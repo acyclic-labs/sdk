@@ -35,6 +35,8 @@ use std::sync::Arc;
 
 mod deadline;
 mod reconciliation;
+mod inspection;
+pub use inspection::TaskSourceInspection;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
@@ -179,6 +181,7 @@ pub struct FilesystemTaskRuntime<P, A, O> {
     maximum_payload_bytes: u64,
     policy: Option<Arc<dyn ToolPolicy>>,
     interaction_owner: Option<TaskInteractionOwner>,
+    recursive_source: Option<Arc<dyn super::RecursiveDefaultToolSource<P, A, O>>>,
 }
 
 struct TaskInteractionOwner {
@@ -186,6 +189,47 @@ struct TaskInteractionOwner {
     schemas: SchemaRegistry,
     scope: Scope,
     volume: VolumeRef,
+}
+
+struct TaskJournalMailbox<P: StreamProvider> {
+    host: Arc<CoordinatorTaskHost<P>>,
+    owner: crate::durable_host::TaskJournalOwner<P>,
+}
+
+impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJournalMailbox<P> {
+    fn validate_scope(&self, scope: &RuntimeScope) -> Result<()> {
+        self.owner.require_mail_scope(scope)
+    }
+    fn task_binding(&self) -> (TaskId, crate::scheduler::LeaseFence) {
+        self.owner.task_binding()
+    }
+    fn send<'a>(
+        &'a self, recipient: TaskId, operation: OperationId, payload: crate::conversation::FileRef,
+    ) -> BoxFuture<'a, Result<crate::durable_host::MailSendAck>> {
+        Box::pin(async move {
+            let (task, fence) = self.owner.task_binding();
+            self.host.send_owned(task, fence, recipient, operation, payload).await
+        })
+    }
+    fn inbox<'a>(
+        &'a self, after: u64, maximum: usize,
+    ) -> BoxFuture<'a, Result<Vec<crate::scheduler::InboxItem>>> {
+        Box::pin(async move {
+            self.owner.verify(true).await?;
+            let (task, _) = self.owner.task_binding();
+            let items = self.host.inbox(task, after, maximum).await?;
+            self.owner.verify(true).await?;
+            Ok(items)
+        })
+    }
+    fn read_received<'a>(
+        &'a self, receive_operation: OperationId, item: &'a crate::scheduler::InboxItem,
+    ) -> BoxFuture<'a, Result<Vec<u8>>> {
+        Box::pin(async move {
+            let (task, fence) = self.owner.task_binding();
+            self.host.read_received_mail_owned(task, fence, receive_operation, item).await
+        })
+    }
 }
 
 struct TaskJournalInteractions {
@@ -320,6 +364,7 @@ where
         Self::open_with_creation_providers(
             stream, filesystem, volume, verifier, signed, scope, tasks, machines, tools,
             session_limits, concurrency, maximum_payload_bytes, clock, policy, Vec::new(),
+            crate::durable_tool::ResumableToolRegistry::default(),
         ).await
     }
 
@@ -345,6 +390,7 @@ where
         clock: Arc<dyn UnixMillisClock>,
         policy: Option<Arc<dyn ToolPolicy>>,
         creation_providers: Vec<Arc<dyn crate::resource_preparation::ResourceCreationProvider>>,
+        resumable_tools: crate::durable_tool::ResumableToolRegistry,
     ) -> Result<Self> {
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
             filesystem.clone(),
@@ -380,20 +426,17 @@ where
             host = host.with_policy(policy.clone())?;
         }
         let host = Arc::new(host);
-        let harness = AgentHarness::with_policy(
+        let harness = crate::runtime::HarnessBuilder {
             tasks,
-            tools.clone(),
+            tools: tools.clone(),
+            resumable_tools,
             scope,
             concurrency,
-            Some(host.clone()),
-            None,
-            Some(ContentBindings {
-                reader,
-                writer: None,
-            }),
-            None,
-            policy.clone(),
-        )?;
+            durable_host: Some(host.clone()),
+            content: Some(ContentBindings { reader, writer: None }),
+            policy: policy.clone(),
+            ..crate::runtime::HarnessBuilder::local()
+        }.build()?;
         Ok(Self {
             stream,
             host,
@@ -406,7 +449,25 @@ where
             maximum_payload_bytes,
             policy,
             interaction_owner: None,
+            recursive_source: None,
         })
+    }
+
+    /// Installs the same configured recursive source used by registered default
+    /// tools. Preparation dispatch resolves its exact original request per task.
+    #[must_use]
+    pub fn with_recursive_source(
+        mut self,
+        source: Arc<dyn super::RecursiveDefaultToolSource<P, A, O>>,
+    ) -> Self {
+        self.recursive_source = Some(source);
+        self
+    }
+
+    pub(super) fn recursive_source(
+        &self,
+    ) -> Option<&Arc<dyn super::RecursiveDefaultToolSource<P, A, O>>> {
+        self.recursive_source.as_ref()
     }
 
     /// Binds the existing conversation owner for task approval/question tickets.
@@ -710,6 +771,18 @@ where
         }
     }
 
+    /// Constructs the ordinary retained scope/parent context with the exact
+    /// current mailbox owner token. Unbound context constructors cannot send.
+    pub async fn task_context(&self, task: TaskId, fence: LeaseFence) -> Result<TaskContext> {
+        let owner = self.host.journal_owner(task, fence).await?;
+        let context = self.harness.durable_context(
+            task, OperationId::from_bytes(task.into_bytes()),
+        ).await?;
+        context.with_owned_mailbox(task, Arc::new(TaskJournalMailbox {
+            host: self.host.clone(), owner,
+        }))
+    }
+
     /// The existing typed admission, recovery and cancellation API.
     #[must_use]
     pub const fn harness(&self) -> &Arc<AgentHarness> {
@@ -774,6 +847,41 @@ where
                 .grants
                 .contains(crate::contract::capability::INTERACTION_ROUTE),
         )
+    }
+
+    /// Opens the canonical tool-effect workflow under the original caller
+    /// reservation. This does not acquire a replacement fence or root scope.
+    pub async fn workflow_journal_for_tool(
+        &self,
+        context: &crate::runtime::ToolContext,
+        tool: &crate::durable_tool::ResumableTool,
+        invocation: &crate::tool::ToolInvocation,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> Result<Arc<FilesystemWorkflowJournal<P, A, O>>> {
+        let task = context.task().durable_task_id()
+            .ok_or_else(|| Error::Unauthorized("tool has no admitted caller".into()))?;
+        let owner = self.host.journal_owner(task, context.task().owned_task_fence()?).await?
+            .for_tool_workflow(context, tool, invocation, cancellation).await?;
+        let maximum_payload_bytes = self.maximum_payload_bytes.min(owner.input_limits().file_bytes);
+        Ok(Arc::new(FilesystemWorkflowJournal::for_task(
+            owner, self.filesystem.clone(), self.volume.clone(),
+            self.verifier.clone(), self.signed.clone(), maximum_payload_bytes,
+        )?))
+    }
+
+    /// Actual caller/source route for portable recursive tool adapters.
+    pub async fn recursive_tool_owner(
+        self: &Arc<Self>,
+        context: &crate::runtime::ToolContext,
+        tool: &crate::durable_tool::ResumableTool,
+        invocation: &crate::tool::ToolInvocation,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> Result<super::RecursiveToolOwner<P, A, O>> {
+        let fence = context.task().owned_task_fence()?;
+        let workflow = self.workflow_journal_for_tool(context, tool, invocation, cancellation).await?;
+        let journal_owner = workflow.task_journal_owner()
+            .ok_or_else(|| Error::Unauthorized("recursive tool lacks its original task owner".into()))?;
+        Ok(super::RecursiveToolOwner { runtime:self.clone(), fence, workflow, journal_owner, cancellation:cancellation.clone() })
     }
 
     /// Opens a workflow journal under the exact retained lease and admission.
@@ -944,6 +1052,49 @@ where
         })
     }
 
+    /// Reads the exact suspended workflow checkpoint under this runtime's
+    /// protected service scope. No lease is acquired and no machine is advanced.
+    /// This is not a task-level grant to read another task's private state.
+    pub async fn observe_workflow_checkpoint(
+        &self,
+        task: TaskId,
+    ) -> Result<crate::workflow::MachineCheckpoint> {
+        use crate::workflow::WorkflowJournal as _;
+        let slot = self.host.workflow_suspension(task).await?
+            .ok_or_else(|| Error::Conflict("workflow is not passively suspended".into()))?;
+        let admission = self.host.observe_admission(task).await?;
+        let journal = FilesystemWorkflowJournal::new(
+            self.host.workflow_stream(),
+            self.filesystem.clone(),
+            &admission.operation_id.to_string(),
+            self.volume.clone(),
+            self.verifier.clone(),
+            self.signed.clone(),
+            self.maximum_payload_bytes.min(admission.limits.file_bytes),
+        )?;
+        let retained = journal.admission().await?
+            .ok_or_else(|| Error::Storage("suspended workflow admission is absent".into()))?;
+        if retained.operation_id != admission.operation_id
+            || retained.request_digest != crate::contract::canonical_json_digest(&admission)?
+            || retained.initial.machine != admission.machine
+        {
+            return Err(Error::Unauthorized("observed workflow differs from admitted task".into()));
+        }
+        let record = journal.observe_transition(slot.revision).await?;
+        if record.next.revision != slot.revision
+            || record.next.machine != admission.machine
+            || !matches!(record.transition.status, MachineStatus::Suspended)
+        {
+            return Err(Error::Conflict("observed checkpoint differs from suspension".into()));
+        }
+        // A concurrently consumed/replaced resume slot cannot be represented as
+        // the same passive checkpoint to the caller.
+        if self.host.workflow_suspension(task).await?.as_ref() != Some(&slot) {
+            return Err(Error::Conflict("workflow suspension changed during observation".into()));
+        }
+        Ok(record.next)
+    }
+
     /// Polls one durable passive wait and fills its existing authenticated wake
     /// slot when ready. Callers drive bounded task discovery; this keeps no
     /// watcher, sleep future, execution reservation or second queue.
@@ -1068,8 +1219,8 @@ where
         let operation_id = lease.operation.operation_id;
         let task = TaskId::from_bytes(operation_id.into_bytes());
         let fence = LeaseFence::from(&lease.reservation);
-        let context = self.harness.durable_context(task, operation_id).await?;
         self.host.start_task(&lease).await?;
+        let context = self.task_context(task, fence.clone()).await?;
         let mut session = self.open_task(task, fence.clone()).await?;
         let wake = self.host.workflow_input(task, &fence).await?;
         let mut advanced = 0;
@@ -1166,6 +1317,13 @@ where
         outbox: &[WorkflowCommand],
         commands: &dyn TaskCommandHost,
     ) -> Result<CommandDispatch> {
+        if outbox.len() != 1 && outbox.iter().any(|command|
+            command.kind == super::MAIL_RECEIVE_TASK_COMMAND_KIND)
+        {
+            return Err(Error::Invalid(
+                "mail receive must checkpoint alone before the next command".into(),
+            ));
+        }
         let mut results = Vec::new();
         for command in outbox {
             self.host.verify_dispatch_owner(task, fence.clone()).await?;
@@ -1230,10 +1388,7 @@ where
                 "persistent local stock composition has no routed execution provider".into(),
             ));
         }
-        let task_context = self
-            .harness
-            .durable_context(task, admission.operation_id)
-            .await?;
+        let task_context = self.task_context(task, fence.clone()).await?;
         let scope = task_context.scope().clone();
         let limits = scope.limits();
         let run_limits = scope.run_limits();

@@ -200,6 +200,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             reader,
         )?;
         let request = ForkRequest {
+            authorized_source: None,
             operation_id: OperationId::from_bytes([6; 16]),
             parent: parent.clone(),
             parent_revision: aggregate.reducer().revision(),
@@ -207,6 +208,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             child_agent,
             attached_agents: Vec::new(),
             preparation: ForkPreparation {
+                child_result_volume: None,
                 summary: None,
                 child_project_volume: child_project.clone(),
                 child_private_volume: child_private.clone(),

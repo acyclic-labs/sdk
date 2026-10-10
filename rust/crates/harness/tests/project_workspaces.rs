@@ -141,6 +141,9 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
         Some(reducer.revision().to_string()),
     )?;
     let seed = ForkSeed { history_witness: None, summary: None,
+    authorized_source: None,
+    child_result_volume: None,
+    child_result_generation: None,
     operation_id: OperationId::from_bytes([2; 16]),
     parent: parent.clone(),
     parent_revision: reducer.revision(),

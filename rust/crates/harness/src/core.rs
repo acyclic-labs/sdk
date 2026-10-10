@@ -2236,6 +2236,9 @@ impl Reducer {
                     ));
                 }
                 for resource in &seed.resources {
+                    if let crate::fork::ResourceRevision::Project { volume, .. } = &resource.source {
+                        require(&volume.capability(VolumeOperation::Read)?)?;
+                    }
                     if let crate::fork::ResourceRevision::PrivateVolume { volume, .. } =
                         &resource.source
                     {
@@ -4340,13 +4343,13 @@ resolve_interaction interaction_resolved interaction:resolve";
         let mut capabilities: Vec<String> = capabilities.iter().map(str::to_owned).collect();
         if let Action::PublishFork { seed } = &action {
             for resource in &seed.resources {
-                if let crate::fork::ResourceRevision::PrivateVolume { volume, .. } =
-                    &resource.source
+                if let crate::fork::ResourceRevision::PrivateVolume { volume, .. }
+                    | crate::fork::ResourceRevision::Project { volume, .. } = &resource.source
                 {
                     capabilities.push(
                         volume
                             .capability(crate::conversation::VolumeOperation::Read)
-                            .expect("valid scratch reference"),
+                            .expect("valid source reference"),
                     );
                 }
             }
@@ -5163,6 +5166,9 @@ resolve_interaction interaction_resolved interaction:resolve";
             VolumeOwner::Project("project-1".into()),
         )?;
         let seed = ForkSeed { history_witness: None, summary: None,
+        authorized_source: None,
+        child_result_volume: None,
+        child_result_generation: None,
         operation_id: operation(8),
         parent: parent.clone(),
         parent_revision: 1,
@@ -5401,6 +5407,19 @@ resolve_interaction interaction_resolved interaction:resolve";
             reducer.plan(&foreign_command),
             Err(Error::Unauthorized(_))
         ));
+        let mut unreadable_source = command(
+            operation(8), 1, Action::PublishFork { seed: Box::new(seed.clone()) },
+        );
+        let project_read = seed.resources.iter().find_map(|resource| match &resource.source {
+            ResourceRevision::Project { volume, .. } => Some(volume.capability(VolumeOperation::Read)),
+            _ => None,
+        }).ok_or_else(|| Error::Invalid("fixture project source is absent".into()))??;
+        unreadable_source.scope = issuer().root_for_agent(
+            crate::AgentId::from_bytes([1;16]), "current-agent",
+            Capabilities::new(unreadable_source.scope.capabilities().iter().filter(|grant| *grant != project_read)),
+        );
+        assert!(matches!(reducer.plan(&unreadable_source), Err(Error::Unauthorized(_))));
+        assert_eq!(reducer.revision(), 1);
         let planned = reducer.plan(&command(
             operation(8),
             1,

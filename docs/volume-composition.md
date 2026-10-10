@@ -68,9 +68,49 @@ After restart, restore the retained authenticated snapshot with
 `BrowserTaskAuthority.restore`, then use `restoreRecursiveForkSource`. Restore
 checks its exact head event against canonical browser history and never uses a
 newer conversation tail. An explicit foreign `source` selects only project
-data through the caller's existing read grants; it neither imports another
-agent's transcript nor adopts its signed scope. History capture retains the
-ordinary bounded HistoryReader and trusted fork witness.
+data. Trusted RootService policy may authorize an operation-specific read across
+the actual same-session root, ancestor, sibling or descendant graph without
+changing the original caller's grants. The owning coordinator verifies retained
+creator evidence; a mandatory trusted provider verifies the pinned generation,
+genuine native capture and protected bootstrap allocation when selecting a root.
+The original issuer MAC binds the fixed `harness.project-source.read.v1` purpose,
+complete caller admission, issuing fence, fork operation and exact selection.
+Immutable admitted evidence
+survives owner recovery; current preparation authority remains separately fenced.
+The serialized policy scope attests only an opaque descriptor label, not a
+Filesystem read capability. Only the owning kernel can consume verified original
+owner, graph and snapshot evidence into the private exact-selection read handle.
+Neither this record nor its sealed read handle imports another agent's transcript,
+private data or signed scope. Foreign workspace forks inherit no conversation.
+History capture retains the ordinary bounded HistoryReader and trusted fork witness.
+
+For ordinary model-driven defaults, pass `BrowserTaskOptions.recursive_tools`.
+Its explicit signed caller, child allocation and merge-notice bindings configure
+the same generic `ConfiguredRecursiveToolSource` used by native consumers.
+Opening installs the real file tools and both matching recursive tool registries
+on the existing runtime; it adds neither a browser source registry nor workers.
+Known descendants bind their actual admitted agent and volumes. An unlisted new
+child receives a typed authority denial, never a guessed root identity.
+For browser foreign reads, `project_policy_graph_root` must identify the actual
+coordinator graph root. Opening binds the production `FsRootProjectSourceProvider`
+to that root and the supplied service owner, separately from conversation keys.
+This creator-only policy verifies the selected immutable Filesystem generation;
+it rejects raw native descriptors and unproved bootstrap sources. Native hosts
+install the same provider with an independently authenticated native source.
+Direct source consumers supply `selected_project` and finite
+`source_policy_limits`; these references are verified evidence, never grants.
+Logical scratch/output namespaces remain distinct from protected service journals.
+
+The ordinary recursive workflow commits its bounded selected-source intent
+before staging a source checkpoint or admitting preparation. Recovery loads that
+exact authenticated canonical cut, and the operation-only publication receipt
+recovers the original immutable checkpoint instead of selecting a newer source.
+`content_budget` bounds measured receipt observation, checkpoint reads and
+publication with their actual remaining work. Explicit `input_files` authorize
+only the exact launch files; referenced child messages use the configured outer
+and inner JSON pointers, not recursive descriptor guessing. Source checkpoints
+are recovery data, not automatically delegated launch-file authority.
+
 
 ## Validation scope
 

@@ -221,6 +221,7 @@ impl ResourceCreationProvider for SandboxCreator {
                 allocation_generation: generation,
                 operations: vec![CreatedResourceOperation::Named("execute".into())],
                 content: Vec::new(),
+                references: Vec::new(),
             })
         })
     }
@@ -260,6 +261,10 @@ impl CreationFixture {
             "fork:publish".into(), payload_volume.capability(VolumeOperation::Read)?,
             "conversation:bind".into(),
             payload_volume.capability(VolumeOperation::Write)?,
+            VolumeRef::new(filesystem_provider.clone(), "parent-project", VolumeClass::Project,
+                VolumeOwner::Project("created-project".into()))?.capability(VolumeOperation::Read)?,
+            VolumeRef::new(filesystem_provider.clone(), "parent-private", VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(AgentId::from_bytes([90;16])))?.capability(VolumeOperation::Read)?,
         ]);
         let signed = issuer.root_for_agent(AgentId::from_bytes([80; 16]), "owner", grants.clone());
         let root_scope = RuntimeScope::new(grants, Limits::default())?
@@ -350,14 +355,14 @@ impl CreationFixture {
             "task:spawn:test.created@1".into(),
         ]);
         child = child.with_resource_proofs(vec![proof.clone()])?;
-        Ok(ResourcePreparationRequest {
-            provider: self.creator.provider.clone(), child, resources: vec![proof.resource],
-            creation_grant: "resource:create:custom".into(), maximum_resources: 1,
-            maximum_work: 4, maximum_bytes: 65_536, payload: serde_json::json!({"image":"isolated"}),
-        })
+        Ok(ResourcePreparationRequest { command: None, source_checkpoint:None, provider: self.creator.provider.clone(), child, resources: vec![proof.resource],
+        creation_grant: "resource:create:custom".into(), maximum_resources: 1,
+        maximum_work: 4, maximum_bytes: 65_536, payload: serde_json::json!({"image":"isolated"}), })
     }
 
-    async fn prepare(&self, request: &ResourcePreparationRequest) -> Result<(TaskResourcePreparation, crate::distributed::WorkLease)> {
+    async fn prepare(&self, request: &ResourcePreparationRequest)
+        -> Result<(TaskResourcePreparation, crate::distributed::WorkLease, crate::filesystem::InvocationCancellation)> {
+        let invocation = crate::filesystem::InvocationCancellation(acyclic_fs::CancellationToken::new());
         let prep = self.admission(83, serde_json::to_value(request).map_err(|e| Error::Invalid(e.to_string()))?);
         assert!(matches!(self.host.admit_owned(prep, (&self.root_lease.reservation).into()).await?,
             Admission::Accepted(id) if id == TaskId::from_bytes([83; 16])));
@@ -368,8 +373,8 @@ impl CreationFixture {
         let owner = Arc::new(self.host.journal_owner(
             TaskId::from_bytes(lease.operation.operation_id.into_bytes()),
             (&lease.reservation).into(),
-        ).await?);
-        Ok((owner.resource_preparation(request.clone()).await?, lease))
+        ).await?.with_invocation_cancellation(&invocation.0));
+        Ok((owner.resource_preparation(request.clone()).await?, lease, invocation))
     }
 
     pub(crate) async fn admit_child(&self, child: TaskAdmissionRecord) -> Result<Admission<TaskId>> {
@@ -395,7 +400,7 @@ async fn created_custom_operation_requires_canonical_admission_not_a_caller_rece
     let request = fixture.sandbox_request()?;
     let label = created_resource_capability(&request.resources[0], "execute")?;
     assert!(!fixture.root_scope.grants().contains(&label));
-    let (preparation, _) = fixture.prepare(&request).await?;
+    let (preparation, _, _invocation) = fixture.prepare(&request).await?;
     fixture.creator.create(&preparation, |_| {}).await?;
     let raw = fixture.creator.verify(&request, &request.child.resource_proofs[0]).await?;
     assert_eq!(raw.origin, *preparation.origin());
@@ -428,7 +433,7 @@ async fn corrupt_genuine_allocation_provenance_never_derives_scope() -> Result<(
     for corruption in 0..6 {
         let fixture = CreationFixture::new().await?;
         let request = fixture.sandbox_request()?;
-        let (preparation, _) = fixture.prepare(&request).await?;
+        let (preparation, _, _invocation) = fixture.prepare(&request).await?;
         fixture.creator.create(&preparation, |origin| match corruption {
             0 => origin.intended_child = OperationId::from_bytes([85; 16]),
             1 => origin.admission_digest[0] ^= 1,
@@ -451,7 +456,7 @@ async fn corrupt_genuine_allocation_provenance_never_derives_scope() -> Result<(
 async fn changed_child_request_evidence_and_provider_revision_are_rejected() -> Result<()> {
     let fixture = CreationFixture::new().await?;
     let request = fixture.sandbox_request()?;
-    let (preparation, _) = fixture.prepare(&request).await?;
+    let (preparation, _, _invocation) = fixture.prepare(&request).await?;
     fixture.creator.create(&preparation, |_| {}).await?;
     let mut changed_request = request.clone();
     changed_request.payload = serde_json::json!({"image":"foreign"});
@@ -486,7 +491,7 @@ async fn changed_child_request_evidence_and_provider_revision_are_rejected() -> 
 async fn original_creation_fence_survives_current_preparation_and_parent_recovery() -> Result<()> {
     let mut fixture = CreationFixture::new().await?;
     let request = fixture.sandbox_request()?;
-    let (preparation, original_prep) = fixture.prepare(&request).await?;
+    let (preparation, original_prep, _invocation) = fixture.prepare(&request).await?;
     fixture.creator.create(&preparation, |_| {}).await?;
     fixture.host.coordinator.lock().await.release_lease(
         &original_prep, IdempotencyKey::new("release-created-preparation")?,
@@ -520,13 +525,26 @@ async fn original_creation_fence_survives_current_preparation_and_parent_recover
 async fn cancelled_parent_cannot_consume_existing_created_allocation() -> Result<()> {
     let fixture = CreationFixture::new().await?;
     let request = fixture.sandbox_request()?;
-    let (preparation, _) = fixture.prepare(&request).await?;
+    let (preparation, _, _invocation) = fixture.prepare(&request).await?;
     fixture.creator.create(&preparation, |_| {}).await?;
+    assert!(!preparation.cancellation().expect("caller invocation is sealed").is_cancelled());
     fixture.host.cancel(fixture.root).await?;
     assert!(preparation.verify_creation().await.is_err());
+    assert!(preparation.cancellation().expect("same caller invocation").is_cancelled());
     // Provider evidence survives cancellation; it is not itself authorization.
     fixture.creator.verify(&request, &request.child.resource_proofs[0]).await?;
     assert!(fixture.admit_child(request.child.clone()).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn sealed_preparation_borrows_the_actual_callers_drop_guard_token() -> Result<()> {
+    let fixture = CreationFixture::new().await?;
+    let request = fixture.sandbox_request()?;
+    let (preparation, _, invocation) = fixture.prepare(&request).await?;
+    assert!(!preparation.cancellation().expect("actual owner invocation").is_cancelled());
+    drop(invocation);
+    assert!(preparation.cancellation().expect("same owner invocation").is_cancelled());
     Ok(())
 }
 
@@ -602,11 +620,13 @@ impl CreationFixture {
         )).transpose()?;
         let stream_provider = ProviderRef::new("created-controls", "stream", "2")?;
         let fork = ForkRequest {
+            authorized_source: None,
             operation_id: OperationId::from_bytes([92; 16]), parent: parent.clone(),
             parent_revision: aggregate.reducer().revision(),
             child: Authority { kind: AggregateKind::Conversation, id: "created-fork-child".into() },
             child_agent, attached_agents: Vec::new(),
             preparation: ForkPreparation {
+                child_result_volume: None,
                 child_project_volume: project.clone(), child_private_volume: private.clone(),
                 child_result_volume: result.clone(),
                 summary: None, inherited_through_sequence: 0, maximum_inherited_messages: 1,
@@ -625,11 +645,11 @@ impl CreationFixture {
                 } },
             ], boundary: None,
         };
-        let history = crate::history::HistoryReader::new(
+        let history = crate::store::HistoryReader::new(
             &fork_stream, &parent, fork_issuer.verifier(),
         )?.fork_history(
             aggregate.reducer(), 0,
-            crate::history::HistoryReadLimits { maximum_events:2, maximum_bytes:65_536 },
+            crate::store::HistoryReadLimits { maximum_events:2, maximum_bytes:65_536 },
         ).await?;
         let preparer = FilesystemForkPreparer::new(
             self.filesystem.clone(), aggregate.reducer().clone(), fork_issuer.verifier(),
@@ -653,29 +673,21 @@ impl CreationFixture {
         }
         child = child.with_resource_proofs(preparer.creation_proofs(&fork, TaskId::from_bytes([83; 16]))?)?;
         let request = ResourcePreparationRequest {
+            command: None, source_checkpoint: None,
             provider: self.filesystem_provider.clone(), child,
             resources: preparer.creation_resources(&fork)?, creation_grant: "fork:publish".into(),
             maximum_resources: if with_result {3} else {2}, maximum_work: 16_384, maximum_bytes: 16 * 1_024 * 1_024,
             payload: serde_json::to_value(&fork).map_err(|e| Error::Invalid(e.to_string()))?,
         };
-        let creation_operation = preparer.project_creation_operation(&fork)?;
-        let encoded = serde_json::to_vec(&fork).map_err(|error| Error::Invalid(error.to_string()))?;
-        let project_key = crate::IdempotencyKey::new(format!(
-            "fork:{}:{}:project", fork.operation_id, blake3::hash(&encoded),
-        ))?;
-        let digest = blake3::hash(project_key.as_str().as_bytes());
-        let mut expected = [0; 16];
-        expected.copy_from_slice(&digest.as_bytes()[..16]);
-        if expected == [0; 16] { expected[0] = 1; }
-        assert_eq!(creation_operation, acyclic_fs::OperationId::from_bytes(expected));
-        drop(encoded);
-        let (preparation, _) = self.prepare(&request).await?;
+        let (preparation, _, _invocation) = self.prepare(&request).await?;
         let report = preparer.with_task_preparation(Arc::new(preparation))?.prepare(fork).await?;
         let seed = report.clone().into_seed()?;
         Ok(PreparedFilesystemChild { request, private, project, seed, report,
             parent: aggregate.reducer().clone(), parent_scope: fork_scope, parent_verifier: fork_issuer.verifier() })
     }
 }
+
+mod recursive_lifecycle;
 
 #[tokio::test]
 async fn ordinary_task_io_uses_verified_created_volume_without_root_grant_widening() -> Result<()> {
@@ -867,6 +879,7 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
         fixture.host.tasks.clone(), fixture.host.machines.clone(), crate::tool::ToolRegistry::default(),
         crate::scheduler::SessionLimits { active_tasks:16, total_tasks:32, depth:4, model_steps:4 },
         16, 65_536, Arc::new(SystemUnixMillisClock), None, fixture.host.resource_creation.clone(),
+        crate::durable_tool::ResumableToolRegistry::default(),
     ).await?;
     let mut session = runtime.open_task(task, fence).await?;
     session.step(
@@ -987,3 +1000,6 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
     ).await.is_err());
     Ok(())
 }
+
+mod mailbox_parcels;
+mod source_authorization;

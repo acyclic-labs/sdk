@@ -23,6 +23,7 @@ use crate::{
     },
     resource_preparation::{ResourceCreationOrigin, TaskResourcePreparation},
     resources::{ProviderRef, ResourceRef, WorkspaceRef},
+    source_authorization::ProjectSourceReadHandle,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
@@ -111,6 +112,7 @@ pub struct FilesystemForkPreparer<A, O> {
     summary: Option<BoundSummary>,
     history: Option<PreparedForkHistory>,
     task_preparation: Option<Arc<TaskResourcePreparation>>,
+    project_source: Option<ProjectSourceReadHandle>,
 }
 
 struct BoundSummary {
@@ -121,6 +123,7 @@ struct BoundSummary {
 struct PreparationAttempt<'a, A, O> {
     preparer: &'a FilesystemForkPreparer<A, O>,
     io: Option<PreparationIo>,
+    task_preparation: Option<&'a TaskResourcePreparation>,
 }
 
 impl<A, O> std::ops::Deref for PreparationAttempt<'_, A, O> {
@@ -163,7 +166,18 @@ impl<A, O> FilesystemForkPreparer<A, O> {
             summary: None,
             history: None,
             task_preparation: None,
+            project_source: None,
         })
+    }
+
+    /// Retains an operation-specific project read sealed by the original task
+    /// owner. This does not change caller grants or authorize private/history IO.
+    pub fn with_project_source_read_handle(mut self, handle: ProjectSourceReadHandle) -> Result<Self> {
+        if handle.authorization().project.provider() != &self.host.provider {
+            return Err(Error::Unauthorized("project source belongs to another Filesystem provider".into()));
+        }
+        self.project_source = Some(handle);
+        Ok(self)
     }
 
     /// Binds a finite archive selection produced by the original history reader.
@@ -235,6 +249,45 @@ impl<A, O> FilesystemForkPreparer<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
+    /// Computes the exact foreign-reader references before immutable child
+    /// admission, using the materializer's canonical authenticated history and
+    /// attachment-manifest projection. This allocates no child resource and
+    /// performs no capture or publication.
+    pub async fn required_reference_grants(&self, request: &ForkRequest) -> Result<Vec<ReferenceGrant>> {
+        self.check_request(request)?;
+        let controller = ParentProjectController::new(
+            self.host.as_ref(), &self.parent, &self.verifier, &self.scope, self.project.clone(),
+        )?;
+        let mut grants = controller.inherited_reference_grants(
+            &self.parent, request.child_agent, &request.attached_agents,
+            request.preparation.inherited_through_sequence,
+            usize::try_from(request.preparation.maximum_inherited_messages)
+                .map_err(|_| Error::Invalid("fork message bound is too large".into()))?,
+            request.preparation.maximum_inherited_bytes,
+            request.preparation.maximum_inherited_references as usize,
+            self.resolver.as_ref(), self.history.as_ref(),
+        ).await?;
+        if request.preparation.summary.is_some() {
+            let summary = self.summary.as_ref()
+                .ok_or_else(|| Error::Invalid("summary source was not authenticated".into()))?;
+            let (_, references) = super::summary_fork::split_references(&summary.prepared)?;
+            let mut selected = grants.iter().map(|grant| Ok((grant.capability()?, grant.reader)))
+                .collect::<Result<BTreeSet<_>>>()?;
+            for reader in std::iter::once(request.child_agent).chain(request.attached_agents.iter().copied()) {
+                for file in references.values() {
+                    if file.volume().owner() != &crate::conversation::VolumeOwner::Agent(reader)
+                        && selected.insert((file.read_capability()?, reader)) {
+                        if selected.len() > request.preparation.maximum_inherited_references as usize {
+                            return Err(Error::Invalid("summary reader grants exceed the original capture allowance".into()));
+                        }
+                        grants.push(ReferenceGrant { file: file.clone(), reader, attachment_manifest: None });
+                    }
+                }
+            }
+        }
+        Ok(grants)
+    }
+
     /// Exact created identities for this provider's fork request, without IO.
     pub fn creation_resources(&self, request: &ForkRequest) -> Result<Vec<ResourceRef>> {
         request.validate()?;
@@ -319,12 +372,40 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
     }
 
     fn attempt(&self) -> Result<PreparationAttempt<'_, A, O>> {
-        let io = self.task_preparation.as_ref()
-            .map(|task| PreparationIo::new(task.request())).transpose()?;
-        if let (Some(io), Some(task)) = (&io, &self.task_preparation) {
+        self.attempt_with_preparation(self.task_preparation.as_deref())
+    }
+
+    fn attempt_with_preparation<'a>(
+        &'a self,
+        task: Option<&'a TaskResourcePreparation>,
+    ) -> Result<PreparationAttempt<'a, A, O>> {
+        let io = task.map(|task| {
+            let cancellation = task.cancellation().ok_or_else(|| Error::Unauthorized(
+                "task-bound preparation has no original invocation cancellation token".into()))?;
+            PreparationIo::new_with_cancellation(task.request(), cancellation)
+        }).transpose()?;
+        if let (Some(io), Some(task)) = (&io, task) {
             io.encode(task.request(), task.request().maximum_bytes)?;
         }
-        Ok(PreparationAttempt { preparer: self, io })
+        Ok(PreparationAttempt { preparer: self, io, task_preparation: task })
+    }
+
+    /// Executes the existing exact capture under one authenticated preparation
+    /// task without copying the selected parent reducer or retaining its lease
+    /// in a reusable provider binding.
+    pub async fn prepare_for_task(
+        &self,
+        request: ForkRequest,
+        preparation: &TaskResourcePreparation,
+    ) -> Result<ForkReport> {
+        if preparation.request().provider != self.host.provider
+            || preparation.request().creation_grant != capability::FORK_PUBLISH
+        {
+            return Err(Error::Unauthorized(
+                "fork preparation task belongs to another provider or creation authority".into(),
+            ));
+        }
+        self.attempt_with_preparation(Some(preparation))?.prepare_inner(request).await
     }
 }
 
@@ -354,12 +435,67 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
                     "fork request or resources differ from the admitted preparation".into(),
                 ));
             }
+            if bound.read_authorization != request.authorized_source {
+                return Err(Error::Unauthorized("fork source authorization differs from its admitted request".into()));
+            }
+            match (&request.authorized_source, preparation.project_source()) {
+                (Some(authorization), Some(handle))
+                    if handle.authorization() == authorization
+                        && authorization.owner == preparation.origin().owner
+                        && authorization.caller_task == preparation.origin().parent_task => {}
+                (None, None) => {}
+                _ => return Err(Error::Unauthorized("fork preparation lacks its original owner's sealed project source".into())),
+            }
             if request.preparation.maximum_inherited_bytes > bound.maximum_bytes {
                 return Err(Error::Invalid("fork preparation exceeds admitted IO allowance".into()));
             }
             crate::contract::validate_json_byte_bound(request, bound.maximum_bytes)?;
+            for selection in &request.selections {
+                match &selection.revision {
+                    ResourceRevision::Project { volume, generation } if request.authorized_source.is_some() => {
+                        self.project_read_grant(request, volume, generation)?;
+                    }
+                    ResourceRevision::Project { volume, .. }
+                    | ResourceRevision::PrivateVolume { volume, .. }
+                        if !preparation.grants().contains(&volume.capability(VolumeOperation::Read)?) =>
+                    {
+                        return Err(Error::Unauthorized(
+                            "preparation task lacks the exact selected workspace source-read grant".into(),
+                        ));
+                    }
+                    _ => {}
+                }
+            }
         }
         Ok(())
+    }
+
+    fn project_read_grant<'a>(
+        &'a self,
+        request: &ForkRequest,
+        volume: &VolumeRef,
+        generation: &crate::resources::GenerationRef,
+    ) -> Result<std::borrow::Cow<'a, ContentGrant>> {
+        let Some(authorization) = &request.authorized_source else {
+            return ContentGrant::verify(&self.verifier, &self.scope, volume, VolumeOperation::Read)
+                .map(std::borrow::Cow::Owned);
+        };
+        let handle = match self.task_preparation {
+            Some(preparation) => preparation.project_source(),
+            None => self.project_source.as_ref(),
+        }.ok_or_else(|| Error::Unauthorized("fork source descriptor has no sealed project read".into()))?;
+        if handle.authorization() != authorization {
+            return Err(Error::Unauthorized("fork source descriptor differs from its sealed project read".into()));
+        }
+        if authorization.source_task != authorization.caller_task
+            && (request.preparation.inherited_through_sequence != 0 || request.preparation.summary.is_some())
+        {
+            return Err(Error::Unsupported("foreign workspace source cannot inherit conversation history".into()));
+        }
+        handle.require_selection(request.operation_id, authorization.source_task, volume, generation,
+            authorization.native_snapshot.as_ref())?;
+        handle.grant().require(volume, VolumeOperation::Read)?;
+        Ok(std::borrow::Cow::Borrowed(handle.grant()))
     }
 
     async fn verify_task_lease(&self, settlement: bool) -> Result<()> {
@@ -404,6 +540,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
     fn authorize_request(&self, request: &ForkRequest) -> Result<()> {
         request.validate()?;
         self.validate_task_request(request)?;
+        if !self.scope.capabilities().contains(capability::FORK_PUBLISH) {
+            return Err(Error::Unauthorized("parent project operation is not granted".into()));
+        }
         if request.parent != *self.parent.authority()
             || request.preparation.child_project_volume.provider() != &self.host.provider
         {
@@ -430,10 +569,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
                         "fork history belongs to another Stream provider".into(),
                     ));
                 }
-                ResourceRevision::Project { volume, .. } if volume != &self.project => {
-                    return Err(Error::Invalid(
-                        "fork project is not the bound parent project".into(),
-                    ));
+                ResourceRevision::Project { volume, generation } => {
+                    self.project_read_grant(request, volume, generation)?;
                 }
                 ResourceRevision::PrivateVolume { volume, .. } => {
                     if volume.owner()
@@ -712,17 +849,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
     )]
     async fn prepare_inner(&self, request: ForkRequest) -> Result<ForkReport> {
         self.check_request(&request)?;
+        if request.authorized_source.is_some() && self.task_preparation.is_none() {
+            return Err(Error::Unauthorized("authorized workspace capture requires its original preparation lease".into()));
+        }
         self.verify_task_lease(false).await?;
         let journal = self.claim(&request).await?;
         if let Some(report) = self.read_report(&journal, &request).await? {
             self.verify_task_allocations(&request).await?;
             return Ok(report);
         }
-        let source_generation = request
+        let (source_project, source_generation) = request
             .selections
             .iter()
             .find_map(|selection| match &selection.revision {
-                ResourceRevision::Project { generation, .. } => Some(generation),
+                ResourceRevision::Project { volume, generation } => Some((volume, generation)),
                 _ => None,
             })
             .ok_or_else(|| Error::Invalid("fork has no project selection".into()))?;
@@ -766,9 +906,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
             "fork:{}:{request_digest}:scratch",
             request.operation_id
         ))?;
+        let private_grant = ContentGrant::verify(
+            &self.verifier, &self.scope, source_private, VolumeOperation::Read,
+        )?;
+        let project_grant = self.project_read_grant(&request, source_project, source_generation)?;
         self.verify_task_lease(false).await?;
         let private_observation = bounded_io::fork(
-            &self.host, source_private, private_generation, &private,
+            &self.host, source_private, &private_grant, private_generation, &private,
             Some(paths.clone()), &private_key, self.io.as_ref(),
         ).await?;
         let controller = ParentProjectController::new(
@@ -780,9 +924,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
         )?;
         let project_key = project_creation_key(request.operation_id, request_digest)?;
         self.verify_task_lease(false).await?;
-        controller.require(capability::FORK_PUBLISH, VolumeOperation::Read)?;
+        if request.authorized_source.is_none() {
+            controller.require(capability::FORK_PUBLISH, VolumeOperation::Read)?;
+        }
         let child_project = bounded_io::fork(
-            &self.host, &self.project, source_generation,
+            &self.host, source_project, &project_grant, source_generation,
             &request.preparation.child_project_volume, None, &project_key, self.io.as_ref(),
         ).await?;
         let (child_result_volume, child_result_generation) = if let Some(volume) = &request.preparation.child_result_volume {
@@ -1016,6 +1162,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
             attachment_manifests,
         };
         report.validate()?;
+        if let Some(preparation) = &self.task_preparation {
+            for grant in &report.reference_grants {
+                require_reference_donor(preparation.grants(), grant)?;
+                if grant.reader == report.request.child_agent
+                    && !preparation.request().child.grants.contains(&grant.capability()?)
+                {
+                    return Err(Error::Unauthorized(
+                        "prepared child omitted an exact inherited-file read grant".into(),
+                    ));
+                }
+            }
+        }
         let required_captures_ready =
             report
                 .request
@@ -1037,6 +1195,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
         self.verify_task_lease(false).await?;
         self.commit_report(&journal, &report).await
     }
+}
+
+/// The member proof is produced by the canonical authenticated manifest
+/// traversal and retained in the protected original report/seed binding.
+pub(super) fn require_reference_donor(grants: &crate::Capabilities, reference: &ReferenceGrant) -> Result<()> {
+    reference.validate()?;
+    if crate::runtime::read_granted(grants, &reference.file)? {
+        return Ok(());
+    }
+    if let Some(manifest) = &reference.attachment_manifest
+        && crate::runtime::read_granted(grants, manifest)?
+    {
+        return Ok(());
+    }
+    Err(Error::Unauthorized(
+        "preparation task cannot delegate an inherited reference it cannot read".into(),
+    ))
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
@@ -1368,6 +1543,9 @@ where
         Box::pin(async move {
             let this = self.attempt()?;
             this.authorize_request(&request)?;
+            if request.authorized_source.is_some() && this.task_preparation.is_none() {
+                return Err(Error::Unauthorized("authorized workspace reconciliation requires its original preparation lease".into()));
+            }
             this.verify_task_lease(true).await?;
             let journal = this.journal_ref(&request)?;
             match bounded_io::resolve(&this.host, &journal, this.io.as_ref()).await {
@@ -1474,6 +1652,7 @@ mod task_origin_tests {
             preparation_task: TaskId::from_bytes([73; 16]),
             intended_child: OperationId::from_bytes([74; 16]),
             admission_digest: [75; 32],
+            source_grants: crate::Capabilities::new([] as [&str; 0]),
             request_digest: [76; 32],
             creation_fence: crate::scheduler::LeaseFence {
                 reservation_id: "original".into(),

@@ -1388,6 +1388,9 @@ pub struct ForkRequest {
     pub selections: Vec<ForkSelection>,
     /// Present only when one provider attests a common capture boundary.
     pub boundary: Option<AttestedBoundary>,
+    /// Operation-sealed workspace read; never grants source transcript access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorized_source: Option<crate::source_authorization::ProjectSourceAuthorization>,
 }
 
 /// Selection of authoritative logical history before a fork is admitted.
@@ -1419,6 +1422,10 @@ pub struct ForkPreparation {
     /// Fresh private workspace owned by the child agent.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmVolumeRefWire"))]
     pub child_private_volume: VolumeRef,
+    /// Optional child-owned unmounted result namespace, distinct from scratch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmVolumeRefWire | null"))]
+    pub child_result_volume: Option<VolumeRef>,
     /// Inclusive final parent conversation sequence; zero selects none.
     #[cfg_attr(feature = "wasm", tsify(type = "bigint"))]
     pub inherited_through_sequence: u64,
@@ -1458,7 +1465,45 @@ impl ForkPreparation {
         {
             return Err(Error::Invalid("fork preparation is invalid".into()));
         }
+        if let Some(result) = &self.child_result_volume {
+            validate_child_result_volume(result, &self.child_private_volume, child_agent)?;
+            if result == &self.child_project_volume {
+                return Err(Error::Invalid("fork result aliases project".into()));
+            }
+        }
         Ok(())
+    }
+}
+
+fn validate_child_result_volume(volume: &VolumeRef, scratch: &VolumeRef, child: AgentId) -> Result<()> {
+    volume.validate()?;
+    if volume.class() != VolumeClass::AgentPrivate
+        || volume.owner() != &VolumeOwner::Agent(child)
+        || volume.provider() != scratch.provider()
+        || volume == scratch
+    {
+        return Err(Error::Invalid("fork result must be a distinct child-owned private namespace".into()));
+    }
+    Ok(())
+}
+
+fn validate_child_result_generation(
+    volume: Option<&VolumeRef>,
+    generation: Option<&GenerationRef>,
+    scratch: &VolumeRef,
+    child: AgentId,
+) -> Result<()> {
+    match (volume, generation) {
+        (None, None) => Ok(()),
+        (Some(volume), Some(generation)) => {
+            validate_child_result_volume(volume, scratch, child)?;
+            generation.validate()?;
+            if generation.as_resource().provider() != volume.provider() {
+                return Err(Error::Invalid("fork result generation provider mismatch".into()));
+            }
+            Ok(())
+        }
+        _ => Err(Error::Invalid("fork result volume and generation must be paired".into())),
     }
 }
 
@@ -1702,6 +1747,18 @@ impl ForkRequest {
         let _child_path = work.stream_path(&self.child)?;
         self.preparation.validate(self.child_agent)?;
         work.slots::<AgentId>(self.attached_agents.len())?;
+        if let Some(source) = &self.authorized_source {
+            source.validate()?;
+            if source.operation_id != self.operation_id
+                || !self.selections.iter().any(|selection| matches!(&selection.revision,
+                    ResourceRevision::Project { volume, generation }
+                        if volume == &source.project && generation == &source.generation))
+                || (source.source_task != source.caller_task
+                    && (self.preparation.inherited_through_sequence != 0 || self.preparation.summary.is_some()))
+            {
+                return Err(Error::Unauthorized("fork workspace authorization does not bind this exact history-free source".into()));
+            }
+        }
         let attached: BTreeSet<_> = self.attached_agents.iter().copied().collect();
         if attached.len() != self.attached_agents.len() || attached.contains(&self.child_agent) {
             return Err(Error::Invalid("fork attached agents are not unique".into()));
@@ -1964,6 +2021,12 @@ pub struct ForkReport {
     pub child_private_volume: VolumeRef,
     /// Exact private generation after inherited files were materialized.
     pub child_private_generation: GenerationRef,
+    /// Optional actual result allocation; never selected by private-volume order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_result_volume: Option<VolumeRef>,
+    /// Immutable original result allocation generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_result_generation: Option<GenerationRef>,
     /// Bounded parent context materialized as child-owned files.
     pub inherited_context: Vec<FileRef>,
     /// Exact optional Summary capture; its selection and files are seed-bound.
@@ -2076,6 +2139,11 @@ impl ForkReport {
                 "fork report private volume is not child owned".into(),
             ));
         }
+        if self.child_result_volume != self.request.preparation.child_result_volume {
+            return Err(Error::Invalid("fork report changed result allocation".into()));
+        }
+        validate_child_result_generation(self.child_result_volume.as_ref(),
+            self.child_result_generation.as_ref(), &self.child_private_volume, self.request.child_agent)?;
         for file in &self.inherited_context {
             work.checkpoint()?;
             file.validate()?;
@@ -2158,6 +2226,9 @@ impl ForkReport {
             omissions,
             child_private_volume: self.child_private_volume,
             child_private_generation: self.child_private_generation,
+            child_result_volume: self.child_result_volume,
+            child_result_generation: self.child_result_generation,
+            authorized_source: self.request.authorized_source,
             inherited_context: self.inherited_context,
             summary: self.summary,
             inherited_through_sequence: self.inherited_through_sequence,
@@ -2182,6 +2253,9 @@ pub struct ForkSeed {
     pub parent: Authority,
     /// Exact predecessor revision.
     pub parent_revision: u64,
+    /// Retained operation-sealed workspace source evidence, not transcript access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorized_source: Option<crate::source_authorization::ProjectSourceAuthorization>,
     /// Fresh child aggregate.
     pub child: Authority,
     /// Fresh child agent.
@@ -2196,6 +2270,12 @@ pub struct ForkSeed {
     pub child_private_volume: VolumeRef,
     /// Exact immutable child-private view admitted at fork publication.
     pub child_private_generation: GenerationRef,
+    /// Optional distinct unmounted result allocation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_result_volume: Option<VolumeRef>,
+    /// Exact original result allocation generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_result_generation: Option<GenerationRef>,
     /// Child-owned inherited conversation files.
     pub inherited_context: Vec<FileRef>,
     /// Exact optional Summary capture; its selection and files are seed-bound.
@@ -2270,6 +2350,20 @@ impl ForkSeed {
             return Err(Error::Invalid(
                 "fork private volume is not child owned".into(),
             ));
+        }
+        validate_child_result_generation(self.child_result_volume.as_ref(),
+            self.child_result_generation.as_ref(), &self.child_private_volume, self.child_agent)?;
+        if let Some(source) = &self.authorized_source {
+            source.validate()?;
+            if source.operation_id != self.operation_id
+                || !self.resources.iter().any(|resource| matches!(&resource.source,
+                    ResourceRevision::Project { volume, generation }
+                        if volume == &source.project && generation == &source.generation))
+                || (source.source_task != source.caller_task
+                    && (self.inherited_through_sequence != 0 || self.summary.is_some()))
+            {
+                return Err(Error::Unauthorized("fork seed changed authorized source".into()));
+            }
         }
         let mut history = 0;
         let mut project = 0;
@@ -2905,6 +2999,9 @@ mod tests {
             Some("3".into()),
         )?);
         let mut seed = ForkSeed {
+            authorized_source: None,
+            child_result_volume: None,
+            child_result_generation: None,
             summary: None,
             history_witness: None,
             operation_id: OperationId::from_bytes([1; 16]),
@@ -3119,9 +3216,12 @@ mod tests {
             VolumeOwner::Session("session".into()),
         )?);
         let report = ForkReport {
+            child_result_volume: seed.child_result_volume.clone(),
+            child_result_generation: seed.child_result_generation.clone(),
             summary: None,
             history_witness: seed.history_witness,
             request: ForkRequest {
+                authorized_source: seed.authorized_source.clone(),
                 operation_id: seed.operation_id,
                 parent: seed.parent.clone(),
                 parent_revision: seed.parent_revision,
@@ -3129,6 +3229,7 @@ mod tests {
                 child_agent: seed.child_agent,
                 attached_agents: Vec::new(),
                 preparation: ForkPreparation {
+                    child_result_volume: seed.child_result_volume.clone(),
                     summary: None,
                     child_project_volume: match &project_resource.revision {
                         ResourceRevision::Project { volume, .. } => volume.clone(),

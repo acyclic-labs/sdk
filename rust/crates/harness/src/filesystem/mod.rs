@@ -80,6 +80,29 @@ pub use native_contract::{
 };
 mod task_commands;
 mod task_runtime;
+mod recursive;
+mod mailbox_machine;
+mod default_tools;
+mod configured_recursive_tools;
+pub use configured_recursive_tools::{
+    ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller,
+    ConfiguredRecursiveFork, ConfiguredRecursiveMerge, ConfiguredRecursiveToolsConfig,
+    ConfiguredRecursiveToolSource,
+};
+pub use default_tools::{
+    recursive_default_tools, RecursiveDefaultToolset, RecursiveDefaultToolSource,
+    RecursiveToolOwner, RecursiveForkToolBinding, RecursiveForkToolPlan,
+    RecursiveForkSourceIntent,
+    RecursiveMergeToolBinding, RecursiveMergeToolPlan,
+    MergeToolArguments, MergeToolSelection, MergeToolSide,
+};
+pub(crate) use default_tools::InvocationCancellation;
+pub use mailbox_machine::MailboxModelMachine;
+pub use recursive::{
+    ForkToolArguments, ForkPreparationLimits, ForkPreparationMachine, fork_preparation_request,
+    RecursiveSourceSnapshot, RecursiveForkConfig, RetainedSourceBinding,
+    recursive_fork_source, restore_recursive_fork_source,
+};
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_execution::{
     BorrowedNativeVolumeBinding, NativePreparationReceipt, NativePreparationRoot,
@@ -92,10 +115,13 @@ pub use task_commands::{
     MailSendTaskCommand, ModelTaskCommand, TASK_ADMIT_COMMAND_KIND, TASK_OBSERVE_COMMAND_KIND,
     TIMER_TASK_COMMAND_KIND, TOOL_TASK_COMMAND_KIND, TaskAdmitCommand, TaskObserveCommand,
     TimerTaskCommand, ToolTaskCommand,
+    FORK_PREPARE_TASK_COMMAND_KIND, TASK_ADMIT_PREPARED_COMMAND_KIND,
+    PreparedTaskAdmitCommand, TASK_CANCEL_COMMAND_KIND, TaskCancelCommand,
 };
 pub use task_runtime::{
     FilesystemTaskExecution, FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress,
     TaskWakeCursor, TaskWakePage, TaskWorkerAttempt, TaskWorkerOutcome, TaskWorkerTick,
+    TaskSourceInspection,
 };
 
 /// Owner-scoped scheduler result staging into one agent-private Filesystem volume.
@@ -1516,6 +1542,130 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         .await
     }
 
+    /// Projects the exact inherited reader capabilities before child admission,
+    /// using the same traversal as materialization. This creates no child volume,
+    /// prefix or grants. An archive must be the authenticated original parent cut.
+    #[allow(clippy::too_many_arguments, reason = "original history, readers and finite bounds remain explicit")]
+    pub async fn inherited_reference_grants(
+        &self, parent: &Reducer, child_agent: AgentId, attached_agents: &[AgentId],
+        through_sequence: u64, maximum_messages: usize, maximum_bytes: u64,
+        maximum_references: usize, resolver: &dyn ContentResidencyVerifier,
+        archive: Option<&crate::fork::PreparedForkHistory>,
+    ) -> Result<Vec<ReferenceGrant>> {
+        self.require(capability::FORK_PUBLISH, VolumeOperation::Read)?;
+        if let Some(archive) = archive {
+            archive.verify(&self.verifier)?;
+            if archive.parent() != parent.authority() || archive.parent_revision() != parent.revision() {
+                return Err(Error::Conflict("inherited archive is not the original parent cut".into()));
+            }
+        }
+        let history = self.selected_inherited_history(parent, through_sequence, maximum_messages,
+            archive.map(crate::fork::PreparedForkHistory::conversation))?;
+        let (grants, _) = Self::collect_inherited_reference_grants(history, child_agent,
+            attached_agents, through_sequence, maximum_bytes, maximum_references, resolver).await?;
+        Ok(grants)
+    }
+
+    fn selected_inherited_history<'p>(
+        &self, parent: &'p Reducer, through_sequence: u64, maximum_messages: usize,
+        archive: Option<&'p crate::conversation::ConversationState>,
+    ) -> Result<&'p crate::conversation::ConversationState> {
+        if parent.authority() != &self.parent
+            || parent.conversation().and_then(|state| state.agent) != self.scope.agent() {
+            return Err(Error::Unauthorized("inherited history is outside the actual parent".into()));
+        }
+        let parent_history = parent.conversation()
+            .ok_or_else(|| Error::Invalid("parent is not a conversation".into()))?;
+        let history = archive.unwrap_or(parent_history);
+        if history.agent != parent_history.agent || through_sequence > parent_history.logical_revision()
+            || (archive.is_some() && (history.resident_after_sequence() != 0
+                || history.logical_revision() != through_sequence)) {
+            return Err(Error::Conflict("inherited archive differs from its original parent cut".into()));
+        }
+        let count = usize::try_from(through_sequence)
+            .map_err(|_| Error::Invalid("inherited prefix is too large".into()))?;
+        if count > maximum_messages || count > history.messages.len() {
+            return Err(Error::Invalid("inherited prefix exceeds the selected history or limit".into()));
+        }
+        Ok(history)
+    }
+
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines, reason = "one canonical bounded reference projection")]
+    async fn collect_inherited_reference_grants(
+        history: &crate::conversation::ConversationState, child_agent: AgentId,
+        attached_agents: &[AgentId], through_sequence: u64, maximum_bytes: u64,
+        maximum_references: usize, resolver: &dyn ContentResidencyVerifier,
+    ) -> Result<(Vec<ReferenceGrant>, Vec<FileRef>)> {
+        let count = usize::try_from(through_sequence)
+            .map_err(|_| Error::Invalid("inherited prefix is too large".into()))?;
+        let mut direct = BTreeMap::<String, FileRef>::new();
+        let mut member = BTreeMap::<(String, String), (FileRef, FileRef)>::new();
+        let mut manifests = BTreeMap::<String, FileRef>::new();
+        let mut manifest_bytes_total = 0_u64;
+        for message in history.messages.iter().take(count) {
+            direct.insert(message.content.read_capability()?, message.content.clone());
+            for reference in message.extensions.values() {
+                direct.insert(reference.read_capability()?, reference.clone());
+            }
+            match &message.attachments {
+                ReferencedAttachments::Inline { items } => {
+                    for item in items {
+                        direct.insert(item.file.read_capability()?, item.file.clone());
+                    }
+                }
+                ReferencedAttachments::Manifest { manifest, item_count } => {
+                    manifest_bytes_total = manifest_bytes_total
+                        .checked_add(manifest.descriptor().byte_length())
+                        .ok_or_else(|| Error::Invalid("inherited manifests exceed byte limit".into()))?;
+                    if manifest_bytes_total > maximum_bytes {
+                        return Err(Error::Invalid("inherited attachment manifest exceeds limit".into()));
+                    }
+                    let manifest_bytes = resolver.read(manifest).await?;
+                    let items = decode_complete_attachment_manifest(manifest, &manifest_bytes)?;
+                    if items.len() != *item_count as usize {
+                        return Err(Error::Invalid("inherited attachment manifest count mismatch".into()));
+                    }
+                    let key = manifest.read_capability()?;
+                    direct.insert(key.clone(), manifest.clone());
+                    manifests.insert(key.clone(), manifest.clone());
+                    for item in items {
+                        member.insert((key.clone(), item.file.read_capability()?), (manifest.clone(), item.file));
+                    }
+                }
+            }
+            if direct.len().saturating_add(member.len()) > maximum_references {
+                return Err(Error::Invalid("inherited reference count exceeds limit".into()));
+            }
+        }
+        let mut readers = BTreeSet::from([child_agent]);
+        readers.extend(attached_agents.iter().copied());
+        if readers.len() != attached_agents.len().saturating_add(1) {
+            return Err(Error::Invalid("inherited readers are duplicated".into()));
+        }
+        let total_grants = direct.len().saturating_add(member.len()).saturating_mul(readers.len());
+        if total_grants > maximum_references {
+            return Err(Error::Invalid("inherited read grants exceed limit".into()));
+        }
+        let mut reference_grants = Vec::with_capacity(total_grants);
+        for reader in readers {
+            for file in direct.values() {
+                if file.volume().class() == VolumeClass::AgentPrivate
+                    && file.volume().owner() == &VolumeOwner::Agent(reader) {
+                    continue;
+                }
+                reference_grants.push(ReferenceGrant { file: file.clone(), reader, attachment_manifest: None });
+            }
+            for (manifest, file) in member.values() {
+                if file.volume().class() == VolumeClass::AgentPrivate
+                    && file.volume().owner() == &VolumeOwner::Agent(reader) {
+                    continue;
+                }
+                reference_grants.push(ReferenceGrant { file: file.clone(), reader, attachment_manifest: Some(manifest.clone()) });
+            }
+        }
+        Ok((reference_grants, manifests.into_values().collect()))
+    }
+
     #[allow(
         clippy::too_many_arguments,
         clippy::too_many_lines,
@@ -1549,25 +1699,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             ));
         }
         child_private.validate()?;
-        let parent_history = parent
-            .conversation()
-            .ok_or_else(|| Error::Invalid("parent is not a conversation".into()))?;
-        let history = archived_history.unwrap_or(parent_history);
-        if history.agent != parent_history.agent
-            || through_sequence > parent_history.logical_revision()
-            || (archived_history.is_some()
-                && (history.resident_after_sequence() != 0
-                    || history.logical_revision() != through_sequence))
-        {
-            return Err(Error::Conflict("inherited archive differs from its original parent cut".into()));
-        }
-        let count = usize::try_from(through_sequence)
-            .map_err(|_| Error::Invalid("inherited prefix is too large".into()))?;
-        if count > maximum_messages || count > history.messages.len() {
-            return Err(Error::Invalid(
-                "inherited prefix exceeds the selected history or limit".into(),
-            ));
-        }
+        let history = self.selected_inherited_history(parent, through_sequence, maximum_messages, archived_history)?;
         let prefix = InheritedConversationPrefix::select(
             self.parent.clone(),
             parent.revision(),
@@ -1575,98 +1707,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             attached_agents,
             history,
         )?;
-        let mut direct = BTreeMap::<String, FileRef>::new();
-        let mut member = BTreeMap::<(String, String), (FileRef, FileRef)>::new();
-        let mut manifests = BTreeMap::<String, FileRef>::new();
-        let mut manifest_bytes_total = 0_u64;
-        for message in history.messages.iter().take(count) {
-            direct.insert(message.content.read_capability()?, message.content.clone());
-            for reference in message.extensions.values() {
-                direct.insert(reference.read_capability()?, reference.clone());
-            }
-            match &message.attachments {
-                ReferencedAttachments::Inline { items } => {
-                    for item in items {
-                        direct.insert(item.file.read_capability()?, item.file.clone());
-                    }
-                }
-                ReferencedAttachments::Manifest {
-                    manifest,
-                    item_count,
-                } => {
-                    manifest_bytes_total = manifest_bytes_total
-                        .checked_add(manifest.descriptor().byte_length())
-                        .ok_or_else(|| {
-                            Error::Invalid("inherited manifests exceed byte limit".into())
-                        })?;
-                    if manifest_bytes_total > maximum_bytes {
-                        return Err(Error::Invalid(
-                            "inherited attachment manifest exceeds limit".into(),
-                        ));
-                    }
-                    let manifest_bytes = resolver.read(manifest).await?;
-                    let items = decode_complete_attachment_manifest(manifest, &manifest_bytes)?;
-                    if items.len() != *item_count as usize {
-                        return Err(Error::Invalid(
-                            "inherited attachment manifest count mismatch".into(),
-                        ));
-                    }
-                    let key = manifest.read_capability()?;
-                    direct.insert(key.clone(), manifest.clone());
-                    manifests.insert(key.clone(), manifest.clone());
-                    for item in items {
-                        member.insert(
-                            (key.clone(), item.file.read_capability()?),
-                            (manifest.clone(), item.file),
-                        );
-                    }
-                }
-            }
-            if direct.len().saturating_add(member.len()) > maximum_references {
-                return Err(Error::Invalid(
-                    "inherited reference count exceeds limit".into(),
-                ));
-            }
-        }
-        let mut readers = BTreeSet::from([child_agent]);
-        readers.extend(attached_agents.iter().copied());
-        if readers.len() != attached_agents.len().saturating_add(1) {
-            return Err(Error::Invalid("inherited readers are duplicated".into()));
-        }
-        let total_grants = direct
-            .len()
-            .saturating_add(member.len())
-            .saturating_mul(readers.len());
-        if total_grants > maximum_references {
-            return Err(Error::Invalid("inherited read grants exceed limit".into()));
-        }
-        let mut reference_grants = Vec::with_capacity(total_grants);
-        for reader in readers {
-            for file in direct.values() {
-                if file.volume().class() == VolumeClass::AgentPrivate
-                    && file.volume().owner() == &VolumeOwner::Agent(reader)
-                {
-                    continue;
-                }
-                reference_grants.push(ReferenceGrant {
-                    file: file.clone(),
-                    reader,
-                    attachment_manifest: None,
-                });
-            }
-            for (manifest, file) in member.values() {
-                if file.volume().class() == VolumeClass::AgentPrivate
-                    && file.volume().owner() == &VolumeOwner::Agent(reader)
-                {
-                    continue;
-                }
-                reference_grants.push(ReferenceGrant {
-                    file: file.clone(),
-                    reader,
-                    attachment_manifest: Some(manifest.clone()),
-                });
-            }
-        }
+        let (reference_grants, attachment_manifests) = Self::collect_inherited_reference_grants(
+            history, child_agent, attached_agents, through_sequence, maximum_bytes,
+            maximum_references, resolver,
+        ).await?;
         let bytes = prefix.canonical_bytes()?;
         if bytes.len() as u64 > maximum_bytes {
             return Err(Error::Invalid(
@@ -1760,7 +1804,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             file: reference,
             generation,
             reference_grants,
-            attachment_manifests: manifests.into_values().collect(),
+            attachment_manifests,
         })
     }
 

@@ -365,6 +365,19 @@ pub struct ContentGrant {
 }
 
 impl ContentGrant {
+    /// Consumes only the kernel's sealed operation proof, never serialized
+    /// project-source metadata or an opaque attestation used as a read scope.
+    pub(crate) fn from_verified_project_source(
+        proof: &crate::source_authorization::VerifiedProjectSourceRead<'_>,
+    ) -> Self {
+        Self {
+            volume: proof.project().clone(),
+            operation: VolumeOperation::Read,
+            exact_file: None,
+            directory_prefix: None,
+        }
+    }
+
     /// Resolves a pinned read from an authenticated whole-volume, exact-file,
     /// or segment-bounded private-directory grant. A reference itself carries
     /// no authority; the owning provider verifies this scope before reading.

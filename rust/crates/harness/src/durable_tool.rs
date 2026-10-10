@@ -79,20 +79,17 @@ impl ResumableTool {
         registry.register(self.machine.clone())
     }
 
-    /// Admits one exact invocation before any transition is committed. The
-    /// owner journal must retain the admission even when its reply is lost.
-    pub async fn open(
+    /// Derives the complete original workflow envelope for this exact scoped
+    /// tool invocation. This is data, not authority to bypass policy or a lease.
+    pub fn workflow_admission(
         &self,
-        context: ToolContext,
-        invocation: ToolInvocation,
-        journal: Arc<dyn WorkflowJournal>,
-    ) -> Result<ResumableToolSession> {
+        context: &ToolContext,
+        invocation: &ToolInvocation,
+    ) -> Result<WorkflowAdmission> {
         self.validate()?;
         invocation.validate()?;
         if invocation.name != self.definition.name {
-            return Err(Error::Conflict(
-                "resumable tool invocation names another definition".into(),
-            ));
+            return Err(Error::Conflict("resumable tool invocation names another definition".into()));
         }
         if context.operation_id() != invocation.operation_id
             || context.call_id() != invocation.call_id
@@ -102,53 +99,47 @@ impl ResumableTool {
                 "resumable tool requires its admitted task and exact call context".into(),
             ));
         }
-        // RuntimeScope intentionally keeps its authority fields private. Use
-        // the immutable accessors here so durable admission cannot couple to
-        // the scope's representation (and so the host and WASM facades keep
-        // the same boundary).
         let scope = context.task().scope();
         let required = capability::tool_call(&self.definition.name);
         if !scope.grants().contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
-        context
-            .task()
-            .authorize_tool(&self.definition, &invocation)
-            .await?;
-        validate_value(
-            &self.definition.input_schema,
-            &invocation.arguments,
-            "tool input",
-        )?;
+        validate_value(&self.definition.input_schema, &invocation.arguments, "tool input")?;
         let initial = MachineCheckpoint {
             machine: self.machine.identity().clone(),
             revision: 0,
             state: self.machine.initialize(&invocation.arguments)?,
         };
-        let mut registry = MachineRegistry::default();
-        registry.register(self.machine.clone())?;
-        registry.validate_checkpoint(&initial)?;
+        validate_value(self.machine.state_schema(), &initial.state, "tool state")?;
         let admission = WorkflowAdmission {
             operation_id: invocation.operation_id,
             request_digest: crate::contract::canonical_json_digest(&(
-                context.task().durable_task_id(),
-                scope.grants(),
-                scope.limits(),
-                scope.run_limits(),
-                scope.extensions(),
-                &self.definition,
-                &invocation,
-                self.machine.identity(),
+                context.task().durable_task_id(), scope.grants(), scope.limits(),
+                scope.run_limits(), scope.extensions(), &self.definition,
+                invocation, self.machine.identity(),
             ))?,
-            initial: initial.clone(),
+            initial,
         };
         admission.validate()?;
+        Ok(admission)
+    }
+
+    /// Admits one exact invocation before any transition is committed. The
+    /// owner journal must retain the admission even when its reply is lost.
+    pub async fn open(
+        &self,
+        context: ToolContext,
+        invocation: ToolInvocation,
+        journal: Arc<dyn WorkflowJournal>,
+    ) -> Result<ResumableToolSession> {
+        let admission = self.workflow_admission(&context, &invocation)?;
+        context.task().authorize_tool(&self.definition, &invocation).await?;
         if journal.admit(admission.clone()).await? != admission {
-            return Err(Error::Conflict(
-                "tool workflow identity belongs to another admission".into(),
-            ));
+            return Err(Error::Conflict("tool workflow identity belongs to another admission".into()));
         }
-        let host = DurableWorkflowHost::open(registry, initial, journal).await?;
+        let mut registry = MachineRegistry::default();
+        registry.register(self.machine.clone())?;
+        let host = DurableWorkflowHost::open(registry, admission.initial, journal).await?;
         Ok(ResumableToolSession {
             definition: self.definition.clone(),
             invocation,

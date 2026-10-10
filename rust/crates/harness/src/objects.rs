@@ -789,6 +789,7 @@ mod tests {
         let project_owner = VolumeOwner::Project("artifact-project".into());
         let child_agent = AgentId::from_bytes([14; 16]);
         let request = ForkRequest {
+            authorized_source: None,
             operation_id: OperationId::from_bytes([15; 16]),
             parent: parent.clone(),
             parent_revision: 1,
@@ -799,6 +800,7 @@ mod tests {
             child_agent,
             attached_agents: Vec::new(),
             preparation: ForkPreparation {
+                child_result_volume: None,
                 summary: None,
                 child_project_volume: VolumeRef::new(
                     filesystem.clone(),
@@ -878,6 +880,9 @@ mod tests {
             }),
         );
         let seed = ForkSeed { history_witness: None, summary: None,
+        authorized_source: request.authorized_source.clone(),
+        child_result_volume: request.preparation.child_result_volume.clone(),
+        child_result_generation: None,
         operation_id: request.operation_id,
         parent: request.parent.clone(),
         parent_revision: request.parent_revision,

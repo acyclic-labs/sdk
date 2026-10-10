@@ -49,7 +49,7 @@ pub const MAIL_RECEIVE_TASK_COMMAND_KIND: &str = "acyclic.mail.receive.v1";
 pub struct MailSendTaskCommand {
     /// Recipient's retained task identity.
     pub recipient: TaskId,
-    /// Exact immutable file, validated against recipient grants and limits.
+    /// Sender-authorized immutable payload; direct transport adds no receiver file grant.
     pub payload: FileRef,
 }
 
@@ -59,6 +59,17 @@ pub struct MailSendTaskCommand {
 pub struct MailReceiveTaskCommand {
     /// Exclusive one-based cursor; zero selects the first message.
     pub after: u64,
+}
+
+/// Versioned recursive direct-child cancellation intent, not confirmed stop.
+pub const TASK_CANCEL_COMMAND_KIND: &str = "acyclic.task.cancel.v1";
+
+/// Selects the retained direct child whose complete subtree is cancelled.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskCancelCommand {
+    /// Exact direct-child identity; never a caller-selected sender.
+    pub child: TaskId,
 }
 
 /// Versioned child admission through the existing registry and scheduler.
@@ -86,6 +97,19 @@ pub struct TaskObserveCommand {
     pub admission_operation: OperationId,
 }
 
+/// Versioned creation under the ordinary preparation task's retained request.
+pub const FORK_PREPARE_TASK_COMMAND_KIND: &str = "acyclic.fork.prepare.v1";
+/// Versioned admission with authenticated exact created-resource proofs.
+pub const TASK_ADMIT_PREPARED_COMMAND_KIND: &str = "acyclic.task.admit_prepared.v1";
+
+/// Complete requested child, distinct from its dispatch operation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreparedTaskAdmitCommand {
+    /// Exact child identity, definitions, input, requested grants and proofs.
+    pub admission: crate::runtime::TaskAdmissionRecord,
+}
+
 /// Ref-resolved model input. The worker supplies the stable execution identity.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -100,6 +124,10 @@ pub struct ModelTaskCommand {
     /// Caller-selected output ceiling; absent uses the installed compaction policy's ceiling.
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
+    /// Sole receive command whose result was committed in the immediately prior
+    /// checkpoint. Its pinned file is appended before a new model admission.
+    #[serde(default)]
+    pub mailbox_operation: Option<OperationId>,
 }
 
 /// A pinned revision in the existing tool registry, with schema-defined arguments.
@@ -128,6 +156,7 @@ pub struct FilesystemTaskCommands<'a, P, A, O> {
     runtime: &'a FilesystemTaskRuntime<P, A, O>,
     model: Option<ModelBinding>,
     effects: Option<Arc<crate::effect_host::ConversationEffectHost<P>>>,
+    fork_preparer: Option<Arc<super::FilesystemForkPreparer<A, O>>>,
 }
 
 impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
@@ -136,6 +165,7 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
             runtime,
             model: None,
             effects: None,
+            fork_preparer: None,
         }
     }
 
@@ -168,6 +198,14 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
         self.effects = Some(effects);
         self
     }
+
+    /// Selects one exact parent/source snapshot for the preparation command.
+    /// Its authenticated task token is borrowed only for the current invocation.
+    #[must_use]
+    pub fn with_fork_preparer(mut self, preparer: Arc<super::FilesystemForkPreparer<A, O>>) -> Self {
+        self.fork_preparer = Some(preparer);
+        self
+    }
 }
 
 impl<P, A, O> TaskCommandHost for FilesystemTaskCommands<'_, P, A, O>
@@ -183,7 +221,10 @@ where
         command: WorkflowCommand,
         payload: Value,
     ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let guard = super::default_tools::InvocationCancellation(cancellation.clone());
         Box::pin(async move {
+            let _guard = guard;
             let task = context
                 .durable_task_id()
                 .ok_or_else(|| Error::Unauthorized("command has no admitted task".into()))?;
@@ -222,9 +263,72 @@ where
                     self.task_command(task, &context, fence.clone(), &command, payload)
                         .await
                 }
+                FORK_PREPARE_TASK_COMMAND_KIND => {
+                    let request: crate::resource_preparation::ResourcePreparationRequest =
+                        serde_json::from_value(admission.input.clone()).map_err(|error| {
+                            Error::Invalid(format!("invalid retained fork preparation input: {error}"))
+                        })?;
+                    if request.command.as_ref() != Some(&command) || request.payload != payload {
+                        return Err(Error::Unauthorized(
+                            "fork command differs from its retained preparation request".into(),
+                        ));
+                    }
+                    let owner = self.runtime.task_host().journal_owner(task, fence.clone()).await?
+                        .with_invocation_cancellation(&cancellation);
+                    let preparation = owner.resource_preparation(request).await?;
+                    let request = preparation.request();
+                    let fork: crate::fork::ForkRequest =
+                        serde_json::from_value(request.payload.clone()).map_err(|error| {
+                            Error::Invalid(format!("invalid exact fork request: {error}"))
+                        })?;
+                    let preparer = if let Some(preparer) = &self.fork_preparer {
+                        preparer.clone()
+                    } else {
+                        let source = self.runtime.recursive_source().ok_or_else(|| {
+                            Error::Unsupported("fork preparation source is not configured".into())
+                        })?;
+                        let retained = source.preparation(&context, &preparation, &cancellation).await?;
+                        if retained.request != fork {
+                            return Err(Error::Unauthorized("resolved fork source differs from original request".into()));
+                        }
+                        retained.preparer
+                    };
+                    ready(Outcome::Succeeded(
+                        preparer.prepare_for_task(fork, &preparation).await?,
+                    ))
+                }
+                TASK_ADMIT_PREPARED_COMMAND_KIND => {
+                    let request: PreparedTaskAdmitCommand =
+                        serde_json::from_value(payload).map_err(|error| {
+                            Error::Invalid(format!("invalid prepared child command: {error}"))
+                        })?;
+                    if request.admission.parent != Some(task)
+                        || request.admission.operation_id.into_bytes() == task.into_bytes()
+                        || request.admission.operation_id == command.operation_id
+                    {
+                        return Err(Error::Unauthorized(
+                            "prepared child does not belong to this calling task".into(),
+                        ));
+                    }
+                    match self.runtime.task_host().admit_owned(request.admission, fence.clone()).await? {
+                        crate::Admission::Accepted(child) => ready(Outcome::Succeeded(child)),
+                        crate::Admission::Rejected { reason } => {
+                            ready(Outcome::<Value>::Failed { message: reason })
+                        }
+                        crate::Admission::Indeterminate { .. } => Ok(TaskCommandProgress::Indeterminate),
+                    }
+                }
                 MAIL_SEND_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND => {
-                    self.mail_command(task, &context, fence.clone(), &command, payload)
+                    self.mail_command(task, fence.clone(), &command, payload)
                         .await
+                }
+                TASK_CANCEL_COMMAND_KIND => {
+                    let input: TaskCancelCommand = serde_json::from_value(payload)
+                        .map_err(|error| Error::Invalid(format!("invalid child cancellation: {error}")))?;
+                    let state = self.runtime.task_host().cancel_child_owned(
+                        task, fence.clone(), input.child, command.operation_id,
+                    ).await?;
+                    ready(Outcome::Succeeded(state))
                 }
                 TIMER_TASK_COMMAND_KIND => {
                     let input: TimerTaskCommand =
@@ -344,7 +448,8 @@ where
                     }
                     Ok(TaskCommandProgress::Ready(Value::Null))
                 }
-                TIMER_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND | TASK_OBSERVE_COMMAND_KIND => {
+                TIMER_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND | TASK_OBSERVE_COMMAND_KIND
+                | TASK_CANCEL_COMMAND_KIND => {
                     // These commands only observe existing timer, inbox or child
                     // state. Reconciliation does not schedule, acknowledge or
                     // advance any of them.
@@ -418,12 +523,7 @@ where
                 let input: MailReceiveTaskCommand = serde_json::from_value(payload)
                     .map_err(|error| Error::Invalid(error.to_string()))?;
                 let items = self.runtime.task_host().inbox(task, input.after, 1).await?;
-                if let Some(item) = items.first() {
-                    context.read_file(&item.payload).await?;
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
+                Ok(!items.is_empty())
             }
             TASK_OBSERVE_COMMAND_KIND => {
                 let input: TaskObserveCommand = serde_json::from_value(payload)
@@ -528,7 +628,6 @@ where
     async fn mail_command(
         &self,
         task: TaskId,
-        context: &TaskContext,
         fence: LeaseFence,
         command: &WorkflowCommand,
         payload: Value,
@@ -536,7 +635,7 @@ where
         if command.kind == MAIL_SEND_TASK_COMMAND_KIND {
             let input: MailSendTaskCommand = serde_json::from_value(payload)
                 .map_err(|error| Error::Invalid(format!("invalid mail send: {error}")))?;
-            self.runtime
+            let ack = self.runtime
                 .task_host()
                 .send_owned(
                     task,
@@ -546,7 +645,7 @@ where
                     input.payload,
                 )
                 .await?;
-            ready(Outcome::Succeeded(Value::Null))
+            ready(Outcome::Succeeded(ack))
         } else {
             let input: MailReceiveTaskCommand = serde_json::from_value(payload)
                 .map_err(|error| Error::Invalid(format!("invalid mail receive: {error}")))?;
@@ -556,9 +655,67 @@ where
             };
             // The immutable first item is stable across a crash before checkpoint
             // publication. Later appends cannot change this selected result.
-            context.read_file(&item.payload).await?;
             ready(Outcome::Succeeded(item))
         }
+    }
+
+    async fn committed_mail_input(
+        &self,
+        task: TaskId,
+        fence: LeaseFence,
+        model_operation: OperationId,
+        receive_operation: OperationId,
+    ) -> Result<crate::scheduler::InboxItem> {
+        let journal = self.runtime.workflow_journal(task, fence).await?;
+        let latest = journal.observe_latest_record().await?
+            .ok_or_else(|| Error::Unauthorized("model steering has no committed checkpoint".into()))?;
+        if !latest.transition.commands.iter().any(|command|
+            command.operation_id == model_operation && command.kind == MODEL_TASK_COMMAND_KIND)
+        {
+            return Err(Error::Unauthorized("model is not in the committed steering outbox".into()));
+        }
+        let previous = journal.observe_transition(latest.prior.revision).await?;
+        let [receive] = previous.transition.commands.as_slice() else {
+            return Err(Error::Unauthorized("steering requires one committed receive".into()));
+        };
+        if receive.operation_id != receive_operation || receive.kind != MAIL_RECEIVE_TASK_COMMAND_KIND
+            || previous.next != latest.prior
+        {
+            return Err(Error::Unauthorized("steering checkpoint does not consume the receive".into()));
+        }
+        let commands = latest.input["commands"].as_array()
+            .ok_or_else(|| Error::Unauthorized("steering checkpoint has no command result".into()))?;
+        let [result] = commands.as_slice() else {
+            return Err(Error::Unauthorized("steering checkpoint consumes more than one item".into()));
+        };
+        if result["operation_id"] != serde_json::to_value(receive_operation)
+            .map_err(|error| Error::Invalid(error.to_string()))?
+        {
+            return Err(Error::Unauthorized("steering result changed its operation".into()));
+        }
+        let outcome: Outcome<crate::scheduler::InboxItem> =
+            serde_json::from_value(result["value"].clone())
+                .map_err(|error| Error::Unauthorized(format!("invalid steering receipt: {error}")))?;
+        let Outcome::Succeeded(item) = outcome else {
+            return Err(Error::Unauthorized("steering receive did not succeed".into()));
+        };
+        if item.task_id != task || item.sequence == 0 {
+            return Err(Error::Unauthorized("steering item belongs to another recipient".into()));
+        }
+        let context = self.runtime.harness().durable_context(
+            task, OperationId::from_bytes(task.into_bytes()),
+        ).await?;
+        let selection: MailReceiveTaskCommand = crate::contract::json_from_slice(
+            &context.read_file(&receive.payload).await?,
+        ).map_err(|error| Error::Unauthorized(format!("invalid retained mail selection: {error}")))?;
+        if selection.after.checked_add(1) != Some(item.sequence) {
+            return Err(Error::Unauthorized("steering receipt changed the selected cursor".into()));
+        }
+        let retained = self.runtime.task_host().inbox(task, item.sequence - 1, 1).await?;
+        if retained.as_slice() != std::slice::from_ref(&item) {
+            return Err(Error::Conflict("steering item differs from the original mail".into()));
+        }
+        Ok(item)
     }
 
     async fn model_command(
@@ -569,7 +726,7 @@ where
         payload: Value,
         reconciliation_only: bool,
     ) -> Result<TaskCommandProgress> {
-        let input: ModelTaskCommand = serde_json::from_value(payload)
+        let mut input: ModelTaskCommand = serde_json::from_value(payload)
             .map_err(|error| Error::Invalid(format!("invalid model command: {error}")))?;
         let journal = if reconciliation_only {
             let journal = self.runtime.execution_journal(task, fence.clone(), turn).await?;
@@ -588,6 +745,42 @@ where
         } else {
             None
         };
+        if let Some(receive) = input.mailbox_operation {
+            let item = self.committed_mail_input(task, fence.clone(), turn, receive).await?;
+            let context = self.runtime.task_context(task, fence.clone()).await?;
+            let copy_operation = received_mail_copy_operation(task, receive);
+            let copy_path = format!("mailbox/{receive}/parcel");
+            let copy = match context.observe_staged_file_once(copy_operation).await? {
+                Some(file) => file,
+                None if reconciliation_only => {
+                    return Err(Error::Storage("started steered model has no retained receiver parcel".into()));
+                }
+                None => {
+                    let bytes = context.read_received_mail(receive, &item).await?;
+                    self.runtime.task_host().verify_dispatch_owner(task, fence.clone()).await?;
+                    let file = context.stage_file_once(
+                        copy_operation, &copy_path, &bytes, item.payload.descriptor().media_type(),
+                        item.payload.display_name(),
+                    ).await?;
+                    self.runtime.task_host().verify_dispatch_owner(task, fence.clone()).await?;
+                    file
+                }
+            };
+            if copy.path() != copy_path || copy.descriptor() != item.payload.descriptor()
+                || copy.display_name() != item.payload.display_name()
+            {
+                return Err(Error::Conflict("receiver parcel receipt differs from original mail".into()));
+            }
+            let mut parts = match input.input {
+                ModelContent::Text(text) => vec![crate::model::ModelContentPart::Text { text }],
+                ModelContent::Part(part) => vec![part],
+                ModelContent::Parts(parts) => parts,
+            };
+            parts.push(crate::model::ModelContentPart::File {
+                file: copy, policy: crate::model::FileProjectionPolicy::BoundedFull,
+            });
+            input.input = ModelContent::Parts(parts);
+        }
         let binding = self
             .model
             .as_ref()
@@ -723,6 +916,16 @@ fn ready(value: impl Serialize) -> Result<TaskCommandProgress> {
     serde_json::to_value(value)
         .map(TaskCommandProgress::Ready)
         .map_err(|error| Error::Invalid(format!("invalid command outcome: {error}")))
+}
+
+pub(super) fn received_mail_copy_operation(task: TaskId, receive: OperationId) -> OperationId {
+    let mut digest = blake3::Hasher::new();
+    digest.update(b"harness/v2/received-mail-copy\0");
+    digest.update(&task.into_bytes());
+    digest.update(&receive.into_bytes());
+    let mut identity = [0; 16];
+    identity.copy_from_slice(&digest.finalize().as_bytes()[..16]);
+    OperationId::from_bytes(identity)
 }
 
 fn child_operation(task: TaskId, command: OperationId) -> OperationId {

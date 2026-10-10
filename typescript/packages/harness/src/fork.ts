@@ -2,10 +2,11 @@
 export type { ForkHistoryPolicy } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { FileRef, Limits, ProviderRef, VolumeRef } from "./conversation.js";
 import type { HistoryReadLimits } from "./browser-history.js";
+import type { ToolJsonValue } from "./model.js";
 import { NativeContracts } from "./native-contracts.js";
 import type { ResourceKind } from "./enums.js";
 export type { ResourceKind } from "./enums.js";
-import type { AgentId, Authority, OperationId } from "./index.js";
+import type { AgentId, Authority, OperationId, Scope, TaskId } from "./index.js";
 import { MAX_FORK_INHERITED_MESSAGES } from "./limits-contract.js";
 export {
   MAX_FORK_AGENTS,
@@ -67,6 +68,24 @@ export interface ReferenceGrant {
   readonly attachment_manifest?: FileRef;
 }
 
+/** Retained RootService MAC descriptor. Shape is not proof of authorization;
+ * only the trusted Rust owner verifies the exact project-read policy scope. */
+export interface ProjectSourceAuthorization {
+  readonly owner: Authority;
+  readonly caller_task: TaskId;
+  readonly caller_admission_digest: readonly number[];
+  readonly caller_fence: Readonly<{ reservation_id: string; placement: string }>;
+  readonly operation_id: OperationId;
+  readonly source_task: TaskId;
+  readonly project: VolumeRef<"project", "filesystem">;
+  readonly generation: ResourceRef<"generation">;
+  readonly native_snapshot: ToolJsonValue;
+  readonly graph_root: TaskId;
+  readonly maximum_work: bigint;
+  readonly maximum_bytes: bigint;
+  readonly policy_scope: Scope;
+}
+
 export interface ForkRequest {
   readonly operation_id: OperationId;
   readonly parent: Authority<"conversation">;
@@ -77,6 +96,7 @@ export interface ForkRequest {
   readonly preparation: ForkPreparation;
   readonly selections: readonly ForkSelection[];
   readonly boundary: AttestedBoundary | null;
+  readonly authorized_source?: ProjectSourceAuthorization | null;
 }
 
 /** Immutable parent checkpoint and explicit bounded verification work. */
@@ -98,6 +118,8 @@ export interface ForkPreparation {
   readonly summary?: SummaryForkSelection | null;
   readonly child_project_volume: VolumeRef<"project", "filesystem">;
   readonly child_private_volume: VolumeRef<"agent_private", "filesystem">;
+  /** Optional third child-private RESULT namespace; never mounted as scratch. */
+  readonly child_result_volume?: VolumeRef<"agent_private", "filesystem"> | null;
   readonly inherited_through_sequence: bigint;
   readonly maximum_inherited_messages: bigint;
   readonly maximum_inherited_bytes: bigint;
@@ -153,6 +175,8 @@ export interface ForkReport {
   readonly captures: readonly Capture[];
   readonly child_private_volume: VolumeRef<"agent_private", "filesystem">;
   readonly child_private_generation: ResourceRef<"generation">;
+  readonly child_result_volume?: VolumeRef<"agent_private", "filesystem"> | null;
+  readonly child_result_generation?: ResourceRef<"generation"> | null;
   readonly inherited_context: readonly FileRef<"agent_private", "filesystem">[];
   readonly inherited_through_sequence: bigint;
   readonly shared_grants: readonly SharedGrant[];
@@ -169,6 +193,8 @@ export interface ForkSeed extends Omit<ForkRequest, "selections" | "preparation"
   readonly omissions: readonly ForkOmission[];
   readonly child_private_volume: VolumeRef<"agent_private", "filesystem">;
   readonly child_private_generation: ResourceRef<"generation">;
+  readonly child_result_volume?: VolumeRef<"agent_private", "filesystem"> | null;
+  readonly child_result_generation?: ResourceRef<"generation"> | null;
   readonly inherited_context: readonly FileRef<"agent_private", "filesystem">[];
   readonly inherited_through_sequence: bigint;
   readonly shared_grants: readonly SharedGrant[];

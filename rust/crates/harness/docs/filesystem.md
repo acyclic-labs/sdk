@@ -117,3 +117,126 @@ Coordinator admission selects one candidate directly from the existing reducer r
 Cold model-selection verification reads its committed operation and the selected message locators at that operation's event cutoff. Canonical checkpoint reconstruction reads the exact message-sequence range after the previous checkpoint coverage, including non-model messages before filtering the projection. These locators share the original message publication commit; missing, altered, or later records reject without a replay fallback. `FilesystemExecutionJournal::with_history_read_limits(HistoryReadLimits)` sets a separate positive message-work and encoded-byte allowance for those canonical range reads. Without an override, the admitted `Limits::context_messages` also caps the number of canonical records read, and the byte ceiling covers two maximum-sized protocol records per message. This read allowance does not expand model projection or content grants. It does not evict the conversation reducer's resident history.
 
 The owner-proof coordinator uses history version 3. Its event stream, retry-location namespace and idempotency identity are separate from legacy version 2. Version-2 declarations lack the authenticated original owner grant and are not automatically migrated. Keep legacy histories with their matching reader; new version-3 operations require explicit original signed grants and fresh operation identities.
+
+## Portable recursive defaults
+
+`recursive_default_tools(source, maximum_request_bytes)` returns the shared
+`RecursiveDefaultToolset`: portable `acyclic.read_file`, `acyclic.write_file`,
+`acyclic.edit_file` (one exact replacement), `acyclic.fork`, and `acyclic.merge`.
+Install both `tools` and `resumable_tools`. The fork/merge ToolExecutor adapters
+always open their identical pinned `ResumableTool` and commit its ref-only outbox
+before invoking canonical controllers; they do not fall back to a live async
+stack, shell, mount, or process-global registry. A registry collision is accepted
+only for an explicitly durable-backed adapter with the same complete definition
+and exact machine identity.
+
+Supply an actual `RecursiveDefaultToolSource` for the caller's owned runtime,
+original ToolContext/effect, fenced effect-workflow journal, authenticated current
+source checkpoint, and signed publication scopes. Its fork binding uses
+`recursive_fork_source` initially and `restore_recursive_fork_source` against the
+retained immutable checkpoint on recovery. `ForkToolArguments.id` is the new
+AgentId; `source` selects only an explicitly approved pinned workspace and defaults to the
+actual calling TaskId. Raw `id`, `msg`, and `source`, the exact selected revisions,
+the initial producer input, and the preparation/child identities are retained.
+`source.select` is a real read-only selection of the original caller, independent
+selected-project TaskId, intended child admission operation, allocation claims
+digest, and complete pinned `ForkRequest`. The tool commits this
+`RecursiveForkSourceIntent` and its source-stage outbox in the same workflow
+before `source.fork` may stage a checkpoint or launch input. Recovery consumes
+that intent and the exact original parent revision, never a later history cut.
+The configured child message pointer must identify the exact original message
+or its admitted model-command FileRef; file resolution uses the original caller
+reader, not an adapter-captured broader reader.
+The mandatory `source.preparation(TaskContext, TaskResourcePreparation,
+CancellationToken)` hook consumes the dispatcher-sealed original request and
+Project source handle, restores that request's actual checkpoint, and binds the
+same authenticated preparer to the ordinary preparation task. It must not reuse
+a configured root snapshot or reissue approval as the helper's different owner.
+`TaskResourcePreparation::cancellation()` borrows its original owner's actual
+invocation token; task-bound Filesystem preparation requires that token and uses
+it for the canonical finite IO ledger rather than creating a callee-local token.
+
+`owner`, `select`, `fork`, and `merge` borrow the actual invoking operation's
+`CancellationToken`. The driver owns its drop guard from future creation, so
+dropping even an unpolled future cancels that same token. Cancellation rejects
+the next guarded SDK boundary; it does not claim durable task cancellation or
+that an already-pending backend effect stopped. Fork parent publication and
+child binding use `publish_fork_report_measured` and
+`bind_published_child_measured` with the same original caller `TaskJournalOwner`,
+finite original-request budgets, and that actual token. Binding receives the
+remaining publication budget and checks the acknowledged canonical parent seed
+against the complete original report before prepared-child admission.
+
+`input_files` explicitly identifies the configured producer's actual immutable
+launch inputs, including a model command payload staged after the history cut.
+It is not a graph scan or an automatic grant to the source checkpoint. The
+preparation request bounds their count and aggregate descriptor bytes; the
+creator verifies original donor reads and real pinned content before returning
+exact read handles. A referenced model message is checked through the actual
+`ModelTaskCommand.input = Text(msg)` contract. Other registered producers supply
+an explicit `child_message_file_pointer` into their immutable input bytes.
+
+The ordinary preparation task and requested child are siblings under the caller.
+Preparation and prepared-child admission use
+`acyclic.task.admit_prepared.v1` under the caller's original reservation;
+preparation itself executes `acyclic.fork.prepare.v1` through the actual bound
+Filesystem preparer and created-resource owner. An unresolved preparation remains
+unresolved. A successful tool result requires the exact preparation report,
+canonical parent publication and child conversation binding, and the actual
+prepared-child admission receipt. Construction alone neither publishes a child
+nor grants another task's transcript.
+
+Each live portable tool invocation owns its actual Filesystem cancellation token.
+The driver forwards that token to source selection, publication and the original
+task-owner view; dropping the invocation cancels it. Authoritative journal guards
+also cancel this token when they reject the original lease, cancellation intent
+or deadline. This is not a remote durable-task push signal: remote intent is
+checked at SDK boundaries, and pending backend effects remain uncertain until
+their real receipts are reconciled. Cancellation never claims those effects
+already stopped.
+
+Foreign workspace selection requires an operation-sealed
+`ProjectSourceReadHandle` issued by the original task owner using the actual
+RootService issuer and a mandatory `RootProjectSourceProvider` policy. The
+coordinator verifies same-session ancestry, the original admission, actual source
+creator evidence and the provider's pinned snapshot proof. Caller grants are
+unchanged. The authorization is retained in the original preparation input;
+recovery restores that exact authorization, not a newly selected source.
+Workspace approval never grants transcript access: foreign-source forks use
+fresh empty conversation lineage. Requests to inherit a selected foreign
+transcript are rejected; this workspace token is not transcript authorization.
+
+`ForkPreparation.child_result_volume` optionally declares one distinct
+child-owned unmounted result namespace. Its report and seed retain the paired
+original allocation generation; it is neither scratch nor a merge destination.
+All three resources and exact created read/write grants must be admitted before
+the child starts. `TaskContext::with_output_volume` selects only an existing
+authenticated created binding. Trusted root producers without a creator receipt
+may supply `with_content_bindings`, but the original task must already declare
+that writer's write grant. Neither method widens task authority.
+
+Before immutable child admission, use
+`FilesystemForkPreparer::required_reference_grants(&ForkRequest)` to project
+the exact inherited refs through the same authenticated history/manifest
+traversal as materialization. Only these exact read labels enter the child scope.
+The task owner seals the original preparation donor grants in
+`ResourceCreationOrigin.source_grants`; the coordinator compares them with the
+actual retained preparation admission. The Filesystem creator authenticates the
+original allocation, report, seed and donor rights before returning
+`CreatedResourceOperation::ReadFile` with a `CreatedReferenceBinding`.
+Reference readers revalidate that evidence for each exact pinned read and expose
+no broad parent-private, directory or publication capability. They are separate
+from created namespace content mappings and never add source-volume metadata,
+select a private destination or substitute the child's allocation generation
+for a foreign file's immutable version.
+
+Merge retains its explicitly selected immutable source, original conflict
+choices, notice and inspected destination generation before publication.
+`ParentProjectController::prepare_project_import_at` restores that original
+three-way plan after uncertainty; it never selects a newer target. Canonical
+Filesystem CAS and idempotency receipts control the write. Opaque conflict keys
+are the existing Filesystem project-provider keys. A stale target, conflict,
+fence, unchanged source or idempotency conflict is reported as that outcome, not
+as a published merge. Successful publication additionally requires the canonical
+provider-verified history receipt. Existing task/tool grant and approval gates
+remain mandatory on dispatch and replay.

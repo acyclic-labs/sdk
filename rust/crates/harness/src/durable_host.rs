@@ -39,6 +39,30 @@ use std::{
 };
 use tokio::sync::Mutex;
 
+mod headless;
+pub use headless::TaskVolumeSnapshot;
+#[cfg(feature = "filesystem")]
+mod source_authorization;
+
+/// Exact canonical send acknowledgement, authenticated by the atomic mail receipt.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct MailSendAck {
+    /// Retained sender admission.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub sender: TaskId,
+    /// Exact retained recipient.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub recipient: TaskId,
+    /// Exact idempotent send identity.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub operation_id: OperationId,
+    /// Exact donor-authorized payload accepted under the retained route and byte limits.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
+    pub payload: FileRef,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MailEvent {
@@ -226,6 +250,8 @@ pub struct TaskJournalOwner<P> {
     stream: StreamClient<P>,
     task_id: TaskId,
     fence: crate::scheduler::LeaseFence,
+    original_admission_digest: [u8; 32],
+    invocation_cancellation: Option<acyclic_fs::CancellationToken>,
     workflow: crate::workflow::WorkflowAdmission,
     maximum_payload_bytes: u64,
     output_schema: Value,
@@ -258,6 +284,13 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.verify(true).await
     }
 
+    pub(crate) fn require_mail_scope(&self, scope: &RuntimeScope) -> Result<()> {
+        if scope.grants() != &self.input_grants || scope.limits() != self.input_limits {
+            return Err(Error::Unauthorized("mailbox scope differs from retained admission".into()));
+        }
+        Ok(())
+    }
+
     pub(crate) const fn input_limits(&self) -> crate::conversation::Limits {
         self.input_limits
     }
@@ -276,13 +309,16 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     /// journal input resolver remains authoritative for every other volume.
     pub(crate) async fn read_created_input(&self, file: &FileRef) -> Result<Option<Vec<u8>>> {
         self.validate_input_file(file)?;
-        let Some(binding) = self.input_created.as_ref().and_then(|access| {
-            access.content.iter().find(|binding| &binding.volume == file.volume())
+        let Some(reader) = self.input_created.as_ref().and_then(|access| {
+            access.references.iter().find(|binding| &binding.file == file)
+                .map(|binding| &binding.reader)
+                .or_else(|| access.content.iter().find(|binding| &binding.volume == file.volume())
+                    .map(|binding| &binding.binding.reader))
         }) else {
             return Ok(None);
         };
         self.verify(true).await?;
-        let bytes = binding.binding.reader.read(file).await?;
+        let bytes = reader.read(file).await?;
         file.descriptor().verify(&bytes)?;
         self.verify(true).await?;
         Ok(Some(bytes))
@@ -325,6 +361,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             &bytes,
             self.input_limits,
         )
+    }
+
+    pub(crate) const fn input_grants(&self) -> &crate::Capabilities {
+        &self.input_grants
     }
 
     #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
@@ -485,6 +525,47 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self.workflow
     }
 
+    pub(crate) fn invocation_cancellation(&self) -> Option<&acyclic_fs::CancellationToken> {
+        self.invocation_cancellation.as_ref()
+    }
+
+    /// Binds this already-sealed owner to the caller's actual live operation
+    /// token. This neither grants authority nor turns remote task intent into
+    /// a push cancellation signal; original journal guards remain authoritative.
+    pub fn with_invocation_cancellation(mut self, cancellation: &acyclic_fs::CancellationToken) -> Self {
+        self.invocation_cancellation = Some(cancellation.clone());
+        self
+    }
+
+    /// Derives a tool-effect workflow from this same original task reservation.
+    /// The independently registered tool may not adopt a foreign task or lease.
+    pub(crate) async fn for_tool_workflow(
+        mut self,
+        context: &crate::runtime::ToolContext,
+        tool: &crate::durable_tool::ResumableTool,
+        invocation: &crate::tool::ToolInvocation,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> Result<Self> {
+        self.invocation_cancellation = Some(cancellation.clone());
+        if context.task().durable_task_id() != Some(self.task_id)
+            || context.task().owned_task_fence()? != self.fence
+            || invocation.operation_id == self.operation_id()
+        {
+            return Err(Error::Unauthorized("tool workflow differs from original task owner".into()));
+        }
+        self.require_mail_scope(context.task().scope())?;
+        let admission = self.host.observe_admission(self.task_id).await?;
+        if context.task().scope().run_limits() != admission.run_limits
+            || context.task().scope().extensions() != admission.extensions.as_ref()
+        {
+            return Err(Error::Unauthorized("tool workflow changed original admission policy".into()));
+        }
+        self.verify(false).await?;
+        self.workflow = tool.workflow_admission(context, invocation)?;
+        self.output_schema = tool.definition.output_schema.clone();
+        Ok(self)
+    }
+
     pub(crate) fn validate_workflow_record(
         &self,
         record: &crate::workflow::WorkflowRecord,
@@ -530,6 +611,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if !matches!(write, crate::distributed::JournalWrite::Settlement)
             && self.deadline_epoch_ms.is_some_and(|deadline| self.host.clock.now_unix_millis() >= deadline)
         {
+            if let Some(cancellation) = &self.invocation_cancellation {
+                cancellation.cancel();
+            }
             // The measured binding preflight rejects without pretending that
             // unobserved admission reads or durable cancellation were measured.
             if work.is_none() {
@@ -537,7 +621,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             }
             return Err(Error::Indeterminate(self.operation_id()));
         }
-        self.host
+        let result = self.host
             .coordinator
             .lock()
             .await
@@ -550,7 +634,13 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 write,
                 work,
             )
-            .await
+            .await;
+        if result.is_err() {
+            if let Some(cancellation) = &self.invocation_cancellation {
+                cancellation.cancel();
+            }
+        }
+        result
     }
 
     pub(crate) async fn verify_dispatch_with_work(
@@ -649,6 +739,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     ) -> Result<crate::resource_preparation::TaskResourcePreparation> {
         crate::contract::validate_json_byte_bound(&request, self.maximum_payload_bytes)?;
         request.validate()?;
+        if let Some(checkpoint) = &request.source_checkpoint {
+            self.validate_input_file(checkpoint)?;
+        }
         self.verify(false).await?;
         // Allocation must consume an explicitly configured retained session,
         // independently of per-model or per-worker invocation limits.
@@ -678,19 +771,27 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                     .into(),
             ));
         }
+        // Source authority becomes newly retained provenance here. Count the
+        // borrowed original grants with the request before owning their copy.
+        crate::contract::validate_json_byte_bound(
+            &(&request, &self.input_grants), request.maximum_bytes,
+        )?;
+        let project_source = self.host.seal_prepared_project_source(&request, parent_task).await?;
         let origin = crate::resource_preparation::ResourceCreationOrigin {
             owner: self.host.owner.clone(),
             parent_task,
             preparation_task: self.task_id,
             intended_child: request.child.operation_id,
-            admission_digest: self.workflow.request_digest,
+            admission_digest: self.original_admission_digest,
             request_digest: crate::contract::canonical_json_digest(&request)?,
             creation_fence: self.fence.clone(),
+            source_grants: self.input_grants.clone(),
         };
         Ok(crate::resource_preparation::TaskResourcePreparation {
             owner: self.clone(),
             request,
             origin,
+            project_source,
         })
     }
 
@@ -930,7 +1031,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             "workflows"
         };
         let path =
-            acyclic_stream::StreamPath::new(format!("harness/v2/{class}/{}", self.operation_id()))?;
+            acyclic_stream::StreamPath::new(format!("harness/v2/{class}/{}", self.workflow.operation_id))?;
         self.append(
             path,
             expected_tail,
@@ -1289,16 +1390,176 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         recipient: TaskId,
         message_id: OperationId,
         payload: FileRef,
-    ) -> Result<()> {
+    ) -> Result<MailSendAck> {
         // Validate the original task/lease before retaining or observing mail.
         self.journal_owner(sender, fence.clone()).await?;
+        let ack = MailSendAck { sender, recipient, operation_id: message_id, payload };
         let bytes = Bytes::from(
-            self.mail_bytes(sender, recipient, message_id, payload)
+            self.mail_bytes(sender, recipient, message_id, ack.payload.clone())
                 .await?,
         );
         self.publish_mail(sender, recipient, message_id, bytes, Some(fence))
-            .await
+            .await?;
+        Ok(ack)
     }
+
+    /// Resolves one exact retained parcel under its receiver's original lease
+    /// and sole receive command. Donor content authority remains donor-owned;
+    /// these returned bytes do not grant access to the donor's volume.
+    #[cfg(feature = "filesystem")]
+    pub async fn read_received_mail_owned(
+        self: &Arc<Self>,
+        receiver: TaskId,
+        fence: crate::scheduler::LeaseFence,
+        receive_operation: OperationId,
+        item: &InboxItem,
+    ) -> Result<Vec<u8>> {
+        let owner = self.journal_owner(receiver, fence.clone()).await?;
+        owner.verify(true).await?;
+        if item.task_id != receiver || item.sequence == 0 {
+            return Err(Error::Unauthorized("parcel recipient or sequence differs".into()));
+        }
+        let path = format!("harness/v2/workflows/{}", owner.workflow_admission().operation_id);
+        let workflow = owner.stream().stream(&path)?;
+        let tail = workflow.bounds().await
+            .map_err(|error| Error::Unauthorized(format!("parcel receive checkpoint is absent: {error}")))?.tail;
+        let index = tail.checked_sub(1)
+            .ok_or_else(|| Error::Unauthorized("parcel receive checkpoint is absent".into()))?;
+        let latest = self.read_mail_workflow_record(&owner, &workflow, index).await?;
+        let pending = latest.transition.commands.as_slice();
+        let receive = if let [command] = pending
+            && command.operation_id == receive_operation
+            && command.kind == crate::filesystem::MAIL_RECEIVE_TASK_COMMAND_KIND
+        {
+            command.clone()
+        } else {
+            let results = latest.input["commands"].as_array()
+                .ok_or_else(|| Error::Unauthorized("parcel receive result is not committed".into()))?;
+            let [result] = results.as_slice() else {
+                return Err(Error::Unauthorized("parcel must consume one receive result".into()));
+            };
+            let exact = serde_json::to_value(Outcome::Succeeded(item.clone()))
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            if result["operation_id"] != serde_json::to_value(receive_operation)
+                .map_err(|error| Error::Invalid(error.to_string()))?
+                || result["value"] != exact
+            {
+                return Err(Error::Unauthorized("parcel differs from the committed receive result".into()));
+            }
+            let prior_index = latest.prior.revision.checked_sub(1)
+                .ok_or_else(|| Error::Unauthorized("parcel receive outbox is absent".into()))?;
+            let prior = self.read_mail_workflow_record(&owner, &workflow, prior_index).await?;
+            let [command] = prior.transition.commands.as_slice() else {
+                return Err(Error::Unauthorized("parcel requires a sole receive outbox".into()));
+            };
+            if command.operation_id != receive_operation
+                || command.kind != crate::filesystem::MAIL_RECEIVE_TASK_COMMAND_KIND
+                || prior.next != latest.prior
+            {
+                return Err(Error::Unauthorized("parcel receive operation differs".into()));
+            }
+            command.clone()
+        };
+        let receiver_admission = self.admission(owner.workflow_admission().operation_id).await?;
+        let selection: crate::filesystem::MailReceiveTaskCommand = crate::contract::json_from_slice(
+            &self.read_mail_source(&receiver_admission, &receive.payload).await?,
+        ).map_err(|error| Error::Unauthorized(format!("invalid retained parcel selection: {error}")))?;
+        if selection.after.checked_add(1) != Some(item.sequence) {
+            return Err(Error::Unauthorized("parcel cursor differs from the retained receive".into()));
+        }
+        let records = self.mailbox(receiver)?.read(item.sequence - 1, 1).await?
+            .try_collect::<Vec<_>>().await?;
+        let [record] = records.as_slice() else {
+            return Err(Error::Unauthorized("parcel source is absent".into()));
+        };
+        let event: MailEvent = crate::contract::json_from_slice(&record.value)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        if record.sequence.checked_add(1) != Some(item.sequence)
+            || event.message_id.to_string() != item.message_id || event.payload != item.payload
+            || crate::contract::canonical_json_bytes(&event)?.as_slice() != record.value.as_ref()
+        {
+            return Err(Error::Unauthorized("parcel differs from its retained mailbox item".into()));
+        }
+        let sender_admission = self.admission(OperationId::from_bytes(event.sender.into_bytes())).await?;
+        let direct = Self::authorize_mail_route(
+            event.sender, &sender_admission, receiver, &receiver_admission,
+        )?;
+        receiver_admission.limits.validate_file(&event.payload)?;
+        if !direct && !read_granted(&receiver_admission.grants, &event.payload)? {
+            return Err(Error::Unauthorized("custom parcel requires recipient file authority".into()));
+        }
+        if !self.observe_mail_location(
+            event.sender, receiver, event.message_id, &record.value, Some(record.sequence),
+        ).await? {
+            return Err(Error::Unauthorized("parcel has no original atomic receipt".into()));
+        }
+        let bytes = self.read_mail_source(&sender_admission, &event.payload).await?;
+        owner.verify(true).await?;
+        Ok(bytes)
+    }
+
+    #[cfg(feature = "filesystem")]
+    async fn read_mail_workflow_record(
+        &self,
+        owner: &TaskJournalOwner<P>,
+        workflow: &acyclic_stream::Stream<P>,
+        index: u64,
+    ) -> Result<crate::workflow::WorkflowRecord> {
+        let records = workflow.read(index, 1).await?.try_collect::<Vec<_>>().await?;
+        let [record] = records.as_slice() else {
+            return Err(Error::Unauthorized("parcel workflow record is absent".into()));
+        };
+        let reference: FileRef = crate::contract::json_from_slice(&record.value)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        owner.input_limits().validate_file(&reference)?;
+        if record.sequence != index
+            || crate::contract::canonical_json_bytes(&reference)?.as_slice() != record.value.as_ref()
+        {
+            return Err(Error::Storage("parcel workflow reference differs".into()));
+        }
+        let value = self.read_json(&reference).await?;
+        let envelope: crate::workflow::WorkflowRecord = serde_json::from_value(value)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        envelope.validate()?;
+        if envelope.prior.revision != index || envelope.next.revision != index + 1 {
+            return Err(Error::Storage("parcel workflow revision differs".into()));
+        }
+        owner.validate_workflow_record(&envelope)?;
+        Ok(envelope)
+    }
+
+    /// Requests a direct child's entire subtree to stop under the caller's
+    /// retained lease. The returned scheduler state proves intent, not provider stop.
+    #[cfg(feature = "filesystem")]
+    pub async fn cancel_child_owned(
+        &self,
+        parent: TaskId,
+        fence: crate::scheduler::LeaseFence,
+        child: TaskId,
+        operation: OperationId,
+    ) -> Result<crate::scheduler::OperationState> {
+        self.verify_owner(parent, &fence, false).await?;
+        let admitted = self.admission(OperationId::from_bytes(parent.into_bytes())).await?;
+        if !admitted.grants.contains(capability::OPERATION_CANCEL)
+            || self.admission(OperationId::from_bytes(child.into_bytes())).await?.parent != Some(parent)
+        {
+            return Err(Error::Unauthorized("cancellation requires an authorized direct child".into()));
+        }
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.refresh().await?;
+        let parent_state = coordinator.observe_operation(
+            &self.owner, &self.owner_scope, &self.verifier,
+            OperationId::from_bytes(parent.into_bytes()),
+        )?;
+        crate::scheduler::require_execution_owner(&parent_state, &fence, false)?;
+        coordinator.cancel_child_operation(
+            &self.owner, &self.owner_scope, &self.verifier,
+            OperationId::from_bytes(child.into_bytes()),
+            IdempotencyKey::new(format!("task-child-cancel:{parent}:{operation}"))?,
+            OperationId::from_bytes(parent.into_bytes()), fence,
+        ).await
+    }
+
 
     /// Starts or reattaches the exact already-admitted lease. This does not
     /// acquire another reservation or infer that an uncertain provider stopped.
@@ -1511,7 +1772,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     .as_ref()
                     .is_some_and(|slot| slot.waiting_command.is_some())
             {
-                tasks.insert(TaskId::from_bytes(event.operation_id.into_bytes()));
+                tasks.insert(crate::runtime::task_id_for_admission(event.operation_id));
             }
         }
         Ok(WorkflowWaitPage {
@@ -1524,7 +1785,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     /// Authenticated read of a passive slot; never claims execution ownership.
     #[cfg(feature = "filesystem")]
-    pub(crate) async fn workflow_suspension(
+    pub async fn workflow_suspension(
         &self,
         task: TaskId,
     ) -> Result<Option<crate::scheduler::WorkflowSuspension>> {
@@ -1796,6 +2057,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             stream,
             task_id,
             fence,
+            original_admission_digest: workflow.request_digest,
+            invocation_cancellation: None,
             workflow,
             maximum_payload_bytes: admission.limits.file_bytes,
             output_schema: admission.output_schema,
@@ -1942,6 +2205,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(self)
     }
 
+    #[cfg(feature = "filesystem")]
     pub(crate) fn with_resource_creation_providers(
         mut self,
         providers: Vec<Arc<dyn crate::resource_preparation::ResourceCreationProvider>>,
@@ -2268,6 +2532,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     || receipt.origin.intended_child != request.child.operation_id
                     || receipt.origin.admission_digest != crate::contract::canonical_json_digest(&preparation)?
                     || receipt.origin.request_digest != crate::contract::canonical_json_digest(&request)?
+                    || receipt.origin.source_grants != preparation.grants
                 {
                     return Err(Error::Unauthorized("resource allocation provenance changed".into()));
                 }
@@ -2664,6 +2929,47 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 
+    fn authorize_mail_route(
+        sender: TaskId,
+        sender_admission: &TaskAdmissionRecord,
+        recipient: TaskId,
+        recipient_admission: &TaskAdmissionRecord,
+    ) -> Result<bool> {
+        let direct = sender_admission.parent == Some(recipient)
+            || recipient_admission.parent == Some(sender);
+        if !direct
+            && (!sender_admission.grants.contains(capability::MAIL_SEND)
+                || !recipient_admission.grants.contains(capability::MAIL_READ))
+        {
+            return Err(Error::Unauthorized(
+                "custom mail route requires sender mail:send and recipient mail:read".into(),
+            ));
+        }
+        Ok(direct)
+    }
+
+    /// Resolves only the authenticated donor's exact immutable parcel bytes.
+    /// This does not install a donor reader or grant in the recipient scope.
+    async fn read_mail_source(
+        &self, admission: &TaskAdmissionRecord, payload: &FileRef,
+    ) -> Result<Vec<u8>> {
+        payload.validate()?;
+        admission.limits.validate_file(payload)?;
+        if !read_granted(&admission.grants, payload)? {
+            return Err(Error::Unauthorized("mail donor cannot read its payload".into()));
+        }
+        let scope = self.authenticated_scope(admission).await?;
+        let bytes = if let Some(reader) = scope.created_reference(payload) {
+            reader.read(payload).await?
+        } else if let Some(binding) = scope.created_content(Some(payload.volume())) {
+            binding.reader.read(payload).await?
+        } else {
+            self.reader.read(payload).await?
+        };
+        payload.descriptor().verify(&bytes)?;
+        Ok(bytes)
+    }
+
     async fn mail_bytes(
         &self,
         sender: TaskId,
@@ -2675,24 +2981,19 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let sender_admission = self
             .admission(OperationId::from_bytes(sender.into_bytes()))
             .await?;
-        if !sender_admission.grants.contains("mail:send") {
-            return Err(Error::Unauthorized("sender scope lacks mail:send".into()));
-        }
         let recipient_admission = self
             .admission(OperationId::from_bytes(recipient.into_bytes()))
             .await?;
+        let direct = Self::authorize_mail_route(sender, &sender_admission, recipient, &recipient_admission)?;
         recipient_admission.limits.validate_file(&payload)?;
-        if !read_granted(&recipient_admission.grants, &payload)? {
+        if !direct && !read_granted(&recipient_admission.grants, &payload)? {
             return Err(Error::Unauthorized(
                 "recipient cannot read the mailed file".into(),
             ));
         }
-        let sender_scope = self.authenticated_scope(&sender_admission).await?;
-        if let Some(binding) = sender_scope.created_content(Some(payload.volume())) {
-            let bytes = binding.reader.read(&payload).await?;
-            payload.descriptor().verify(&bytes)?;
-        } else {
-            self.reader.verify(&payload).await?;
+        sender_admission.limits.validate_file(&payload)?;
+        if !read_granted(&sender_admission.grants, &payload)? {
+            return Err(Error::Unauthorized("mail donor cannot read its payload".into()));
         }
         let event = MailEvent {
             sender,
@@ -2706,6 +3007,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 
     /// Observes the original atomic mail receipt; never publishes another send.
+    #[cfg(feature = "filesystem")]
     pub(crate) async fn reconcile_sent_mail(
         &self,
         sender: TaskId,
@@ -2856,6 +3158,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, CommitRequest};
         let mailbox = self.mailbox(recipient)?;
         let location_path = Self::mail_location_path(sender, message)?;
+        let mut source_verified = false;
         loop {
             if let Some(fence) = &fence {
                 self.verify_owner(sender, fence, false).await?;
@@ -2868,6 +3171,16 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     self.verify_owner(sender, fence, false).await?;
                 }
                 return Ok(());
+            }
+            if !source_verified {
+                let event: MailEvent = crate::contract::json_from_slice(&bytes)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                if event.sender != sender || event.message_id != message {
+                    return Err(Error::Storage("mail publication identity differs".into()));
+                }
+                let admission = self.admission(OperationId::from_bytes(sender.into_bytes())).await?;
+                self.read_mail_source(&admission, &event.payload).await?;
+                source_verified = true;
             }
             let (tail, target) = match mailbox.bounds().await {
                 Ok(bounds) => (
@@ -3207,7 +3520,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                     .into_iter()
                     .map(|entry| TaskChild {
                         slot: entry.slot,
-                        task_id: TaskId::from_bytes(entry.operation_id.into_bytes()),
+                        task_id: crate::runtime::task_id_for_admission(entry.operation_id),
                     })
                     .collect(),
                 next_after: page.next_after,
@@ -3222,7 +3535,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         Box::pin(async move {
             match self.admission(operation_id).await {
                 Ok(admission) => Ok(Some((
-                    TaskId::from_bytes(operation_id.into_bytes()),
+                    admission.task_id(),
                     admission,
                 ))),
                 Err(Error::NotFound(_)) => Ok(None),
@@ -3260,7 +3573,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 let expected = request.member_admission(index)?;
                 match self.admission(operation_id).await {
                     Ok(admission) if admission == expected => entries.push(Admission::Accepted(
-                        TaskId::from_bytes(operation_id.into_bytes()),
+                        admission.task_id(),
                     )),
                     Ok(_) => {
                         return Err(Error::Conflict(
@@ -3536,6 +3849,16 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         payload: FileRef,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            // The explicit owner-level custom route is not the task-context
+            // default. Only a retained sender lease enables implicit topology.
+            let recipient_scope = self.admission(OperationId::from_bytes(recipient.into_bytes())).await?;
+            if !self.admission(OperationId::from_bytes(sender.into_bytes())).await?
+                .grants.contains(capability::MAIL_SEND)
+                || !recipient_scope.grants.contains(capability::MAIL_READ)
+                || !read_granted(&recipient_scope.grants, &payload)?
+            {
+                return Err(Error::Unauthorized("unfenced custom mail requires explicit mail and file grants".into()));
+            }
             let bytes = Bytes::from(
                 self.mail_bytes(sender, recipient, message_id, payload)
                     .await?,
@@ -3558,11 +3881,6 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             let recipient_admission = self
                 .admission(OperationId::from_bytes(task_id.into_bytes()))
                 .await?;
-            if !recipient_admission.grants.contains(capability::MAIL_READ) {
-                return Err(Error::Unauthorized(
-                    "recipient scope lacks mail:read".into(),
-                ));
-            }
             let mailbox = self.mailbox(task_id)?;
             let bounds = match mailbox.bounds().await {
                 Ok(bounds) => bounds,
@@ -3595,18 +3913,18 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 let event = MailEvent::decode(&record.value, task_id)?;
                 event.payload.validate()?;
                 recipient_admission.limits.validate_file(&event.payload)?;
-                if !read_granted(&recipient_admission.grants, &event.payload)? {
-                    return Err(Error::Unauthorized(
-                        "mail history contains an unreadable payload".into(),
-                    ));
-                }
                 let sender_admission = self
                     .admission(OperationId::from_bytes(event.sender.into_bytes()))
                     .await?;
-                if !sender_admission.grants.contains(capability::MAIL_SEND) {
-                    return Err(Error::Unauthorized(
-                        "mail source lacks its original send grant".into(),
-                    ));
+                let direct = Self::authorize_mail_route(
+                    event.sender, &sender_admission, task_id, &recipient_admission,
+                )?;
+                if !direct && !read_granted(&recipient_admission.grants, &event.payload)? {
+                    return Err(Error::Unauthorized("custom mail history contains an unreadable payload".into()));
+                }
+                sender_admission.limits.validate_file(&event.payload)?;
+                if !read_granted(&sender_admission.grants, &event.payload)? {
+                    return Err(Error::Unauthorized("mail source cannot read its payload".into()));
                 }
                 if !self
                     .observe_mail_location(

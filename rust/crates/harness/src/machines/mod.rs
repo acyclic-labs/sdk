@@ -473,6 +473,9 @@ mod tests {
         };
         let process = ResourceRevision::Process(checkpoint);
         let seed = ForkSeed { history_witness: None, summary: None,
+        authorized_source: None,
+        child_result_volume: None,
+        child_result_generation: None,
         operation_id: OperationId::from_bytes([3; 16]),
         parent,
         parent_revision: 0,
@@ -538,6 +541,7 @@ mod tests {
             return Err(Error::Invalid("test child project is missing".into()));
         };
         let request = ForkRequest {
+            authorized_source: seed.authorized_source.clone(),
             operation_id: seed.operation_id,
             parent: seed.parent.clone(),
             parent_revision: seed.parent_revision,
@@ -545,6 +549,7 @@ mod tests {
             child_agent: seed.child_agent,
             attached_agents: Vec::new(),
             preparation: ForkPreparation {
+                child_result_volume: seed.child_result_volume.clone(),
                 summary: None,
                 child_project_volume: child_project.clone(),
                 child_private_volume: seed.child_private_volume.clone(),

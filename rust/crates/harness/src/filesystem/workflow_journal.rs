@@ -67,7 +67,7 @@ pub struct FilesystemWorkflowJournal<P, A, O> {
     scope: Scope,
     maximum_payload_bytes: u64,
     verified: Mutex<Option<VerifiedSummary>>,
-    owner: Option<TaskJournalOwner<P>>,
+    owner: Option<Arc<TaskJournalOwner<P>>>,
 }
 
 impl<P, A, O> FilesystemWorkflowJournal<P, A, O>
@@ -90,14 +90,18 @@ where
         let mut journal = Self::new(
             owner.stream(),
             host,
-            &owner.operation_id().to_string(),
+            &owner.workflow_admission().operation_id.to_string(),
             volume,
             verifier,
             scope,
             maximum_payload_bytes,
         )?;
-        journal.owner = Some(owner);
+        journal.owner = Some(Arc::new(owner));
         Ok(journal)
+    }
+
+    pub(crate) fn task_journal_owner(&self) -> Option<Arc<TaskJournalOwner<P>>> {
+        self.owner.clone()
     }
 
     /// Binds a validated workflow identity and its exact private-volume grants.

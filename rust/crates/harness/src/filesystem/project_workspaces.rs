@@ -265,7 +265,7 @@ where
     }
 }
 
-fn encode_conflict(conflict: &MergeConflict) -> Vec<u8> {
+pub(super) fn encode_conflict(conflict: &MergeConflict) -> Vec<u8> {
     match conflict {
         MergeConflict::File(id) => {
             let mut key = vec![1];
@@ -286,7 +286,7 @@ fn encode_conflict(conflict: &MergeConflict) -> Vec<u8> {
     }
 }
 
-fn decode_conflict(key: &[u8]) -> Result<MergeConflict> {
+pub(super) fn decode_conflict(key: &[u8]) -> Result<MergeConflict> {
     let (tag, rest) = key
         .split_first()
         .ok_or_else(|| Error::Invalid("empty conflict key".into()))?;

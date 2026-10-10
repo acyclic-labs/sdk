@@ -8,7 +8,7 @@ use crate::core::Authority;
 use crate::resources::{ProviderRef, ResourceRef};
 use crate::runtime::TaskAdmissionRecord;
 use crate::scheduler::LeaseFence;
-use crate::{Error, OperationId, Result, TaskId};
+use crate::{Capabilities, Error, OperationId, Result, TaskId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -59,6 +59,23 @@ pub struct ResourcePreparationRequest {
     pub maximum_bytes: u64,
     /// Complete provider-specific request, never substituted on recovery.
     pub payload: Value,
+    /// Optional ordinary resumable outbox command. Its immutable payload refers
+    /// to provider input, not recursively to this complete preparation request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<crate::workflow::WorkflowCommand>,
+    /// Immutable original caller checkpoint for source restoration. The owner
+    /// requires read authority; consumers must authenticate the snapshot itself.
+    /// Direct configured creators may already retain the exact source separately.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_checkpoint: Option<crate::conversation::FileRef>,
+    /// Explicit immutable inputs for the intended child, not a reference scan or
+    /// a grant. The creator authenticates original donor rights and pinned bytes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_files: Vec<crate::conversation::FileRef>,
+    /// Explicit selected Project authorization; the owner verifies and seals it.
+    /// This never grants another task's history or private namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_authorization: Option<crate::source_authorization::ProjectSourceAuthorization>,
 }
 
 impl ResourcePreparationRequest {
@@ -80,6 +97,36 @@ impl ResourcePreparationRequest {
             ));
         }
         crate::contract::validate_json_byte_bound(self, self.maximum_bytes)?;
+        if let Some(checkpoint) = &self.source_checkpoint {
+            checkpoint.validate()?;
+            if checkpoint.descriptor().byte_length() > self.maximum_bytes {
+                return Err(Error::Invalid("source checkpoint exceeds preparation byte bound".into()));
+            }
+        }
+        if self.input_files.len() as u64 > self.maximum_work {
+            return Err(Error::Invalid("child input reference count exceeds preparation work bound".into()));
+        }
+        let mut input_bytes = 0_u64;
+        let mut input_identities = BTreeSet::new();
+        for file in &self.input_files {
+            file.validate()?;
+            input_bytes = input_bytes.checked_add(file.descriptor().byte_length())
+                .ok_or_else(|| Error::Invalid("child input reference byte bound overflow".into()))?;
+            if input_bytes > self.maximum_bytes || !input_identities.insert(file.read_capability()?) {
+                return Err(Error::Invalid("child input references exceed their bound or repeat an identity".into()));
+            }
+        }
+        if let Some(authorization) = &self.read_authorization {
+            authorization.validate()?;
+        }
+        if let Some(command) = &self.command {
+            command.validate()?;
+            if command.operation_id == self.child.operation_id {
+                return Err(Error::Invalid(
+                    "preparation effect and intended child identities must differ".into(),
+                ));
+            }
+        }
         self.child.validate()?;
         let mut identities = BTreeSet::new();
         for resource in &self.resources {
@@ -127,6 +174,9 @@ pub struct ResourceCreationOrigin {
     pub intended_child: OperationId,
     /// Digest of the preparation task's complete retained admission.
     pub admission_digest: [u8; 32],
+    /// Exact authenticated preparation-task donor grants, not provider-root scope.
+    /// The coordinator verifies these against the original retained admission.
+    pub source_grants: Capabilities,
     /// Digest of the complete immutable resource request and requested child scope.
     pub request_digest: [u8; 32],
     /// Original creation lease, distinct from a later recovery lease.
@@ -140,6 +190,7 @@ pub struct TaskResourcePreparation {
     pub(crate) owner: std::sync::Arc<dyn ResourcePreparationLease>,
     pub(crate) request: ResourcePreparationRequest,
     pub(crate) origin: ResourceCreationOrigin,
+    pub(crate) project_source: Option<crate::source_authorization::ProjectSourceReadHandle>,
 }
 
 #[cfg(feature = "filesystem")]
@@ -154,6 +205,26 @@ impl TaskResourcePreparation {
     #[must_use]
     pub const fn origin(&self) -> &ResourceCreationOrigin {
         &self.origin
+    }
+
+    /// Authenticated explicit Project source, sealed by the original task owner.
+    #[must_use]
+    pub fn project_source(&self) -> Option<&crate::source_authorization::ProjectSourceReadHandle> {
+        self.project_source.as_ref()
+    }
+
+    /// Borrowed original preparation-task grants. Broader provider credentials
+    /// never substitute for the task's admitted source-read authority.
+    #[must_use]
+    pub fn grants(&self) -> &crate::Capabilities {
+        self.owner.grants()
+    }
+
+    /// Borrowed actual preparation invocation token, if its owner was bound at
+    /// the caller's live invocation boundary. It grants no resource authority.
+    #[must_use]
+    pub fn cancellation(&self) -> Option<&acyclic_fs::CancellationToken> {
+        self.owner.cancellation()
     }
 
     /// Requires the current uncancelled preparation lease before fresh allocation.
@@ -174,12 +245,22 @@ impl TaskResourcePreparation {
 #[cfg(feature = "filesystem")]
 pub(crate) trait ResourcePreparationLease: acyclic_stream::ProviderPlatform {
     fn verify_lease(&self, settlement: bool) -> acyclic_stream::BoxProviderFuture<'_, Result<()>>;
+    fn grants(&self) -> &crate::Capabilities;
+    fn cancellation(&self) -> Option<&acyclic_fs::CancellationToken>;
 }
 
 #[cfg(feature = "filesystem")]
 impl<P: acyclic_stream::StreamProvider> ResourcePreparationLease
     for crate::durable_host::TaskJournalOwner<P>
 {
+    fn grants(&self) -> &crate::Capabilities {
+        self.input_grants()
+    }
+
+    fn cancellation(&self) -> Option<&acyclic_fs::CancellationToken> {
+        self.invocation_cancellation()
+    }
+
     fn verify_lease(&self, settlement: bool) -> acyclic_stream::BoxProviderFuture<'_, Result<()>> {
         Box::pin(async move { self.verify(settlement).await })
     }
@@ -195,6 +276,9 @@ pub enum CreatedResourceOperation {
     ReadVolume(crate::conversation::VolumeRef),
     /// Actual filesystem content publication authority for an exact volume.
     WriteVolume(crate::conversation::VolumeRef),
+    /// Exact immutable inherited-file read delegated by an authenticated creator.
+    /// This does not authorize the source volume or any publication operation.
+    ReadFile(crate::conversation::FileRef),
 }
 
 /// Canonical request label for an operation on one created resource.
@@ -274,6 +358,16 @@ impl ChildScratchCreationProof {
     }
 }
 
+/// One immutable inherited file and its authenticated exact-file reader.
+/// This is not an allocated namespace, volume mapping or writable destination.
+#[derive(Clone)]
+pub struct CreatedReferenceBinding {
+    /// Complete exact file identity authenticated by the original creator seal.
+    pub file: crate::conversation::FileRef,
+    /// Read-only provider handle restricted to that file and immutable version.
+    pub reader: std::sync::Arc<dyn crate::conversation::ContentResidencyVerifier>,
+}
+
 /// Authenticated result of one explicitly trusted provider verification.
 /// This public record is not authority: only the coordinator consumes it into a
 /// private, operation-bound scope after authenticating the preparation admission.
@@ -291,6 +385,8 @@ pub struct CreatedResourceReceipt {
     pub operations: Vec<CreatedResourceOperation>,
     /// Actual content mappings for filesystem-compatible resources.
     pub content: Vec<CreatedContentBinding>,
+    /// Reference-only readers; these never describe a new volume allocation.
+    pub references: Vec<CreatedReferenceBinding>,
 }
 
 /// Trusted provider-neutral verifier registered at the actual task owner.
@@ -315,6 +411,7 @@ pub(crate) struct CreatedResourceAccess {
     pub(crate) admission_digest: [u8; 32],
     pub(crate) grants: crate::Capabilities,
     pub(crate) content: Vec<CreatedContentBinding>,
+    pub(crate) references: Vec<CreatedReferenceBinding>,
     pub(crate) proofs: Vec<ResourceCreationProofRef>,
     pub(crate) publication_lease: Option<std::sync::Arc<dyn CreatedTaskLease>>,
 }
@@ -340,6 +437,8 @@ impl CreatedResourceAccess {
             return Err(Error::Unauthorized("created resource receipts are incomplete".into()));
         }
         let mut labels = BTreeSet::new();
+        let mut references = Vec::new();
+        let mut reference_keys = BTreeSet::new();
         let mut content = Vec::new();
         let mut volumes = BTreeSet::new();
         let mut default_writer = false;
@@ -351,10 +450,19 @@ impl CreatedResourceAccess {
             {
                 return Err(Error::Unauthorized("created resource receipt changed identity".into()));
             }
+            let mut reference_labels = BTreeSet::new();
             for operation in &receipt.operations {
                 let label = match operation {
                     CreatedResourceOperation::Named(name) => {
                         created_resource_capability(&receipt.resource, name)?
+                    }
+                    CreatedResourceOperation::ReadFile(file) => {
+                        file.validate()?;
+                        let label = file.read_capability()?;
+                        if !reference_labels.insert(label.clone()) {
+                            return Err(Error::Unauthorized("created exact-file operation is ambiguous".into()));
+                        }
+                        label
                     }
                     CreatedResourceOperation::ReadVolume(volume) => {
                         if volume.provider() != &proof.provider {
@@ -370,6 +478,17 @@ impl CreatedResourceAccess {
                     }
                 };
                 labels.insert(label);
+            }
+            for binding in receipt.references {
+                binding.file.validate()?;
+                let label = binding.file.read_capability()?;
+                if !reference_labels.remove(&label) || !reference_keys.insert(label) {
+                    return Err(Error::Unauthorized("created exact-file reader differs from this proof".into()));
+                }
+                references.push(binding);
+            }
+            if !reference_labels.is_empty() {
+                return Err(Error::Unauthorized("created exact-file operation has no authenticated reader".into()));
             }
             for mut binding in receipt.content {
                 if (binding.default_writer || binding.artifact_writer) && binding.binding.writer.is_none() {
@@ -411,6 +530,7 @@ impl CreatedResourceAccess {
             grants: crate::Capabilities::new(labels),
             proofs: admission.resource_proofs.clone(),
             content,
+            references,
             publication_lease: None,
         })
     }

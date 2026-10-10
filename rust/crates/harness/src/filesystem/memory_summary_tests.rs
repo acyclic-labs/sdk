@@ -252,6 +252,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         VolumeOwner::Agent(child_agent),
     )?;
     let request = ForkRequest {
+        authorized_source: None,
         operation_id: OperationId::new(),
         parent: storage.conversation.clone(),
         parent_revision: aggregate.reducer().revision(),
@@ -262,6 +263,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         child_agent,
         attached_agents: Vec::new(),
         preparation: ForkPreparation {
+            child_result_volume: None,
             summary: None,
             child_project_volume: VolumeRef::new(
                 provider,
@@ -1066,6 +1068,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
         storage.content_verifier.clone())?.with_history_context(archived)?;
     let child_agent = AgentId::new();
     let request = ForkRequest {
+        authorized_source: None,
         operation_id: OperationId::new(),
         parent: storage.conversation.clone(),
         parent_revision: parent.reducer().revision(),
@@ -1073,6 +1076,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
         child_agent,
         attached_agents: Vec::new(),
         preparation: ForkPreparation {
+            child_result_volume: None,
             summary: None,
             child_project_volume: VolumeRef::new(provider.clone(), "full-child-project",
                 VolumeClass::Project, VolumeOwner::Project("full-project".into()))?,
