@@ -43,6 +43,7 @@ async fn selected_source_never_adopts_its_grants_and_pins_project_and_scratch() 
     let old_generation = fixture.filesystem.file_generation(&next)?;
     let current = put(&fixture, &project, "src/a.txt", b"new", "new").await?;
     let scratch = put(&fixture, &fixture.volume, "scratch/read.txt", b"scratch", "scratch").await?;
+    let scratch_generation = fixture.filesystem.file_generation(&scratch)?;
     let runtime = runtime(&fixture).await?;
     let source = admit(&runtime, &fixture, 111, fixture.scope.grants().clone()).await?;
     let limited = Capabilities::new(["task:spawn:test.deadline@1"]);
@@ -54,6 +55,7 @@ async fn selected_source_never_adopts_its_grants_and_pins_project_and_scratch() 
     assert!(matches!(inspected.list(&project, "src", "src", &old_generation, None, 1).await,
         Err(Error::Unauthorized(_))));
     let owner = runtime.inspect_source(source, source).await?;
+    assert!(owner.list(&project, "", "", &scratch_generation, None, 1).await.is_err());
     let page = owner.list(&project, "src", "src", &old_generation, None, 1).await?;
     assert_eq!(page.entries.len(), 1);
     assert_eq!(page.entries[0].name, "a.txt");
