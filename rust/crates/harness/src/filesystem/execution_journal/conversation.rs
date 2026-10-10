@@ -2,10 +2,10 @@
 
 use super::*;
 use crate::{
-    conversation::{Attachment, ContentPublisher, ConversationMessage, MessageKind, ReferencedAttachments},
+    conversation::{Attachment, ConversationMessage, MessageKind, ReferencedAttachments},
     core::{Action, Command},
     executor::{TurnInput, TurnOutput},
-    filesystem::FilesystemContentPublisher,
+    filesystem::InternalContentClass,
 };
 use uuid::Uuid;
 
@@ -23,10 +23,25 @@ where
         media_type: &str,
         display_name: &str,
     ) -> Result<FileRef> {
-        FilesystemContentPublisher::new(
-            self.host.clone(), self.volume.clone(), &self.verifier, &self.scope,
-            self.maximum_payload_bytes,
-        )?.stage(operation, path, bytes, media_type, display_name).await
+        let retry = IdempotencyKey::new(format!(
+            "filesystem-upload:{operation}:{}",
+            blake3::hash(path.as_bytes()).to_hex()
+        ))?;
+        self.host
+            .put_internal_content(
+                &self.volume,
+                &ContentGrant::verify(
+                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Write,
+                )?,
+                "turns/.canonical/payload",
+                bytes,
+                media_type,
+                display_name,
+                self.maximum_payload_bytes,
+                &retry,
+                InternalContentClass::Conversation,
+            )
+            .await
     }
     /// Runs a canonical conversation turn from already staged primary content
     /// and ordered attachments. The user record and model-context selection
@@ -59,16 +74,25 @@ where
         let referenced = if attachments.len() <= 128 {
             ReferencedAttachments::Inline { items: attachments }
         } else {
-            self.host
-                .put_attachment_manifest(
+            let bytes = crate::conversation::encode_attachment_manifest(&attachments)?;
+            let manifest = self.host
+                .put_internal_content(
                     &self.volume,
                     &ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write)?,
-                    &format!("turns/{operation_id}/attachments.json"),
-                    &attachments,
+                    "turns/.canonical/payload",
+                    &bytes,
+                    "application/vnd.acyclic.harness.attachments+json",
+                    "attachments.json",
                     self.maximum_payload_bytes,
                     &IdempotencyKey::new(format!("conversation:{operation_id}:attachments"))?,
+                    InternalContentClass::Conversation,
                 )
-                .await?
+                .await?;
+            ReferencedAttachments::Manifest {
+                manifest,
+                item_count: u32::try_from(attachments.len())
+                    .map_err(|_| Error::Invalid("attachment count exceeds limit".into()))?,
+            }
         };
         let user_operation = derived_operation_id(operation_id, b"conversation-user");
         let mut aggregate = self.conversation_projection(limits).await?;
@@ -340,18 +364,27 @@ where
                 items: output.attachments.clone(),
             }
         } else {
-            self.host
-                .put_attachment_manifest(
+            let bytes = crate::conversation::encode_attachment_manifest(&output.attachments)?;
+            let manifest = self.host
+                .put_internal_content(
                     &self.volume,
                     &ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write)?,
-                    &format!("turns/{operation_id}/assistant-attachments.json"),
-                    &output.attachments,
+                    "turns/.canonical/payload",
+                    &bytes,
+                    "application/vnd.acyclic.harness.attachments+json",
+                    "attachments.json",
                     self.maximum_payload_bytes,
                     &IdempotencyKey::new(format!(
                         "conversation:{operation_id}:assistant-attachments"
                     ))?,
+                    InternalContentClass::Conversation,
                 )
-                .await?
+                .await?;
+            ReferencedAttachments::Manifest {
+                manifest,
+                item_count: u32::try_from(output.attachments.len())
+                    .map_err(|_| Error::Invalid("attachment count exceeds limit".into()))?,
+            }
         };
         let mut aggregate = self.conversation_projection(limits).await?;
         self.append_tool_history(&mut aggregate, operation_id, user_id, limits)

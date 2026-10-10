@@ -966,6 +966,7 @@ pub(crate) enum InternalContentClass {
     Workflow,
     Execution,
     ModelPrefix,
+    Conversation,
 }
 
 impl InternalContentClass {
@@ -975,6 +976,7 @@ impl InternalContentClass {
             Self::Workflow => ".system/workflows/",
             Self::Execution => ".system/execution/",
             Self::ModelPrefix => ".system/inherited-conversation/model-prefix/",
+            Self::Conversation => "turns/.canonical/",
         }
     }
 }
@@ -2140,15 +2142,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 ));
             }
             None if provisional.path() == ".system"
-                || provisional.path().starts_with(".system/") =>
+                || provisional.path().starts_with(".system/")
+                || provisional.path() == "turns/.canonical"
+                || provisional.path().starts_with("turns/.canonical/") =>
             {
                 return Err(Error::Invalid("internal storage paths are reserved".into()));
             }
             None => {}
         }
+        // Internal staging reuses bounded live slots. Every prior upload still
+        // resolves its original receipt in the original operation's immutable
+        // retained generation; no historical reference or retry key is repinned.
+        let receipt_identity = if internal_class.is_some() {
+            provisional.path()
+        } else {
+            idempotency_key.as_str()
+        };
         let receipt_path = format!(
             ".system/harness-uploads/{}.json",
-            blake3::hash(idempotency_key.as_str().as_bytes()).to_hex()
+            blake3::hash(receipt_identity.as_bytes()).to_hex()
         );
         let metadata_path = content_metadata_path(provisional.path());
         let metadata_bytes =

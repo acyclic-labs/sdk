@@ -1379,7 +1379,10 @@ where
                 .put_internal_content(
                     &self.volume,
                     &grant,
-                    &format!(".system/execution/{operation_id}/{}.json", digest.to_hex()),
+                    // The returned reference pins the generation, not the
+                    // current head. Reuse one active slot without changing any
+                    // historical payload or operation's retry identity.
+                    ".system/execution/payload.json",
                     &bytes,
                     media_type,
                     "execution.json",

@@ -171,6 +171,17 @@ Explicit archival fork capture may traverse its finite selected prefix.
 Growing active graphs or provider-retained immutable history still consume
 their declared capacities; no unrestricted memory or throughput claim follows.
 
+Canonical journal payloads reuse one `.system/execution/payload.json` slot.
+Canonical assistant content, metadata and attachment manifests reuse one
+host-reserved, normally readable `turns/.canonical/payload` slot. Internal
+upload receipts and metadata are keyed by the stable payload path, not by
+the lifetime operation count. Original operation keys still resolve the
+original immutable generation and exact receipt; previously returned
+references are never repinned or rewritten. Arbitrary public upload paths
+and public upload receipt identities are unchanged. The durable 10,000-turn
+fixture checks the actual current payload, metadata and receipt directories
+at turn 114 and after all turns, then retries its first original reference.
+
 Summary-fork capture and explicit child-stage admission are exercised by
 `filesystem::memory::summary_tests`: an actual admitted compaction is copied,
 published, imported into its bound child and consumed by a replayable model
@@ -231,6 +242,11 @@ The memory composition's byte capacity is 64 MiB, with no cardinality ceiling.
 An eventual passing continuation must preserve this capacity, history,
 durability and full workload; reducing proof reads alone is not evidence
 that retained provider bytes were repaired.
+The fixed-slot internal publication cutover addresses the growing active
+internal namespace rather than suppressing the capacity error or increasing
+the allowance. The original memory control still stages its explicit
+user-chosen input paths; its unchanged full workload must also qualify.
+No unrun control establishes that all pinned historical bytes fit 64 MiB.
 
 The full composition goal remains open until all required owned work is qualified
 and merged into `main`; a first focused landing is not full goal completion.

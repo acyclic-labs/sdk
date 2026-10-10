@@ -6,7 +6,7 @@ use crate::{
     context::{Context, ContextPipeline, ContextPlacement, ModelContextCapacity, ModelTokenCount, SourceStage},
     conversation::{VolumeClass, VolumeOwner},
     core::{AggregateKind, Authority, AuthorityIssuer},
-    filesystem::FilesystemContentVerifier,
+    filesystem::{FilesystemContentPublisher, FilesystemContentVerifier},
     model::{Model, ModelAttempt, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     resources::ProviderRef,
     runtime::ContentBindings,
@@ -128,6 +128,22 @@ async fn durable_ten_thousand_turns_reopen_and_replay_original_identity() -> Res
             assert_eq!(state.logical_revision(), u64::from(index + 1) * 2);
             assert!(state.messages().len() <= 8);
             if index >= 3 { assert!(state.resident_after_sequence() > 0); }
+        }
+        if index == 113 || index == TURNS - 1 {
+            let workspace = crate::filesystem::workspace_ref(
+                binding.journal.host.provider.clone(),
+                &binding.journal.volume.storage_name()?,
+            )?;
+            for (path, expected_entries) in [
+                ("/.system/execution", 1),
+                ("/turns/.canonical", 1),
+                ("/.system/harness-file-metadata", 2),
+                ("/.system/harness-uploads", 2),
+            ] {
+                let page = binding.journal.host.list(&workspace, None, path, 3).await?;
+                assert_eq!(page.entries.len(), expected_entries, "{path}");
+                assert!(!page.has_more, "active namespace must not accumulate old turns");
+            }
         }
         if index == TURNS - 3 {
             let weak_journal = Arc::downgrade(&binding.journal);

@@ -1032,6 +1032,49 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
         max_steps: 2,
     };
     let first = executor.execute(input.clone(), &journal).await?;
+    let staged_operation = OperationId::from_bytes([8; 16]);
+    let staged = journal
+        .stage(
+            staged_operation,
+            "original".into(),
+            b"original payload".to_vec(),
+            "application/json",
+        )
+        .await?;
+    for index in 0..32 {
+        let replacement = journal
+            .stage(
+                OperationId::new(),
+                format!("replacement-{index}"),
+                format!("replacement payload {index}").into_bytes(),
+                "application/json",
+            )
+            .await?;
+        assert_eq!(replacement.path(), staged.path());
+        assert_eq!(journal.load(&staged).await?, b"original payload");
+    }
+    assert_eq!(
+        journal
+            .stage(
+                staged_operation,
+                "original".into(),
+                b"original payload".to_vec(),
+                "application/json",
+            )
+            .await?,
+        staged
+    );
+    assert!(matches!(
+        journal
+            .stage(
+                staged_operation,
+                "original".into(),
+                b"changed payload".to_vec(),
+                "application/json",
+            )
+            .await,
+        Err(Error::Conflict(_))
+    ));
     let again = executor.execute(input, &journal).await?;
     assert_eq!(first, again);
     assert_eq!(first.text, "private answer");
