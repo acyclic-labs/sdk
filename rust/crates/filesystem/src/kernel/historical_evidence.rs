@@ -152,6 +152,7 @@ pub fn decode_historical_generation_evidence(
     let append = &projection.append;
     if append.authority_id != authority_id
         || append.epoch != record.epoch
+        || append.expected.epoch != record.epoch
         || append.expected.sequence.checked_next().ok() != Some(record.sequence)
         || append.expected.digest != record.previous_digest
         || append.commit.operation_id != record.operation_id
