@@ -97,6 +97,23 @@ try {
   const handoffResult = await handoff.connect(new Map(), handoffAbort.signal).catch(error => error);
   for (let i = 0; i < 8; i++) await Promise.resolve();
   assert(handoffResult.name === "AbortError" && closed === 1, "cancelled browser connection lost cleanup");
+  class CompletionScheduler extends RequestScheduler {
+    after: (() => void) | undefined;
+    override schedule<Value>(bytes: number, work: (signal: AbortSignal, bytes: number) => Promise<Value>, signal?: AbortSignal): Promise<Value> {
+      const promise = super.schedule(bytes, work, signal);
+      void promise.then(() => this.after?.(), () => {});
+      return promise;
+    }
+  }
+  const boundaryScheduler = new CompletionScheduler({ concurrent: 1, requests: 1, bytes: 4096 });
+  const boundary = new DemandLoader(source, boundaryScheduler, 1, 1, 4096);
+  boundaryScheduler.after = () => boundary.invalidate(selected);
+  const boundaryResult = await boundary.read(selected).catch(error => error);
+  assert(boundaryResult.name === "AbortError" && boundary.peek(selected) === undefined, "completed provider published an invalidated browser result");
+  boundaryScheduler.after = () => boundary.dispose();
+  const disposedResult = await boundary.read(selected).catch(error => error);
+  assert(disposedResult.name === "AbortError" && boundary.residency.demand === 0, "completed provider published a disposed browser result");
+  boundaryScheduler.dispose();
 
   // Exercise the existing atomic browser transaction, retaining its honest
   // cursor-only contract. This is not projection-checkpoint recovery evidence.

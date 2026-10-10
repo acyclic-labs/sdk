@@ -109,6 +109,25 @@ test("shared selective hydration isolates caller abort, fences stale completion 
   const transient = new DemandLoader({ reserve: () => 8, load: async () => ({ value, bytes: 4 }) }, scheduler, 1, 1, 4);
   expect(await transient.read("pin-4")).toBe(value);
   transient.dispose();
+  class CompletionScheduler extends RequestScheduler {
+    after: (() => void) | undefined;
+    override schedule<Value>(bytes: number, work: (signal: AbortSignal, bytes: number) => Promise<Value>, signal?: AbortSignal): Promise<Value> {
+      const promise = super.schedule(bytes, work, signal);
+      void promise.then(() => this.after?.(), () => {});
+      return promise;
+    }
+  }
+  const boundaryScheduler = new CompletionScheduler({ concurrent: 1, requests: 1, bytes: 4 });
+  const boundary = new DemandLoader({ reserve: () => 4, load: async () => ({ value, bytes: 4 }) }, boundaryScheduler, 1, 1, 4);
+  boundaryScheduler.after = () => boundary.invalidate("completion-boundary");
+  const invalidatedResult = await boundary.read("completion-boundary").catch(error => error);
+  expect(invalidatedResult.name).toBe("AbortError");
+  expect(boundary.peek("completion-boundary")).toBeUndefined();
+  boundaryScheduler.after = () => boundary.dispose();
+  const disposedResult = await boundary.read("dispose-boundary").catch(error => error);
+  expect(disposedResult.name).toBe("AbortError");
+  expect(boundary.residency.demand).toBe(0);
+  boundary.dispose(); boundaryScheduler.dispose();
   loader.dispose(); scheduler.dispose();
 });
 

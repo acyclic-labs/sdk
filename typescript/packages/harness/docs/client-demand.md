@@ -30,6 +30,8 @@ the last caller cancels shared work. Invalidating a key cancels current interest
 and fences late completion. Errors and absence are not cached. `peek` performs no
 IO. Each shared request owns one completion callback and a removable set of active
 readers: joining/cancelling a slow request cannot accumulate stale callbacks.
+Invalidation/disposal settle owned readers directly, including when the provider
+has completed but its reader completion callback is still queued.
 `peek` returns the same retained value/receipt on warm reads. No cache-miss status
 confers authority: keep not-loaded/absent/stale/available and prediction provenance
 in existing `ClientViews` and the domain adapter.
