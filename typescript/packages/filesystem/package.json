@@ -56,12 +56,12 @@
     "pack:dry": "bun run build:clean && bun pm pack --dry-run"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "2.15.0",
-    "@connectrpc/connect": "2.1.1",
-    "@connectrpc/connect-web": "2.1.1"
+    "@bufbuild/protobuf": "2.16.0",
+    "@connectrpc/connect": "2.2.0",
+    "@connectrpc/connect-web": "2.2.0"
   },
   "devDependencies": {
-    "@types/node": "26.6.2",
+    "@types/node": "26.6.4",
     "typescript": "7.0.2"
   }
 }

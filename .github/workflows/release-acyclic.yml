@@ -55,7 +55,7 @@ jobs:
             executable: acyclic.exe
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/rust-toolchain
         with:
           targets: ${{ matrix.rust_target }}
@@ -137,7 +137,7 @@ jobs:
             linux-x64-gnu|darwin-arm64) cp "target-qualifier/${{ matrix.rust_target }}/release/native-mount-qualify" "release/${{ matrix.target }}/native-mount-qualify" ;;
             win32-x64) cp "target-qualifier/${{ matrix.rust_target }}/release/native-mount-qualify.exe" "release/${{ matrix.target }}/native-mount-qualify.exe" ;;
           esac
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: acyclic-${{ matrix.target }}
           # Preserve the target directory: assembly consumes a structural
@@ -171,7 +171,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/rust-toolchain
@@ -189,7 +189,7 @@ jobs:
           if ((Get-WindowsOptionalFeature -Online -FeatureName Client-ProjFS).State -ne 'Enabled') {
             throw 'Client-ProjFS could not be enabled without a reboot'
           }
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: acyclic-${{ matrix.target }}
           path: ${{ runner.temp }}/release-binary
@@ -217,7 +217,7 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}\native-mount-target
           SDK_ARTIFACT_DIR: ${{ runner.temp }}\native-mount-artifacts
         run: .\scripts\qualify-native-mount.ps1 -Backend '${{ matrix.backend }}'
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-mount-${{ matrix.backend }}
           path: ${{ runner.temp }}/native-mount-artifacts/${{ matrix.backend }}.json
@@ -250,7 +250,7 @@ jobs:
       contents: write
       id-token: write
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -273,16 +273,16 @@ jobs:
             refs/heads/main:refs/remotes/origin/main
           git merge-base --is-ancestor "$source_sha" refs/remotes/origin/main
           test "$version" = "$(node -p "require('./plugin/package.json').version")"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.15.0
           registry-url: https://registry.npmjs.org
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: acyclic-*
           path: release/binaries
           merge-multiple: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: native-mount-*
           path: release/native-mount
@@ -436,7 +436,7 @@ jobs:
             release/native-mount/windows-projfs.json \
             release/acyclic.spdx.json
           node scripts/release-evidence.mjs verify release/SHA256SUMS
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: acyclic-universal
           path: |
