@@ -9,6 +9,13 @@ use crate::{
     runtime::TaskAdmissionRecord,
     store::{HistoryCursor, HistoryReadLimits, HistoryReader, StreamAggregate},
 };
+use acyclic_fs::CancellationToken;
+use crate::source_authorization::{ProjectSourceReadHandle, ProjectSourceSnapshot};
+
+struct SourceInvocation(CancellationToken);
+impl Drop for SourceInvocation {
+    fn drop(&mut self) { self.0.cancel(); }
+}
 
 #[derive(Deserialize, Tsify)]
 #[serde(deny_unknown_fields)]
@@ -19,6 +26,15 @@ struct WasmRecursiveForkConfig {
     child_project: VolumeRef,
     #[tsify(type = "WasmVolumeRefWire")]
     child_private: VolumeRef,
+    #[serde(default)]
+    #[tsify(type = "WasmVolumeRefWire | null")]
+    child_result_volume: Option<VolumeRef>,
+    #[serde(default)]
+    #[tsify(type = "WasmProjectSourceSnapshot | null")]
+    selected_project: Option<ProjectSourceSnapshot>,
+    #[serde(default)]
+    #[tsify(type = "WasmForkPreparationLimits | null")]
+    source_policy_limits: Option<crate::filesystem::ForkPreparationLimits>,
     limits: WasmLimitsInput,
     inherited_messages: u64,
     inherited_bytes: u64,
@@ -34,6 +50,11 @@ export interface WasmRecursiveSourceSnapshot {
     readonly project_generation: WasmResourceRefWire & { readonly kind: 'generation' };
     readonly private_volume: WasmVolumeRefWire;
     readonly private_generation: WasmResourceRefWire & { readonly kind: 'generation' };
+}
+export interface WasmProjectSourceSnapshot {
+    readonly project: WasmVolumeRefWire;
+    readonly generation: WasmResourceRefWire & { readonly kind: 'generation' };
+    readonly native_snapshot: unknown | null;
 }
 export interface WasmForkPreparationCommand {
     readonly operation_id: string;
@@ -77,13 +98,14 @@ impl WasmRecursiveForkSource {
         #[wasm_bindgen(unchecked_param_type = "WasmTaskAdmissionWire")] child: JsValue,
         #[wasm_bindgen(unchecked_param_type = "WasmForkPreparationCommand")] command: JsValue,
         #[wasm_bindgen(unchecked_param_type = "WasmForkPreparationLimits")] limits: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "readonly WasmFileRefWire[]")] input_files: JsValue,
     ) -> std::result::Result<JsValue, JsValue> {
         let child = TaskAdmissionRecord::from_canonical_value(from_js(child)?).map_err(js_error)?;
         if child.parent != Some(self.caller) {
             return Err(js_error(Error::Unauthorized("fork child has a different original caller".into())));
         }
         let request = fork_preparation_request(&self.binding.preparer, self.binding.request.clone(),
-            TaskId::parse(&preparation_task).map_err(js_error)?, child, from_js(command)?, from_js(limits)?, None)
+            TaskId::parse(&preparation_task).map_err(js_error)?, child, from_js(command)?, from_js(limits)?, None, from_js(input_files)?)
             .map_err(js_error)?;
         to_js(&request)
     }
@@ -105,6 +127,8 @@ impl WasmTaskRuntime {
         #[wasm_bindgen(unchecked_param_type = "WasmRecursiveForkConfig")] config: JsValue,
         schemas: JsValue,
     ) -> std::result::Result<WasmRecursiveForkSource, JsValue> {
+        let cancellation = CancellationToken::new();
+        let _guard = SourceInvocation(cancellation.clone());
         let caller = TaskId::parse(&caller).map_err(js_error)?;
         let source: RecursiveSourceSnapshot = from_js(source)?;
         let signed: Scope = from_js(signed_scope)?;
@@ -114,16 +138,35 @@ impl WasmTaskRuntime {
         if limits != context.scope().limits() {
             return Err(js_error(Error::Unauthorized("fork limits differ from original caller admission".into())));
         }
+        cancellation.check().map_err(|error| js_error(Error::Storage(error.to_string())))?;
         let parent = StreamAggregate::open(&self.stream, caller_owner.reducer.authority().clone(),
             caller_owner.issuer.verifier(), super::super::schema_registry(schemas)?).await.map_err(js_error)?;
+        cancellation.check().map_err(|error| js_error(Error::Storage(error.to_string())))?;
         let snapshot = parent.reducer().snapshot_with_event_limit(1).map_err(js_error)?;
+        let arguments: ForkToolArguments = from_js(arguments)?;
+        let operation = OperationId::parse(&operation).map_err(js_error)?;
+        let source_read = if let Some(selected) = arguments.source.filter(|selected| *selected != caller) {
+            let policy = self.project_source_policy.as_ref().ok_or_else(|| js_error(Error::Unauthorized("foreign source lacks configured RootService policy".into())))?;
+            let selected_project = config.selected_project.ok_or_else(|| js_error(Error::Invalid("foreign source requires exact project snapshot metadata".into())))?;
+            let policy_limits = config.source_policy_limits.ok_or_else(|| js_error(Error::Invalid("foreign source requires explicit finite policy limits".into())))?;
+            let owner = Arc::new(self.runtime.task_host().journal_owner(caller, context.owned_task_fence().map_err(js_error)?).await.map_err(js_error)?
+                .with_invocation_cancellation(&cancellation));
+            Some(owner.authorize_project_source(&context, &self.service_issuer, policy.as_ref(), selected,
+                operation, selected_project, policy_limits.work, policy_limits.bytes).await.map_err(js_error)?)
+        } else {
+            if config.selected_project.is_some() || config.source_policy_limits.is_some() {
+                return Err(js_error(Error::Invalid("current source cannot adopt a foreign project policy descriptor".into())));
+            }
+            None
+        };
         let binding = recursive_fork_source(&self.runtime, self.filesystem.clone(), &self.stream,
             &parent, caller_owner.issuer.verifier(), signed, &context, source, from_js(stream_provider)?,
-            OperationId::parse(&operation).map_err(js_error)?, &from_js::<ForkToolArguments>(arguments)?,
+            operation, &arguments,
             RecursiveForkConfig { child: config.child, child_project: config.child_project,
-                child_private: config.child_private, limits, inherited_messages: config.inherited_messages,
+                child_private: config.child_private, child_result_volume: config.child_result_volume,
+                limits, inherited_messages: config.inherited_messages,
                 inherited_bytes: config.inherited_bytes, inherited_references: config.inherited_references,
-                history_limits: config.history_limits }).await.map_err(js_error)?;
+                history_limits: config.history_limits }, source_read, &cancellation).await.map_err(js_error)?;
         Ok(WasmRecursiveForkSource { binding, filesystem: self.filesystem.clone(), caller, snapshot })
     }
 
@@ -138,23 +181,33 @@ impl WasmTaskRuntime {
         #[wasm_bindgen(unchecked_param_type = "ForkRequest")] request: JsValue,
         #[wasm_bindgen(unchecked_param_type = "HistoryReadLimits")] history_limits: JsValue,
     ) -> std::result::Result<WasmRecursiveForkSource, JsValue> {
+        let cancellation = CancellationToken::new();
+        let _guard = SourceInvocation(cancellation.clone());
         let caller = TaskId::parse(&caller).map_err(js_error)?;
         let source: RecursiveSourceSnapshot = from_js(source)?;
         let signed: Scope = from_js(signed_scope)?;
-        self.recursive_caller(caller, from_js(fence)?, original_owner, &signed, &source).await?;
+        let context = self.recursive_caller(caller, from_js(fence)?, original_owner, &signed, &source).await?;
         let history_limits: HistoryReadLimits = from_js(history_limits)?;
         let snapshot = original_owner.reducer.snapshot_with_event_limit(1).map_err(js_error)?;
         let head = snapshot.events.last().ok_or_else(|| js_error(Error::Unauthorized("fork source has no committed caller event".into())))?;
         let reader = HistoryReader::new(&self.stream, original_owner.reducer.authority(), original_owner.issuer.verifier()).map_err(js_error)?;
         let revision = original_owner.reducer.revision();
+        cancellation.check().map_err(|error| js_error(Error::Storage(error.to_string())))?;
         let page = reader.read_page(&HistoryCursor { authority: original_owner.reducer.authority().clone(),
             after_revision: revision - 1, through_revision: revision }, history_limits).await.map_err(js_error)?;
+        cancellation.check().map_err(|error| js_error(Error::Storage(error.to_string())))?;
         if page.events.as_slice() != std::slice::from_ref(head) {
             return Err(js_error(Error::Unauthorized("original fork source head differs from canonical Stream".into())));
         }
+        let request: ForkRequest = from_js(request)?;
+        let source_read: Option<ProjectSourceReadHandle> = if let Some(authorization) = &request.authorized_source {
+            let owner = Arc::new(self.runtime.task_host().journal_owner(caller, context.owned_task_fence().map_err(js_error)?).await.map_err(js_error)?
+                .with_invocation_cancellation(&cancellation));
+            Some(owner.restore_project_source_authorization(&context, authorization).await.map_err(js_error)?)
+        } else { None };
         let binding = restore_recursive_fork_source(self.filesystem.clone(), &self.stream,
             &original_owner.reducer, original_owner.issuer.verifier(), signed, source.project,
-            from_js(stream_provider)?, from_js(request)?, history_limits).await.map_err(js_error)?;
+            from_js(stream_provider)?, request, history_limits, source_read, &cancellation).await.map_err(js_error)?;
         Ok(WasmRecursiveForkSource { binding, filesystem: self.filesystem.clone(), caller, snapshot })
     }
 
