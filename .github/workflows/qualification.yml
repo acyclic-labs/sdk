@@ -381,3 +381,15 @@ jobs:
           else
             test "$RESULT" = success
           fi
+
+  static_compatibility:
+    name: SDK Static
+    if: always()
+    needs: [gate]
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 2
+    steps:
+      - name: Require actual SDK qualification
+        env:
+          QUALIFICATION_RESULT: ${{ needs.gate.result }}
+        run: test "$QUALIFICATION_RESULT" = success
