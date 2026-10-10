@@ -1724,7 +1724,7 @@ fn shared_regular_data_and_metadata_are_authenticated_once()
     let conflicting = generation_with_records(&store, root_id, records)?;
     assert!(matches!(
         prove_generation_closure(&store, conflicting, limits(), WorkBudget::UNBOUNDED),
-        Err(ClosureError::RoutingBoundsMismatch)
+        Err(failure) if matches!(failure.error, ClosureError::RoutingBoundsMismatch)
     ));
     Ok(())
 }
