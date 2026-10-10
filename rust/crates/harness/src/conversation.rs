@@ -2005,7 +2005,23 @@ impl TryFrom<ConversationStateWire> for ConversationState {
             .archived_prefix
             .as_ref()
             .map_or([0; 32], |prefix| prefix.history_digest);
-        let mut prefix_digests = Vec::with_capacity(wire.messages.len());
+        let mut prefix_digests = if let Some(work) = cache.work().as_deref_mut() {
+            let bytes = wire.messages.len().checked_mul(std::mem::size_of::<[u8; 32]>())
+                .ok_or_else(|| Error::Invalid("conversation digest cache overflows".into()))?;
+            work.admit_allocation(bytes as u64)?;
+            let mut digests = Vec::new();
+            digests.try_reserve_exact(wire.messages.len())
+                .map_err(|cause| work.allocation_failure(cause))?;
+            digests
+        } else {
+            Vec::with_capacity(wire.messages.len())
+        };
+        if let Some(work) = cache.work().as_deref_mut() {
+            let bytes = prefix_digests.capacity().checked_mul(std::mem::size_of::<[u8; 32]>())
+                .ok_or_else(|| Error::Invalid("conversation digest cache overflows".into()))? as u64;
+            work.retain_owned(bytes)?;
+            cache.adopt(bytes)?;
+        }
         for (position, message) in wire.messages.iter().enumerate() {
             message.validate()?;
             if message.sequence <= previous
@@ -2263,6 +2279,23 @@ impl ConversationState {
                 | MessageKind::ToolCall
                 | MessageKind::ToolResult
         ) {
+            if let Some(work) = cache.work().as_deref_mut() {
+                if self.model_positions.len() == self.model_positions.capacity() {
+                    let old = self.model_positions.capacity();
+                    let target = old.checked_mul(2).map(|count| count.max(4))
+                        .ok_or_else(|| Error::Invalid("conversation position cache overflows".into()))?;
+                    let bytes = (target - old).checked_mul(std::mem::size_of::<usize>())
+                        .ok_or_else(|| Error::Invalid("conversation position cache overflows".into()))?;
+                    work.admit_allocation(bytes as u64)?;
+                    self.model_positions.try_reserve_exact(target - self.model_positions.len())
+                        .map_err(|cause| work.allocation_failure(cause))?;
+                    let actual = (self.model_positions.capacity() - old)
+                        .checked_mul(std::mem::size_of::<usize>())
+                        .ok_or_else(|| Error::Invalid("conversation position cache overflows".into()))? as u64;
+                    work.retain_owned(actual)?;
+                    cache.adopt(actual)?;
+                }
+            }
             self.model_positions.push(position);
         }
         let outcome = message.kind == MessageKind::System
@@ -2503,6 +2536,76 @@ pub fn validate_content_path(path: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "filesystem")]
+    #[test]
+    fn admitted_conversation_rebuild_observes_original_digests_and_negative_work() -> Result<()> {
+        use acyclic_fs::{CancellationToken, WorkBudget};
+        use crate::store::history::HistoryWork;
+        let agent = AgentId::from_bytes([8; 16]);
+        let content = file(agent, "observed-rebuild.txt")?;
+        let mut original = ConversationState::default();
+        original.bind(agent)?;
+        for (sequence, kind) in [(1_u64, MessageKind::User),
+            (2, MessageKind::Assistant), (3, MessageKind::System)] {
+            let mut extensions = BTreeMap::new();
+            if sequence == 3 {
+                extensions.insert("acyclic.turn.outcome".into(), serde_json::Value::Null);
+            }
+            original.append(ConversationMessage {
+                id: Uuid::from_u128(u128::from(sequence)), sequence, kind,
+                content: content.clone(),
+                attachments: ReferencedAttachments::Inline { items: Vec::new() },
+                reply_to: (sequence > 1).then(|| Uuid::from_u128(1)),
+                tool_call_id: None, extensions,
+            })?;
+        }
+        let bytes = crate::contract::canonical_json_bytes(&original)?;
+        let expected_hash_bytes = original.messages().iter().try_fold(0_u64, |total, message| {
+            total.checked_add(crate::contract::canonical_json_bytes(message)?.len() as u64)
+                .and_then(|total| total.checked_add(b"harness:conversation-prefix:v3\0".len() as u64 + 64))
+                .ok_or_else(|| Error::Invalid("test digest input overflow".into()))
+        })?;
+        let budget = WorkBudget {
+            bytes_copied: 1_048_576, bytes_encoded: 1_048_576,
+            bytes_hashed: expected_hash_bytes, items_examined: 100_000,
+            allocation_operations: 100_000, peak_allocation_bytes: 1_048_576,
+            ..WorkBudget::default()
+        };
+        let cancellation = CancellationToken::new();
+        let wire: ConversationStateWire = crate::contract::json_from_slice(&bytes)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let mut work = HistoryWork::new(budget, &cancellation);
+        HISTORY_HASH_CALLS.with(|calls| calls.set(0));
+        let rebuilt = ConversationState::from_wire_with_work(
+            wire, bytes.len() as u64, &mut Some(&mut work));
+        let receipt = work.finish(rebuilt).map_err(|failure| failure.error)?;
+        assert_eq!(receipt.value.0, original);
+        assert_eq!(receipt.work.bytes_hashed, expected_hash_bytes);
+        assert_eq!(HISTORY_HASH_CALLS.with(std::cell::Cell::get), 3);
+        assert!(receipt.value.1 >= 3 * std::mem::size_of::<[u8; 32]>() as u64);
+        assert!(receipt.work.bytes_encoded > 0);
+        let mut denied = budget;
+        denied.bytes_hashed = 0;
+        let mut work = HistoryWork::new(denied, &cancellation);
+        let wire = crate::contract::json_from_slice(&bytes)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let result = ConversationState::from_wire_with_work(
+            wire, bytes.len() as u64, &mut Some(&mut work));
+        let failed = work.finish(result).err().expect("first original message hash must reject");
+        assert_eq!(failed.work.bytes_hashed, 0);
+        assert!(failed.work.bytes_encoded > 0);
+        assert_eq!(failed.work.output_bytes, 0);
+        cancellation.cancel();
+        let mut work = HistoryWork::new(budget, &cancellation);
+        let wire = crate::contract::json_from_slice(&bytes)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let result = ConversationState::from_wire_with_work(
+            wire, bytes.len() as u64, &mut Some(&mut work));
+        let failed = work.finish(result).err().expect("cancelled reconstruction must not start");
+        assert_eq!(failed.work.bytes_encoded + failed.work.bytes_hashed, 0);
+        Ok(())
+    }
 
     #[test]
     fn checkpoint_suffix_preserves_logical_head_digest_and_next_turn() -> Result<()> {

@@ -12,7 +12,12 @@ pub(crate) struct NativeHistoryIo<'a> {
     native_failure: RefCell<Option<NativeTreeMaterializationError>>,
 }
 
-fn error(error: impl std::fmt::Display) -> Error { Error::Storage(format!("native history work: {error}")) }
+fn error(cause: std::collections::TryReserveError) -> Error {
+    Error::NativeWork {
+        cause: NativeTreeMaterializationError::AllocationFailed(cause),
+        custody: None,
+    }
+}
 
 pub(crate) fn native_work_io(
     work: &NativeMaterializationWork,
@@ -66,6 +71,7 @@ impl HistoryIo for NativeHistoryIo<'_> {
     }
     fn begin_call(&mut self) -> Result<()> { self.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() }) }
     fn begin_write(&mut self) -> Result<()> { self.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() }) }
+    fn allocation_failure(&self, cause: std::collections::TryReserveError) -> Error { error(cause) }
     fn receive_record(&mut self, bytes: u64) -> Result<()> {
         // Receiver prefix precedes cancellation, quota checks and all decoding.
         self.work.spent(WorkCounters { authority_records_read: 1, authority_bytes_read: bytes,
@@ -199,6 +205,23 @@ mod tests {
             peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes(),
             ..WorkBudget::default()
         }
+    }
+
+    #[test]
+    fn allocator_failure_preserves_original_inline_cause_without_diagnostic_heap() {
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(control_budget(), &cancellation)
+            .expect("original meter control allocation");
+        let io = native_work_io(&work).expect("zero-byte original custody");
+        let prefix = work.receipt();
+        let mut bytes = Vec::<u8>::new();
+        let cause = bytes.try_reserve_exact(usize::MAX)
+            .expect_err("capacity above isize::MAX is rejected without OS allocation");
+        assert!(matches!(io.allocation_failure(cause), Error::NativeWork {
+            cause: NativeTreeMaterializationError::AllocationFailed(_), custody: None,
+        }));
+        assert_eq!(work.receipt(), prefix);
+        assert_eq!(bytes.capacity(), 0);
     }
 
     #[test]

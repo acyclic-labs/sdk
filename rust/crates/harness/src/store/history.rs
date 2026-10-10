@@ -29,6 +29,9 @@ pub(crate) trait HistoryIo: Send {
     fn retain_owned(&mut self, bytes: u64) -> Result<()>;
     fn admit_owned(&self, bytes: u64) -> Result<()>;
     fn release_owned(&mut self, bytes: u64) -> Result<()>;
+    fn allocation_failure(&self, cause: std::collections::TryReserveError) -> Error {
+        Error::Storage(cause.to_string())
+    }
     fn clone_authority(&mut self, authority: &Authority) -> Result<Authority>;
     fn clone_text(&mut self, value: &str) -> Result<String>;
     fn reserve_events(&mut self, events: &mut Vec<Event>, maximum: usize) -> Result<()>;
