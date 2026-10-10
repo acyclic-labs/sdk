@@ -1126,18 +1126,30 @@ mod bindings {
         ) -> Result<BrowserTransaction, JsValue> {
             let key = IdempotencyKey::from_bytes(fixed_16(&idempotency_key)?);
             let engine = match (&self.engine, &generation.engine) {
-                (BrowserWorkspaceEngine::IndexedDb(value), BrowserGenerationEngine::IndexedDb(generation)) =>
-                    BrowserTransactionEngine::IndexedDb(
-                        Box::pin(value.begin_transaction_at(generation, key)).await.map_err(js_error)?,
-                    ),
-                (BrowserWorkspaceEngine::IndexedDbOpfs(value), BrowserGenerationEngine::IndexedDbOpfs(generation)) =>
-                    BrowserTransactionEngine::IndexedDbOpfs(
-                        Box::pin(value.begin_transaction_at(generation, key)).await.map_err(js_error)?,
-                    ),
-                (BrowserWorkspaceEngine::Memory(value), BrowserGenerationEngine::Memory(generation)) =>
-                    BrowserTransactionEngine::Memory(
-                        Box::pin(value.begin_transaction_at(generation, key)).await.map_err(js_error)?,
-                    ),
+                (
+                    BrowserWorkspaceEngine::IndexedDb(value),
+                    BrowserGenerationEngine::IndexedDb(generation),
+                ) => BrowserTransactionEngine::IndexedDb(
+                    Box::pin(value.begin_transaction_at(generation, key))
+                        .await
+                        .map_err(js_error)?,
+                ),
+                (
+                    BrowserWorkspaceEngine::IndexedDbOpfs(value),
+                    BrowserGenerationEngine::IndexedDbOpfs(generation),
+                ) => BrowserTransactionEngine::IndexedDbOpfs(
+                    Box::pin(value.begin_transaction_at(generation, key))
+                        .await
+                        .map_err(js_error)?,
+                ),
+                (
+                    BrowserWorkspaceEngine::Memory(value),
+                    BrowserGenerationEngine::Memory(generation),
+                ) => BrowserTransactionEngine::Memory(
+                    Box::pin(value.begin_transaction_at(generation, key))
+                        .await
+                        .map_err(js_error)?,
+                ),
                 _ => return Err(js_error("generation belongs to another filesystem")),
             };
             Ok(BrowserTransaction { engine })
