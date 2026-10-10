@@ -1,16 +1,26 @@
 name: Release Acyclic plugin
 
 on:
-  workflow_dispatch:
-  push:
-    tags:
-      - "acyclic-v*"
-
+  workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        required: true
+      version:
+        type: string
+        required: true
+    outputs:
+      attempt:
+        description: Attempt which assembled the exact qualified artifact set
+        value: ${{ jobs.assemble.outputs.attempt }}
+      artifacts:
+        description: Exact package artifacts retained by the successful qualification lanes
+        value: ${{ jobs.assemble.outputs.artifacts }}
 permissions:
   contents: read
 
 concurrency:
-  group: acyclic-release-${{ github.ref_name }}
+  group: acyclic-build-${{ github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -56,6 +66,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_sha }}
       - uses: ./.github/actions/rust-toolchain
         with:
           targets: ${{ matrix.rust_target }}
@@ -174,6 +186,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+          ref: ${{ inputs.source_sha }}
       - uses: ./.github/actions/rust-toolchain
       - name: Install Linux native-mount prerequisites
         if: runner.os == 'Linux'
@@ -233,19 +246,22 @@ jobs:
       pull-requests: read
     with:
       force: true
-      source_ref: ${{ github.sha }}
-      release_tag: ${{ startsWith(github.ref, 'refs/tags/acyclic-v') && github.ref_name || '' }}
+      source_ref: ${{ inputs.source_sha }}
+      release_tag: ""
 
   agent-host-qualification:
     name: Agent host qualification
     needs: build
     uses: ./.github/workflows/agent-host-qualification.yml
+    with:
+      source_ref: ${{ inputs.source_sha }}
 
   assemble:
     name: Validate and assemble
-    needs: [build, native-mount, sdk-qualification, agent-host-qualification]
+    needs: [ build, native-mount, sdk-qualification, agent-host-qualification ]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
+      actions: read
       attestations: write
       contents: write
       id-token: write
@@ -255,28 +271,16 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
-      - name: Verify annotated release tag and merged source
-        if: startsWith(github.ref, 'refs/tags/acyclic-v')
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_REF_NAME" =~ ^acyclic-v([0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?)$ ]]
-          version=${BASH_REMATCH[1]}
-          # checkout v4 may replace the local annotated tag with its peeled commit.
-          git fetch --no-tags --force origin \
-            "$GITHUB_REF:refs/release-tags/$GITHUB_REF_NAME"
-          tag_oid=$(git rev-parse "refs/release-tags/$GITHUB_REF_NAME")
-          test "$(git cat-file -t "$tag_oid")" = tag
-          source_sha=$(git rev-parse "$tag_oid^{commit}")
-          test "$(git rev-parse HEAD)" = "$source_sha"
-          git fetch --no-tags --force origin \
-            refs/heads/main:refs/remotes/origin/main
-          git merge-base --is-ancestor "$source_sha" refs/remotes/origin/main
-          test "$version" = "$(node -p "require('./plugin/package.json').version")"
+          ref: ${{ inputs.source_sha }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.15.0
           registry-url: https://registry.npmjs.org
+      - id: qualification
+        name: Freeze qualified lane artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-qualification-artifacts.mjs
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: acyclic-*
@@ -438,7 +442,7 @@ jobs:
           node scripts/release-evidence.mjs verify release/SHA256SUMS
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: acyclic-universal
+          name: acyclic-universal-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             release/SHA256SUMS
             release/acyclic.spdx.json
@@ -460,44 +464,16 @@ jobs:
             release/native-mount/windows-projfs.json
           if-no-files-found: error
       - name: Attest release provenance
-        if: startsWith(github.ref, 'refs/tags/acyclic-v')
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-checksums: release/SHA256SUMS
       - name: Attest release SBOM
-        if: startsWith(github.ref, 'refs/tags/acyclic-v')
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-checksums: release/SHA256SUMS
           sbom-path: release/acyclic.spdx.json
-      - name: Verify release tag matches package version
-        if: startsWith(github.ref, 'refs/tags/acyclic-v')
-        run: |
-          version=$(node -p "require('./release/package/plugin/package.json').version")
-          test "$GITHUB_REF_NAME" = "acyclic-v$version"
-      - name: Publish tag assets
-        if: startsWith(github.ref, 'refs/tags/acyclic-v')
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
-        with:
-          overwrite_files: false
-          fail_on_unmatched_files: true
-          make_latest: legacy
-          files: |
-            release/SHA256SUMS
-            release/acyclic.spdx.json
-            release/acyclic-plugin.tar.gz
-            release/acyclic-plugin-npm.tgz
-            release/plugin-qualification.json
-            release/platform-binaries.json
-            release/verify.js
-            release/acyclic-linux-x64-gnu
-            release/acyclic-linux-x64-musl
-            release/acyclic-linux-arm64-gnu
-            release/acyclic-linux-arm64-musl
-            release/acyclic-darwin-x64
-            release/acyclic-darwin-arm64
-            release/acyclic-win32-x64.exe
-            release/acyclic-win32-arm64.exe
-            release/native-mount/linux-fuse.json
-            release/native-mount/macos-nfs.json
-            release/native-mount/windows-projfs.json
+      - id: identity
+        run: echo "attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+    outputs:
+      attempt: ${{ steps.identity.outputs.attempt }}
+      artifacts: ${{ steps.qualification.outputs.artifacts }}

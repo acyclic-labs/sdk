@@ -1,9 +1,23 @@
 name: Publish npm release
 
 on:
-  push:
-    tags:
-      - "npm-v*"
+  workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        required: true
+      version:
+        type: string
+        required: true
+      qualification_run_id:
+        type: string
+        required: true
+      qualification_run_attempt:
+        type: string
+        required: true
+      qualification_artifacts:
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -30,38 +44,18 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
+          ref: ${{ inputs.source_sha }}
 
-      - name: Verify release tag and merged source
+      - name: Use exact coordinated release source
         id: release
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$GITHUB_REF_NAME" =~ ^npm-v([0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?)$ ]]
-          version=${BASH_REMATCH[1]}
-          # checkout may replace an annotated tag with its peeled commit.
-          git fetch --no-tags --force origin \
-            "$GITHUB_REF:refs/release-tags/$GITHUB_REF_NAME"
-          tag_oid=$(git rev-parse "refs/release-tags/$GITHUB_REF_NAME")
-          test "$(git cat-file -t "$tag_oid")" = tag
-          source_sha=$(git rev-parse "$tag_oid^{commit}")
-          test "$(git rev-parse HEAD)" = "$source_sha"
-          git fetch --no-tags --force origin \
-            refs/heads/main:refs/remotes/origin/main
-          git merge-base --is-ancestor "$source_sha" refs/remotes/origin/main
-          node -e '
-            const fs = require("node:fs");
-            const version = process.argv[1];
-            for (const item of JSON.parse(fs.readFileSync("release/npm-packages.json", "utf8"))) {
-              const path = item.source === "typescript"
-                ? "typescript/packages/" + item.directory + "/package.json"
-                : "plugin/package.json";
-              const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
-              if (manifest.name !== item.name || manifest.version !== version || manifest.private !== false) {
-                throw new Error("release identity mismatch for " + item.directory);
-              }
-            }
-          ' "$version"
-          printf 'version=%s\nsource_sha=%s\n' "$version" "$source_sha" >> "$GITHUB_OUTPUT"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          printf 'version=%s\nsource_sha=%s\n' "$VERSION" "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION: ${{ inputs.version }}
 
       - name: Install Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -91,16 +85,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
           TOOLS_DIR: ${{ runner.temp }}/stream-native-tools
+          QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
+          QUALIFICATION_RUN_ATTEMPT: ${{ inputs.qualification_run_attempt }}
+          QUALIFICATION_ARTIFACTS: ${{ inputs.qualification_artifacts }}
         shell: bash
         run: |
           set -euo pipefail
-          run=$(gh api --method GET \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/qualification.yml/runs" \
-            -f head_sha="$SOURCE_SHA" -f status=success -F per_page=100 \
-            --jq '[.workflow_runs[] | select(.head_sha == env.SOURCE_SHA and .conclusion == "success" and (.event == "workflow_dispatch" or .event == "release"))] | sort_by([.run_number, .run_attempt]) | last | [.id, .run_attempt] | @tsv')
-          read -r run_id run_attempt <<<"$run"
+          run_id="$QUALIFICATION_RUN_ID"
+          run_attempt="$QUALIFICATION_RUN_ATTEMPT"
           test -n "$run_id" && test -n "$run_attempt"
-          artifact="packages-linux-${run_id}-${run_attempt}"
+          artifact="$(jq -er '.["packages-linux"]' <<<"$QUALIFICATION_ARTIFACTS")"
+          for lane in packages-linux packages-macos stream-native-windows; do
+            name="$(jq -er --arg lane "$lane" '.[$lane]' <<<"$QUALIFICATION_ARTIFACTS")"
+            [[ "$name" =~ ^$lane-$run_id-[1-9][0-9]*$ ]]
+          done
           mkdir -p "$RUNNER_TEMP/qualified"
           gh run download "$run_id" --name "$artifact" --dir "$RUNNER_TEMP/qualified"
           test -f "$RUNNER_TEMP/qualified/typescript/QUALIFICATION.json"
@@ -133,11 +131,7 @@ jobs:
           NODE
           mkdir -p "$stage/plugin"
           cp plugin/package.json "$stage/plugin/"
-          native_artifact="stream-native-windows-${run_id}-${run_attempt}"
-          native_present=$(NATIVE_ARTIFACT="$native_artifact" gh api --method GET \
-            "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts?per_page=100" \
-            --jq 'any(.artifacts[]; .name == env.NATIVE_ARTIFACT and .expired == false)')
-          test "$native_present" = true
+          native_artifact="$(jq -er '.["stream-native-windows"]' <<<"$QUALIFICATION_ARTIFACTS")"
           native_stage="$RUNNER_TEMP/qualified-stream-native"
           mkdir -p "$native_stage"
           cp -R "$RUNNER_TEMP/qualified/stream-native" "$native_stage/linux"
@@ -145,7 +139,7 @@ jobs:
           mkdir -p "$native_stage/windows"
           cp -R "$RUNNER_TEMP/qualified-windows-native/bundle" "$native_stage/windows/bundle"
           cp "$RUNNER_TEMP/qualified-windows-native/producer-receipt.json" "$native_stage/windows/"
-          mac_artifact="packages-macos-${run_id}-${run_attempt}"
+          mac_artifact="$(jq -er '.["packages-macos"]' <<<"$QUALIFICATION_ARTIFACTS")"
           gh run download "$run_id" --name "$mac_artifact" --dir "$RUNNER_TEMP/qualified-macos"
           cp -R "$RUNNER_TEMP/qualified-macos/stream-native" "$native_stage/macos"
           node scripts/assemble-stream-native-package.mjs release \
@@ -172,18 +166,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
           VERSION: ${{ steps.release.outputs.version }}
+          QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
+          QUALIFICATION_RUN_ATTEMPT: ${{ inputs.qualification_run_attempt }}
         shell: bash
         run: |
           set -euo pipefail
-          run=$(gh api --method GET \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/release-acyclic.yml/runs" \
-            -f head_sha="$SOURCE_SHA" -f status=success -F per_page=20 \
-            --jq '[.workflow_runs[] | select(.head_sha == env.SOURCE_SHA and .conclusion == "success")] | sort_by([.run_number, .run_attempt]) | last | [.id, .run_attempt] | @tsv')
-          read -r run_id run_attempt <<<"$run"
+          run_id="$QUALIFICATION_RUN_ID"
+          run_attempt="$QUALIFICATION_RUN_ATTEMPT"
           test -n "$run_id" && test -n "$run_attempt"
           universal="$RUNNER_TEMP/qualified-plugin"
           mkdir -p "$universal"
-          gh run download "$run_id" --name acyclic-universal --dir "$universal"
+          gh run download "$run_id" --name "acyclic-universal-${run_id}-${run_attempt}" --dir "$universal"
           test -f "$universal/acyclic-plugin-npm.tgz"
           test -f "$universal/plugin-qualification.json"
           stage="$RUNNER_TEMP/npm-publication"
@@ -199,6 +192,15 @@ jobs:
           name: npm-publication-${{ steps.release.outputs.source_sha }}
           path: ${{ runner.temp }}/npm-publication
           if-no-files-found: error
+      - name: Admit this coordinated qualification graph
+        env:
+          RUN: ${{ inputs.qualification_run_id }}
+          ATTEMPT: ${{ inputs.qualification_run_attempt }}
+        run: |-
+          test "$RUN" = "$GITHUB_RUN_ID"
+          [[ "$ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          test "$ATTEMPT" -le "$GITHUB_RUN_ATTEMPT"
+        shell: bash
 
   publish:
     name: Publish qualified npm packages
@@ -238,7 +240,4 @@ jobs:
         shell: bash
         working-directory: ${{ runner.temp }}/npm-publication
         run: >-
-          node scripts/publish-npm-packages.mjs
-          typescript
-          "${{ needs.prepare.outputs.source_sha }}"
-          "${{ needs.prepare.outputs.version }}"
+          node scripts/publish-npm-packages.mjs typescript "${{ needs.prepare.outputs.source_sha }}" "${{ needs.prepare.outputs.version }}"
