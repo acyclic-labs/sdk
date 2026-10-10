@@ -7,6 +7,23 @@ use std::path::Path;
 use std::sync::Arc;
 
 #[tokio::test]
+async fn a_never_created_workspace_is_not_found_and_can_then_be_created()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    assert!(matches!(
+        fs.open_workspace("absent").await,
+        Err(crate::workspace::WorkspaceError::NotFound)
+    ));
+    let workspace = fs.create_workspace("absent").await?;
+    workspace.write_text("/value", "created").await?;
+    assert_eq!(
+        fs.open_workspace("absent").await?.read("/value", 16).await?.as_ref(),
+        b"created"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn pinned_directory_discovery_does_not_scan_ten_thousand_retained_workspaces()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();

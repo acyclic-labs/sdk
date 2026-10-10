@@ -2990,7 +2990,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let name = crate::WorkspaceName::new(name)?;
             let id = crate::WorkspaceId::derive(self.inner.workspace_namespace, &name);
             let workspace_error = |failure: OperationFailure<FsError>| {
-                if matches!(failure.error, FsError::WorkspaceDeleted) {
+                if matches!(
+                    failure.error,
+                    FsError::WorkspaceDeleted | FsError::Authority(AuthorityStoreError::Missing)
+                ) {
                     crate::workspace::WorkspaceError::NotFound
                 } else {
                     crate::workspace::WorkspaceError::engine(failure)
