@@ -1867,6 +1867,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         recipient: TaskId,
         message: OperationId,
         bytes: &[u8],
+        expected_sequence: Option<u64>,
     ) -> Result<bool> {
         let location = self
             .stream
@@ -1893,6 +1894,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             || crate::contract::canonical_json_bytes(&retained)?.as_slice() != record.value.as_ref()
         {
             return Err(Error::Storage("mail location identity differs".into()));
+        }
+        if expected_sequence.is_some_and(|sequence| sequence != retained.sequence) {
+            return Err(Error::Storage(
+                "inbox record differs from its atomic location".into(),
+            ));
         }
         let mailbox = self.mailbox(retained.recipient)?;
         let original = mailbox
@@ -1986,7 +1992,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 self.verify_owner(sender, fence, false).await?;
             }
             if self
-                .observe_mail_location(sender, recipient, message, &bytes)
+                .observe_mail_location(sender, recipient, message, &bytes, None)
                 .await?
             {
                 if let Some(fence) = &fence {
@@ -2064,7 +2070,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 CommitOutcome::Conflict(_) => continue,
                 CommitOutcome::Committed(_) => {
                     if !self
-                        .observe_mail_location(sender, recipient, message, &bytes)
+                        .observe_mail_location(sender, recipient, message, &bytes, None)
                         .await?
                     {
                         return Err(Error::Storage("committed mail receipt is absent".into()));
@@ -2699,8 +2705,28 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                         "mail history contains an unreadable payload".into(),
                     ));
                 }
-                self.admission(OperationId::from_bytes(event.sender.into_bytes()))
+                let sender_admission = self
+                    .admission(OperationId::from_bytes(event.sender.into_bytes()))
                     .await?;
+                if !sender_admission.grants.contains(capability::MAIL_SEND) {
+                    return Err(Error::Unauthorized(
+                        "mail source lacks its original send grant".into(),
+                    ));
+                }
+                if !self
+                    .observe_mail_location(
+                        event.sender,
+                        task_id,
+                        event.message_id,
+                        &record.value,
+                        Some(record.sequence),
+                    )
+                    .await?
+                {
+                    return Err(Error::Unsupported(
+                        "unindexed mail format is not supported".into(),
+                    ));
+                }
                 items.push(InboxItem {
                     task_id,
                     sequence: record

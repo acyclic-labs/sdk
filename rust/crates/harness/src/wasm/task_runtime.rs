@@ -602,7 +602,7 @@ impl WasmTaskRuntime {
         #[wasm_bindgen(unchecked_param_type = "WasmBrowserTaskOptions")] options: JsValue,
         owner: &WasmReducer,
         registry: &WasmTaskRegistry,
-        signed_scope: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "Scope")] signed_scope: JsValue,
     ) -> std::result::Result<WasmTaskRuntime, JsValue> {
         let options: WasmBrowserTaskOptions = from_js(options)?;
         let scope: Scope = from_js(signed_scope)?;
