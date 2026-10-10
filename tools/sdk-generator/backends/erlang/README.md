@@ -36,6 +36,40 @@ erlware_commons ~> 1.9.1. The admitted composition uses 1.9.1 and passed the
 native public generation path. This is evidence for that composition, rather
 than a claim that the upstream declarations agree.
 
-Maintained generation is currently separate from the installed qualification
-work. Generation alone does not prove installed RPC, current Stream v1,
-Rust-backed execution, or a complete domain SDK.
+`src/package.mjs` admits a bounded gzip/tar archive against its generation
+receipt, current producer source, package templates, and the approved Rust
+authority. Only the exact regular-file inventory is accepted.
+
+`src/qualify.mjs` installs that archive with the pinned grpcbox 0.18.0 runtime
+and all five dependencies from its upstream lock. It compiles the actual
+installed application and consumer with warnings treated as errors, checks
+loaded-module paths, and executes 25 populated native TCP RPC pairs (22 unary
+and three server-streaming). Request and response wire vectors are computed
+independently from the Rust descriptors. Bytes, unsigned maxima, optional zero
+and omission, real oneofs, and three invalid-type rejections are checked.
+
+```sh
+node tools/sdk-generator/backends/erlang/src/qualify.mjs \
+  --package /path/to/package.tar.gz --sha256 <archive-sha256> \
+  --receipt /path/to/generation-receipt.json \
+  --authority /path/to/rust-authority \
+  --runtime-root /path/to/prepared-runtime \
+  --runtime-inventory /path/to/otp-runtime-inventory.json \
+  --tool-home /path/to/prepared-generator-tools \
+  --dependencies /path/to/admitted-grpcbox-runtime-libs \
+  --output /path/to/new-qualification
+```
+
+The installed controls currently qualify Actors v1, Workers v1 and Stream v2.
+The complete modeled file descriptor comparison applies declared protobuf
+defaults and default JSON names, sorts unordered message/enum declarations,
+and normalizes source basenames and compiler-made synthetic optional-oneof
+labels. Field numbers, RPC types, actual oneof names and presence-bearing
+indices remain checked; mutation controls verify those comparisons. Unknown
+descriptor extensions are outside the GPB decoder's modeled comparison. The
+original Rust descriptor bytes remain preserved and hash-checked.
+
+These controls prove installed Erlang transport behavior for that foundation.
+Current Stream v1, Rust-backed execution, embedded runtimes and complete domain
+SDK behavior remain separate work. Routine CI runs affected offline Node
+controls without downloading OTP or native dependencies.
