@@ -249,6 +249,7 @@ pub use materializer::{
     MaterializationInspection, MaterializationRootObservation,
     MaterializationIntent, MaterializationPreparationIdentity, MaterializationPreparationObservation,
     MaterializationPreparationSelection,
+    MaterializationPreparationAllocation, MaterializationPreparationProgress,
     MemoryMaterializationJournalStoreError,
 };
 #[cfg(not(target_arch = "wasm32"))]

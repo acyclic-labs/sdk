@@ -205,7 +205,7 @@ pub use retention::{
     decode_workspace_deleted, encode_retention_created, encode_workspace_deleted,
     retention_authority_id,
 };
-pub(crate) use retention::encode_retention_created_measured;
+pub(crate) use retention::{encode_retention_created_measured, encode_workspace_deleted_measured};
 #[cfg(all(
     feature = "local",
     feature = "native-watch",
