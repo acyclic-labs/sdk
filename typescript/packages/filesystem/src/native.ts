@@ -147,14 +147,6 @@ export { CrossVolumeError, MountedView } from "./mounted.js";
 export type { MountedCheckout, MountedSnapshot } from "./mounted.js";
 
 const PACKAGE_VERSION = "0.2.0";
-const TARGETS = new Set([
-  "win32-x64",
-  "win32-arm64",
-  "linux-x64",
-  "linux-arm64",
-  "darwin-x64",
-  "darwin-arm64",
-]);
 
 let bindingPromise: Promise<NativeBindings> | undefined;
 const requireNativeCompanion = createRequire(import.meta.url);
@@ -164,16 +156,11 @@ type NativeModuleNamespace = NativeBindings & {
 };
 
 async function bindings(): Promise<NativeBindings> {
-  const target = `${platform}-${arch}`;
-  if (!TARGETS.has(target)) {
-    throw new Error(`@acyclic-labs/fs has no native companion for ${target}`);
-  }
   bindingPromise ??= Promise.resolve().then((): NativeBindings => {
-    // N-API companions are Node native modules. `import()` asks the ESM loader
-    // to interpret the `.node` file and fails in both Node and Bun, while
-    // createRequire resolves the optional companion from this package's
-    // installed node_modules directory and delegates loading to Node-API.
-    const namespace = requireNativeCompanion(`@acyclic-labs/fs-${target}`) as NativeModuleNamespace;
+    // The maintained NAPI-RS loader owns target/ABI naming and resolves the
+    // qualified optional companion from this package's installed dependency
+    // tree. Node-API modules must load through createRequire, not ESM import.
+    const namespace = requireNativeCompanion("../generated/native/binding.cjs") as NativeModuleNamespace;
     const candidate =
       typeof namespace.nativeCapabilities === "function" ? namespace : namespace.default;
     if (candidate === undefined) {
