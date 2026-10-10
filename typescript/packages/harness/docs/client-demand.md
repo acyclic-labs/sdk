@@ -14,6 +14,11 @@ indeterminate result; recover using the original operation ID and authority.
 `ScheduledTransport` forwards delivery iteration directly and never deduplicates
 writes, buffers history or substitutes admission errors. Its underlying transport
 owns inbound-frame and established-connection budgets, as it did before wrapping.
+Connection ownership remains with the wrapper until handoff completes; abandoned
+late connections are closed. If their cleanup fails after the cancelled caller
+has already returned, `onCleanupError` reports it to the host (the default raises
+an asynchronous error). A delivered connection returns its close failure directly,
+including on repeated close calls.
 
 `DemandLoader` deduplicates equal immutable keys and uses the existing
 `HydrationCache` for byte/entry-bounded retention. Keys must include exact pinned
@@ -23,7 +28,9 @@ constructing a fresh object on each read. One source serves a loader, so unrelat
 providers cannot share a key accidentally. A caller can cancel its own interest;
 the last caller cancels shared work. Invalidating a key cancels current interest
 and fences late completion. Errors and absence are not cached. `peek` performs no
-IO and returns the same retained value/receipt on warm reads. No cache-miss status
+IO. Each shared request owns one completion callback and a removable set of active
+readers: joining/cancelling a slow request cannot accumulate stale callbacks.
+`peek` returns the same retained value/receipt on warm reads. No cache-miss status
 confers authority: keep not-loaded/absent/stale/available and prediction provenance
 in existing `ClientViews` and the domain adapter.
 
@@ -82,3 +89,8 @@ transport failure classes with controlled pending providers. They establish
 finite modeled transitions, not a proof about arbitrary providers. Byte receipts
 and pre-work enforcement are host obligations; post-load checks alone are not a
 security boundary. Missing durability evidence remains a dependency, not PASS.
+The same controls detect the reviewed original source's two cancellation bugs:
+1,000 join/cancel operations retained 1,000 callbacks, and an abort during the
+connection handoff lost cleanup. Repaired code attaches no per-reader completion
+callbacks and closes the unreceived connection. These are focused reproductions,
+not an additional validation matrix.

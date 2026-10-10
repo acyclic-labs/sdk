@@ -12,9 +12,10 @@ export interface DemandSource<Key, Value> {
 
 interface Pending<Value> {
   readonly controller: AbortController;
-  readonly promise: Promise<Hydrated<Value>>;
-  users: number;
+  readonly readers: Set<(result: ReadResult<Value>) => void>;
 }
+
+type ReadResult<Value> = Readonly<{ ok: true; value: Value }> | Readonly<{ ok: false; error: unknown }>;
 
 /** Selective hydration, bounded shared demand and existing LRU retention.
  * Construction performs no work. Cached values must be transitively immutable.
@@ -63,39 +64,41 @@ export class DemandLoader<Key, Value> {
         if (loaded.bytes > this.#cache.maxBytes) throw new RangeError("hydration exceeded retained byte budget");
         return Object.freeze({ value: loaded.value, bytes: loaded.bytes });
       }, controller.signal);
-      pending = { controller, promise, users: 0 };
+      pending = { controller, readers: new Set() };
       this.#pending.set(key, pending);
       const selected = pending;
-      // Always consume failure, including when every caller has cancelled.
+      // Exactly one completion callback per shared request. Individual readers
+      // are removable, so join/cancel churn cannot accumulate promise callbacks.
       void promise.then(loaded => {
         if (!controller.signal.aborted && this.#pending.get(key) === selected) {
           this.#cache.set(key, loaded, loaded.bytes);
         }
-      }, () => {}).finally(() => {
-        if (this.#pending.get(key) === selected) this.#pending.delete(key);
-      });
+        this.#complete(key, selected, { ok: true, value: loaded.value });
+      }, error => this.#complete(key, selected, { ok: false, error }));
     }
     const selected = pending;
-    selected.users++;
     this.#users++;
     return new Promise<Value>((resolve, reject) => {
-      let finished = false;
-      const finish = (): boolean => {
-        if (finished) return false;
-        finished = true;
+      const finish = (result: ReadResult<Value>): void => {
+        if (!selected.readers.delete(finish)) return;
         signal?.removeEventListener("abort", cancel);
-        selected.users--;
         this.#users--;
-        if (selected.users === 0 && this.#pending.get(key) === selected) {
+        if (selected.readers.size === 0 && this.#pending.get(key) === selected) {
           this.#pending.delete(key);
           selected.controller.abort();
         }
-        return true;
+        if (result.ok) resolve(result.value);
+        else reject(result.error);
       };
-      const cancel = (): void => { if (finish()) reject(requestAborted()); };
+      const cancel = (): void => finish({ ok: false, error: requestAborted() });
+      selected.readers.add(finish);
       signal?.addEventListener("abort", cancel, { once: true });
-      void selected.promise.then(value => { if (finish()) resolve(value.value); }, error => { if (finish()) reject(error); });
     });
+  }
+
+  #complete(key: Key, pending: Pending<Value>, result: ReadResult<Value>): void {
+    if (this.#pending.get(key) === pending) this.#pending.delete(key);
+    for (const finish of pending.readers) finish(result);
   }
 
   /** Invalidating a pin cancels current demand; late completion cannot repopulate it. */
