@@ -3,6 +3,12 @@
 ## 0.2.0 - Unreleased
 
 - Align the unified SDK candidate with the breaking Objects v2 public package transition.
+- Pi 1.1.0 installs an executable-pinned task-control extension. Session startup
+  retains one original owner/admission; observation and cancellation use the
+  existing coordinator. Preparing resource references are never usable routes
+  or evidence of successful process execution.
+- Shared physical-root acquisition requires a finite work allowance and retains
+  failed producer work without creating another watcher/source registry.
 
 ## Unreleased
 

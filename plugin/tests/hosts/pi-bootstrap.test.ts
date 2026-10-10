@@ -1,15 +1,9 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-
-const execute = promisify(execFile);
-const cli = fileURLToPath(new URL(
-  "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js", import.meta.url,
-));
+import { invokePi } from "./pi-fixture.ts";
 
 // Pi's own deterministic provider exercises the installed CLI without network
 // requests, credentials, or a substitute session/tool runner.
@@ -44,7 +38,7 @@ async function bootstrap(failingExtension: boolean) {
     const fixture = join(directory, "provider.ts");
     writeFileSync(fixture, provider);
     const args = [
-      cli, "--print", "--mode", "text", "--no-session", "--provider", "acyclic-qualification",
+      "--print", "--mode", "text", "--no-session", "--provider", "acyclic-qualification",
       "--model", "probe", "--no-extensions", "--no-mcp", "--no-builtin-tools", "-e", fixture,
     ];
     if (failingExtension) {
@@ -53,18 +47,7 @@ async function bootstrap(failingExtension: boolean) {
       args.push("-e", failed);
     }
     args.push("Report the enabled tools.");
-    const environment: NodeJS.ProcessEnv = {
-      HOME: directory, USERPROFILE: directory, PI_CODING_AGENT_DIR: agent,
-    };
-    for (const name of ["SystemRoot", "TEMP", "TMP"]) {
-      if (process.env[name]) environment[name] = process.env[name];
-    }
-    const invocation = execute(process.execPath, args, {
-      cwd: project, env: environment, windowsHide: true,
-      timeout: 60_000, maxBuffer: 1024 * 1024, encoding: "utf8",
-    });
-    invocation.child.stdin?.end();
-    return await invocation;
+    return await invokePi(args, project, directory);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

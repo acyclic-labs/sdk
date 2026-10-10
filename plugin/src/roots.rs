@@ -215,98 +215,10 @@ impl SharedRootRegistry {
         &self,
         root: &Path,
         admission: SharedRootAdmission,
-    ) -> Result<Arc<SharedPhysicalRoot>, String> {
-        let canonical = root.canonicalize().map_err(display)?;
-        let registration =
-            {
-                let mut roots = self.roots.lock().await;
-                Arc::clone(roots.entry(canonical.clone()).or_insert_with(|| {
-                    Arc::new(AsyncMutex::new(SharedRootRegistration::default()))
-                }))
-            };
-        let mut registration = registration.lock().await;
-        if let Some(native_identity) = registration.native_identity {
-            let identity_path = canonical.clone();
-            let observed_identity = tokio::task::spawn_blocking(move || {
-                HostRoot::open(&identity_path).map(|root| root.identity().to_bytes())
-            })
-            .await
-            .map_err(|error| format!("physical root validation worker failed: {error}"))?
-            .map_err(display)?;
-            let live = registration.live.upgrade();
-            if observed_identity == native_identity {
-                let retained = *registration
-                    .reference
-                    .as_ref()
-                    .ok_or_else(|| "shared root registration lost its source reference".to_owned())?
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if admission
-                    .reference()
-                    .is_some_and(|expected| expected.identity != retained.identity)
-                {
-                    return Err(format!(
-                        "physical root {} is already registered with another source identity",
-                        canonical.display()
-                    ));
-                }
-                if let Some(shared) = live {
-                    shared.validate_path_identity(canonical.clone()).await?;
-                    return Ok(shared);
-                }
-            } else {
-                if live.is_some() || matches!(admission, SharedRootAdmission::Resume(_)) {
-                    return Err(format!(
-                        "physical root {} changed identity while it was in use",
-                        canonical.display()
-                    ));
-                }
-                *registration = SharedRootRegistration::default();
-            }
-        }
-
-        let retained = registration.reference.as_ref().map(|reference| {
-            *reference
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        });
-        let watcher_path = canonical.clone();
-        let watcher = tokio::task::spawn_blocking(move || open_native_watcher(&watcher_path))
-            .await
-            .map_err(|error| format!("physical root watcher worker failed: {error}"))??;
-        let source = open_lazy_source(
-            &canonical,
-            retained.or(admission.reference()),
-            Arc::clone(&watcher) as Arc<dyn DemandDirectoryObserver>,
-        )
-        .await?;
-        let watched_identity = watcher
-            .lock()
-            .map_err(|_| "physical root watcher state is poisoned".to_owned())?
-            .root_identity()
-            .to_bytes();
-        if source.inner().root_identity().to_bytes() != watched_identity {
-            return Err(format!(
-                "physical root {} changed identity during admission",
-                canonical.display()
-            ));
-        }
-        if matches!(admission, SharedRootAdmission::Resume(_)) {
-            source.inner().invalidate();
-        }
-        let reference = Arc::new(Mutex::new(source.reference()));
-        let native_identity = source.inner().root_identity();
-        let shared = Arc::new(SharedPhysicalRoot {
-            source,
-            watcher,
-            reference: Arc::clone(&reference),
-        });
-        *registration = SharedRootRegistration {
-            live: Arc::downgrade(&shared),
-            reference: Some(reference),
-            native_identity: Some(native_identity.to_bytes()),
-        };
-        Ok(shared)
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Arc<SharedPhysicalRoot>>, String> {
+        native_root_source::acquire(self, root, admission, budget, cancellation).await
     }
 
     pub(crate) async fn prune(&self) {

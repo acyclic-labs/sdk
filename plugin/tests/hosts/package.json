@@ -7,7 +7,9 @@
   "scripts": {
     "test:pi-context": "node --experimental-strip-types --test pi-context.test.ts",
     "test:pi-bootstrap": "node --experimental-strip-types --test pi-bootstrap.test.ts",
-    "test:pi-installation": "node --experimental-strip-types --test pi-installation.test.ts"
+    "test:pi-session": "node --experimental-strip-types --test pi-session.test.ts",
+    "test:pi-installation": "node --experimental-strip-types --test pi-installation.test.ts",
+    "test:pi-service": "node --experimental-strip-types --test pi-service.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-code": "2.1.278",

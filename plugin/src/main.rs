@@ -16,11 +16,22 @@ mod git;
 mod guidance;
 mod install;
 mod obs;
+mod native_root_source;
 mod pi;
+mod pi_binding;
+mod pi_owner;
+mod pi_recovery;
+mod pi_registration;
+mod pi_root;
+mod pi_root_allocation;
+mod pi_root_inputs;
+mod pi_runtime;
+mod pi_task;
 mod roots;
 mod service;
 mod service_log;
 mod service_process;
+mod service_session;
 #[cfg(test)]
 mod tests;
 mod tool_input;
@@ -89,9 +100,11 @@ use git::*;
 use guidance::*;
 use install::*;
 use pi::*;
+use pi_binding::*;
 use roots::*;
 use service::*;
 use service_process::*;
+use service_session::SessionController;
 use tool_input::*;
 use util::*;
 
@@ -111,6 +124,7 @@ fn main_result() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match arguments.next().as_deref() {
         Some("__hook") => return run_native_hook(&arguments.collect::<Vec<_>>()),
         Some("__mcp") => return codex_hook_mcp::serve().map_err(Into::into),
+        Some("__pi") => return run_pi_control(&arguments.collect::<Vec<_>>()),
         _ => {}
     }
     if is_foreground_cli_invocation() {
@@ -172,6 +186,20 @@ fn run_native_hook(arguments: &[String]) -> Result<(), Box<dyn std::error::Error
         }
         Err(error) => HookFailure::classify(host, event, None).answer(&error),
     };
+    serde_json::to_writer(io::stdout().lock(), &response)?;
+    Ok(())
+}
+
+/// Pi controls use the same service transport, but errors are not native-hook
+/// fail-open answers and uncertain requests are never automatically resent.
+fn run_pi_control(arguments: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let [event] = arguments else {
+        return Err(io::Error::other("acyclic __pi requires one operation").into());
+    };
+    let (cwd, input) = read_native_hook_call().map_err(io::Error::other)?;
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let response = runtime.block_on(forward_native_hook("pi", event, cwd, input, ServiceStart::Allowed))
+        .map_err(io::Error::other)?;
     serde_json::to_writer(io::stdout().lock(), &response)?;
     Ok(())
 }

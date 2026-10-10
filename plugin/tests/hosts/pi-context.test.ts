@@ -1,23 +1,15 @@
 import assert from "node:assert/strict";
-import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { discoverAndLoadExtensions, SessionManager, parseSessionEntries } from "@earendil-works/pi-coding-agent";
+import { loadPiContextHelpers } from "./pi-fixture.ts";
 
 // The installed extension is outside the SDK package and Pi resolves its imports.
 // For these native-SDK unit tests, copy the exact source beneath the qualification
 // package so Node resolves the same pinned SDK without a custom import hook.
-const directory = mkdtempSync(fileURLToPath(new URL(".pi-context-", import.meta.url)));
-let context: typeof import("../../pi/index.ts");
-try {
-  const extension = join(directory, "index.ts");
-  copyFileSync(new URL("../../pi/index.ts", import.meta.url), extension);
-  context = await import(pathToFileURL(extension).href);
-} finally {
-  rmSync(directory, { recursive: true });
-}
-const { assertParentCutCurrent, captureParentCut, childSessionBytes } = context;
+const { assertParentCutCurrent, captureParentCut, childSessionBytes } = await loadPiContextHelpers();
 
 test("the native Pi loader resolves and registers the extension outside the host package", async () => {
   const isolated = mkdtempSync(fileURLToPath(new URL(".pi-loader-", import.meta.url)));
@@ -27,6 +19,8 @@ test("the native Pi loader resolves and registers the extension outside the host
     assert.deepEqual(loaded.errors, []);
     assert.equal(loaded.extensions.length, 1);
     assert.ok(loaded.extensions[0].commands.has("acyclic-doctor"));
+    assert.deepEqual([...loaded.extensions[0].tools.keys()].sort(), ["acyclic_agents", "acyclic_cancel"]);
+    assert.ok(loaded.extensions[0].handlers.has("session_start"));
   } finally {
     rmSync(isolated, { recursive: true });
   }

@@ -359,6 +359,20 @@ pub(crate) fn validate_state_bounds(state: &AdapterState) -> Result<(), String> 
     {
         return Err("pending root registration is incomplete".to_owned());
     }
+    for root in state.roots.values() {
+        match &root.allocation {
+            RootAllocation::Created(creation) => creation.validate()?,
+            RootAllocation::Preparing
+                if matches!(state.task_binding, PluginTaskBinding::Pi(_))
+                    && state.pending_root_registration
+                    && state.routes.is_empty()
+                    && state.pending.is_empty()
+                    && state.pending_root_adoptions.is_empty()
+                    && state.leases.is_empty()
+                    && state.pending_discards.is_empty() => {}
+            _ => return Err("root allocation is invalid or has unbound preparation".to_owned()),
+        }
+    }
     if state
         .routes
         .values()

@@ -8,6 +8,7 @@ import {
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
+import { Type } from "typebox";
 
 // Replaced with a JSON string by the installer; never resolved through a shell.
 const executable = "__ACYCLIC_EXECUTABLE__";
@@ -139,10 +140,61 @@ export function childSessionBytes(
   return [header, ...child.getEntries()].map(entry => JSON.stringify(entry)).join("\n") + "\n";
 }
 
+/** One request through the owning service; never retry an uncertain effect. */
+export async function taskControl(
+  operation: "SessionStart" | "TaskStatus" | "TaskCancel",
+  ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+  fields: Readonly<Record<string, unknown>> = {},
+  signal?: AbortSignal,
+) {
+  signal?.throwIfAborted();
+  const sessionId = ctx.sessionManager.getSessionId();
+  const input = JSON.stringify({
+    ...fields, cwd: ctx.cwd, session_id: sessionId,
+  });
+  if (Buffer.byteLength(input) > 1024 * 1024) throw new Error("Pi control exceeds its byte bound");
+  const invocation = execute(executable, ["__pi", operation], {
+    cwd: ctx.cwd, timeout: 60_000, maxBuffer: 4 * 1024 * 1024,
+    windowsHide: true, encoding: "utf8", ...(signal ? { signal } : {}),
+  });
+  invocation.child.stdin?.end(input);
+  const { stdout } = await invocation;
+  const result: unknown = JSON.parse(stdout);
+  if (typeof result !== "object" || result === null || !("session" in result)
+    || result.session !== sessionId || ctx.sessionManager.getSessionId() !== sessionId
+    || !("tasks" in result) || !Array.isArray(result.tasks)) {
+    throw new Error("Pi control returned another or changed native session");
+  }
+  return result;
+}
+
 export default function acyclic(pi: ExtensionAPI) {
   if (VERSION !== "1.1.0") {
     throw new Error(`Acyclic requires Pi 1.1.0 APIs; found ${VERSION}`);
   }
+  pi.on("session_start", async (_event, ctx) => {
+    await taskControl("SessionStart", ctx);
+  });
+  pi.registerTool({
+    name: "acyclic_agents",
+    label: "Acyclic tasks",
+    description: "Observe retained task identities and durable outcomes without dispatching or repeating effects.",
+    parameters: Type.Object({}, { additionalProperties: false }),
+    async execute(_id, _params, signal, _update, ctx) {
+      const result = await taskControl("TaskStatus", ctx, {}, signal);
+      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+    },
+  });
+  pi.registerTool({
+    name: "acyclic_cancel",
+    label: "Cancel Acyclic task",
+    description: "Order cancellation of an original retained task and its subtree; uncertain native cleanup remains explicit.",
+    parameters: Type.Object({ task: Type.String({ format: "uuid" }) }, { additionalProperties: false }),
+    async execute(_id, params, signal, _update, ctx) {
+      const result = await taskControl("TaskCancel", ctx, { task: params.task }, signal);
+      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+    },
+  });
   pi.registerCommand("acyclic-doctor", {
     description: "Inspect the installed Acyclic service and platform qualification",
     async handler(_args, ctx) {

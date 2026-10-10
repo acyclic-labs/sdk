@@ -14,13 +14,71 @@ pub(crate) fn git_lease_renewal_expiry(now: u64, previous_expiry: u64) -> Result
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct RootBinding {
     pub(crate) root_id: [u8; 16],
     pub(crate) path: PathBuf,
+    pub(crate) allocation: RootAllocation,
+}
+
+/// Selected root intent exists before allocation. Only Created carries usable
+/// workspace/source references; neither variant grants authority by itself.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(
+    tag = "state",
+    content = "creation",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub(crate) enum RootAllocation {
+    Preparing,
+    Created(RootCreation),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RootCreation {
     pub(crate) repository_workspace_id: [u8; 16],
     pub(crate) source_identity: [u8; 16],
+    /// Current retained watcher observation; zero is valid and this advances
+    /// during ordinary recovery/reconciliation without changing allocation.
     pub(crate) source_epoch: u64,
     pub(crate) native_root_identity: [u8; 16],
+}
+
+impl RootCreation {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if [
+            self.repository_workspace_id,
+            self.source_identity,
+            self.native_root_identity,
+        ]
+        .contains(&[0; 16])
+        {
+            return Err("physical root creation has an empty identity".to_owned());
+        }
+        Ok(())
+    }
+}
+
+impl RootBinding {
+    pub(crate) fn created(&self) -> Result<&RootCreation, String> {
+        match &self.allocation {
+            RootAllocation::Created(creation) => Ok(creation),
+            RootAllocation::Preparing => {
+                Err("physical root allocation is still preparing".to_owned())
+            }
+        }
+    }
+
+    pub(crate) fn created_mut(&mut self) -> Result<&mut RootCreation, String> {
+        match &mut self.allocation {
+            RootAllocation::Created(creation) => Ok(creation),
+            RootAllocation::Preparing => {
+                Err("physical root allocation is still preparing".to_owned())
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -232,6 +290,15 @@ pub(crate) struct AdapterState {
     pub(crate) pending_discards: BTreeMap<String, PendingDiscard>,
 }
 
+impl AdapterState {
+    pub(crate) fn require_created_roots(&self) -> Result<(), String> {
+        for root in self.roots.values() {
+            root.created()?;
+        }
+        Ok(())
+    }
+}
+
 pub(crate) struct ControlPlane {
     pub(crate) data: PathBuf,
     pub(crate) config_root: PathBuf,
@@ -318,6 +385,7 @@ impl ControlPlane {
     ) -> Result<Self, String> {
         fs::create_dir_all(&data).map_err(display)?;
         let (state, slots) = load_state(&data)?;
+        state.task_binding.require_host_managed_recovery()?;
         let mut control = Self {
             data,
             config_root,
@@ -523,6 +591,7 @@ impl ControlPlane {
                 .roots
                 .get(&root_key(root_id))
                 .ok_or_else(|| "published root binding is unavailable".to_owned())?
+                .created()?
                 .repository_workspace_id
         } else {
             self.state
@@ -867,6 +936,7 @@ impl ControlPlane {
         if self.state.root_session_id.is_empty() {
             return Ok(());
         }
+        self.state.require_created_roots()?;
         if self.state.pending_root_registration {
             let root_id = WorkspaceRootId::from_bytes(self.state.root_id);
             let binding = self
@@ -882,7 +952,7 @@ impl ControlPlane {
                 ))
                 .await
                 .map_err(display)?;
-            if workspace.id().into_bytes() != binding.repository_workspace_id {
+            if workspace.id().into_bytes() != binding.created()?.repository_workspace_id {
                 return Err("pending root workspace identity changed".to_owned());
             }
             self.distributed
@@ -931,7 +1001,7 @@ impl ControlPlane {
                 let workspace = self
                     .distributed
                     .workspace(acyclic_fs::WorkspaceId::from_bytes(
-                        binding.repository_workspace_id,
+                        binding.created()?.repository_workspace_id,
                     ))
                     .await
                     .map_err(display)?;
@@ -976,16 +1046,18 @@ impl ControlPlane {
                 .acquire(
                     &root.path,
                     SharedRootAdmission::Resume(SourceReference {
-                        identity: root.source_identity,
-                        epoch: root.source_epoch,
+                        identity: root.created()?.source_identity,
+                        epoch: root.created()?.source_epoch,
                     }),
+                    native_root_source::budget(),
+                    &CancellationToken::new(),
                 )
-                .await?;
+                .await.map_err(|failure| format!("{}; work={:?}", failure.error, failure.work))?.value;
             let source = Arc::clone(&physical.source);
-            verify_native_root_identity(&source, root.native_root_identity, &root.path)?;
+            verify_native_root_identity(&source, root.created()?.native_root_identity, &root.path)?;
             let refreshed = source.reference();
             if let Some(binding) = self.state.roots.get_mut(&key) {
-                binding.source_epoch = refreshed.epoch;
+                binding.created_mut()?.source_epoch = refreshed.epoch;
             }
             let workspace = self
                 .distributed
@@ -1113,6 +1185,7 @@ impl ControlPlane {
     }
 
     pub(crate) async fn session_start(&mut self, input: Value) -> Result<Value, String> {
+        self.state.require_created_roots()?;
         let session_id = string(&input, "session_id")?;
         let host = input.get("host").and_then(Value::as_str).unwrap_or("codex");
         let root_path = PathBuf::from(string(&input, "cwd")?);
@@ -1135,8 +1208,8 @@ impl ControlPlane {
                 let workspace_name = root_workspace_name(&session_id, &canonical);
                 let physical = self
                     .shared_roots
-                    .acquire(&canonical, SharedRootAdmission::Fresh)
-                    .await?;
+                    .acquire(&canonical, SharedRootAdmission::Fresh, native_root_source::budget(), &CancellationToken::new())
+                    .await.map_err(|failure| format!("{}; work={:?}", failure.error, failure.work))?.value;
                 let source = Arc::clone(&physical.source);
                 let source_reference = source.reference();
                 let workspace = self
@@ -1159,10 +1232,12 @@ impl ControlPlane {
                     RootBinding {
                         root_id: root_id.into_bytes(),
                         path: canonical.clone(),
-                        repository_workspace_id: workspace.workspace().id().into_bytes(),
-                        source_identity: source_reference.identity,
-                        source_epoch: source_reference.epoch,
-                        native_root_identity: source.inner().root_identity().to_bytes(),
+                        allocation: RootAllocation::Created(RootCreation {
+                            repository_workspace_id: workspace.workspace().id().into_bytes(),
+                            source_identity: source_reference.identity,
+                            source_epoch: source_reference.epoch,
+                            native_root_identity: source.inner().root_identity().to_bytes(),
+                        }),
                     },
                 );
                 self.state.pending_root_adoptions.insert(key.clone());
@@ -1202,8 +1277,8 @@ impl ControlPlane {
         let workspace_name = root_workspace_name(&session_id, &canonical);
         let physical = self
             .shared_roots
-            .acquire(&canonical, SharedRootAdmission::Fresh)
-            .await?;
+            .acquire(&canonical, SharedRootAdmission::Fresh, native_root_source::budget(), &CancellationToken::new())
+            .await.map_err(|failure| format!("{}; work={:?}", failure.error, failure.work))?.value;
         let source = Arc::clone(&physical.source);
         let source_reference = source.reference();
         // The root's binding, lineage, and context commit as one change set
@@ -1238,10 +1313,12 @@ impl ControlPlane {
         let binding = RootBinding {
             root_id: root_id.into_bytes(),
             path: canonical.clone(),
-            repository_workspace_id: workspace.workspace().id().into_bytes(),
-            source_identity: source_reference.identity,
-            source_epoch: source_reference.epoch,
-            native_root_identity: source.inner().root_identity().to_bytes(),
+            allocation: RootAllocation::Created(RootCreation {
+                repository_workspace_id: workspace.workspace().id().into_bytes(),
+                source_identity: source_reference.identity,
+                source_epoch: source_reference.epoch,
+                native_root_identity: source.inner().root_identity().to_bytes(),
+            }),
         };
         self.state.roots.insert(root_key(root_id), binding);
         self.state.pending_root_registration = true;
@@ -1820,7 +1897,7 @@ impl ControlPlane {
         let apply_patch = git_apply_patch(&lazy_workspace, &root_binding.path, &argv).await?;
         let repository_id = repository_id(
             workspace.id().into_bytes(),
-            root_binding.repository_workspace_id,
+            root_binding.created()?.repository_workspace_id,
         );
         let (ignore, merge_drivers) = git_policy(&lazy_workspace).await?;
         let executor = RootMaterializingGitExecutor {
@@ -2528,7 +2605,7 @@ impl ControlPlane {
                     .ok_or_else(|| "physical root source is unavailable".to_owned())?;
                 verify_native_root_identity(
                     &source,
-                    source_binding.native_root_identity,
+                    source_binding.created()?.native_root_identity,
                     &source_binding.path,
                 )?;
                 let parent_workspace = distributed
@@ -2603,7 +2680,11 @@ impl ControlPlane {
                 .get(&root_key(root_id))
                 .map(|root| Arc::clone(&root.source))
                 .ok_or_else(|| "physical root source is unavailable".to_owned())?;
-            verify_native_root_identity(&source, binding.native_root_identity, &binding.path)?;
+            verify_native_root_identity(
+                &source,
+                binding.created()?.native_root_identity,
+                &binding.path,
+            )?;
             let workspace = self
                 .distributed
                 .workspace(acyclic_fs::WorkspaceId::from_bytes(
@@ -3517,6 +3598,7 @@ impl ControlPlane {
         &self,
         cwd: &Path,
     ) -> Result<(String, Option<Route>, WorkspaceRootId), String> {
+        self.state.require_created_roots()?;
         let canonical = cwd.canonicalize().map_err(display)?;
         let mut mounted = Vec::new();
         for route in self
@@ -3649,6 +3731,7 @@ impl ControlPlane {
         route: &Route,
         root_id: WorkspaceRootId,
     ) -> Result<LocalWorkspace, String> {
+        self.state.require_created_roots()?;
         if !route.roots.contains_key(&root_key(root_id)) {
             return Err("workspace route root is missing".to_owned());
         }
@@ -3685,7 +3768,11 @@ impl ControlPlane {
             .get(&root_key(root_id))
             .map(|root| Arc::clone(&root.source))
             .ok_or_else(|| "physical root source is unavailable".to_owned())?;
-        verify_native_root_identity(&source, binding.native_root_identity, &binding.path)?;
+        verify_native_root_identity(
+            &source,
+            binding.created()?.native_root_identity,
+            &binding.path,
+        )?;
         self.distributed
             .open_lazy(workspace, source)
             .await
@@ -3709,6 +3796,7 @@ impl ControlPlane {
         &mut self,
         root_id: WorkspaceRootId,
     ) -> Result<(), String> {
+        self.state.require_created_roots()?;
         let key = root_key(root_id);
         let physical = self
             .physical_roots
@@ -3730,7 +3818,8 @@ impl ControlPlane {
         })
         .await
         .map_err(|error| format!("physical root observation worker failed: {error}"))??;
-        let source_advanced_elsewhere = binding.source_epoch != observation.prior_source.epoch;
+        let source_advanced_elsewhere =
+            binding.created()?.source_epoch != observation.prior_source.epoch;
         // On a file system that may drop a change without a trace (`ReFS`),
         // no batch proves the root unchanged: every path the root workspace
         // records is checked against the disk at each refresh. What it does
@@ -3900,7 +3989,7 @@ impl ControlPlane {
             .roots
             .get_mut(&key)
             .ok_or_else(|| "physical root binding is missing".to_owned())?;
-        binding.source_epoch = observation.source.epoch;
+        binding.created_mut()?.source_epoch = observation.source.epoch;
         self.persist()
     }
 
@@ -3984,6 +4073,7 @@ impl ControlPlane {
     }
 
     pub(crate) fn ensure_agent_idle(&self, agent_id: &str) -> Result<(), String> {
+        self.state.require_created_roots()?;
         if self
             .state
             .leases
@@ -4188,6 +4278,10 @@ impl ControlPlane {
         result.map(|()| slots)
     }
 }
+
+#[cfg(test)]
+#[path = "root_allocation_tests.rs"]
+mod root_allocation_tests;
 
 /// Every path the workspace's head records, parents before children.
 async fn recorded_paths(workspace: &LocalWorkspace) -> Result<Vec<NamespacePath>, String> {
@@ -4403,6 +4497,7 @@ impl ControlPlane {
         parent: &str,
         deletions: BTreeMap<WorkspaceRootId, Vec<String>>,
     ) -> Result<(), String> {
+        self.state.require_created_roots()?;
         let root_parent = parent == self.state.root_agent_id;
         for (root_id, paths) in deletions {
             if paths.is_empty() {
