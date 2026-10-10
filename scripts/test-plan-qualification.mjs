@@ -41,6 +41,7 @@ const tree = [
   blob("README.md"),
   blob(".github/workflows/publish-npm.yml"),
   blob(".github/workflows/qualification.yml"),
+  blob(".gitleaks.toml"),
   ...generatorPaths.map(path => blob(path)),
   blob(".github/sdk-generator-backends.json"),
   blob("tools/sdk-generator/shared/authority.mjs"),
@@ -62,6 +63,14 @@ test("every lane names a known input set and a Blacksmith runner", () => {
 
 test("root documentation changes reuse every lane", () => {
   assert.deepEqual(differing(laneKeys(lanes, tree), laneKeys(lanes, changed("README.md"))), []);
+});
+
+test("secret scanner configuration reruns policy without rebuilding SDKs", () => {
+  for (const scope of ["core", "full"]) {
+    const before = laneKeys(lanes, tree, scope);
+    const after = laneKeys(lanes, changed(".gitleaks.toml"), scope);
+    assert.deepEqual(differing(before, after), ["linux", "macos", "policy"]);
+  }
 });
 
 test("full qualification has a separate cache identity from the core gate", () => {
