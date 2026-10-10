@@ -290,10 +290,15 @@ where
                 TOOL_TASK_COMMAND_KIND => {
                     let operation = super::task_runtime::execution_operation(task, command.operation_id);
                     let journal = self.runtime.execution_journal(task, fence.clone(), command.operation_id).await?;
-                    if !journal.replay(operation, 0, 4).await?.iter().any(|record| {
-                        matches!(record.event, crate::executor::ExecutionEvent::ToolStarted { .. })
-                    }) {
-                        return Ok(TaskCommandProgress::Indeterminate);
+                    let mut replay = crate::executor::ExecutionReplay::new(operation);
+                    let mut dispatched = false;
+                    while let Some(page) = replay.next_page(journal.as_ref()).await? {
+                        dispatched |= page.iter().any(|record| {
+                            matches!(record.event, crate::executor::ExecutionEvent::ToolStarted { .. })
+                        });
+                    }
+                    if !dispatched {
+                        return Ok(TaskCommandProgress::Ready(Value::Null));
                     }
                     self.tool_command(task, context, fence.clone(), command.operation_id, payload).await
                 }
@@ -310,10 +315,40 @@ where
                     match effects.reconcile_task_effect(&owner, command.operation_id, &plan).await? {
                         crate::core::EffectStatus::Succeeded { result } => ready(Outcome::Succeeded(result)),
                         crate::core::EffectStatus::Failed { message } => ready(Outcome::<Value>::Failed { message }),
-                        crate::core::EffectStatus::Planned
-                        | crate::core::EffectStatus::Dispatched
+                        crate::core::EffectStatus::Planned => Ok(TaskCommandProgress::Ready(Value::Null)),
+                        crate::core::EffectStatus::Dispatched
                         | crate::core::EffectStatus::Indeterminate => Ok(TaskCommandProgress::Indeterminate),
                     }
+                }
+                MAIL_SEND_TASK_COMMAND_KIND => {
+                    let input: MailSendTaskCommand = serde_json::from_value(payload)
+                        .map_err(|error| Error::Invalid(format!("invalid mail send: {error}")))?;
+                    self.runtime.task_host().reconcile_sent_mail(
+                        task, fence.clone(), input.recipient,
+                        super::task_runtime::execution_operation(task, command.operation_id), input.payload,
+                    ).await?;
+                    Ok(TaskCommandProgress::Ready(Value::Null))
+                }
+                TASK_ADMIT_COMMAND_KIND => {
+                    let input: TaskAdmitCommand = serde_json::from_value(payload)
+                        .map_err(|error| Error::Invalid(format!("invalid child command: {error}")))?;
+                    let admission = self.runtime.harness().registered_child_admission(
+                        child_operation(task, command.operation_id), &input.name, &input.version,
+                        input.input, task, context.scope(),
+                    )?;
+                    if let Some((_, retained)) = self.runtime.task_host()
+                        .reconcile_admission(admission.operation_id).await?
+                        && retained != admission
+                    {
+                        return Err(Error::Conflict("retained child admission differs".into()));
+                    }
+                    Ok(TaskCommandProgress::Ready(Value::Null))
+                }
+                TIMER_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND | TASK_OBSERVE_COMMAND_KIND => {
+                    // These commands only observe existing timer, inbox or child
+                    // state. Reconciliation does not schedule, acknowledge or
+                    // advance any of them.
+                    Ok(TaskCommandProgress::Ready(Value::Null))
                 }
                 _ => Err(Error::Unsupported(format!(
                     "stock command kind {} has no effect reconciliation",
@@ -547,7 +582,7 @@ where
                 });
             }
             if !dispatched {
-                return Ok(TaskCommandProgress::Indeterminate);
+                return Ok(TaskCommandProgress::Ready(Value::Null));
             }
             Some(journal)
         } else {

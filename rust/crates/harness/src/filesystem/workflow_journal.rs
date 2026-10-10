@@ -146,6 +146,7 @@ where
         &self,
         reference: &FileRef,
         verify_payloads: bool,
+        verify_machine: bool,
     ) -> Result<WorkflowRecord> {
         if reference.volume() != &self.volume
             || reference.descriptor().media_type() != "application/json"
@@ -171,7 +172,13 @@ where
             .map_err(|error| Error::Storage(format!("workflow record is invalid: {error}")))?;
         record.validate()?;
         if let Some(owner) = &self.owner {
-            owner.validate_workflow_record(&record)?;
+            if verify_machine {
+                owner.validate_workflow_record(&record)?;
+            } else if record.prior.machine != owner.workflow_admission().initial.machine
+                || record.next.machine != owner.workflow_admission().initial.machine
+            {
+                return Err(Error::Unauthorized("observed workflow changed its pinned machine".into()));
+            }
         }
         if verify_payloads {
             self.verify_command_payloads(&record).await?;
@@ -184,6 +191,7 @@ where
         after: u64,
         maximum: u32,
         verify_payloads: bool,
+        verify_machine: bool,
     ) -> Result<Vec<WorkflowRecord>> {
         validate_workflow_page(after, maximum)?;
         let stream = self.stream.stream(&self.path)?;
@@ -208,7 +216,7 @@ where
                 crate::contract::json_from_slice(&entry.value).map_err(|error| {
                     Error::Storage(format!("workflow reference is invalid: {error}"))
                 })?;
-            let record = self.read_record(&reference, verify_payloads).await?;
+            let record = self.read_record(&reference, verify_payloads, verify_machine).await?;
             if record.prior.revision != sequence || record.next.revision != sequence + 1 {
                 return Err(Error::Storage(
                     "workflow checkpoint revision is discontinuous".into(),
@@ -225,11 +233,39 @@ where
         let after = revision
             .checked_sub(1)
             .ok_or_else(|| Error::Invalid("zero observation revision".into()))?;
-        self.replay_records(after, 1, false)
+        self.replay_records(after, 1, false, false)
             .await?
             .into_iter()
             .next()
             .ok_or_else(|| Error::Storage("observed workflow checkpoint is absent".into()))
+    }
+
+    /// Observes the original authenticated outbox without executing a machine
+    /// callback. It does not grant checkpoint or command publication authority.
+    pub(crate) async fn observe_latest_outbox(&self) -> Result<Option<crate::workflow::MachineTransition>> {
+        let owner = self.owner.as_ref()
+            .ok_or_else(|| Error::Unsupported("task outbox observation requires its original owner".into()))?;
+        owner.verify(true).await?;
+        let Some(admission) = self.read_admission().await? else {
+            return Ok(None);
+        };
+        if &admission != owner.workflow_admission() {
+            return Err(Error::Unauthorized("observed outbox differs from original task admission".into()));
+        }
+        let stream = self.stream.stream(&self.path)?;
+        let bounds = match stream.bounds().await {
+            Ok(bounds) => bounds,
+            Err(StreamError::NotFound) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if bounds.tail == 0 {
+            return Ok(None);
+        }
+        let record = self.replay_records(bounds.tail - 1, 1, true, false).await?
+            .into_iter().next()
+            .ok_or_else(|| Error::Storage("original outbox record is absent".into()))?;
+        owner.verify(true).await?;
+        Ok(Some(record.transition))
     }
 
     async fn verified_history(
@@ -249,7 +285,7 @@ where
         let mut matched = None;
         loop {
             let page = self
-                .replay_records(summary.revision, WORKFLOW_REPLAY_PAGE_RECORDS, false)
+                .replay_records(summary.revision, WORKFLOW_REPLAY_PAGE_RECORDS, false, true)
                 .await?;
             if page.is_empty() {
                 break;
@@ -418,6 +454,14 @@ where
             VolumeOperation::Read,
         )?;
         for command in &record.transition.commands {
+            if command.payload.descriptor().byte_length() > self.maximum_payload_bytes {
+                return Err(Error::Invalid("workflow command exceeds payload limit".into()));
+            }
+            if let Some(owner) = &self.owner
+                && owner.read_created_input(&command.payload).await?.is_some()
+            {
+                continue;
+            }
             if command.payload.volume() != &self.volume {
                 return Err(Error::Unauthorized(
                     "workflow command payload belongs to another volume".into(),
@@ -609,7 +653,7 @@ where
 
     fn replay(&self, after: u64, maximum: u32) -> BoxFuture<'_, Result<Vec<WorkflowRecord>>> {
         let span = obs_span!("acyclic.harness.workflow.replay", rev = after);
-        traced(span, self.replay_records(after, maximum, true))
+        traced(span, self.replay_records(after, maximum, true, true))
     }
 
     fn commit<'a>(
@@ -655,7 +699,7 @@ where
                 self.cached_preflight(&admission, &record)?;
             }
             let reference = self.stage(&record).await?;
-            if self.read_record(&reference, true).await? != record {
+            if self.read_record(&reference, true, true).await? != record {
                 return Err(Error::Conflict(
                     "staged workflow record disagrees with its transition".into(),
                 ));

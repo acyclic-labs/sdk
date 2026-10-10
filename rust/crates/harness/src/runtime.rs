@@ -1969,10 +1969,14 @@ impl RuntimeScope {
         Ok(())
     }
 
-    fn created_content(&self, volume: Option<&VolumeRef>) -> Option<&ContentBindings> {
+    pub(crate) fn created_content(&self, volume: Option<&VolumeRef>) -> Option<&ContentBindings> {
         self.created_access.as_ref()?.content.iter().find(|binding| {
             volume.map_or(binding.default_writer, |volume| &binding.volume == volume)
         }).map(|binding| &binding.binding)
+    }
+
+    pub(crate) fn created_access(&self) -> Option<Arc<crate::resource_preparation::CreatedResourceAccess>> {
+        self.created_access.clone()
     }
 
     /// Returns the exact effective grants.

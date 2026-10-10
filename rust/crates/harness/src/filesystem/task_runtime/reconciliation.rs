@@ -59,11 +59,10 @@ where
         // A missing initial journal is not permission to create an admission.
         let journal = self.workflow_journal(task, fence.clone()).await?;
         if journal.admission().await?.is_none() {
-            return Ok(reconciling());
+            return self.finish_known_reconciliation(task, fence, lease).await;
         }
-        let session = self.open_task(task, fence.clone()).await?;
-        let Some(transition) = session.latest_transition().await? else {
-            return Ok(reconciling());
+        let Some(transition) = journal.observe_latest_outbox().await? else {
+            return self.finish_known_reconciliation(task, fence, lease).await;
         };
         let context = self.harness.durable_context(task, operation).await?;
         for command in transition.commands.iter().take(maximum_commands as usize) {
@@ -82,13 +81,22 @@ where
         if transition.commands.len() > maximum_commands as usize {
             return Ok(reconciling());
         }
+        self.finish_known_reconciliation(task, fence, lease).await
+    }
+
+    async fn finish_known_reconciliation(
+        &self,
+        task: TaskId,
+        fence: LeaseFence,
+        lease: &crate::distributed::WorkLease,
+    ) -> Result<TaskWorkerOutcome> {
         self.host.verify_execution_owner(task, fence.clone()).await?;
         if self.host.observe_task(task).await?.cancellation_requested {
             self.host.settle_task(task, fence, Outcome::Cancelled).await?;
             Ok(TaskWorkerOutcome::Completed { task })
         } else {
             // Observation grants no authority to advance an uncancelled task.
-            Ok(reconciling())
+            Ok(TaskWorkerOutcome::Reconciling { lease: lease.clone() })
         }
     }
 }

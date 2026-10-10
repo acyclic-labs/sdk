@@ -23,6 +23,36 @@ use serde::{Deserialize, Serialize};
 
 type MemoryFilesystem = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
 
+struct CreatedControlMachine {
+    identity: MachineIdentity,
+    schema: Value,
+}
+
+impl ResumableMachine for CreatedControlMachine {
+    fn identity(&self) -> &MachineIdentity { &self.identity }
+    fn state_schema(&self) -> &Value { &self.schema }
+    fn initialize(&self, input: &Value) -> Result<Value> { Ok(input.clone()) }
+    fn transition(&self, state: &Value, input: &Value) -> Result<MachineTransition> {
+        if state.get("emitted") == Some(&Value::Bool(true)) {
+            return Ok(MachineTransition {
+                state: state.clone(), commands: Vec::new(),
+                status: MachineStatus::Completed { value: serde_json::json!({"ok":true}) },
+            });
+        }
+        if let Some(command) = input.get("created_command") {
+            let command = serde_json::from_value(command.clone())
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            return Ok(MachineTransition {
+                state: serde_json::json!({"emitted":true}), commands: vec![command],
+                status: MachineStatus::Suspended,
+            });
+        }
+        Ok(MachineTransition {
+            state: state.clone(), commands: Vec::new(), status: MachineStatus::Suspended,
+        })
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SandboxAllocation {
@@ -242,8 +272,11 @@ impl CreationFixture {
             filesystem.clone(), issuer.verifier(), signed.clone(), root_scope.limits().file_bytes,
         )?);
         let schema = serde_json::json!({"type":"object"});
-        let implementation = Arc::new(BatchMachine {
-            identity: MachineIdentity { name: "test.created".into(), version: "1".into(), digest: [81; 32] },
+        let implementation = Arc::new(CreatedControlMachine {
+            identity: MachineIdentity {
+                name: "test.created".into(), version: "1".into(),
+                digest: *blake3::hash(include_str!("created_resource_access.rs").as_bytes()).as_bytes(),
+            },
             schema: schema.clone(),
         });
         let definition = TaskDefinition::<Value, Value>::resumable(
@@ -572,13 +605,19 @@ impl CreationFixture {
                 } },
             ], boundary: None,
         };
+        let history = crate::history::HistoryReader::new(
+            &fork_stream, &parent, fork_issuer.verifier(),
+        )?.fork_history(
+            aggregate.reducer(), 0,
+            crate::history::HistoryReadLimits { maximum_events:2, maximum_bytes:65_536 },
+        ).await?;
         let preparer = FilesystemForkPreparer::new(
             self.filesystem.clone(), aggregate.reducer().clone(), fork_issuer.verifier(),
             fork_scope, fork.selections.iter().find_map(|selection| match &selection.revision {
                 ResourceRevision::Project { volume, .. } => Some(volume.clone()), _ => None,
             }).ok_or_else(|| Error::Invalid("fork fixture project missing".into()))?,
             stream_provider, resolver,
-        )?;
+        )?.with_history_context(history)?;
         let mut child = self.admission(84, serde_json::json!({"action":"filesystem-io"}));
         // These are requests for exact created volumes, not root grants.
         child.grants = Capabilities::new([
@@ -715,5 +754,94 @@ async fn created_content_reauthenticates_allocation_provenance_on_every_io() -> 
     ).await.is_err());
     // A copied seed/receipt never repairs or bypasses protected evidence.
     created.seed.validate()?;
+    Ok(())
+}
+
+struct CreatedIoCommands {
+    output: Mutex<Option<FileRef>>,
+}
+
+impl crate::filesystem::TaskCommandHost for CreatedIoCommands {
+    fn execute<'a>(
+        &'a self,
+        context: crate::runtime::TaskContext,
+        _: crate::scheduler::LeaseFence,
+        command: crate::workflow::WorkflowCommand,
+        payload: Value,
+    ) -> BoxProviderFuture<'a, Result<crate::filesystem::TaskCommandProgress>> {
+        Box::pin(async move {
+            if command.kind != "test.created.content.v1" {
+                return Err(Error::Unsupported("unknown created-content command".into()));
+            }
+            let text = payload.get("text").and_then(Value::as_str)
+                .ok_or_else(|| Error::Invalid("created-content command lacks text".into()))?;
+            let file = context.stage_file_once(
+                command.operation_id, "ordinary/worker.txt", text.as_bytes(), "text/plain", "worker.txt",
+            ).await?;
+            *self.output.lock().await = Some(file);
+            Ok(crate::filesystem::TaskCommandProgress::Ready(serde_json::json!({"written":true})))
+        })
+    }
+}
+
+#[tokio::test]
+async fn created_scope_executes_existing_workflow_and_journal_input_boundaries() -> Result<()> {
+    use crate::executor::ExecutionJournal as _;
+    use crate::filesystem::{
+        FilesystemExecutionJournal, FilesystemTaskRuntime, TaskWorkerAttempt, TaskWorkerOutcome,
+    };
+    let fixture = CreationFixture::new().await?;
+    let created = fixture.create_filesystem_child().await?;
+    assert!(matches!(fixture.admit_child(created.request.child.clone()).await?, Admission::Accepted(_)));
+    let task = TaskId::from_bytes([84; 16]);
+    let observation = fixture.host.observe_task(task).await?;
+    let reservation = observation.reservation.ok_or_else(|| Error::NotFound("created task lease".into()))?;
+    let lease = crate::distributed::WorkLease {
+        operation: observation.spec, reservation, checkpoint: observation.checkpoint,
+        operation_revision: observation.revision,
+    };
+    let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
+    let context = fixture.harness.durable_context(task, created.request.child.operation_id).await?;
+    let command_payload = context.stage_file_once(
+        OperationId::from_bytes([102; 16]), "ordinary/command.json",
+        &crate::contract::canonical_json_bytes(&serde_json::json!({"text":"real created-volume command"}))?,
+        "application/json", "command.json",
+    ).await?;
+    let volume = VolumeRef::new(
+        fixture.filesystem_provider.clone(), "scheduler", VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
+    )?;
+    let journal = FilesystemExecutionJournal::for_task(
+        fixture.host.journal_owner(task, fence.clone()).await?, OperationId::from_bytes([103; 16]),
+        fixture.filesystem.clone(), volume.clone(), fixture.host.verifier.clone(),
+        fixture.host.owner_scope.clone(), 65_536,
+    )?;
+    journal.verify_input_file(&command_payload).await?;
+    let runtime = FilesystemTaskRuntime::open_with_creation_providers(
+        fixture.host.stream.clone(), fixture.filesystem.clone(), volume,
+        fixture.host.verifier.clone(), fixture.host.owner_scope.clone(), fixture.root_scope.clone(),
+        fixture.host.tasks.clone(), fixture.host.machines.clone(), crate::tool::ToolRegistry::default(),
+        crate::scheduler::SessionLimits { active_tasks:16, total_tasks:32, depth:4, model_steps:4 },
+        16, 65_536, Arc::new(SystemUnixMillisClock), None, fixture.host.resource_creation.clone(),
+    ).await?;
+    let mut session = runtime.open_task(task, fence).await?;
+    session.step(
+        OperationId::from_bytes([104; 16]), IdempotencyKey::new("created-workflow-input")?,
+        serde_json::json!({"created_command":crate::workflow::WorkflowCommand {
+            operation_id:OperationId::from_bytes([105; 16]), kind:"test.created.content.v1".into(),
+            payload:command_payload,
+        }}),
+    ).await?;
+    let commands = CreatedIoCommands { output:Mutex::new(None) };
+    assert!(matches!(
+        runtime.resume_task(lease, &commands, 2).await,
+        TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task:completed }) if completed == task
+    ));
+    let output = commands.output.lock().await.clone()
+        .ok_or_else(|| Error::NotFound("created workflow content result".into()))?;
+    assert_eq!(output.volume(), &created.private);
+    assert_eq!(context.read_file(&output).await?, b"real created-volume command");
+    assert!(!fixture.root_scope.grants().contains(&created.private.capability(VolumeOperation::Write)?));
+    assert!(matches!(runtime.task_host().outcome(task).await?, Some(Outcome::Succeeded(_))));
     Ok(())
 }

@@ -120,13 +120,17 @@ impl Fixture {
             "operation:declare".to_owned(), "operation:observe".to_owned(),
             "operation:cancel".to_owned(), "task:spawn:test.deadline@1".to_owned(),
             "tool:call:test.deadline".to_owned(), "model:generate".to_owned(),
+            "mail:send".to_owned(), "mail:read".to_owned(),
             volume.capability(VolumeOperation::Read)?,
             volume.capability(VolumeOperation::Write)?,
         ]));
         let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?
             .with_run_limits(TaskRunLimits { deadline_epoch_ms: Some(20), ..TaskRunLimits::default() })?;
         let machine = Arc::new(Machine {
-            identity: MachineIdentity { name: "test.deadline".into(), version: "1".into(), digest: [103; 32] },
+            identity: MachineIdentity {
+                name: "test.deadline".into(), version: "1".into(),
+                digest: *blake3::hash(include_str!("tests.rs").as_bytes()).as_bytes(),
+            },
             schema: json!({"type":"object"}),
             transitioned: AtomicUsize::new(0),
         });
@@ -162,17 +166,22 @@ impl Fixture {
         ).await
     }
     async fn admit(&self, runtime: &Runtime) -> Result<WorkLease> {
+        self.admit_command(runtime, super::super::TOOL_TASK_COMMAND_KIND, serde_json::to_value(
+            &super::super::ToolTaskCommand {
+                name:"test.deadline".into(), revision:"1".into(), arguments:Value::Null,
+            },
+        ).map_err(|error| Error::Invalid(error.to_string()))?).await
+    }
+    async fn admit_command(&self, runtime: &Runtime, kind: &str, command: Value) -> Result<WorkLease> {
         let operation = OperationId::from_bytes([104; 16]);
         let payloads = FilesystemSchedulerPayloadStore::new(
             self.filesystem.clone(), self.volume.clone(), &self.issuer.verifier(), &self.signed, 65_536,
         )?;
-        let payload = payloads.stage(operation, "tool-command", &crate::contract::canonical_json_bytes(
-            &super::super::ToolTaskCommand { name: "test.deadline".into(), revision: "1".into(), arguments: Value::Null },
-        )?).await?;
+        let payload = payloads.stage(operation, "command", &crate::contract::canonical_json_bytes(&command)?).await?;
         let definition = self.tasks.get_version::<Value, Value>("test.deadline", "1")?;
         let input = json!({"command":WorkflowCommand {
             operation_id: OperationId::from_bytes([105; 16]),
-            kind: super::super::TOOL_TASK_COMMAND_KIND.into(),
+            kind: kind.into(),
             payload,
         }});
         assert!(matches!(
@@ -203,8 +212,16 @@ async fn expired_reopened_task_rejects_before_machine_or_tool_dispatch() -> Resu
     assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);
     let state = reopened.task_host().observe_task(task).await?;
     assert!(state.cancellation_requested);
-    assert_eq!(state.reservation, Some(lease.reservation));
+    assert_eq!(state.reservation, Some(lease.reservation.clone()));
     assert!(state.outcome.is_none());
+    assert!(matches!(
+        reopened.reconcile_task(lease, &reopened.commands(), 1, 1_000).await,
+        TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task:completed }) if completed == task
+    ));
+    assert!(matches!(reopened.task_host().outcome(task).await?, Some(crate::Outcome::Cancelled)));
+    assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.tool.reconciled.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);
     Ok(())
 }
 
@@ -323,5 +340,43 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
         assert_eq!(provider.generated.load(Ordering::SeqCst), usize::from(!expired_before_dispatch));
         assert!(reopened.task_host().observe_task(task).await?.outcome.is_none());
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_mail_reconciles_original_atomic_send_without_republication() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let runtime = fixture.runtime().await?;
+    let task = TaskId::from_bytes([104; 16]);
+    let payloads = FilesystemSchedulerPayloadStore::new(
+        fixture.filesystem.clone(), fixture.volume.clone(), &fixture.issuer.verifier(),
+        &fixture.signed, 65_536,
+    )?;
+    let file = payloads.stage(OperationId::from_bytes([106; 16]), "mail-body", b"7").await?;
+    let lease = fixture.admit_command(
+        &runtime, super::super::MAIL_SEND_TASK_COMMAND_KIND,
+        serde_json::to_value(&super::super::MailSendTaskCommand { recipient:task, payload:file })
+            .map_err(|error| Error::Invalid(error.to_string()))?,
+    ).await?;
+    assert!(matches!(
+        runtime.resume_task(lease.clone(), &runtime.commands(), 1).await,
+        TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { .. })
+    ));
+    assert_eq!(runtime.task_host().inbox(task, 0, 8).await?.len(), 1);
+    drop(runtime);
+    fixture.clock.0.store(20, Ordering::SeqCst);
+    let reopened = fixture.runtime().await?;
+    assert!(matches!(
+        reopened.resume_task(lease.clone(), &reopened.commands(), 1).await,
+        TaskWorkerAttempt::Unresolved { error:Error::Indeterminate(_), .. }
+    ));
+    assert_eq!(reopened.task_host().observe_task(task).await?.reservation, Some(lease.reservation.clone()));
+    assert!(matches!(
+        reopened.reconcile_task(lease, &reopened.commands(), 1, 1_000).await,
+        TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task:completed }) if completed == task
+    ));
+    assert_eq!(reopened.task_host().inbox(task, 0, 8).await?.len(), 1);
+    assert!(matches!(reopened.task_host().outcome(task).await?, Some(crate::Outcome::Cancelled)));
+    assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
     Ok(())
 }

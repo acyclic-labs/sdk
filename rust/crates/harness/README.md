@@ -85,14 +85,20 @@ bindings into that child's scope. Caller-built proof refs alone grant nothing.
 and publisher; `open_with_creation_providers` composes it into the same filesystem
 task runtime. Child writes and new child admission require their current retained
 publication lease, while inherited access preserves the original proof identity.
+Workflow command and model inputs resolve through those same owner-authenticated
+bindings. Protected workflow and execution records remain in their original
+owner-controlled storage; ordinary content refs cannot substitute for them.
 
 The filesystem task runtime enforces the originally admitted absolute deadline
 through the host's current clock and native or browser-worker timers. Expiry
 records cancellation but does not claim an uncertain command stopped.
 `reconcile_task` only observes already retained command intents under their
 original lease with caller-selected command and wait bounds; it cannot execute
-a new command, advance a machine or reset the deadline. Only known settlement
-can release the retained reservation.
+a new command, invoke a task-machine transition or reset the deadline. It reads
+the original authenticated outbox rather than reopening an execution session.
+Original atomic mail receipts are observed without another send. Cancellation
+may release capacity only after all dispatched effects are known, or the
+authenticated journal proves no dispatch occurred.
 
 `AgentHarness::children` asks the retained task owner for a bounded page of direct children, independent of conversation forks and task dependencies. The coordinator authenticates the parent, exposes only same-owner children in stable slot order, and requires its revision on continuation so concurrent admissions cannot silently skip a child. A caller from another owner cannot declare a child under that parent merely by knowing its ID.
 

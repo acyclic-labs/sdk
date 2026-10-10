@@ -1161,25 +1161,14 @@ where
         outbox: &[WorkflowCommand],
         commands: &dyn TaskCommandHost,
     ) -> Result<CommandDispatch> {
-        use crate::conversation::ContentResidencyVerifier as _;
-        let reader = FilesystemContentVerifier::new(
-            self.filesystem.clone(),
-            self.verifier.clone(),
-            self.signed.clone(),
-            self.maximum_payload_bytes
-                .min(context.scope().limits().file_bytes),
-        )?;
         let mut results = Vec::new();
         for command in outbox {
             self.host.verify_dispatch_owner(task, fence.clone()).await?;
-            context.scope().limits().validate_file(&command.payload)?;
-            if !crate::runtime::read_granted(context.scope().grants(), &command.payload)? {
-                return Err(Error::Unauthorized(
-                    "task cannot read command payload".into(),
-                ));
+            if command.payload.descriptor().byte_length() > self.maximum_payload_bytes {
+                return Err(Error::Invalid("command exceeds payload limit".into()));
             }
             let payload =
-                crate::contract::json_from_slice(&reader.read(&command.payload).await?)
+                crate::contract::json_from_slice(&context.read_file(&command.payload).await?)
                     .map_err(|error| Error::Invalid(format!("invalid command JSON: {error}")))?;
             let progress = commands
                 .execute(context.clone(), fence.clone(), command.clone(), payload)

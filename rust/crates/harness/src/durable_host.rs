@@ -185,6 +185,7 @@ pub struct TaskJournalOwner<P> {
     maximum_payload_bytes: u64,
     output_schema: Value,
     input_grants: crate::Capabilities,
+    input_created: Option<Arc<crate::resource_preparation::CreatedResourceAccess>>,
     deadline_epoch_ms: Option<u64>,
     input_limits: crate::conversation::Limits,
     extensions: Option<crate::core::ExtensionAdmission>,
@@ -206,6 +207,22 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             ));
         }
         Ok(())
+    }
+
+    /// Reads only a kernel-authenticated created-volume input. The ordinary
+    /// journal input resolver remains authoritative for every other volume.
+    pub(crate) async fn read_created_input(&self, file: &FileRef) -> Result<Option<Vec<u8>>> {
+        self.validate_input_file(file)?;
+        let Some(binding) = self.input_created.as_ref().and_then(|access| {
+            access.content.iter().find(|binding| &binding.volume == file.volume())
+        }) else {
+            return Ok(None);
+        };
+        self.verify(true).await?;
+        let bytes = binding.binding.reader.read(file).await?;
+        file.descriptor().verify(&bytes)?;
+        self.verify(true).await?;
+        Ok(Some(bytes))
     }
 
     pub(crate) fn validate_native_configuration(
@@ -1350,8 +1367,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         fence: crate::scheduler::LeaseFence,
     ) -> Result<TaskJournalOwner<P>> {
         let admission = self
-            .admission(OperationId::from_bytes(task_id.into_bytes()))
+            .read_retained_admission(OperationId::from_bytes(task_id.into_bytes()))
             .await?;
+        let scope = self.authenticated_scope(&admission).await?;
         let machine = self
             .machines
             .resolve(&admission.machine)
@@ -1376,6 +1394,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             maximum_payload_bytes: admission.limits.file_bytes,
             output_schema: admission.output_schema,
             input_grants: admission.grants,
+            input_created: scope.created_access(),
             input_limits: admission.limits,
             deadline_epoch_ms: admission.run_limits.deadline_epoch_ms,
             extensions: admission.extensions,
@@ -2244,13 +2263,35 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "recipient cannot read the mailed file".into(),
             ));
         }
-        self.reader.verify(&payload).await?;
+        let sender_scope = self.authenticated_scope(&sender_admission).await?;
+        if let Some(binding) = sender_scope.created_content(Some(payload.volume())) {
+            let bytes = binding.reader.read(&payload).await?;
+            payload.descriptor().verify(&bytes)?;
+        } else {
+            self.reader.verify(&payload).await?;
+        }
         let event = MailEvent {
             sender,
             message_id,
             payload,
         };
         crate::contract::canonical_json_bytes(&event)
+    }
+
+    /// Observes the original atomic mail receipt; never publishes another send.
+    pub(crate) async fn reconcile_sent_mail(
+        &self,
+        sender: TaskId,
+        fence: crate::scheduler::LeaseFence,
+        recipient: TaskId,
+        message: OperationId,
+        payload: FileRef,
+    ) -> Result<bool> {
+        self.verify_owner(sender, &fence, true).await?;
+        let bytes = self.mail_bytes(sender, recipient, message, payload).await?;
+        let retained = self.observe_mail_location(sender, recipient, message, &bytes, None).await?;
+        self.verify_owner(sender, &fence, true).await?;
+        Ok(retained)
     }
 
     fn mail_location_path(

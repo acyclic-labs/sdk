@@ -76,8 +76,10 @@ the current wall clock in windows and workers and bounds pending execution with
 worker-compatible timers. Expiry records cancellation without inventing a stopped
 effect or releasing its reservation. `observeTask(taskId)` exposes the original
 run limits and retained lease; `reconcile(lease, maximumCommands, maximumWaitMillis)`
-only observes existing command intents. It cannot advance a machine or dispatch
-a new effect. Late callbacks and reopened workers retain the original fence.
+only observes existing command intents from the authenticated outbox. It cannot
+invoke a task-machine transition or dispatch a new effect. Original mail receipts
+recover without another send; late callbacks and reopened workers retain the
+original fence.
 
 `admitRecord(record, parentFence)` submits the canonical Rust admission, including
 `resource_proofs`. Proof refs are untrusted data, not capabilities. The same owner
