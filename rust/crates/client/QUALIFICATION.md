@@ -2,7 +2,9 @@
 
 Scope: the portable speculation/view kernel, data-only hypothesis export,
 public Harness consumer, tests and examples in this crate. Workspace membership,
-lockfile and the coordinator-reserved publication-list entry are additive.
+lockfile and the coordinator-reserved publication-list entry are additive. The
+private `qualification/harness-consumer` workspace member is coordinator-reserved
+and runs through the existing workspace qualification infrastructure.
 CL2–CL5 frameworks, transport/checkpoint recovery, durable/shared adapters and
 inference computation are excluded. No existing production domain source or CI
 orchestration was changed.
@@ -65,7 +67,7 @@ infinite schedules. A separate 10,000-revision trace checks constant residency a
 one adapter work step per canonical update. With 16 active independent branches,
 one changed key emits exactly one hypothesis notification and three work visits.
 
-`examples/harness_views.rs` and `tests/public_consumer.rs` compile the same consumer
+The private fixture's `examples/harness_views.rs` and `tests/public_consumer.rs` compile the same consumer
 on native and WASM. Harness `Reducer`, canonical `ConversationMessage`/`FileRef`,
 original `OperationId`, `Scheduler` and real lease fences own domain semantics.
 It demonstrates message prediction plus concurrent authoritative data, provisional
@@ -81,8 +83,10 @@ operation; treat indeterminate as terminal; bypass resident-byte capacity; bypas
 work checks. Each mutant compiled, then failed a relevant public consumer/production
 test. A `finally` block restored the exact source. No mutation engine or new
 verification framework was added to the repository. The first controls preceded
-the final basis-sharing change; final-source controls are recorded with platform
-receipts below.
+the final basis-sharing change; all eight controls were then repeated against final
+production blob `490df1b5eefc1038971f4c5cbec645041355f0d6` and again failed test
+assertions. The restored blob matched exactly. Relocating the public fixture did
+not change its source blob `49bbf0e157ab7b2cf756dee88e4d66ada4a9afa8`.
 
 ## Measured baseline and regression acceptance
 
@@ -123,6 +127,17 @@ path was copied. Existing reducers remain in their own crates. The numeric test
 adapter is only a bounded kernel fixture; the public consumer uses actual Harness
 reducers. No replaced production path exists in this new crate.
 
+The audit removed an avoidable package-time coupling: the real-domain public
+consumer is now a private workspace qualification fixture, excluded from the
+core archive. The core has no Harness or UUID dependency, even in its dev graph.
+The fixture is compiled/run by ordinary workspace tests, with no CI changes or
+separate verification engine. The plain initial archive failed because Harness
+0.2.0 was not yet published; a temporary explicit local companion patch produced
+a candidate archive only as source-closure evidence. That failed attempt and
+patched candidate are historical, not publisher/registry passes. After isolation,
+ordinary unpatched Cargo packaging succeeds for the independent core. No registry
+publication occurred.
+
 Retained structures have concrete purposes: keyed demand avoids lifetime history;
 original-operation index rejects duplicate live identity and correlates receipts;
 key index finds affected roots; reverse edges find only dependent hypotheses;
@@ -144,7 +159,14 @@ bounds; this audit makes no universal minimality claim.
 
 ## Final-source gates
 
-Open: final-source mutation controls; Windows/WSL Linux/macOS native consumer,
-strict native/WASM lint and installed Chromium identical trace receipts; package
-artifact validation; required exact-head SDK Qualification; qualified PR merge
-and independent actual-main SHA/tree verification. An open gate is not a pass.
+Production blob above and the unchanged public-consumer blob passed Windows,
+WSL/Linux and macOS (`ssh ivar`) native tests/strict lint and actual installed
+Chromium 154/WASM identical traces/strict target lint on commit
+`50820c46f58f02fd71a8dc1645c83cd941b224b5`. Each ran ten kernel scenarios and
+the public Harness consumer. Rust 1.98.1 and wasm-bindgen-test runner 0.2.117 were
+used. These receipts remain scoped source evidence; the later package/fixture
+partition requires affected closure qualification below.
+
+Open: final independent archive/fresh consumer and relocated-fixture platform
+qualification; required exact-head SDK Qualification; qualified PR merge and
+independent actual-main SHA/tree verification. An open gate is not a pass.

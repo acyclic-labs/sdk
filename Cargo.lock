@@ -75,8 +75,18 @@ dependencies = [
 name = "acyclic-client"
 version = "0.2.0"
 dependencies = [
- "acyclic-harness",
  "divan",
+ "serde",
+ "serde_json",
+ "wasm-bindgen-test",
+]
+
+[[package]]
+name = "acyclic-client-harness-consumer"
+version = "0.2.0"
+dependencies = [
+ "acyclic-client",
+ "acyclic-harness",
  "serde",
  "serde_json",
  "uuid",
