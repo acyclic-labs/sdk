@@ -105,12 +105,17 @@ const RECEIPT_LABELS: &str = concat!(
     "diagnostic publication_failure invocation_failure work destination completed volume generation namespace path writable authority_revision ",
     "materialized_directory lazy_mount snapshot source authored_generation overlay shadows ",
     "sha256 byte_length media_type display_name version class owner project agent session ",
+    "authorityRecordsRead authorityRecordsAppended authorityBytesRead authorityBytesWritten ",
+    "objectProbes backendReadOperations backendWriteOperations durabilityOperations ",
+    "pageReads pageWrites objectBytesRead objectBytesWritten bytesHashed bytesCopied bytesEncoded ",
+    "sourceBytesRead sourcePathComponents sourceEntriesVisited outputBytes itemsExamined itemsReturned ",
+    "allocationOperations peakAllocationBytes materializations ",
     "native receipt capacity overflows native receipt admission overflows SHA-256 digest must contain exactly 32 bytes"
 );
 
 pub(super) fn decode(
     bytes: &[u8], work: Option<&NativeMaterializationWork>,
-    custody: &mut Option<NativeAllocation>, marker: OperationId,
+    custody: &mut Option<NativeAllocation>, _marker: OperationId,
 ) -> std::result::Result<Receipt<'static>, NativeReceiptError> {
     let Some(work) = work else {
         return crate::contract::json_from_slice(bytes)
@@ -120,7 +125,6 @@ pub(super) fn decode(
     let bounds = JsonBounds { maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
         maximum_items: remaining.items_examined, maximum_depth: 256 };
     let mut items = 0u64;
-    let mut native_failure = None;
     let guard = custody.as_mut().ok_or(NativeReceiptError::Record("native receipt custody is missing"))?;
     let previous = guard.bytes();
     guard.resize_retained(add(previous, 1024)?)?;
@@ -129,18 +133,18 @@ pub(super) fn decode(
             JsonCodecCharge::Work { items: visited, bytes: encoded } => {
                 items = match items.checked_add(visited) {
                     Some(items) => items,
-                    None => { native_failure = Some(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow)); return Err(Error::Indeterminate(marker)); }
+                    None => return Err(Error::NativeWork {
+                        cause: acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow),
+                        custody: None,
+                    }),
                 };
                 work.charge(WorkCounters { items_examined: visited, bytes_encoded: encoded, ..WorkCounters::default() })
             }
             JsonCodecCharge::Read { .. } => work.remaining().map(|_| ()),
             _ => work.remaining().map(|_| ()),
         };
-        result.map_err(|error| { native_failure = Some(error); Error::Indeterminate(marker) })
-    }).map_err(|error| match native_failure.take() {
-        Some(error) => NativeReceiptError::Native(error),
-        None => NativeReceiptError::Codec { source: error, custody: custody.take() },
-    })?;
+        result.map_err(|cause| Error::NativeWork { cause, custody: None })
+    }).map_err(|source| NativeReceiptError::Codec { source, custody: custody.take() })?;
     let slots = multiply(items, 10)?;
     let content_slot = size_of::<(serde::__private229::de::Content<'static>, serde::__private229::de::Content<'static>)>()
         .max(size_of::<serde::__private229::de::Content<'static>>()) as u64;
@@ -239,7 +243,6 @@ fn effect_identity(
 ) -> std::result::Result<crate::EffectId, NativeReceiptError> {
     let remaining = work.remaining()?;
     let mut custody = work.retain_owned(0)?;
-    let mut native_failure = None;
     let encoded = crate::contract::canonical_json_bytes_bounded(
         &("harness/v2/task-effect", task, command),
         JsonBounds { maximum_bytes: remaining.bytes_encoded,
@@ -261,15 +264,12 @@ fn effect_identity(
                 JsonCodecCharge::Admission { maximum_owned_bytes } =>
                     work.admit_retained(maximum_owned_bytes),
             };
-            result.map_err(|error| { native_failure = Some(error); Error::Indeterminate(command) })
+            result.map_err(|cause| Error::NativeWork { cause, custody: None })
         },
     );
     let bytes = match encoded {
         Ok(bytes) => bytes,
-        Err(error) => return Err(match native_failure.take() {
-            Some(error) => NativeReceiptError::Native(error),
-            None => NativeReceiptError::Codec { source: error, custody: Some(custody) },
-        }),
+        Err(source) => return Err(NativeReceiptError::Codec { source, custody: Some(custody) }),
     };
     work.charge(WorkCounters { bytes_hashed: bytes.len() as u64, ..WorkCounters::default() })?;
     let hash = blake3::hash(&bytes);

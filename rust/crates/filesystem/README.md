@@ -57,6 +57,14 @@ compiled size and preserve nested failure work, rather than using a fixed estima
 or removing the stack boundary. Cancellation remains cooperative with OS I/O;
 receipts wait for accepted workers and their retained buffers to retire.
 
+Mounted callback receipts include SDK-completed prefixes from ordinary lookup
+errors as well as successful callbacks. Expected misses do not poison the source.
+An owned first fatal callback diagnostic is taken once without resetting the
+original cancellation, allowance or reconciliation requirement. Driver reply APIs
+that expose no transport result report client delivery as unknown: source/backend
+read and write counters are not IPC reply acknowledgements. Real mounted-client
+bytes and termination remain the qualification oracle.
+
 Concurrent native read observers share the checkout's semantic proof but admit
 and report their own completed name/path DATA. Weak custody metadata follows
 the actual owned keys, including weak-only map moves, and retires when those
