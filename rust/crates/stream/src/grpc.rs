@@ -1384,7 +1384,7 @@ impl Completion {
 }
 impl Drop for Completion {
     fn drop(&mut self) {
-        self.finish(Some("cancelled"), Some(Code::Cancelled));
+        self.finish(Some("cancelled"), None);
     }
 }
 
@@ -1609,9 +1609,16 @@ mod tests {
     async fn observed_body_completes_only_at_terminal_delivery() {
         use tracing_subscriber::layer::SubscriberExt as _;
         for (filtered, scenario) in [false, true].into_iter().flat_map(|filtered| {
-            ["unpolled", "partial", "pending", "exhausted", "error"]
-                .into_iter()
-                .map(move |scenario| (filtered, scenario))
+            [
+                "unpolled",
+                "partial",
+                "pending",
+                "exhausted",
+                "error",
+                "peer_cancelled",
+            ]
+            .into_iter()
+            .map(move |scenario| (filtered, scenario))
         }) {
             let captured = obs::tests::Capture::default();
             let _default = tracing::subscriber::set_default(
@@ -1630,6 +1637,9 @@ mod tests {
             let source: futures::stream::BoxStream<'static, Result<u8, Status>> = match scenario {
                 "pending" => stream::pending().boxed(),
                 "error" => stream::iter([Err(Status::permission_denied("denied"))]).boxed(),
+                "peer_cancelled" => {
+                    stream::iter([Err(Status::cancelled("peer cancelled"))]).boxed()
+                }
                 _ => stream::iter([Ok(1), Ok(2)]).boxed(),
             };
             let mut body = observe_body(&span, source);
@@ -1654,7 +1664,7 @@ mod tests {
                             assert!(item.is_ok());
                         }
                     }
-                    "error" => {
+                    "error" | "peer_cancelled" => {
                         assert!(body.next().await.unwrap().is_err());
                         assert!(body.next().await.is_none());
                     }
@@ -1676,10 +1686,15 @@ mod tests {
                         assert_eq!(fields["error.kind"], "access_denied");
                         assert_eq!(fields["rpc.code"], "7");
                     }
-                    _ => {
+                    "peer_cancelled" => {
                         assert_eq!(fields["outcome"], "err");
                         assert_eq!(fields["error.kind"], "cancelled");
                         assert_eq!(fields["rpc.code"], "1");
+                    }
+                    _ => {
+                        assert_eq!(fields["outcome"], "err");
+                        assert_eq!(fields["error.kind"], "cancelled");
+                        assert!(!fields.contains_key("rpc.code"));
                     }
                 }
             }
@@ -1870,7 +1885,7 @@ mod tests {
         let fields = captured.fields("acyclic.stream.grpc.serve.tail");
         assert_eq!(fields["outcome"], "err");
         assert_eq!(fields["error.kind"], "cancelled");
-        assert_eq!(fields["rpc.code"], "1");
+        assert!(!fields.contains_key("rpc.code"));
         assert_eq!(captured.closed("acyclic.stream.grpc.serve.tail"), 1);
         assert_eq!(captured.closed("origin_parent"), 1);
         assert_eq!(other.closed("foreign_parent"), 0);
@@ -2224,12 +2239,12 @@ mod tests {
                 "partial" => {
                     assert_eq!(logical["error.kind"], "cancelled");
                     assert_eq!(rpc["error.kind"], "cancelled");
-                    assert_eq!(rpc["rpc.code"], "1");
+                    assert!(!rpc.contains_key("rpc.code"));
                 }
                 "limit" => {
                     assert_eq!(logical["outcome"], "ok");
                     assert_eq!(rpc["error.kind"], "cancelled");
-                    assert_eq!(rpc["rpc.code"], "1");
+                    assert!(!rpc.contains_key("rpc.code"));
                 }
                 "eof" => {
                     assert_eq!(logical["outcome"], "ok");
@@ -2348,10 +2363,12 @@ mod tests {
             rpcs.iter()
                 .any(|fields| fields.get("rpc.code").is_some_and(|value| value == "0"))
         );
-        assert!(
-            rpcs.iter()
-                .any(|fields| fields.get("rpc.code").is_some_and(|value| value == "1"))
-        );
+        assert!(rpcs.iter().any(|fields| {
+            fields
+                .get("error.kind")
+                .is_some_and(|value| value == "cancelled")
+                && !fields.contains_key("rpc.code")
+        }));
         Ok(())
     }
 
