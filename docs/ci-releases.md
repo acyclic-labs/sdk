@@ -58,3 +58,38 @@ source and contents.
 Manual diagnostic qualification remains available in `qualification.yml`,
 `native-mount-qualification.yml`, `agent-host-qualification.yml`, and
 `sdk-generator.yml`. These diagnostics do not publish a release.
+
+## Dependency preservation
+
+The PR335 JavaScript updates apply to the current workspace, without replacing
+the corrected qualification and coordinated publication workflows:
+
+- `@bufbuild/protoc-gen-es`, protobuf and its generator plugin: 2.16.0.
+- `@napi-rs/cli`: 3.10.8; Node types: 26.6.4.
+- Connect, Connect Node and Connect Web: 2.2.0.
+- `bun-types`: 1.4.2; `fake-indexeddb`: 6.2.5.
+- The existing React/Svelte dependencies, Pi host 1.1.0 pin, Cargo graph and
+  source-generation policy are unchanged by these JavaScript updates.
+
+Lock resolver entries and integrity strings come from the
+[PR335 lock delta](https://github.com/acyclic-labs/sdk/pull/335/files), including
+`undici-types` 8.9.0 and the nested `bun-types` Node types 26.6.5. The published
+[@napi-rs/cli 3.10.8 artifact](https://registry.npmjs.org/@napi-rs/cli/-/cli-3.10.8.tgz)
+still constructs `Error` in `dist/index.cjs`, `dist/index.js` and
+`src/api/templates/js-binding.ts`. Its new `createLoadErrorChain` preserves
+messages in `cause`, not original errors in `AggregateError.errors`. Therefore
+the existing three-line patch is retained and rebased to that exact artifact;
+it must not be removed merely because upstream now provides a cause chain.
+
+Maintained workflows and composite actions use Checkout 7.0.1, Setup Node
+7.1.0, Upload Artifact 7.0.2, Download Artifact 8.0.2, Cache 6.1.0 and Setup Go
+7.0.0. Workflow names, callers, qualification lanes and retained-artifact
+contracts are preserved; no historical publication workflow is restored.
+
+After integrating source changes, resolve the lock with
+`bun install --lockfile-only`, then install with `bun install --frozen-lockfile`.
+Run `bun run generate` and inspect generated changes before
+`bun run check:generated`, `bun run test` and `bun run test:contracts:browser`;
+the last command now builds Actors, Objects and Stream WASM before compiling
+and exercising the Actors browser client. These are integration qualification
+steps, not evidence of checks executed while porting the dependency updates.

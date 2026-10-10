@@ -6,6 +6,7 @@ release commit.
 
 ## 0.2.0 - Unreleased
 
+- Update the current JavaScript toolchain and protobuf/Connect dependencies and pin maintained GitHub Actions to their audited releases. Preserve the native binding load-error patch on NAPI CLI 3.10.8, whose upstream cause chain does not replace the existing `AggregateError.errors` surface. Browser Actors conformance now builds Actors WASM before compiling its real client.
 - Move the public Objects SDK, Stream contract and native Filesystem Objects composition to the sole v1 contract. Remove historical clients, readers and compatibility artifacts. Local roots with obsolete format discriminators fail closed without upgrade or overwrite.
 - Complete the public Actors v1, Workers v1 and Stream v1 transport surfaces under the unified breaking candidate version. Publication and live Cloud acceptance require separate qualification.
 - Native Rust Actors, Workers, Objects v1 and Stream gRPC (including their installed N-API routes) trust platform roots through `rustls-platform-verifier`; Linux honors `SSL_CERT_FILE` and `SSL_CERT_DIR`. An explicitly supplied PEM CA now replaces ambient trust instead of augmenting it. Objects mTLS identity behavior is retained. HTTP, browser and direct TypeScript ConnectRPC trust is unchanged.

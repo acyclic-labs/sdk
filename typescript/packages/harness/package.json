@@ -28,8 +28,8 @@
     "test:browser:mcp": "node test/mcp-http-fixture.mjs",
     "test:client:browser": "bun test/client-framework-browser.mjs"
   },
-  "dependencies": { "@bufbuild/protobuf": "2.15.0" },
+  "dependencies": { "@bufbuild/protobuf": "2.16.0" },
   "peerDependencies": { "@acyclic-labs/objects": "0.2.0", "react": "^19.0.0" },
   "peerDependenciesMeta": { "@acyclic-labs/objects": { "optional": true }, "react": { "optional": true } },
-  "devDependencies": { "@types/bun": "1.4.2", "@types/node": "26.4.1", "@types/react": "19.3.0", "@types/react-dom": "19.3.0", "bun-types": "1.4.0", "fake-indexeddb": "6.2.4", "react-dom": "19.3.0", "svelte": "5.57.2", "typescript": "7.0.2", "react": "19.3.0" }
+  "devDependencies": { "@types/bun": "1.4.2", "@types/node": "26.6.4", "@types/react": "19.3.0", "@types/react-dom": "19.3.0", "bun-types": "1.4.2", "fake-indexeddb": "6.2.5", "react-dom": "19.3.0", "svelte": "5.57.2", "typescript": "7.0.2", "react": "19.3.0" }
 }
