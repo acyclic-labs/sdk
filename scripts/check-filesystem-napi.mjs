@@ -33,6 +33,9 @@ if (childBinding !== undefined) {
 
 const adapterOnly = process.argv.includes("--adapter-only");
 const adapter = adapterOnly || process.argv.includes("--adapter");
+if (adapter && (process.versions.bun !== undefined || !/^v24\./u.test(process.version))) {
+  throw new Error("filesystem retained native qualification requires actual Node.js 24, not Bun's emulated Node identity");
+}
 const args = process.argv.slice(2).filter((value) => value !== "--adapter" && value !== "--adapter-only");
 if (args.length !== 4 || args[0] !== "--bundle" || args[2] !== "--producer-receipt"
     || !isAbsolute(args[1]) || !isAbsolute(args[3])) {
@@ -58,6 +61,7 @@ try {
   const runtimeEnv = { ...process.env };
   delete runtimeEnv.GIT_DIR;
   delete runtimeEnv.GIT_WORK_TREE;
+  if (adapter) await rm(resolve(bundle, "..", "qualification", "runtime-qualification.json"), { force: true });
   await /** @type {Promise<void>} */ (new Promise((resolveChild, rejectChild) => {
     const child = spawn(process.execPath, [fileURLToPath(import.meta.url)], {
       env: {
@@ -117,6 +121,9 @@ async function qualify(bindingPath, engineRoot) {
 
 async function qualifyAdapter(bindingPath, engineRoot) {
   if (engineRoot === undefined) throw new Error("N-API adapter root is absent");
+  if (process.versions.bun !== undefined || !/^v24\./u.test(process.version)) {
+    throw new Error("filesystem retained native qualification requires an actual Node.js 24 child runtime");
+  }
   // Pack maintained manifests and exact privately retained bytes, then install
   // real archives before exercising the public createRequire loader.
   const installationRoot = join(engineRoot, "installed");
@@ -168,9 +175,10 @@ async function qualifyAdapter(bindingPath, engineRoot) {
   const proof = {
     schema: "acyclic.filesystem.native-runtime-qualification.v1",
     source_commit: metadata.source_revision, source_sha256: metadata.source_sha256, target: metadata.selected_target,
-    platform: process.platform, arch: process.arch, node: process.version,
+    platform: process.platform, arch: process.arch, runtime: "node", node: process.version,
     artifact: metadata.artifact,
     producer_receipt_sha256: `sha256:${createHash("sha256").update(await readFile(receipt)).digest("hex")}`,
+    retained_artifact: { path: `acyclic-fs-${version}-${process.platform}-${process.arch}.node`, sha256: metadata.artifact.sha256, bytes: metadata.artifact.bytes },
     archives: await Promise.all([parentArchive, companionArchive].map(async path => ({
       path: path.split(/[\\/]/u).at(-1), sha256: `sha256:${createHash("sha256").update(await readFile(path)).digest("hex")}`,
     }))),
@@ -300,6 +308,15 @@ async function qualifyAdapter(bindingPath, engineRoot) {
   ], { stdio: "inherit" });
   if (nodeConsumer.error) throw nodeConsumer.error;
   if (nodeConsumer.status !== 0) throw new Error("installed native Node.js consumer qualification failed");
+  const retainedPath = join(output, proof.retained_artifact.path);
+  await copyFile(bindingPath, retainedPath);
+  if (`sha256:${createHash("sha256").update(await readFile(retainedPath)).digest("hex")}` !== metadata.artifact.sha256) {
+    throw new Error("retained privately tested ABI bytes differ from qualified artifact");
+  }
+  await writeFile(join(output, "SHA256SUMS"), [
+    ...proof.archives.map(entry => `${entry.sha256.slice("sha256:".length)}  ${entry.path}`),
+    `${proof.retained_artifact.sha256.slice("sha256:".length)}  ${proof.retained_artifact.path}`,
+  ].sort().join("\n") + "\n");
   await writeFile(join(output, "runtime-qualification.json"), `${JSON.stringify(proof, null, 2)}\n`);
   console.log(`acyclic-fs native TypeScript adapter passed on ${process.platform}-${process.arch}`);
 }

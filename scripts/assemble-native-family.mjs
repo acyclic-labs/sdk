@@ -158,14 +158,18 @@ function assertNativeReceipt(receipt, metadata) {
   if (JSON.stringify(reconstructed) !== JSON.stringify(metadata.build_inputs) || objectDigest(reconstructed) !== receipt.published_build_inputs_sha256) fail("native receipt reconstructed build inputs differ from published recipe");
 }
 function assertNativeRuntimeQualification(proof, metadata, companion, receiptBytes) {
+  const companionAsset = `${companion.name.replace(/^@/u, "").replace("/", "-")}-${metadata.version}.tgz`;
+  const expectedArchives = [parentAsset(metadata.version), companionAsset].sort();
+  const retainedPath = `acyclic-fs-${metadata.version}-${proof.platform}-${proof.arch}.node`;
   if (proof.schema !== "acyclic.filesystem.native-runtime-qualification.v1"
       || proof.source_commit !== metadata.source_revision || proof.source_sha256 !== metadata.source_sha256
       || proof.target !== metadata.selected_target || !companion.os.includes(proof.platform)
-      || !companion.cpu.includes(proof.arch) || !/^v24\./u.test(proof.node ?? "")
+      || !companion.cpu.includes(proof.arch) || proof.runtime !== "node" || !/^v24\./u.test(proof.node ?? "")
       || metadata.artifact.path !== `generated/native/${companion.main}`
       || !isDeepStrictEqual(proof.artifact, metadata.artifact)
       || proof.producer_receipt_sha256 !== `sha256:${createHash("sha256").update(receiptBytes).digest("hex")}`
-      || !Array.isArray(proof.archives) || proof.archives.length !== 2
+      || !isDeepStrictEqual(proof.retained_artifact, { path: retainedPath, sha256: metadata.artifact.sha256, bytes: metadata.artifact.bytes })
+      || !Array.isArray(proof.archives) || !isDeepStrictEqual(proof.archives.map(entry => entry.path).sort(), expectedArchives)
       || proof.archives.some(entry => !/^[^/\\]+\.tgz$/u.test(entry.path ?? "") || !/^sha256:[0-9a-f]{64}$/u.test(entry.sha256 ?? ""))) {
     fail("filesystem native runtime qualification source, artifact, compiler receipt or architecture differs");
   }
@@ -397,6 +401,8 @@ async function main() {
             const archivePath = join(bundle.path, "..", "qualification", archive.path);
             if (`sha256:${digest(archivePath)}` !== archive.sha256) fail("filesystem tested archive digest differs");
           }
+          const retainedPath = join(bundle.path, "..", "qualification", proof.retained_artifact.path);
+          if (`sha256:${digest(retainedPath)}` !== proof.retained_artifact.sha256) fail("filesystem tested retained ABI asset digest differs");
         }
         await cp(original, join(attestation, name));
         await cp(original, join(companionRoot, name));

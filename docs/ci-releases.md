@@ -88,6 +88,12 @@ The six-target assembler and publisher reject absent/mismatched runtime receipts
 artifacts, source, package metadata, and checksums; companions publish before
 the neutral parent.
 
+It also retains the exact privately tested bytes as
+`acyclic-fs-0.2.0-<platform>-<arch>.node` with `SHA256SUMS`; this asset is not a
+loader alias. The companion uses the maintained NAPI filename for those same
+bytes. Runtime receipts accept actual Node 24 only, not Bun's Node-version
+emulation, and require distinct canonical parent/companion archives.
+
 Linux ARM64 now retains source-bound native output. Darwin Intel addons run
 under checksum-pinned Intel Node and Bun via Rosetta, not ARM Node. Windows
 ARM64 uses the narrowly scoped `windows-11-arm` lane and ARM64 Node; x64 Bun
