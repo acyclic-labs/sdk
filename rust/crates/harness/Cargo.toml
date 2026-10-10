@@ -41,7 +41,7 @@ harness = false
 [features]
 # Native presentation only; this does not select providers or grant authority.
 terminal = ["dep:hex"]
-wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
+wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen"]
 # Provider adapters. Each pulls only its own SDK family.
 filesystem = ["dep:acyclic-fs", "acyclic-fs/memory", "dep:hex"]
 filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local"]
@@ -82,7 +82,6 @@ uuid.workspace = true
 serde-wasm-bindgen = { workspace = true, optional = true }
 tsify = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
-wasm-bindgen-futures = { workspace = true, optional = true }
 
 [dev-dependencies]
 async-trait.workspace = true
@@ -91,6 +90,9 @@ async-trait.workspace = true
 prost-build.workspace = true
 protoc-bin-vendored.workspace = true
 tonic-prost-build = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optional = true }
