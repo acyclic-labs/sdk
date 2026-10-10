@@ -4,6 +4,7 @@ import {pinnedActions,rustFormatNeeded} from './static-policy.mjs';
 
 test('every supported action reference is pinned and alternative YAML forms fail closed',()=>{
   pinnedActions('workflow.yml',`  - uses: actions/checkout@${'a'.repeat(40)}\n  - uses: ./.github/actions/local\n# uses: example@main`);
+  pinnedActions('workflow.yml',`  - run: |\n      echo 'uses: example@main'\n  - uses: ./.github/actions/local`);
   for (const source of ['- {uses: actions/checkout@main}', '- "uses": actions/checkout@main',
     '- uses: actions/checkout@main', '- uses: *action', '- {"uses": actions/checkout@main}']) {
     assert.throws(()=>pinnedActions('workflow.yml',source));
