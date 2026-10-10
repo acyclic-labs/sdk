@@ -68,6 +68,15 @@ pub struct SummaryForkCapture {
 impl SummaryForkCapture {
     /// Validates the exact typed capture before provider residency checks.
     pub fn validate(&self, child_private: &VolumeRef) -> Result<()> {
+        self.validate_with_work(child_private, &mut None)
+    }
+
+    pub(crate) fn validate_with_work(
+        &self,
+        child_private: &VolumeRef,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        let mut work = super::ForkValidationWork::new(work)?;
         self.selection.validate()?;
         if self
             .payloads
@@ -90,8 +99,10 @@ impl SummaryForkCapture {
                 "summary fork context is not the selected child capture".into(),
             ));
         }
+        work.slots::<&str>(self.payloads.len())?;
         let mut paths = std::collections::BTreeSet::new();
         for file in &self.payloads {
+            work.checkpoint()?;
             self.selection.limits.validate_file(file)?;
             if file.volume() != child_private
                 || !file
@@ -104,10 +115,12 @@ impl SummaryForkCapture {
                 ));
             }
         }
+        work.slots::<[u8; 32]>(self.references.len())?;
         let mut refs = std::collections::BTreeSet::new();
         for file in &self.references {
+            work.checkpoint()?;
             self.selection.limits.validate_file(file)?;
-            if !refs.insert(crate::contract::canonical_json_digest(file)?) {
+            if !refs.insert(work.digest(file)?) {
                 return Err(Error::Invalid(
                     "summary fork reference appears twice".into(),
                 ));

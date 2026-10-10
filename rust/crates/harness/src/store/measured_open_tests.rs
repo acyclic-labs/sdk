@@ -1,0 +1,395 @@
+#[cfg(feature = "filesystem")]
+mod measured_open_tests {
+    use super::*;
+    use acyclic_fs::{CancellationToken, WorkBudget, WorkCounters};
+    use std::sync::atomic::Ordering;
+
+    type Provider = crate::test_stream::LostSessionAck<MemoryStream>;
+
+    fn budget() -> WorkBudget {
+        let bytes = 64 * acyclic_stream::MAX_COMMAND_BYTES as u64;
+        WorkBudget {
+            authority_records_read: 128,
+            authority_bytes_read: bytes,
+            backend_read_operations: 128,
+            source_bytes_read: bytes,
+            bytes_copied: bytes,
+            bytes_encoded: bytes,
+            bytes_hashed: bytes,
+            output_bytes: bytes,
+            items_examined: 1_000_000,
+            items_returned: 128,
+            allocation_operations: 1_000_000,
+            peak_allocation_bytes: bytes,
+            ..WorkBudget::default()
+        }
+    }
+
+    async fn fixture() -> Result<(Arc<Provider>, StreamClient<Provider>)> {
+        let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+        let client = StreamClient::new(provider.clone());
+        let mut writer = with_content(StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?);
+        for revision in 0..69 {
+            writer.execute(projection_command(u128::from(revision + 1), revision)?).await?;
+        }
+        provider.forbid_writes.store(true, Ordering::SeqCst);
+        provider.reset_io();
+        Ok((provider, client))
+    }
+
+    #[tokio::test]
+    async fn measured_checkpoint_open_matches_original_cut_and_exact_sdk_work() -> Result<()> {
+        let (provider, client) = fixture().await?;
+        let expected = StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?.reducer().snapshot()?;
+        let loaded = checkpoints::load(&client, &authority(), &issuer().verifier(), default_projection_read_limits()).await?;
+        let payload_bytes = crate::contract::canonical_json_bytes(loaded.snapshot.as_ref().expect("durable checkpoint"))?.len() as u64;
+        let suffix = HistoryReader::new(&client, &authority(), issuer().verifier())?.read_page_counted(
+            &HistoryCursor { authority: authority(), after_revision: 64, through_revision: 69 },
+            default_projection_read_limits(),
+        ).await?;
+        let cancellation = CancellationToken::new();
+        provider.reset_io();
+        let receipt = StreamAggregate::open_measured(&client, authority(), issuer().verifier(), schemas(), budget(), &cancellation).await.map_err(|failure| failure.error)?;
+        assert_eq!(receipt.value.reducer().snapshot()?, expected);
+        assert_eq!(receipt.value.reducer().revision(), 69);
+        let io = provider.io_snapshot();
+        assert_eq!(receipt.work.backend_read_operations, io.reads + io.tails as u64);
+        assert_eq!(receipt.work.backend_read_operations, 6);
+        assert_eq!(receipt.work.authority_records_read, 8);
+        assert_eq!(receipt.work.authority_bytes_read, io.read_bytes);
+        assert_eq!(receipt.work.source_bytes_read, loaded.consumed_bytes + suffix.bytes);
+        assert_eq!(receipt.work.output_bytes, payload_bytes + suffix.bytes);
+        assert_eq!(receipt.work.items_returned, 6);
+        assert!(receipt.work.bytes_copied >= payload_bytes);
+        assert!(receipt.work.bytes_hashed >= 2 * payload_bytes);
+        // The first raw chunk coexists with the assembly buffer and raw head
+        // plus canonical anchor. Opaque decoded snapshot allocations are excluded.
+        assert!(receipt.work.peak_allocation_bytes >= loaded.consumed_bytes + payload_bytes);
+        assert!(receipt.work.allocation_operations > 0);
+        assert_eq!(io.writes + io.inspections + io.commit_reads + io.other_calls, 0);
+        let exact = receipt.work;
+        provider.reset_io();
+        let repeated = StreamAggregate::open_measured(&client, authority(), issuer().verifier(), schemas(), exact, &cancellation).await.map_err(|failure| failure.error)?;
+        assert_eq!(repeated.work, exact);
+        assert_eq!(repeated.value.reducer().snapshot()?, expected);
+        for narrow in [
+            WorkBudget { backend_read_operations: 0, ..budget() },
+            WorkBudget { backend_read_operations: 1, ..budget() },
+            WorkBudget { authority_bytes_read: 0, ..budget() },
+            WorkBudget { source_bytes_read: exact.source_bytes_read - 1, ..budget() },
+            WorkBudget { bytes_copied: payload_bytes - 1, ..budget() },
+            WorkBudget { bytes_encoded: 0, ..budget() },
+            WorkBudget { bytes_hashed: 0, ..budget() },
+            WorkBudget { output_bytes: payload_bytes - 1, ..budget() },
+            WorkBudget { allocation_operations: 0, ..budget() },
+            WorkBudget { peak_allocation_bytes: exact.peak_allocation_bytes - 1, ..budget() },
+        ] {
+            provider.reset_io();
+            let failure = StreamAggregate::open_measured(&client, authority(), issuer().verifier(), schemas(), narrow, &cancellation).await.err().expect("one narrow allowance must reject");
+            let io = provider.io_snapshot();
+            assert_eq!(failure.work.backend_read_operations, io.reads + io.tails as u64);
+            assert_eq!(failure.work.authority_bytes_read, io.read_bytes);
+            assert_eq!(failure.work.source_bytes_read, io.read_bytes);
+            assert_eq!(failure.work.output_bytes, 0);
+            assert_eq!(failure.work.items_returned, 0);
+            assert_eq!(io.writes + io.inspections + io.commit_reads + io.other_calls, 0);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn measured_checkpoint_faults_and_issuer_tamper_keep_failed_prefixes() -> Result<()> {
+        let (provider, client) = fixture().await?;
+        let canonical_path = authority().stream_path()?;
+        let path = acyclic_stream::StreamPath::new(format!("harness/v3/projection-checkpoints/{}", canonical_path.strip_prefix("harness/v2/").expect("canonical authority")))?;
+        let head_bytes = operations::one_record(&client, &path, 0).await?.expect("checkpoint head").value.len() as u64;
+        let cancellation = CancellationToken::new();
+        for (fault, records, raw_bytes) in [
+            (1, 1, head_bytes),
+            (2, 2, 2 * head_bytes),
+            (3, 0, 0),
+            (4, 1, 7),
+            (5, 1, acyclic_stream::MAX_RECORD_BYTES as u64 + 1),
+            (6, 1, head_bytes),
+        ] {
+            provider.reset_io();
+            provider.history_read_fault.store(fault, Ordering::SeqCst);
+            let failure = StreamAggregate::open_measured(&client, authority(), issuer().verifier(), schemas(), budget(), &cancellation).await.err().expect("mutated durable checkpoint read must reject");
+            assert_eq!(failure.work.backend_read_operations, 2);
+            assert_eq!(failure.work.authority_records_read, records);
+            assert_eq!(failure.work.authority_bytes_read, raw_bytes);
+            assert_eq!(failure.work.source_bytes_read, raw_bytes);
+            assert_eq!(failure.work.output_bytes, 0);
+            assert_eq!(failure.work.items_returned, 0);
+            assert_eq!(provider.io_snapshot().writes, 0);
+            assert_eq!(StreamAggregate::open_measured(&client, authority(), issuer().verifier(), schemas(), budget(), &cancellation).await.map_err(|failure| failure.error)?.value.reducer().revision(), 69);
+        }
+        provider.reset_io();
+        let wrong_issuer = AuthorityIssuer::new("test", [8; 32], authority());
+        let failure = StreamAggregate::open_measured(&client, authority(), wrong_issuer.verifier(), schemas(), budget(), &cancellation).await.err().expect("checkpoint canonical anchor must retain original issuer authentication");
+        assert_eq!(failure.work.backend_read_operations, 3);
+        assert_eq!(failure.work.authority_records_read, 2);
+        assert_eq!(failure.work.authority_bytes_read, provider.io_snapshot().read_bytes);
+        assert_eq!(failure.work.output_bytes, 0);
+        assert_eq!(failure.work.items_returned, 0);
+        provider.reset_io();
+        let failure = StreamAggregate::open_measured(&client, authority(), issuer().verifier(), SchemaRegistry::new(), budget(), &cancellation).await.err().expect("decoded checkpoint must still authenticate its schema registry");
+        assert_eq!(failure.work.authority_bytes_read, provider.io_snapshot().read_bytes);
+        assert_eq!(failure.work.output_bytes, 0);
+        assert_eq!(failure.work.items_returned, 0);
+        assert_eq!(provider.io_snapshot().writes, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn measured_checkpoint_cancellation_stops_before_next_sdk_call() -> Result<()> {
+        let (provider, client) = fixture().await?;
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let uncancelled = CancellationToken::new();
+        for (work_budget, token) in [(budget(), &cancelled), (WorkBudget::UNBOUNDED, &uncancelled)] {
+            provider.reset_io();
+            let failure = StreamAggregate::open_measured(&client, authority(), issuer().verifier(), schemas(), work_budget, token).await.err().expect("invalid preflight must not touch provider");
+            assert_eq!(*failure.work, WorkCounters::default());
+            assert_eq!(provider.io_snapshot().reads + provider.io_snapshot().tails as u64, 0);
+        }
+        let cancellation = CancellationToken::new();
+        *provider.history_cancel_after_tail.lock().map_err(|_| Error::Storage("cancellation control poisoned".into()))? = Some(cancellation.clone());
+        provider.reset_io();
+        let failure = StreamAggregate::open_measured(&client, authority(), issuer().verifier(), schemas(), budget(), &cancellation).await.err().expect("cancellation after cut must precede checkpoint read");
+        assert_eq!(failure.work.backend_read_operations, 1);
+        assert_eq!(failure.work.authority_records_read, 0);
+        assert_eq!(failure.work.output_bytes, 0);
+        assert_eq!(provider.io_snapshot().reads, 0);
+        assert_eq!(provider.io_snapshot().tails, 1);
+        provider.reset_io();
+        let other = Authority { id: "other".into(), ..authority() };
+        let failure = StreamAggregate::open_measured(&client, other, issuer().verifier(), schemas(), budget(), &CancellationToken::new()).await.err().expect("wrong audience must fail before provider IO");
+        assert!(matches!(failure.error, Error::Unauthorized(_)));
+        assert_eq!(*failure.work, WorkCounters::default());
+        let empty_provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+        let empty = StreamClient::new(empty_provider.clone());
+        let receipt = StreamAggregate::open_measured(&empty, authority(), issuer().verifier(), schemas(), budget(), &CancellationToken::new()).await.map_err(|failure| failure.error)?;
+        assert_eq!(receipt.value.reducer().revision(), 0);
+        assert_eq!(receipt.work.backend_read_operations, 1);
+        assert_eq!(receipt.work.authority_bytes_read, 0);
+        assert_eq!(receipt.work.items_returned, 0);
+        assert_eq!(empty_provider.io_snapshot().writes, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn measured_cold_retirement_preserves_original_atomic_indexes() -> Result<()> {
+        use crate::core::EffectGuarantee;
+        use crate::{EffectAttemptId, EffectId};
+        let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+        let client = StreamClient::new(provider.clone());
+        let request = content()?;
+        let schema_bytes = br#"{"type":"object"}"#;
+        let schema = FileRef::new(request.volume().clone(), "effects/schema.json", "generation-1", FileDescriptor::from_bytes(schema_bytes, "application/schema+json")?, "schema.json")?;
+        let content_verifier = Arc::new(InteractionContent(BTreeMap::from([
+            (request.path().to_owned(), EXTENSION_BYTES.to_vec()),
+            (schema.path().to_owned(), schema_bytes.to_vec()),
+        ])));
+        let mut writer = StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?.with_content_verifier(content_verifier);
+        let effect_id = EffectId::from_bytes([41; 16]);
+        let attempt_id = EffectAttemptId::from_bytes([42; 16]);
+        let scope = issuer().root("effects", Capabilities::new(["effect:run", "effect:plan", "effect:provider:test.effects"]));
+        let fresh = |identity: u8, revision, action| Command {
+            operation_id: OperationId::from_bytes([identity; 16]),
+            idempotency_key: IdempotencyKey::new(format!("measured-effect-{identity}")).expect("finite key"),
+            expected_revision: revision,
+            scope: scope.clone(),
+            causal_parent: None,
+            action,
+        };
+        writer.execute(fresh(41, 0, Action::PlanEffect { effect_id, provider: "test.effects".into(), guarantee: EffectGuarantee::IdempotentRetry, effect_kind: "test.write".into(), request, result_schema: schema })).await?;
+        writer.execute(fresh(42, 1, Action::MarkEffectDispatched { effect_id, attempt_id })).await?;
+        let observation = issuer().attest_effect(effect_id, writer.reducer().effect(effect_id).expect("dispatched effect"), attempt_id, EffectStatus::Failed { message: "known failure".into() })?;
+        writer.execute(fresh(43, 2, Action::ResolveEffect { observation })).await?;
+        let expected = writer.reducer().snapshot()?;
+        provider.forbid_writes.store(true, Ordering::SeqCst);
+        provider.reset_io();
+        let cancellation = CancellationToken::new();
+        let receipt = StreamAggregate::open_measured(&client, authority(), issuer().verifier(), schemas(), budget(), &cancellation).await.map_err(|failure| failure.error)?;
+        assert_eq!(receipt.value.reducer().snapshot()?, expected);
+        assert_eq!(receipt.work.backend_read_operations, 6);
+        assert_eq!(receipt.work.authority_records_read, 5);
+        assert_eq!(receipt.work.authority_bytes_read, provider.io_snapshot().read_bytes);
+        assert_eq!(receipt.work.backend_read_operations, provider.io_snapshot().reads + provider.io_snapshot().tails as u64);
+        assert_eq!(receipt.work.items_returned, 3);
+        let terminal = expected.events.last().expect("original resolved event");
+        provider.reset_io();
+        let mut work = history::HistoryWork::new(budget(), &cancellation);
+        work.preflight()?;
+        let result = effects::retirement_proof_for_event_with_work(&client, &authority(), terminal, &mut Some(&mut work)).await;
+        let proof = work.finish(result).map_err(|failure| failure.error)?;
+        assert!(proof.value);
+        assert_eq!(proof.work.backend_read_operations, 4);
+        assert_eq!(proof.work.authority_records_read, 3);
+        assert_eq!(proof.work.authority_bytes_read, provider.io_snapshot().read_bytes);
+        assert!(proof.work.bytes_encoded > 0);
+        provider.reset_io();
+        let mut work = history::HistoryWork::new(WorkBudget { bytes_encoded: 0, ..budget() }, &cancellation);
+        work.preflight()?;
+        let result = effects::retirement_proof_for_event_with_work(&client, &authority(), terminal, &mut Some(&mut work)).await;
+        let failure = work.finish(result).err().expect("original canonical re-encode must admit before owned codec growth");
+        assert_eq!(failure.work.backend_read_operations, 1);
+        assert_eq!(failure.work.authority_records_read, 1);
+        assert_eq!(failure.work.authority_bytes_read, provider.io_snapshot().read_bytes);
+        assert_eq!(failure.work.bytes_encoded, 0);
+        assert_eq!(failure.work.output_bytes, 0);
+        provider.hide_aggregate_read.store(true, Ordering::SeqCst);
+        provider.reset_io();
+        let failure = StreamAggregate::open_measured(&client, authority(), issuer().verifier(), schemas(), budget(), &cancellation).await.err().expect("unavailable original operation index must preserve spent canonical suffix work");
+        assert_eq!(failure.work.backend_read_operations, 4);
+        assert_eq!(failure.work.authority_records_read, 3);
+        assert_eq!(failure.work.authority_bytes_read, provider.io_snapshot().read_bytes);
+        assert_eq!(failure.work.output_bytes, 0);
+        assert_eq!(failure.work.items_returned, 0);
+        provider.hide_effect_transition_position.store(3, Ordering::SeqCst);
+        provider.reset_io();
+        let failure = StreamAggregate::open_measured(&client, authority(), issuer().verifier(), schemas(), budget(), &cancellation).await.err().expect("missing original terminal effect index cannot retire");
+        assert_eq!(failure.work.backend_read_operations, 6);
+        assert_eq!(failure.work.authority_records_read, 4);
+        assert_eq!(failure.work.authority_bytes_read, provider.io_snapshot().read_bytes);
+        assert_eq!(failure.work.output_bytes, 0);
+        assert_eq!(failure.work.items_returned, 0);
+        provider.hide_effect_transition_position.store(0, Ordering::SeqCst);
+        provider.reset_io();
+        let failure = StreamAggregate::open_measured(&client, authority(), issuer().verifier(), schemas(), WorkBudget { backend_read_operations: 4, ..budget() }, &cancellation).await.err().expect("retirement proof shares the original work allowance");
+        assert_eq!(failure.work.backend_read_operations, 4);
+        assert_eq!(failure.work.authority_records_read, 4);
+        assert_eq!(failure.work.authority_bytes_read, provider.io_snapshot().read_bytes);
+        assert_eq!(failure.work.output_bytes, 0);
+        assert_eq!(provider.io_snapshot().writes, 0);
+        assert_eq!(StreamAggregate::open_measured(&client, authority(), issuer().verifier(), schemas(), budget(), &cancellation).await.map_err(|failure| failure.error)?.value.reducer().snapshot()?, expected);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn measured_snapshot_authentication_observes_original_encoder_and_mac_failures() -> Result<()> {
+        let (provider, client) = fixture().await?;
+        let snapshot = checkpoints::load(&client, &authority(), &issuer().verifier(), default_projection_read_limits()).await?.snapshot.expect("durable checkpoint");
+        let expected = Reducer::restore(snapshot.clone(), issuer().verifier(), schemas())?;
+        let cancellation = CancellationToken::new();
+        let mut work = history::HistoryWork::new(budget(), &cancellation);
+        work.preflight()?;
+        provider.reset_io();
+        let result = Reducer::restore_with_work(snapshot.clone(), issuer().verifier(), schemas(), &mut Some(&mut work));
+        let receipt = work.finish(result).map_err(|failure| failure.error)?;
+        assert_eq!(receipt.value, expected);
+        assert!(receipt.work.bytes_encoded > 0);
+        assert!(receipt.work.bytes_hashed > 0);
+        assert!(receipt.work.peak_allocation_bytes > 0);
+        assert_eq!(receipt.work.authority_bytes_read, 0);
+        assert_eq!(receipt.work.backend_read_operations, 0);
+        assert_eq!(receipt.work.source_bytes_read, 0);
+        for narrow in [
+            WorkBudget { bytes_encoded: 0, ..budget() },
+            WorkBudget { bytes_hashed: 0, ..budget() },
+            WorkBudget { peak_allocation_bytes: 0, ..budget() },
+        ] {
+            let mut work = history::HistoryWork::new(narrow, &cancellation);
+            work.preflight()?;
+            let result = Reducer::restore_with_work(snapshot.clone(), issuer().verifier(), schemas(), &mut Some(&mut work));
+            let failure = work.finish(result).err().expect("original snapshot crypto shares the cumulative work allowance");
+            if narrow.bytes_encoded == 0 { assert_eq!(failure.work.bytes_encoded, 0); }
+            if narrow.peak_allocation_bytes == 0 { assert_eq!(failure.work.peak_allocation_bytes, 0); }
+            if narrow.bytes_hashed == 0 {
+                assert!(failure.work.bytes_encoded > 0);
+                assert!(failure.work.peak_allocation_bytes > 0);
+                assert_eq!(failure.work.bytes_hashed, 0);
+            }
+            assert_eq!(failure.work.authority_bytes_read, 0);
+            assert_eq!(failure.work.backend_read_operations, 0);
+            assert_eq!(failure.work.output_bytes, 0);
+        }
+        let mut forged = snapshot.clone();
+        forged.attestation[0] ^= 1;
+        assert!(matches!(Reducer::restore(forged.clone(), issuer().verifier(), schemas()), Err(Error::Unauthorized(_))));
+        let mut work = history::HistoryWork::new(budget(), &cancellation);
+        let result = Reducer::restore_with_work(forged, issuer().verifier(), schemas(), &mut Some(&mut work));
+        let failure = work.finish(result).err().expect("original snapshot MAC must reject even after its state digest verifies");
+        assert!(matches!(failure.error, Error::Unauthorized(_)));
+        assert!(failure.work.bytes_encoded > 0);
+        assert!(failure.work.bytes_hashed > 0);
+        assert_eq!(failure.work.output_bytes, 0);
+        assert_eq!(failure.work.items_returned, 0);
+        let mut forged = snapshot;
+        forged.state_digest[0] ^= 1;
+        let mut work = history::HistoryWork::new(budget(), &cancellation);
+        let result = Reducer::restore_with_work(forged, issuer().verifier(), schemas(), &mut Some(&mut work));
+        let failure = work.finish(result).err().expect("original complete projection digest must reject");
+        assert!(matches!(failure.error, Error::Invalid(_)));
+        assert!(failure.work.bytes_encoded > 0);
+        assert!(failure.work.bytes_hashed > 0);
+        assert_eq!(failure.work.output_bytes, 0);
+        assert_eq!(provider.io_snapshot().reads + provider.io_snapshot().tails as u64, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn exact_historical_open_keeps_admitted_origin_after_later_parent_appends() -> Result<()> {
+        let (provider, client) = fixture().await?;
+        let limits = default_projection_read_limits();
+        let original = StreamAggregate::open_at_revision_with_read_limits(&client, authority(), issuer().verifier(), schemas(), 65, limits).await?.reducer().snapshot()?;
+        provider.forbid_writes.store(false, Ordering::SeqCst);
+        let mut writer = with_content(StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?);
+        for revision in 69..134 {
+            writer.execute(projection_command(u128::from(revision + 1), revision)?).await?;
+        }
+        provider.forbid_writes.store(true, Ordering::SeqCst);
+        provider.stale_projection_head_tail.store(2, Ordering::SeqCst);
+        let cancellation = CancellationToken::new();
+        provider.reset_io();
+        let admitted = StreamAggregate::open_at_revision_measured(&client, authority(), issuer().verifier(), schemas(), 65, limits, budget(), &cancellation).await.map_err(|failure| failure.error)?;
+        assert_eq!(admitted.value.reducer().snapshot()?, original);
+        assert_eq!(admitted.value.reducer().revision(), 65);
+        assert_eq!(admitted.work.backend_read_operations, 6);
+        assert_eq!(admitted.work.authority_records_read, 4);
+        assert_eq!(admitted.work.items_returned, 2);
+        assert_eq!(admitted.work.authority_bytes_read, provider.io_snapshot().read_bytes);
+        assert_eq!(provider.io_snapshot().writes, 0);
+        // The stale head-tail control remains unused: selection is pinned by
+        // the admitted canonical revision, never the latest checkpoint tail.
+        assert_eq!(provider.stale_projection_head_tail.load(Ordering::SeqCst), 2);
+        provider.stale_projection_head_tail.store(0, Ordering::SeqCst);
+        for cut in [0_u64, 63, 64, 127, 128, 134] {
+            provider.reset_io();
+            let historical = StreamAggregate::open_at_revision_measured(&client, authority(), issuer().verifier(), schemas(), cut, limits, budget(), &cancellation).await.map_err(|failure| failure.error)?;
+            assert_eq!(historical.value.reducer().revision(), cut);
+            let cached = if cut < 64 { cut as usize } else { (cut % 64 + 1) as usize };
+            assert_eq!(historical.value.reducer().snapshot()?.events.len(), cached);
+            let io = provider.io_snapshot();
+            assert_eq!(historical.work.backend_read_operations, io.reads + io.tails as u64);
+            assert_eq!(historical.work.authority_bytes_read, io.read_bytes);
+            assert_eq!(io.writes + io.inspections + io.commit_reads + io.other_calls, 0);
+        }
+        provider.reset_io();
+        let future = StreamAggregate::open_at_revision_measured(&client, authority(), issuer().verifier(), schemas(), 135, limits, budget(), &cancellation).await.err().expect("uncommitted original revision cannot use latest projection");
+        assert_eq!(future.work.backend_read_operations, 1);
+        assert_eq!(future.work.authority_records_read, 0);
+        assert_eq!(future.work.output_bytes, 0);
+        assert_eq!(provider.io_snapshot().reads, 0);
+        provider.reset_io();
+        let narrow = StreamAggregate::open_at_revision_measured(&client, authority(), issuer().verifier(), schemas(), 65, HistoryReadLimits { maximum_events: 1, ..limits }, budget(), &cancellation).await.err().expect("exact historical suffix must share original finite event allowance");
+        assert_eq!(narrow.work.backend_read_operations, 2);
+        assert_eq!(narrow.work.authority_records_read, 1);
+        assert_eq!(narrow.work.output_bytes, 0);
+        for fault in [3, 4] {
+            provider.reset_io();
+            provider.history_read_fault.store(fault, Ordering::SeqCst);
+            let failed = StreamAggregate::open_at_revision_measured(&client, authority(), issuer().verifier(), schemas(), 65, limits, budget(), &cancellation).await.err().expect("unavailable/tampered original checkpoint cannot fall forward to latest checkpoint");
+            assert_eq!(failed.work.backend_read_operations, 2);
+            assert_eq!(failed.work.output_bytes, 0);
+            assert_eq!(failed.work.items_returned, 0);
+            assert_eq!(StreamAggregate::open_at_revision_with_read_limits(&client, authority(), issuer().verifier(), schemas(), 65, limits).await?.reducer().snapshot()?, original);
+        }
+        let exact = StreamAggregate::open_at_revision_measured(&client, authority(), issuer().verifier(), schemas(), 134, limits, budget(), &cancellation).await.map_err(|failure| failure.error)?;
+        let latest = StreamAggregate::open_measured(&client, authority(), issuer().verifier(), schemas(), budget(), &cancellation).await.map_err(|failure| failure.error)?;
+        assert_eq!(exact.value.reducer().snapshot()?, latest.value.reducer().snapshot()?);
+        assert_eq!(exact.work, latest.work);
+        Ok(())
+    }
+}

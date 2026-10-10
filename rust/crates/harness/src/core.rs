@@ -20,6 +20,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 mod snapshot;
 pub use snapshot::Snapshot;
+pub(crate) use snapshot::event_clone_reservation;
 
 /// Kind of independently ordered durable aggregate.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -398,8 +399,48 @@ impl AuthorityVerifier {
         Ok(())
     }
 
+    pub(crate) fn verify_with_work(
+        &self, scope: &Scope,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.verify_scope_for_with_work(&self.audience, scope, work)
+    }
+
+    /// Rebinds only the authenticated audience, retaining this original key.
+    /// A caller-supplied verifier or matching issuer label is not authority.
+    pub(crate) fn verify_scope_for_with_work(
+        &self, audience: &Authority, scope: &Scope,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(work) = work.as_deref_mut() {
+            let fixed = 1 + 8 + audience.id.len() as u64
+                + 8 + scope.issuer.len() as u64 + 8 + scope.id.len() as u64
+                + 1 + u64::from(scope.agent.is_some()) * 16
+                + 1 + u64::from(scope.parent_proof.is_some()) * 32;
+            let bytes = scope.capabilities.iter().try_fold(fixed, |total, capability| {
+                total.checked_add(8 + capability.len() as u64)
+                    .ok_or_else(|| Error::Invalid("scope hash byte count overflows".into()))
+            })?;
+            work.hashed_bytes(bytes)?;
+        }
+        let expected = scope_proof(&self.key, audience, &scope.issuer, &scope.id,
+            &scope.capabilities, scope.agent, scope.parent_proof);
+        if scope.issuer != self.id || scope.proof != expected {
+            return Err(Error::Unauthorized("scope proof is invalid".into()));
+        }
+        Ok(())
+    }
+
     fn attest_event(&self, event: &Event) -> Result<[u8; 32]> {
-        let canonical = crate::contract::canonical_json_bytes(&(
+        self.attest_event_with_work(event, &mut None)
+    }
+
+    fn attest_event_with_work(
+        &self,
+        event: &Event,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<[u8; 32]> {
+        let canonical = crate::store::history::canonical_bytes_with_work(&(
             &self.audience,
             event.revision,
             event.operation_id,
@@ -407,16 +448,29 @@ impl AuthorityVerifier {
             &event.scope,
             &event.causal_parent,
             &event.payload,
-        ))?;
+        ), crate::store::default_projection_read_limits().maximum_bytes, work)?;
+        if let Some(work) = work.as_deref_mut() {
+            work.hashed_bytes(b"harness/v2/committed-event\0".len() as u64 + 8 + canonical.len() as u64)?;
+        }
         let mut hasher = blake3::Hasher::new_keyed(&self.key);
         hasher.update(b"harness/v2/committed-event\0");
         hasher.update(&(canonical.len() as u64).to_le_bytes());
         hasher.update(&canonical);
-        Ok(*hasher.finalize().as_bytes())
+        let proof = *hasher.finalize().as_bytes();
+        if let Some(work) = work.as_deref_mut() { work.release_owned(canonical.capacity() as u64)?; }
+        Ok(proof)
     }
 
     pub(crate) fn verify_event(&self, event: &Event) -> Result<()> {
-        if event.scope.issuer != self.id || event.attestation != self.attest_event(event)? {
+        self.verify_event_with_work(event, &mut None)
+    }
+
+    pub(crate) fn verify_event_with_work(
+        &self,
+        event: &Event,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if event.scope.issuer != self.id || event.attestation != self.attest_event_with_work(event, work)? {
             return Err(Error::Unauthorized(
                 "event admission attestation is invalid".into(),
             ));
@@ -464,6 +518,7 @@ impl AuthorityVerifier {
         Ok(*hasher.finalize().as_bytes())
     }
 
+    #[cfg(feature = "filesystem")]
     pub(crate) fn fork_history_selection_proof(
         &self,
         revision: u64,
@@ -1798,17 +1853,38 @@ impl Reducer {
     }
 
     pub(crate) fn verify_command_scope(&self, command: &Command) -> Result<()> {
+        self.verify_command_scope_with_work(command, &mut None)
+    }
+
+    pub(crate) fn verify_command_scope_with_work(
+        &self, command: &Command,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
         self.authority_verifier.verify_audience(&self.authority)?;
-        IdempotencyKey::new(command.idempotency_key.0.clone())?;
-        self.authority_verifier.verify(&command.scope)
+        let key = match work.as_deref_mut() {
+            Some(work) => work.clone_text(&command.idempotency_key.0)?,
+            None => command.idempotency_key.0.clone(),
+        };
+        let capacity = key.capacity() as u64;
+        let valid = IdempotencyKey::new(key).map(|_| ());
+        if let Some(work) = work.as_deref_mut() { work.release_owned(capacity)?; }
+        valid?;
+        self.authority_verifier.verify_with_work(&command.scope, work)
     }
 
     /// Checks an archived admitted event against the exact caller command without re-planning effects.
     pub(crate) fn verify_retained_command(&self, command: &Command, event: &Event) -> Result<()> {
-        self.verify_command_scope(command)?;
-        self.authority_verifier.verify_event(event)?;
+        self.verify_retained_command_with_work(command, event, &mut None)
+    }
+
+    pub(crate) fn verify_retained_command_with_work(
+        &self, command: &Command, event: &Event,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.verify_command_scope_with_work(command, work)?;
+        self.authority_verifier.verify_event_with_work(event, work)?;
         if event.operation_id != command.operation_id
-            || event.intent_digest != canonical_intent(command)?
+            || event.intent_digest != canonical_intent_with_work(command, work)?
         {
             return Err(Error::Conflict(
                 "operation identity is already bound to another intent".into(),
@@ -1918,12 +1994,19 @@ impl Reducer {
         command: &Command,
         migration_verified: bool,
     ) -> Result<ApplyResult> {
+        self.plan_indexed_with_work(command, migration_verified, &mut None)
+    }
+
+    pub(crate) fn plan_indexed_with_work(
+        &self, command: &Command, migration_verified: bool,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<ApplyResult> {
         if migration_verified && !matches!(&command.action, Action::MigrateExtensionState { .. }) {
             return crate::obs::outcome(Err(Error::Invalid(
                 "verified migration planner requires a migration action".into(),
             )));
         }
-        crate::obs::outcome(self.plan_with_migration_boundary(
+        crate::obs::outcome(self.plan_with_migration_boundary_with_work(
             command,
             if migration_verified {
                 Migration::Verified
@@ -1932,6 +2015,7 @@ impl Reducer {
             },
             true,
             None,
+            work,
         ))
     }
 
@@ -2007,8 +2091,19 @@ impl Reducer {
         identity_checked: bool,
         archived_effect: Option<(EffectId, &EffectState)>,
     ) -> Result<ApplyResult> {
-        self.verify_command_scope(command)?;
-        let intent = canonical_intent(command)?;
+        self.plan_with_migration_boundary_with_work(command, migration, identity_checked, archived_effect, &mut None)
+    }
+
+    fn plan_with_migration_boundary_with_work(
+        &self,
+        command: &Command,
+        migration: Migration,
+        identity_checked: bool,
+        archived_effect: Option<(EffectId, &EffectState)>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<ApplyResult> {
+        self.verify_command_scope_with_work(command, work)?;
+        let intent = canonical_intent_with_work(command, work)?;
         if let Some(event) = self.event_for_operation(command.operation_id) {
             if event.intent_digest == intent {
                 return Ok(ApplyResult::Replayed {
@@ -2077,7 +2172,10 @@ impl Reducer {
             causal_parent: command.causal_parent.clone(),
             payload,
         };
-        event.attestation = self.authority_verifier.attest_event(&event)?;
+        event.attestation = match work.as_deref_mut() {
+            Some(work) => self.authority_verifier.attest_event_with_work(&event, &mut Some(work))?,
+            None => self.authority_verifier.attest_event(&event)?,
+        };
         Ok(ApplyResult::Applied { event })
     }
 
@@ -2183,6 +2281,13 @@ impl Reducer {
         )
     )]
     pub fn apply_committed(&mut self, event: Event) -> Result<ApplyResult> {
+        self.apply_committed_with_work(event, &mut None)
+    }
+
+    pub(crate) fn apply_committed_with_work(
+        &mut self, event: Event,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<ApplyResult> {
         self.authority_verifier.verify_audience(&self.authority)?;
         if let Some(existing) = self.event_for_operation(event.operation_id) {
             if existing == &event {
@@ -2201,7 +2306,7 @@ impl Reducer {
                 event.revision
             )));
         }
-        self.authority_verifier.verify_event(&event)?;
+        self.authority_verifier.verify_event_with_work(&event, work)?;
         self.authorize(
             |capability| require_recorded_capability(&event.scope, capability),
             event.scope.agent(),
@@ -2415,6 +2520,7 @@ impl Reducer {
         }
     }
 
+    #[cfg(feature = "filesystem")]
     pub(crate) fn attest_fork_history(
         &self,
         seed: &mut ForkSeed,
@@ -3541,7 +3647,20 @@ fn effect_attestation_proof(
 }
 
 pub(crate) fn canonical_intent(command: &Command) -> Result<[u8; 32]> {
-    crate::contract::canonical_json_digest(command)
+    canonical_intent_with_work(command, &mut None)
+}
+
+pub(crate) fn canonical_intent_with_work(
+    command: &Command,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<[u8; 32]> {
+    let bytes = crate::store::history::canonical_bytes_with_work(
+        command, crate::store::default_projection_read_limits().maximum_bytes, work,
+    )?;
+    if let Some(work) = work.as_deref_mut() { work.hashed_bytes(bytes.len() as u64)?; }
+    let digest = *blake3::hash(&bytes).as_bytes();
+    if let Some(work) = work.as_deref_mut() { work.release_owned(bytes.capacity() as u64)?; }
+    Ok(digest)
 }
 
 fn effect_request_digest(

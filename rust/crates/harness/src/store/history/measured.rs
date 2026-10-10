@@ -26,8 +26,8 @@ impl<P: StreamProvider> HistoryReader<P> {
     /// Reads through the original authenticated page engine with exact visible
     /// SDK tail/read counts and original encoded record bytes, including failures.
     /// `output_bytes` is the source canonical bytes represented by returned events,
-    /// not a re-encoding. Memory counts cover explicit vector capacity and logical
-    /// raw-byte retention; opaque provider/serde/allocator internals are excluded.
+    /// not a re-encoding. Explicit vector capacities and concrete typed/schema
+    /// logical custody are admitted; opaque provider/allocator internals are not RSS.
     pub async fn read_page_measured(
         &self,
         cursor: &HistoryCursor,
@@ -43,21 +43,87 @@ impl<P: StreamProvider> HistoryReader<P> {
         }.await;
         work.finish(result)
     }
+
+    /// Original immutable operation locator and canonical event, without replay.
+    /// Successful output uses canonical source record bytes, never re-encoding.
+    pub async fn operation_event_bounded_measured(
+        &self,
+        operation: crate::OperationId,
+        maximum_bytes: u64,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> MeasuredResult<OperationReceipt<(Option<Event>, u64)>, Error> {
+        let mut work = HistoryWork::new(budget, cancellation);
+        let result = async {
+            work.preflight()?;
+            super::super::operations::find_operation_bounded_with_work(
+                &self.client, self.verifier.audience(), &self.verifier, operation,
+                maximum_bytes, &mut Some(&mut work),
+            ).await
+        }.await;
+        work.finish(result)
+    }
+
+    /// The same pinned, authenticated sequence-index range with one SDK ledger.
+    /// Failure retains actual input prefixes and returns no partial output.
+    pub async fn conversation_range_measured(
+        &self,
+        cursor: &HistoryCursor,
+        after_sequence: u64,
+        through_sequence: u64,
+        limits: HistoryReadLimits,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> MeasuredResult<OperationReceipt<Vec<crate::conversation::ConversationMessage>>, Error> {
+        let mut work = HistoryWork::new(budget, cancellation);
+        let result = async {
+            work.preflight()?;
+            self.conversation_range_with_work(cursor, after_sequence, through_sequence,
+                limits, &mut Some(&mut work)).await
+        }.await;
+        work.finish(result)
+    }
+
+    /// Verifies the original published child without acquiring another lease,
+    /// restoring an aggregate, rebinding, or requiring a Summary projection.
+    pub async fn verify_published_child_measured(
+        &self, parent: &Self, seed: &crate::fork::ForkSeed,
+        budget: WorkBudget, cancellation: &CancellationToken,
+    ) -> MeasuredResult<OperationReceipt<()>, Error> {
+        let mut work = HistoryWork::verification(budget, cancellation);
+        let result = async {
+            work.preflight()?;
+            let limits = HistoryReadLimits {
+                maximum_events: 2,
+                maximum_bytes: budget.bytes_read,
+            };
+            self.verify_published_child_with_work(parent, seed, limits, &mut Some(&mut work)).await
+        }.await;
+        work.finish(result)
+    }
 }
 
-pub(super) struct HistoryWork<'a> {
+pub(crate) struct HistoryWork<'a> {
     budget: WorkBudget,
     cancellation: &'a CancellationToken,
     work: WorkCounters,
     live_bytes: u64,
+    staged_bytes: u64,
+    staged_items: u64,
+    verification_only: bool,
 }
 
+
 impl<'a> HistoryWork<'a> {
-    fn new(budget: WorkBudget, cancellation: &'a CancellationToken) -> Self {
-        Self { budget, cancellation, work: WorkCounters::default(), live_bytes: 0 }
+    pub(crate) fn new(budget: WorkBudget, cancellation: &'a CancellationToken) -> Self {
+        Self { budget, cancellation, work: WorkCounters::default(), live_bytes: 0, staged_bytes: 0, staged_items: 0, verification_only: false }
     }
 
-    fn preflight(&self) -> Result<()> {
+    pub(crate) fn verification(budget: WorkBudget, cancellation: &'a CancellationToken) -> Self {
+        Self { verification_only: true, ..Self::new(budget, cancellation) }
+    }
+
+    pub(crate) fn preflight(&self) -> Result<()> {
         if !self.budget.has_finite_allowances() {
             return Err(Error::Invalid("history work allowances must be finite".into()));
         }
@@ -82,6 +148,87 @@ impl<'a> HistoryWork<'a> {
         let next = self.combined(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
         self.verify(next)?;
         self.work = next;
+        Ok(())
+    }
+
+    fn begin_write(&mut self) -> Result<()> {
+        self.check_cancellation()?;
+        let next = self.combined(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() })?;
+        self.verify(next)?;
+        self.work = next;
+        Ok(())
+    }
+
+    fn observed(&mut self, delta: WorkCounters) -> Result<()> {
+        self.work = self.combined(delta)?;
+        self.verify(self.work)
+    }
+
+    fn planned(&mut self, delta: WorkCounters) -> Result<()> {
+        self.check_cancellation()?;
+        let next = self.combined(delta)?;
+        self.verify(next)?;
+        self.work = next;
+        Ok(())
+    }
+
+    pub(crate) fn remaining(&self) -> Result<WorkBudget> {
+        self.check_cancellation()?;
+        let mut budget = self.work.remaining(self.budget).map_err(|error| Error::Invalid(error.to_string()))?;
+        budget.peak_allocation_bytes = budget.peak_allocation_bytes.checked_sub(self.live_bytes)
+            .ok_or_else(|| Error::Invalid("history live allocation exceeds allowance".into()))?;
+        budget.output_bytes = budget.output_bytes.checked_sub(self.staged_bytes)
+            .ok_or_else(|| Error::Invalid("history staged output exceeds allowance".into()))?;
+        budget.items_returned = budget.items_returned.checked_sub(self.staged_items)
+            .ok_or_else(|| Error::Invalid("history staged items exceed allowance".into()))?;
+        Ok(budget)
+    }
+
+    pub(crate) fn cancellation(&self) -> &'a CancellationToken { self.cancellation }
+
+    pub(crate) fn receipt(&self) -> WorkCounters { self.work }
+
+    pub(crate) fn receive_work(&mut self, mut delta: WorkCounters) -> Result<()> {
+        let peak = self.live_bytes.checked_add(delta.peak_allocation_bytes)
+            .ok_or_else(|| Error::Invalid("nested history peak allocation overflows".into()))?;
+        // Intermediate content is not this API's returned canonical records.
+        delta.output_bytes = 0;
+        delta.items_returned = 0;
+        delta.peak_allocation_bytes = peak;
+        self.observed(delta)
+    }
+
+    pub(crate) fn reserve_bytes(&mut self, bytes: &mut Vec<u8>, target: usize) -> Result<()> {
+        if target <= bytes.capacity() { return Ok(()); }
+        let previous = bytes.capacity();
+        let growth = (target - previous) as u64;
+        let mut planned = self.combined(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })?;
+        planned.peak_allocation_bytes = planned.peak_allocation_bytes.max(self.live_bytes.checked_add(growth)
+            .ok_or_else(|| Error::Invalid("history byte vector live count overflows".into()))?);
+        self.check_cancellation()?;
+        self.verify(planned)?;
+        self.work.allocation_operations = planned.allocation_operations;
+        bytes.try_reserve_exact(target - bytes.len())
+            .map_err(|error| Error::Storage(format!("history byte allocation failed: {error}")))?;
+        self.retain((bytes.capacity() - previous) as u64)
+    }
+
+    pub(crate) fn stage_output(&mut self, bytes: u64, count: u64) -> Result<()> {
+        if self.verification_only { return self.check_cancellation(); }
+        let staged_bytes = self.staged_bytes.checked_add(bytes)
+            .ok_or_else(|| Error::Invalid("history staged bytes overflow".into()))?;
+        let staged_items = self.staged_items.checked_add(count)
+            .ok_or_else(|| Error::Invalid("history staged item count overflows".into()))?;
+        self.admit_output(staged_bytes, staged_items)?;
+        self.staged_bytes = staged_bytes;
+        self.staged_items = staged_items;
+        Ok(())
+    }
+
+    pub(crate) fn return_staged_output(&mut self) -> Result<()> {
+        self.return_output(self.staged_bytes, self.staged_items)?;
+        self.staged_bytes = 0;
+        self.staged_items = 0;
         Ok(())
     }
 
@@ -149,16 +296,19 @@ impl<'a> HistoryWork<'a> {
     }
 
     pub(super) fn admit_output(&self, bytes: u64, count: u64) -> Result<()> {
+        if self.verification_only { return self.check_cancellation(); }
         self.verify(self.combined(WorkCounters { output_bytes: bytes, items_returned: count, ..WorkCounters::default() })?)
     }
 
     pub(super) fn return_output(&mut self, bytes: u64, count: u64) -> Result<()> {
+        if self.verification_only { return self.check_cancellation(); }
         self.admit_output(bytes, count)?;
         self.work = self.combined(WorkCounters { output_bytes: bytes, items_returned: count, ..WorkCounters::default() })?;
         Ok(())
     }
 
-    fn finish<T>(self, result: Result<T>) -> MeasuredResult<OperationReceipt<T>, Error> {
+    pub(crate) fn finish<T>(mut self, result: Result<T>) -> MeasuredResult<OperationReceipt<T>, Error> {
+        let result = result.and_then(|value| self.return_staged_output().map(|()| value));
         result.map(|value| OperationReceipt { value, work: self.work })
             .map_err(|error| OperationFailure::new(error, self.work))
     }
@@ -167,10 +317,102 @@ impl<'a> HistoryWork<'a> {
 impl HistoryIo for HistoryWork<'_> {
     fn check_cancellation(&self) -> Result<()> { HistoryWork::check_cancellation(self) }
     fn begin_call(&mut self) -> Result<()> { HistoryWork::begin_call(self) }
+    fn begin_write(&mut self) -> Result<()> { HistoryWork::begin_write(self) }
     fn receive_record(&mut self, bytes: u64) -> Result<()> { HistoryWork::receive_record(self, bytes) }
     fn release_record(&mut self, bytes: u64) -> Result<()> { HistoryWork::release_record(self, bytes) }
+    fn retain_owned(&mut self, bytes: u64) -> Result<()> { self.retain(bytes) }
+    fn admit_owned(&self, bytes: u64) -> Result<()> {
+        self.check_cancellation()?;
+        let mut planned = self.work;
+        planned.peak_allocation_bytes = planned.peak_allocation_bytes.max(self.live_bytes.checked_add(bytes)
+            .ok_or_else(|| Error::Invalid("history allocation admission overflows".into()))?);
+        self.verify(planned)
+    }
+    fn release_owned(&mut self, bytes: u64) -> Result<()> { self.release_record(bytes) }
     fn clone_authority(&mut self, authority: &Authority) -> Result<Authority> { HistoryWork::clone_authority(self, authority) }
+    fn clone_text(&mut self, value: &str) -> Result<String> {
+        let bytes = value.len() as u64;
+        self.admit_owned(bytes)?;
+        self.planned(WorkCounters {
+            allocation_operations: u64::from(bytes != 0),
+            bytes_copied: bytes,
+            ..WorkCounters::default()
+        })?;
+        let mut copy = String::new();
+        copy.try_reserve_exact(value.len())
+            .map_err(|error| Error::Storage(format!("history text allocation failed: {error}")))?;
+        copy.push_str(value);
+        self.retain(copy.capacity() as u64)?;
+        Ok(copy)
+    }
     fn reserve_events(&mut self, events: &mut Vec<Event>, maximum: usize) -> Result<()> { self.reserve_item(events, maximum) }
+    fn reserve_records(&mut self, records: &mut Vec<acyclic_stream::Record>, maximum: usize) -> Result<()> { self.reserve_item(records, maximum) }
+    fn reserve_messages(&mut self, messages: &mut Vec<crate::conversation::ConversationMessage>, maximum: usize) -> Result<()> { self.reserve_item(messages, maximum) }
+    fn reserve_values(&mut self, values: &mut Vec<serde_json::Value>, maximum: usize) -> Result<()> { self.reserve_item(values, maximum) }
+    fn reserve_bytes(&mut self, bytes: &mut Vec<u8>, capacity: usize) -> Result<()> { HistoryWork::reserve_bytes(self, bytes, capacity) }
+    fn copy_bytes(&mut self, bytes: u64) -> Result<()> { self.planned(WorkCounters { bytes_copied: bytes, ..WorkCounters::default() }) }
+    fn encoded_bytes(&mut self, bytes: u64) -> Result<()> { self.observed(WorkCounters { bytes_encoded: bytes, ..WorkCounters::default() }) }
+    fn admit_encoding(&self, bytes: u64) -> Result<()> {
+        self.check_cancellation()?;
+        self.verify(self.combined(WorkCounters { bytes_encoded: bytes, ..WorkCounters::default() })?)
+    }
+    fn codec_charge(&mut self, charge: crate::contract::JsonCodecCharge) -> Result<()> {
+        use crate::contract::JsonCodecCharge;
+        if let JsonCodecCharge::Release { bytes } = charge {
+            return self.release_record(bytes);
+        }
+        self.check_cancellation()?;
+        match charge {
+            JsonCodecCharge::Work { bytes, items } => self.planned(WorkCounters {
+                bytes_encoded: bytes, items_examined: items, ..WorkCounters::default()
+            }),
+            JsonCodecCharge::Retain { bytes } => { self.admit_owned(bytes)?; self.retain(bytes) }
+            JsonCodecCharge::Release { bytes } => self.release_record(bytes),
+            JsonCodecCharge::Copy { bytes } => self.copy_bytes(bytes),
+            JsonCodecCharge::Read { .. } => Ok(()),
+            JsonCodecCharge::Admission { maximum_owned_bytes } => {
+                self.admit_owned(maximum_owned_bytes)?;
+                self.retain(maximum_owned_bytes)
+            }
+        }
+    }
+    fn hashed_bytes(&mut self, bytes: u64) -> Result<()> { self.planned(WorkCounters { bytes_hashed: bytes, ..WorkCounters::default() }) }
+    fn admit_acknowledgment(&self, bytes: u64, count: u64) -> Result<()> {
+        self.verify(self.combined(WorkCounters { authority_bytes_written: bytes, authority_records_appended: count, ..WorkCounters::default() })?)
+    }
+    fn acknowledged(&mut self, bytes: u64, count: u64) -> Result<()> {
+        self.observed(WorkCounters { authority_bytes_written: bytes, authority_records_appended: count, ..WorkCounters::default() })
+    }
     fn admit_output(&self, bytes: u64, count: u64) -> Result<()> { HistoryWork::admit_output(self, bytes, count) }
+    fn stage_output(&mut self, bytes: u64, count: u64) -> Result<()> { HistoryWork::stage_output(self, bytes, count) }
     fn return_output(&mut self, bytes: u64, count: u64) -> Result<()> { HistoryWork::return_output(self, bytes, count) }
+    fn remaining(&self) -> Result<WorkBudget> { HistoryWork::remaining(self) }
+    fn cancellation(&self) -> &CancellationToken { self.cancellation }
+    fn receive_work(&mut self, work: WorkCounters) -> Result<()> { HistoryWork::receive_work(self, work) }
+    fn verify_content<'a>(
+        &'a mut self, verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
+        reference: &'a crate::conversation::FileRef,
+    ) -> crate::conversation::ContentFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let receipt = verifier.verify_measured(reference, reference.descriptor().byte_length(),
+                self.remaining()?, self.cancellation).await;
+            match receipt {
+                Ok(receipt) => self.receive_work(receipt.work),
+                Err(failure) => { let _ = self.receive_work(*failure.work); Err(failure.error) }
+            }
+        })
+    }
+    fn read_content<'a>(
+        &'a mut self, verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
+        reference: &'a crate::conversation::FileRef,
+    ) -> crate::conversation::ContentFuture<'a, Result<Vec<u8>>> {
+        Box::pin(async move {
+            let receipt = verifier.read_measured(reference, reference.descriptor().byte_length(),
+                self.remaining()?, self.cancellation).await;
+            match receipt {
+                Ok(receipt) => { self.receive_work(receipt.work)?; self.retain(receipt.value.capacity() as u64)?; Ok(receipt.value) }
+                Err(failure) => { let _ = self.receive_work(*failure.work); Err(failure.error) }
+            }
+        })
+    }
 }

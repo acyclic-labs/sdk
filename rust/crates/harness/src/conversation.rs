@@ -1619,6 +1619,19 @@ impl ModelContextSelection {
 }
 
 impl ConversationState {
+    /// Logical payload cloned from caches omitted by the wire projection.
+    /// Opaque BTreeMap allocator nodes are deliberately outside this witness.
+    pub(crate) fn clone_cache_logical_bytes(&self) -> Result<u64> {
+        let digests = self.prefix_digests.len().checked_mul(std::mem::size_of::<[u8; 32]>());
+        let positions = self.model_positions.len().checked_mul(std::mem::size_of::<usize>());
+        let maps = self.by_id.len().checked_add(self.outcomes.len())
+            .and_then(|count| count.checked_mul(std::mem::size_of::<(Uuid, usize)>()));
+        digests.and_then(|bytes| positions.and_then(|positions| bytes.checked_add(positions)))
+            .and_then(|bytes| maps.and_then(|maps| bytes.checked_add(maps)))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or_else(|| Error::Invalid("conversation clone cache inventory overflows".into()))
+    }
+
     /// Logical history head, independent of the number of resident records.
     /// A sparse read-only selection may end before its separately pinned source cut.
     #[must_use]

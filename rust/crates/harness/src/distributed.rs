@@ -350,16 +350,95 @@ pub async fn observe_declaration<P: StreamProvider>(
     Ok(Some(*spec))
 }
 
+// Shared by ordinary and observed coordinator replay. Collecting the original
+// SDK page here exposes yielded prefixes that Replay::next_page would discard
+// on a stream error; the whole page is still checked before reducer admission.
+async fn read_records_with_work<P: StreamProvider>(
+    stream: &Stream<P>,
+    from: u64,
+    maximum: u32,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<Option<Vec<acyclic_stream::Record>>> {
+    if let Some(work) = work.as_deref_mut() {
+        work.begin_call()?;
+    }
+    let mut source = match stream.read(from, maximum).await {
+        Ok(source) => source,
+        Err(StreamError::NotFound) if from == 0 => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut records = Vec::new();
+    loop {
+        if let Some(work) = work.as_deref_mut() {
+            work.check_cancellation()?;
+        }
+        let Some(record) = source.try_next().await? else {
+            if let Some(work) = work.as_deref_mut() {
+                work.check_cancellation()?;
+            }
+            break;
+        };
+        if let Some(work) = work.as_deref_mut() {
+            work.receive_record(record.value.len() as u64)?;
+        }
+        if records.len() >= maximum as usize
+            || record.value.len() > acyclic_stream::MAX_RECORD_BYTES
+        {
+            return Err(StreamError::LimitExceeded.into());
+        }
+        if let Some(work) = work.as_deref_mut() {
+            work.reserve_records(&mut records, maximum as usize)?;
+        }
+        records.push(record);
+    }
+    Ok(Some(records))
+}
+
+fn release_records(
+    records: &[acyclic_stream::Record],
+    capacity: usize,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<()> {
+    if let Some(work) = work.as_deref_mut() {
+        for record in records {
+            work.release_record(record.value.len() as u64)?;
+        }
+        work.release_owned((capacity * std::mem::size_of::<acyclic_stream::Record>()) as u64)?;
+    }
+    Ok(())
+}
+
+
 async fn read_intent_location<P: StreamProvider>(
     client: &StreamClient<P>,
     key: &str,
 ) -> Result<Option<IntentLocation>> {
-    IdempotencyKey::new(key.to_owned())?;
+    read_intent_location_with_work(client, key, &mut None).await
+}
+
+async fn read_intent_location_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    key: &str,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<Option<IntentLocation>> {
+    if let Some(work) = work.as_deref_mut() {
+        work.copy_bytes(key.len() as u64)?;
+    }
+    let owned_key = key.to_owned();
+    let key_capacity = owned_key.capacity() as u64;
+    if let Some(work) = work.as_deref_mut() {
+        work.retain_owned(key_capacity)?;
+    }
+    drop(IdempotencyKey::new(owned_key)?);
+    if let Some(work) = work.as_deref_mut() {
+        work.release_owned(key_capacity)?;
+    }
+    if let Some(work) = work.as_deref_mut() {
+        work.hashed_bytes(key.len() as u64)?;
+    }
     let stream = client.stream(intent_location_path(key))?;
-    let records = match stream.read(0, 2).await {
-        Ok(records) => records.try_collect::<Vec<_>>().await?,
-        Err(StreamError::NotFound) => return Ok(None),
-        Err(error) => return Err(error.into()),
+    let Some(records) = read_records_with_work(&stream, 0, 2, work).await? else {
+        return Ok(None);
     };
     let [record] = records.as_slice() else {
         return Err(Error::Storage(
@@ -368,13 +447,23 @@ async fn read_intent_location<P: StreamProvider>(
     };
     let location: IntentLocation = crate::contract::json_from_slice(&record.value)
         .map_err(|error| Error::Storage(error.to_string()))?;
+    if let Some(work) = work.as_deref_mut() {
+        work.retain_owned(location.key.capacity() as u64)?;
+    }
+    let canonical = crate::store::history::canonical_bytes_with_work(
+        &location, acyclic_stream::MAX_RECORD_BYTES as u64, work,
+    )?;
     if record.sequence != 0
         || location.key != key
         || location.revision == 0
-        || crate::contract::canonical_json_bytes(&location)?.as_slice() != record.value.as_ref()
+        || canonical.as_slice() != record.value.as_ref()
     {
         return Err(Error::Storage("intent location identity differs".into()));
     }
+    if let Some(work) = work.as_deref_mut() {
+        work.release_owned(canonical.capacity() as u64)?;
+    }
+    release_records(&records, records.capacity(), work)?;
     Ok(Some(location))
 }
 
@@ -463,7 +552,27 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         fence: &LeaseFence,
         write: JournalWrite,
     ) -> Result<acyclic_stream::CommitCondition> {
-        self.refresh().await?;
+        self.journal_condition_with_work(
+            owner, scope, verifier, operation_id, fence, write, &mut None,
+        ).await
+    }
+
+    #[cfg(feature = "filesystem")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the original signed journal fence and its shared receipt observer"
+    )]
+    pub(crate) async fn journal_condition_with_work(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        operation_id: OperationId,
+        fence: &LeaseFence,
+        write: JournalWrite,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<acyclic_stream::CommitCondition> {
+        self.refresh_with_work(work).await?;
         let operation = self.observe_operation(owner, scope, verifier, operation_id)?;
         crate::scheduler::require_execution_owner(&operation, fence, write.settlement())?;
         if let JournalWrite::Model {
@@ -507,25 +616,59 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     /// observed revision. A long-lived host must refresh before observing a
     /// remote completion or planning another event against its local reducer.
     pub async fn refresh(&mut self) -> Result<()> {
-        let mut replay = self.stream.replay(self.revision);
-        while let Some(page) = replay.next_page().await? {
+        self.refresh_with_work(&mut None).await
+    }
+
+    pub(crate) async fn refresh_with_work(
+        &mut self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        let initial_revision = self.revision;
+        let mut next = self.revision;
+        loop {
+            let page = read_records_with_work(&self.stream, next, READ_PAGE_SIZE, work)
+                .await?.unwrap_or_default();
+            if page.is_empty() {
+                release_records(&page, page.capacity(), work)?;
+                break;
+            }
+            for record in &page {
+                if record.sequence != next {
+                    return Err(StreamError::Unavailable.into());
+                }
+                next = next.checked_add(1).ok_or(StreamError::LimitExceeded)?;
+            }
+            let page_capacity = page.capacity();
             for record in page {
+                if let Some(work) = work.as_deref_mut() {
+                    work.check_cancellation()?;
+                }
                 let (revision, operation_id, key, digest, committed_at_ms, event) =
-                    decode(&record.value)?;
+                    decode_with_work(&record.value, work)?;
                 if revision != next_revision(record.sequence)? {
                     return Err(Error::Storage("coordinator revision is not gapless".into()));
                 }
                 if let SchedulerEvent::Declared { spec } = &event {
-                    self.content_verifier.verify(&spec.state).await?;
+                    self.verify_content_with_work(&spec.state, work).await?;
                 }
-                self.verify_published_result(&event).await?;
-                self.ensure_intent_location(IntentLocation {
+                self.verify_published_result_with_work(&event, work).await?;
+                if let Some(work) = work.as_deref_mut() {
+                    work.copy_bytes(key.len() as u64)?;
+                }
+                self.ensure_intent_location_with_work(IntentLocation {
                     key: key.clone(),
                     revision,
                     event_digest: digest,
                     commit_id: *record.commit_id.as_bytes(),
-                })
-                .await?;
+                }, work).await?;
+                if let Some(work) = work.as_deref_mut() {
+                    work.check_cancellation()?;
+                }
+                let evicted_capacity = if work.is_some() && self.intents.len() >= MAX_CACHED_INTENTS {
+                    self.intents.iter().min_by_key(|(_, intent)| intent.2)
+                        .filter(|(_, intent)| intent.2 > initial_revision)
+                        .map_or(0, |(key, _)| key.capacity() as u64)
+                } else { 0 };
                 self.apply_committed(
                     (revision, record.commit_id),
                     operation_id,
@@ -534,17 +677,38 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     committed_at_ms,
                     event,
                 )?;
+                if let Some(work) = work.as_deref_mut() {
+                    work.release_owned(evicted_capacity)?;
+                    work.release_record(record.value.len() as u64)?;
+                }
+            }
+            if let Some(work) = work.as_deref_mut() {
+                work.release_owned((page_capacity * std::mem::size_of::<acyclic_stream::Record>()) as u64)?;
             }
         }
         Ok(())
     }
 
+    #[cfg(test)]
     async fn read_intent_location(&self, key: &str) -> Result<Option<IntentLocation>> {
         read_intent_location(&self.client, key).await
     }
 
-    async fn ensure_intent_location(&self, location: IntentLocation) -> Result<()> {
-        if let Some(existing) = self.read_intent_location(&location.key).await? {
+
+    async fn ensure_intent_location_with_work(
+        &self,
+        location: IntentLocation,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        let location_capacity = location.key.capacity() as u64;
+        if let Some(work) = work.as_deref_mut() {
+            work.retain_owned(location_capacity)?;
+        }
+        if let Some(existing) = read_intent_location_with_work(&self.client, &location.key, work).await? {
+            if let Some(work) = work.as_deref_mut() {
+                work.release_owned(existing.key.capacity() as u64)?;
+                work.release_owned(location_capacity)?;
+            }
             return if existing == location {
                 Ok(())
             } else {
@@ -553,25 +717,57 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 ))
             };
         }
-        let bytes = crate::contract::canonical_json_bytes(&location)?;
-        let physical = stream_key(&format!(
+        let bytes = crate::store::history::canonical_bytes_with_work(
+            &location, acyclic_stream::MAX_RECORD_BYTES as u64, work,
+        )?;
+        let byte_length = bytes.len() as u64;
+        let byte_capacity = bytes.capacity() as u64;
+        if let Some(work) = work.as_deref_mut() {
+            work.admit_acknowledgment(byte_length, 1)?;
+            work.hashed_bytes(byte_length)?;
+        }
+        let physical_identity = format!(
             "intent-location:{}",
             blake3::hash(&bytes).to_hex()
-        ))?;
-        let outcome = self
-            .client
-            .stream(intent_location_path(&location.key))?
+        );
+        let physical_capacity = physical_identity.capacity() as u64;
+        if let Some(work) = work.as_deref_mut() {
+            work.retain_owned(physical_capacity)?;
+        }
+        let physical = stream_key_with_work(&physical_identity, work)?;
+        drop(physical_identity);
+        if let Some(work) = work.as_deref_mut() {
+            work.release_owned(physical_capacity)?;
+            work.hashed_bytes(location.key.len() as u64)?;
+        }
+        let destination = self.client.stream(intent_location_path(&location.key))?;
+        if let Some(work) = work.as_deref_mut() {
+            work.begin_write()?;
+        }
+        let outcome = destination
             .append_batch(vec![Bytes::from(bytes)], Some(0), Some(physical))
             .await;
         match outcome {
             Ok(AppendOutcome::Committed(receipt))
                 if receipt.start == 0 && receipt.end == 1 && receipt.tail == 1 =>
             {
+                if let Some(work) = work.as_deref_mut() {
+                    work.acknowledged(byte_length, 1)?;
+                    work.release_owned(byte_capacity)?;
+                    work.release_owned(location_capacity)?;
+                }
                 Ok(())
             }
             Ok(AppendOutcome::TailConflict { .. }) | Err(StreamError::Unavailable) => {
-                match self.read_intent_location(&location.key).await? {
-                    Some(existing) if existing == location => Ok(()),
+                match read_intent_location_with_work(&self.client, &location.key, work).await? {
+                    Some(existing) if existing == location => {
+                        if let Some(work) = work.as_deref_mut() {
+                            work.release_owned(byte_capacity)?;
+                            work.release_owned(existing.key.capacity() as u64)?;
+                            work.release_owned(location_capacity)?;
+                        }
+                        Ok(())
+                    }
                     Some(_) => Err(Error::Conflict(
                         "intent location publication differs".into(),
                     )),
@@ -621,8 +817,27 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     async fn verify_published_result(&self, event: &SchedulerEvent) -> Result<()> {
+        self.verify_published_result_with_work(event, &mut None).await
+    }
+
+    async fn verify_content_with_work(
+        &self,
+        reference: &FileRef,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        match work.as_deref_mut() {
+            Some(work) => work.verify_content(self.content_verifier.as_ref(), reference).await,
+            None => self.content_verifier.verify(reference).await,
+        }
+    }
+
+    async fn verify_published_result_with_work(
+        &self,
+        event: &SchedulerEvent,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
         if let SchedulerEvent::WorkflowResumed { input, .. } = event {
-            return self.content_verifier.verify(input).await;
+            return self.verify_content_with_work(input, work).await;
         }
         let (operation_id, outcome, reducer) = match event {
             SchedulerEvent::Completed {
@@ -641,7 +856,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let crate::Outcome::Succeeded(reference) = outcome else {
             return Ok(());
         };
-        let value = self.load_json(reference).await?;
+        let value = self.load_json_with_work(reference, work).await?;
         if let SchedulerEvent::Orchestrated {
             operation_id,
             reducer: None,
@@ -650,11 +865,19 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             && let OrchestrationDecision::Assemble {
                 assembly, values, ..
             } = self.scheduler.orchestration(*operation_id)
-            && value != self.assemble_values(assembly, &values).await?
         {
-            return Err(Error::Invalid(
-                "assembled scheduler result differs from pinned children".into(),
-            ));
+            let expected = self.assemble_values_with_work(assembly, &values, work).await?;
+            let differs = value != expected;
+            if let Some(work) = work.as_deref_mut()
+                && let serde_json::Value::Array(values) = &expected
+            {
+                work.release_owned((values.capacity() * std::mem::size_of::<serde_json::Value>()) as u64)?;
+            }
+            if differs {
+                return Err(Error::Invalid(
+                    "assembled scheduler result differs from pinned children".into(),
+                ));
+            }
         }
         let operation = self
             .scheduler
@@ -1843,22 +2066,43 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     async fn load_json(&self, reference: &FileRef) -> Result<serde_json::Value> {
+        self.load_json_with_work(reference, &mut None).await
+    }
+
+    async fn load_json_with_work(
+        &self,
+        reference: &FileRef,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<serde_json::Value> {
         reference.validate()?;
         if reference.descriptor().media_type() != "application/json" {
             return Err(Error::Invalid(
                 "scheduler result must be a JSON file".into(),
             ));
         }
-        let bytes = self.content_verifier.read(reference).await?;
+        let bytes = match work.as_deref_mut() {
+            Some(work) => work.read_content(self.content_verifier.as_ref(), reference).await?,
+            None => self.content_verifier.read(reference).await?,
+        };
+        if let Some(work) = work.as_deref_mut() {
+            work.hashed_bytes(bytes.len() as u64)?;
+        }
         reference.descriptor().verify(&bytes)?;
         let value: serde_json::Value =
             crate::contract::json_from_slice(&bytes).map_err(|error| {
                 Error::Invalid(format!("scheduler result is invalid JSON: {error}"))
             })?;
-        if crate::contract::canonical_json_bytes(&value)? != bytes {
+        let canonical = crate::store::history::canonical_bytes_with_work(
+            &value, reference.descriptor().byte_length(), work,
+        )?;
+        if canonical != bytes {
             return Err(Error::Invalid(
                 "scheduler result is not canonical JSON".into(),
             ));
+        }
+        if let Some(work) = work.as_deref_mut() {
+            work.release_owned(canonical.capacity() as u64)?;
+            work.release_owned(bytes.capacity() as u64)?;
         }
         Ok(value)
     }
@@ -1868,9 +2112,25 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         assembly: AssemblyKind,
         values: &[(String, FileRef)],
     ) -> Result<serde_json::Value> {
-        let mut assembled = Vec::with_capacity(values.len());
+        self.assemble_values_with_work(assembly, values, &mut None).await
+    }
+
+    async fn assemble_values_with_work(
+        &self,
+        assembly: AssemblyKind,
+        values: &[(String, FileRef)],
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<serde_json::Value> {
+        let mut assembled = if work.is_some() {
+            Vec::new()
+        } else {
+            Vec::with_capacity(values.len())
+        };
         for (slot, reference) in values {
-            let value = self.load_json(reference).await?;
+            if let Some(work) = work.as_deref_mut() {
+                work.reserve_values(&mut assembled, values.len())?;
+            }
+            let value = self.load_json_with_work(reference, work).await?;
             assembled.push(match assembly {
                 AssemblyKind::Join => serde_json::json!({"slot": slot, "value": value}),
                 AssemblyKind::Quorum => value,
@@ -1978,8 +2238,26 @@ fn encode(
 }
 
 fn decode(bytes: &[u8]) -> Result<(u64, OperationId, String, [u8; 32], u64, SchedulerEvent)> {
+    decode_with_work(bytes, &mut None)
+}
+
+fn decode_with_work(
+    bytes: &[u8],
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<(u64, OperationId, String, [u8; 32], u64, SchedulerEvent)> {
     let envelope = wire::SchedulerEventEnvelope::decode(bytes)
         .map_err(|error| Error::Storage(error.to_string()))?;
+    let temporary_capacity = if work.is_some() {
+        (envelope.canonical_event_json.capacity()
+            + envelope.event_digest.capacity() + envelope.operation_id.capacity()
+            + envelope.protocol.as_ref().map_or(0, |protocol| {
+                protocol.version.capacity() + protocol.descriptor_digest.capacity()
+            })) as u64
+    } else { 0 };
+    if let Some(work) = work.as_deref_mut() {
+        work.retain_owned(temporary_capacity + envelope.idempotency_key.capacity() as u64)?;
+        work.hashed_bytes(COORDINATOR_WIRE_CONTRACT.len() as u64)?;
+    }
     validate_protocol(
         envelope.protocol.as_ref(),
         &coordinator_protocol_identity(),
@@ -1989,6 +2267,9 @@ fn decode(bytes: &[u8]) -> Result<(u64, OperationId, String, [u8; 32], u64, Sche
         .event_digest
         .try_into()
         .map_err(|_| Error::Storage("scheduler digest must be 32 bytes".into()))?;
+    if let Some(work) = work.as_deref_mut() {
+        work.hashed_bytes(envelope.canonical_event_json.len() as u64)?;
+    }
     if *blake3::hash(&envelope.canonical_event_json).as_bytes() != digest {
         return Err(Error::Storage("scheduler event digest mismatch".into()));
     }
@@ -1998,6 +2279,9 @@ fn decode(bytes: &[u8]) -> Result<(u64, OperationId, String, [u8; 32], u64, Sche
         .committed_at_ms
         .filter(|time| *time > 0)
         .ok_or_else(|| Error::Storage("coordinator event lacks commit time".into()))?;
+    if let Some(work) = work.as_deref_mut() {
+        work.release_owned(temporary_capacity)?;
+    }
     Ok((
         envelope.revision,
         OperationId::parse(&envelope.operation_id)?,
@@ -2080,18 +2364,103 @@ pub(crate) async fn commit_keyed<P: StreamProvider>(
     request: acyclic_stream::CommitRequest,
     operation: OperationId,
 ) -> Result<acyclic_stream::CommitOutcome> {
+    commit_keyed_with_work(client, request, operation, &mut None).await
+}
+
+pub(crate) async fn commit_keyed_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    request: acyclic_stream::CommitRequest,
+    operation: OperationId,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<acyclic_stream::CommitOutcome> {
     let key = request.idempotency_key.clone();
-    match client.commit(request).await {
-        Ok(outcome) => Ok(outcome),
-        Err(StreamError::Unavailable) => match client.inspect_idempotency(key).await {
-            Ok(Some(observation)) => match observation.outcome {
-                IdempotencyOutcome::Commit(outcome) => Ok(outcome),
-                _ => Err(Error::Conflict("commit recovery identity reused".into())),
+    let request_capacity = if work.is_some() {
+        request.mutations.iter().try_fold(
+            (request.conditions.capacity() * std::mem::size_of::<acyclic_stream::CommitCondition>()
+                + request.mutations.capacity() * std::mem::size_of::<acyclic_stream::CommitMutation>()) as u64,
+            |bytes, mutation| {
+                let records = match mutation {
+                    acyclic_stream::CommitMutation::Append { records, .. }
+                    | acyclic_stream::CommitMutation::Fork { records, .. } => records,
+                };
+                bytes.checked_add((records.capacity() * std::mem::size_of::<Bytes>()) as u64)
+                    .ok_or_else(|| Error::Invalid("commit vector capacity overflows".into()))
             },
-            Ok(None) | Err(_) => Err(Error::Indeterminate(operation)),
-        },
-        Err(error) => Err(error.into()),
+        )?
+    } else { 0 };
+    if let Some(work) = work.as_deref_mut() {
+        work.retain_owned(request_capacity)?;
+        let (bytes, count) = request.mutations.iter().try_fold(
+            (0u64, 0u64), |(bytes, count), mutation| {
+                let records = match mutation {
+                    acyclic_stream::CommitMutation::Append { records, .. }
+                    | acyclic_stream::CommitMutation::Fork { records, .. } => records,
+                };
+                let bytes = records.iter().try_fold(bytes, |bytes, record| {
+                    bytes.checked_add(record.len() as u64)
+                        .ok_or_else(|| Error::Invalid("commit payload byte count overflows".into()))
+                })?;
+                let count = count.checked_add(records.len() as u64)
+                    .ok_or_else(|| Error::Invalid("commit record count overflows".into()))?;
+                Ok::<_, Error>((bytes, count))
+            },
+        )?;
+        work.admit_acknowledgment(bytes, count)?;
+        work.begin_write()?;
     }
+    let committed = client.commit(request).await;
+    if let Some(work) = work.as_deref_mut() {
+        work.release_owned(request_capacity)?;
+    }
+    let (outcome, direct_acknowledgment) = match committed {
+        Ok(outcome) => (outcome, true),
+        Err(StreamError::Unavailable) => {
+            if let Some(work) = work.as_deref_mut() {
+                work.begin_call()?;
+            }
+            match client.inspect_idempotency(key).await {
+                Ok(Some(observation)) => match observation.outcome {
+                    IdempotencyOutcome::Commit(outcome) => (outcome, false),
+                    _ => return Err(Error::Conflict("commit recovery identity reused".into())),
+                },
+                Ok(None) | Err(_) => return Err(Error::Indeterminate(operation)),
+            }
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if let Some(work) = work.as_deref_mut()
+        && let acyclic_stream::CommitOutcome::Committed(envelope) = &outcome
+    {
+        // The SDK returned this complete envelope at once. Preserve every
+        // received value even when an earlier value exceeded the allowance.
+        // A direct committed SDK receipt acknowledges its records, including
+        // an idempotent receipt. Inspection is source evidence only; neither
+        // branch claims physical newly appended records or provider-internal IO.
+        let mut failure = work.retain_owned((envelope.mutations.capacity()
+            * std::mem::size_of::<acyclic_stream::CommittedMutation>()) as u64).err();
+        for mutation in &envelope.mutations {
+            let records = match mutation {
+                acyclic_stream::CommittedMutation::Append(append) => &append.records,
+                acyclic_stream::CommittedMutation::Fork(fork) => &fork.records,
+            };
+            for record in records {
+                let received = work.receive_record(record.value.len() as u64);
+                if failure.is_none() { failure = received.err(); }
+                if direct_acknowledgment {
+                    let acknowledged = work.acknowledged(record.value.len() as u64, 1);
+                    if failure.is_none() { failure = acknowledged.err(); }
+                }
+            }
+            let retained = work.retain_owned((records.capacity()
+                * std::mem::size_of::<acyclic_stream::Record>()) as u64);
+            if failure.is_none() { failure = retained.err(); }
+        }
+        if let Some(error) = failure { return Err(error); }
+    }
+    if let Some(work) = work.as_deref_mut() {
+        work.check_cancellation()?;
+    }
+    Ok(outcome)
 }
 
 #[allow(
@@ -2178,6 +2547,17 @@ async fn append_if_execution_idle<P: StreamProvider>(
 }
 
 fn stream_key(key: &str) -> Result<StreamIdempotencyKey> {
+    stream_key_with_work(key, &mut None)
+}
+
+fn stream_key_with_work(
+    key: &str,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<StreamIdempotencyKey> {
+    if let Some(work) = work.as_deref_mut() {
+        work.hashed_bytes((b"acyclic-harness-coordinator-v3".len() + key.len()) as u64)?;
+        work.copy_bytes(32)?;
+    }
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"acyclic-harness-coordinator-v3");
     hasher.update(key.as_bytes());
@@ -3049,7 +3429,7 @@ mod tests {
             .root("original-declare", Capabilities::new(["operation:declare"]))
     }
 
-    fn spec(operation_id: OperationId, cpu: u64) -> Result<OperationSpec> {
+    pub(super) fn spec(operation_id: OperationId, cpu: u64) -> Result<OperationSpec> {
         Ok(OperationSpec {
             operation_id,
             parent: None,
@@ -5276,3 +5656,7 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(all(test, feature = "filesystem"))]
+#[path = "distributed/measured_tests.rs"]
+mod measured_tests;

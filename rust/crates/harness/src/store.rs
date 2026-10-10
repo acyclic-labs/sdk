@@ -3,9 +3,11 @@
 mod checkpoints;
 mod effect_heads;
 mod effects;
-mod history;
+pub(crate) mod history;
 pub use checkpoints::{DEFAULT_PROJECTION_EVENTS, default_projection_read_limits};
 pub(crate) mod operations;
+#[cfg(feature = "filesystem")]
+mod guarded;
 pub use history::*;
 
 use crate::{
@@ -38,19 +40,36 @@ use std::{collections::BTreeMap, sync::Arc};
 pub const DEFAULT_TERMINAL_EFFECTS: usize = 64;
 
 fn fork_child_binding(seed: &ForkSeed) -> Result<(OperationId, EventReference)> {
+    fork_child_binding_with_work(seed, &mut None)
+}
+
+fn fork_child_binding_with_work(
+    seed: &ForkSeed,
+    work: &mut Option<&mut dyn history::HistoryIo>,
+) -> Result<(OperationId, EventReference)> {
+    if let Some(observer) = work.as_deref_mut() {
+        observer.check_cancellation()?;
+    }
     let revision = seed
         .parent_revision
         .checked_add(1)
         .ok_or_else(|| Error::Invalid("fork parent revision overflow".into()))?;
+    if let Some(observer) = work.as_deref_mut() {
+        observer.hashed_bytes(b"harness/v2/fork-child-bind\0".len() as u64 + 16)?;
+    }
     let mut hash = blake3::Hasher::new();
     hash.update(b"harness/v2/fork-child-bind\0");
     hash.update(&seed.operation_id.into_bytes());
+    if let Some(observer) = work.as_deref_mut() { observer.copy_bytes(16)?; }
     let mut identity = [0; 16];
     identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
     Ok((
         OperationId::from_bytes(identity),
         EventReference {
-            authority: seed.parent.clone(),
+            authority: match work.as_deref_mut() {
+                Some(observer) => observer.clone_authority(&seed.parent)?,
+                None => seed.parent.clone(),
+            },
             revision,
         },
     ))
@@ -184,6 +203,28 @@ fn extension_migration_command(
             content,
         },
     })
+}
+/// Original canonical ROOT binding custody, constructed only by this store.
+#[cfg(feature = "filesystem")]
+pub(crate) struct VerifiedRootBinding {
+    original_task: crate::TaskId,
+    admission_digest: [u8; 32],
+    fence: crate::scheduler::LeaseFence,
+    agent: crate::AgentId,
+    audience: Authority,
+    bind_operation: OperationId,
+    intent_digest: [u8; 32],
+}
+
+#[cfg(feature = "filesystem")]
+impl VerifiedRootBinding {
+    pub(crate) fn original_task(&self) -> crate::TaskId { self.original_task }
+    pub(crate) fn admission_digest(&self) -> [u8; 32] { self.admission_digest }
+    pub(crate) fn fence(&self) -> &crate::scheduler::LeaseFence { &self.fence }
+    pub(crate) fn agent(&self) -> crate::AgentId { self.agent }
+    pub(crate) fn audience(&self) -> &Authority { &self.audience }
+    pub(crate) fn bind_operation(&self) -> OperationId { self.bind_operation }
+    pub(crate) fn intent_digest(&self) -> [u8; 32] { self.intent_digest }
 }
 
 /// One authoritative reducer whose canonical history is stored directly in Stream.
@@ -431,6 +472,46 @@ impl<P: StreamProvider> StreamAggregate<P> {
         .await
     }
 
+    /// Publishes the original fork report under its admitted task owner's
+    /// fresh atomic fence, charging the same canonical publication engine.
+    #[cfg(feature = "filesystem")]
+    pub async fn publish_fork_report_measured(
+        &mut self,
+        report: ForkReport,
+        scope: Scope,
+        owner: &crate::durable_host::TaskJournalOwner<P>,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<ApplyResult>, Error> {
+        let mut work = history::HistoryWork::new(budget, cancellation);
+        let result = async {
+            work.preflight()?;
+            report.validate_with_work(&mut Some(&mut work))?;
+            if report.request.parent != *self.reducer.authority() {
+                return Err(Error::Unauthorized("fork report belongs to another parent".into()));
+            }
+            owner.authenticate_fork_parent(self.reducer.authority())?;
+            if scope.agent() != Some(owner.authenticated_fork_agent()?) {
+                return Err(Error::Unauthorized("fork publication scope differs from its admitted caller".into()));
+            }
+            let seed = report.into_seed_with_work(&mut Some(&mut work))?;
+            self.execute_guarded_publication_with_work(
+                Command {
+                    operation_id: seed.operation_id,
+                    idempotency_key: IdempotencyKey::new(format!("fork-publication:{}", seed.operation_id))?,
+                    expected_revision: seed.parent_revision,
+                    scope,
+                    causal_parent: None,
+                    action: Action::PublishFork { seed: Box::new(seed) },
+                },
+                owner,
+                crate::distributed::JournalWrite::Fresh,
+                &mut Some(&mut work),
+            ).await
+        }.await;
+        work.finish(result)
+    }
+
     /// Admits a prepared child through the parent, then binds its fresh
     /// conversation to the published seed. A failed child bind does not undo
     /// parent publication: retry this exact report and scopes to reconcile it.
@@ -541,6 +622,79 @@ impl<P: StreamProvider> StreamAggregate<P> {
         Ok(())
     }
 
+    /// Binds only the exact child of an authenticated canonical parent fork.
+    /// The parent publication owner fences this append; no root binder is used.
+    #[cfg(feature = "filesystem")]
+    pub async fn bind_published_child_measured(
+        &mut self,
+        parent: &Self,
+        seed: &ForkSeed,
+        scope: Scope,
+        owner: &crate::durable_host::TaskJournalOwner<P>,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
+        let mut work = history::HistoryWork::new(budget, cancellation);
+        let result = async {
+            work.preflight()?;
+            seed.validate_with_work(&mut Some(&mut work))?;
+            let parent_agent = owner.authenticated_fork_agent()?;
+            owner.authenticate_fork_parent(&seed.parent)?;
+            if parent.reducer.authority() != &seed.parent
+                || parent.reducer.fork(&seed.child) != Some(seed)
+                || self.reducer.authority() != &seed.child
+            {
+                return Err(Error::Unauthorized("child binding has no published parent fork".into()));
+            }
+            if scope.agent() != Some(seed.child_agent) {
+                return Err(Error::Unauthorized("child binding scope belongs to another agent".into()));
+            }
+            let fork_revision = seed.parent_revision.checked_add(1)
+                .ok_or_else(|| Error::Invalid("fork parent revision overflow".into()))?;
+            let fork_event = parent.read_event_at_with_work(fork_revision, &mut Some(&mut work)).await?;
+            if fork_event.revision != fork_revision
+                || fork_event.operation_id != seed.operation_id
+                || fork_event.scope.agent() != Some(parent_agent)
+                || !matches!(&fork_event.payload, crate::core::EventPayload::ForkPublished { seed: published } if published.as_ref() == seed)
+            {
+                return Err(Error::Conflict("parent fork event does not match the child seed".into()));
+            }
+            let (bind_operation, causal_parent) =
+                fork_child_binding_with_work(seed, &mut Some(&mut work))?;
+            let conversation = self.reducer.conversation()
+                .ok_or_else(|| Error::Invalid("fork child is not a conversation".into()))?;
+            if conversation.agent == Some(seed.child_agent) {
+                let event = self.read_event_at_with_work(1, &mut Some(&mut work)).await?;
+                if event.revision == 1 && event.operation_id == bind_operation
+                    && event.causal_parent.as_ref() == Some(&causal_parent)
+                    && matches!(event.payload, crate::core::EventPayload::ConversationBound { agent } if agent == seed.child_agent)
+                {
+                    owner.verify_dispatch_with_work(&mut Some(&mut work)).await?;
+                    return Ok(());
+                }
+                return Err(Error::Conflict("child conversation was bound outside its published fork".into()));
+            }
+            if self.reducer.revision() != 0 || conversation.agent.is_some() {
+                return Err(Error::Conflict("fork child already has a different history".into()));
+            }
+            self.execute_guarded_publication_with_work(
+                Command {
+                    operation_id: bind_operation,
+                    idempotency_key: IdempotencyKey::new(format!("fork-child-bind:{}", seed.operation_id))?,
+                    expected_revision: 0,
+                    scope,
+                    causal_parent: Some(causal_parent),
+                    action: Action::BindConversation { agent: seed.child_agent },
+                },
+                owner,
+                crate::distributed::JournalWrite::Fresh,
+                &mut Some(&mut work),
+            ).await?;
+            Ok(())
+        }.await;
+        work.finish(result)
+    }
+
     /// Opens and replays an aggregate, treating an absent path as empty.
     #[cfg_attr(
         not(target_arch = "wasm32"),
@@ -567,6 +721,103 @@ impl<P: StreamProvider> StreamAggregate<P> {
             )
             .await,
         )
+    }
+
+    /// Opens through the original authenticated checkpoint and finite suffix
+    /// engine with a cumulative SDK-boundary receipt, including failed prefixes.
+    /// Output counts the canonical checkpoint payload and suffix bytes used to
+    /// restore the returned projection, not a re-encoding of its reducer.
+    /// Explicit checkpoint digest inputs are charged before their original hashes.
+    /// Canonical encoding uses the same bounded codec with admission before
+    /// owned storage/copies grow. Its live storage, assembly/vector capacities
+    /// and raw records share one ledger; opaque provider/reducer internals and
+    /// allocator overhead are excluded.
+    #[cfg(feature = "filesystem")]
+    pub async fn open_measured(
+        client: &StreamClient<P>,
+        authority: Authority,
+        authority_verifier: AuthorityVerifier,
+        schemas: SchemaRegistry,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Self>, Error> {
+        let mut work = history::HistoryWork::new(budget, cancellation);
+        let result = async {
+            work.preflight()?;
+            let aggregate = Self::open_inner(
+                client,
+                authority,
+                authority_verifier,
+                schemas,
+                None,
+                default_projection_read_limits(),
+                DEFAULT_TERMINAL_EFFECTS,
+                None,
+                &mut Some(&mut work),
+            ).await?;
+            work.return_staged_output()?;
+            Ok(aggregate)
+        }.await;
+        work.finish(result)
+    }
+
+    /// Restores the original authenticated checkpoint at or before an exact
+    /// committed revision, then only its bounded canonical suffix through that
+    /// revision. Later parent appends cannot change the restored projection.
+    pub async fn open_at_revision_with_read_limits(
+        client: &StreamClient<P>,
+        authority: Authority,
+        authority_verifier: AuthorityVerifier,
+        schemas: SchemaRegistry,
+        original_revision: u64,
+        limits: HistoryReadLimits,
+    ) -> Result<Self> {
+        Self::open_inner(
+            client,
+            authority,
+            authority_verifier,
+            schemas,
+            None,
+            limits,
+            DEFAULT_TERMINAL_EFFECTS,
+            Some(original_revision),
+            &mut None,
+        ).await
+    }
+
+    /// Restores the same exact historical cut with one cumulative finite
+    /// SDK-boundary receipt. Future cuts reject after observing the real tail;
+    /// no latest-checkpoint fallback or unbounded historical replay is used.
+    #[cfg(feature = "filesystem")]
+    #[allow(clippy::too_many_arguments, reason = "original exact-cut open arguments plus the cumulative work receipt")]
+    pub async fn open_at_revision_measured(
+        client: &StreamClient<P>,
+        authority: Authority,
+        authority_verifier: AuthorityVerifier,
+        schemas: SchemaRegistry,
+        original_revision: u64,
+        limits: HistoryReadLimits,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Self>, Error> {
+        let mut work = history::HistoryWork::new(budget, cancellation);
+        let result = async {
+            work.preflight()?;
+            let aggregate = Self::open_inner(
+                client,
+                authority,
+                authority_verifier,
+                schemas,
+                None,
+                limits,
+                DEFAULT_TERMINAL_EFFECTS,
+                Some(original_revision),
+                &mut Some(&mut work),
+            ).await?;
+            work.return_staged_output()?;
+            Ok(aggregate)
+        }.await;
+        work.finish(result)
     }
 
     /// Opens the latest authenticated durable projection and a finite canonical suffix.
@@ -609,6 +860,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
             None,
             limits,
             maximum_terminal_effects,
+            None,
+            &mut None,
         )
         .await
     }
@@ -664,6 +917,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
             Some(snapshot),
             limits,
             DEFAULT_TERMINAL_EFFECTS,
+            None,
+            &mut None,
         )
         .await
     }
@@ -686,10 +941,13 @@ impl<P: StreamProvider> StreamAggregate<P> {
             Some(snapshot),
             limits,
             maximum_terminal_effects,
+            None,
+            &mut None,
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments, reason = "one original restore engine with optional exact cut and observer")]
     async fn open_inner(
         client: &StreamClient<P>,
         authority: Authority,
@@ -698,6 +956,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
         snapshot: Option<Snapshot>,
         limits: HistoryReadLimits,
         maximum_terminal_effects: usize,
+        original_revision: Option<u64>,
+        work: &mut Option<&mut dyn history::HistoryIo>,
     ) -> Result<Self> {
         authority_verifier.verify_audience(&authority)?;
         if limits.maximum_events == 0 || limits.maximum_bytes == 0 || maximum_terminal_effects == 0
@@ -708,8 +968,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
         let reader = HistoryReader::new(client, &authority, authority_verifier.clone())?;
         let loaded = match snapshot {
-            Some(snapshot) => checkpoints::supplied(client, &authority, snapshot, limits).await?,
-            None => checkpoints::load(client, &authority, &authority_verifier, limits).await?,
+            Some(snapshot) => checkpoints::supplied(client, &authority, snapshot, limits, original_revision, work).await?,
+            None if work.is_none() && original_revision.is_none() => checkpoints::load(client, &authority, &authority_verifier, limits).await?,
+            None => checkpoints::load_with_work(client, &authority, &authority_verifier, limits, original_revision, work).await?,
         };
         let path = authority.stream_path()?;
         let stream = client.stream(path)?;
@@ -719,7 +980,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     "snapshot authority does not match requested aggregate".into(),
                 ));
             }
-            Reducer::restore(snapshot, authority_verifier, schemas)?
+            Reducer::restore_with_work(snapshot, authority_verifier, schemas, work)?
         } else {
             Reducer::new(authority, authority_verifier, schemas)
         };
@@ -742,9 +1003,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 loaded.through_revision,
                 remaining_events,
                 limits.maximum_bytes.saturating_sub(loaded.consumed_bytes),
+                work,
             )
             .await?;
         }
+        if let Some(work) = work.as_deref_mut() { work.check_cancellation()?; }
         crate::obs::obs_record!(
             "rev" = reducer.revision(),
             "items" = reducer.revision().saturating_sub(start)
@@ -769,38 +1032,51 @@ impl<P: StreamProvider> StreamAggregate<P> {
         through: u64,
         maximum_events: u32,
         maximum_bytes: u64,
+        work: &mut Option<&mut dyn history::HistoryIo>,
     ) -> Result<()> {
         if maximum_bytes == 0 {
             return Err(Error::Invalid(
                 "projection suffix exceeds byte allowance".into(),
             ));
         }
+        let cursor = HistoryCursor {
+            authority: match work.as_deref_mut() {
+                Some(work) => work.clone_authority(reducer.authority())?,
+                None => reducer.authority().clone(),
+            },
+            after_revision: reducer.revision(),
+            through_revision: through,
+        };
         let read = reader
-            .read_page_counted(
-                &HistoryCursor {
-                    authority: reducer.authority().clone(),
-                    after_revision: reducer.revision(),
-                    through_revision: through,
-                },
-                HistoryReadLimits {
-                    maximum_events,
-                    maximum_bytes,
-                },
+            .read_page_with_work(
+                &cursor,
+                HistoryReadLimits { maximum_events, maximum_bytes },
+                true,
+                work.as_mut().map(|observer| &mut **observer as &mut dyn history::HistoryIo),
             )
             .await?;
+        let cursor_bytes = cursor.authority.id.capacity() as u64;
+        drop(cursor);
+        if let Some(work) = work.as_deref_mut() { work.release_bytes(cursor_bytes)?; }
         if read.page.cursor.after_revision != through {
             return Err(Error::Invalid(
                 "projection suffix exceeds byte allowance".into(),
             ));
         }
+        let event_bytes = (read.page.events.capacity() * std::mem::size_of::<crate::core::Event>()) as u64;
+        let record_capacity = (read.records.capacity() * std::mem::size_of::<acyclic_stream::Record>()) as u64;
+        let page_cursor_bytes = read.page.cursor.authority.id.capacity() as u64;
+        drop(read.page.cursor);
+        if let Some(work) = work.as_deref_mut() { work.release_bytes(page_cursor_bytes)?; }
         let mut used = read.bytes;
         for (event, record) in read.page.events.into_iter().zip(read.records) {
-            let (indexed, bytes) = effects::retirement_proof(
+            let (indexed, bytes) = effects::retirement_proof_with_work(
                 client,
                 reducer.authority(),
                 &event,
                 &record,
                 maximum_bytes.saturating_sub(used),
+                work,
             )
             .await?;
             used = used
@@ -812,6 +1088,14 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 reducer.mark_indexed_terminal_effect(&event)?;
             }
             reducer.enforce_terminal_effect_limit()?;
+            let record_bytes = record.value.len() as u64;
+            drop(record);
+            if let Some(work) = work.as_deref_mut() { work.release_record(record_bytes)?; }
+        }
+        if let Some(work) = work.as_deref_mut() {
+            work.release_bytes(event_bytes)?;
+            work.release_bytes(record_capacity)?;
+            work.check_cancellation()?;
         }
         Ok(())
     }
@@ -1683,6 +1967,11 @@ fn stream_idempotency_key(path: &str, value: &IdempotencyKey) -> Result<StreamId
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("store/measured_open_tests.rs");
+    #[cfg(feature = "filesystem")]
+    mod measured_fork_tests {
+        include!("store/measured_fork_tests.rs");
+    }
     use crate::wire_codec::encode_event;
     use crate::{
         Capabilities, OperationId,

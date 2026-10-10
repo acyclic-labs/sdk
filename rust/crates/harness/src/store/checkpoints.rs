@@ -1,10 +1,9 @@
 //! Durable accelerators over the same authenticated reducer and canonical Stream.
 
-use super::{HistoryReadLimits, operations};
+use super::{HistoryReadLimits, history::HistoryIo, operations};
 use crate::{
     Error, Result,
     core::{Authority, AuthorityVerifier, Event, Reducer, Snapshot},
-    wire_codec::{decode_event, encode_event},
 };
 use acyclic_stream::{
     CommitCondition, CommitMutation, CommitOutcome, CommitRequest, CommittedMutation,
@@ -69,7 +68,10 @@ fn head_path(authority: &Authority) -> Result<StreamPath> {
 // history does not retain another copy of its unchanged interior every 64 events.
 // The rolling value depends only on the last 64 bytes; boundaries are bounded
 // between 16 KiB and one Stream record, apart from the final chunk.
-fn projection_chunks(bytes: &[u8]) -> Result<Vec<&[u8]>> {
+fn projection_chunks<'a>(
+    bytes: &'a [u8],
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<Vec<&'a [u8]>> {
     let mut chunks = Vec::new();
     let mut start = 0;
     let mut rolling = 0_u64;
@@ -82,6 +84,7 @@ fn projection_chunks(bytes: &[u8]) -> Result<Vec<&[u8]>> {
         if length == acyclic_stream::MAX_RECORD_BYTES
             || (length >= 16 * 1024 && rolling & 0x3fff == 0)
         {
+            reserve_chunk_slot(&mut chunks, bytes.len() / (16 * 1024) + 1, work)?;
             chunks.push(
                 bytes
                     .get(start..=index)
@@ -91,6 +94,7 @@ fn projection_chunks(bytes: &[u8]) -> Result<Vec<&[u8]>> {
         }
     }
     if start < bytes.len() {
+        reserve_chunk_slot(&mut chunks, bytes.len() / (16 * 1024) + 1, work)?;
         chunks.push(
             bytes.get(start..).ok_or_else(|| {
                 Error::Invalid("projection final chunk boundary is invalid".into())
@@ -98,6 +102,25 @@ fn projection_chunks(bytes: &[u8]) -> Result<Vec<&[u8]>> {
         );
     }
     Ok(chunks)
+}
+
+fn reserve_chunk_slot<T>(
+    values: &mut Vec<T>,
+    maximum: usize,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<()> {
+    let Some(observer) = work.as_deref_mut() else { return Ok(()); };
+    if values.len() < values.capacity() { return Ok(()); }
+    let target = (values.capacity().max(1) * 2).min(maximum);
+    let element_bytes = std::mem::size_of::<T>() as u64;
+    let old_capacity = values.capacity();
+    observer.admit_owned(target as u64 * element_bytes)?;
+    observer.copy_bytes(values.len() as u64 * element_bytes)?;
+    values.try_reserve_exact(target - values.len())
+        .map_err(|_| Error::Invalid("projection chunk vector allocation failed".into()))?;
+    observer.retain_owned(values.capacity() as u64 * element_bytes)?;
+    observer.release_owned(old_capacity as u64 * element_bytes)?;
+    Ok(())
 }
 
 fn chunk_path(authority: &Authority, chunk: &ProjectionChunk) -> Result<StreamPath> {
@@ -113,20 +136,50 @@ pub(super) async fn stage_immutable_record<P: StreamProvider>(
     path: StreamPath,
     bytes: Bytes,
 ) -> Result<()> {
+    stage_immutable_record_with_work(client, path, bytes, &mut None).await
+}
+
+pub(super) async fn stage_immutable_record_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    path: StreamPath,
+    bytes: Bytes,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<()> {
+    if let Some(observer) = work.as_deref_mut() {
+        observer.check_cancellation()?;
+        observer.hashed_bytes(path.as_str().len() as u64)?;
+        observer.copy_bytes(32)?;
+    }
     let key = IdempotencyKey::new(Bytes::copy_from_slice(
         blake3::hash(path.as_str().as_bytes()).as_bytes(),
     ))?;
-    let outcome = client
-        .commit(CommitRequest {
-            conditions: vec![CommitCondition::Absent { path: path.clone() }],
-            mutations: vec![CommitMutation::Append {
-                path: path.clone(),
-                records: vec![bytes.clone()],
-            }],
-            idempotency_key: key,
-        })
-        .await?;
+    let request = CommitRequest {
+        conditions: vec![CommitCondition::Absent { path: path.clone() }],
+        mutations: vec![CommitMutation::Append {
+            path: path.clone(),
+            records: vec![bytes.clone()],
+        }],
+        idempotency_key: key,
+    };
+    if let Some(observer) = work.as_deref_mut() {
+        observer.admit_acknowledgment(bytes.len() as u64, 1)?;
+        observer.begin_write()?;
+    }
+    let outcome = client.commit(request).await?;
     if let CommitOutcome::Committed(envelope) = outcome {
+        let mut received_failure = None;
+        if let Some(observer) = work.as_deref_mut() {
+            for mutation in &envelope.mutations {
+                let records = match mutation {
+                    CommittedMutation::Append(append) => &append.records,
+                    CommittedMutation::Fork(fork) => &fork.records,
+                };
+                for record in records {
+                    let received = observer.receive_record(record.value.len() as u64);
+                    if received_failure.is_none() { received_failure = received.err(); }
+                }
+            }
+        }
         if let [CommittedMutation::Append(append)] = envelope.mutations.as_slice()
             && append.path == path
             && append.start == 0
@@ -137,17 +190,30 @@ pub(super) async fn stage_immutable_record<P: StreamProvider>(
             && record.value == bytes
             && record.commit_id == envelope.commit_id
         {
+            if let Some(observer) = work.as_deref_mut() {
+                observer.acknowledged(bytes.len() as u64, 1)?;
+                if let Some(error) = received_failure { return Err(error); }
+                observer.release_record(bytes.len() as u64)?;
+            }
             return Ok(());
         }
         return Err(Error::Storage("immutable record receipt is invalid".into()));
     }
     // A competing publication may stage identical content. Its immutable bytes
     // must match; only the later canonical commit makes the checkpoint visible.
-    if operations::one_record(client, &path, 0)
-        .await?
-        .is_some_and(|record| record.value == bytes)
-        && client.stream(path.as_str())?.tail().await? == 1
-    {
+    let record = operations::one_record_with_work(client, &path, 0, work).await?;
+    let identical = record.as_ref().is_some_and(|record| record.value == bytes);
+    if let (Some(observer), Some(record)) = (work.as_deref_mut(), record.as_ref()) {
+        observer.release_record(record.value.len() as u64)?;
+    }
+    if !identical {
+        return Err(Error::Conflict("immutable record identity differs".into()));
+    }
+    if let Some(observer) = work.as_deref_mut() {
+        observer.begin_call()?;
+    }
+    let tail = client.stream(path.as_str())?.tail().await?;
+    if tail == 1 {
         Ok(())
     } else {
         Err(Error::Conflict("immutable record identity differs".into()))
@@ -159,71 +225,129 @@ pub(super) async fn publication<P: StreamProvider>(
     reducer: &Reducer,
     event: &Event,
 ) -> Result<operations::IndexedPublication> {
-    let mut publication = operations::IndexedPublication::new(
+    publication_with_work(client, reducer, event, &mut None).await
+}
+
+pub(super) async fn publication_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    reducer: &Reducer,
+    event: &Event,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<operations::IndexedPublication> {
+    let mut publication = operations::IndexedPublication::new_with_work(
         reducer.authority(),
         event,
-        encode_event(reducer.authority(), event)?,
+        crate::wire_codec::encode_event_with_work(reducer.authority(), event, work)?,
+        work,
     )?;
-    super::effects::add_publication_index(client, reducer, event, &mut publication).await?;
+    super::effects::add_publication_index_with_work(client, reducer, event, &mut publication, work).await?;
     if !event
         .revision
         .is_multiple_of(u64::from(DEFAULT_PROJECTION_EVENTS))
     {
         return Ok(publication);
     }
-    let mut preview = reducer.clone();
-    preview.apply_committed(event.clone())?;
     // The staged projection becomes visible only in the same canonical commit
     // that publishes these original operation/effect indexes and checkpoint.
-    preview.mark_indexed_terminal_effect(event)?;
-    let snapshot = preview.snapshot_with_event_limit(1)?;
-    crate::contract::validate_json_byte_bound(&snapshot, MAX_PROJECTION_BYTES)?;
-    let bytes = crate::contract::canonical_json_bytes(&snapshot)?;
-    let chunks = projection_chunks(&bytes)?;
+    let (snapshot, snapshot_reservation) =
+        reducer.publication_snapshot_with_work(event, 1, work)?;
+    let encoded = super::history::canonical_bytes_with_work(&snapshot, MAX_PROJECTION_BYTES, work);
+    drop(snapshot);
+    if let Some(observer) = work.as_deref_mut() {
+        observer.release_owned(snapshot_reservation)?;
+    }
+    let bytes = encoded?;
+    let chunks = projection_chunks(&bytes, work)?;
+    if let Some(observer) = work.as_deref_mut() {
+        observer.hashed_bytes(bytes.len() as u64)?;
+    }
+    let digest = *blake3::hash(&bytes).as_bytes();
+    let chunk_slots = chunks.capacity() as u64 * std::mem::size_of::<&[u8]>() as u64;
+    let mut descriptors = Vec::new();
+    for chunk in &chunks {
+        reserve_chunk_slot(&mut descriptors, chunks.len(), work)?;
+        let length = u32::try_from(chunk.len())
+            .map_err(|_| Error::Invalid("projection chunk exceeds platform".into()))?;
+        if let Some(observer) = work.as_deref_mut() {
+            observer.hashed_bytes(chunk.len() as u64)?;
+        }
+        descriptors.push(ProjectionChunk {
+            digest: *blake3::hash(chunk).as_bytes(),
+            bytes: length,
+        });
+    }
     let location = ProjectionLocation {
-        authority: reducer.authority().clone(),
+        authority: match work.as_deref_mut() {
+            Some(observer) => observer.clone_authority(reducer.authority())?,
+            None => reducer.authority().clone(),
+        },
         revision: event.revision,
         bytes: bytes.len() as u64,
-        digest: *blake3::hash(&bytes).as_bytes(),
-        chunks: chunks
-            .iter()
-            .map(|chunk| {
-                Ok(ProjectionChunk {
-                    digest: *blake3::hash(chunk).as_bytes(),
-                    bytes: u32::try_from(chunk.len())
-                        .map_err(|_| Error::Invalid("projection chunk exceeds platform".into()))?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?,
+        digest,
+        chunks: descriptors,
     };
-    let location_bytes = crate::contract::canonical_json_bytes(&location)?;
+    let location_bytes = super::history::canonical_bytes_with_work(&location, acyclic_stream::MAX_RECORD_BYTES as u64, work)?;
     if location_bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
         return Err(Error::Invalid(
             "projection manifest exceeds one record".into(),
         ));
     }
     for (descriptor, chunk) in location.chunks.iter().zip(chunks) {
-        stage_immutable_record(
+        if let Some(observer) = work.as_deref_mut() {
+            observer.admit_owned(chunk.len() as u64)?;
+            observer.copy_bytes(chunk.len() as u64)?;
+            observer.retain_owned(chunk.len() as u64)?;
+        }
+        stage_immutable_record_with_work(
             client,
             chunk_path(&location.authority, descriptor)?,
             Bytes::copy_from_slice(chunk),
+            work,
         )
         .await?;
+        if let Some(observer) = work.as_deref_mut() {
+            observer.release_owned(chunk.len() as u64)?;
+        }
     }
-    publication.add_derived_index(
+    let location_owned = location.authority.id.capacity() as u64
+        + location.chunks.capacity() as u64 * std::mem::size_of::<ProjectionChunk>() as u64;
+    let source_capacity = bytes.capacity() as u64;
+    drop(location);
+    drop(bytes);
+    if let Some(observer) = work.as_deref_mut() {
+        observer.release_owned(source_capacity)?;
+        observer.release_owned(chunk_slots)?;
+        observer.release_owned(location_owned)?;
+    }
+    publication.add_derived_index_with_work(
         head_path(reducer.authority())?,
         event.revision / u64::from(DEFAULT_PROJECTION_EVENTS) - 1,
         Bytes::from(location_bytes),
-    );
+        work,
+    )?;
     Ok(publication)
 }
 
-async fn tail<P: StreamProvider>(client: &StreamClient<P>, authority: &Authority) -> Result<u64> {
-    match client.stream(authority.stream_path()?)?.tail().await {
+async fn tail<P: StreamProvider>(
+    client: &StreamClient<P>,
+    authority: &Authority,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<u64> {
+    let stream = client.stream(authority.stream_path()?)?;
+    if let Some(work) = work.as_deref_mut() { work.begin_call()?; }
+    match stream.tail().await {
         Ok(tail) => Ok(tail),
         Err(StreamError::NotFound) => Ok(0),
         Err(error) => Err(error.into()),
     }
+}
+
+fn projection_cut(committed_tail: u64, original_revision: Option<u64>) -> Result<u64> {
+    let through_revision = original_revision.unwrap_or(committed_tail);
+    if through_revision > committed_tail {
+        return Err(Error::Invalid("projection revision exceeds committed tail".into()));
+    }
+    Ok(through_revision)
 }
 
 fn charge(used: &mut u64, bytes: u64, maximum: u64) -> Result<()> {
@@ -239,6 +363,8 @@ pub(super) async fn supplied<P: StreamProvider>(
     authority: &Authority,
     snapshot: Snapshot,
     limits: HistoryReadLimits,
+    original_revision: Option<u64>,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<LoadedProjection> {
     if &snapshot.authority != authority {
         return Err(Error::Invalid(
@@ -254,7 +380,7 @@ pub(super) async fn supplied<P: StreamProvider>(
     // still authenticates the issuer MAC and registry before state is used.
     Ok(LoadedProjection {
         snapshot: Some(snapshot),
-        through_revision: tail(client, authority).await?,
+        through_revision: projection_cut(tail(client, authority, work).await?, original_revision)?,
         consumed_bytes,
         consumed_events,
     })
@@ -266,16 +392,27 @@ pub(super) async fn load<P: StreamProvider>(
     verifier: &AuthorityVerifier,
     limits: HistoryReadLimits,
 ) -> Result<LoadedProjection> {
+    load_with_work(client, authority, verifier, limits, None, &mut None).await
+}
+
+pub(super) async fn load_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    authority: &Authority,
+    verifier: &AuthorityVerifier,
+    limits: HistoryReadLimits,
+    original_revision: Option<u64>,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<LoadedProjection> {
     verifier.verify_audience(authority)?;
     if limits.maximum_events == 0 || limits.maximum_bytes == 0 {
         return Err(Error::Invalid(
             "projection read bounds must be positive".into(),
         ));
     }
-    // Pin the canonical cut first. Checkpoints publish atomically at every
-    // interval, so the corresponding immutable position already exists and
-    // later publications cannot change which checkpoint this read selects.
-    let through_revision = tail(client, authority).await?;
+    // Observe the real committed tail before choosing a checkpoint. Explicit
+    // historical cuts select their own floor position; later publications
+    // cannot change that authenticated checkpoint or its canonical anchor.
+    let through_revision = projection_cut(tail(client, authority, work).await?, original_revision)?;
     let checkpoint_count = through_revision / u64::from(DEFAULT_PROJECTION_EVENTS);
     if checkpoint_count == 0 {
         return Ok(LoadedProjection {
@@ -285,7 +422,7 @@ pub(super) async fn load<P: StreamProvider>(
             consumed_events: 0,
         });
     }
-    let index = operations::one_record(client, &head_path(authority)?, checkpoint_count - 1)
+    let index = operations::one_record_with_work(client, &head_path(authority)?, checkpoint_count - 1, work)
         .await?
         .ok_or_else(|| {
             Error::Unsupported("canonical history requires a durable projection checkpoint".into())
@@ -325,8 +462,12 @@ pub(super) async fn load<P: StreamProvider>(
             &index.commit_id,
             &mut consumed_bytes,
             limits.maximum_bytes,
+            work,
         )
         .await?;
+    let index_bytes = index.value.len() as u64;
+    drop(index);
+    if let Some(work) = work.as_deref_mut() { work.release_record(index_bytes)?; }
     Ok(LoadedProjection {
         snapshot: Some(snapshot),
         through_revision,
@@ -343,11 +484,13 @@ impl ProjectionLocation {
         commit_id: &acyclic_stream::CommitId,
         consumed_bytes: &mut u64,
         maximum_bytes: u64,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Snapshot> {
-        let canonical = operations::one_record(
+        let canonical = operations::one_record_with_work(
             client,
             &StreamPath::new(self.authority.stream_path()?)?,
             self.revision - 1,
+            work,
         )
         .await?
         .ok_or_else(|| Error::Storage("projection canonical anchor is missing".into()))?;
@@ -357,12 +500,13 @@ impl ProjectionLocation {
                 "projection head is outside its canonical atomic commit".into(),
             ));
         }
-        let (actual_authority, event) = decode_event(&canonical.value)?;
-        verifier.verify_event(&event)?;
+        let (actual_authority, event) = crate::wire_codec::decode_event_with_work(&canonical.value, work)?;
+        verifier.verify_event_with_work(&event, work)?;
         if actual_authority != self.authority || event.revision != self.revision {
             return Err(Error::Storage("projection canonical anchor differs".into()));
         }
-        let bytes = load_chunks(client, self, consumed_bytes, maximum_bytes).await?;
+        if let Some(work) = work.as_deref_mut() { work.stage_output(self.bytes, 1)?; }
+        let bytes = load_chunks(client, self, consumed_bytes, maximum_bytes, work).await?;
         let snapshot: Snapshot = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Storage(error.to_string()))?;
         if snapshot.authority != self.authority
@@ -373,6 +517,17 @@ impl ProjectionLocation {
                 "projection snapshot differs from its canonical anchor".into(),
             ));
         }
+        if let Some(work) = work.as_deref_mut() {
+            work.check_cancellation()?;
+        }
+        let capacity = bytes.capacity() as u64;
+        drop(bytes);
+        let canonical_bytes = canonical.value.len() as u64;
+        drop(canonical);
+        if let Some(work) = work.as_deref_mut() {
+            work.release_bytes(capacity)?;
+            work.release_record(canonical_bytes)?;
+        }
         Ok(snapshot)
     }
 }
@@ -382,6 +537,7 @@ async fn load_chunks<P: StreamProvider>(
     location: &ProjectionLocation,
     consumed: &mut u64,
     maximum: u64,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Vec<u8>> {
     let length = usize::try_from(location.bytes)
         .map_err(|_| Error::Invalid("projection size exceeds platform".into()))?;
@@ -410,7 +566,14 @@ async fn load_chunks<P: StreamProvider>(
             "projection chunk manifest total differs".into(),
         ));
     }
-    let mut bytes = Vec::with_capacity(length);
+    let mut bytes = match work.as_deref_mut() {
+        Some(work) => {
+            let mut bytes = Vec::new();
+            work.reserve_bytes(&mut bytes, length)?;
+            bytes
+        }
+        None => Vec::with_capacity(length),
+    };
     for chunk in &location.chunks {
         let expected = chunk.bytes as usize;
         if expected as u64 > maximum.saturating_sub(*consumed) {
@@ -418,18 +581,28 @@ async fn load_chunks<P: StreamProvider>(
                 "projection read exceeds byte allowance".into(),
             ));
         }
-        let record = operations::one_record(client, &chunk_path(&location.authority, chunk)?, 0)
+        let record = operations::one_record_with_work(client, &chunk_path(&location.authority, chunk)?, 0, work)
             .await?
             .ok_or_else(|| Error::Storage("projection chunk is missing".into()))?;
         charge(consumed, record.value.len() as u64, maximum)?;
-        if record.value.len() != expected || blake3::hash(&record.value).as_bytes() != &chunk.digest
-        {
+        let digest_matches = if record.value.len() == expected {
+            if let Some(work) = work.as_deref_mut() { work.hashed_bytes(record.value.len() as u64)?; }
+            blake3::hash(&record.value).as_bytes() == &chunk.digest
+        } else {
+            false
+        };
+        if !digest_matches {
             return Err(Error::Storage(
                 "projection chunk length or digest differs".into(),
             ));
         }
+        if let Some(work) = work.as_deref_mut() { work.copy_bytes(record.value.len() as u64)?; }
         bytes.extend_from_slice(&record.value);
+        let record_bytes = record.value.len() as u64;
+        drop(record);
+        if let Some(work) = work.as_deref_mut() { work.release_record(record_bytes)?; }
     }
+    if let Some(work) = work.as_deref_mut() { work.hashed_bytes(bytes.len() as u64)?; }
     if blake3::hash(&bytes).as_bytes() != &location.digest {
         return Err(Error::Storage("projection payload digest differs".into()));
     }

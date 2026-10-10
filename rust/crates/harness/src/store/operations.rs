@@ -12,6 +12,94 @@ use bytes::Bytes;
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 
+pub(super) fn validate_canonical_json_with_work(
+    bytes: &[u8],
+    maximum_bytes: u64,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<()> {
+    if work.is_none() {
+        let _: serde_json::Value = crate::executor::decode_json(bytes)?;
+        return Ok(());
+    }
+    let mut items = 0u64;
+    let mut reservation = 0;
+    let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(
+        bytes.len() as u64,
+        ["Value", "sequence", "map", "string", "number", "boolean", "null"]
+            .iter().map(|label| label.len() as u64 + 4).sum(),
+    )?;
+    let mut observed_failure = false;
+    let parsed = {
+        let observer = work.as_deref_mut().expect("observed canonical validation");
+        crate::contract::json_from_slice_bounded_trusted::<serde_json::Value, _>(
+            bytes,
+            crate::contract::JsonBounds {
+                maximum_bytes,
+                maximum_items: maximum_bytes,
+                maximum_depth: 256,
+            },
+            bytes.len() as u64,
+            &mut |charge| {
+                let charged = match charge {
+                crate::contract::JsonCodecCharge::Work { items: visited, .. } => {
+                    items = items.checked_add(visited)
+                        .ok_or_else(|| Error::Invalid("index JSON item count overflows".into()))?;
+                    observer.codec_charge(charge)
+                }
+                crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes } => {
+                    // Value owns string payloads and logical sequence/map slots.
+                    // The lexical count admits minimum-eight/geometric vectors;
+                    // opaque map allocator overhead is outside this contract.
+                    let slot = std::mem::size_of::<serde_json::Value>()
+                        .max(std::mem::size_of::<(String, serde_json::Value)>()) as u64;
+                    reservation = items.checked_mul(10).and_then(|count| count.checked_mul(slot))
+                        .and_then(|slots| slots.checked_add(maximum_owned_bytes))
+                        .and_then(|owned| owned.checked_add(diagnostic_bytes))
+                        .ok_or_else(|| Error::Invalid("index JSON reservation overflows".into()))?;
+                    observer.retain_owned(reservation)
+                }
+                _ => observer.codec_charge(charge),
+                };
+                if charged.is_err() { observed_failure = true; }
+                charged
+            },
+        )
+    };
+    let parsed = parsed.map_err(|error| {
+        if observed_failure { error } else {
+            match error {
+                Error::Invalid(message) => Error::Storage(format!("execution journal JSON is invalid: {message}")),
+                other => other,
+            }
+        }
+    });
+    let result = match parsed {
+        Ok(parsed) => {
+            let encoded = super::history::canonical_bytes_with_work(&parsed, maximum_bytes, work);
+            drop(parsed);
+            match encoded {
+                Ok(encoded) => {
+                    let identical = encoded == bytes;
+                    let capacity = encoded.capacity() as u64;
+                    drop(encoded);
+                    if let Some(observer) = work.as_deref_mut() {
+                        observer.release_owned(capacity)?;
+                    }
+                    if identical { Ok(()) } else {
+                        Err(Error::Storage("execution journal JSON is not canonical".into()))
+                    }
+                }
+                Err(error) => Err(error),
+            }
+        }
+        Err(error) => Err(error),
+    };
+    if let Some(observer) = work.as_deref_mut() {
+        observer.release_owned(reservation)?;
+    }
+    result
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct OperationLocation {
@@ -23,12 +111,118 @@ pub(super) struct OperationLocation {
     pub(super) effect_position: Option<u64>,
 }
 
+pub(super) fn decode_location_with_work(
+    bytes: &[u8],
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<OperationLocation> {
+    if work.is_some() {
+        validate_canonical_json_with_work(bytes, acyclic_stream::MAX_RECORD_BYTES as u64, work)?;
+    }
+    let Some(observer) = work.as_deref_mut() else {
+        return crate::executor::decode_json(bytes);
+    };
+    // This named-field schema owns only Authority.id; every other field is
+    // fixed-width. Decoded UTF-8 string storage cannot exceed lexical input.
+    let mut reservation = 0;
+    let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(
+        bytes.len() as u64,
+        ["OperationLocation", "Authority", "AggregateKind", "authority", "operation_id",
+         "revision", "intent_digest", "effect_position", "kind", "id", "agent",
+         "conversation", "session", "turn", "task"]
+            .iter().map(|label| label.len() as u64 + 4).sum(),
+    )?;
+    let mut observed_failure = false;
+    let decoded = crate::contract::json_from_slice_bounded_trusted::<OperationLocation, _>(
+        bytes,
+        crate::contract::JsonBounds {
+            maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
+            maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64,
+            maximum_depth: 256,
+        },
+        bytes.len() as u64,
+        &mut |charge| {
+            let charged = if let crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes } = charge {
+                reservation = maximum_owned_bytes.checked_add(diagnostic_bytes)
+                    .ok_or_else(|| Error::Invalid("operation locator reservation overflows".into()))?;
+                observer.retain_owned(reservation)
+            } else {
+                observer.codec_charge(charge)
+            };
+            if charged.is_err() { observed_failure = true; }
+            charged
+        },
+    );
+    let decoded = decoded.map_err(|error| {
+        if observed_failure { error } else {
+            match error {
+                Error::Invalid(message) => Error::Storage(format!("execution journal content is invalid: {message}")),
+                other => other,
+            }
+        }
+    });
+    observer.release_owned(reservation)?;
+    let location = decoded?;
+    observer.retain_owned(location.authority.id.capacity() as u64)?;
+    observer.copy_bytes(location.authority.id.len() as u64)?;
+    Ok(location)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MessageLocation {
     location: OperationLocation,
     message_id: uuid::Uuid,
     sequence: u64,
+}
+
+fn decode_message_location_with_work(
+    bytes: &[u8],
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<MessageLocation> {
+    if work.is_some() {
+        validate_canonical_json_with_work(bytes, acyclic_stream::MAX_RECORD_BYTES as u64, work)?;
+    }
+    let Some(observer) = work.as_deref_mut() else { return crate::executor::decode_json(bytes); };
+    let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(
+        bytes.len() as u64,
+        ["MessageLocation", "OperationLocation", "Authority", "AggregateKind", "location",
+         "message_id", "sequence", "authority", "operation_id", "revision", "intent_digest",
+         "effect_position", "kind", "id", "agent", "conversation", "session", "turn", "task"]
+            .iter().map(|label| label.len() as u64 + 4).sum(),
+    )?;
+    let mut reservation = 0;
+    let mut observed_failure = false;
+    let decoded = crate::contract::json_from_slice_bounded_trusted::<MessageLocation, _>(
+        bytes,
+        crate::contract::JsonBounds {
+            maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
+            maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64,
+            maximum_depth: 256,
+        },
+        bytes.len() as u64,
+        &mut |charge| {
+            let charged = if let crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes } = charge {
+                reservation = maximum_owned_bytes.checked_add(diagnostic_bytes)
+                    .ok_or_else(|| Error::Invalid("message locator reservation overflows".into()))?;
+                observer.retain_owned(reservation)
+            } else { observer.codec_charge(charge) };
+            if charged.is_err() { observed_failure = true; }
+            charged
+        },
+    );
+    let decoded = decoded.map_err(|error| {
+        if observed_failure { error } else {
+            match error {
+                Error::Invalid(message) => Error::Storage(format!("execution journal content is invalid: {message}")),
+                other => other,
+            }
+        }
+    });
+    observer.release_owned(reservation)?;
+    let location = decoded?;
+    observer.retain_owned(location.location.authority.id.capacity() as u64)?;
+    observer.copy_bytes(location.location.authority.id.len() as u64)?;
+    Ok(location)
 }
 
 fn message_path(authority: &Authority, message: uuid::Uuid) -> Result<StreamPath> {
@@ -95,37 +289,95 @@ pub(crate) struct IndexedPublication {
     indexes: Vec<(StreamPath, u64, Bytes)>,
 }
 
+fn reserve_indexes(
+    indexes: &mut Vec<(StreamPath, u64, Bytes)>,
+    additional: usize,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<()> {
+    let Some(observer) = work.as_deref_mut() else { return Ok(()); };
+    let needed = indexes.len().checked_add(additional)
+        .ok_or_else(|| Error::Invalid("publication index count overflows".into()))?;
+    if needed <= indexes.capacity() { return Ok(()); }
+    let element_bytes = std::mem::size_of::<(StreamPath, u64, Bytes)>() as u64;
+    let old_capacity = indexes.capacity();
+    observer.admit_owned(needed as u64 * element_bytes)?;
+    observer.copy_bytes(indexes.len() as u64 * element_bytes)?;
+    indexes.try_reserve_exact(additional)
+        .map_err(|_| Error::Invalid("publication index allocation failed".into()))?;
+    observer.retain_owned(indexes.capacity() as u64 * element_bytes)?;
+    observer.release_owned(old_capacity as u64 * element_bytes)?;
+    Ok(())
+}
+
 impl IndexedPublication {
     pub(crate) fn new(authority: &Authority, event: &Event, bytes: Vec<u8>) -> Result<Self> {
+        Self::new_with_work(authority, event, bytes, &mut None)
+    }
+
+    pub(crate) fn new_with_work(
+        authority: &Authority,
+        event: &Event,
+        bytes: Vec<u8>,
+        work: &mut Option<&mut dyn super::history::HistoryIo>,
+    ) -> Result<Self> {
+        if let Some(observer) = work.as_deref_mut() {
+            observer.check_cancellation()?;
+        }
         let expected_tail = event
             .revision
             .checked_sub(1)
             .ok_or_else(|| Error::Invalid("indexed event revision must be positive".into()))?;
         let location = OperationLocation {
-            authority: authority.clone(),
+            authority: match work.as_deref_mut() {
+                Some(observer) => observer.clone_authority(authority)?,
+                None => authority.clone(),
+            },
             operation_id: event.operation_id,
             revision: event.revision,
             intent_digest: event.intent_digest,
             effect_position: None,
         };
-        let mut indexes = vec![(
+        let location_capacity = location.authority.id.capacity() as u64;
+        let mut indexes = Vec::new();
+        let initial_indexes = match event.payload {
+            crate::core::EventPayload::ConversationBound { .. } => 2,
+            crate::core::EventPayload::ConversationMessageAppended { .. }
+                | crate::core::EventPayload::ProjectMergePublished { .. } => 4,
+            _ => 1,
+        };
+        reserve_indexes(&mut indexes, initial_indexes, work)?;
+        indexes.push((
             operation_path(authority, event.operation_id)?,
             0,
-            Bytes::from(crate::contract::canonical_json_bytes(&location)?),
-        )];
+            Bytes::from(super::history::canonical_bytes_with_work(&location, acyclic_stream::MAX_RECORD_BYTES as u64, work)?),
+        ));
         if matches!(
             event.payload,
             crate::core::EventPayload::ConversationBound { .. }
         ) {
-            indexes.push((
-                message_head_path(authority)?,
-                0,
-                Bytes::from(crate::contract::canonical_json_bytes(&MessageLocation {
-                    location: location.clone(),
-                    message_id: uuid::Uuid::nil(),
-                    sequence: 0,
-                })?),
-            ));
+            let binding_location = MessageLocation {
+                location: OperationLocation {
+                    authority: match work.as_deref_mut() {
+                        Some(observer) => observer.clone_authority(&location.authority)?,
+                        None => location.authority.clone(),
+                    },
+                    operation_id: location.operation_id,
+                    revision: location.revision,
+                    intent_digest: location.intent_digest,
+                    effect_position: location.effect_position,
+                },
+                message_id: uuid::Uuid::nil(),
+                sequence: 0,
+            };
+            let binding_bytes = super::history::canonical_bytes_with_work(
+                &binding_location, acyclic_stream::MAX_RECORD_BYTES as u64, work,
+            )?;
+            let binding_capacity = binding_location.location.authority.id.capacity() as u64;
+            drop(binding_location);
+            if let Some(observer) = work.as_deref_mut() {
+                observer.release_owned(binding_capacity)?;
+            }
+            indexes.push((message_head_path(authority)?, 0, Bytes::from(binding_bytes)));
         }
         let message = match &event.payload {
             crate::core::EventPayload::ConversationMessageAppended { message } => {
@@ -136,11 +388,11 @@ impl IndexedPublication {
         };
         if let Some(message) = message {
             let message_location =
-                Bytes::from(crate::contract::canonical_json_bytes(&MessageLocation {
+                Bytes::from(super::history::canonical_bytes_with_work(&MessageLocation {
                     location,
                     message_id: message.id,
                     sequence: message.sequence,
-                })?);
+                }, acyclic_stream::MAX_RECORD_BYTES as u64, work)?);
             indexes.push((
                 message_path(authority, message.id)?,
                 0,
@@ -160,6 +412,11 @@ impl IndexedPublication {
                 message.sequence,
                 message_location,
             ));
+        } else {
+            drop(location);
+        }
+        if let Some(observer) = work.as_deref_mut() {
+            observer.release_owned(location_capacity)?;
         }
         Ok(Self {
             operation_id: event.operation_id,
@@ -170,19 +427,41 @@ impl IndexedPublication {
         })
     }
 
-    pub(super) fn set_effect_position(&mut self, position: u64) -> Result<()> {
+    pub(super) fn set_effect_position_with_work(
+        &mut self,
+        position: u64,
+        work: &mut Option<&mut dyn super::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(observer) = work.as_deref_mut() {
+            observer.check_cancellation()?;
+        }
         let (_, _, bytes) = self
             .indexes
             .first_mut()
             .ok_or_else(|| Error::Storage("publication operation index is absent".into()))?;
-        let mut location: OperationLocation = crate::executor::decode_json(bytes)?;
+        let mut location = decode_location_with_work(bytes, work)?;
         location.effect_position = Some(position);
-        *bytes = Bytes::from(crate::contract::canonical_json_bytes(&location)?);
+        let encoded = super::history::canonical_bytes_with_work(&location, acyclic_stream::MAX_RECORD_BYTES as u64, work)?;
+        if let Some(observer) = work.as_deref_mut() {
+            observer.release_owned(location.authority.id.capacity() as u64)?;
+        }
+        if let Some(observer) = work.as_deref_mut() {
+            observer.release_owned(bytes.len() as u64)?;
+        }
+        *bytes = Bytes::from(encoded);
         Ok(())
     }
 
-    pub(super) fn add_derived_index(&mut self, path: StreamPath, tail: u64, bytes: Bytes) {
+    pub(super) fn add_derived_index_with_work(
+        &mut self,
+        path: StreamPath,
+        tail: u64,
+        bytes: Bytes,
+        work: &mut Option<&mut dyn super::history::HistoryIo>,
+    ) -> Result<()> {
+        reserve_indexes(&mut self.indexes, 1, work)?;
         self.indexes.push((path, tail, bytes));
+        Ok(())
     }
 
     pub(crate) fn add_index(&self, request: &mut CommitRequest) {
@@ -207,6 +486,18 @@ impl IndexedPublication {
         client: &StreamClient<P>,
         key: IdempotencyKey,
     ) -> Result<CommitRequest> {
+        self.request_with_work(client, key, &mut None).await
+    }
+
+    pub(crate) async fn request_with_work<P: StreamProvider>(
+        &self,
+        client: &StreamClient<P>,
+        key: IdempotencyKey,
+        work: &mut Option<&mut dyn super::history::HistoryIo>,
+    ) -> Result<CommitRequest> {
+        if let Some(observer) = work.as_deref_mut() {
+            observer.begin_call()?;
+        }
         let target = match client.bounds(self.path.as_str()).await {
             Ok(_) => CommitCondition::Tail {
                 path: self.path.clone(),
@@ -279,13 +570,34 @@ pub(super) async fn one_record<P: StreamProvider>(
     path: &StreamPath,
     from: u64,
 ) -> Result<Option<Record>> {
+    one_record_with_work(client, path, from, &mut None).await
+}
+
+/// The original one-record lookup with receipts at each visible SDK boundary.
+pub(crate) async fn one_record_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    path: &StreamPath,
+    from: u64,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<Option<Record>> {
+    if let Some(work) = work.as_deref_mut() { work.begin_call()?; }
     let mut records = match client.stream(path.as_str())?.read(from, 1).await {
         Ok(records) => records,
         Err(acyclic_stream::StreamError::NotFound) => return Ok(None),
         Err(error) => return Err(error.into()),
     };
+    if let Some(work) = work.as_deref_mut() { work.check_cancellation()?; }
     let first = records.try_next().await?;
-    if records.try_next().await?.is_some() {
+    if let Some(record) = &first
+        && let Some(work) = work.as_deref_mut()
+    {
+        work.receive_record(record.value.len() as u64)?;
+    }
+    if let Some(work) = work.as_deref_mut() { work.check_cancellation()?; }
+    if let Some(extra) = records.try_next().await? {
+        if let Some(work) = work.as_deref_mut() {
+            work.receive_record(extra.value.len() as u64)?;
+        }
         return Err(Error::Storage(
             "operation lookup exceeded its one-record bound".into(),
         ));
@@ -325,6 +637,17 @@ pub(crate) async fn find_operation_bounded<P: StreamProvider>(
     operation: OperationId,
     maximum_bytes: u64,
 ) -> Result<(Option<Event>, u64)> {
+    find_operation_bounded_with_work(client, authority, verifier, operation, maximum_bytes, &mut None).await
+}
+
+pub(crate) async fn find_operation_bounded_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    authority: &Authority,
+    verifier: &AuthorityVerifier,
+    operation: OperationId,
+    maximum_bytes: u64,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<(Option<Event>, u64)> {
     verifier.verify_audience(authority)?;
     if maximum_bytes == 0 {
         return Err(Error::Invalid(
@@ -332,7 +655,8 @@ pub(crate) async fn find_operation_bounded<P: StreamProvider>(
         ));
     }
     let path = operation_path(authority, operation)?;
-    let Some(index) = one_record(client, &path, 0).await? else {
+    let Some(index) = one_record_with_work(client, &path, 0, work).await? else {
+        if let Some(work) = work.as_deref_mut() { work.begin_call()?; }
         return match client.stream(path.as_str())?.tail().await {
             Err(acyclic_stream::StreamError::NotFound) => Ok((None, 0)),
             Ok(_) => Err(Error::Storage(
@@ -345,6 +669,7 @@ pub(crate) async fn find_operation_bounded<P: StreamProvider>(
     if index_bytes >= maximum_bytes {
         return Err(Error::Invalid("operation lookup exceeds byte bound".into()));
     }
+    if let Some(work) = work.as_deref_mut() { work.begin_call()?; }
     if client.stream(path.as_str())?.tail().await? != 1 {
         return Err(Error::Storage(
             "operation location is not a single immutable record".into(),
@@ -359,16 +684,14 @@ pub(crate) async fn find_operation_bounded<P: StreamProvider>(
             "operation location identity is invalid".into(),
         ));
     }
-    verify_operation_locator(
-        client,
-        authority,
-        verifier,
-        &index,
-        &location,
-        maximum_bytes,
-    )
-    .await
-    .map(|(event, bytes)| (Some(event), bytes))
+    let (event, bytes) = verify_operation_locator_with_work(
+        client, authority, verifier, &index, &location, maximum_bytes, work,
+    ).await?;
+    if let Some(work) = work.as_deref_mut() {
+        work.stage_output(bytes - index_bytes, 1)?;
+        work.release_record(index_bytes)?;
+    }
+    Ok((Some(event), bytes))
 }
 
 pub(super) async fn verify_operation_locator<P: StreamProvider>(
@@ -378,6 +701,18 @@ pub(super) async fn verify_operation_locator<P: StreamProvider>(
     index: &Record,
     location: &OperationLocation,
     maximum_bytes: u64,
+) -> Result<(Event, u64)> {
+    verify_operation_locator_with_work(client, authority, verifier, index, location, maximum_bytes, &mut None).await
+}
+
+pub(crate) async fn verify_operation_locator_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    authority: &Authority,
+    verifier: &AuthorityVerifier,
+    index: &Record,
+    location: &OperationLocation,
+    maximum_bytes: u64,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<(Event, u64)> {
     verifier.verify_audience(authority)?;
     let index_bytes = index.value.len() as u64;
@@ -391,15 +726,18 @@ pub(super) async fn verify_operation_locator<P: StreamProvider>(
     }
     let canonical = StreamPath::new(authority.stream_path()?)?;
     let sequence = location.revision - 1;
-    let record = one_record(client, &canonical, sequence)
+    let record = one_record_with_work(client, &canonical, sequence, work)
         .await?
         .ok_or_else(|| Error::Storage("indexed canonical event is missing".into()))?;
     let consumed_bytes = index_bytes
         .checked_add(record.value.len() as u64)
         .filter(|bytes| *bytes <= maximum_bytes)
         .ok_or_else(|| Error::Invalid("operation lookup exceeds byte bound".into()))?;
-    let event = super::history::verify_history_record(verifier, authority, sequence, &record)?;
+    let event = super::history::verify_history_record_with_work(verifier, authority, sequence, &record, work)?;
     verify_operation_binding(authority, index, location, &record, &event)?;
+    if let Some(work) = work.as_deref_mut() {
+        work.release_record(record.value.len() as u64)?;
+    }
     Ok((event, consumed_bytes))
 }
 
@@ -476,8 +814,20 @@ pub(crate) async fn find_message_sequence<P: StreamProvider>(
     through_revision: u64,
     maximum_bytes: u64,
 ) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
+    find_message_sequence_with_work(client, authority, verifier, sequence, through_revision, maximum_bytes, &mut None).await
+}
+
+pub(crate) async fn find_message_sequence_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    authority: &Authority,
+    verifier: &AuthorityVerifier,
+    sequence: u64,
+    through_revision: u64,
+    maximum_bytes: u64,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
     let path = message_sequence_path(authority, sequence)?;
-    find_message_at_locator(
+    find_message_at_locator_with_work(
         client,
         authority,
         verifier,
@@ -486,6 +836,7 @@ pub(crate) async fn find_message_sequence<P: StreamProvider>(
         Some(sequence),
         through_revision,
         maximum_bytes,
+        work,
     )
     .await
 }
@@ -504,13 +855,30 @@ async fn find_message_at_locator<P: StreamProvider>(
     through_revision: u64,
     maximum_bytes: u64,
 ) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
+    find_message_at_locator_with_work(client, authority, verifier, path, expected_id,
+        expected_sequence, through_revision, maximum_bytes, &mut None).await
+}
+
+#[allow(clippy::too_many_arguments, reason = "same exact indexed locator and pinned cut with optional SDK receipts")]
+async fn find_message_at_locator_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    authority: &Authority,
+    verifier: &AuthorityVerifier,
+    path: StreamPath,
+    expected_id: Option<uuid::Uuid>,
+    expected_sequence: Option<u64>,
+    through_revision: u64,
+    maximum_bytes: u64,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
     verifier.verify_audience(authority)?;
     if maximum_bytes == 0 {
         return Err(Error::Invalid(
             "message lookup byte bound must be positive".into(),
         ));
     }
-    let Some(index) = one_record(client, &path, 0).await? else {
+    let Some(index) = one_record_with_work(client, &path, 0, work).await? else {
+        if let Some(work) = work.as_deref_mut() { work.begin_call()?; }
         return match client.stream(path.as_str())?.tail().await {
             Err(acyclic_stream::StreamError::NotFound) => Ok((None, 0)),
             Ok(_) => Err(Error::Storage(
@@ -522,10 +890,11 @@ async fn find_message_at_locator<P: StreamProvider>(
     if index.value.len() as u64 > maximum_bytes {
         return Err(Error::Invalid("message lookup exceeds byte bound".into()));
     }
+    if let Some(work) = work.as_deref_mut() { work.begin_call()?; }
     if client.stream(path.as_str())?.tail().await? != 1 {
         return Err(Error::Storage("message location is not immutable".into()));
     }
-    verify_message_locator(
+    verify_message_locator_with_work(
         client,
         authority,
         verifier,
@@ -534,6 +903,7 @@ async fn find_message_at_locator<P: StreamProvider>(
         expected_sequence,
         through_revision,
         maximum_bytes,
+        work,
     )
     .await
 }
@@ -552,6 +922,22 @@ async fn verify_message_locator<P: StreamProvider>(
     through_revision: u64,
     maximum_bytes: u64,
 ) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
+    verify_message_locator_with_work(client, authority, verifier, index, expected_id,
+        expected_sequence, through_revision, maximum_bytes, &mut None).await
+}
+
+#[allow(clippy::too_many_arguments, reason = "shared original atomic locator verification plus optional receipts")]
+async fn verify_message_locator_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    authority: &Authority,
+    verifier: &AuthorityVerifier,
+    index: Record,
+    expected_id: Option<uuid::Uuid>,
+    expected_sequence: Option<u64>,
+    through_revision: u64,
+    maximum_bytes: u64,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
     let location: MessageLocation = crate::executor::decode_json(&index.value)?;
     if &location.location.authority != authority
         || expected_id.is_some_and(|id| location.message_id != id)
@@ -563,15 +949,18 @@ async fn verify_message_locator<P: StreamProvider>(
             "message location identity is invalid".into(),
         ));
     }
-    let (event, consumed_bytes) = verify_operation_locator(
+    let (event, consumed_bytes) = verify_operation_locator_with_work(
         client,
         authority,
         verifier,
         &index,
         &location.location,
         maximum_bytes,
+        work,
     )
     .await?;
+    let index_bytes = index.value.len() as u64;
+    if let Some(work) = work.as_deref_mut() { work.release_record(index_bytes)?; }
     if location.sequence == 0 {
         return if location.message_id.is_nil()
             && matches!(
@@ -598,6 +987,11 @@ async fn verify_message_locator<P: StreamProvider>(
         return Err(Error::Storage(
             "message location differs from its canonical message".into(),
         ));
+    }
+    if event.revision <= through_revision
+        && let Some(work) = work.as_deref_mut()
+    {
+        work.stage_output(consumed_bytes - index_bytes, 1)?;
     }
     Ok((
         (event.revision <= through_revision).then_some(message),

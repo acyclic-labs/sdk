@@ -11,18 +11,58 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "filesystem")]
 mod measured;
+#[cfg(feature = "filesystem")]
+pub(crate) use measured::HistoryWork;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod native;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) use native::native_work_io;
 
 // The portable reader remains independent of the optional Filesystem SDK.
 // A receipt observer instruments this same engine, never another reader.
-trait HistoryIo: Send {
+pub(crate) trait HistoryIo: Send {
     fn check_cancellation(&self) -> Result<()>;
     fn begin_call(&mut self) -> Result<()>;
+    fn begin_write(&mut self) -> Result<()>;
     fn receive_record(&mut self, bytes: u64) -> Result<()>;
     fn release_record(&mut self, bytes: u64) -> Result<()>;
+    fn retain_owned(&mut self, bytes: u64) -> Result<()>;
+    fn admit_owned(&self, bytes: u64) -> Result<()>;
+    fn release_owned(&mut self, bytes: u64) -> Result<()>;
     fn clone_authority(&mut self, authority: &Authority) -> Result<Authority>;
+    fn clone_text(&mut self, value: &str) -> Result<String>;
     fn reserve_events(&mut self, events: &mut Vec<Event>, maximum: usize) -> Result<()>;
+    fn reserve_records(&mut self, records: &mut Vec<acyclic_stream::Record>, maximum: usize) -> Result<()>;
+    fn reserve_messages(&mut self, messages: &mut Vec<crate::conversation::ConversationMessage>, maximum: usize) -> Result<()>;
+    fn reserve_values(&mut self, values: &mut Vec<serde_json::Value>, maximum: usize) -> Result<()>;
+    fn reserve_bytes(&mut self, bytes: &mut Vec<u8>, capacity: usize) -> Result<()>;
+    fn copy_bytes(&mut self, bytes: u64) -> Result<()>;
+    fn release_bytes(&mut self, bytes: u64) -> Result<()> { self.release_owned(bytes) }
+    fn encoded_bytes(&mut self, bytes: u64) -> Result<()>;
+    fn admit_encoding(&self, bytes: u64) -> Result<()>;
+    fn codec_charge(&mut self, charge: crate::contract::JsonCodecCharge) -> Result<()>;
+    fn hashed_bytes(&mut self, bytes: u64) -> Result<()>;
+    fn admit_acknowledgment(&self, bytes: u64, count: u64) -> Result<()>;
+    fn acknowledged(&mut self, bytes: u64, count: u64) -> Result<()>;
     fn admit_output(&self, bytes: u64, count: u64) -> Result<()>;
+    fn stage_output(&mut self, bytes: u64, count: u64) -> Result<()>;
     fn return_output(&mut self, bytes: u64, count: u64) -> Result<()>;
+    fn verify_content<'a>(
+        &'a mut self,
+        verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
+        reference: &'a crate::conversation::FileRef,
+    ) -> crate::conversation::ContentFuture<'a, Result<()>>;
+    fn read_content<'a>(
+        &'a mut self,
+        verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
+        reference: &'a crate::conversation::FileRef,
+    ) -> crate::conversation::ContentFuture<'a, Result<Vec<u8>>>;
+    #[cfg(feature = "filesystem")]
+    fn remaining(&self) -> Result<acyclic_fs::WorkBudget>;
+    #[cfg(feature = "filesystem")]
+    fn cancellation(&self) -> &acyclic_fs::CancellationToken;
+    #[cfg(feature = "filesystem")]
+    fn receive_work(&mut self, work: acyclic_fs::WorkCounters) -> Result<()>;
 }
 
 /// Explicit archival position. Revisions are inclusive; later appends are excluded.
@@ -120,13 +160,22 @@ impl<P: StreamProvider> HistoryReader<P> {
         {
             return Err(Error::Storage("fork archive differs from the authenticated parent prefix".into()));
         }
-        let proof = self.verifier.fork_history_selection_proof(
-            parent.revision(), through_sequence, conversation.agent,
-            conversation.history_prefix_digest(through_sequence)?,
-        )?;
-        Ok(crate::fork::PreparedForkHistory::from_archive(
-            parent.authority().clone(), parent.revision(), conversation, proof,
-        ))
+        #[cfg(feature = "filesystem")]
+        {
+            let proof = self.verifier.fork_history_selection_proof(
+                parent.revision(), through_sequence, conversation.agent,
+                conversation.history_prefix_digest(through_sequence)?,
+            )?;
+            Ok(crate::fork::PreparedForkHistory::from_archive(
+                parent.authority().clone(), parent.revision(), conversation, proof,
+            ))
+        }
+        #[cfg(not(feature = "filesystem"))]
+        {
+            Ok(crate::fork::PreparedForkHistory::from_archive(
+                parent.authority().clone(), parent.revision(), conversation,
+            ))
+        }
     }
 
     /// Captures an admitted Summary fork through cold authenticated indexes.
@@ -150,7 +199,6 @@ impl<P: StreamProvider> HistoryReader<P> {
             ));
         }
         crate::contract::validate_json_byte_bound(seed, history_limits.maximum_bytes)?;
-        seed.validate()?;
         self.verifier.verify(scope)?;
         if parent.verifier.audience() != &seed.parent
             || self.verifier.audience() != &seed.child
@@ -169,43 +217,7 @@ impl<P: StreamProvider> HistoryReader<P> {
             limits.validate_file(file)?;
             crate::conversation::ContentGrant::verify_read(&self.verifier, scope, file)?;
         }
-        let child_cut = self.pin(0).await?;
-        if child_cut.through_revision == 0 {
-            return Err(Error::Unauthorized("summary child is not bound".into()));
-        }
-        let (operation_id, causal_parent) = super::fork_child_binding(seed)?;
-        let (publication, consumed) = parent
-            .operation_event_bounded(seed.operation_id, history_limits.maximum_bytes)
-            .await?;
-        let publication = publication
-            .ok_or_else(|| Error::Conflict("summary source has no parent publication".into()))?;
-        if publication.revision != causal_parent.revision
-            || !matches!(&publication.payload, crate::core::EventPayload::ForkPublished { seed: published } if published.as_ref() == seed)
-        {
-            return Err(Error::Conflict(
-                "summary source differs from parent publication".into(),
-            ));
-        }
-        let remaining = history_limits
-            .maximum_bytes
-            .checked_sub(consumed)
-            .filter(|bytes| *bytes > 0)
-            .ok_or_else(|| Error::Invalid("summary fork history exceeds byte bound".into()))?;
-        let (binding, _) = self
-            .operation_event_bounded(operation_id, remaining)
-            .await?;
-        let binding = binding.ok_or_else(|| {
-            Error::Conflict("summary child lacks its original fork binding".into())
-        })?;
-        if binding.revision != 1
-            || binding.revision > child_cut.through_revision
-            || binding.causal_parent != Some(causal_parent)
-            || !matches!(binding.payload, crate::core::EventPayload::ConversationBound { agent } if agent == seed.child_agent)
-        {
-            return Err(Error::Conflict(
-                "summary child lacks its original fork binding".into(),
-            ));
-        }
+        self.verify_published_child_with_work(parent, seed, history_limits, &mut None).await?;
         crate::context::PinnedContextStage::capture(
             "fork-summary",
             "1",
@@ -215,6 +227,54 @@ impl<P: StreamProvider> HistoryReader<P> {
             limits,
         )
         .await
+    }
+
+    /// Authenticates the original publication and initial child binding only.
+    /// This has no dependency on a current publication lease or Summary policy.
+    pub(crate) async fn verify_published_child_with_work(
+        &self, parent: &Self, seed: &crate::fork::ForkSeed,
+        limits: HistoryReadLimits, work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        if limits.maximum_events < 2 || limits.maximum_bytes == 0 {
+            return Err(Error::Invalid("published child verification requires two bounded canonical events".into()));
+        }
+        seed.validate_with_work(work)?;
+        if parent.verifier.audience() != &seed.parent || self.verifier.audience() != &seed.child {
+            return Err(Error::Unauthorized("published child differs from the original parent or child audience".into()));
+        }
+        let child_cut = self.pin_with_work(0,
+            work.as_mut().map(|work| &mut **work as &mut dyn HistoryIo)).await?;
+        if child_cut.through_revision == 0 {
+            return Err(Error::Unauthorized("published child is not bound".into()));
+        }
+        let child_cursor_bytes = child_cut.authority.id.capacity() as u64;
+        let cut = child_cut.through_revision;
+        drop(child_cut);
+        if let Some(work) = work.as_deref_mut() { work.release_owned(child_cursor_bytes)?; }
+        let (operation, causal) = super::fork_child_binding_with_work(seed, work)?;
+        let (publication, consumed) = super::operations::find_operation_bounded_with_work(
+            &parent.client, parent.verifier.audience(), &parent.verifier,
+            seed.operation_id, limits.maximum_bytes, work).await?;
+        let publication = publication.ok_or_else(|| Error::Conflict("child has no original parent publication".into()))?;
+        if publication.revision != causal.revision
+            || !matches!(&publication.payload, crate::core::EventPayload::ForkPublished { seed: published } if published.as_ref() == seed)
+        {
+            return Err(Error::Conflict("child differs from the original parent publication".into()));
+        }
+        drop(publication);
+        let remaining = limits.maximum_bytes.checked_sub(consumed).filter(|bytes| *bytes > 0)
+            .ok_or_else(|| Error::Invalid("published child verification exceeds byte allowance".into()))?;
+        let (binding, _) = super::operations::find_operation_bounded_with_work(
+            &self.client, self.verifier.audience(), &self.verifier, operation, remaining, work).await?;
+        let binding = binding.ok_or_else(|| Error::Conflict("child lacks its original fork binding".into()))?;
+        if binding.revision != 1 || binding.revision > cut
+            || binding.scope.agent() != Some(seed.child_agent)
+            || binding.causal_parent.as_ref() != Some(&causal)
+            || !matches!(binding.payload, crate::core::EventPayload::ConversationBound { agent } if agent == seed.child_agent)
+        {
+            return Err(Error::Conflict("child lacks its original fork binding".into()));
+        }
+        Ok(())
     }
 
     /// Resolves a globally unique admitted operation without restoring its aggregate.
@@ -438,6 +498,17 @@ impl<P: StreamProvider> HistoryReader<P> {
         through_sequence: u64,
         limits: HistoryReadLimits,
     ) -> Result<Vec<crate::conversation::ConversationMessage>> {
+        self.conversation_range_with_work(cursor, after_sequence, through_sequence, limits, &mut None).await
+    }
+
+    pub(crate) async fn conversation_range_with_work(
+        &self,
+        cursor: &HistoryCursor,
+        after_sequence: u64,
+        through_sequence: u64,
+        limits: HistoryReadLimits,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Vec<crate::conversation::ConversationMessage>> {
         self.verifier.verify_audience(&cursor.authority)?;
         if limits.maximum_events == 0
             || limits.maximum_bytes == 0
@@ -449,7 +520,7 @@ impl<P: StreamProvider> HistoryReader<P> {
                 "conversation range bounds or cursor are invalid".into(),
             ));
         }
-        if cursor.through_revision > self.committed_tail().await? {
+        if cursor.through_revision > self.committed_tail_with_work(work).await? {
             return Err(Error::Invalid(
                 "conversation range exceeds committed event cutoff".into(),
             ));
@@ -465,18 +536,22 @@ impl<P: StreamProvider> HistoryReader<P> {
                 .checked_sub(consumed)
                 .filter(|bytes| *bytes > 0)
                 .ok_or_else(|| Error::Invalid("conversation range exceeds byte bound".into()))?;
-            let (message, bytes) = super::operations::find_message_sequence(
+            let (message, bytes) = super::operations::find_message_sequence_with_work(
                 &self.client,
                 &cursor.authority,
                 &self.verifier,
                 sequence,
                 cursor.through_revision,
                 remaining,
+                work,
             )
             .await?;
             consumed = consumed
                 .checked_add(bytes)
                 .ok_or_else(|| Error::Invalid("conversation range byte count overflows".into()))?;
+            if let Some(work) = work.as_deref_mut() {
+                work.reserve_messages(&mut messages, limits.maximum_events as usize)?;
+            }
             messages.push(message.ok_or_else(|| {
                 Error::Storage("conversation range is incomplete at its pinned cutoff".into())
             })?);
@@ -554,7 +629,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         self.read_page_with_work(cursor, limits, true, None).await
     }
 
-    async fn read_page_with_work(
+    pub(crate) async fn read_page_with_work(
         &self,
         cursor: &HistoryCursor,
         limits: HistoryReadLimits,
@@ -620,11 +695,12 @@ impl<P: StreamProvider> HistoryReader<P> {
                 .checked_add(record.value.len() as u64)
                 .filter(|total| *total <= limits.maximum_bytes)
                 .ok_or_else(|| Error::Invalid("history page exceeds byte bound".into()))?;
-            let event = verify_history_record(
+            let event = verify_history_record_with_work(
                 &self.verifier,
                 &cursor.authority,
                 next.after_revision,
                 &record,
+                &mut work,
             )?;
             if let Some(work) = work.as_deref_mut() {
                 work.admit_output(bytes, events.len() as u64 + 1)?;
@@ -633,6 +709,9 @@ impl<P: StreamProvider> HistoryReader<P> {
             next.after_revision = event.revision;
             events.push(event);
             if retain_records {
+                if let Some(work) = work.as_deref_mut() {
+                    work.reserve_records(&mut retained_records, count as usize)?;
+                }
                 retained_records.push(record);
             } else {
                 drop(record);
@@ -646,7 +725,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         }
         if let Some(work) = work.as_deref_mut() {
             work.check_cancellation()?;
-            work.return_output(bytes, events.len() as u64)?;
+            work.stage_output(bytes, events.len() as u64)?;
         }
         Ok(CountedHistoryPage {
             page: HistoryPage {
@@ -683,12 +762,22 @@ pub(crate) fn verify_history_record(
     sequence: u64,
     record: &acyclic_stream::Record,
 ) -> Result<Event> {
+    verify_history_record_with_work(verifier, authority, sequence, record, &mut None)
+}
+
+pub(crate) fn verify_history_record_with_work(
+    verifier: &AuthorityVerifier,
+    authority: &Authority,
+    sequence: u64,
+    record: &acyclic_stream::Record,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<Event> {
     if record.sequence != sequence || record.value.len() > acyclic_stream::MAX_RECORD_BYTES {
         return Err(Error::Storage(
             "history record position or byte bound is invalid".into(),
         ));
     }
-    let (record_authority, event) = decode_event(&record.value)?;
+    let (record_authority, event) = crate::wire_codec::decode_event_with_work(&record.value, work)?;
     let revision = sequence
         .checked_add(1)
         .ok_or_else(|| Error::Storage("history event revision overflows".into()))?;
@@ -696,6 +785,37 @@ pub(crate) fn verify_history_record(
         return Err(Error::Storage("history event binding is invalid".into()));
     }
     verifier.verify_audience(authority)?;
-    verifier.verify_event(&event)?;
+    verifier.verify_event_with_work(&event, work)?;
     Ok(event)
+}
+
+/// The original canonical codec, admitting logical storage before growth.
+/// Opaque allocator/map-node overhead is outside this codec contract.
+pub(crate) fn canonical_bytes_with_work<T: Serialize + ?Sized>(
+    value: &T,
+    maximum_bytes: u64,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<Vec<u8>> {
+    let Some(work) = work.as_deref_mut() else {
+        return crate::contract::canonical_json_bytes(value);
+    };
+    if maximum_bytes == 0 || maximum_bytes == u64::MAX {
+        return Err(Error::Invalid("canonical encoder allowance must be finite and positive".into()));
+    }
+    let bytes = crate::contract::canonical_json_bytes_bounded(
+        value,
+        crate::contract::JsonBounds {
+            maximum_bytes,
+            maximum_items: maximum_bytes.saturating_add(1),
+            maximum_depth: 256,
+        },
+        &mut |charge| work.codec_charge(charge),
+    )?;
+    if let Err(error) = work.retain_owned((bytes.capacity() - bytes.len()) as u64) {
+        let size = bytes.len() as u64;
+        drop(bytes);
+        let _ = work.release_owned(size);
+        return Err(error);
+    }
+    Ok(bytes)
 }

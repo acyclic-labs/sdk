@@ -12,6 +12,207 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use crate::store::history::HistoryIo;
+
+fn canonical_digest_with_work<T: Serialize>(
+    value: &T,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<[u8; 32]> {
+    if let Some(work) = work.as_deref_mut() { work.check_cancellation()?; }
+    let canonical = crate::store::history::canonical_bytes_with_work(
+        value,
+        crate::store::default_projection_read_limits().maximum_bytes,
+        work,
+    )?;
+    if let Some(work) = work.as_deref_mut() {
+        work.hashed_bytes(canonical.len() as u64)?;
+    }
+    let digest = *blake3::hash(&canonical).as_bytes();
+    let capacity = canonical.capacity() as u64;
+    drop(canonical);
+    if let Some(work) = work.as_deref_mut() { work.release_bytes(capacity)?; }
+    Ok(digest)
+}
+
+// A borrowed source-field walk, not JSON sizing or a cloned/encoded tree.
+// Only the closed reducer/snapshot/event schemas below may use this witness.
+// Reservations are logical quota custody, never allocator/RSS observations.
+#[derive(Default)]
+struct CloneInventory {
+    bytes: u64,
+}
+
+impl CloneInventory {
+    fn add(&mut self, bytes: u64) -> std::result::Result<(), serde_json::Error> {
+        self.bytes = self.bytes.checked_add(bytes)
+            .ok_or_else(|| <serde_json::Error as serde::ser::Error>::custom("clone inventory overflows"))?;
+        Ok(())
+    }
+
+        // Every reachable owned container/boxed schema is represented here.
+        // Primitive/fixed arrays may conservatively consume slots too; this is
+        // a reservation witness, not fabricated physical allocation accounting.
+        const SLOT: u64 = {
+            let sizes = [
+            std::mem::size_of::<Reducer>(),
+            std::mem::size_of::<Snapshot>(),
+            std::mem::size_of::<Projection>(),
+            std::mem::size_of::<Event>(),
+            std::mem::size_of::<super::EventPayload>(),
+            std::mem::size_of::<super::EffectStatus>(),
+            std::mem::size_of::<EffectState>(),
+            std::mem::size_of::<super::ExtensionBinding>(),
+            std::mem::size_of::<super::ExtensionAdmission>(),
+            std::mem::size_of::<super::ExtensionStateMigration>(),
+            std::mem::size_of::<ExtensionRecord>(),
+            std::mem::size_of::<ExtensionConfiguration>(),
+            std::mem::size_of::<ExtensionDependency>(),
+            std::mem::size_of::<Authority>(),
+            std::mem::size_of::<EventReference>(),
+            std::mem::size_of::<ForkSeed>(),
+            std::mem::size_of::<crate::fork::ForkSelection>(),
+            std::mem::size_of::<crate::fork::ForkOmission>(),
+            std::mem::size_of::<crate::fork::CapturedResource>(),
+            std::mem::size_of::<crate::fork::ResourceRevision>(),
+            std::mem::size_of::<crate::fork::SharedGrant>(),
+            std::mem::size_of::<crate::fork::ReferenceGrant>(),
+            std::mem::size_of::<crate::fork::SummaryForkCapture>(),
+            std::mem::size_of::<crate::fork::AttestedBoundary>(),
+            std::mem::size_of::<crate::merge::ProjectMergeReceipt>(),
+            std::mem::size_of::<crate::conversation::ConversationMessage>(),
+            std::mem::size_of::<ConversationState>(),
+            std::mem::size_of::<crate::conversation::ModelContextSelection>(),
+            std::mem::size_of::<FileRef>(),
+            std::mem::size_of::<crate::conversation::VolumeRef>(),
+            std::mem::size_of::<crate::conversation::FileDescriptor>(),
+            std::mem::size_of::<InteractionTicket>(),
+            std::mem::size_of::<InteractionResolution>(),
+            std::mem::size_of::<crate::resources::ResourceRef>(),
+            std::mem::size_of::<crate::resources::ProviderRef>(),
+            std::mem::size_of::<(String, serde_json::Value)>(),
+            std::mem::size_of::<serde_json::Value>(),
+            ];
+            let mut maximum = 0;
+            let mut index = 0;
+            while index < sizes.len() {
+                if sizes[index] > maximum { maximum = sizes[index]; }
+                index += 1;
+            }
+            maximum as u64
+        };
+    fn slot(&mut self) -> std::result::Result<(), serde_json::Error> {
+        self.add(Self::SLOT)
+    }
+}
+
+macro_rules! inventory_scalar {
+    ($($method:ident($ty:ty)),* $(,)?) => {$(
+        fn $method(self, _: $ty) -> std::result::Result<(), Self::Error> { Ok(()) }
+    )*};
+}
+
+impl<'a> serde::Serializer for &'a mut CloneInventory {
+    type Ok = ();
+    type Error = serde_json::Error;
+    type SerializeSeq = Self;
+    type SerializeTuple = Self;
+    type SerializeTupleStruct = Self;
+    type SerializeTupleVariant = Self;
+    type SerializeMap = Self;
+    type SerializeStruct = Self;
+    type SerializeStructVariant = Self;
+    inventory_scalar!(
+        serialize_bool(bool), serialize_i8(i8), serialize_i16(i16),
+        serialize_i32(i32), serialize_i64(i64), serialize_i128(i128),
+        serialize_u8(u8), serialize_u16(u16), serialize_u32(u32),
+        serialize_u64(u64), serialize_u128(u128), serialize_f32(f32),
+        serialize_f64(f64), serialize_char(char),
+    );
+    fn serialize_str(self, value: &str) -> std::result::Result<(), Self::Error> { self.add(value.len() as u64) }
+    fn serialize_bytes(self, value: &[u8]) -> std::result::Result<(), Self::Error> { self.add(value.len() as u64) }
+    fn serialize_none(self) -> std::result::Result<(), Self::Error> { Ok(()) }
+    fn serialize_some<T: Serialize + ?Sized>(self, value: &T) -> std::result::Result<(), Self::Error> { value.serialize(self) }
+    fn serialize_unit(self) -> std::result::Result<(), Self::Error> { Ok(()) }
+    fn serialize_unit_struct(self, _: &'static str) -> std::result::Result<(), Self::Error> { Ok(()) }
+    fn serialize_unit_variant(self, _: &'static str, _: u32, _: &'static str) -> std::result::Result<(), Self::Error> { Ok(()) }
+    fn serialize_newtype_struct<T: Serialize + ?Sized>(self, _: &'static str, value: &T) -> std::result::Result<(), Self::Error> { value.serialize(self) }
+    fn serialize_newtype_variant<T: Serialize + ?Sized>(self, _: &'static str, _: u32, _: &'static str, value: &T) -> std::result::Result<(), Self::Error> {
+        self.slot()?;
+        value.serialize(self)
+    }
+    fn serialize_seq(self, _: Option<usize>) -> std::result::Result<Self, Self::Error> { Ok(self) }
+    fn serialize_tuple(self, _: usize) -> std::result::Result<Self, Self::Error> { Ok(self) }
+    fn serialize_tuple_struct(self, _: &'static str, _: usize) -> std::result::Result<Self, Self::Error> { Ok(self) }
+    fn serialize_tuple_variant(self, _: &'static str, _: u32, _: &'static str, _: usize) -> std::result::Result<Self, Self::Error> { self.slot()?; Ok(self) }
+    fn serialize_map(self, _: Option<usize>) -> std::result::Result<Self, Self::Error> { Ok(self) }
+    fn serialize_struct(self, _: &'static str, _: usize) -> std::result::Result<Self, Self::Error> { self.slot()?; Ok(self) }
+    fn serialize_struct_variant(self, _: &'static str, _: u32, _: &'static str, _: usize) -> std::result::Result<Self, Self::Error> { self.slot()?; Ok(self) }
+    fn collect_str<T: std::fmt::Display + ?Sized>(self, value: &T) -> std::result::Result<(), Self::Error> {
+        struct Count<'a>(&'a mut CloneInventory);
+        impl std::fmt::Write for Count<'_> {
+            fn write_str(&mut self, value: &str) -> std::fmt::Result {
+                self.0.add(value.len() as u64).map_err(|_| std::fmt::Error)
+            }
+        }
+        std::fmt::write(&mut Count(self), format_args!("{value}"))
+            .map_err(|_| <serde_json::Error as serde::ser::Error>::custom("clone string inventory overflows"))
+    }
+}
+
+macro_rules! inventory_sequence {
+    ($trait:ident, $method:ident) => {
+        impl serde::ser::$trait for &mut CloneInventory {
+            type Ok = ();
+            type Error = serde_json::Error;
+            fn $method<T: Serialize + ?Sized>(&mut self, value: &T) -> std::result::Result<(), Self::Error> {
+                self.slot()?;
+                value.serialize(&mut **self)
+            }
+            fn end(self) -> std::result::Result<(), Self::Error> { Ok(()) }
+        }
+    };
+}
+inventory_sequence!(SerializeSeq, serialize_element);
+inventory_sequence!(SerializeTuple, serialize_element);
+inventory_sequence!(SerializeTupleStruct, serialize_field);
+inventory_sequence!(SerializeTupleVariant, serialize_field);
+
+impl serde::ser::SerializeMap for &mut CloneInventory {
+    type Ok = ();
+    type Error = serde_json::Error;
+    fn serialize_key<T: Serialize + ?Sized>(&mut self, key: &T) -> std::result::Result<(), Self::Error> {
+        self.slot()?;
+        key.serialize(&mut **self)
+    }
+    fn serialize_value<T: Serialize + ?Sized>(&mut self, value: &T) -> std::result::Result<(), Self::Error> {
+        self.slot()?;
+        value.serialize(&mut **self)
+    }
+    fn end(self) -> std::result::Result<(), Self::Error> { Ok(()) }
+}
+
+macro_rules! inventory_struct {
+    ($trait:ident) => {
+        impl serde::ser::$trait for &mut CloneInventory {
+            type Ok = ();
+            type Error = serde_json::Error;
+            fn serialize_field<T: Serialize + ?Sized>(&mut self, _: &'static str, value: &T) -> std::result::Result<(), Self::Error> { value.serialize(&mut **self) }
+            fn end(self) -> std::result::Result<(), Self::Error> { Ok(()) }
+        }
+    };
+}
+inventory_struct!(SerializeStruct);
+inventory_struct!(SerializeStructVariant);
+
+fn source_inventory<T: Serialize + ?Sized>(source: &T) -> Result<u64> {
+    let mut inventory = CloneInventory::default();
+    source.serialize(&mut inventory).map_err(|error| Error::Invalid(error.to_string()))?;
+    Ok(inventory.bytes)
+}
+
+pub(crate) fn event_clone_reservation(event: &Event) -> Result<u64> {
+    source_inventory(event)
+}
 
 /// Versioned, issuer-authenticated accelerator; Stream events remain authoritative.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -62,7 +263,87 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+#[derive(Serialize)]
+struct ReducerCloneFields<'a> {
+    authority: &'a Authority,
+    verifier_id: &'a str,
+    verifier_audience: &'a Authority,
+    schemas: &'a BTreeMap<(String, u32), super::ExtensionBinding>,
+    active_extensions: &'a [ExtensionDependency],
+    extension_states: &'a BTreeMap<String, (EventReference, ExtensionRecord)>,
+    configured_extensions: &'a BTreeMap<ExtensionDependency, ExtensionConfiguration>,
+    active_configurations: &'a [ExtensionConfiguration],
+    events: &'a VecDeque<Event>,
+    operation_positions: &'a BTreeMap<crate::OperationId, u64>,
+    effects: &'a BTreeMap<EffectId, EffectState>,
+    indexed_terminal_effects: &'a VecDeque<EffectId>,
+    forks: &'a BTreeMap<Authority, ForkSeed>,
+    published_merges: &'a BTreeSet<(String, Vec<u8>)>,
+    conversation: &'a ConversationState,
+    latest_context_checkpoint: &'a Option<FileRef>,
+    interactions: &'a BTreeMap<uuid::Uuid, (InteractionTicket, Option<InteractionResolution>)>,
+}
+
 impl Reducer {
+    fn clone_reservation(&self) -> Result<u64> {
+        // Registry schema Values, verifier Strings, canonical event deque and
+        // retry/cache maps are original owned state, not just the wire view.
+        let fields = ReducerCloneFields {
+            authority: &self.authority,
+            verifier_id: &self.authority_verifier.id,
+            verifier_audience: &self.authority_verifier.audience,
+            schemas: &self.schemas.schemas,
+            active_extensions: &self.active_extensions,
+            extension_states: &self.extension_states,
+            configured_extensions: &self.configured_extensions,
+            active_configurations: &self.active_configurations,
+            events: &self.events,
+            operation_positions: &self.operation_positions,
+            effects: &self.effects,
+            indexed_terminal_effects: &self.indexed_terminal_effects,
+            forks: &self.forks,
+            published_merges: &self.published_merges,
+            conversation: &self.conversation,
+            latest_context_checkpoint: &self.latest_context_checkpoint,
+            interactions: &self.interactions,
+        };
+        source_inventory(&fields)?
+            .checked_add(self.conversation.clone_cache_logical_bytes()?)
+            .ok_or_else(|| Error::Invalid("reducer clone reservation overflows".into()))
+    }
+
+    /// Keeps logical custody through the original preview and snapshot clones.
+    pub(crate) fn publication_snapshot_with_work(
+        &self,
+        event: &Event,
+        maximum_events: usize,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<(Snapshot, u64)> {
+        let preview_reservation = if work.is_some() {
+            // Original apply holds the input event, its cache clone and its
+            // payload projection clone concurrently (ForkPublished stores seed).
+            self.clone_reservation()?.checked_add(
+                event_clone_reservation(event)?.checked_mul(3)
+                    .ok_or_else(|| Error::Invalid("publication event clone reservation overflows".into()))?,
+            ).ok_or_else(|| Error::Invalid("publication preview reservation overflows".into()))?
+        } else { 0 };
+        if let Some(observer) = work.as_deref_mut() {
+            observer.check_cancellation()?;
+            observer.admit_owned(preview_reservation)?;
+            observer.retain_owned(preview_reservation)?;
+        }
+        let result = (|| {
+            let mut preview = self.clone();
+            preview.apply_committed_with_work(event.clone(), work)?;
+            preview.mark_indexed_terminal_effect(event)?;
+            preview.snapshot_with_event_limit_with_work(maximum_events, work)
+        })();
+        if let Some(observer) = work.as_deref_mut() {
+            observer.release_owned(preview_reservation)?;
+        }
+        result
+    }
+
     /// Captures issuer-authenticated state for direct projection restoration.
     /// Closed checkpoint-covered conversation prefixes are represented by their
     /// authenticated logical cut and digest. Terminal projections still need cold retention.
@@ -73,9 +354,30 @@ impl Reducer {
     /// Captures the same authenticated projection with a bounded retry suffix.
     /// A nonempty projection must retain its head event for canonical binding.
     pub fn snapshot_with_event_limit(&self, maximum_events: usize) -> Result<Snapshot> {
+        self.snapshot_with_event_limit_with_work(maximum_events, &mut None)
+            .map(|(snapshot, _)| snapshot)
+    }
+
+    pub(crate) fn snapshot_with_event_limit_with_work(
+        &self,
+        maximum_events: usize,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<(Snapshot, u64)> {
         if maximum_events == 0 && self.revision != 0 {
             return Err(Error::Invalid("snapshot must retain its head event".into()));
         }
+        let reservation = if work.is_some() {
+            // The original map.clone().into_iter().collect() briefly owns both
+            // map payload and destination vector slots during capture.
+            self.clone_reservation()?.checked_mul(2)
+                .ok_or_else(|| Error::Invalid("snapshot clone reservation overflows".into()))?
+        } else { 0 };
+        if let Some(observer) = work.as_deref_mut() {
+            observer.check_cancellation()?;
+            observer.admit_owned(reservation)?;
+            observer.retain_owned(reservation)?;
+        }
+        let result = (|| {
         let conversation = self.checkpointed_conversation()?;
         let projection = Projection {
             lifecycle: self.lifecycle,
@@ -92,7 +394,7 @@ impl Reducer {
             conversation,
             latest_context_checkpoint: self.latest_context_checkpoint.clone(),
             interactions: self.interactions.clone(),
-            bindings: registry_bindings(&self.schemas)?,
+            bindings: registry_bindings_with_work(&self.schemas, work)?,
         };
         let mut snapshot = Snapshot {
             format_version: 6,
@@ -108,9 +410,14 @@ impl Reducer {
             state_digest: [0; 32],
             attestation: [0; 32],
         };
-        snapshot.state_digest = snapshot.digest()?;
-        snapshot.attestation = self.authority_verifier.attest_snapshot(&snapshot)?;
+        snapshot.state_digest = snapshot.digest_with_work(work)?;
+        snapshot.attestation = self.authority_verifier.attest_snapshot_with_work(&snapshot, work)?;
         Ok(snapshot)
+        })();
+        if result.is_err() {
+            if let Some(observer) = work.as_deref_mut() { observer.release_owned(reservation)?; }
+        }
+        result.map(|snapshot| (snapshot, reservation))
     }
 
     fn resident_checkpoint_selection(&self) -> Option<&crate::conversation::ModelContextSelection> {
@@ -158,7 +465,16 @@ impl Reducer {
         authority_verifier: AuthorityVerifier,
         schemas: SchemaRegistry,
     ) -> Result<Self> {
-        snapshot.verify(&authority_verifier, &schemas)?;
+        Self::restore_with_work(snapshot, authority_verifier, schemas, &mut None)
+    }
+
+    pub(crate) fn restore_with_work(
+        snapshot: Snapshot,
+        authority_verifier: AuthorityVerifier,
+        schemas: SchemaRegistry,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Self> {
+        snapshot.verify(&authority_verifier, &schemas, work)?;
         let operation_positions = snapshot
             .events
             .iter()
@@ -193,17 +509,22 @@ impl Reducer {
 }
 
 impl Snapshot {
-    fn digest(&self) -> Result<[u8; 32]> {
-        crate::contract::canonical_json_digest(&(
+    fn digest_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<[u8; 32]> {
+        canonical_digest_with_work(&(
             self.format_version,
             &self.authority,
             self.revision,
             &self.events,
             &self.projection,
-        ))
+        ), work)
     }
 
-    fn verify(&self, verifier: &AuthorityVerifier, schemas: &SchemaRegistry) -> Result<()> {
+    fn verify(
+        &self,
+        verifier: &AuthorityVerifier,
+        schemas: &SchemaRegistry,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
         if self.format_version != 6 {
             return Err(Error::Unsupported(format!(
                 "snapshot format {}",
@@ -211,10 +532,10 @@ impl Snapshot {
             )));
         }
         verifier.verify_audience(&self.authority)?;
-        if self.digest()? != self.state_digest {
+        if self.digest_with_work(work)? != self.state_digest {
             return Err(Error::Invalid("snapshot digest mismatch".into()));
         }
-        if verifier.attest_snapshot(self)? != self.attestation {
+        if verifier.attest_snapshot_with_work(self, work)? != self.attestation {
             return Err(Error::Unauthorized(
                 "snapshot admission attestation is invalid".into(),
             ));
@@ -236,7 +557,7 @@ impl Snapshot {
         let mut identities = BTreeSet::new();
         let mut previous = None;
         for event in &self.events {
-            verifier.verify_event(event)?;
+            verifier.verify_event_with_work(event, work)?;
             if event.revision == 0
                 || event.revision > self.revision
                 || previous
@@ -263,7 +584,7 @@ impl Snapshot {
         }
         for (extension, expected) in &self.projection.bindings {
             let binding = schemas.pinned_binding(&extension.name, extension.version, None)?;
-            if crate::contract::canonical_json_digest(binding)? != *expected {
+            if canonical_digest_with_work(binding, work)? != *expected {
                 return Err(Error::Conflict(
                     "snapshot extension binding mismatch".into(),
                 ));
@@ -274,31 +595,50 @@ impl Snapshot {
 }
 
 impl AuthorityVerifier {
-    fn attest_snapshot(&self, snapshot: &Snapshot) -> Result<[u8; 32]> {
-        let canonical = crate::contract::canonical_json_bytes(&(
-            &self.id,
-            &self.audience,
-            snapshot.state_digest,
-        ))?;
+    fn attest_snapshot_with_work(
+        &self,
+        snapshot: &Snapshot,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<[u8; 32]> {
+        if let Some(work) = work.as_deref_mut() { work.check_cancellation()?; }
+        let canonical = crate::store::history::canonical_bytes_with_work(
+            &(&self.id, &self.audience, snapshot.state_digest),
+            crate::store::default_projection_read_limits().maximum_bytes,
+            work,
+        )?;
+        if let Some(work) = work.as_deref_mut() {
+            work.hashed_bytes(b"harness/v6/reducer-checkpoint\0".len() as u64 + 8 + canonical.len() as u64)?;
+        }
         let mut hasher = blake3::Hasher::new_keyed(&self.key);
         hasher.update(b"harness/v6/reducer-checkpoint\0");
         hasher.update(&(canonical.len() as u64).to_le_bytes());
         hasher.update(&canonical);
-        Ok(*hasher.finalize().as_bytes())
+        let attestation = *hasher.finalize().as_bytes();
+        let capacity = canonical.capacity() as u64;
+        drop(canonical);
+        if let Some(work) = work.as_deref_mut() { work.release_bytes(capacity)?; }
+        Ok(attestation)
     }
 }
 
-fn registry_bindings(schemas: &SchemaRegistry) -> Result<Vec<(ExtensionDependency, [u8; 32])>> {
+fn registry_bindings_with_work(
+    schemas: &SchemaRegistry,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<Vec<(ExtensionDependency, [u8; 32])>> {
     schemas
         .schemas
         .iter()
         .map(|((name, version), binding)| {
+            if let Some(observer) = work.as_deref_mut() {
+                observer.check_cancellation()?;
+                observer.copy_bytes(name.len() as u64)?;
+            }
             Ok((
                 ExtensionDependency {
                     name: name.clone(),
                     version: *version,
                 },
-                crate::contract::canonical_json_digest(binding)?,
+                canonical_digest_with_work(binding, work)?,
             ))
         })
         .collect()
@@ -328,14 +668,14 @@ mod tests {
         let original = reducer.snapshot()?;
         let mut forged = original.clone();
         forged.projection.lifecycle = LifecycleState::Completed;
-        forged.state_digest = forged.digest()?;
+        forged.state_digest = forged.digest_with_work(&mut None)?;
         assert!(matches!(
             Reducer::restore(forged, issuer.verifier(), SchemaRegistry::new()),
             Err(Error::Unauthorized(_))
         ));
         let mut forged_cache = original;
         forged_cache.revision = 50;
-        forged_cache.state_digest = forged_cache.digest()?;
+        forged_cache.state_digest = forged_cache.digest_with_work(&mut None)?;
         assert!(matches!(
             Reducer::restore(forged_cache, issuer.verifier(), SchemaRegistry::new()),
             Err(Error::Unauthorized(_))
