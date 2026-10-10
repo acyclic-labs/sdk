@@ -1356,16 +1356,25 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ));
         }
         let key = format!("task-admission:{operation_id}");
-        let state = self.payloads.stage(operation_id, &key, &bytes).await?;
-        state.descriptor().verify(&bytes)?;
-        if self.read_json(&state).await? != canonical {
-            return Err(Error::Storage(
-                "staged task admission changed before publication".into(),
-            ));
-        }
+        let (state, owner_scope) =
+            if let Some(retained) = self.retained_declaration(operation_id).await? {
+                if self.read_admission_json(&retained.state).await? != canonical {
+                    return Err(Error::Conflict("task admission changed on retry".into()));
+                }
+                (retained.state, retained.owner_scope)
+            } else {
+                let state = self.payloads.stage(operation_id, &key, &bytes).await?;
+                state.descriptor().verify(&bytes)?;
+                if self.read_json(&state).await? != canonical {
+                    return Err(Error::Storage(
+                        "staged task admission changed before publication".into(),
+                    ));
+                }
+                (state, self.owner_scope.clone())
+            };
         let spec = OperationSpec {
             operation_id,
-            owner_scope: self.owner_scope.clone(),
+            owner_scope,
             parent: parent.map(|parent| ParentLink {
                 operation_id: OperationId::from_bytes(parent.into_bytes()),
                 slot: operation_id.to_string(),
@@ -1479,7 +1488,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(value)
     }
 
-    async fn admission(&self, operation_id: OperationId) -> Result<TaskAdmissionRecord> {
+    async fn retained_declaration(
+        &self,
+        operation_id: OperationId,
+    ) -> Result<Option<OperationSpec>> {
         let declaration_key = IdempotencyKey::new(format!("task-admission:{operation_id}"))?;
         let indexed = crate::distributed::observe_declaration(
             &self.stream,
@@ -1490,18 +1502,44 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &declaration_key,
         )
         .await?;
-        let spec = if let Some(spec) = indexed {
-            spec
-        } else {
+        if indexed.is_some() {
+            return Ok(indexed);
+        }
+        {
             // Missing/legacy locations are not evidence of missing admission.
             // Bootstrap through the existing authoritative reducer, then use
             // its verified declaration. This fallback remains a mutable read.
             let mut coordinator = self.coordinator.lock().await;
             coordinator.refresh().await?;
-            coordinator
-                .observe_operation(&self.owner, &self.owner_scope, &self.verifier, operation_id)?
-                .spec
-        };
+            match coordinator.observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                operation_id,
+            ) {
+                Ok(operation) => Ok(Some(operation.spec)),
+                Err(Error::NotFound(_)) => Ok(None),
+                Err(error) => Err(error),
+            }
+        }
+    }
+
+    async fn read_admission_json(&self, reference: &FileRef) -> Result<Value> {
+        self.read_json(reference)
+            .await
+            .map_err(|error| match error {
+                Error::NotFound(_) => {
+                    Error::Storage("committed task admission content is missing".into())
+                }
+                other => other,
+            })
+    }
+
+    async fn admission(&self, operation_id: OperationId) -> Result<TaskAdmissionRecord> {
+        let spec = self
+            .retained_declaration(operation_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("task admission".into()))?;
         if let Some(limits) = self.session_limits {
             let mut coordinator = self.coordinator.lock().await;
             // Session configuration and parent links are immutable. A cached
@@ -1520,15 +1558,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 ));
             }
         }
-        let value = self
-            .read_json(&spec.state)
-            .await
-            .map_err(|error| match error {
-                Error::NotFound(_) => {
-                    Error::Storage("committed task admission content is missing".into())
-                }
-                other => other,
-            })?;
+        let value = self.read_admission_json(&spec.state).await?;
         let admission = TaskAdmissionRecord::from_canonical_value(value)?;
         if admission.policy != self.policy.as_ref().map(|policy| policy.identity()) {
             return Err(Error::Conflict(
@@ -4482,6 +4512,227 @@ mod tests {
                 .is_err()
         );
         Ok(payloads)
+    }
+
+    #[tokio::test]
+    async fn admission_retry_retains_original_owner_grant_after_renewal() -> Result<()> {
+        for session in [false, true] {
+            let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+            let payloads = Arc::new(MemoryPayloads::new()?);
+            let owner = Authority {
+                kind: AggregateKind::Task,
+                id: "batch-owner".into(),
+            };
+            let issuer = AuthorityIssuer::new("batch-test", [7; 32], owner.clone());
+            let owner_scope = issuer.root(
+                "owner",
+                Capabilities::new([
+                    "operation:declare",
+                    "operation:observe",
+                    "operation:cancel",
+                    "task:spawn:test.batch@1",
+                ]),
+            );
+            let runtime_scope =
+                RuntimeScope::new(owner_scope.capabilities().clone(), Limits::default())?;
+            let machine = MachineIdentity {
+                name: "test.batch".into(),
+                version: "1".into(),
+                digest: [2; 32],
+            };
+            let mut machines = MachineRegistry::default();
+            let implementation: Arc<dyn ResumableMachine> = Arc::new(BatchMachine {
+                identity: machine.clone(),
+                schema: serde_json::json!({"type": "integer"}),
+            });
+            machines.register(implementation.clone())?;
+            let definition = TaskDefinition::<Value, i64>::resumable(
+                implementation,
+                serde_json::json!({"type": "integer"}),
+                serde_json::json!({"type": "integer"}),
+            )?;
+            let task = definition.identity().clone();
+            let mut tasks = TaskRegistry::default();
+            tasks.register(definition)?;
+            let coordinator = DistributedCoordinator::open(&stream, payloads.clone()).await?;
+            let host = CoordinatorTaskHost::new(
+                coordinator,
+                stream.clone(),
+                payloads.clone(),
+                payloads.clone(),
+                owner.clone(),
+                owner_scope.clone(),
+                issuer.verifier(),
+                runtime_scope.clone(),
+                tasks.clone(),
+                machines.clone(),
+                Arc::new(SystemUnixMillisClock),
+            )?;
+            let limits = crate::scheduler::SessionLimits {
+                active_tasks: 8,
+                total_tasks: 16,
+                depth: 4,
+                model_steps: 100,
+            };
+            let host = if session {
+                host.with_session_limits(limits)?
+            } else {
+                host
+            };
+            let root_admission = |operation_id, input| TaskAdmissionRecord {
+                operation_id,
+                task: task.clone(),
+                machine: machine.clone(),
+                input,
+                input_schema: serde_json::json!({"type": "integer"}),
+                output_schema: serde_json::json!({"type": "integer"}),
+                parent: None,
+                grants: runtime_scope.grants().clone(),
+                limits: runtime_scope.limits(),
+                run_limits: runtime_scope.run_limits(),
+                policy: None,
+                extensions: runtime_scope.extensions().cloned(),
+                execution: None,
+            };
+
+            let operation_id = OperationId::from_bytes([88; 16]);
+            let admission = root_admission(operation_id, serde_json::json!(0));
+            assert!(matches!(
+                host.admit(admission.clone()).await?,
+                Admission::Accepted(_)
+            ));
+            let original = host
+                .retained_declaration(operation_id)
+                .await?
+                .ok_or_else(|| Error::NotFound("original admission".into()))?;
+            let lease = host
+                .coordinator
+                .lock()
+                .await
+                .pull(&crate::distributed::Worker {
+                    id: "renewal-worker".into(),
+                    available: crate::scheduler::ResourceSnapshot::default(),
+                    labels: BTreeMap::new(),
+                })
+                .await?
+                .ok_or_else(|| Error::NotFound("parent lease".into()))?;
+            let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
+            let mut child = root_admission(OperationId::from_bytes([89; 16]), serde_json::json!(0));
+            child.parent = Some(TaskId::from_bytes(operation_id.into_bytes()));
+            assert!(matches!(
+                host.admit_owned(child.clone(), fence.clone()).await?,
+                Admission::Accepted(_)
+            ));
+            let original_child = host
+                .retained_declaration(child.operation_id)
+                .await?
+                .ok_or_else(|| Error::NotFound("original child admission".into()))?;
+            let renewed = issuer.root("renewed-owner", owner_scope.capabilities().clone());
+            let reopened = CoordinatorTaskHost::new(
+                DistributedCoordinator::open(&stream, payloads.clone()).await?,
+                stream.clone(),
+                payloads.clone(),
+                payloads.clone(),
+                owner.clone(),
+                renewed,
+                issuer.verifier(),
+                runtime_scope.clone(),
+                tasks.clone(),
+                machines.clone(),
+                Arc::new(SystemUnixMillisClock),
+            )?;
+            let reopened = if session {
+                reopened.with_session_limits(limits)?
+            } else {
+                reopened
+            };
+            let revision = reopened.coordinator.lock().await.revision();
+            assert!(matches!(
+                reopened.admit(admission.clone()).await?,
+                Admission::Accepted(_)
+            ));
+            assert_eq!(reopened.coordinator.lock().await.revision(), revision);
+            assert_eq!(
+                reopened.retained_declaration(operation_id).await?,
+                Some(original.clone())
+            );
+            assert!(matches!(
+                reopened.admit_owned(child.clone(), fence.clone()).await?,
+                Admission::Accepted(_)
+            ));
+            assert_eq!(reopened.coordinator.lock().await.revision(), revision);
+            assert_eq!(
+                reopened.retained_declaration(child.operation_id).await?,
+                Some(original_child.clone())
+            );
+            let mut stale = fence.clone();
+            stale.reservation_id.push_str("-stale");
+            assert!(matches!(
+                reopened.admit_owned(child.clone(), stale).await,
+                Err(Error::Unauthorized(_))
+            ));
+            assert_eq!(reopened.coordinator.lock().await.revision(), revision);
+            let mut changed = admission.clone();
+            changed.input = serde_json::json!(1);
+            assert!(matches!(
+                reopened.admit(changed).await,
+                Err(Error::Conflict(_))
+            ));
+            let impostor = AuthorityIssuer::new("batch-test", [8; 32], owner.clone());
+            let impostor_host = CoordinatorTaskHost::new(
+                DistributedCoordinator::open(&stream, payloads.clone()).await?,
+                stream.clone(),
+                payloads.clone(),
+                payloads.clone(),
+                owner.clone(),
+                impostor.root("renewed-owner", owner_scope.capabilities().clone()),
+                impostor.verifier(),
+                runtime_scope.clone(),
+                tasks.clone(),
+                machines.clone(),
+                Arc::new(SystemUnixMillisClock),
+            )?;
+            let impostor_host = if session {
+                impostor_host.with_session_limits(limits)?
+            } else {
+                impostor_host
+            };
+            assert!(matches!(
+                impostor_host.admit(admission).await,
+                Err(Error::Unauthorized(_))
+            ));
+            assert_eq!(
+                reopened.retained_declaration(operation_id).await?,
+                Some(original)
+            );
+            reopened
+                .coordinator
+                .lock()
+                .await
+                .cancel_operation(
+                    &owner,
+                    &reopened.owner_scope,
+                    &issuer.verifier(),
+                    operation_id,
+                    IdempotencyKey::new("renewal-parent-cancel")?,
+                    false,
+                )
+                .await?;
+            let cancelled_revision = reopened.coordinator.lock().await.revision();
+            assert!(matches!(
+                reopened.admit_owned(child.clone(), fence).await,
+                Err(Error::Conflict(_))
+            ));
+            assert_eq!(
+                reopened.coordinator.lock().await.revision(),
+                cancelled_revision
+            );
+            assert_eq!(
+                reopened.retained_declaration(child.operation_id).await?,
+                Some(original_child)
+            );
+        }
+        Ok(())
     }
 
     #[tokio::test]
