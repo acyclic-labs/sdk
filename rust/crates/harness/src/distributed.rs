@@ -1381,7 +1381,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             ))
             .await?
         } else {
-            append_keyed(
+            match append_keyed(
                 (&self.stream, &self.client),
                 Bytes::copy_from_slice(&bytes),
                 Some(self.revision),
@@ -1389,7 +1389,26 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 operation_id,
                 "coordinator retry identity",
             )
-            .await?
+            .await
+            {
+                Ok(outcome) => outcome,
+                Err(error @ Error::Conflict(_)) => {
+                    // Concurrent identical events can have distinct envelope
+                    // timestamps. Reconcile the retained logical event rather
+                    // than treating envelope-byte mismatch as changed intent.
+                    self.refresh().await?;
+                    if let Some((existing_digest, existing, ..)) = self.retained_intent(key).await?
+                        && existing_digest == digest
+                        && existing == event
+                    {
+                        self.require_command_wait(&event, waiting_command, true)?;
+                        self.require_parent_owner(&event, parent_fence.as_ref())?;
+                        return self.replay_intent(&event);
+                    }
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            }
         };
         let applied = self
             .finish_append(outcome, &event, key, &digest, revision)

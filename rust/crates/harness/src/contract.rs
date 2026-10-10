@@ -315,6 +315,7 @@ pub struct ProtocolIdentity {
 
 /// Deterministic capability set.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Capabilities(BTreeSet<String>);
 
 impl Capabilities {
