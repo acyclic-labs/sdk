@@ -78,9 +78,11 @@ original Rust descriptor bytes remain preserved and hash-checked.
 
 The current control inventory also requires the terminal Actors `DeleteActor`
 RPC added in main revision `d86b660146738d507029403756117fa6f102a9c4`:
-26 calls, with 23 unary and three server-streaming. Fresh generation and
-installed qualification for that revision are pending; the 25-call receipts
-above remain scoped to their original source revision.
+26 calls, with 23 unary and three server-streaming. Fresh maintained generation,
+archive installation and native qualification passed for that revision, including
+three runtime type rejections and checks of the executed source, dependencies,
+compiled SDK, consumer and loaded-module provenance. The 25-call receipts above
+remain scoped to their original source revision.
 
 These controls prove installed Erlang transport behavior for the qualified cohort.
 Rust-backed execution, embedded runtimes and complete domain
