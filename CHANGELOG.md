@@ -19,6 +19,7 @@ release commit.
 - Actors idempotency keys are limited to 1â€“256 bytes. Family clients treat every loopback address as local and mark credentials sensitive.
 - Filesystem materialization rollback includes an edit applied before its progress record became durable, decoded multi-root publications are checked with the coordinator's journal rules, and listing cursors longer than the volume's name bound are rejected.
 - Retire the duplicate `acyclic-inference-contract` and `acyclic-stream-wasm` crates; `acyclic_inference::DESCRIPTOR` is available without the host feature. Replace the unmaintained `tsify-next` with `tsify`.
+- Update Rust code generation consumers to Syn 3 and Prettyplease 0.3, N-API build support to 2.6, selected Base64 consumers to 0.23, and Objects entropy and TLS test support to Getrandom 0.4 and Tokio Rustls 0.26.6.
 - Add `acyclic-harness-codex` (unpublished): an `Executor` that runs a turn as one pinned Codex CLI 0.155.1 process. Model calls go through a metered local Responses proxy, and the consumer's granted tools are served over MCP. It is qualified end to end against the real binary.
 
 ## 0.1.1 - 2026-09-24

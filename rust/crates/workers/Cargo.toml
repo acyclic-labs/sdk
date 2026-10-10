@@ -77,7 +77,7 @@ tempfile = "3.27.0"
 
 [build-dependencies]
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["codegen"] }
-napi-build = { version = "2.3.1", optional = true }
+napi-build = { version = "2.6.0", optional = true }
 prost.workspace = true
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 ts-rs = "=12.0.1"
