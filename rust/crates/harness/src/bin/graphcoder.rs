@@ -198,7 +198,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Selection::Scenario(path) => {
             #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
             {
-                let manifest = native_scenario::prepare(&path).await?;
+                let cancellation = acyclic_fs::CancellationToken::new();
+                let preparation = native_scenario::prepare(&path, &cancellation);
+                tokio::pin!(preparation);
+                let manifest = tokio::select! {
+                    result = &mut preparation => result?,
+                    signal = tokio::signal::ctrl_c() => {
+                        signal?;
+                        cancellation.cancel();
+                        preparation.await?
+                    }
+                };
                 println!("scenario-json={}", serde_json::json!({"manifest": manifest}));
                 return Ok(());
             }

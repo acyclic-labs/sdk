@@ -42,6 +42,10 @@ pub struct NativeToolCaller {
     pub owner: AuthorityBinding,
     pub project: VolumeRef,
     pub private_volume: VolumeRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_snapshot: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_volume: Option<VolumeRef>,
 }
 
 /// An original signed allocation/input, not permission to mint a production
@@ -56,6 +60,8 @@ pub struct NativeToolFork {
     pub private_volume: VolumeRef,
     pub admission: TaskAdmissionRecord,
     pub limits: ForkPreparationLimits,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_volume: Option<VolumeRef>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -87,6 +93,8 @@ impl NativeToolSource {
                 owner: authority_binding(&caller.owner),
                 project: caller.project.clone(),
                 private_volume: caller.private_volume.clone(),
+                native_snapshot: caller.native_snapshot.clone(),
+                result_volume: caller.result_volume.clone(),
             }).collect(),
             forks: config.tools.forks.iter().map(|fork| {
                 let command = WorkflowCommand::deserialize(&fork.admission.input)
@@ -107,6 +115,7 @@ impl NativeToolSource {
                     child_message_file_pointer: Some("/input".into()),
                     input_files: vec![command.payload],
                     limits: fork.limits,
+                    result_volume: fork.result_volume.clone(),
                 })
             }).collect::<Result<Vec<_>>>()?,
             merges: config.tools.merges.iter().map(|merge| ConfiguredRecursiveMerge {
@@ -119,6 +128,9 @@ impl NativeToolSource {
             inherited_messages: 64,
             inherited_references: 64,
             content_budget: config.tools.content_budget,
+            // Native assembly installs its actual service/graph policy
+            // explicitly; this browser configuration hook cannot infer a root.
+            project_policy_graph_root: None,
         };
         let source = Source::new(configured, stream, files, &config.filesystem_provider, config.limits)?;
         Ok(Arc::new(Self { source }))

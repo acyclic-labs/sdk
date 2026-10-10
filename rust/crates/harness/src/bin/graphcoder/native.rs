@@ -75,6 +75,9 @@ pub struct Config {
     pub tools: super::native_tools::NativeToolsConfig,
     #[serde(default)]
     pub native_publications: Vec<super::native_writeback::NativePublicationConfig>,
+    /// Actual coordinator session graph root for explicit creator-only source policy.
+    #[serde(default)]
+    pub project_source_root: Option<TaskId>,
 }
 
 impl Config {
@@ -158,6 +161,15 @@ impl NativeSession {
                 .map_err(|error| Error::Storage(error.to_string()))?,
         ));
         let source = super::native_tools::NativeToolSource::new(&config, stream.clone(), files.clone())?;
+        if let Some(graph_root) = config.project_source_root {
+            let policy = acyclic_harness::filesystem::FsRootProjectSourceProvider::new(
+                files.clone(), config.owner.authority.clone(), graph_root,
+            )?;
+            source.recursive_source().with_project_source_policy(
+                AuthorityIssuer::new(&config.owner.issuer, config.owner.key, config.owner.authority.clone()),
+                Arc::new(policy),
+            )?;
+        }
         let toolset = source.tools(MAX_FRAME_BYTES as u64)?;
         let machine = Arc::new(StockTurnMachine::new());
         let mut tasks = TaskRegistry::default();
@@ -309,7 +321,7 @@ impl NativeSession {
                 .map_err(|error| Error::Invalid(format!("retained fork preparation input: {error}")))?;
             preparation.validate()?;
             if preparation.source_checkpoint.is_none() {
-                let request: acyclic_harness::fork::ForkRequest = serde_json::from_value(preparation.payload)
+                let request = acyclic_harness::fork::ForkRequest::deserialize(&preparation.payload)
                     .map_err(|error| Error::Invalid(format!("retained fork source request: {error}")))?;
                 let source = self.config.fork_sources.iter().find(|source| {
                     Some(source.caller) == preparation.child.parent
@@ -322,10 +334,15 @@ impl NativeSession {
                 let reducer = acyclic_harness::core::Reducer::restore(
                     source.snapshot.clone(), verifier.clone(), SchemaRegistry::default(),
                 )?;
+                let fence = LeaseFence::from(&lease.reservation);
+                let context = self.runtime.task_context(task, fence.clone()).await?;
+                let owner = Arc::new(self.runtime.task_host().journal_owner(task, fence).await?);
+                let source_read = owner.restore_project_source(&context, &preparation).await?;
                 let binding = restore_recursive_fork_source(
                     self.files.clone(), &self.stream, &reducer, verifier, source.owner.scope.clone(),
                     source.project.clone(), self.config.stream_provider.clone(), request,
                     HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 },
+                    source_read,
                 ).await?;
                 commands = commands.with_fork_preparer(binding.preparer);
             }

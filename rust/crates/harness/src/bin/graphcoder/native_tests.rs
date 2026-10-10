@@ -39,6 +39,7 @@ async fn composition(root: &std::path::Path) -> Result<Config> {
         fork_sources: vec![],
         tools: Default::default(),
         native_publications: vec![],
+        project_source_root: None,
     })
 }
 

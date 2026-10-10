@@ -48,6 +48,7 @@ struct Caller {
     binding: AuthorityBinding,
     project: VolumeRef,
     private: VolumeRef,
+    result: Option<VolumeRef>,
     aggregate: StreamAggregate<LocalStream>,
     lease: WorkLease,
 }
@@ -65,13 +66,14 @@ struct Producer {
     planned_commands: BTreeMap<String, WorkflowCommand>,
     planned_inputs: BTreeMap<String, FileRef>,
     leases: BTreeMap<String, PathBuf>,
+    cancellation: acyclic_fs::CancellationToken,
 }
 
 /// Produces actual local provider resources, authenticated source checkpoints,
 /// retained ordinary preparation requests/reports and original owner leases.
 /// The manifest distinguishes genuine bootstrap effects from pending UI work.
 /// No model invocation, native allocation witness or approval is fabricated.
-pub async fn prepare(root: &Path) -> Result<PathBuf> {
+pub async fn prepare(root: &Path, cancellation: &acyclic_fs::CancellationToken) -> Result<PathBuf> {
     if !root.is_absolute() {
         return Err(Error::Invalid("scenario root must be an absolute path".into()));
     }
@@ -79,11 +81,12 @@ pub async fn prepare(root: &Path) -> Result<PathBuf> {
         .map_err(|error| Error::Storage(format!("native IO service startup: {error}")))?;
     acyclic_fs::initialize_native_mount_services()
         .map_err(|error| Error::Storage(format!("native mount service startup: {error}")))?;
-    let negative = prepare_case(&root.join("one-below-actual"), 11, None).await?;
-    prepare_case(root, 12, Some(negative)).await
+    let negative = prepare_case(&root.join("one-below-actual"), 11, None, cancellation).await?;
+    prepare_case(root, 12, Some(negative), cancellation).await
 }
 
-async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<PathBuf>) -> Result<PathBuf> {
+async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<PathBuf>,
+    cancellation: &acyclic_fs::CancellationToken) -> Result<PathBuf> {
     if !root.is_absolute() {
         return Err(Error::Invalid("scenario root must be an absolute path".into()));
     }
@@ -137,6 +140,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         session_limits: SessionLimits { active_tasks: 6, total_tasks, depth: 3, model_steps: 7 },
         concurrency: 6, deterministic_delay_ms: 2000, fork_sources: Vec::new(),
         tools: Default::default(), native_publications: Vec::new(),
+        project_source_root: None,
     };
     let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&config.filesystem_root)).await
         .map_err(|error| Error::Storage(error.to_string()))?;
@@ -172,7 +176,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
             &IdempotencyKey::new(format!("planned-input-{label}"))?).await?;
         artifact_grants.push(file.read_capability()?);
         let command = WorkflowCommand { operation_id: OperationId::new(), kind: MODEL_TASK_COMMAND_KIND.into(),
-            payload: serde_json::to_value(&file).map_err(|error| Error::Invalid(error.to_string()))? };
+            payload: file.clone() };
         planned_commands.insert(label.to_owned(), command);
         planned_inputs.insert(label.to_owned(), file);
     }
@@ -199,6 +203,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     let operation = OperationId::new();
     let command = planned_commands["bootstrap"].clone();
     let seed_task = admitted_task(runtime.harness().admit(operation, &definition, command, None).await?)?;
+    config.project_source_root = Some(seed_task);
     let template = runtime.task_host().observe_admission(seed_task).await?;
     let worker = Worker { id: format!("qualification-bootstrap-{}", uuid::Uuid::new_v4()),
         available: Default::default(), labels: Default::default() };
@@ -209,11 +214,12 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     aggregate.execute(Command { operation_id: OperationId::new(), idempotency_key: IdempotencyKey::new("bind-bootstrap")?,
         expected_revision: 0, scope: owner.scope.clone(), causal_parent: None,
         action: Action::BindConversation { agent: seed_agent } }).await?;
-    let mut seed = Caller { task: seed_task, binding: owner, project, private, aggregate, lease: seed_lease };
+    let mut seed = Caller { task: seed_task, binding: owner, project, private, result: None,
+        aggregate, lease: seed_lease };
     let mut producer = Producer { root: root.clone(), files, stream, runtime, config, template,
         worker, preparations: Vec::new(), references: BTreeMap::new(),
         leases: BTreeMap::from([("bootstrap_seed".to_owned(), seed_lease_path)]),
-        planned_commands, planned_inputs };
+        planned_commands, planned_inputs, cancellation: cancellation.clone() };
     let imported_ref = acyclic_harness::resources::GenerationRef::new(producer.config.filesystem_provider.clone(),
         imported_generation.id().digest().into_bytes(), None)?;
     let imported_bytes = producer.files.read(&workspace_ref(producer.config.filesystem_provider.clone(),
@@ -263,11 +269,13 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     for (caller, label) in callers {
         if label != "bootstrap_seed" {
             producer.config.tools.callers.push(NativeToolCaller { task: caller.task, owner: caller.binding.clone(),
-                project: caller.project.clone(), private_volume: caller.private.clone() });
+                project: caller.project.clone(), private_volume: caller.private.clone(),
+                native_snapshot: None, result_volume: caller.result.clone() });
         }
         identities.insert(label, caller.task);
         caller_records.insert(label, json!({ "task": caller.task, "agent": caller.binding.scope.agent(),
             "authority": caller.binding.authority, "project": caller.project, "private_volume": caller.private,
+            "result_volume": caller.result,
             "admission": producer.runtime.task_host().observe_admission(caller.task).await?,
             "volume_snapshots": producer.runtime.task_host().observe_volume_snapshots(caller.task).await? }));
     }
@@ -424,16 +432,36 @@ impl Producer {
             VolumeClass::Project, VolumeOwner::Project("qualification-project".into()))?;
         let private = VolumeRef::new(self.config.filesystem_provider.clone(), format!("{label}-private"),
             VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
+        let result = VolumeRef::new(self.config.filesystem_provider.clone(), format!("{label}-result"),
+            VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
         let operation = OperationId::new();
         let preparation_operation = OperationId::new();
-        // This is the ordinary owner's documented operation-derived task identity,
-        // unrelated to the new AgentId. Admission below authenticates it.
-        let preparation_task = TaskId::from_bytes(preparation_operation.into_bytes());
+        let preparation_task = acyclic_harness::runtime::task_id_for_admission(preparation_operation);
         let child_operation = OperationId::new();
         let initial_prompt = format!("real isolated {label} qualification task");
         let verifier = AuthorityIssuer::new(ISSUER, TEST_KEY, parent.binding.authority.clone()).verifier();
         let admission = self.runtime.task_host().observe_admission(parent.task).await?;
         let context = self.runtime.task_context(parent.task, LeaseFence::from(&parent.lease.reservation)).await?;
+        let source_read = if let Some(source_task) = source.filter(|task| *task != parent.task) {
+            let inspection = self.runtime.inspect_source(parent.task, source_task).await?;
+            let selected = inspection.project()?;
+            let graph_root = self.config.project_source_root.ok_or_else(|| Error::Unsupported(
+                "actual coordinator graph root source policy is not configured".into()))?;
+            let policy = acyclic_harness::filesystem::FsRootProjectSourceProvider::new(
+                self.files.clone(), self.config.owner.authority.clone(), graph_root,
+            )?;
+            let service_issuer = AuthorityIssuer::new(
+                &self.config.owner.issuer, self.config.owner.key, self.config.owner.authority.clone(),
+            );
+            let owner = Arc::new(self.runtime.task_host().journal_owner(
+                parent.task, LeaseFence::from(&parent.lease.reservation),
+            ).await?.with_invocation_cancellation(&self.cancellation));
+            Some(owner.authorize_project_source(&context, &service_issuer, &policy,
+                source_task, operation, acyclic_harness::source_authorization::ProjectSourceSnapshot {
+                    project: selected.volume.clone(), generation: selected.generation.clone(),
+                    native_snapshot: None,
+                }, 16 * 1024 * 1024, 16 * 1024 * 1024).await?)
+        } else { None };
         let binding = recursive_fork_source(&self.runtime, self.files.clone(), &self.stream,
             &parent.aggregate, verifier, parent.binding.scope.clone(), &context,
             RecursiveSourceSnapshot {
@@ -446,9 +474,11 @@ impl Producer {
             }, self.config.stream_provider.clone(), operation,
             &ForkToolArguments { id: agent, msg: initial_prompt.clone(), source },
             RecursiveForkConfig { child: child_authority.clone(), child_project: project.clone(),
-                child_private: private.clone(), limits: self.config.limits, inherited_messages: 64,
+                child_private: private.clone(), child_result_volume: Some(result.clone()),
+                limits: self.config.limits, inherited_messages: 64,
                 inherited_bytes: PAYLOAD_BYTES, inherited_references: 64,
                 history_limits: HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 } },
+            source_read,
         ).await?;
         let projected_reference_grants = binding.preparer.required_reference_grants(&binding.request).await?;
         let checkpoint = ForkSourceConfig { caller: parent.task, owner: parent.binding.clone(),
@@ -484,11 +514,19 @@ impl Producer {
             grants.push(grant.capability()?);
         }
         child.grants = Capabilities::new(grants);
+        let fork_bytes = serde_json::to_vec(&binding.request).map_err(|error| Error::Invalid(error.to_string()))?;
+        if fork_bytes.len() as u64 > PAYLOAD_BYTES {
+            return Err(Error::Invalid("retained fork command exceeds fixture artifact bound".into()));
+        }
+        let command_file = context.stage_file_once(OperationId::new(),
+            &format!(".qualification-forks/{operation}.json"), &fork_bytes,
+            "application/json", "fork-request.json").await?;
         let command = WorkflowCommand { operation_id: operation, kind: FORK_PREPARE_TASK_COMMAND_KIND.into(),
-            payload: serde_json::to_value(&binding.request).map_err(|error| Error::Invalid(error.to_string()))? };
+            payload: command_file.clone() };
         let request = fork_preparation_request(&binding.preparer, binding.request, preparation_task,
-            child, command, ForkPreparationLimits { resources: 2, work: 16 * 1024 * 1024,
-                bytes: 16 * 1024 * 1024 })?;
+            child, command, ForkPreparationLimits { resources: 3, work: 16 * 1024 * 1024,
+                bytes: 16 * 1024 * 1024 }, None,
+            vec![command_file, self.planned_commands[label].payload.clone()])?;
         let request_path = self.root.join("inputs").join(format!("{label}-prepare.json"));
         persist(&request_path, &json!({ "operation": preparation_operation, "parent": parent.task,
             "caller_lease": parent.lease, "request": request })).await?;
@@ -511,7 +549,8 @@ impl Producer {
             self.config.observed_authorities.push(child_owner.clone());
             self.config.tools.forks.push(NativeToolFork { caller: parent.task, child: child_owner,
                 project, private_volume: private, admission: request.child.clone(),
-                limits: ForkPreparationLimits { resources: 2, work: 16 * 1024 * 1024, bytes: 16 * 1024 * 1024 } });
+                limits: ForkPreparationLimits { resources: 3, work: 16 * 1024 * 1024, bytes: 16 * 1024 * 1024 },
+                result_volume: Some(result) });
             return Ok(None);
         }
         let definition: Arc<TaskDefinition<ResourcePreparationRequest, ForkReport>> =
@@ -560,7 +599,7 @@ impl Producer {
             "parent_lease": parent.lease, "preparation_lease": preparation_lease })).await?;
         self.config.observed_authorities.push(owner.clone());
         println!("native-scenario real-fork label={label} parent={} preparation={preparation_task} child={child_task}", parent.task);
-        Ok(Some(Caller { task: child_task, binding: owner, project, private,
+        Ok(Some(Caller { task: child_task, binding: owner, project, private, result: Some(result),
             aggregate: child_aggregate, lease: child_lease }))
     }
 }

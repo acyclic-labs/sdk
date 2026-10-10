@@ -330,10 +330,25 @@ if (scenarioDirectory) {
       assert.equal(request.parent, preparation.parent);
       assert.equal(result.child.operation_id, manifest.tasks[label]);
       assert.equal(result.child.parent, preparation.parent);
-      assert.ok(result.child.resource_proofs.length >= 2, `${label}: actual creator proofs, not invented grants`);
+      assert.equal(request.request.resources.length, 3, `${label}: project, scratch and separate result are actual declared allocations`);
+      assert.equal(request.request.maximum_resources, 3);
+      assert.ok(result.child.resource_proofs.length >= 3, `${label}: actual creator proofs for all three resources`);
       assert.equal(result.report.request.operation_id, result.seed.operation_id);
       assert.equal(result.report.request.child_agent, result.seed.child_agent);
       assert.notEqual(result.seed.child_agent, manifest.tasks[label], "agent identity is not a task UUID cast");
+      const resultVolume = manifest.callers[label].result_volume;
+      assert.ok(resultVolume, `${label}: genuine optional result allocation is present`);
+      assert.equal(resultVolume.class, "agent_private");
+      assert.deepEqual(resultVolume.owner, { kind: "agent", id: result.seed.child_agent });
+      assert.deepEqual(request.request.payload.preparation.child_result_volume, resultVolume);
+      assert.deepEqual(result.report.child_result_volume, resultVolume);
+      assert.deepEqual(result.seed.child_result_volume, resultVolume);
+      assert.ok(result.report.child_result_generation, `${label}: actual immutable result allocation generation`);
+      assert.deepEqual(result.seed.child_result_generation, result.report.child_result_generation);
+      assert.ok(!isDeepStrictEqual(resultVolume, manifest.callers[label].private_volume),
+        "result role must not alias the default scratch writer");
+      assert.ok(!isDeepStrictEqual(resultVolume, manifest.callers[label].project),
+        "result role must not alias the mounted project");
       assert.equal(new Set([preparation.task, request.request.child.operation_id,
         request.request.payload.operation_id]).size, 3,
       `${label}: preparation task, child admission, and fork effect are distinct`);
@@ -348,6 +363,11 @@ if (scenarioDirectory) {
     assert.equal(new Set(Object.values(retained).map(value =>
       JSON.stringify(value.seed.child_private_volume))).size, 4,
     "real children use separate caller-owned private allocations");
+    assert.equal(manifest.callers.bootstrap_seed.result_volume, null,
+      "trusted bootstrap is disclosed without an invented result allocation");
+    assert.equal(new Set(Object.values(retained).map(value =>
+      JSON.stringify(value.seed.child_result_volume))).size, 4,
+    "genuine result allocations are isolated across the four caller agents");
     active = new InstalledSession("native-full-recursive-installed-interactions", manifest.config);
     await active.expect(/actual local Harness runtime/);
     const rootChildren = await active.commandJson(`/children ${input("root-children",
@@ -399,6 +419,19 @@ if (scenarioDirectory) {
       assert.equal(current.text, label === "left" ? mutation : before[label],
         "actual mutable workspace heads stay isolated after a real left write");
     }
+    const resultPath = `installed-result-${randomUUID()}.txt`;
+    const resultBytes = `actual isolated left result ${randomUUID()}`;
+    const writtenResult = await active.commandJson(`/write ${input("left-explicit-result-write", {
+      caller: left, lease: leases.left, volume: manifest.callers.left.result_volume,
+      operation: randomUUID(), path: resultPath, bytes: resultBytes,
+    })}`, "file");
+    assert.deepEqual(writtenResult.file.volume, manifest.callers.left.result_volume,
+      "explicit result publication must not retarget the default scratch or mounted project writer");
+    const readResult = await active.commandJson(`/read-path ${input("left-explicit-result-current", {
+      caller: left, lease: leases.left, volume: manifest.callers.left.result_volume, path: resultPath,
+    })}`, "file");
+    assert.deepEqual(readResult.file.volume, manifest.callers.left.result_volume);
+    assert.equal(readResult.text, resultBytes, "actual unmounted result bytes are readable under their original caller");
     const callerContent = {};
     for (const label of ["root", "left"]) {
       for (const kind of ["transcript", "scratch"]) {
@@ -578,7 +611,11 @@ if (scenarioDirectory) {
     assert.deepEqual(selectedInspection.project.volume, selectedProject.revision.reference.volume);
     assert.deepEqual(selectedInspection.project.generation, selectedProject.revision.reference.generation);
     assert.deepEqual(selectedInspection.private_volume.volume, manifest.callers.root.private_volume);
-    assert.equal(selectedInspection.volumes.length, 2, "selected inspection returns only actual requested source allocation metadata");
+    assert.ok(selectedInspection.volumes.length > 0 && selectedInspection.volumes.length <= 16,
+      "selected inspection remains bounded to normalized current-actor allocation metadata");
+    assert.ok(!selectedInspection.volumes.some(value =>
+      isDeepStrictEqual(value.volume, manifest.callers.root.result_volume)),
+    "unmounted non-default result must not be adopted as inspected scratch");
     const selectedForeign = await active.commandJson(`/read-path ${input("root-exact-selected-foreign-generation", {
       caller: root, lease: leases.root, volume: selectedProject.revision.reference.volume,
       path: manifest.files.root_project.path, generation: selectedProject.revision.reference.generation,
@@ -618,6 +655,16 @@ if (scenarioDirectory) {
     assert.deepEqual(crossPrivate.source.reference.paths, []);
     assert.deepEqual(crossProject.revision.reference.volume, crossReport.request.preparation.child_project_volume);
     assert.deepEqual(publishedCross.seed.child_private_volume, crossReport.request.preparation.child_private_volume);
+    assert.deepEqual(publishedCross.seed.child_result_volume, crossInput.request.payload.preparation.child_result_volume);
+    assert.deepEqual(publishedCross.seed.child_result_generation, crossReport.child_result_generation);
+    assert.ok(publishedCross.seed.child_result_volume && publishedCross.seed.child_result_generation);
+    assert.deepEqual(publishedCross.seed.child_result_volume.owner,
+      { kind: "agent", id: publishedCross.new_child_agent });
+    assert.ok(!isDeepStrictEqual(publishedCross.seed.child_result_volume, publishedCross.seed.child_private_volume),
+      "fresh cross-source result remains separate from actual caller scratch lineage");
+    assert.ok(!Object.values(manifest.callers).some(value =>
+      isDeepStrictEqual(value.result_volume, publishedCross.seed.child_result_volume)),
+    "fresh cross-source fork cannot alias another caller's result");
     const crossClaim = await active.command(`/claim ${crossTask}`,
       /worker-claim task=([0-9a-f-]+) lease-json-hex=([0-9a-f]+)/);
     assert.equal(crossClaim[1], crossTask);
@@ -811,6 +858,16 @@ if (scenarioDirectory) {
         path: manifest.files.left_scratch.path,
       })}\n`, false, 15_000);
     assert.match(emptyScratch.stderr, /not found|missing|does not exist/i);
+    for (const [label, role] of [["left", "private_volume"], ["left", "project"],
+      ["root", "result_volume"], ["right", "result_volume"], ["grandchild", "result_volume"]]) {
+      const absentResult = run(`native-full-result-isolation-${label}-${role}`,
+        ["--session", manifest.config, "--headless"],
+        `/read-path ${input(`result-absent-${label}-${role}`, {
+          caller: manifest.tasks[label], lease: leases[label], volume: manifest.callers[label][role], path: resultPath,
+        })}\n`, false, 15_000);
+      assert.match(absentResult.stderr, /not found|missing|does not exist/i,
+        "result write must remain absent from separately authorized scratch, project and other agents' results");
+    }
     const fileBound = run("native-full-file-staging-bound-negative",
       ["--session", manifest.config, "--headless"],
       `/write ${input("oversized-owned-file", {

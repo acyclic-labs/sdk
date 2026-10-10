@@ -26,7 +26,8 @@ Its fields are `filesystem_root`, `stream_root` (absolute paths),
 `filesystem_provider`, `stream_provider`, `private_volume`, `owner`,
 `observed_authorities`, `generation`, `limits`, `run_limits`, `session_limits`,
 `concurrency`, optional `deterministic_delay_ms` (0–5000), `fork_sources`,
-`tools`, and `native_publications`. Each authority binding contains `authority`,
+`tools`, `native_publications`, and optional `project_source_root`. Each authority
+binding contains `authority`,
 `issuer`, `key` (32 bytes), and an original signed `scope`. Keep this credential
 file private. Each `fork_sources` entry retains the original authenticated
 caller/snapshot/owner/project tuple; checkpoint-backed preparations use the
@@ -39,6 +40,13 @@ budget; without `native-execution`, a nonempty publication binding is explicitly
 unsupported. The producer must have created/published volumes and workspaces
 with real provider authority. Drop producer handles before starting the local
 consumer; providers retain their normal exclusive ownership rules.
+`project_source_root` binds the actual admitted coordinator graph root, not an
+agent UUID or inferred task label. When present, the native session installs the
+SDK's creator-only filesystem source verifier using the original `owner` service
+issuer before registering tools. It authenticates pinned backend generations and
+same-graph creator receipts; missing policy denies foreign selection. Uncreated
+bootstrap sources or opaque native snapshots without actual bound lazy-source
+proof are explicitly unavailable, never approved by metadata alone.
 
 The installed credential-free model is explicitly `graphcoder-deterministic /
 request-digest @ 1`. It computes output from the exact admitted request digest,
@@ -183,6 +191,19 @@ mailbox helper, one cross-source preparation and its admitted child account for
 12. A separate immutable 11-total fixture rejects that final admission; no
 budget is raised after admission. The logical root is itself a genuinely prepared
 child of the disclosed seed, preserving the required creation proofs.
+Each new agent explicitly allocates three genuine resources: isolated project,
+default private scratch and separate child-owned result volume. Result is
+unmounted and is never selected as default scratch by iteration order; explicit
+volume writes use its own authenticated binding. The bootstrap seed's result
+role is explicitly absent. Three declared resources do not add helper tasks or
+raise the immutable session task/model budgets. Foreign project selection also
+requires a sealed operation-specific source authorization from the actual
+coordinator service issuer and an installed authentic root source provider.
+Native snapshots are not invented from metadata or a directory witness.
+The installed helper owns a real per-invocation cancellation token; Ctrl+C cancels
+that token while retaining the same preparation future. Source authorization
+callbacks borrow it, and the original journal owner remains the authority for
+task/fence cancellation. A service-wide dummy token is not substituted.
 
 For an actual installed PTY, launch the absolute installed binary with
 `--session CONFIG.json` in the qualification runner's real native PTY (for
