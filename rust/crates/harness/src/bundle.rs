@@ -668,7 +668,7 @@ impl HarnessBundle {
                 .task::<TurnInput, TurnOutput>("acyclic.stock_turn@2")?;
             let admitted = self
                 .runtime
-                .spawn_with_operation(input.operation_id, &definition, input)
+                .spawn_local_with_operation(input.operation_id, &definition, input)
                 .await?;
             let crate::runtime::RuntimeTask::Live(handle) = admitted else {
                 return Err(Error::Unsupported(
