@@ -25,4 +25,6 @@ jobs:
           node-version: 24.15.0
           package-manager-cache: false
       - name: Static repository checks
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/static-ci.mjs

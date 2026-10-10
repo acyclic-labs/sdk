@@ -10,11 +10,15 @@ export function pinnedActions(file, source) {
       scalarIndent = null;
     }
     if (line.trimStart().startsWith('#')) continue;
-    if (/^\s*(?:-\s*)?[^:]+:\s*[|>][0-9+-]*(?:\s+#.*)?\s*$/.test(line)) {
+    // Mask quoted values while retaining quoted mapping keys. Text in a
+    // step name or environment value is not an action reference.
+    const keys = line.replace(/"(?:\\.|[^"\\])*"|'(?:''|[^'])*'/g,
+      (value, offset) => /^\s*:/.test(line.slice(offset + value.length)) ? value : ' '.repeat(value.length));
+    const key = /(?:^\s*(?:-\s*)?|[{,]\s*)(?:uses|["']uses["'])\s*:/.test(keys);
+    if (!key && /^\s*(?:-\s*)?[^:]+:\s*[|>][0-9+-]*(?:\s+#.*)?\s*$/.test(line)) {
       scalarIndent = indent;
       continue;
     }
-    const key = /(?:\buses|["']uses["'])\s*:/.test(line);
     if (!key) continue;
     const action = line.match(/^\s*(?:-\s*)?uses:\s*["']?([^\s"'#]+)/)?.[1];
     if (!action) throw new Error(`${file}: uses must be an unquoted block mapping key`);

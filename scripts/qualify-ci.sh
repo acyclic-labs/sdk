@@ -408,6 +408,7 @@ case "$lane" in
     node scripts/publish-cargo-crates.mjs check
     node --test scripts/test-publish-cargo-crates.mjs
     node --test scripts/test-publish-npm-packages.mjs
+    node --test scripts/static-policy.test.mjs
     node --test scripts/test-typescript-qualification.mjs
     node --test scripts/test-plan-qualification.mjs
     node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
