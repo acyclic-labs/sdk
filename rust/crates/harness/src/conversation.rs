@@ -1413,11 +1413,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
             .map_err(acyclic_fs::OperationFailure::before_work)?;
         let result = (|| {
-            volume.validate()?;
-            let key = io.encode_json(volume, io.remaining()?.bytes_encoded, false)?;
-            let key = std::str::from_utf8(&key).map_err(|error| Error::Invalid(error.to_string()))?;
-            let reader = self.volumes.get(key).ok_or_else(|| Error::Unsupported(
-                "finite lazy owner mounting is unavailable".into()))?;
+            let reader = self.finite_bound_reader(volume, &io)?;
             io.receive_content(reader.supports_measured_read(volume, io.remaining()?, cancellation))
         })();
         match result {
@@ -1436,10 +1432,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
                 .map_err(acyclic_fs::OperationFailure::before_work)?;
             let result = async {
                 reference.validate()?;
-                let key = io.encode_json(reference.volume(), io.remaining()?.bytes_encoded, false)?;
-                let key = std::str::from_utf8(&key).map_err(|error| Error::Invalid(error.to_string()))?;
-                let reader = self.volumes.get(key).ok_or_else(|| Error::Unsupported(
-                    "finite content routing requires an explicitly bound measured owner; lazy mount lacks finite IO".into()))?;
+                let reader = self.finite_bound_reader(reference.volume(), &io)?;
                 io.receive_content(reader.read_measured(reference, maximum_bytes, io.remaining()?, cancellation).await)
             }.await;
             match result {
