@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { posix } from "node:path";
 import { runInNewContext } from "node:vm";
-import { packagedSourceCopies } from "./generated-bindings.mjs";
+import { compatibilityArtifacts, packagedSourceCopies } from "./generated-bindings.mjs";
 
 import {
   chooseLanes,
@@ -202,6 +202,17 @@ test("registered backends declare the shared readers used by their source and co
   }
 });
 
+test("registered backend targets match the maintained transport contracts", () => {
+  const expected = ["actors", "workers", "stream"].map(name =>
+    compatibilityArtifacts[name].schemaDigest.split("proto/").at(-1)).sort();
+  for (const backend of languageGeneratorBackends) {
+    const root = `tools/sdk-generator/backends/${backend}/src`;
+    const declarations = readdirSync(root).filter(name => name.endsWith(".mjs")).flatMap(name =>
+      [...readFileSync(`${root}/${name}`, "utf8").matchAll(/\bconst targets\s*=\s*(\[[^;]+\]);/g)]);
+    assert.ok(declarations.length, `${backend} must declare its qualified targets`);
+    for (const [, targets] of declarations) assert.deepEqual(JSON.parse(targets).sort(), expected, backend);
+  }
+});
 test("unregistered generators retain full qualification inputs", () => {
   const before = laneKeys(lanes, tree);
   const after = laneKeys(lanes, changed("tools/sdk-generator/backends/future/generate.mjs"));
