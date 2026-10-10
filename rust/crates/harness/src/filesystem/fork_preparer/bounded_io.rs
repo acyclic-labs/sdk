@@ -171,10 +171,11 @@ pub(super) async fn retain<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 pub(super) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    host: &FilesystemHost<A, O>, source: &VolumeRef,
+    host: &FilesystemHost<A, O>, source: &VolumeRef, grant: &ContentGrant,
     source_generation: &crate::resources::GenerationRef, child: &VolumeRef,
     paths: Option<Vec<String>>, key: &IdempotencyKey, io: Option<&PreparationIo>,
 ) -> Result<super::super::WorkspaceObservation> {
+    grant.require(source, VolumeOperation::Read)?;
     let Some(io) = io else { return host.fork_volume_pinned(source, source_generation, child, paths, key).await; };
     source.validate()?;
     child.validate()?;
@@ -197,4 +198,63 @@ pub(super) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         workspace: workspace_ref(host.provider.clone(), &child_name)?,
         generation: host.generation_ref(&initial)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::conversation::{VolumeClass, VolumeOwner};
+    use crate::core::{AggregateKind, AuthorityIssuer};
+    use acyclic_fs::Fs;
+
+    #[tokio::test]
+    async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() -> Result<()> {
+        let provider = crate::resources::ProviderRef::new("source-read-control", "filesystem", "2")?;
+        let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
+        let project = |name: &str| VolumeRef::new(provider.clone(), name, VolumeClass::Project,
+            VolumeOwner::Project("source-read-control".into()));
+        let source = project("selected")?;
+        let caller = project("caller")?;
+        let child = project("child")?;
+        let denied_child = project("denied-child")?;
+        let initial = host.create_volume(&source).await?;
+        let caller_head = host.create_volume(&caller).await?;
+        let selected_generation = host.apply(&initial.workspace, Some(&initial.generation),
+            &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"selected".to_vec() }],
+            &IdempotencyKey::new("selected-generation")?).await?;
+        let wrong_generation = host.apply(&caller_head.workspace, Some(&caller_head.generation),
+            &[WorkspaceMutation::PutFile { path: "/other.txt".into(), bytes: b"other-source".to_vec() }],
+            &IdempotencyKey::new("other-source-generation")?).await?;
+        let issuer = AuthorityIssuer::new("source-read-control", [41; 32], Authority {
+            kind: AggregateKind::Conversation, id: "caller".into(),
+        });
+        let scope = issuer.root("exact-project-read", crate::Capabilities::new([
+            source.capability(VolumeOperation::Read)?, caller.capability(VolumeOperation::Read)?,
+        ]));
+        let selected_read = ContentGrant::verify(&issuer.verifier(), &scope, &source, VolumeOperation::Read)?;
+        let caller_read = ContentGrant::verify(&issuer.verifier(), &scope, &caller, VolumeOperation::Read)?;
+        assert!(matches!(fork(&host, &source, &caller_read, &selected_generation, &denied_child,
+            None, &IdempotencyKey::new("denied-source-read")?, None).await, Err(Error::Unauthorized(_))));
+        let denied_ref = workspace_ref(provider.clone(), &denied_child.storage_name()?)?;
+        assert!(host.resolve(&denied_ref).await.is_err());
+        assert!(fork(&host, &source, &selected_read, &wrong_generation, &denied_child,
+            None, &IdempotencyKey::new("wrong-generation")?, None).await.is_err());
+        assert!(host.resolve(&denied_ref).await.is_err());
+        let later_generation = host.apply(&initial.workspace, Some(&selected_generation),
+            &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"later".to_vec() }],
+            &IdempotencyKey::new("later-generation")?).await?;
+        let forked = fork(&host, &source, &selected_read, &selected_generation, &child,
+            None, &IdempotencyKey::new("pinned-selected-fork")?, None).await?;
+        assert_eq!(host.read(&forked.workspace, Some(&forked.generation), "/value.txt", 32).await?,
+            bytes::Bytes::from_static(b"selected"));
+        host.apply(&forked.workspace, Some(&forked.generation),
+            &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"child".to_vec() }],
+            &IdempotencyKey::new("isolated-child-edit")?).await?;
+        assert_eq!(host.resolve(&initial.workspace).await?.generation, later_generation);
+        assert_eq!(host.read(&initial.workspace, None, "/value.txt", 32).await?,
+            bytes::Bytes::from_static(b"later"));
+        assert_eq!(host.read(&initial.workspace, Some(&selected_generation), "/value.txt", 32).await?,
+            bytes::Bytes::from_static(b"selected"));
+        Ok(())
+    }
 }
