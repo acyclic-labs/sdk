@@ -1,9 +1,9 @@
-// Runs the browser qualification pages in a private headless Chrome and
+// Runs the browser qualification pages in a private headless Chrome or Firefox and
 // reports each page's result, with every uncaught exception and console error
 // each page raised while it ran.
 //
-// Nothing here waits on a guess: the file server is listening before Chrome
-// starts, Chrome publishes its own DevTools endpoint in its profile, and each
+// Nothing here waits on a guess: the file server is listening before the browser
+// starts, the driver publishes its own protocol endpoint in its profile, and each
 // page is navigated only once the driver is observing it.
 //
 // Usage: node test/browser-qualify.mjs [page ...]   (default: every page)
