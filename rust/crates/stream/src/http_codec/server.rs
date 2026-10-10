@@ -4,7 +4,7 @@ use crate::{MAX_COMMAND_BYTES, wire};
 use prost::Message;
 use serde_json::{Map, Value};
 
-/// Hosted routes that have a canonical StreamService RPC. Token issuance is an
+/// Hosted routes that have a canonical `StreamService` RPC. Token issuance is an
 /// account-authority operation and is deliberately not a fabricated Stream RPC.
 pub const HTTP_ROUTES: &[(&str, &str)] = &[
     ("idempotency/inspect", "InspectIdempotency"), ("tail", "Tail"),

@@ -162,8 +162,8 @@ impl StreamPath {
         let mut path = String::with_capacity(66 + self.0.len());
         path.push('\u{1f}');
         for byte in namespace {
-            path.push(char::from(HEX[usize::from(byte >> 4)]));
-            path.push(char::from(HEX[usize::from(byte & 15)]));
+            path.push(char::from(*HEX.get(usize::from(byte >> 4)).ok_or(StreamError::InvalidPath)?));
+            path.push(char::from(*HEX.get(usize::from(byte & 15)).ok_or(StreamError::InvalidPath)?));
         }
         path.push('\u{1f}');
         path.push_str(&self.0);
@@ -204,8 +204,8 @@ impl StreamPath {
         }
         const HEX: &[u8; 16] = b"0123456789abcdef";
         if namespace.iter().enumerate().any(|(index, byte)|
-            bytes.get(1 + index * 2) != Some(&HEX[usize::from(byte >> 4)])
-                || bytes.get(2 + index * 2) != Some(&HEX[usize::from(byte & 15)]))
+            bytes.get(1 + index * 2) != HEX.get(usize::from(byte >> 4))
+                || bytes.get(2 + index * 2) != HEX.get(usize::from(byte & 15)))
         {
             return Err(StreamError::InvalidPath);
         }

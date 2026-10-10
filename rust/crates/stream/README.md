@@ -18,7 +18,7 @@ The `http` feature provides `http::HttpStream`, implementing the same provider i
 
 Native servers can use `http_response::encode(route, protobuf_bytes, maximum_json_bytes)` to project generated append, fork, Commit, commit-read, child-page and retry-observation responses through the same Rust code used by WASM. The successful Commit retains its existing `ok`, `commitId`, `tails` and `forks` fields and adds the complete `envelope`. The encoder does not authorize or durably accept mutations.
 
-`http_codec::HTTP_ROUTES` lists exactly the ten hosted StreamService RPC
+`http_codec::HTTP_ROUTES` lists exactly the ten hosted `StreamService` RPC
 projections. `http_codec::decode` reverses the SDK request JSON into generated
 protobuf without moving provider validation or authorization into the adapter.
 `http_response::StreamProjection` expands compressed read/follow and children

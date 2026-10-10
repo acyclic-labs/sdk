@@ -656,20 +656,28 @@ impl<P: ObjectsProvider> AsyncObjectStore for RemoteLogicalObjectStore<P> {
             work = self.inner.validate_write(write.object_id, &write.bytes, work, budget)?;
             indices.push(index);
         }
-        indices.sort_unstable_by_key(|index| (writes[*index].object_id, *index));
-        for pair in indices.windows(2) {
-            let first = &writes[pair[0]];
-            let second = &writes[pair[1]];
+        indices.sort_unstable_by_key(|index| {
+            writes.get(*index).map(|write| (write.object_id, *index))
+        });
+        for [first_index, second_index] in indices.array_windows::<2>() {
+            let first = writes.get(*first_index).ok_or_else(|| {
+                OperationFailure::new(ObjectStoreError::Corrupt, work)
+            })?;
+            let second = writes.get(*second_index).ok_or_else(|| {
+                OperationFailure::new(ObjectStoreError::Corrupt, work)
+            })?;
             if first.object_id == second.object_id && first.bytes != second.bytes {
                 return Err(OperationFailure::new(ObjectStoreError::DigestMismatch, work));
             }
         }
-        indices.dedup_by_key(|index| writes[*index].object_id);
+        indices.dedup_by_key(|index| writes.get(*index).map(|write| write.object_id));
         // Select the first occurrence, not an arbitrary equal-key representative.
         // Sorting by ID and input position makes the eventual RPC order stable.
         indices.sort_unstable();
         for index in indices {
-            let write = &writes[index];
+            let write = writes.get(index).ok_or_else(|| {
+                OperationFailure::new(ObjectStoreError::Corrupt, work)
+            })?;
             work = self.inner.put_verified(
                 write.object_id,
                 provider_put_request(self.bucket(), &self.inner.key_prefix, write),

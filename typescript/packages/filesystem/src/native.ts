@@ -2,7 +2,6 @@ import { copyBytes, copyOptionalBytes, ownBytes, requireIdentity } from "./bindi
 import { adaptOperationWindowCoordinator } from "./operation-windows.js";
 import { createRequire } from "node:module";
 import { arch, platform } from "node:process";
-import type { NativeCheckpointResult, NativeExtentPlan, NativeCommitResult, NativeLiveMutationResult, NativeAuthoredLiveMutationResult } from "../generated/native/binding.js";
 import type {
   EngineCapabilities,
   FsChangeSet,
@@ -17,6 +16,11 @@ import type {
   NativeFsOptions,
   NativeRawFs,
   NativeRawVolume,
+  NativeRawCheckpointResult,
+  NativeRawExtentPlan,
+  NativeRawCommitResult,
+  NativeRawLiveMutationResult,
+  NativeRawAuthoredLiveMutationResult,
   NativeRawCheckout,
   NativeRawSpeculation,
   NativeRawMutation,
@@ -737,7 +741,7 @@ function copyObjectCacheStats(value: ObjectCacheStats): ObjectCacheStats {
   return { ...value };
 }
 
-function checkpointResult(value: NativeCheckpointResult) {
+function checkpointResult(value: NativeRawCheckpointResult) {
   return { generationId: copyBytes(value.generationId), work: parseWork(value.workJson) };
 }
 
@@ -757,7 +761,7 @@ function seekResult(value: { readonly offset: bigint | undefined; readonly workJ
   return { offset: value.offset, work: parseWork(value.workJson) };
 }
 
-function nativeFileExtentPlan(value: NativeExtentPlan) {
+function nativeFileExtentPlan(value: NativeRawExtentPlan) {
   return copyFileExtentPlan(
     nativeBoundary<Parameters<typeof copyFileExtentPlan>[0]>(value),
     parseWork(value.workJson),
@@ -765,15 +769,15 @@ function nativeFileExtentPlan(value: NativeExtentPlan) {
   );
 }
 
-function commitResult(value: NativeCommitResult) {
+function commitResult(value: NativeRawCommitResult) {
   return copyCheckoutCommit(nativeBoundary<Parameters<typeof copyCheckoutCommit>[0]>(value), parseWork(value.workJson));
 }
 
-function liveMutationResult(value: NativeLiveMutationResult) {
+function liveMutationResult(value: NativeRawLiveMutationResult) {
   return copyLiveMutation(nativeBoundary<Parameters<typeof copyLiveMutation>[0]>(value), parseWork(value.workJson));
 }
 
-function liveTransactionResult(value: NativeAuthoredLiveMutationResult) {
+function liveTransactionResult(value: NativeRawAuthoredLiveMutationResult) {
   return copyLiveTransaction(nativeBoundary<Parameters<typeof copyLiveTransaction>[0]>(value), parseWork(value.workJson));
 }
 

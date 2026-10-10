@@ -16,6 +16,8 @@ With `distributed`, compose `Fs::new(StreamAuthorityStore::new(streams), RemoteL
 
 `RemoteLogicalObjectStore` keeps no local authority or durable object state. It validates canonical content digests, uses immutable conditional publication, verifies existing content on conflicts, and charges every individual PUT/GET. Its write groups are not atomic: a failed group can leave an unreferenced durable prefix, but authority publication occurs only after the required objects are durable. Native memory/local compositions continue to use `LogicalObjectStore<P: NativeBatchObjects>` for genuine one-operation batches. Reopening a remote filesystem must use the same authorized Streams namespace and Objects bucket; external deletion/collection must not remove content reachable from published generations.
 
+Remote write groups admit one compact index allocation under the work budget, validate every input before issuing PUTs, and publish each distinct object in first-occurrence order. Duplicate content does not add a PUT; retrying an already published object verifies its retained bytes and charges the readback.
+
 Shared service-account deployments must use `Fs::new_in_namespace` with a stable
 namespace derived exclusively from the verified tenant and deployment realm,
 and `RemoteLogicalObjectStore::with_key_prefix` with the same tenant scope.

@@ -12,7 +12,7 @@ enum Kind {
     Children { last: Option<String>, remaining: u32 },
 }
 impl StreamProjection {
-    /// Initialize from the same generated request sent to StreamService.
+    /// Initialize from the same generated request sent to `StreamService`.
     pub fn new(route: &str, request: &[u8], maximum: usize) -> Result<Self> {
         if maximum == 0 || request.len() > crate::MAX_COMMAND_BYTES { return Err("limit_exceeded"); }
         let kind = match route {
@@ -57,8 +57,10 @@ impl StreamProjection {
                     size = size.checked_add(encoded.len()).filter(|size| *size <= self.maximum).ok_or("limit_exceeded")?;
                     output.push(encoded);
                 }
+                if let Some(remaining) = remaining {
+                    *remaining -= u32::try_from(output.len()).map_err(|_| "invalid_response")?;
+                }
                 *next = cursor;
-                if let Some(remaining) = remaining { *remaining -= output.len() as u32; }
                 Ok(output)
             }
             Kind::Children { last, remaining } => {
@@ -92,7 +94,7 @@ impl Collection {
         if maximum < 2 { return Err("limit_exceeded"); }
         Ok(Self { bytes: vec![b'['], maximum, empty: true })
     }
-    /// `element` must be an element produced by StreamProjection.
+    /// `element` must be an element produced by `StreamProjection`.
     pub fn push(&mut self, element: &[u8]) -> Result<()> {
         let size = self.bytes.len().checked_add(element.len())
             .and_then(|size| size.checked_add(usize::from(!self.empty) + 1))

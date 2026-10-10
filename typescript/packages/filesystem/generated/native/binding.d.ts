@@ -1196,6 +1196,14 @@ export declare class NativeWorkspace {
    * Returns invalid retry identity, authority, authentication, or storage failures.
    */
   beginTransaction(idempotencyKey?: Buffer | undefined | null): Promise<NativeWorkspaceTransaction>
+  /**
+   * Resumes an exact original-base transaction with its persisted retry identity.
+   *
+   * # Errors
+   *
+   * Returns foreign-generation, invalid identity, authority or storage failures.
+   */
+  beginTransactionAt(generation: NativeGeneration, idempotencyKey: Buffer): Promise<NativeWorkspaceTransaction>
   /** Advances this fork onto its source workspace's current generation. */
   liveRebase(idempotencyKey: Buffer | undefined | null, maximumGenerations: NapiU32, maximumChanges: NapiU32, maximumConflicts: NapiU32): Promise<NativeWorkspaceRebaseResult>
   /**

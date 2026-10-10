@@ -1,11 +1,11 @@
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const libraryNames = {
   win32: "acyclic_fs_napi.dll",
@@ -25,18 +25,21 @@ if (typeof version !== "string" || !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?
 
 const childBinding = process.env.ACYCLIC_FS_NAPI_CHILD_BINDING;
 if (childBinding !== undefined) {
-  await qualify(childBinding, process.env.ACYCLIC_FS_NAPI_CHILD_ROOT);
+  if (process.env.ACYCLIC_FS_NAPI_CHILD_ADAPTER_ONLY !== "1") {
+    await qualify(childBinding, process.env.ACYCLIC_FS_NAPI_CHILD_ROOT);
+  }
   if (process.env.ACYCLIC_FS_NAPI_CHILD_ADAPTER === "1") {
     await qualifyAdapter(childBinding, process.env.ACYCLIC_FS_NAPI_CHILD_ROOT);
   }
   process.exit(0);
 }
 
-const adapter = process.argv.includes("--adapter");
-const positional = process.argv.slice(2).filter((value) => value !== "--adapter");
+const adapterOnly = process.argv.includes("--adapter-only");
+const adapter = adapterOnly || process.argv.includes("--adapter");
+const positional = process.argv.slice(2).filter((value) => value !== "--adapter" && value !== "--adapter-only");
 const output = positional[0];
 if (positional.length > 1 || (output !== undefined && !isAbsolute(output))) {
-  throw new Error("usage: check-filesystem-napi.mjs [--adapter] [ABSOLUTE_OUTPUT]");
+  throw new Error("usage: check-filesystem-napi.mjs [--adapter | --adapter-only] [ABSOLUTE_OUTPUT]");
 }
 
 const targetRoot = resolve(process.env.CARGO_TARGET_DIR ?? "target");
@@ -53,6 +56,7 @@ try {
         ACYCLIC_FS_NAPI_CHILD_BINDING: bindingPath,
         ACYCLIC_FS_NAPI_CHILD_ROOT: join(temporary, "engine"),
         ACYCLIC_FS_NAPI_CHILD_ADAPTER: adapter ? "1" : "0",
+        ACYCLIC_FS_NAPI_CHILD_ADAPTER_ONLY: adapterOnly ? "1" : "0",
       },
       stdio: "inherit",
     });
@@ -109,10 +113,21 @@ async function qualify(bindingPath, engineRoot) {
 }
 
 async function qualifyAdapter(bindingPath, engineRoot) {
-  const { mock } = await import("bun:test");
-  const binding = createRequire(import.meta.url)(bindingPath);
-  mock.module(`@acyclic-labs/fs-${process.platform}-${process.arch}`, () => binding);
-  const { openNativeFs, openNativeWorkspaceGraph, DEFAULT_OBJECT_CACHE_OPTIONS, portableVolumeOptions } = await import("../typescript/packages/filesystem/dist/native.js");
+  if (engineRoot === undefined) throw new Error("N-API adapter root is absent");
+  // Install the actual distribution and compiled companion in a private package
+  // tree. Exercise createRequire's public loader, not a module-mocked binding.
+  const packageRoot = join(engineRoot, "installed", "node_modules", "@acyclic-labs", "fs");
+  const companionName = `@acyclic-labs/fs-${process.platform}-${process.arch}`;
+  const companionRoot = join(packageRoot, "node_modules", companionName);
+  await mkdir(companionRoot, { recursive: true });
+  await cp(new URL("../typescript/packages/filesystem/dist", import.meta.url), join(packageRoot, "dist"), { recursive: true });
+  await cp(new URL("../typescript/packages/filesystem/generated/wasm", import.meta.url), join(packageRoot, "generated", "wasm"), { recursive: true });
+  await copyFile(new URL("../typescript/packages/filesystem/package.json", import.meta.url), join(packageRoot, "package.json"));
+  await copyFile(bindingPath, join(companionRoot, "binding.node"));
+  await writeFile(join(companionRoot, "package.json"), JSON.stringify({
+    name: companionName, version, main: "./binding.node",
+  }));
+  const { openNativeFs, openNativeWorkspaceGraph, DEFAULT_OBJECT_CACHE_OPTIONS, portableVolumeOptions } = await import(pathToFileURL(join(packageRoot, "dist", "native.js")).href);
   const engine = await openNativeFs({
     root: join(engineRoot, "public-adapter"),
     objectCache: {

@@ -350,6 +350,10 @@ case "$lane" in
     bun run check:generated
     bash scripts/check-harness-package.sh "$SDK_ARTIFACT_DIR/packages/harness"
     bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem"
+    # The public adapter requires the built distribution. Load the actual
+    # companion through its installed package path; ABI ran earlier.
+    CARGO_TARGET_DIR="$target_dir-napi" \
+      bun scripts/check-filesystem-napi.mjs --adapter-only
     bun scripts/run-harness-conformance.mjs \
       "$SDK_ARTIFACT_DIR/packages/harness" \
       "$SDK_ARTIFACT_DIR/packages/harness/runner-report.json" \

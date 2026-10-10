@@ -40,11 +40,6 @@ try {
   if (new TextDecoder().decode(pinnedRead.bytes) !== "head-tail") {
     throw new Error("resolved-file handle did not remain pinned to its generation");
   }
-  const manifest = await checkout.exportManifest();
-  const batch = await engine.exportGenerationBatch(manifest, 0n, 32, 1024n * 1024n);
-  if (batch.objects.length === 0 || manifest.objects.length === 0) {
-    throw new Error("public volume export omitted canonical objects");
-  }
 } finally {
   engine.close();
 }

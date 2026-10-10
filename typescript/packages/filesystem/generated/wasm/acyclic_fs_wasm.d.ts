@@ -1538,6 +1538,10 @@ export class BrowserWorkspace {
      */
     beginTransaction(idempotency_key?: Uint8Array | null): Promise<BrowserTransaction>;
     /**
+     * Resumes an exact original-base transaction with its persisted retry identity.
+     */
+    beginTransactionAt(generation: BrowserGeneration, idempotency_key: Uint8Array): Promise<BrowserTransaction>;
+    /**
      * Retains the current generation under one human-readable label.
      */
     checkpoint(label: string): Promise<BrowserGeneration>;
@@ -1876,6 +1880,7 @@ export interface InitOutput {
     readonly browservolume_diffGenerations: (a: number, b: number, c: number, d: number, e: number, f: any) => any;
     readonly browservolume_id: (a: number) => [number, number];
     readonly browserworkspace_beginTransaction: (a: number, b: number, c: number) => any;
+    readonly browserworkspace_beginTransactionAt: (a: number, b: number, c: number, d: number) => any;
     readonly browserworkspace_checkpoint: (a: number, b: number, c: number) => any;
     readonly browserworkspace_delete: (a: number, b: number, c: number) => any;
     readonly browserworkspace_diff: (a: number, b: number, c: number, d: any) => any;
@@ -1917,11 +1922,11 @@ export interface InitOutput {
     readonly encodePublicationJson: (a: number, b: number) => [number, number, number, number];
     readonly openBrowserFs: (a: any) => any;
     readonly openMemoryFs: (a: any) => [number, number, number];
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___wasm_bindgen_2db2d17d2c533688___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_9d8a003a502ed1ff___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsValue___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_9d8a003a502ed1ff___features__gen_Event__Event______true_: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke_______true_: (a: number, b: number) => void;
+    readonly wasm_bindgen_93a73551dbc7fbb7___convert__closures_____invoke___wasm_bindgen_93a73551dbc7fbb7___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_93a73551dbc7fbb7___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_93a73551dbc7fbb7___convert__closures_____invoke___web_sys_59e32a0ab2552162___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_93a73551dbc7fbb7___JsValue___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_93a73551dbc7fbb7___convert__closures_____invoke___js_sys_7609a9cad0aceba7___Function_fn_wasm_bindgen_93a73551dbc7fbb7___JsValue_____wasm_bindgen_93a73551dbc7fbb7___sys__Undefined___js_sys_7609a9cad0aceba7___Function_fn_wasm_bindgen_93a73551dbc7fbb7___JsValue_____wasm_bindgen_93a73551dbc7fbb7___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen_93a73551dbc7fbb7___convert__closures_____invoke___web_sys_59e32a0ab2552162___features__gen_Event__Event______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_93a73551dbc7fbb7___convert__closures_____invoke_______true_: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
