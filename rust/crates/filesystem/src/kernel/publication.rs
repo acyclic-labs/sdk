@@ -480,13 +480,14 @@ fn prepare_publication(
     let retained_bytes = proof_retained_bytes
         .checked_add(usize_to_u64(payload.capacity()))
         .ok_or_else(|| OperationFailure::new(WorkError::Overflow.into(), work))?;
+    let fingerprint_input = encode_fingerprint_input(&request, operation_context, &payload);
     let actual_peak = retained_bytes
-        .checked_add(fingerprint_bytes)
+        .checked_add(usize_to_u64(fingerprint_input.capacity()))
         .ok_or_else(|| OperationFailure::new(WorkError::Overflow.into(), work))?;
     work.peak_allocation_bytes = work.peak_allocation_bytes.max(actual_peak);
     work.verify(budget)
         .map_err(|error| OperationFailure::new(error.into(), work))?;
-    let fingerprint = publication_fingerprint(request, operation_context, &payload);
+    let fingerprint = hash_publication_fingerprint(operation_context, &fingerprint_input);
     Ok(PreparedPublication {
         proof,
         commit: ProposedCommit {
@@ -513,9 +514,13 @@ fn publication_fingerprint(
     payload: &[u8],
 ) -> Digest {
     let fingerprint_input = encode_fingerprint_input(&request, operation_context, payload);
+    hash_publication_fingerprint(operation_context, &fingerprint_input)
+}
+
+fn hash_publication_fingerprint(operation_context: Option<Digest>, input: &[u8]) -> Digest {
     let mut hasher = blake3::Hasher::new();
     hasher.update(fingerprint_domain(operation_context));
-    hasher.update(&fingerprint_input);
+    hasher.update(input);
     Digest::from_bytes(*hasher.finalize().as_bytes())
 }
 
