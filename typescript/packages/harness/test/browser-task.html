@@ -11,6 +11,8 @@ const phase = text => { result.dataset.waiting = text; result.textContent = text
 try {
   const describe = value => JSON.stringify(value, (_, item) => typeof item === "bigint" ? `${item}n` : item);
   await init();
+  const { exerciseBrowserRecursiveSource } = await import("./browser-recursive-source.mjs");
+  await exerciseBrowserRecursiveSource();
   const id = crypto.randomUUID();
   const owner = new WasmReducer({ kind: "task", id }, "browser-task", new Uint8Array(32).fill(23), []);
   const agent = "15151515-1515-1515-1515-151515151515";

@@ -4,6 +4,14 @@ export {
   WasmReducer as BrowserTaskAuthority,
   WasmTaskRegistry as BrowserTaskRegistry,
   WasmTaskRuntime as BrowserTaskRuntime,
+  WasmRecursiveForkSource as BrowserRecursiveForkSource,
+  type WasmRecursiveForkConfig as BrowserRecursiveForkConfig,
+  type WasmRecursiveSourceSnapshot as BrowserRecursiveSourceSnapshot,
+  type WasmForkPreparationCommand as BrowserForkPreparationCommand,
+  type WasmForkPreparationLimits as BrowserForkPreparationLimits,
+  type ForkToolArguments as BrowserForkArguments,
+  type ForkRequest as BrowserForkRequest,
+  type HistoryReadLimits as BrowserHistoryReadLimits,
   type WasmBrowserTaskOptions as BrowserTaskOptions,
   type WasmMachineDefinition as BrowserMachineDefinition,
   type Worker as BrowserWorker,
@@ -16,6 +24,13 @@ export {
   type InboxItem as BrowserInboxItem,
   type WasmBrowserTaskObservation as BrowserTaskObservation,
   type WasmBrowserLeaseFence as BrowserLeaseFence,
+  WasmHeadlessExecution as BrowserHeadlessExecution,
+  type WasmHeadlessTurnInput as BrowserHeadlessTurnInput,
+  type WasmModelToolsProgress as BrowserModelToolsProgress,
+  type WasmSelectedDirectory as BrowserSelectedDirectory,
+  type WasmSelectedFileRead as BrowserSelectedFileRead,
+  type TaskVolumeSnapshot as BrowserVolumeSnapshot,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 export type BrowserTaskOutcome = Outcome<WasmModelJsonValue> | null;
 export { ensureHarnessWasm as initializeBrowserRuntime } from "./wasm-runtime.js";
+export { inspectTaskSource, type BrowserSourceInspection } from "./headless.js";

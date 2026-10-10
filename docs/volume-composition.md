@@ -47,6 +47,31 @@ publication for an admitted caller workflow. Effectful policy observations and
 recovery belong to that workflow's journal; an in-memory resolution cache is not
 durable evidence.
 
+## Browser recursive preparation
+
+`BrowserTaskRegistry.registerForkPreparation()` registers the ordinary Rust
+machine; it does not start workers. `prepareRecursiveForkSource` opens the
+authenticated conversation on the runtime's own BrowserStream. Supply the
+current caller's real lease fence, owner, signed scope, and pinned volume
+bindings. A root supplies its explicit bindings; a descendant's agent and
+volumes must match its retained admission, never the root's bindings.
+
+Retain the source handle's `snapshot()` and `request()` before admission.
+`preparationRequest` builds the exact ordinary machine input; stage its fork
+payload with the ordinary runtime, then admit the registered preparation task.
+`resumeForkPreparation` and `reconcileForkPreparation` accept only that caller's
+matching original preparation lease and bind its actual Filesystem preparer.
+The existing prepared-admission command separately admits the child under the
+original caller; preparation alone does not publish, merge, or write back.
+
+After restart, restore the retained authenticated snapshot with
+`BrowserTaskAuthority.restore`, then use `restoreRecursiveForkSource`. Restore
+checks its exact head event against canonical browser history and never uses a
+newer conversation tail. An explicit foreign `source` selects only project
+data through the caller's existing read grants; it neither imports another
+agent's transcript nor adopts its signed scope. History capture retains the
+ordinary bounded HistoryReader and trusted fork witness.
+
 ## Validation scope
 
 | Invariant | Production mechanism | Assumptions | Verification and evidence |
