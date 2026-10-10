@@ -24,6 +24,21 @@ pub enum McpStdioMethod {
     /// One pinned tool call.
     #[serde(rename = "tools/call")]
     CallTool,
+    /// One resource discovery page.
+    #[serde(rename = "resources/list")]
+    ListResources,
+    /// One resource template discovery page.
+    #[serde(rename = "resources/templates/list")]
+    ListResourceTemplates,
+    /// One exact resource read.
+    #[serde(rename = "resources/read")]
+    ReadResource,
+    /// One prompt discovery page.
+    #[serde(rename = "prompts/list")]
+    ListPrompts,
+    /// One exact prompt selection.
+    #[serde(rename = "prompts/get")]
+    GetPrompt,
 }
 
 impl McpStdioMethod {
@@ -32,6 +47,11 @@ impl McpStdioMethod {
         match self {
             Self::ListTools => "tools/list",
             Self::CallTool => "tools/call",
+            Self::ListResources => "resources/list",
+            Self::ListResourceTemplates => "resources/templates/list",
+            Self::ReadResource => "resources/read",
+            Self::ListPrompts => "prompts/list",
+            Self::GetPrompt => "prompts/get",
         }
     }
 }
@@ -82,10 +102,16 @@ impl McpStdioRequest {
                     ));
                 }
             }
-            McpStdioMethod::ListTools => {
+            McpStdioMethod::ListTools | McpStdioMethod::ListResources | McpStdioMethod::ListResourceTemplates | McpStdioMethod::ListPrompts => {
                 let _: rmcp::model::PaginatedRequestParams =
                     serde_json::from_value(self.params.clone())
                         .map_err(|error| Error::Invalid(error.to_string()))?;
+            }
+            McpStdioMethod::ReadResource => {
+                let _: rmcp::model::ReadResourceRequestParams = serde_json::from_value(self.params.clone()).map_err(|error| Error::Invalid(error.to_string()))?;
+            }
+            McpStdioMethod::GetPrompt => {
+                let _: rmcp::model::GetPromptRequestParams = serde_json::from_value(self.params.clone()).map_err(|error| Error::Invalid(error.to_string()))?;
             }
         }
         McpStdioExchange::new(
@@ -108,15 +134,7 @@ impl McpStdioRequest {
         let (mut exchange, _) = self.exchange()?;
         exchange.push(stdout)?;
         let value = exchange.finish()?;
-        match self.method {
-            McpStdioMethod::CallTool => {
-                super::rpc::decode_tool_result(value.clone())?;
-            }
-            McpStdioMethod::ListTools => {
-                let _: super::McpToolsPage = serde_json::from_value(value.clone())
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
-            }
-        }
+        super::services::validate_result(self.method.as_str(), value.clone())?;
         Ok(value)
     }
 }
@@ -158,7 +176,7 @@ impl McpStdioExchange {
     ) -> Result<(Self, Vec<u8>)> {
         if initialization == operation
             || maximum_bytes == 0
-            || !matches!(method, "tools/list" | "tools/call")
+            || !matches!(method, "tools/list" | "tools/call" | "resources/list" | "resources/templates/list" | "resources/read" | "prompts/list" | "prompts/get")
             || !params.is_object()
         {
             return Err(Error::Invalid("invalid MCP stdio exchange contract".into()));

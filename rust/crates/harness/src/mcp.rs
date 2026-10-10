@@ -18,6 +18,10 @@ use serde_json::{Value, json};
 use std::{collections::BTreeSet, sync::Arc};
 
 pub mod http;
+pub mod callbacks;
+#[cfg(all(feature = "mcp-oauth", not(target_arch = "wasm32")))]
+pub mod oauth;
+pub mod services;
 mod rpc;
 pub mod stdio;
 
@@ -126,6 +130,10 @@ pub struct McpToolResult {
 /// an admitted Harness tool. Reconciliation must query the exact operation;
 /// it must never resend a possibly applied remote request.
 pub trait McpToolTransport: acyclic_stream::ProviderPlatform {
+    /// Exact opt-in callback identity, or `None` when no callback route is installed.
+    fn callback_policy(&self) -> Option<&callbacks::McpCallbackPolicy> {
+        None
+    }
     /// Calls one admitted remote tool.
     fn call<'a>(
         &'a self,
@@ -263,6 +271,7 @@ impl McpCatalog {
         projection: &Arc<dyn ToolProjection>,
         installation: McpCatalogInstallation<'_>,
     ) -> Result<()> {
+        self.validate_transport_binding(transport.as_ref())?;
         installation.verifier.verify(installation.scope)?;
         if !installation
             .scope
@@ -406,6 +415,16 @@ impl McpCatalog {
         })
     }
 
+    fn validate_transport_binding(&self, transport: &dyn McpToolTransport) -> Result<()> {
+        if let Some(policy) = transport.callback_policy() {
+            policy.validate()?;
+            if policy.server != self.server || policy.revision != self.revision {
+                return Err(Error::Conflict("MCP callback route differs from catalog revision".into()));
+            }
+        }
+        Ok(())
+    }
+
     /// Publishes the complete next-admission catalog, retaining every old
     /// executor/revision for already admitted calls. Invalid replacements leave
     /// the old registry unchanged. `previous` must be the installed catalog.
@@ -419,6 +438,7 @@ impl McpCatalog {
         maximum_bytes: u32,
     ) -> Result<()> {
         self.validate(maximum_tools, maximum_bytes)?;
+        self.validate_transport_binding(transport.as_ref())?;
         if previous.is_some_and(|old| old.server != self.server) {
             return Err(Error::Conflict(
                 "MCP replacement changes server namespace".into(),

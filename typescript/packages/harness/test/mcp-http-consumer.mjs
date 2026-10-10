@@ -62,6 +62,19 @@ export async function exerciseMcpHttp(origin, client, mode, createProvider) {
     try { searchMcpCatalog({ ...catalog, discovery: "disabled" }, "find", undefined, 2, 2, 8192); }
     catch { disabled = true; }
     check(disabled, "disabled discovery was accepted");
+    const resources = JSON.parse(decode(await transport.serviceJson(crypto.randomUUID(), "resources/list", {})));
+    check(resources.resources[0].uri === "fixture://content", "resource discovery changed");
+    const templates = JSON.parse(decode(await transport.serviceJson(crypto.randomUUID(), "resources/templates/list", {})));
+    check(templates.resourceTemplates[0].uriTemplate === "fixture://{name}", "resource template changed");
+    const resource = JSON.parse(decode(await transport.serviceJson(crypto.randomUUID(), "resources/read", { uri: "fixture://content" })));
+    check(resource.contents[0].text === "héllo resource 🦀", "resource bytes changed");
+    const prompts = JSON.parse(decode(await transport.serviceJson(crypto.randomUUID(), "prompts/list", {})));
+    check(prompts.prompts[0].name === "fixture", "prompt discovery changed");
+    const prompt = JSON.parse(decode(await transport.serviceJson(crypto.randomUUID(), "prompts/get", { name: "fixture", arguments: { topic: "chosen" } })));
+    check(prompt.messages[0].role === "user" && prompt.messages[0].content.text === "external chosen prompt", "prompt projection changed");
+    let refused = false;
+    try { await transport.serviceJson(crypto.randomUUID(), "unknown/arbitrary", {}); } catch { refused = true; }
+    check(refused, "unselected service method dispatched");
     const value = decode(await transport.callJson(crypto.randomUUID(), "echo", {}));
     check(value.includes("18446744073709551615") && JSON.parse(value).content[0].text === "héllo 🦀", "result bytes changed");
     const lostOperation = crypto.randomUUID();
@@ -71,7 +84,7 @@ export async function exerciseMcpHttp(origin, client, mode, createProvider) {
     check(lost, "incomplete observation accepted");
     check(await transport.reconcileJson(lostOperation) === undefined, "invented remote receipt");
     const stats = await peerStats(origin, client);
-    check(stats.requests === 6 && stats.calls === 2 && stats.session === session, "physical request count changed");
+    check(stats.requests === 11 && stats.calls === 2 && stats.session === session, "physical request count changed");
     return { endpoint, client, session, lostOperation, requests: stats.requests, calls: stats.calls };
   } finally { accepted?.free(); transport?.free(); setup.free(); }
 }

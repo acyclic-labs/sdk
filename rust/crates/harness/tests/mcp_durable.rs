@@ -559,3 +559,10 @@ async fn disk_reopen_never_reposts_a_claimed_mcp_call() -> Result<()> {
     }
     Ok(())
 }
+
+#[path = "mcp_cases/services.rs"]
+mod services_cases;
+
+#[cfg(feature = "mcp-oauth")]
+#[path = "mcp_cases/oauth.rs"]
+mod oauth_cases;

@@ -840,6 +840,9 @@ fn native_request(
                     json!({"name":"echo","arguments":{"text":"héllo","sequence":u64::MAX}})
                 }
                 McpStdioMethod::ListTools => json!({"cursor":"next"}),
+                McpStdioMethod::ListResources | McpStdioMethod::ListResourceTemplates | McpStdioMethod::ListPrompts => json!({}),
+                McpStdioMethod::ReadResource => json!({"uri":"example://content"}),
+                McpStdioMethod::GetPrompt => json!({"name":"example","arguments":{}}),
             },
             maximum_bytes: 4096,
         }),
@@ -939,6 +942,11 @@ fn verify_mcp_calls(
         {
             McpStdioMethod::CallTool => b"call\n",
             McpStdioMethod::ListTools => b"list\n",
+            McpStdioMethod::ListResources => b"resources\n",
+            McpStdioMethod::ListResourceTemplates => b"templates\n",
+            McpStdioMethod::ReadResource => b"read\n",
+            McpStdioMethod::ListPrompts => b"prompts\n",
+            McpStdioMethod::GetPrompt => b"prompt\n",
         };
         if calls? != expected {
             return Err("MCP request was not applied exactly once".into());
@@ -984,6 +992,17 @@ fn verify_mcp_result(
         {
             return Err("incorrect MCP discovery page".into());
         }
+    } else if let Some(descriptor) = request.mcp_stdio.as_ref().filter(|descriptor| !matches!(descriptor.method, McpStdioMethod::CallTool | McpStdioMethod::ListTools)) {
+        let value = request.mcp_response(output)?;
+        let expected = match descriptor.method {
+            McpStdioMethod::ListResources => json!({"resources":[{"uri":"example://content","name":"content"}]}),
+            McpStdioMethod::ListResourceTemplates => json!({"resourceTemplates":[{"uriTemplate":"example://{name}","name":"named"}]}),
+            McpStdioMethod::ReadResource => json!({"contents":[{"uri":"example://content","text":"héllo"}]}),
+            McpStdioMethod::ListPrompts => json!({"prompts":[{"name":"example"}]}),
+            McpStdioMethod::GetPrompt => json!({"messages":[{"role":"user","content":{"type":"text","text":"héllo"}}]}),
+            McpStdioMethod::CallTool | McpStdioMethod::ListTools => return Err("service selection changed".into()),
+        };
+        if value != expected { return Err("incorrect MCP resource/prompt result".into()); }
     } else if request.mcp_response(output)?
         != json!({
             "content":[{"type":"text","text":"héllo"}],
@@ -1020,6 +1039,11 @@ fn mcp_peer_result(
                 b"call\n",
             ))
         }
+        Some("resources/list") if call.get("params") == Some(&json!({})) => Ok((json!({"resources":[{"uri":"example://content","name":"content"}]}), b"resources\n")),
+        Some("resources/templates/list") if call.get("params") == Some(&json!({})) => Ok((json!({"resourceTemplates":[{"uriTemplate":"example://{name}","name":"named"}]}), b"templates\n")),
+        Some("resources/read") if call.get("params") == Some(&json!({"uri":"example://content"})) => Ok((json!({"contents":[{"uri":"example://content","text":"héllo"}]}), b"read\n")),
+        Some("prompts/list") if call.get("params") == Some(&json!({})) => Ok((json!({"prompts":[{"name":"example"}]}), b"prompts\n")),
+        Some("prompts/get") if call.get("params") == Some(&json!({"name":"example","arguments":{}})) => Ok((json!({"messages":[{"role":"user","content":{"type":"text","text":"héllo"}}]}), b"prompt\n")),
         _ => Err("incorrect pinned MCP request".into()),
     }
 }
@@ -1119,6 +1143,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         run(None).await?;
         run(Some(McpStdioMethod::CallTool)).await?;
         run(Some(McpStdioMethod::ListTools)).await?;
+        for method in [McpStdioMethod::ListResources, McpStdioMethod::ListResourceTemplates, McpStdioMethod::ReadResource, McpStdioMethod::ListPrompts, McpStdioMethod::GetPrompt] {
+            run(Some(method)).await?;
+        }
         #[cfg(test)]
         faults::run().await?;
         Ok(())

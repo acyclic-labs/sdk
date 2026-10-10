@@ -268,6 +268,22 @@ impl WasmMcpHttpTransport {
             .map_err(js_error)?;
         serde_json::to_vec(&page).map_err(|error| JsValue::from_str(&error.to_string()))
     }
+    /// Executes one explicitly admitted resource or prompt operation through the
+    /// same bounded Rust transport; method/parameters/results validate at runtime.
+    #[wasm_bindgen(js_name = serviceJson)]
+    pub async fn service_json(
+        &self,
+        operation: String,
+        method: String,
+        #[wasm_bindgen(unchecked_param_type = "WasmToolJsonValue")] params: JsValue,
+    ) -> std::result::Result<Vec<u8>, JsValue> {
+        let operation = OperationId::parse(&operation).map_err(js_error)?;
+        let params = from_js(params)?;
+        crate::mcp::services::validate_params(&method, &params).map_err(js_error)?;
+        let result = self.0.rpc(operation, &method, params).await.map_err(js_error)?;
+        let result = crate::mcp::services::validate_result(&method, result).map_err(js_error)?;
+        serde_json::to_vec(&result).map_err(|error| JsValue::from_str(&error.to_string()))
+    }
     /// Calls an already admitted operation. Canonical JSON bytes preserve
     /// full-width remote numbers and avoid a second JavaScript result engine.
     #[wasm_bindgen(js_name=callJson)]

@@ -5,10 +5,12 @@ use super::{McpInitializeResult, McpToolResult, McpToolTransport, McpToolsPage, 
 use crate::{Error, OperationId, Result};
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
 use bytes::Bytes;
-use futures::StreamExt as _;
+use futures::{StreamExt as _, FutureExt as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
+use super::callbacks::{McpCallbackAdmission, McpCallbackPolicy, McpCallbackRequest};
+use crate::runtime::ToolContext;
 
 #[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
 mod native;
@@ -72,6 +74,7 @@ pub struct HttpMcpTransport {
     session: Option<String>,
     maximum_bytes: u32,
     timeout_ms: u32,
+    callbacks: Option<(McpCallbackPolicy, Arc<dyn McpCallbackAdmission>)>,
 }
 
 impl HttpMcpTransport {
@@ -93,7 +96,7 @@ impl HttpMcpTransport {
             operation,
             "initialize",
             json!({"protocolVersion":PROTOCOL_VERSION,
-            "capabilities":{},"clientInfo":{"name":name,"version":version}}),
+            "capabilities":self.callbacks.as_ref().map(|(policy, _)| policy.capabilities()).transpose()?.unwrap_or_else(|| json!({})),"clientInfo":{"name":name,"version":version}}),
         )?;
         self.request("POST", body)
     }
@@ -173,7 +176,28 @@ impl HttpMcpTransport {
             endpoint,
             session,
             maximum_bytes,
+            callbacks: None,
             timeout_ms,
+        })
+    }
+
+    /// Binds explicit callback admission before negotiation. A live session cannot
+    /// gain callback authority by changing its transport configuration.
+    pub fn with_callbacks(mut self, policy: McpCallbackPolicy, admission: Arc<dyn McpCallbackAdmission>) -> Result<Self> {
+        policy.validate()?;
+        if self.session.is_some() { return Err(Error::Conflict("MCP callback policy requires fresh negotiation".into())); }
+        self.callbacks = Some((policy, admission));
+        Ok(self)
+    }
+
+    /// Executes under the enclosing ordinary task's authority. Callback results
+    /// are separately POSTed once; losing their ACK never repeats model dispatch.
+    pub fn rpc_with_context<'a>(&'a self, context: ToolContext, method: &'a str, params: Value) -> BoxProviderFuture<'a, Result<Value>> {
+        Box::pin(async move {
+            let operation = context.operation_id();
+            let request = self.request("POST", request(operation, method, params)?)?;
+            let response = self.provider.exchange(operation, request).await?;
+            self.response_with_context(operation, response, Some(context)).await
         })
     }
 
@@ -211,8 +235,12 @@ impl HttpMcpTransport {
     async fn response(
         &self,
         operation: OperationId,
-        mut response: McpHttpResponse,
+        response: McpHttpResponse,
     ) -> Result<Value> {
+        self.response_with_context(operation, response, None).await
+    }
+
+    async fn response_with_context(&self, operation: OperationId, mut response: McpHttpResponse, context: Option<ToolContext>) -> Result<Value> {
         if response.status == 404 && self.session.is_some() {
             // A future admission may explicitly initialize a new session. This
             // invocation remains uncertain and is never submitted to it again.
@@ -239,7 +267,11 @@ impl HttpMcpTransport {
             }
         };
         if sse {
-            return sse_response(response.body, operation, self.maximum_bytes).await;
+            return if let Some(context) = context {
+                sse_response_scoped(response.body, operation, self.maximum_bytes, Some((self, context))).await
+            } else {
+                sse_response(response.body, operation, self.maximum_bytes).await
+            };
         }
         let mut bytes = Vec::new();
         let mut received = 0_usize;
@@ -280,6 +312,9 @@ impl HttpMcpTransport {
 }
 
 impl McpToolTransport for HttpMcpTransport {
+    fn callback_policy(&self) -> Option<&McpCallbackPolicy> {
+        self.callbacks.as_ref().map(|(policy, _)| policy)
+    }
     fn call<'a>(
         &'a self,
         operation: OperationId,
@@ -295,6 +330,11 @@ impl McpToolTransport for HttpMcpTransport {
                 )
                 .await?,
             )
+        })
+    }
+    fn call_with_context<'a>(&'a self, context: ToolContext, name: &'a str, arguments: Value) -> BoxProviderFuture<'a, Result<McpToolResult>> {
+        Box::pin(async move {
+            decode_tool_result(self.rpc_with_context(context, "tools/call", json!({"name":name,"arguments":arguments})).await?)
         })
     }
     fn reconcile<'a>(
@@ -321,6 +361,18 @@ async fn sse_response(
     operation: OperationId,
     maximum_bytes: u32,
 ) -> Result<Value> {
+    sse_response_scoped(body, operation, maximum_bytes, None).await
+}
+
+async fn sse_response_scoped(
+    body: BoxProviderStream<'static, Result<Bytes>>,
+    operation: OperationId,
+    maximum_bytes: u32,
+    callbacks: Option<(&HttpMcpTransport, ToolContext)>,
+) -> Result<Value> {
+    let mut requests = 0_u32;
+    let mut pending = std::collections::VecDeque::new();
+    let mut stream_open = true;
     // Bound input before the library parser can buffer it. This stream owns the
     // platform body, so dropping the response future cancels that same exchange.
     let mut received = 0_usize;
@@ -334,24 +386,80 @@ async fn sse_response(
     });
     let events = sse_stream::SseByteStream::new(bounded);
     futures::pin_mut!(events);
-    while let Some(event) = events.next().await {
-        let event = event.map_err(|error| match error {
-            sse_stream::Error::Body(error) => error
-                .downcast::<Error>()
-                .map_or_else(|error| Error::Invalid(error.to_string()), |error| *error),
-            error => Error::Invalid(error.to_string()),
-        })?;
-        let Some(data) = event.data.filter(|data| !data.trim().is_empty()) else {
-            continue;
+    loop {
+        let value = if let Some(value) = pending.pop_front() {
+            value
+        } else {
+            let Some(event) = events.next().await else { break; };
+            let Some(value) = decode_sse_event(event)? else { continue; };
+            value
         };
-        let value: Value = crate::contract::json_from_slice(data.as_bytes())
-            .map_err(|error| Error::Invalid(error.to_string()))?;
         if value.get("id") == Some(&json!(operation.to_string())) {
             return rpc_result(value, operation);
+        }
+        if value.get("method").is_some() && value.get("id").is_some() {
+            let (transport, context) = callbacks.as_ref().ok_or_else(|| Error::Unsupported("MCP callback router is not installed".into()))?;
+            let (policy, admission) = transport.callbacks.as_ref().ok_or_else(|| Error::Unsupported("MCP callback policy is not installed".into()))?;
+            requests = requests.checked_add(1).filter(|count| *count <= policy.maximum_requests)
+                .ok_or_else(|| Error::Invalid("MCP callback count exceeds admitted bound".into()))?;
+            let callback = McpCallbackRequest { parent: operation, policy: policy.clone(), message: value };
+            let callback_operation = callback.operation()?;
+            callback.validate()?;
+            let admitted = admission.admit(context.clone(), &callback).fuse();
+            futures::pin_mut!(admitted);
+            let reply = loop {
+                if !stream_open { break admitted.await?; }
+                futures::select! {
+                    reply = admitted => break reply?,
+                    event = events.next().fuse() => {
+                        let Some(event) = event else {
+                            stream_open = false;
+                            if !pending.iter().any(|value: &Value| value.get("id") == Some(&json!(operation.to_string()))) {
+                                return Err(Error::Indeterminate(operation));
+                            }
+                            continue;
+                        };
+                        let Some(value) = decode_sse_event(event)? else { continue; };
+                        if value.get("method").and_then(Value::as_str) == Some("notifications/cancelled")
+                            && value.pointer("/params/requestId") == callback.message.get("id")
+                        {
+                            notification(&value)?;
+                            // Drop this admitted future. Its existing owner retains
+                            // the claim/observed prefix; no model request is replayed.
+                            return Err(Error::Indeterminate(operation));
+                        }
+                        if value.get("method").is_some() && value.get("id").is_none() {
+                            notification(&value)?;
+                        } else {
+                            if pending.len() as u64 >= u64::from(policy.maximum_requests) {
+                                return Err(Error::Invalid("MCP pending callback bound exceeded".into()));
+                            }
+                            pending.push_back(value);
+                        }
+                    }
+                }
+            };
+            callback.validate_reply(&reply)?;
+            let request = transport.request("POST", crate::contract::canonical_json_bytes(&reply)?)?;
+            let acknowledgement = transport.provider.exchange(callback_operation, request).await.map_err(|_| Error::Indeterminate(operation))?;
+            if acknowledgement.status != 202 { return Err(Error::Indeterminate(operation)); }
+            drop(acknowledgement);
+            continue;
         }
         notification(&value)?;
     }
     Err(Error::Indeterminate(operation))
+}
+
+fn decode_sse_event(event: std::result::Result<sse_stream::Sse, sse_stream::Error>) -> Result<Option<Value>> {
+    let event = event.map_err(|error| match error {
+        sse_stream::Error::Body(error) => error.downcast::<Error>()
+            .map_or_else(|error| Error::Invalid(error.to_string()), |error| *error),
+        error => Error::Invalid(error.to_string()),
+    })?;
+    event.data.filter(|data| !data.trim().is_empty())
+        .map(|data| crate::contract::json_from_slice(data.as_bytes()).map_err(|error| Error::Invalid(error.to_string())))
+        .transpose()
 }
 
 #[cfg(test)]

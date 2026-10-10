@@ -22,6 +22,49 @@ impl NativeMcpHttpProvider {
             .map_err(|e| Error::Invalid(e.to_string()))?;
         Ok(Self(client))
     }
+    #[cfg(feature = "mcp-oauth")]
+    pub(crate) fn exchange_authenticated<'a>(
+        &'a self,
+        operation: OperationId,
+        request: McpHttpRequest,
+        bearer: Option<reqwest::header::HeaderValue>,
+    ) -> BoxProviderFuture<'a, Result<McpHttpResponse>> {
+        self.exchange_inner(operation, request, bearer)
+    }
+
+    fn exchange_inner<'a>(
+        &'a self,
+        operation: OperationId,
+        request: McpHttpRequest,
+        bearer: Option<reqwest::header::HeaderValue>,
+    ) -> BoxProviderFuture<'a, Result<McpHttpResponse>> {
+        Box::pin(async move {
+            if request.timeout_ms == 0 || request.maximum_response_bytes == 0 {
+                return Err(Error::Invalid("HTTP exchange needs finite bounds".into()));
+            }
+            let method = reqwest::Method::from_bytes(request.method.as_bytes())
+                .map_err(|e| Error::Invalid(e.to_string()))?;
+            let mut builder = self.0.request(method, &request.endpoint)
+                .timeout(Duration::from_millis(u64::from(request.timeout_ms)))
+                .body(request.body);
+            for (key, value) in request.headers { builder = builder.header(key, value); }
+            if let Some(bearer) = bearer { builder = builder.header(reqwest::header::AUTHORIZATION, bearer); }
+            let response = builder.send().await.map_err(|_| Error::Indeterminate(operation))?;
+            let status = response.status().as_u16();
+            let headers = response.headers().iter().map(|(key, value)| {
+                value.to_str().map(|value| (key.as_str().to_owned(), value.to_owned()))
+                    .map_err(|e| Error::Invalid(e.to_string()))
+            }).collect::<Result<_>>()?;
+            let mut received = 0_usize;
+            let body = response.bytes_stream().map(move |chunk| {
+                let chunk = chunk.map_err(|_| Error::Indeterminate(operation))?;
+                received = received.saturating_add(chunk.len());
+                if received as u64 > u64::from(request.maximum_response_bytes) { return Err(Error::Indeterminate(operation)); }
+                Ok(chunk)
+            });
+            Ok(McpHttpResponse { status, headers, body: Box::pin(body) })
+        })
+    }
 }
 
 impl McpHttpProvider for NativeMcpHttpProvider {
@@ -30,50 +73,7 @@ impl McpHttpProvider for NativeMcpHttpProvider {
         operation: OperationId,
         request: McpHttpRequest,
     ) -> BoxProviderFuture<'a, Result<McpHttpResponse>> {
-        Box::pin(async move {
-            if request.timeout_ms == 0 || request.maximum_response_bytes == 0 {
-                return Err(Error::Invalid("HTTP exchange needs finite bounds".into()));
-            }
-            let method = reqwest::Method::from_bytes(request.method.as_bytes())
-                .map_err(|e| Error::Invalid(e.to_string()))?;
-            let mut builder = self
-                .0
-                .request(method, &request.endpoint)
-                .timeout(Duration::from_millis(u64::from(request.timeout_ms)))
-                .body(request.body);
-            for (key, value) in request.headers {
-                builder = builder.header(key, value);
-            }
-            let response = builder
-                .send()
-                .await
-                .map_err(|_| Error::Indeterminate(operation))?;
-            let status = response.status().as_u16();
-            let headers = response
-                .headers()
-                .iter()
-                .map(|(key, value)| {
-                    value
-                        .to_str()
-                        .map(|value| (key.as_str().to_owned(), value.to_owned()))
-                        .map_err(|e| Error::Invalid(e.to_string()))
-                })
-                .collect::<Result<_>>()?;
-            let mut received = 0_usize;
-            let body = response.bytes_stream().map(move |chunk| {
-                let chunk = chunk.map_err(|_| Error::Indeterminate(operation))?;
-                received = received.saturating_add(chunk.len());
-                if received as u64 > u64::from(request.maximum_response_bytes) {
-                    return Err(Error::Indeterminate(operation));
-                }
-                Ok(chunk)
-            });
-            Ok(McpHttpResponse {
-                status,
-                headers,
-                body: Box::pin(body),
-            })
-        })
+        self.exchange_inner(operation, request, None)
     }
     fn reconcile<'a>(
         &'a self,
