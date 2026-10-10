@@ -264,29 +264,73 @@ mod tests {
     fn filesystem_fault_child() {
         let path = PathBuf::from(std::env::var_os("ACYCLIC_TEST_LOG_PATH").expect("log path"));
         let mut log = writer(&path, 32);
-        limit_file_size(8);
+        let _file_size_limit = limit_file_size(8);
         let error = log
             .write_all(b"0123456789abcdef")
             .expect_err("partial filesystem write");
         assert!(!error.to_string().contains(&path.display().to_string()));
         assert_eq!(fs::metadata(&path).expect("partial log").len(), 8);
+        let original = _file_size_limit.0;
+        drop(_file_size_limit);
+        let unwound = std::panic::catch_unwind(|| {
+            let _limit = limit_file_size(8);
+            panic!("exercise fault-limit unwind restoration");
+        });
+        assert!(unwound.is_err());
+        let restored = limit_file_size(8);
+        assert_eq!(restored.0.rlim_cur, original.rlim_cur);
+        assert_eq!(restored.0.rlim_max, original.rlim_max);
+    }
+
+    #[cfg(unix)]
+    struct FileSizeLimit(libc::rlimit);
+
+    #[cfg(unix)]
+    #[allow(
+        unsafe_code,
+        reason = "restores the limit in a dedicated fault subprocess"
+    )]
+    impl Drop for FileSizeLimit {
+        fn drop(&mut self) {
+            // SAFETY: the saved limit came from this process before only its
+            // soft limit changed. Restore it before exit-time profile writes.
+            if unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &self.0) } != 0 {
+                eprintln!("failed to restore fault subprocess file-size limit");
+                std::process::abort();
+            }
+        }
     }
 
     #[cfg(unix)]
     #[allow(unsafe_code, reason = "called only in dedicated fault subprocesses")]
-    fn limit_file_size(bytes: libc::rlim_t) {
+    fn limit_file_size(bytes: libc::rlim_t) -> FileSizeLimit {
+        let mut previous = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        assert_eq!(
+            // SAFETY: valid writable fixed-size limit pointer; this process is isolated.
+            unsafe { libc::getrlimit(libc::RLIMIT_FSIZE, &mut previous) },
+            0
+        );
+        assert!(
+            previous.rlim_max >= bytes,
+            "existing hard limit is below fault bound"
+        );
         let limit = libc::rlimit {
             rlim_cur: bytes,
-            rlim_max: bytes,
+            rlim_max: previous.rlim_max,
         };
         // SAFETY: valid fixed-size limit pointer, with no retained references;
         // this helper runs only in a dedicated process that exits afterwards.
         assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &limit) }, 0);
+        let guard = FileSizeLimit(previous);
         assert_ne!(
             // SAFETY: SIG_IGN is the OS-defined handler, and this process is isolated.
             unsafe { libc::signal(libc::SIGXFSZ, libc::SIG_IGN) },
             libc::SIG_ERR
         );
+        guard
     }
 
     #[cfg(unix)]
@@ -297,7 +341,7 @@ mod tests {
         let mut log = writer(&path, 16);
         log.write_all(b"0123456789abcdef").expect("fill active");
         fs::write(suffix(&path, ".1"), b"past").expect("published archive");
-        limit_file_size(8);
+        let _file_size_limit = limit_file_size(8);
         assert!(log.write_all(b"new").is_err());
         assert_eq!(
             fs::read(&path).expect("active preserved"),
