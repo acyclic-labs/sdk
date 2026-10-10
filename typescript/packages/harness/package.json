@@ -11,8 +11,12 @@
   "exports": {
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
     "./objects": { "types": "./dist/objects.d.ts", "default": "./dist/objects.js" },
+    "./client": { "types": "./dist/client-views.d.ts", "default": "./dist/client-views.js" },
+    "./react": { "types": "./dist/react.d.ts", "default": "./dist/react.js" },
+    "./svelte": { "types": "./dist/svelte.d.ts", "default": "./dist/svelte.js" },
     "./proto": { "types": "./generated/proto/harness/v2/harness_pb.d.ts", "default": "./generated/proto/harness/v2/harness_pb.js" },
-    "./protocol": { "types": "./generated/proto/protocol/v1/protocol_pb.d.ts", "default": "./generated/proto/protocol/v1/protocol_pb.js" }
+    "./protocol": { "types": "./generated/proto/protocol/v1/protocol_pb.d.ts", "default": "./generated/proto/protocol/v1/protocol_pb.js" },
+    "./worker": { "types": "./dist/client-worker.d.ts", "default": "./dist/client-worker.js" }
   },
   "scripts": {
     "build:wasm": "bun ../../../scripts/build-wasm.mjs harness",
@@ -20,10 +24,11 @@
     "check": "bun run build:wasm && bun x tsc -p tsconfig.json --noEmit",
     "check:types": "bun x tsc -p tsconfig.type-tests.json",
     "test": "bun run build && bun test test",
-    "test:browser:mcp": "node test/mcp-http-fixture.mjs"
+    "test:browser:mcp": "node test/mcp-http-fixture.mjs",
+    "test:client:browser": "bun test/client-framework-browser.mjs"
   },
   "dependencies": { "@bufbuild/protobuf": "2.15.0" },
-  "peerDependencies": { "@acyclic-labs/objects": "0.2.0" },
-  "peerDependenciesMeta": { "@acyclic-labs/objects": { "optional": true } },
-  "devDependencies": { "@types/bun": "1.4.2", "@types/node": "26.4.1", "bun-types": "1.4.0", "fake-indexeddb": "6.2.4", "typescript": "7.0.2" }
+  "peerDependencies": { "@acyclic-labs/objects": "0.2.0", "react": "^19.0.0" },
+  "peerDependenciesMeta": { "@acyclic-labs/objects": { "optional": true }, "react": { "optional": true } },
+  "devDependencies": { "@types/bun": "1.4.2", "@types/node": "26.4.1", "@types/react": "19.3.0", "@types/react-dom": "19.3.0", "bun-types": "1.4.0", "fake-indexeddb": "6.2.4", "react-dom": "19.3.0", "svelte": "5.57.2", "typescript": "7.0.2", "react": "19.3.0" }
 }

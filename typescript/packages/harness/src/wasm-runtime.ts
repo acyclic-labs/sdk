@@ -36,6 +36,8 @@ const REQUIRED_WASM_CONTENT_EXPORTS = [
   "wasmcontentstore_read_path", "wasmcontentstore_stage",
 ] as const;
 
+const CLIENT_VIEW_METHODS = ["advance", "begin", "discard", "observe", "release", "residency", "status", "view", "free"] as const;
+
 /** Reject a stale binding before runtime code can call a missing validator. */
 export function assertHarnessWasmExports(value: unknown): void {
   if (value === null || typeof value !== "object") {
@@ -45,13 +47,17 @@ export function assertHarnessWasmExports(value: unknown): void {
   const contentStore = typeof exports.WasmContentStore === "function"
     ? true
     : REQUIRED_WASM_CONTENT_EXPORTS.every(name => typeof exports[name] === "function");
+  const clientViews = typeof exports.WasmClientViews === "function"
+    ? CLIENT_VIEW_METHODS.every(name => typeof (exports.WasmClientViews as { prototype: Record<string, unknown> }).prototype[name] === "function")
+    : typeof exports.wasmclientviews_new === "function" && CLIENT_VIEW_METHODS.every(name =>
+      typeof exports[name === "free" ? "__wbg_wasmclientviews_free" : `wasmclientviews_${name}`] === "function");
   const prefix = typeof exports.WasmReducer === "function"
     ? typeof (exports.WasmReducer as { prototype: Record<string, unknown> }).prototype.prepareInheritedModelRequest === "function"
     : typeof exports.wasmreducer_prepareInheritedModelRequest === "function";
   const forkPolicy = typeof exports.WasmReducer === "function"
     ? typeof (exports.WasmReducer as { prototype: Record<string, unknown> }).prototype.prepareForkRequest === "function"
     : typeof exports.wasmreducer_prepareForkRequest === "function";
-  if (!contentStore || !prefix || !forkPolicy || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
+  if (!contentStore || !clientViews || !prefix || !forkPolicy || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
     throw new Error("harness WASM does not provide the required validators");
   }
 }

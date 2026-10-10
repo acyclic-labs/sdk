@@ -12,6 +12,9 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+mod wasm;
+
 /// Stable identity within an embedding application's durable namespace.
 /// The namespace must be unique; sequence allocation is monotonic within a client.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]

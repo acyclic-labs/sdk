@@ -2,6 +2,7 @@ import type { AggregateKind, Authority, OperationId } from "./index.js";
 import type { FileRef, ReferencedAttachments } from "./conversation.js";
 import { NativeContracts } from "./native-contracts.js";
 import { isSafeAuthorityId } from "./rust-policy.js";
+import { SnapshotStore } from "./client-snapshot.js";
 
 export interface ReplayCursor {
   readonly generation: string;
@@ -207,31 +208,36 @@ export type ClientListener<Event> = (event: ClientEvent<Event>) => void;
 
 /** Framework-neutral external store derived only from authoritative events. */
 export class ProjectionStore<State, Event = unknown> {
-  #state: State;
-  readonly #listeners = new Set<() => void>();
-  readonly #unsubscribe: () => void;
+  readonly #store: SnapshotStore<State>;
+  #unsubscribe: (() => void) | undefined;
+  #disposed = false;
 
-  constructor(client: HarnessClient<Event>, initial: State, reduce: (state: State, event: ClientEvent<Event>) => State) {
-    this.#state = initial;
-    this.#unsubscribe = client.subscribe(event => {
-      this.#state = reduce(this.#state, event);
-      for (const listener of this.#listeners) listener();
+  constructor(readonly client: Pick<HarnessClient<Event>, "subscribe">, initial: State,
+    readonly reduce: (state: State, event: ClientEvent<Event>) => State) {
+    this.#store = new SnapshotStore(initial);
+  }
+
+  /** Explicitly attach before delivering events. Construction/SSR start no effects. */
+  start(): void {
+    if (this.#disposed) throw new Error("projection store is disposed");
+    this.#unsubscribe ??= this.client.subscribe(event => {
+      this.#store.publish(this.reduce(this.#store.getSnapshot(), event));
     });
   }
 
   /** React-compatible immutable snapshot accessor. */
-  getSnapshot = (): State => this.#state;
+  getSnapshot = (): State => this.#store.getSnapshot();
 
   /** Svelte/React-compatible subscription. */
-  subscribe = (listener: () => void): (() => void) => {
-    this.#listeners.add(listener);
-    return () => this.#listeners.delete(listener);
-  };
+  subscribe = (listener: () => void): (() => void) => this.#store.subscribe(listener);
 
   /** Detaches the store from its client. */
   dispose(): void {
-    this.#unsubscribe();
-    this.#listeners.clear();
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#unsubscribe?.();
+    this.#unsubscribe = undefined;
+    this.#store.dispose();
   }
 }
 
