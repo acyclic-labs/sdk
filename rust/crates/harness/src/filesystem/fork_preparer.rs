@@ -11,8 +11,8 @@ use crate::{
     core::{Authority, AuthorityVerifier, Reducer, Scope},
     fork::{
         Capture, CapturedResource, ForkCaptureProvider, ForkPreparer, ForkReport, ForkRequest,
-        ForkSeed, ForkSelection, InheritedConversationPrefix, PreparedSummaryFork, ReferenceGrant,
-        ResourceRevision, SharedGrant,
+        ForkSeed, ForkSelection, InheritedConversationPrefix, PreparedForkHistory,
+        PreparedSummaryFork, ReferenceGrant, ResourceRevision, SharedGrant,
     },
     resources::{ProviderRef, WorkspaceRef},
 };
@@ -70,6 +70,7 @@ pub struct FilesystemForkPreparer<A, O> {
     resolver: Arc<dyn ContentResidencyVerifier>,
     capture_providers: Vec<Arc<dyn ForkCaptureProvider>>,
     summary: Option<BoundSummary>,
+    history: Option<PreparedForkHistory>,
 }
 
 struct BoundSummary {
@@ -110,7 +111,21 @@ impl<A, O> FilesystemForkPreparer<A, O> {
             resolver,
             capture_providers: Vec::new(),
             summary: None,
+            history: None,
         })
+    }
+
+    /// Binds a finite archive selection produced by the original history reader.
+    /// This does not grant file access or publish a child.
+    pub fn with_history_context(mut self, history: PreparedForkHistory) -> Result<Self> {
+        history.verify(&self.verifier)?;
+        if history.parent() != self.parent.authority()
+            || history.parent_revision() != self.parent.revision()
+        {
+            return Err(Error::Conflict("fork history differs from the bound parent".into()));
+        }
+        self.history = Some(history);
+        Ok(self)
     }
 
     /// Binds an already verified original-parent Summary projection. This
@@ -209,6 +224,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
 
     fn check_request(&self, request: &ForkRequest) -> Result<()> {
         self.authorize_request(request)?;
+        if let Some(history) = &self.history {
+            if history.through_sequence() != request.preparation.inherited_through_sequence {
+                return Err(Error::Conflict("fork archive differs from its selected logical cut".into()));
+            }
+        } else if self.parent.conversation().is_some_and(|state|
+            state.resident_after_sequence() > 0
+                && request.preparation.inherited_through_sequence > 0)
+        {
+            return Err(Error::Invalid("archived fork requires its authenticated history capture".into()));
+        }
         if let Some(selection) = &request.preparation.summary {
             let summary = self.summary.as_ref().ok_or_else(|| {
                 Error::Unsupported(
@@ -628,6 +653,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
                     self.resolver.as_ref(),
                     &context_key,
                     &continuation_keys,
+                    self.history.as_ref().map(PreparedForkHistory::conversation),
                 )
                 .await?;
             (
@@ -794,7 +820,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
             captures.push(capture);
         }
         let inherited_through_sequence = request.preparation.inherited_through_sequence;
-        let report = ForkReport {
+        let mut report = ForkReport {
             request,
             captures,
             child_private_volume: private.clone(),
@@ -804,6 +830,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
             inherited_through_sequence,
             shared_grants,
             reference_grants,
+            history_witness: None,
             attachment_manifests,
         };
         report.validate()?;
@@ -817,7 +844,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
                     !selection.required || matches!(capture, Capture::Captured(_))
                 });
         if required_captures_ready {
-            let seed = report.clone().into_seed()?;
+            let mut seed = report.clone().into_seed()?;
+            if let Some(history) = &self.history {
+                self.parent.attest_fork_history(&mut seed, history.conversation())?;
+                report.history_witness = seed.history_witness;
+            }
             self.host.bind_fork_seed(&seed).await?;
         }
         self.commit_report(&journal, &report).await

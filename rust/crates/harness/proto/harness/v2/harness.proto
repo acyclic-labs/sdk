@@ -736,6 +736,7 @@ message ForkReport {
   uint64 inherited_through_sequence = 8;
   GenerationRef child_private_generation = 9;
   SummaryForkCapture summary = 10;
+  optional bytes history_witness = 11; // original issuer MAC, exactly 32 bytes
 }
 
 message ForkSeed {
@@ -756,6 +757,7 @@ message ForkSeed {
   uint64 inherited_through_sequence = 15;
   GenerationRef child_private_generation = 16;
   SummaryForkCapture summary = 17;
+  optional bytes history_witness = 18; // mandatory for an archived inherited prefix
 }
 
 // One parent-authorized Filesystem join. The notice is admitted atomically

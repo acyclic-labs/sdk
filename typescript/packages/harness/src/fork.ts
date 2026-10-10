@@ -157,6 +157,8 @@ export interface ForkReport {
   readonly inherited_through_sequence: bigint;
   readonly shared_grants: readonly SharedGrant[];
   readonly reference_grants: readonly ReferenceGrant[];
+  /** Original issuer proof of complete archived grant capture, never caller authority. */
+  readonly history_witness?: readonly number[] | null;
   /** Manifest reads need owner, selected-volume, or direct exact-ref authority. */
   readonly attachment_manifests: readonly FileRef[];
 }
@@ -171,6 +173,8 @@ export interface ForkSeed extends Omit<ForkRequest, "selections" | "preparation"
   readonly inherited_through_sequence: bigint;
   readonly shared_grants: readonly SharedGrant[];
   readonly reference_grants: readonly ReferenceGrant[];
+  /** Required when inherited history has retired from the parent projection. */
+  readonly history_witness?: readonly number[] | null;
   /** Manifest bytes and listed members are independently read-authorized. */
   readonly attachment_manifests: readonly FileRef[];
 }

@@ -444,6 +444,40 @@ impl AuthorityVerifier {
         Ok(*hasher.finalize().as_bytes())
     }
 
+    pub(crate) fn fork_history_proof(&self, seed: &ForkSeed) -> Result<[u8; 32]> {
+        self.verify_audience(&seed.parent)?;
+        let canonical = crate::contract::canonical_json_bytes(&(
+            (&self.id, &seed.operation_id, &seed.parent, seed.parent_revision,
+             &seed.child, seed.child_agent, &seed.attached_agents, &seed.resources,
+             &seed.omissions, &seed.child_private_volume),
+            (&seed.child_private_generation, &seed.inherited_context, &seed.summary,
+             seed.inherited_through_sequence, &seed.shared_grants,
+             &seed.reference_grants, &seed.attachment_manifests, &seed.boundary),
+        ))?;
+        let mut hasher = blake3::Hasher::new_keyed(&self.key);
+        hasher.update(b"harness/v1/fork-history-witness\0");
+        hasher.update(&(canonical.len() as u64).to_le_bytes());
+        hasher.update(&canonical);
+        Ok(*hasher.finalize().as_bytes())
+    }
+
+    pub(crate) fn fork_history_selection_proof(
+        &self,
+        revision: u64,
+        through_sequence: u64,
+        agent: Option<AgentId>,
+        history_digest: [u8; 32],
+    ) -> Result<[u8; 32]> {
+        let canonical = crate::contract::canonical_json_bytes(&(
+            &self.id, &self.audience, revision, through_sequence, agent, history_digest,
+        ))?;
+        let mut hasher = blake3::Hasher::new_keyed(&self.key);
+        hasher.update(b"harness/v1/fork-history-selection\0");
+        hasher.update(&(canonical.len() as u64).to_le_bytes());
+        hasher.update(&canonical);
+        Ok(*hasher.finalize().as_bytes())
+    }
+
     /// Rejects accidental pairing with another aggregate authority.
     pub fn verify_audience(&self, authority: &Authority) -> Result<()> {
         if &self.audience == authority {
@@ -2378,23 +2412,52 @@ impl Reducer {
         }
     }
 
+    pub(crate) fn attest_fork_history(
+        &self,
+        seed: &mut ForkSeed,
+        history: &ConversationState,
+    ) -> Result<()> {
+        if seed.parent != self.authority || seed.parent_revision != self.revision
+            || history.agent != self.conversation.agent
+            || history.resident_after_sequence() != 0
+            || history.logical_revision() != seed.inherited_through_sequence
+        {
+            return Err(Error::Conflict("fork archive differs from its original parent cut".into()));
+        }
+        self.validate_fork_reference_ownership_using(seed, history)?;
+        seed.history_witness = Some(self.authority_verifier.fork_history_proof(seed)?);
+        Ok(())
+    }
+
+    fn validate_fork_reference_ownership(&self, seed: &ForkSeed) -> Result<()> {
+        if let Some(proof) = seed.history_witness {
+            if proof != self.authority_verifier.fork_history_proof(seed)? {
+                return Err(Error::Unauthorized("fork archive witness differs from its exact seed".into()));
+            }
+            return Ok(());
+        }
+        self.validate_fork_reference_ownership_using(seed, &self.conversation)
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "fork publication checks one complete seed"
     )]
-    fn validate_fork_reference_ownership(&self, seed: &ForkSeed) -> Result<()> {
+    fn validate_fork_reference_ownership_using(
+        &self,
+        seed: &ForkSeed,
+        history: &ConversationState,
+    ) -> Result<()> {
         let inherited_count = usize::try_from(seed.inherited_through_sequence)
             .map_err(|_| Error::Invalid("inherited conversation prefix is too large".into()))?;
-        let parent_agent = self
-            .conversation
-            .agent
+        let parent_agent = history.agent
             .ok_or_else(|| Error::Conflict("fork parent conversation is unbound".into()))?;
         if seed.child_agent == parent_agent {
             return Err(Error::Invalid(
                 "fork child must have a distinct agent identity".into(),
             ));
         }
-        if seed.inherited_through_sequence > self.conversation.logical_revision() {
+        if seed.inherited_through_sequence > history.logical_revision() {
             return Err(Error::Invalid(
                 "fork inherited prefix exceeds parent conversation".into(),
             ));
@@ -2414,7 +2477,7 @@ impl Reducer {
                 self.revision,
                 seed.inherited_through_sequence,
                 &seed.attached_agents,
-                &self.conversation,
+                history,
             )?;
             let bytes = prefix.canonical_bytes()?;
             let expected = FileDescriptor::from_bytes(
@@ -2429,14 +2492,14 @@ impl Reducer {
                 ));
             }
         }
-        if self.conversation.resident_after_sequence() > 0 && inherited_count > 0 {
+        if history.resident_after_sequence() > 0 && inherited_count > 0 {
             return Err(Error::Invalid(
                 "fork grant capture requires authenticated archived history".into(),
             ));
         }
         let mut published_refs = std::collections::BTreeMap::new();
         let mut published_manifests = std::collections::BTreeSet::new();
-        for message in self.conversation.messages.iter().take(inherited_count) {
+        for message in history.messages.iter().take(inherited_count) {
             let mut retain = |file: &crate::conversation::FileRef| -> Result<()> {
                 published_refs.insert(file.read_capability()?, file.clone());
                 Ok(())
@@ -4977,88 +5040,86 @@ resolve_interaction interaction_resolved interaction:resolve";
             VolumeClass::Project,
             VolumeOwner::Project("project-1".into()),
         )?;
-        let seed = ForkSeed {
-            summary: None,
-            operation_id: operation(8),
-            parent: parent.clone(),
-            parent_revision: 1,
-            child: child.clone(),
-            child_agent,
-            resources: vec![
-                CapturedResource {
-                    source: ResourceRevision::PrivateVolume {
-                        volume: VolumeRef::new(
-                            filesystem_provider.clone(),
-                            "parent-private",
-                            VolumeClass::AgentPrivate,
-                            VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])),
-                        )?,
-                        generation: GenerationRef::new(filesystem_provider.clone(), [4; 32], None)?,
-                        paths: Vec::new(),
-                    },
-                    revision: ResourceRevision::PrivateVolume {
-                        volume: VolumeRef::new(
-                            filesystem_provider.clone(),
-                            "child-private",
-                            VolumeClass::AgentPrivate,
-                            VolumeOwner::Agent(child_agent),
-                        )?,
-                        generation: GenerationRef::new(filesystem_provider.clone(), [3; 32], None)?,
-                        paths: Vec::new(),
-                    },
+        let seed = ForkSeed { history_witness: None, summary: None,
+        operation_id: operation(8),
+        parent: parent.clone(),
+        parent_revision: 1,
+        child: child.clone(),
+        child_agent,
+        resources: vec![
+            CapturedResource {
+                source: ResourceRevision::PrivateVolume {
+                    volume: VolumeRef::new(
+                        filesystem_provider.clone(),
+                        "parent-private",
+                        VolumeClass::AgentPrivate,
+                        VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])),
+                    )?,
+                    generation: GenerationRef::new(filesystem_provider.clone(), [4; 32], None)?,
+                    paths: Vec::new(),
                 },
-                CapturedResource {
-                    source: ResourceRevision::History(StreamRef::new(
-                        stream_provider,
-                        parent.stream_path()?.into_bytes(),
-                        Some("1".into()),
-                    )?),
-                    revision: ResourceRevision::History(StreamRef::new(
-                        ProviderRef::new("acyclic", "stream", "1")?,
-                        parent.stream_path()?.into_bytes(),
-                        Some("1".into()),
-                    )?),
+                revision: ResourceRevision::PrivateVolume {
+                    volume: VolumeRef::new(
+                        filesystem_provider.clone(),
+                        "child-private",
+                        VolumeClass::AgentPrivate,
+                        VolumeOwner::Agent(child_agent),
+                    )?,
+                    generation: GenerationRef::new(filesystem_provider.clone(), [3; 32], None)?,
+                    paths: Vec::new(),
                 },
-                CapturedResource {
-                    source: ResourceRevision::Project {
-                        volume: VolumeRef::new(
-                            filesystem_provider.clone(),
-                            "parent-project",
-                            VolumeClass::Project,
-                            VolumeOwner::Project("project-1".into()),
-                        )?,
-                        generation: GenerationRef::new(
-                            filesystem_provider.clone(),
-                            [1; 32],
-                            Some("6".into()),
-                        )?,
-                    },
-                    revision: ResourceRevision::Project {
-                        volume: child_project,
-                        generation: GenerationRef::new(
-                            filesystem_provider.clone(),
-                            [2; 32],
-                            Some("7".into()),
-                        )?,
-                    },
+            },
+            CapturedResource {
+                source: ResourceRevision::History(StreamRef::new(
+                    stream_provider,
+                    parent.stream_path()?.into_bytes(),
+                    Some("1".into()),
+                )?),
+                revision: ResourceRevision::History(StreamRef::new(
+                    ProviderRef::new("acyclic", "stream", "1")?,
+                    parent.stream_path()?.into_bytes(),
+                    Some("1".into()),
+                )?),
+            },
+            CapturedResource {
+                source: ResourceRevision::Project {
+                    volume: VolumeRef::new(
+                        filesystem_provider.clone(),
+                        "parent-project",
+                        VolumeClass::Project,
+                        VolumeOwner::Project("project-1".into()),
+                    )?,
+                    generation: GenerationRef::new(
+                        filesystem_provider.clone(),
+                        [1; 32],
+                        Some("6".into()),
+                    )?,
                 },
-            ],
-            omissions: Vec::new(),
-            child_private_volume: VolumeRef::new(
-                filesystem_provider.clone(),
-                "child-private",
-                VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(child_agent),
-            )?,
-            child_private_generation: GenerationRef::new(filesystem_provider, [3; 32], None)?,
-            inherited_context: Vec::new(),
-            shared_grants: Vec::new(),
-            attached_agents: Vec::new(),
-            reference_grants: Vec::new(),
-            attachment_manifests: Vec::new(),
-            inherited_through_sequence: 0,
-            boundary: None,
-        };
+                revision: ResourceRevision::Project {
+                    volume: child_project,
+                    generation: GenerationRef::new(
+                        filesystem_provider.clone(),
+                        [2; 32],
+                        Some("7".into()),
+                    )?,
+                },
+            },
+        ],
+        omissions: Vec::new(),
+        child_private_volume: VolumeRef::new(
+            filesystem_provider.clone(),
+            "child-private",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(child_agent),
+        )?,
+        child_private_generation: GenerationRef::new(filesystem_provider, [3; 32], None)?,
+        inherited_context: Vec::new(),
+        shared_grants: Vec::new(),
+        attached_agents: Vec::new(),
+        reference_grants: Vec::new(),
+        attachment_manifests: Vec::new(),
+        inherited_through_sequence: 0,
+        boundary: None, };
         let extension = ResourceRevision::Extension {
             name: "example.message".into(),
             version: 1,

@@ -35,6 +35,8 @@ use std::{
     sync::Arc,
 };
 
+mod conversation;
+
 #[derive(Default)]
 struct ExecutionSummary {
     operation: Option<OperationId>,

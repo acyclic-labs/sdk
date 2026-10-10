@@ -336,3 +336,55 @@ async fn missing_authenticated_node_rejects_instead_of_selecting_older_state() -
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn seeded_archive_transitions_preserve_old_cuts_across_read_faults() -> Result<()> {
+    use std::{collections::BTreeMap, sync::atomic::Ordering};
+    // Deterministic schedules exercise real immutable index writes, repeated
+    // transitions, arbitrary key bits, stale cuts and failed reads. The oracle
+    // records logical heads only; it does not duplicate radix traversal.
+    for seed in 1..=8_u64 {
+        let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+        let client = StreamClient::new(provider.clone());
+        let mut random = seed;
+        let mut root = None;
+        let mut heads = BTreeMap::<EffectId, Head>::new();
+        let mut cuts = Vec::new();
+        for revision in 1..=96_u64 {
+            random = random.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let key = random % 24;
+            let effect = EffectId::from_bytes(*blake3::hash(&key.to_le_bytes()).as_bytes()
+                .first_chunk::<16>().ok_or_else(|| Error::Invalid("fixture key".into()))?);
+            let previous = heads.get(&effect).copied();
+            let head = Head { revision, position: previous.map_or(0, |head| head.position + 1) };
+            let mut used = 0;
+            let observed = walk(&client, &authority(), effect, root, &mut used, 1_000_000).await?;
+            root = Some(update(&client, &authority(), effect, head, observed).await?);
+            heads.insert(effect, head);
+            cuts.push((root, heads.clone()));
+            let cut = usize::try_from(random % revision)
+                .map_err(|_| Error::Invalid("fixture cut".into()))?;
+            let (historical, expected) = &cuts[cut];
+            provider.history_read_fault.store(3, Ordering::SeqCst);
+            let mut failed_bytes = 0;
+            assert!(walk(&client, &authority(), effect, *historical,
+                &mut failed_bytes, 1_000_000).await.is_err());
+            let mut bytes = 0;
+            let selected = walk(&client, &authority(), effect, *historical,
+                &mut bytes, 1_000_000).await?;
+            assert_eq!(selected.leaf.and_then(|(_, id, head)|
+                (id == effect).then_some(head)), expected.get(&effect).copied());
+            assert!(selected.path.len() <= 128);
+            assert!(bytes > 0);
+            let mut short = 0;
+            assert!(walk(&client, &authority(), effect, *historical,
+                &mut short, bytes - 1).await.is_err());
+            let absent = EffectId::from_bytes([255; 16]);
+            let mut bytes = 0;
+            let selected = walk(&client, &authority(), absent, *historical,
+                &mut bytes, 1_000_000).await?;
+            assert!(selected.leaf.is_none_or(|(_, id, _)| id != absent));
+        }
+    }
+    Ok(())
+}

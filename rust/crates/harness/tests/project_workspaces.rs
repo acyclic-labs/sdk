@@ -140,52 +140,50 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
         parent.stream_path()?.into_bytes(),
         Some(reducer.revision().to_string()),
     )?;
-    let seed = ForkSeed {
-        summary: None,
-        operation_id: OperationId::from_bytes([2; 16]),
-        parent: parent.clone(),
-        parent_revision: reducer.revision(),
-        child: child.clone(),
-        child_agent,
-        attached_agents: Vec::new(),
-        resources: vec![
-            CapturedResource {
-                source: ResourceRevision::PrivateVolume {
-                    volume: parent_private,
-                    generation: parent_private_head.generation,
-                    paths: Vec::new(),
-                },
-                revision: ResourceRevision::PrivateVolume {
-                    volume: child_private.clone(),
-                    generation: child_private_head.generation.clone(),
-                    paths: Vec::new(),
-                },
+    let seed = ForkSeed { history_witness: None, summary: None,
+    operation_id: OperationId::from_bytes([2; 16]),
+    parent: parent.clone(),
+    parent_revision: reducer.revision(),
+    child: child.clone(),
+    child_agent,
+    attached_agents: Vec::new(),
+    resources: vec![
+        CapturedResource {
+            source: ResourceRevision::PrivateVolume {
+                volume: parent_private,
+                generation: parent_private_head.generation,
+                paths: Vec::new(),
             },
-            CapturedResource {
-                source: ResourceRevision::History(history.clone()),
-                revision: ResourceRevision::History(history),
+            revision: ResourceRevision::PrivateVolume {
+                volume: child_private.clone(),
+                generation: child_private_head.generation.clone(),
+                paths: Vec::new(),
             },
-            CapturedResource {
-                source: ResourceRevision::Project {
-                    volume: project.clone(),
-                    generation: parent_head.generation.clone(),
-                },
-                revision: ResourceRevision::Project {
-                    volume: child_project.clone(),
-                    generation: child_head.clone(),
-                },
+        },
+        CapturedResource {
+            source: ResourceRevision::History(history.clone()),
+            revision: ResourceRevision::History(history),
+        },
+        CapturedResource {
+            source: ResourceRevision::Project {
+                volume: project.clone(),
+                generation: parent_head.generation.clone(),
             },
-        ],
-        omissions: Vec::new(),
-        child_private_volume: child_private,
-        child_private_generation: child_private_head.generation,
-        inherited_context: Vec::new(),
-        inherited_through_sequence: 0,
-        shared_grants: Vec::new(),
-        reference_grants: Vec::new(),
-        attachment_manifests: Vec::new(),
-        boundary: None,
-    };
+            revision: ResourceRevision::Project {
+                volume: child_project.clone(),
+                generation: child_head.clone(),
+            },
+        },
+    ],
+    omissions: Vec::new(),
+    child_private_volume: child_private,
+    child_private_generation: child_private_head.generation,
+    inherited_context: Vec::new(),
+    inherited_through_sequence: 0,
+    shared_grants: Vec::new(),
+    reference_grants: Vec::new(),
+    attachment_manifests: Vec::new(),
+    boundary: None, };
     seed.validate()?;
     reducer.apply(Command {
         operation_id: seed.operation_id,

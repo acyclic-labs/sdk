@@ -229,6 +229,10 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         .issuer
         .root_for_agent(agent, "summary-parent", grants);
     let stream_provider = ProviderRef::new("local", "stream", "2")?;
+    let archived = history.fork_history(
+        aggregate.reducer(), 4,
+        HistoryReadLimits { maximum_events: 4, maximum_bytes: 2_097_152 },
+    ).await?;
     let preparer = FilesystemForkPreparer::new(
         storage.host.clone(),
         aggregate.reducer().clone(),
@@ -238,6 +242,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         stream_provider.clone(),
         storage.content_verifier.clone(),
     )?
+    .with_history_context(archived)?
     .with_summary_context(prepared, storage.journal())?;
     let child_agent = AgentId::new();
     let child_private = VolumeRef::new(
@@ -357,6 +362,27 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         );
     }
     let seed = report.into_seed()?;
+    assert!(seed.history_witness.is_some());
+    // The original proof cannot bless omission, changed readers or a changed
+    // logical cut, even when the public seed digest is recomputed.
+    for mutation in 0..4 {
+        let mut changed = seed.clone();
+        match mutation {
+            0 => { changed.history_witness = None; }
+            1 => { changed.reference_grants.pop(); }
+            2 => { changed.attached_agents.push(AgentId::new()); }
+            _ => { changed.inherited_through_sequence -= 1; }
+        }
+        let mut reducer = aggregate.reducer().clone();
+        assert!(reducer.apply(Command {
+            operation_id: changed.operation_id,
+            idempotency_key: IdempotencyKey::new(format!("summary-witness-mutation-{mutation}"))?,
+            expected_revision: reducer.revision(),
+            scope: scope.clone(),
+            causal_parent: None,
+            action: Action::PublishFork { seed: Box::new(changed) },
+        }).is_err());
+    }
     let fs_verifier = Arc::new(FilesystemForkVerifier::new(storage.host.clone(), 262_144)?);
     fs_verifier.verify(&seed).await?;
     assert!(matches!(
@@ -998,5 +1024,132 @@ async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
             .len(),
         requests
     );
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines, reason = "actual retired parent, full fork publication and cold inherited paging")]
+async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<()> {
+    let agent = AgentId::new();
+    let storage = MemoryHarnessStorage::new(agent, 262_144).await?;
+    let limits = Limits { context_messages: 8, ..Limits::default() };
+    let model = Arc::new(SummaryModel::default());
+    let bundle = storage.builder()
+        .model(Model::new("synthetic", "retired-full-fork", "1", Value::Null)?, model)
+        .grant("model:generate").limits(limits).build()?;
+    for index in 0..6 {
+        let operation = OperationId::new();
+        let input = storage.stage(operation, &format!("full/{index}.txt"),
+            b"small input", "text/plain", "input.txt").await?;
+        storage.run_conversation(&bundle, operation, input, Vec::new(), 1).await?;
+    }
+    let mut parent = storage.open_conversation(limits).await?;
+    let conversation = parent.reducer().conversation()
+        .ok_or_else(|| Error::Invalid("missing full-fork parent".into()))?;
+    assert!(conversation.resident_after_sequence() > 0);
+    assert_eq!(conversation.logical_revision(), 12);
+    let history = HistoryReader::new(&storage.stream, &storage.conversation, storage.verifier())?;
+    assert!(history.fork_history(parent.reducer(), 12,
+        HistoryReadLimits { maximum_events: 11, maximum_bytes: 2_097_152 }).await.is_err());
+    let archived = history.fork_history(parent.reducer(), 12,
+        HistoryReadLimits { maximum_events: 12, maximum_bytes: 2_097_152 }).await?;
+    let provider = storage.volume.provider().clone();
+    let project = VolumeRef::new(provider.clone(), "full-parent-project",
+        VolumeClass::Project, VolumeOwner::Project("full-project".into()))?;
+    let project_head = storage.host.create_volume(&project).await?;
+    let scope = storage.issuer.root_for_agent(agent, "full-parent",
+        Capabilities::new(storage.scope.capabilities().iter().map(str::to_owned)
+            .chain(["fork:publish".to_owned(), project.capability(VolumeOperation::Read)?])));
+    let stream_provider = ProviderRef::new("local", "stream", "2")?;
+    let preparer = FilesystemForkPreparer::new(storage.host.clone(), parent.reducer().clone(),
+        storage.verifier(), scope.clone(), project.clone(), stream_provider.clone(),
+        storage.content_verifier.clone())?.with_history_context(archived)?;
+    let child_agent = AgentId::new();
+    let request = ForkRequest {
+        operation_id: OperationId::new(),
+        parent: storage.conversation.clone(),
+        parent_revision: parent.reducer().revision(),
+        child: Authority { kind: AggregateKind::Conversation, id: "retired-full-child".into() },
+        child_agent,
+        attached_agents: Vec::new(),
+        preparation: ForkPreparation {
+            summary: None,
+            child_project_volume: VolumeRef::new(provider.clone(), "full-child-project",
+                VolumeClass::Project, VolumeOwner::Project("full-project".into()))?,
+            child_private_volume: VolumeRef::new(provider, "full-child-private",
+                VolumeClass::AgentPrivate, VolumeOwner::Agent(child_agent))?,
+            inherited_through_sequence: 0,
+            maximum_inherited_messages: 12,
+            maximum_inherited_bytes: 262_144,
+            maximum_inherited_references: 64,
+        },
+        selections: vec![
+            ForkSelection { required: true, revision: ResourceRevision::PrivateVolume {
+                volume: storage.volume.clone(),
+                generation: storage.host.resolve(&crate::filesystem::workspace_ref(
+                    storage.volume.provider().clone(), &storage.volume.storage_name()?)?).await?.generation,
+                paths: Vec::new(),
+            }},
+            ForkSelection { required: true, revision: ResourceRevision::History(StreamRef::new(
+                stream_provider.clone(), storage.conversation.stream_path()?.into_bytes(),
+                Some(parent.reducer().revision().to_string()))?) },
+            ForkSelection { required: true, revision: ResourceRevision::Project {
+                volume: project, generation: project_head.generation,
+            }},
+        ],
+        boundary: None,
+    }.with_history_policy(parent.reducer(), ForkHistoryPolicy::Fork)?;
+    let report = parent.prepare_fork(&preparer, request.clone()).await?;
+    assert_eq!(parent.reconcile_fork(&preparer, request).await?, Some(report.clone()));
+    let seed = report.into_seed()?;
+    assert!(seed.summary.is_none());
+    assert!(seed.history_witness.is_some());
+    let revision = parent.reducer().revision();
+    for mutation in 0..4 {
+        let mut changed = seed.clone();
+        match mutation {
+            0 => changed.history_witness = None,
+            1 => changed.history_witness = Some([0; 32]),
+            2 => { changed.reference_grants.pop(); }
+            _ => changed.parent_revision -= 1,
+        }
+        assert!(matches!(parent.execute(Command {
+            operation_id: changed.operation_id,
+            idempotency_key: IdempotencyKey::new(format!("full-witness-mutation-{mutation}"))?,
+            expected_revision: revision,
+            scope: scope.clone(),
+            causal_parent: None,
+            action: Action::PublishFork { seed: Box::new(changed) },
+        }).await, Err(Error::Invalid(_) | Error::Unauthorized(_))));
+        assert_eq!(parent.reducer().revision(), revision);
+    }
+    let fork_verifier = Arc::new(CompositeForkVerifier::new(vec![
+        Arc::new(FilesystemForkVerifier::new(storage.host.clone(), 262_144)?),
+        Arc::new(StreamHistoryForkVerifier::new(stream_provider)?),
+    ])?);
+    parent = parent.with_fork_verifier(fork_verifier.clone());
+    let command = Command {
+        operation_id: seed.operation_id,
+        idempotency_key: IdempotencyKey::new("publish-retired-full-fork")?,
+        expected_revision: revision,
+        scope,
+        causal_parent: None,
+        action: Action::PublishFork { seed: Box::new(seed.clone()) },
+    };
+    parent.execute(command.clone()).await?;
+    let mut reopened = storage.open_conversation(limits).await?
+        .with_fork_verifier(fork_verifier);
+    assert!(matches!(reopened.execute(command).await?, crate::core::ApplyResult::Replayed { .. }));
+    let mut count = 0;
+    while count < 12 {
+        let page = history.inherited_conversation_page(&seed, child_agent, count,
+            HistoryReadLimits { maximum_events: 3, maximum_bytes: 262_144 }).await?;
+        assert!(!page.is_empty());
+        for message in page {
+            count += 1;
+            assert_eq!(message.sequence, count);
+        }
+    }
+    assert_eq!(count, 12);
     Ok(())
 }

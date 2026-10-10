@@ -877,61 +877,59 @@ mod tests {
                 revision: ResourceRevision::Artifact(artifact.clone()),
             }),
         );
-        let seed = ForkSeed {
-            summary: None,
-            operation_id: request.operation_id,
-            parent: request.parent.clone(),
-            parent_revision: request.parent_revision,
-            child: request.child.clone(),
-            child_agent: request.child_agent,
-            attached_agents: Vec::new(),
-            resources: vec![
-                CapturedResource {
-                    source: _scratch_selection.revision.clone(),
-                    revision: ResourceRevision::PrivateVolume {
-                        volume: request.preparation.child_private_volume.clone(),
-                        generation: GenerationRef::new(
-                            request.preparation.child_private_volume.provider().clone(),
-                            [18; 32],
-                            Some("1".into()),
-                        )?,
-                        paths: Vec::new(),
-                    },
+        let seed = ForkSeed { history_witness: None, summary: None,
+        operation_id: request.operation_id,
+        parent: request.parent.clone(),
+        parent_revision: request.parent_revision,
+        child: request.child.clone(),
+        child_agent: request.child_agent,
+        attached_agents: Vec::new(),
+        resources: vec![
+            CapturedResource {
+                source: _scratch_selection.revision.clone(),
+                revision: ResourceRevision::PrivateVolume {
+                    volume: request.preparation.child_private_volume.clone(),
+                    generation: GenerationRef::new(
+                        request.preparation.child_private_volume.provider().clone(),
+                        [18; 32],
+                        Some("1".into()),
+                    )?,
+                    paths: Vec::new(),
                 },
-                CapturedResource {
-                    source: history_selection.revision.clone(),
-                    revision: history_selection.revision.clone(),
+            },
+            CapturedResource {
+                source: history_selection.revision.clone(),
+                revision: history_selection.revision.clone(),
+            },
+            CapturedResource {
+                source: project_selection.revision.clone(),
+                revision: ResourceRevision::Project {
+                    volume: request.preparation.child_project_volume.clone(),
+                    generation: GenerationRef::new(
+                        request.preparation.child_project_volume.provider().clone(),
+                        [17; 32],
+                        Some("1".into()),
+                    )?,
                 },
-                CapturedResource {
-                    source: project_selection.revision.clone(),
-                    revision: ResourceRevision::Project {
-                        volume: request.preparation.child_project_volume.clone(),
-                        generation: GenerationRef::new(
-                            request.preparation.child_project_volume.provider().clone(),
-                            [17; 32],
-                            Some("1".into()),
-                        )?,
-                    },
-                },
-                CapturedResource {
-                    source: artifact_selection.revision.clone(),
-                    revision: artifact_selection.revision.clone(),
-                },
-            ],
-            omissions: Vec::new(),
-            child_private_volume: request.preparation.child_private_volume.clone(),
-            child_private_generation: GenerationRef::new(
-                request.preparation.child_private_volume.provider().clone(),
-                [18; 32],
-                Some("1".into()),
-            )?,
-            inherited_context: Vec::new(),
-            inherited_through_sequence: 0,
-            shared_grants: Vec::new(),
-            reference_grants: Vec::new(),
-            attachment_manifests: Vec::new(),
-            boundary: None,
-        };
+            },
+            CapturedResource {
+                source: artifact_selection.revision.clone(),
+                revision: artifact_selection.revision.clone(),
+            },
+        ],
+        omissions: Vec::new(),
+        child_private_volume: request.preparation.child_private_volume.clone(),
+        child_private_generation: GenerationRef::new(
+            request.preparation.child_private_volume.provider().clone(),
+            [18; 32],
+            Some("1".into()),
+        )?,
+        inherited_context: Vec::new(),
+        inherited_through_sequence: 0,
+        shared_grants: Vec::new(),
+        reference_grants: Vec::new(),
+        attachment_manifests: Vec::new(),
+        boundary: None, };
         ForkSeedVerifier::verify(owner_store.as_ref(), &seed).await?;
         assert!(owner_store.bindings().writer.is_some());
         let items = vec![Attachment {

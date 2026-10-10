@@ -1391,6 +1391,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             resolver,
             idempotency_key,
             &[],
+            None,
         )
         .await
     }
@@ -1414,6 +1415,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         resolver: &dyn ContentResidencyVerifier,
         idempotency_key: &IdempotencyKey,
         continuation_keys: &[IdempotencyKey],
+        archived_history: Option<&crate::conversation::ConversationState>,
     ) -> Result<InheritedContextCapture> {
         self.require(capability::FORK_PUBLISH, VolumeOperation::Read)?;
         if parent.authority() != &self.parent
@@ -1427,9 +1429,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             ));
         }
         child_private.validate()?;
-        let history = parent
+        let parent_history = parent
             .conversation()
             .ok_or_else(|| Error::Invalid("parent is not a conversation".into()))?;
+        let history = archived_history.unwrap_or(parent_history);
+        if history.agent != parent_history.agent
+            || through_sequence > parent_history.logical_revision()
+            || (archived_history.is_some()
+                && (history.resident_after_sequence() != 0
+                    || history.logical_revision() != through_sequence))
+        {
+            return Err(Error::Conflict("inherited archive differs from its original parent cut".into()));
+        }
         let count = usize::try_from(through_sequence)
             .map_err(|_| Error::Invalid("inherited prefix is too large".into()))?;
         if count > maximum_messages || count > history.messages.len() {

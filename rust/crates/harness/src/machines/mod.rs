@@ -472,65 +472,63 @@ mod tests {
             generation: GenerationRef::new(filesystem.clone(), [2; 32], Some("1".into()))?,
         };
         let process = ResourceRevision::Process(checkpoint);
-        let seed = ForkSeed {
-            summary: None,
-            operation_id: OperationId::from_bytes([3; 16]),
-            parent,
-            parent_revision: 0,
-            child,
-            child_agent: AgentId::from_bytes([4; 16]),
-            resources: vec![
-                CapturedResource {
-                    source: history.clone(),
-                    revision: history,
+        let seed = ForkSeed { history_witness: None, summary: None,
+        operation_id: OperationId::from_bytes([3; 16]),
+        parent,
+        parent_revision: 0,
+        child,
+        child_agent: AgentId::from_bytes([4; 16]),
+        resources: vec![
+            CapturedResource {
+                source: history.clone(),
+                revision: history,
+            },
+            CapturedResource {
+                source: project,
+                revision: child_project,
+            },
+            CapturedResource {
+                source: process.clone(),
+                revision: process,
+            },
+            CapturedResource {
+                source: ResourceRevision::PrivateVolume {
+                    volume: VolumeRef::new(
+                        filesystem.clone(),
+                        "parent-scratch",
+                        VolumeClass::AgentPrivate,
+                        VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+                    )?,
+                    generation: GenerationRef::new(filesystem.clone(), [98; 32], None)?,
+                    paths: Vec::new(),
                 },
-                CapturedResource {
-                    source: project,
-                    revision: child_project,
+                revision: ResourceRevision::PrivateVolume {
+                    volume: VolumeRef::new(
+                        filesystem.clone(),
+                        "child-private",
+                        VolumeClass::AgentPrivate,
+                        VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
+                    )?,
+                    generation: GenerationRef::new(filesystem.clone(), [99; 32], None)?,
+                    paths: Vec::new(),
                 },
-                CapturedResource {
-                    source: process.clone(),
-                    revision: process,
-                },
-                CapturedResource {
-                    source: ResourceRevision::PrivateVolume {
-                        volume: VolumeRef::new(
-                            filesystem.clone(),
-                            "parent-scratch",
-                            VolumeClass::AgentPrivate,
-                            VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
-                        )?,
-                        generation: GenerationRef::new(filesystem.clone(), [98; 32], None)?,
-                        paths: Vec::new(),
-                    },
-                    revision: ResourceRevision::PrivateVolume {
-                        volume: VolumeRef::new(
-                            filesystem.clone(),
-                            "child-private",
-                            VolumeClass::AgentPrivate,
-                            VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
-                        )?,
-                        generation: GenerationRef::new(filesystem.clone(), [99; 32], None)?,
-                        paths: Vec::new(),
-                    },
-                },
-            ],
-            omissions: Vec::new(),
-            child_private_volume: VolumeRef::new(
-                filesystem.clone(),
-                "child-private",
-                VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
-            )?,
-            child_private_generation: GenerationRef::new(filesystem, [3; 32], Some("1".into()))?,
-            inherited_context: Vec::new(),
-            shared_grants: Vec::new(),
-            attached_agents: Vec::new(),
-            reference_grants: Vec::new(),
-            attachment_manifests: Vec::new(),
-            inherited_through_sequence: 0,
-            boundary: None,
-        };
+            },
+        ],
+        omissions: Vec::new(),
+        child_private_volume: VolumeRef::new(
+            filesystem.clone(),
+            "child-private",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
+        )?,
+        child_private_generation: GenerationRef::new(filesystem, [3; 32], Some("1".into()))?,
+        inherited_context: Vec::new(),
+        shared_grants: Vec::new(),
+        attached_agents: Vec::new(),
+        reference_grants: Vec::new(),
+        attachment_manifests: Vec::new(),
+        inherited_through_sequence: 0,
+        boundary: None, };
         host.verify(&seed).await?;
         let ResourceRevision::Project {
             volume: child_project,

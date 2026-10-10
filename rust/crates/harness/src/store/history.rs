@@ -71,6 +71,48 @@ impl<P: StreamProvider> HistoryReader<P> {
         })
     }
 
+    /// Explicitly hydrates one finite logical prefix for fork grant capture.
+    /// Normal turns never call this archival operation. Every message's atomic
+    /// locator and canonical event share the supplied input allowance.
+    pub async fn fork_history(
+        &self,
+        parent: &crate::core::Reducer,
+        through_sequence: u64,
+        limits: HistoryReadLimits,
+    ) -> Result<crate::fork::PreparedForkHistory> {
+        self.verifier.verify_audience(parent.authority())?;
+        let source = parent.conversation()
+            .ok_or_else(|| Error::Invalid("fork archive parent is unbound".into()))?;
+        if through_sequence > source.logical_revision() {
+            return Err(Error::Invalid("fork archive exceeds the logical parent cut".into()));
+        }
+        let messages = self.conversation_range(
+            &HistoryCursor {
+                authority: parent.authority().clone(),
+                after_revision: 0,
+                through_revision: parent.revision(),
+            },
+            0,
+            through_sequence,
+            limits,
+        ).await?;
+        let mut conversation = crate::conversation::ConversationState::selected_view(messages)?;
+        conversation.agent = source.agent;
+        if through_sequence >= source.resident_after_sequence()
+            && conversation.history_prefix_digest(through_sequence)?
+                != source.history_prefix_digest(through_sequence)?
+        {
+            return Err(Error::Storage("fork archive differs from the authenticated parent prefix".into()));
+        }
+        let proof = self.verifier.fork_history_selection_proof(
+            parent.revision(), through_sequence, conversation.agent,
+            conversation.history_prefix_digest(through_sequence)?,
+        )?;
+        Ok(crate::fork::PreparedForkHistory::from_archive(
+            parent.authority().clone(), parent.revision(), conversation, proof,
+        ))
+    }
+
     /// Captures an admitted Summary fork through cold authenticated indexes.
     /// Parent publication and the child's original causal binding share the
     /// supplied history allowance: two canonical events and four bounded records.

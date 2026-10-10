@@ -33,10 +33,9 @@ use futures::TryStreamExt as _;
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 
-/// Existing default retained until the native receipt consumer adopts the
-/// authoritative async lookup. Finite retirement is currently explicit opt-in;
-/// default activation remains required composition work after consumer landing.
-pub const DEFAULT_TERMINAL_EFFECTS: usize = usize::MAX;
+/// Finite recent terminal cache. Original results and identities are recovered
+/// through the authenticated bounded archive; uncertainty remains resident.
+pub const DEFAULT_TERMINAL_EFFECTS: usize = 64;
 
 fn fork_child_binding(seed: &ForkSeed) -> Result<(OperationId, EventReference)> {
     let revision = seed

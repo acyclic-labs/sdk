@@ -521,75 +521,73 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             );
         }
         let inherited = captured.file.clone();
-        let seed = ForkSeed {
-            summary: None,
-            operation_id: OperationId::from_bytes(identity(level + 80)),
-            parent: authority.clone(),
-            parent_revision: aggregate.reducer().revision(),
-            child: child_authority.clone(),
+        let seed = ForkSeed { history_witness: None, summary: None,
+        operation_id: OperationId::from_bytes(identity(level + 80)),
+        parent: authority.clone(),
+        parent_revision: aggregate.reducer().revision(),
+        child: child_authority.clone(),
+        child_agent,
+        resources: vec![
+            CapturedResource {
+                source: ResourceRevision::PrivateVolume {
+                    volume: private.clone(),
+                    generation: source_private_generation,
+                    paths: Vec::new(),
+                },
+                revision: ResourceRevision::PrivateVolume {
+                    volume: child_private.clone(),
+                    generation: private_fork.generation,
+                    paths: Vec::new(),
+                },
+            },
+            CapturedResource {
+                source: ResourceRevision::History(StreamRef::new(
+                    stream_provider.clone(),
+                    authority.stream_path()?.into_bytes(),
+                    Some(aggregate.reducer().revision().to_string()),
+                )?),
+                revision: ResourceRevision::History(StreamRef::new(
+                    stream_provider.clone(),
+                    authority.stream_path()?.into_bytes(),
+                    Some(aggregate.reducer().revision().to_string()),
+                )?),
+            },
+            CapturedResource {
+                source: ResourceRevision::Project {
+                    volume: project.clone(),
+                    generation: project_head.generation.clone(),
+                },
+                revision: ResourceRevision::Project {
+                    volume: child_project.clone(),
+                    generation: forked.generation.clone(),
+                },
+            },
+            CapturedResource {
+                source: ResourceRevision::SharedVolume(shared.clone()),
+                revision: ResourceRevision::SharedVolume(shared.clone()),
+            },
+        ],
+        omissions: Vec::new(),
+        child_private_volume: child_private.clone(),
+        child_private_generation: captured.generation.clone(),
+        inherited_context: vec![inherited.clone()],
+        shared_grants: vec![SharedGrant {
+            volume: shared.clone(),
             child_agent,
-            resources: vec![
-                CapturedResource {
-                    source: ResourceRevision::PrivateVolume {
-                        volume: private.clone(),
-                        generation: source_private_generation,
-                        paths: Vec::new(),
-                    },
-                    revision: ResourceRevision::PrivateVolume {
-                        volume: child_private.clone(),
-                        generation: private_fork.generation,
-                        paths: Vec::new(),
-                    },
-                },
-                CapturedResource {
-                    source: ResourceRevision::History(StreamRef::new(
-                        stream_provider.clone(),
-                        authority.stream_path()?.into_bytes(),
-                        Some(aggregate.reducer().revision().to_string()),
-                    )?),
-                    revision: ResourceRevision::History(StreamRef::new(
-                        stream_provider.clone(),
-                        authority.stream_path()?.into_bytes(),
-                        Some(aggregate.reducer().revision().to_string()),
-                    )?),
-                },
-                CapturedResource {
-                    source: ResourceRevision::Project {
-                        volume: project.clone(),
-                        generation: project_head.generation.clone(),
-                    },
-                    revision: ResourceRevision::Project {
-                        volume: child_project.clone(),
-                        generation: forked.generation.clone(),
-                    },
-                },
-                CapturedResource {
-                    source: ResourceRevision::SharedVolume(shared.clone()),
-                    revision: ResourceRevision::SharedVolume(shared.clone()),
-                },
-            ],
-            omissions: Vec::new(),
-            child_private_volume: child_private.clone(),
-            child_private_generation: captured.generation.clone(),
-            inherited_context: vec![inherited.clone()],
-            shared_grants: vec![SharedGrant {
-                volume: shared.clone(),
-                child_agent,
-                operations: BTreeSet::from([VolumeOperation::Read]),
-            }]
-            .into_iter()
-            .chain((level == 1 || level == DEEP_RETRY).then_some(SharedGrant {
-                volume: shared.clone(),
-                child_agent: AgentId::from_bytes([201; 16]),
-                operations: BTreeSet::from([VolumeOperation::Read]),
-            }))
-            .collect(),
-            attached_agents,
-            reference_grants: captured.reference_grants,
-            attachment_manifests: captured.attachment_manifests,
-            inherited_through_sequence: if level == 1 { 2 } else { 1 },
-            boundary: None,
-        };
+            operations: BTreeSet::from([VolumeOperation::Read]),
+        }]
+        .into_iter()
+        .chain((level == 1 || level == DEEP_RETRY).then_some(SharedGrant {
+            volume: shared.clone(),
+            child_agent: AgentId::from_bytes([201; 16]),
+            operations: BTreeSet::from([VolumeOperation::Read]),
+        }))
+        .collect(),
+        attached_agents,
+        reference_grants: captured.reference_grants,
+        attachment_manifests: captured.attachment_manifests,
+        inherited_through_sequence: if level == 1 { 2 } else { 1 },
+        boundary: None, };
         seed.validate()?;
         if level == DEEP_RETRY {
             let attached = AgentId::from_bytes([201; 16]);
@@ -979,51 +977,49 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             );
             assert_eq!(aggregate.reducer().revision(), seed.parent_revision);
         }
-        let report = ForkReport {
-            summary: None,
-            request: ForkRequest {
-                operation_id: seed.operation_id,
-                parent: seed.parent.clone(),
-                parent_revision: seed.parent_revision,
-                child: seed.child.clone(),
-                child_agent: seed.child_agent,
-                attached_agents: seed.attached_agents.clone(),
-                preparation: ForkPreparation {
-                    summary: None,
-                    child_project_volume: match &seed.resources[2].revision {
-                        ResourceRevision::Project { volume, .. } => volume.clone(),
-                        _ => unreachable!("fork seed includes the child project"),
-                    },
-                    child_private_volume: seed.child_private_volume.clone(),
-                    inherited_through_sequence: seed.inherited_through_sequence,
-                    maximum_inherited_messages: acyclic_harness::fork::MAX_FORK_INHERITED_MESSAGES,
-                    maximum_inherited_bytes: 64 * 1024 * 1024,
-                    maximum_inherited_references: 65_536,
+        let report = ForkReport { history_witness: None, summary: None,
+        request: ForkRequest {
+            operation_id: seed.operation_id,
+            parent: seed.parent.clone(),
+            parent_revision: seed.parent_revision,
+            child: seed.child.clone(),
+            child_agent: seed.child_agent,
+            attached_agents: seed.attached_agents.clone(),
+            preparation: ForkPreparation {
+                summary: None,
+                child_project_volume: match &seed.resources[2].revision {
+                    ResourceRevision::Project { volume, .. } => volume.clone(),
+                    _ => unreachable!("fork seed includes the child project"),
                 },
-                selections: seed
-                    .resources
-                    .iter()
-                    .map(|resource| ForkSelection {
-                        revision: resource.source.clone(),
-                        required: true,
-                    })
-                    .collect(),
-                boundary: seed.boundary.clone(),
+                child_private_volume: seed.child_private_volume.clone(),
+                inherited_through_sequence: seed.inherited_through_sequence,
+                maximum_inherited_messages: acyclic_harness::fork::MAX_FORK_INHERITED_MESSAGES,
+                maximum_inherited_bytes: 64 * 1024 * 1024,
+                maximum_inherited_references: 65_536,
             },
-            captures: seed
+            selections: seed
                 .resources
                 .iter()
-                .cloned()
-                .map(Capture::Captured)
+                .map(|resource| ForkSelection {
+                    revision: resource.source.clone(),
+                    required: true,
+                })
                 .collect(),
-            child_private_volume: seed.child_private_volume.clone(),
-            child_private_generation: seed.child_private_generation.clone(),
-            inherited_context: seed.inherited_context.clone(),
-            inherited_through_sequence: seed.inherited_through_sequence,
-            shared_grants: seed.shared_grants.clone(),
-            reference_grants: seed.reference_grants.clone(),
-            attachment_manifests: seed.attachment_manifests.clone(),
-        };
+            boundary: seed.boundary.clone(),
+        },
+        captures: seed
+            .resources
+            .iter()
+            .cloned()
+            .map(Capture::Captured)
+            .collect(),
+        child_private_volume: seed.child_private_volume.clone(),
+        child_private_generation: seed.child_private_generation.clone(),
+        inherited_context: seed.inherited_context.clone(),
+        inherited_through_sequence: seed.inherited_through_sequence,
+        shared_grants: seed.shared_grants.clone(),
+        reference_grants: seed.reference_grants.clone(),
+        attachment_manifests: seed.attachment_manifests.clone(), };
         assert_eq!(report.clone().into_seed()?, seed);
         if level == 1 {
             let verifier = CompositeForkVerifier::new(vec![

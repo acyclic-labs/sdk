@@ -110,6 +110,54 @@ impl InheritedConversationPrefix {
     }
 }
 
+/// A finite, authenticated archive selection used only during explicit fork
+/// preparation. It is not a second journal or permission to publish a child.
+#[derive(Clone, Debug)]
+pub struct PreparedForkHistory {
+    parent: Authority,
+    parent_revision: u64,
+    conversation: crate::conversation::ConversationState,
+    attestation: [u8; 32],
+}
+
+impl PreparedForkHistory {
+    pub(crate) fn from_archive(
+        parent: Authority,
+        parent_revision: u64,
+        conversation: crate::conversation::ConversationState,
+        attestation: [u8; 32],
+    ) -> Self {
+        Self { parent, parent_revision, conversation, attestation }
+    }
+
+    /// Original parent whose indexed records were authenticated.
+    #[must_use]
+    pub const fn parent(&self) -> &Authority { &self.parent }
+
+    /// Exact canonical event cut of the archive selection.
+    #[must_use]
+    pub const fn parent_revision(&self) -> u64 { self.parent_revision }
+
+    /// Inclusive logical message cut, independent of parent residency.
+    #[must_use]
+    pub fn through_sequence(&self) -> u64 { self.conversation.logical_revision() }
+
+    pub(crate) const fn conversation(&self) -> &crate::conversation::ConversationState {
+        &self.conversation
+    }
+
+    pub(crate) fn verify(&self, verifier: &crate::core::AuthorityVerifier) -> Result<()> {
+        verifier.verify_audience(&self.parent)?;
+        let digest = self.conversation.history_prefix_digest(self.through_sequence())?;
+        if self.attestation != verifier.fork_history_selection_proof(
+            self.parent_revision, self.through_sequence(), self.conversation.agent, digest,
+        )? {
+            return Err(Error::Unauthorized("fork archive belongs to another issuer".into()));
+        }
+        Ok(())
+    }
+}
+
 /// Provider-owned asynchronous fence guarding one fork publication.
 pub type ForkFenceFuture<'a> = BoxFuture<'a, Result<Box<dyn ForkPublicationGuard>>>;
 
@@ -1272,6 +1320,8 @@ pub struct ForkReport {
     pub shared_grants: Vec<SharedGrant>,
     /// Exact parent-owned references retained for child and attached readers.
     pub reference_grants: Vec<ReferenceGrant>,
+    /// Original issuer's proof of complete archived reference/grant capture.
+    pub history_witness: Option<[u8; 32]>,
     /// Published manifests whose complete private members must remain readable.
     pub attachment_manifests: Vec<FileRef>,
 }
@@ -1422,6 +1472,7 @@ impl ForkReport {
             inherited_through_sequence: self.inherited_through_sequence,
             shared_grants: self.shared_grants,
             reference_grants: self.reference_grants,
+            history_witness: self.history_witness,
             attachment_manifests: self.attachment_manifests,
             boundary: self.request.boundary,
         };
@@ -1464,6 +1515,9 @@ pub struct ForkSeed {
     pub shared_grants: Vec<SharedGrant>,
     /// Parent-approved read-only access to pinned references.
     pub reference_grants: Vec<ReferenceGrant>,
+    /// Mandatory issuer proof when the selected prefix is no longer resident.
+    /// Binds this complete seed, not merely a caller-supplied history digest.
+    pub history_witness: Option<[u8; 32]>,
     /// Exact published attachment lists. Each reader needs owner, selected
     /// volume, or direct exact-file authority for the manifest itself.
     pub attachment_manifests: Vec<FileRef>,
@@ -2124,6 +2178,7 @@ mod tests {
         )?);
         let mut seed = ForkSeed {
             summary: None,
+            history_witness: None,
             operation_id: OperationId::from_bytes([1; 16]),
             parent,
             parent_revision: 3,
@@ -2337,6 +2392,7 @@ mod tests {
         )?);
         let report = ForkReport {
             summary: None,
+            history_witness: seed.history_witness,
             request: ForkRequest {
                 operation_id: seed.operation_id,
                 parent: seed.parent.clone(),
