@@ -165,7 +165,7 @@ async function launchFirefox(profile) {
   const driver = spawn(process.env.GECKODRIVER ?? "geckodriver", ["--port", "0"], {
     stdio: ["ignore", "pipe", "pipe"],
   });
-  const exited = new Promise(resolveExit => driver.once("exit", resolveExit));
+  const exited = new Promise(resolveExit => driver.once("close", resolveExit));
   let logs = "";
   const endpoint = await new Promise((resolveEndpoint, reject) => {
     const timeout = setTimeout(() => reject(new Error(`geckodriver did not listen: ${logs}`)), 30_000);

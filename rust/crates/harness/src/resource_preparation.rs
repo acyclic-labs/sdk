@@ -181,3 +181,150 @@ impl<P: acyclic_stream::StreamProvider> ResourcePreparationLease
         Box::pin(async move { self.verify(settlement).await })
     }
 }
+
+/// An operation declared by a trusted creation provider for one exact resource.
+/// These labels are requests, not bearer authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CreatedResourceOperation {
+    /// Provider-neutral operation on this resource only.
+    Named(String),
+    /// Actual filesystem content read authority for an exact volume.
+    ReadVolume(crate::conversation::VolumeRef),
+    /// Actual filesystem content publication authority for an exact volume.
+    WriteVolume(crate::conversation::VolumeRef),
+}
+
+/// Canonical request label for an operation on one created resource.
+pub fn created_resource_capability(resource: &ResourceRef, operation: &str) -> Result<String> {
+    resource.validate()?;
+    if operation.is_empty() || operation.len() > crate::COMPONENT_LABEL_MAX_BYTES
+        || operation.chars().any(char::is_control)
+    {
+        return Err(Error::Invalid("created resource operation is invalid".into()));
+    }
+    let bytes = crate::contract::canonical_json_bytes(&(resource, operation))?;
+    Ok(format!("resource:created:{}", blake3::hash(&bytes).to_hex()))
+}
+
+/// Provider-authenticated content handles for an exact created volume.
+/// A configured provider must reauthenticate its retained allocation evidence
+/// whenever these handles read or publish. Raw proof refs cannot create handles.
+#[derive(Clone)]
+pub struct CreatedContentBinding {
+    /// Exact volume mapped by the provider's authenticated allocation record.
+    pub volume: crate::conversation::VolumeRef,
+    /// Existing provider reader/writer machinery, not a second content engine.
+    pub binding: crate::runtime::ContentBindings,
+    /// Selects the task's ordinary content destination; at most one is allowed.
+    pub default_writer: bool,
+}
+
+/// Authenticated result of one explicitly trusted provider verification.
+/// This public record is not authority: only the coordinator consumes it into a
+/// private, operation-bound scope after authenticating the preparation admission.
+#[derive(Clone)]
+pub struct CreatedResourceReceipt {
+    /// Provenance retained with the original allocation.
+    pub origin: ResourceCreationOrigin,
+    /// Exact created identity.
+    pub resource: ResourceRef,
+    /// Exact protected evidence identified in the admitted proof.
+    pub evidence: ResourceRef,
+    /// Immutable original allocation generation, never a mutable resource head.
+    pub allocation_generation: crate::resources::GenerationRef,
+    /// Finite operations declared by this provider's pinned contract.
+    pub operations: Vec<CreatedResourceOperation>,
+    /// Actual content mappings for filesystem-compatible resources.
+    pub content: Vec<CreatedContentBinding>,
+}
+
+/// Trusted provider-neutral verifier registered at the actual task owner.
+/// Implementations authenticate protected allocation records, the immutable
+/// original generation and complete request before returning access operations.
+pub trait ResourceCreationProvider: acyclic_stream::ProviderPlatform {
+    /// Pinned provider namespace, family and immutable contract revision.
+    fn provider(&self) -> &ProviderRef;
+    /// Authenticates evidence without allocating, issuing another request or
+    /// substituting a recovery fence for the receipt's original creation fence.
+    fn verify<'a>(
+        &'a self,
+        request: &'a ResourcePreparationRequest,
+        proof: &'a ResourceCreationProofRef,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<CreatedResourceReceipt>>;
+}
+
+/// A private kernel-produced seal, never deserialized from user input.
+#[derive(Clone)]
+pub(crate) struct CreatedResourceAccess {
+    pub(crate) operation: OperationId,
+    pub(crate) admission_digest: [u8; 32],
+    pub(crate) grants: crate::Capabilities,
+    pub(crate) content: Vec<CreatedContentBinding>,
+}
+
+impl CreatedResourceAccess {
+    pub(crate) fn consume(
+        admission: &TaskAdmissionRecord,
+        receipts: Vec<CreatedResourceReceipt>,
+    ) -> Result<Self> {
+        if receipts.len() != admission.resource_proofs.len() || receipts.is_empty() {
+            return Err(Error::Unauthorized("created resource receipts are incomplete".into()));
+        }
+        let mut labels = BTreeSet::new();
+        let mut content = Vec::new();
+        let mut volumes = BTreeSet::new();
+        let mut default_writer = false;
+        for (proof, receipt) in admission.resource_proofs.iter().zip(receipts) {
+            if receipt.resource != proof.resource || receipt.evidence != proof.evidence
+                || receipt.origin.preparation_task != proof.preparation
+                || receipt.origin.intended_child != admission.operation_id
+                || receipt.allocation_generation.as_resource().provider() != &proof.provider
+            {
+                return Err(Error::Unauthorized("created resource receipt changed identity".into()));
+            }
+            for operation in &receipt.operations {
+                let label = match operation {
+                    CreatedResourceOperation::Named(name) => {
+                        created_resource_capability(&receipt.resource, name)?
+                    }
+                    CreatedResourceOperation::ReadVolume(volume) => {
+                        if volume.provider() != &proof.provider {
+                            return Err(Error::Unauthorized("created volume provider differs".into()));
+                        }
+                        volume.capability(crate::conversation::VolumeOperation::Read)?
+                    }
+                    CreatedResourceOperation::WriteVolume(volume) => {
+                        if volume.provider() != &proof.provider {
+                            return Err(Error::Unauthorized("created volume provider differs".into()));
+                        }
+                        volume.capability(crate::conversation::VolumeOperation::Write)?
+                    }
+                };
+                labels.insert(label);
+            }
+            for binding in receipt.content {
+                let read = binding.volume.capability(crate::conversation::VolumeOperation::Read)?;
+                let write = binding.volume.capability(crate::conversation::VolumeOperation::Write)?;
+                if !labels.contains(&read)
+                    || binding.volume.provider() != &proof.provider
+                    || !volumes.insert(crate::contract::canonical_json_bytes(&binding.volume)?)
+                    || binding.binding.writer.as_ref().is_some_and(|writer|
+                        writer.volume() != &binding.volume || !labels.contains(&write))
+                    || (binding.default_writer && (default_writer || binding.binding.writer.is_none()))
+                {
+                    return Err(Error::Unauthorized("created content mapping differs from receipt".into()));
+                }
+                default_writer |= binding.default_writer;
+                content.push(binding);
+            }
+        }
+        Ok(Self {
+            operation: admission.operation_id,
+            admission_digest: *blake3::hash(
+                &crate::contract::canonical_json_bytes(&admission.canonical_value()?)?
+            ).as_bytes(),
+            grants: crate::Capabilities::new(labels),
+            content,
+        })
+    }
+}

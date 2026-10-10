@@ -35,6 +35,7 @@ import {
   type ComponentIdentity,
   type MessageId,
   type Outcome,
+  type PolicyIdentity,
   type OperationId,
   type RuntimeTaskId,
   type TaskMessage,
@@ -1300,7 +1301,7 @@ describe("typed agent runtime", () => {
       state: numberSchema, initial: input => input,
       async transition(_context, state) { return { kind: "finish", output: state }; },
     }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
-    let currentIdentity: ReturnType<HarnessRuntimeState["policyIdentity"]> = null;
+    let currentIdentity: PolicyIdentity | null = null;
     let retained: import("../src/index.js").BatchAdmissionRequest | undefined;
     const host: HarnessRuntimeSpawner & HarnessRuntimeState = {
       policyIdentity: () => currentIdentity,

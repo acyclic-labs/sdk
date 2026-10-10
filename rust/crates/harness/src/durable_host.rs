@@ -4895,6 +4895,7 @@ mod tests {
             };
             let root_admission = |operation_id, input| TaskAdmissionRecord {
                 operation_id,
+                resource_proofs: Vec::new(),
                 task: task.clone(),
                 machine: machine.clone(),
                 input,
