@@ -100,6 +100,7 @@ export const ignored = {
   rust: path =>
     documentation(path) ||
     unrelatedGithub(path) ||
+    path === ".gitleaks.toml" ||
     standaloneProjects(path) ||
     languageGenerator(path) ||
     (path.startsWith("typescript/") && path !== "typescript/packages/filesystem/package.json") ||
@@ -115,7 +116,8 @@ export const ignored = {
     /^rust\/crates\/[^/]+\/(tests|benches)\//.test(path) ||
     ["plugin/", "languages/", "ffi/"].some(prefix => path.startsWith(prefix))),
   // Rust plus the TypeScript workspace.
-  product: path => documentation(path) || unrelatedGithub(path) || standaloneProjects(path) || languageGenerator(path),
+  // Scanner configuration is read by preflight/policy, never an SDK build.
+  product: path => documentation(path) || unrelatedGithub(path) || path === ".gitleaks.toml" || standaloneProjects(path) || languageGenerator(path),
   // Repository-wide metadata, boundary, and license checks.
   repository: path => documentation(path),
   policy: path => documentation(path),

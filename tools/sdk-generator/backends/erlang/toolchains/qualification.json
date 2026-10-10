@@ -1,0 +1,45 @@
+{
+  "schema": "acyclic.sdk.erlang-qualification-pins.v1",
+  "grpcbox_version": "0.18.0",
+  "upstream_lock_sha256": "8ab8a0a9cd6c34fb04abb6c1f759378887e8710469e09cf791991a070e3a4c34",
+  "dependency_inventory_sha256": "e4373c7022a099f77b528173c01972a720af4f4b6338f5945e88c48883ab8ca5",
+  "dependency_files": 188,
+  "packages": {
+    "acceptor_pool": {
+      "application": "acceptor_pool",
+      "version": "1.0.0",
+      "directory": "acceptor_pool-1.0.0",
+      "archive_sha256": "0cbcd83fdc8b9ad2eee2067ef8b91a14858a5883cb7cd800e6fcd5803e158788"
+    },
+    "ts_chatterbox": {
+      "application": "chatterbox",
+      "version": "0.16.0",
+      "directory": "chatterbox-0.16.0",
+      "archive_sha256": "34c145c702f3a8d22f49a189eb34579ef3db68f9a98a82d19b5cf6e390aad54f"
+    },
+    "ctx": {
+      "application": "ctx",
+      "version": "0.6.0",
+      "directory": "ctx-0.6.0",
+      "archive_sha256": "a14ed2d1b67723dbebbe423b28d7615eb0bdcba6ff28f2d1f1b0a7e1d4aa5fc2"
+    },
+    "gproc": {
+      "application": "gproc",
+      "version": "1.2.0",
+      "directory": "gproc-1.2.0",
+      "archive_sha256": "70c6f8c91fa5974296cd87974949d8eab953230414f31c4a623ff75131e0827a"
+    },
+    "hpack_erl": {
+      "application": "hpack",
+      "version": "0.3.0",
+      "directory": "hpack-0.3.0",
+      "archive_sha256": "d6137d7079169d8c485c6962dfe261af5b9ef60fbc557344511c1e65e3d95fb0"
+    },
+    "grpcbox": {
+      "application": "grpcbox",
+      "version": "0.18.0",
+      "directory": "grpcbox-0.18.0",
+      "archive_sha256": "5ec9f8fe664ab51201b32c117a61511a1f9d6316771e3891ba8a88d289a732ab"
+    }
+  }
+}
