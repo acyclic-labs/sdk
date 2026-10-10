@@ -113,7 +113,36 @@ impl TaskGroup {
         T: Send + 'static,
         F: Future<Output = T> + acyclic_stream::ProviderTask + 'static,
     {
-        let id = OperationId::new();
+        self.try_spawn_with_operation(OperationId::new(), future)
+            .await
+    }
+
+    /// Admits one live operation under its caller-retained identity. This
+    /// prevents concurrent duplicates; settled work is still journal-owned.
+    pub async fn try_spawn_with_operation<T, F>(
+        &self,
+        id: OperationId,
+        future: F,
+    ) -> Admission<TaskHandle<T>>
+    where
+        T: Send + 'static,
+        F: Future<Output = T> + acyclic_stream::ProviderTask + 'static,
+    {
+        let mut admission = self
+            .state
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if admission.closed || admission.active.contains_key(&id) {
+            return Admission::Rejected {
+                reason: if admission.closed {
+                    "task group is closed"
+                } else {
+                    "operation is already active"
+                }
+                .into(),
+            };
+        }
         let semaphore = Arc::clone(&self.state.semaphore);
         let guard = ActiveGuard {
             id,
@@ -134,20 +163,8 @@ impl TaskGroup {
         let join = tokio::spawn(task);
         #[cfg(target_arch = "wasm32")]
         let join = tokio::task::spawn_local(task);
-        {
-            let mut admission = self
-                .state
-                .admission
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if admission.closed {
-                join.abort();
-                return Admission::Rejected {
-                    reason: "task group is closed".into(),
-                };
-            }
-            admission.active.insert(id, join.abort_handle());
-        }
+        admission.active.insert(id, join.abort_handle());
+        drop(admission);
         let _ = start.send(());
         Admission::Accepted(TaskHandle {
             id,
@@ -248,6 +265,26 @@ impl<T> TaskHandle<T> {
     pub fn cancel(&self) {
         if let Some(join) = &self.join {
             join.abort();
+        }
+    }
+
+    /// Waits for a terminal outcome, cancelling this task if the wait is
+    /// dropped. Ordinary result observation retains its existing semantics.
+    pub fn result_owned(self) -> impl Future<Output = Outcome<T>> {
+        struct CancelOnDrop(Option<AbortHandle>);
+        impl Drop for CancelOnDrop {
+            fn drop(&mut self) {
+                if let Some(handle) = &self.0 {
+                    handle.abort();
+                }
+            }
+        }
+        let guard = CancelOnDrop(self.join.as_ref().map(JoinHandle::abort_handle));
+        async move {
+            let mut guard = guard;
+            let outcome = self.result().await;
+            guard.0 = None;
+            outcome
         }
     }
 
@@ -391,6 +428,98 @@ mod tests {
             recursive_sum(TaskGroup::new(8), (1..=16).collect(), 2).await,
             Outcome::Succeeded(136)
         );
+    }
+
+    #[tokio::test]
+    async fn named_admission_rejects_active_duplicates_and_allows_settled_retry() {
+        let group = TaskGroup::new(2);
+        let operation = OperationId::new();
+        let Admission::Accepted(handle) = group
+            .try_spawn_with_operation(operation, std::future::pending::<u64>())
+            .await
+        else {
+            panic!("first admission rejected")
+        };
+        assert_eq!(*handle.id(), operation);
+        assert!(matches!(
+            group
+                .try_spawn_with_operation(operation, async { 99_u64 })
+                .await,
+            Admission::Rejected { .. }
+        ));
+        assert!(
+            group
+                .state
+                .admission
+                .lock()
+                .unwrap()
+                .active
+                .contains_key(&operation)
+        );
+        handle.cancel();
+        assert_eq!(handle.result().await, Outcome::Cancelled);
+        let Admission::Accepted(retried) = group
+            .try_spawn_with_operation(operation, async { 7_u64 })
+            .await
+        else {
+            panic!("settled retry rejected")
+        };
+        assert_eq!(*retried.id(), operation);
+        assert_eq!(retried.result().await, Outcome::Succeeded(7));
+        group.close();
+        assert!(matches!(
+            group
+                .try_spawn_with_operation(operation, async { 9_u64 })
+                .await,
+            Admission::Rejected { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn dropping_an_owned_wait_cancels_only_its_task() -> Result<(), Box<dyn std::error::Error>>
+    {
+        struct MarkDropped(Arc<AtomicBool>);
+        impl Drop for MarkDropped {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let group = TaskGroup::new(2);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&dropped);
+        let (started, observed) = tokio::sync::oneshot::channel();
+        let handle = group
+            .spawn(async move {
+                let _guard = MarkDropped(flag);
+                let _ = started.send(());
+                std::future::pending::<u64>().await
+            })
+            .await;
+        observed.await?;
+        let other = group.spawn(std::future::pending::<u64>()).await;
+        // Cancellation must also work when the returned wait was never polled.
+        drop(handle.result_owned());
+        for _ in 0..16 {
+            if dropped.load(Ordering::SeqCst) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(dropped.load(Ordering::SeqCst));
+        assert!(
+            !other
+                .join
+                .as_ref()
+                .ok_or("missing other task")?
+                .is_finished()
+        );
+        other.cancel();
+        assert_eq!(other.result().await, Outcome::Cancelled);
+        assert_eq!(
+            group.spawn(async { 11_u64 }).await.result_owned().await,
+            Outcome::Succeeded(11)
+        );
+        Ok(())
     }
 
     #[tokio::test]

@@ -493,6 +493,18 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
         input: TurnInput,
         journal: &'a dyn ExecutionJournal,
     ) -> BoxFuture<'a, Result<TurnOutput>>;
+
+    /// Runs with the original ordinary task admission. Custom executors
+    /// may consume this context while retaining their complete loop.
+    fn execute_with_context<'a>(
+        &'a self,
+        context: &'a crate::runtime::TaskContext,
+        input: TurnInput,
+        journal: &'a dyn ExecutionJournal,
+    ) -> BoxFuture<'a, Result<TurnOutput>> {
+        let _ = context;
+        self.execute(input, journal)
+    }
 }
 
 /// Complete default streaming model/tool loop assembled from replaceable values.
@@ -2672,6 +2684,20 @@ impl StockExecutor {
 }
 
 impl Executor for StockExecutor {
+    fn execute_with_context<'a>(
+        &'a self,
+        context: &'a crate::runtime::TaskContext,
+        input: TurnInput,
+        journal: &'a dyn ExecutionJournal,
+    ) -> BoxFuture<'a, Result<TurnOutput>> {
+        Box::pin(async move {
+            let bound = self
+                .clone()
+                .with_task_context(context, input.operation_id)?;
+            bound.execute(input, journal).await
+        })
+    }
+
     fn execute<'a>(
         &'a self,
         input: TurnInput,

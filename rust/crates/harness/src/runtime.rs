@@ -3311,6 +3311,30 @@ impl AgentHarness {
             Vec::new(),
             definition,
             input,
+            None,
+        )
+        .await
+    }
+
+    /// Admits a registered live task under its original operation identity.
+    /// Durable replay remains with the bound journal, not the live task stack.
+    pub async fn spawn_with_operation<I, O>(
+        self: &Arc<Self>,
+        operation_id: OperationId,
+        definition: &Arc<TaskDefinition<I, O>>,
+        input: I,
+    ) -> Result<RuntimeTask<O>>
+    where
+        I: Serialize + Send + 'static,
+        O: Serialize + DeserializeOwned + Send + 'static,
+    {
+        self.spawn_in_group(
+            &self.live,
+            self.scope.clone(),
+            Vec::new(),
+            definition,
+            input,
+            Some(operation_id),
         )
         .await
     }
@@ -3322,6 +3346,7 @@ impl AgentHarness {
         policies: Vec<(ComponentIdentity, Arc<dyn ToolPolicy>)>,
         definition: &Arc<TaskDefinition<I, O>>,
         input: I,
+        operation_id: Option<OperationId>,
     ) -> Result<RuntimeTask<O>>
     where
         I: Serialize + Send + 'static,
@@ -3358,7 +3383,7 @@ impl AgentHarness {
         let descendants = context_group.child(scope.concurrency_bound(self.concurrency));
         let (identity, receive_identity) = tokio::sync::oneshot::channel();
         let admitted = group
-            .try_spawn(async move {
+            .try_spawn_with_operation(operation_id.unwrap_or_default(), async move {
                 let task_id = receive_identity
                     .await
                     .map_err(|_| Error::Conflict("task identity was not admitted".into()))?;
@@ -4686,6 +4711,7 @@ impl TaskContext {
                 self.policy_overrides.clone(),
                 definition,
                 input,
+                None,
             )
             .await
     }
@@ -5928,6 +5954,7 @@ impl RuntimeGroup {
                 self.policy_overrides.clone(),
                 definition,
                 input,
+                None,
             )
             .await
     }
