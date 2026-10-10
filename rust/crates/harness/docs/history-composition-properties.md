@@ -28,6 +28,62 @@ provider reconciliation own admission and effects.
 | Checkpoint continuation does not rerun settled work. | Native canonical conversation execution reuses the committed retained projection and admitted response artifacts. Subsequent stages receive a fresh delta; a covered historical current-input marker is cleared. | The continuation must bind the exact original operation and checkpoint. Reconciliation and lost-ack recovery remain in existing owner journals. |
 | Full, fresh and Summary forks select explicit history semantics. | `ForkHistoryPolicy` pins the original logical history cut, starts fresh, or binds a verified checkpoint projection. The Filesystem preparer copies private execution payloads into child-owned immutable files and binds the complete capture to its seed. `HistoryReader::summary_fork_stage` checks parent publication, the original causal child binding, signed receiving scope and exact reads before using the ordinary pinned stage. | Cold import uses two authenticated event lookups (four bounded records) within one explicit history byte allowance, without restoring either aggregate. Content has separate admitted limits. Full-prefix grant capture still scans parent history; explicit stage capture does not implement automatic receiving-task setup or browser qualification. |
 
+## Original-cut effect archive
+
+Every canonical publication appends a mandatory certificate to one fixed cut
+stream under the original aggregate-tail condition, with the canonical event
+and operation/effect indexes in the same atomic commit. The existing issuer
+MAC binds the complete effect-index root, original authority, canonical path,
+revision and raw canonical digest. The private proof purpose is
+`harness/v1/effect-history-root`; paths derive the current authority domain.
+The certificate supplies observations, never scope or effect admission.
+
+The immutable compressed binary radix index selects the exact last dense
+effect ordinal at the requested canonical cut, including genuine absence.
+Only the update path changes; non-effect publications retain the preceding
+root. Content hashes bind nodes, and a read requires exactly one original
+record at each node path. Missing nodes, changed bytes, invalid branch order,
+wrong authority/cut, non-atomic certificates and missing original transitions
+reject. A missing mandatory certificate requires explicit handling. No later
+index tail or speculative future event determines a historical result.
+
+| Mechanism considered | Cost and correctness at an arbitrary old cut |
+| --- | --- |
+| Original dense effect index alone | Authenticates existing transitions but cannot prove the terminal transition was not omitted. The actual admitted negative control returned older Dispatched state; that candidate was removed. |
+| A current per-effect locator | Does not identify its value at arbitrary older cuts or unrelated-event gaps. Updating all retained locators at every canonical cut costs work proportional to retained effects. |
+| A complete copied map per cut | Provides completeness but serializes and reads the lifetime map, exceeding finite default publication/read work. |
+| Authenticated compressed radix root | Preserves complete original-cut membership and absence with at most 128 ordered branch bits plus one leaf. Updates and reads follow only that bounded path; original typed effect transitions still use the shared core reducer. |
+
+The caller's single byte allowance includes the certificate, raw canonical
+anchor, all traversed nodes and every original index/canonical transition
+record, charged before decoding. Only selected original effect events consume
+the decoded-event allowance. For three transitions, pinning and reading a
+maximum-depth path require 137 record reads and 131 tail reads. Exact proof
+bytes succeed and one byte less rejects, including after a later append.
+Publication's private proof input also has a finite allowance; its path is
+bounded by the same 128-bit key space.
+
+The actual Stream observer measures read, tail, write, record, idempotency,
+commit-read and other provider calls; incoming record payloads, attempted write
+payloads and received commit payloads; and unique committed certificate/node
+records. At 1, 100 and 1,000 terminal effects with three fixed active effects,
+the original effect takes 11 record reads and five tail reads. The three new
+effect commands at the 1,000 sample take 39 reads, 31 tails and 27 writes,
+reading 15,977 payload bytes and sending/receiving 13,809 payload bytes.
+An admitted 129-key adversarial archive exercises all 128 branches: its original
+three-transition read takes 42,880 payload bytes and the stated maximum reads.
+Every sampled and adversarial three-command publication stays within 512 calls per observed method category
+or records and 1 MiB of payload in each measured direction.
+
+Retention remains proportional to history. The 1,000-terminal sample retains
+24,284 immutable nodes (6,117,494 payload bytes) and 13,010 certificates
+(6,436,108 payload bytes); the latter include 10,000 unrelated canonical events.
+These are complete Stream-provider measurements for this fixture, excluding
+wire control-envelope overhead, Filesystem backend IO and whole-process RSS.
+The finite terminal cache remains explicit until the qualified native receipt
+consumer lands; these measurements do not activate the default or qualify
+10,000 model turns.
+
 ## Verification surfaces
 
 The native library tests exercise authenticated snapshot restoration, malformed
