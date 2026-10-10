@@ -289,6 +289,7 @@ where
 
     fn authority(&self) -> NativeProcessAuthority {
         NativeProcessAuthority { verifier: self.issuer.verifier(), history_limits: crate::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 }, content: self.content.clone(),
+        result_content: self.content.clone(),
         results: self.results.clone(),
         approvals: self.approvals.clone(), }
     }
@@ -1885,6 +1886,7 @@ async fn reopen_native(
             seed.plan.clone(),
             seed.approval,
             NativeProcessAuthority { verifier: issuer.verifier(), history_limits: crate::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 }, content: content.clone(),
+            result_content: content.clone(),
             results,
             approvals, },
         )
@@ -3193,7 +3195,7 @@ async fn cancellation_after_actual_provider_drop_keeps_receipt_and_cleans_descen
     assert_eq!(receipt.publication_failure, None);
     assert_eq!(receipt.invocation_failure, None);
     // Cancellation cleanup retains OS output but performs no view publication.
-    assert_eq!(receipt.work, acyclic_fs::WorkCounters::default());
+    assert!(receipt.work.allocation_operations > 0);
     let output: NativeProcessResult =
         crate::contract::json_from_slice(&fixture.content.read(&captured).await?)
             .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -3645,5 +3647,133 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
             fixture.files.write(&destination, "/release-check.txt", b"settled").await?;
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn original_supervisor_stop_is_attempt_fenced_and_does_not_cancel_the_native_view() -> Result<()> {
+    let fixture = process_fixture("wait", true).await?;
+    let process = fixture.provider().await?;
+    let effects = fixture.effects(process.clone())?;
+    let owner = fixture.owner.clone();
+    let command = fixture.command;
+    let plan = fixture.plan.clone();
+    let dispatch = tokio::spawn(async move { effects.run_task_effect(&owner, command, plan).await });
+    let root = fixture.view.manifest().options.root.clone();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !root.join("ready").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await.map_err(|error| Error::Storage(error.to_string()))?;
+    let attempt = crate::EffectAttemptId::from_bytes(
+        task_effect_id(fixture.owner.task_binding().0, fixture.command)?.into_bytes(),
+    );
+    let cleanup_cancellation = acyclic_fs::CancellationToken::new();
+    let budget = fixture.view.manifest().validation_budget()?;
+    let work = acyclic_fs::NativeMaterializationWork::new(budget, &cleanup_cancellation)
+        .map_err(|failure| Error::Storage(failure.to_string()))?;
+    assert!(matches!(
+        process.signal_stop(crate::EffectAttemptId::from_bytes([255; 16]), &work, &cleanup_cancellation).await,
+        Err(crate::filesystem::NativeReceiptError::Record(_)),
+    ));
+    // A reopened provider can inspect the original journal, but it never owns
+    // the warm supervisor and cannot hydrate control from launch intent/PID.
+    let reopened = Process::recover(
+        fixture.owner.clone(), fixture.command, fixture.plan.clone(),
+        fixture.approval, fixture.authority(),
+    ).await?;
+    assert!(matches!(
+        reopened.signal_stop(attempt, &work, &cleanup_cancellation).await,
+        Err(crate::filesystem::NativeReceiptError::Record(_)),
+    ));
+    let mut denied_budget = budget;
+    denied_budget.items_examined = 0;
+    let denied = acyclic_fs::NativeMaterializationWork::new(denied_budget, &cleanup_cancellation)
+        .map_err(|failure| Error::Storage(failure.to_string()))?;
+    assert!(matches!(
+        process.signal_stop(attempt, &denied, &cleanup_cancellation).await,
+        Err(crate::filesystem::NativeReceiptError::Native(_)),
+    ));
+    assert!(!dispatch.is_finished());
+    process.signal_stop(attempt, &work, &cleanup_cancellation).await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let receipt = process.request_stop(attempt, &work, &cleanup_cancellation).await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    assert!(receipt.observed);
+    assert!(work.receipt().items_examined > 0);
+    let status = dispatch.await.map_err(|error| Error::Storage(error.to_string()))??;
+    let EffectStatus::Succeeded { result } = &status else {
+        return Err(Error::Storage(format!("owned stop lost its actual captured result: {status:?}")));
+    };
+    assert_native_receipt_binding(
+        &fixture.owner, fixture.command, &fixture.plan, &receipt, &status, true,
+    )?;
+    let output: NativeProcessResult = crate::contract::json_from_slice(
+        &fixture.content.read(result).await?,
+    ).map_err(|error| Error::Invalid(error.to_string()))?;
+    assert!(!output.success);
+    assert!(matches!(
+        output.stop.as_ref(),
+        Some(stop) if stop.kind == NativeProcessStopKind::ControlStopped && stop.cleanup_completed,
+    ));
+    // Stop is physical supervisor control, not task cancellation, view token
+    // cancellation, filesystem publication, or namespace release authority.
+    fixture.owner.verify(false).await?;
+    fixture.view.validate_for_dispatch(budget).await
+        .map_err(|failure| Error::Storage(failure.to_string()))?;
+    assert!(fixture.files.read(&workspace_ref(
+        fixture.destination.provider().clone(), &fixture.destination.storage_name()?,
+    )?, None, "/output.txt", 64).await.is_err());
+    assert_eq!(reopened.receipt(attempt).await?, Some(receipt));
+    tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
+    assert!(!root.join("escaped").exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn original_warm_supervisor_stop_settles_after_real_task_cancellation() -> Result<()> {
+    let fixture = process_fixture("wait", true).await?;
+    let process = fixture.provider().await?;
+    let effects = fixture.effects(process.clone())?;
+    let owner = fixture.owner.clone();
+    let command = fixture.command;
+    let plan = fixture.plan.clone();
+    let dispatch = tokio::spawn(async move { effects.run_task_effect(&owner, command, plan).await });
+    let root = fixture.view.manifest().options.root.clone();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !root.join("ready").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await.map_err(|error| Error::Storage(error.to_string()))?;
+    let attempt = crate::EffectAttemptId::from_bytes(
+        task_effect_id(fixture.owner.task_binding().0, fixture.command)?.into_bytes(),
+    );
+    // True-close may have already durably cancelled the task. Physical stop
+    // still requires its same original current settlement fence, not dispatch.
+    fixture.task.task_host().cancel(fixture.owner.task_binding().0).await?;
+    let cleanup_cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        fixture.view.manifest().validation_budget()?, &cleanup_cancellation,
+    ).map_err(|failure| Error::Storage(failure.to_string()))?;
+    process.signal_stop(attempt, &work, &cleanup_cancellation).await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let receipt = process.request_stop(attempt, &work, &cleanup_cancellation).await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    assert!(receipt.observed);
+    assert!(receipt.work.allocation_operations > 0);
+    let captured = process.output(attempt).await?
+        .ok_or_else(|| Error::Storage("cancelled original supervisor lost captured output".into()))?;
+    let output: NativeProcessResult = crate::contract::json_from_slice(
+        &fixture.content.read(&captured).await?,
+    ).map_err(|error| Error::Invalid(error.to_string()))?;
+    assert!(matches!(
+        output.stop.as_ref(),
+        Some(stop) if stop.kind == NativeProcessStopKind::ControlStopped && stop.cleanup_completed,
+    ));
+    // The enclosing effect caller is not the supervisor being joined. Its
+    // acknowledgement may be fenced by task closure; the receipt is canonical.
+    let _ = dispatch.await.map_err(|error| Error::Storage(error.to_string()))?;
+    assert!(fixture.owner.verify(false).await.is_err());
+    assert!(fixture.owner.verify(true).await.is_ok());
     Ok(())
 }

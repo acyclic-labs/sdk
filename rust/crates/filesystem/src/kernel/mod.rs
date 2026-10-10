@@ -124,6 +124,7 @@ pub use file_table::{
 pub(crate) use file_table::{
     decode_file_record, encode_file_record, encode_file_record_measured,
     encode_file_table_leaf_records_measured,
+    lookup_file_record_async_with_custody, lookup_file_records_async_with_custody,
 };
 pub use file_table_mutation::{
     FileTableMutation, FileTableMutationError, FileTableMutationFailure, FileTableMutationReceipt,
@@ -168,6 +169,7 @@ pub use metadata::{
 pub use mutation::{FileMutation, Mutation, MutationPlan, MutationPlanError, MutationPlanFailure};
 pub use namespace_path::{NamespacePath, NamespacePathError};
 pub(crate) use path_access::{
+    lookup_path_async_with_custody, lookup_paths_selected_async,
     observe_path_edges_async, observe_path_refs_async, observe_path_with_data_async,
     observe_paths_with_data_async,
 };
@@ -202,6 +204,7 @@ pub use read::{
     TreeBatchLookup, TreeLookup, TreeReadError, TreeReadFailure, lookup_tree_entries,
     lookup_tree_entries_async, lookup_tree_entry, lookup_tree_entry_async,
 };
+pub(crate) use read::lookup_tree_entry_async_with_custody;
 pub(crate) use rebase::{ProofDataClaim, ProofDataCustody};
 pub use rebase::{
     AsyncRebaseProbe, CheckoutDependencies, Dependency, DependencyError, DependencyRegion,
@@ -249,4 +252,4 @@ pub use volume::{
     VolumeCreated, VolumeCreatedError, decode_volume_created, encode_volume_created,
     volume_authority_id,
 };
-pub(crate) use volume::encode_volume_created_measured;
+pub(crate) use volume::{CONFIG_ENCODED_BYTES, encode_volume_created_measured};

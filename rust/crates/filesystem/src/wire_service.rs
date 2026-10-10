@@ -2439,6 +2439,7 @@ fn status(error: &WorkspaceError) -> Status {
         WorkspaceError::NotFound => Status::not_found(error.to_string()),
         WorkspaceError::Name(_)
         | WorkspaceError::Path(_)
+        | WorkspaceError::NamespacePath(_)
         | WorkspaceError::ReadLimitExceeded
         | WorkspaceError::InvalidMergeResolution
         | WorkspaceError::NotRegularFile
@@ -2459,7 +2460,7 @@ fn status(error: &WorkspaceError) -> Status {
         | WorkspaceError::NotFork => Status::failed_precondition(error.to_string()),
         WorkspaceError::Cancelled(_) => Status::cancelled(error.to_string()),
         WorkspaceError::Work(_) => Status::resource_exhausted(error.to_string()),
-        WorkspaceError::Engine(_) => Status::unavailable(error.to_string()),
+        WorkspaceError::Engine(_) | WorkspaceError::Filesystem(_) => Status::unavailable(error.to_string()),
     }
 }
 

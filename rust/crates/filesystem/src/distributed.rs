@@ -34,23 +34,34 @@ pub(crate) struct ForkWork<'a> {
     pub(crate) budget: WorkBudget,
     pub(crate) cancellation: &'a CancellationToken,
     pub(crate) allocations: crate::kernel::allocation::AllocationLedger,
+    /// Admission-only upper witness for retained opaque provider payloads.
+    /// Never reported as an actual owned allocation or allocation operation.
+    opaque_live_upper_bytes: u64,
 }
 
 impl<'a> ForkWork<'a> {
     pub(crate) fn new(budget: WorkBudget, cancellation: &'a CancellationToken) -> Self {
-        Self { work: WorkCounters::default(), budget, cancellation, allocations: Default::default() }
+        Self { work: WorkCounters::default(), budget, cancellation, allocations: Default::default(), opaque_live_upper_bytes: 0 }
     }
 
     pub(crate) fn check(&self) -> Result<(), OperationFailure<AuthorityStoreError>> {
         self.cancellation.check()
             .map_err(|_| OperationFailure::new(AuthorityStoreError::Cancelled, self.work))?;
         self.work.verify(self.budget)
+            .map_err(|error| OperationFailure::new(error.into(), self.work))?;
+        let peak = self.allocations.live_bytes().checked_add(self.opaque_live_upper_bytes)
+            .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), self.work))?;
+        self.work.admit(&WorkCounters { peak_allocation_bytes: peak, ..WorkCounters::default() }, &self.budget)
             .map_err(|error| OperationFailure::new(error.into(), self.work))
     }
 
     pub(crate) fn admit(&self, delta: WorkCounters) -> Result<(), OperationFailure<AuthorityStoreError>> {
         self.check()?;
-        self.work.admit(&delta, &self.budget)
+        let mut admitted = delta;
+        admitted.peak_allocation_bytes = delta.peak_allocation_bytes.max(self.allocations.live_bytes())
+            .checked_add(self.opaque_live_upper_bytes)
+            .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), self.work))?;
+        self.work.admit(&admitted, &self.budget)
             .map_err(|error| OperationFailure::new(error.into(), self.work))
     }
 
@@ -75,6 +86,23 @@ impl<'a> ForkWork<'a> {
 
     pub(crate) fn release_request(&mut self) -> Result<(), OperationFailure<AuthorityStoreError>> {
         self.release(self.allocations.live_bytes())
+    }
+
+    pub(crate) fn hold_opaque(&mut self, bytes: u64) -> Result<(), OperationFailure<AuthorityStoreError>> {
+        let next = self.opaque_live_upper_bytes.checked_add(bytes)
+            .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), self.work))?;
+        let peak = self.allocations.live_bytes().checked_add(next)
+            .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), self.work))?;
+        self.work.admit(&WorkCounters { peak_allocation_bytes: peak, ..WorkCounters::default() }, &self.budget)
+            .map_err(|error| OperationFailure::new(error.into(), self.work))?;
+        self.opaque_live_upper_bytes = next;
+        Ok(())
+    }
+
+    pub(crate) fn release_opaque(&mut self, bytes: u64) -> Result<(), OperationFailure<AuthorityStoreError>> {
+        self.opaque_live_upper_bytes = self.opaque_live_upper_bytes.checked_sub(bytes)
+            .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), self.work))?;
+        Ok(())
     }
 
     pub(crate) fn vec<T>(&mut self, capacity: usize) -> Result<Vec<T>, OperationFailure<AuthorityStoreError>> {
@@ -107,7 +135,12 @@ impl<'a> ForkWork<'a> {
         value.extend_from_slice(domain);
         for field in fields { value.extend_from_slice(field); }
         self.charge(writes)?;
-        Ok(Bytes::from(value))
+        // Audited bytes 1.12 allocates a private sharing owner only for spare capacity.
+        let owner = WorkCounters { allocation_operations: u64::from(value.capacity() != value.len()), ..WorkCounters::default() };
+        self.admit(owner)?;
+        let value = Bytes::from(value);
+        self.charge(owner)?;
+        Ok(value)
     }
 
     pub(crate) fn path(&mut self, authority: AuthorityId, suffix: &str, generation: Option<GenerationId>)
@@ -215,7 +248,7 @@ impl<'a> ForkWork<'a> {
         let mut budget = self.work.remaining(self.budget)
             .map_err(|error| OperationFailure::new(error.into(), self.work))?;
         budget.peak_allocation_bytes = self.budget.peak_allocation_bytes
-            .checked_sub(self.allocations.live_bytes())
+            .checked_sub(self.allocations.live_bytes()).and_then(|bytes| bytes.checked_sub(self.opaque_live_upper_bytes))
             .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), self.work))?;
         Ok(budget)
     }
@@ -2036,6 +2069,108 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         }
     }
 
+    async fn publication_reservation(
+        &self,
+        authority_id: AuthorityId,
+        operation_id: OperationId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<Option<PublicationReservation>> {
+        let mut meter = ForkWork::new(budget, cancellation);
+        meter.check()?;
+        let (gate, gate_tail, active) = self.reservation_gate(authority_id, &mut meter).await?;
+        let gate_bytes = gate.as_str().len() as u64;
+        drop(gate);
+        meter.release(gate_bytes)?;
+        if active != Some(operation_id) { return meter.finish(None); }
+        let unavailable = |work| OperationFailure::new(
+            AuthorityStoreError::ReservationOriginalHeadUnavailable { authority_id, operation_id, gate_tail }, work);
+        let prior_gate = gate_tail.checked_sub(1).ok_or_else(|| unavailable(meter.work))?;
+        let (observation, _retained_key_bytes) = self.reservation_observation(
+            authority_id, operation_id, prior_gate, &mut meter,
+        ).await?;
+        let observation = observation.ok_or_else(|| unavailable(meter.work))?;
+        if !self.qualified_reservation_observation(&observation, authority_id, operation_id, gate_tail) {
+            return Err(unavailable(meter.work));
+        }
+        // The retained request digest authenticates its original tail conditions,
+        // not whichever head the authority happens to expose during this query.
+        let snapshot = self.fork_snapshot(authority_id, &mut meter).await?;
+        let mut request = reservation_request(
+            authority_id, Some(snapshot), operation_id, prior_gate, false, None, &mut meter,
+        )?;
+        let mut original_tails = None;
+        'candidate: for record_tail in (1..=snapshot.record_tail).rev() {
+            for epoch_tail in (1..=snapshot.epoch_tail).rev() {
+                meter.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+                for condition in &mut request.conditions {
+                    if let acyclic_stream::CommitCondition::Tail { path, expected } = condition {
+                        if path.as_str().ends_with("/records") { *expected = record_tail; }
+                        else if path.as_str().ends_with("/epochs") { *expected = epoch_tail; }
+                    }
+                }
+                if reservation_request_digest(&request, &mut meter)? == observation.request_digest {
+                    original_tails = Some((record_tail, epoch_tail));
+                    break 'candidate;
+                }
+            }
+        }
+        let (record_tail, epoch_tail) = original_tails.ok_or_else(|| unavailable(meter.work))?;
+        drop(request);
+        drop(observation);
+        // All query-owned request paths, body and retained original key are gone.
+        // The opaque provider envelope was borrowed, never charged as an allocation.
+        meter.release_opaque(acyclic_stream::MAX_COMMAND_BYTES as u64)?;
+        meter.release_request()?;
+        let epochs = meter.path(authority_id, "/epochs", None)?;
+        let epochs_bytes = epochs.as_str().len() as u64;
+        let epoch_record = self.fork_record(epochs, epoch_tail - 1, &mut meter).await
+            .map_err(|failure| if matches!(failure.error, AuthorityStoreError::Missing) {
+                unavailable(*failure.work)
+            } else { failure })?;
+        meter.release(epochs_bytes)?;
+        let epoch = decode_epoch(&epoch_record.value, EPOCH_DOMAIN)
+            .map_err(|error| OperationFailure::new(error, meter.work))?;
+        drop(epoch_record);
+        let records = meter.path(authority_id, "/records", None)?;
+        let records_bytes = records.as_str().len() as u64;
+        let record = self.fork_record(records, record_tail - 1, &mut meter).await
+            .map_err(|failure| if matches!(failure.error, AuthorityStoreError::Missing) {
+                unavailable(*failure.work)
+            } else { failure })?;
+        meter.release(records_bytes)?;
+        let original_head = if record_tail == 1 {
+            decode_epoch(&record.value, GENESIS_DOMAIN).map_err(|error| OperationFailure::new(error, meter.work))?;
+            Head::genesis(epoch)
+        } else {
+            let durable = StreamsDurableRecord::decode_borrowed(&record.value, STREAM_RECORD_LIMIT)
+                .map_err(|error| OperationFailure::new(AuthorityStoreError::Corrupt(error.to_string()), meter.work))?;
+            let hashing = WorkCounters {
+                bytes_hashed: crate::foundation::AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES.checked_add(durable.payload.len() as u64)
+                    .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), meter.work))?,
+                ..WorkCounters::default()
+            };
+            meter.admit(hashing)?;
+            let digest = authority_commit_digest(authority_id, durable.epoch, durable.sequence,
+                durable.operation_id, durable.fingerprint, durable.previous_digest, durable.payload);
+            meter.charge(hashing)?;
+            if digest != durable.digest || durable.sequence.get().checked_add(1) != Some(record_tail) {
+                return Err(unavailable(meter.work));
+            }
+            Head { epoch, sequence: durable.sequence, digest: durable.digest }
+        };
+        drop(record);
+        // Reconfirm the exact existing gate slot after historical proof reads.
+        let (gate, current_tail, active) = self.reservation_gate(authority_id, &mut meter).await?;
+        let gate_bytes = gate.as_str().len() as u64;
+        drop(gate);
+        meter.release(gate_bytes)?;
+        if current_tail != gate_tail || active != Some(operation_id) { return meter.finish(None); }
+        meter.finish(Some(PublicationReservation {
+            authority_id, operation_id, expected: original_head, gate_tail,
+        }))
+    }
+
     async fn reserve_publication(
         &self,
         authority_id: AuthorityId,
@@ -2044,102 +2179,58 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> AuthorityResult<ReservationOutcome> {
-        cancellation
-            .check()
-            .map_err(|_| OperationFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let snapshot = self
-            .snapshot(authority_id)
-            .await
-            .map_err(OperationFailure::before_work)?;
+        let mut meter = ForkWork::new(budget, cancellation);
+        meter.check()?;
+        let snapshot = self.fork_snapshot(authority_id, &mut meter).await?;
         if snapshot.head != expected {
-            return authority_success(
-                ReservationOutcome::Conflict {
-                    actual: snapshot.head,
-                },
-                authority_read_work(2),
-                budget,
-            );
+            return meter.finish(ReservationOutcome::Conflict { actual: snapshot.head });
         }
-        let gate = publication_gate_path(authority_id).map_err(OperationFailure::before_work)?;
-        let (gate_tail, active) = self
-            .publication_gate(authority_id)
-            .await
-            .map_err(OperationFailure::before_work)?;
+        let (gate, gate_tail, active) = self.reservation_gate(authority_id, &mut meter).await?;
         if active == Some(operation_id) {
-            return authority_success(
-                ReservationOutcome::AlreadyReserved(PublicationReservation {
-                    authority_id,
-                    operation_id,
-                    expected,
-                    gate_tail,
-                }),
-                authority_read_work(3),
-                budget,
-            );
+            let gate_bytes = gate.as_str().len() as u64;
+            drop(gate);
+            meter.release(gate_bytes)?;
+            if !self.reservation_matches_original(
+                authority_id, snapshot, operation_id, gate_tail, &mut meter,
+            ).await? {
+                return Err(OperationFailure::new(
+                    AuthorityStoreError::ReservationOriginalHeadUnavailable {
+                        authority_id, operation_id, gate_tail,
+                    },
+                    meter.work,
+                ));
+            }
+            meter.release_request()?;
+            return meter.finish(ReservationOutcome::AlreadyReserved(PublicationReservation {
+                authority_id, operation_id, expected, gate_tail,
+            }));
         }
         if active.is_some() {
-            return authority_success(
-                ReservationOutcome::Conflict {
-                    actual: snapshot.head,
-                },
-                authority_read_work(3),
-                budget,
-            );
+            drop(gate);
+            meter.release_request()?;
+            return meter.finish(ReservationOutcome::Conflict { actual: snapshot.head });
         }
-        let records = records_path(authority_id).map_err(OperationFailure::before_work)?;
-        let epochs = epochs_path(authority_id).map_err(OperationFailure::before_work)?;
-        let request = acyclic_stream::CommitRequest {
-            conditions: vec![
-                acyclic_stream::CommitCondition::Absent {
-                    path: retirement_path(authority_id).map_err(OperationFailure::before_work)?,
-                },
-                acyclic_stream::CommitCondition::Tail {
-                    path: records,
-                    expected: snapshot.record_tail,
-                },
-                acyclic_stream::CommitCondition::Tail {
-                    path: epochs,
-                    expected: snapshot.epoch_tail,
-                },
-                acyclic_stream::CommitCondition::Tail {
-                    path: gate.clone(),
-                    expected: gate_tail,
-                },
-            ],
-            mutations: vec![acyclic_stream::CommitMutation::Append {
-                path: gate,
-                records: vec![encode_active_reservation(operation_id)],
-            }],
-            idempotency_key: publication_reservation_key(
-                b"reserve-publication",
-                authority_id,
-                operation_id,
-                gate_tail,
-            )
-            .map_err(OperationFailure::before_work)?,
-        };
-        let work = authority_write_work(1, 16);
-        admit_authority(work, budget)?;
-        match self.provider.commit(request).await {
-            Ok(acyclic_stream::CommitOutcome::Committed(_)) => authority_success(
-                ReservationOutcome::Reserved(PublicationReservation {
-                    authority_id,
-                    operation_id,
-                    expected,
-                    gate_tail: gate_tail + 1,
-                }),
-                work,
-                budget,
-            ),
-            Ok(acyclic_stream::CommitOutcome::Conflict(_)) => {
-                let actual = self
-                    .snapshot(authority_id)
-                    .await
-                    .map_err(|error| OperationFailure::new(error, work))?
-                    .head;
-                authority_success(ReservationOutcome::Conflict { actual }, work, budget)
+        let next_gate_tail = gate_tail.checked_add(1)
+            .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), meter.work))?;
+        let request = reservation_request(
+            authority_id, Some(snapshot), operation_id, gate_tail, false, Some(gate), &mut meter,
+        )?;
+        let writes = meter.request_write_work(&request)?;
+        meter.admit(writes)?;
+        let result = self.provider.commit(request).await;
+        meter.charge(commit_work(writes, &result))?;
+        meter.release_request()?;
+        match result {
+            Ok(acyclic_stream::CommitOutcome::Committed(_)) => {
+                meter.finish(ReservationOutcome::Reserved(PublicationReservation {
+                    authority_id, operation_id, expected, gate_tail: next_gate_tail,
+                }))
             }
-            Err(error) => Err(OperationFailure::new(map_stream_error(error), work)),
+            Ok(acyclic_stream::CommitOutcome::Conflict(_)) => {
+                let actual = self.fork_snapshot(authority_id, &mut meter).await?.head;
+                meter.finish(ReservationOutcome::Conflict { actual })
+            }
+            Err(error) => Err(OperationFailure::new(map_stream_error(error), meter.work)),
         }
     }
 
@@ -2149,102 +2240,150 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> AuthorityResult<()> {
-        cancellation
-            .check()
-            .map_err(|_| OperationFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let release_key = publication_reservation_key(
-            b"release-publication",
-            reservation.authority_id,
-            reservation.operation_id,
-            reservation.gate_tail,
-        )
-        .map_err(OperationFailure::before_work)?;
-        // The atomic release can commit even when its response is lost. Check the
-        // durable idempotency record before inspecting the now-free gate so an
-        // exact retry remains successful after the visible gate has advanced.
-        let mut work = authority_read_work(1);
-        admit_authority(work, budget)?;
-        if let Some(observation) = self
-            .provider
-            .inspect_idempotency(release_key.clone())
-            .await
-            .map_err(|error| OperationFailure::new(map_stream_error(error), work))?
+        let mut meter = ForkWork::new(budget, cancellation);
+        meter.check()?;
+        let identity_work = WorkCounters { bytes_copied: 40, ..WorkCounters::default() };
+        meter.admit(identity_work)?;
+        let mut identity = [0_u8; 40];
+        identity[..16].copy_from_slice(&reservation.authority_id.into_bytes());
+        identity[16..32].copy_from_slice(&reservation.operation_id.into_bytes());
+        identity[32..].copy_from_slice(&reservation.gate_tail.to_le_bytes());
+        meter.charge(identity_work)?;
+        let live_before_key = meter.allocations.live_bytes();
+        let release_key = meter.stream_key(b"release-publication", &identity)?;
+        let key_bytes = meter.allocations.live_bytes().checked_sub(live_before_key)
+            .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), meter.work))?;
+        let key_pointer = release_key.as_bytes().as_ptr() as usize;
+        // Inspect consumes the key: Bytes' first clone may allocate. Regenerate
+        // the same bounded identity only when constructing the original request.
+        // The provider exposes no allocation receipt or response byte allowance;
+        // its canonical command ceiling is admission, not claimed actual capacity.
+        let observation_ceiling = acyclic_stream::MAX_COMMAND_BYTES as u64;
+        meter.admit(WorkCounters {
+            backend_read_operations: 1,
+            authority_records_read: (acyclic_stream::MAX_ITEMS as u64)
+                .checked_mul(acyclic_stream::MAX_ITEMS as u64)
+                .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), meter.work))?,
+            authority_bytes_read: observation_ceiling,
+            peak_allocation_bytes: meter.allocations.live_bytes().checked_add(observation_ceiling)
+                .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), meter.work))?,
+            ..WorkCounters::default()
+        })?;
+        // A lost acknowledgement must be recovered before consulting a gate
+        // that may already have advanced to another operation.
+        let observed = self.provider.inspect_idempotency(release_key).await;
+        // MemoryStream returns the supplied key itself. Its admitted backing
+        // remains live until that observation key is dropped, including while
+        // reconstructing the canonical request for authentication.
+        let input_key_retained = matches!(&observed, Ok(Some(observation))
+            if observation.idempotency_key.as_bytes().as_ptr() as usize == key_pointer);
+        if !input_key_retained { meter.release(key_bytes)?; }
+        let mut read_work = WorkCounters { backend_read_operations: 1, ..WorkCounters::default() };
+        if let Ok(Some(observation)) = &observed {
+            if let acyclic_stream::IdempotencyOutcome::Commit(
+                acyclic_stream::CommitOutcome::Committed(envelope),
+            ) = &observation.outcome {
+                for mutation in &envelope.mutations {
+                    let records = match mutation {
+                        acyclic_stream::CommittedMutation::Append(append) => &append.records,
+                        acyclic_stream::CommittedMutation::Fork(fork) => &fork.records,
+                    };
+                    read_work.authority_records_read = read_work.authority_records_read
+                        .checked_add(records.len() as u64)
+                        .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), meter.work))?;
+                    for record in records {
+                        read_work.authority_bytes_read = read_work.authority_bytes_read
+                            .checked_add(record.value.len() as u64)
+                            .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), meter.work))?;
+                    }
+                }
+            }
+        }
+        // Retain the entire known returned prefix even if cancellation arrived
+        // while the provider was completing the invocation.
+        meter.charge(read_work)?;
+        if let Some(observation) = observed
+            .map_err(|error| OperationFailure::new(map_stream_error(error), meter.work))?
         {
+            meter.hold_opaque(observation_ceiling)?;
+            let retained_key = observation.idempotency_key.as_bytes();
+            const DOMAIN: &[u8] = b"release-publication\0";
+            if retained_key.len() != DOMAIN.len() + identity.len()
+                || !retained_key.starts_with(DOMAIN)
+                || retained_key[DOMAIN.len()..] != identity
+            {
+                return Err(OperationFailure::new(AuthorityStoreError::Corrupt(
+                    "publication release observation has another retry identity".to_owned()), meter.work));
+            }
             return match observation.outcome {
                 acyclic_stream::IdempotencyOutcome::Commit(
-                    acyclic_stream::CommitOutcome::Committed(_),
-                ) => authority_success((), work, budget),
+                    acyclic_stream::CommitOutcome::Committed(envelope),
+                ) => {
+                    let request = reservation_request(
+                        reservation.authority_id, None, reservation.operation_id,
+                        reservation.gate_tail, true, None, &mut meter,
+                    )?;
+                    let digest = reservation_request_digest(&request, &mut meter)?;
+                    let acyclic_stream::CommitMutation::Append { path: gate, .. } = &request.mutations[0]
+                        else { unreachable!("release constructor produces one append"); };
+                    let end = reservation.gate_tail.checked_add(1)
+                        .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), meter.work))?;
+                    let valid = observation.request_digest == digest
+                        && matches!(envelope.mutations.as_slice(),
+                            [acyclic_stream::CommittedMutation::Append(append)]
+                            if &append.path == gate
+                                && append.start == reservation.gate_tail
+                                && append.end == end
+                                && append.tail == end
+                                && matches!(append.records.as_slice(), [record]
+                                    if record.sequence == reservation.gate_tail
+                                        && record.commit_id == envelope.commit_id
+                                        && record.value.as_ref() == PUBLICATION_GATE_FREE));
+                    if !valid {
+                        return Err(OperationFailure::new(AuthorityStoreError::Corrupt(
+                            "publication release observation does not bind the original gate release".to_owned()),
+                            meter.work));
+                    }
+                    drop(request);
+                    drop(envelope);
+                    drop(observation.idempotency_key);
+                    meter.release_request()?;
+                    meter.release_opaque(observation_ceiling)?;
+                    meter.finish(())
+                }
                 acyclic_stream::IdempotencyOutcome::Commit(
                     acyclic_stream::CommitOutcome::Conflict(_),
-                ) => Err(OperationFailure::new(
-                    AuthorityStoreError::Rejected(
-                        "publication reservation is no longer active".to_owned(),
-                    ),
-                    work,
-                )),
-                _ => Err(OperationFailure::new(
-                    AuthorityStoreError::Corrupt(
-                        "publication release identity retained another Stream mutation family"
-                            .to_owned(),
-                    ),
-                    work,
-                )),
+                ) => Err(OperationFailure::new(AuthorityStoreError::Rejected(
+                    "publication reservation is no longer active".to_owned()), meter.work)),
+                _ => Err(OperationFailure::new(AuthorityStoreError::Corrupt(
+                    "publication release identity retained another Stream mutation family".to_owned()),
+                    meter.work)),
             };
         }
-        let gate = publication_gate_path(reservation.authority_id)
-            .map_err(|error| OperationFailure::new(error, work))?;
-        work = work
-            .checked_add(authority_read_work(2))
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        admit_authority(work, budget)?;
-        let (current_tail, active) = self
-            .publication_gate(reservation.authority_id)
-            .await
-            .map_err(|error| OperationFailure::new(error, work))?;
+        let (gate, current_tail, active) = self
+            .reservation_gate(reservation.authority_id, &mut meter).await?;
         if current_tail != reservation.gate_tail || active != Some(reservation.operation_id) {
-            return Err(OperationFailure::new(
-                AuthorityStoreError::Rejected(
-                    "publication reservation is no longer owned by this operation".to_owned(),
-                ),
-                work,
-            ));
+            return Err(OperationFailure::new(AuthorityStoreError::Rejected(
+                "publication reservation is no longer owned by this operation".to_owned()), meter.work));
         }
-        let request = acyclic_stream::CommitRequest {
-            conditions: vec![
-                acyclic_stream::CommitCondition::Absent {
-                    path: retirement_path(reservation.authority_id)
-                        .map_err(OperationFailure::before_work)?,
-                },
-                acyclic_stream::CommitCondition::Tail {
-                    path: gate.clone(),
-                    expected: reservation.gate_tail,
-                },
-            ],
-            mutations: vec![acyclic_stream::CommitMutation::Append {
-                path: gate,
-                records: vec![Bytes::from_static(PUBLICATION_GATE_FREE)],
-            }],
-            idempotency_key: release_key,
-        };
-        work = work
-            .checked_add(authority_write_work(1, 0))
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        admit_authority(work, budget)?;
-        match self.provider.commit(request).await {
-            Ok(acyclic_stream::CommitOutcome::Committed(_)) => authority_success((), work, budget),
+        let request = reservation_request(
+            reservation.authority_id, None, reservation.operation_id,
+            reservation.gate_tail, true, Some(gate), &mut meter,
+        )?;
+        let writes = meter.request_write_work(&request)?;
+        meter.admit(writes)?;
+        let result = self.provider.commit(request).await;
+        meter.charge(commit_work(writes, &result))?;
+        meter.release_request()?;
+        match result {
+            Ok(acyclic_stream::CommitOutcome::Committed(_)) => meter.finish(()),
             Ok(acyclic_stream::CommitOutcome::Conflict(_)) => Err(OperationFailure::new(
-                AuthorityStoreError::Rejected(
-                    "publication reservation is no longer active".to_owned(),
-                ),
-                work,
-            )),
+                AuthorityStoreError::Rejected("publication reservation is no longer active".to_owned()),
+                meter.work)),
             Err(acyclic_stream::StreamError::IdempotencyMismatch) => Err(OperationFailure::new(
-                AuthorityStoreError::Rejected(
-                    "publication reservation release identity was reused".to_owned(),
-                ),
-                work,
-            )),
-            Err(error) => Err(OperationFailure::new(map_stream_error(error), work)),
+                AuthorityStoreError::Rejected("publication reservation release identity was reused".to_owned()),
+                meter.work)),
+            Err(error) => Err(OperationFailure::new(map_stream_error(error), meter.work)),
         }
     }
 
@@ -2573,6 +2712,222 @@ fn stream_key(
     value.push(0);
     value.extend_from_slice(identity);
     acyclic_stream::IdempotencyKey::new(Bytes::from(value)).map_err(map_stream_error)
+}
+
+/// The original acquisition/release request, with caller-transferred gate custody.
+fn reservation_request(
+    authority: AuthorityId,
+    snapshot: Option<AuthoritySnapshot>,
+    operation: OperationId,
+    gate_tail: u64,
+    release: bool,
+    gate: Option<acyclic_stream::StreamPath>,
+    meter: &mut ForkWork<'_>,
+) -> Result<acyclic_stream::CommitRequest, OperationFailure<AuthorityStoreError>> {
+    use acyclic_stream::{CommitCondition, CommitMutation};
+    let gate = match gate {
+        Some(gate) => gate,
+        None => meter.path(authority, "/publication-gate", None)?,
+    };
+    let mut conditions = meter.vec::<CommitCondition>(if release { 2 } else { 4 })?;
+    if !release {
+        let snapshot = snapshot.ok_or_else(|| OperationFailure::new(
+            AuthorityStoreError::Corrupt("reservation acquisition lacks its original snapshot".to_owned()), meter.work))?;
+        let epochs = meter.path(authority, "/epochs", None)?;
+        meter.push(&mut conditions, CommitCondition::Tail { path: epochs, expected: snapshot.epoch_tail })?;
+        let gate_condition = meter.clone_path(&gate)?;
+        meter.push(&mut conditions, CommitCondition::Tail { path: gate_condition, expected: gate_tail })?;
+        let records = meter.path(authority, "/records", None)?;
+        meter.push(&mut conditions, CommitCondition::Tail { path: records, expected: snapshot.record_tail })?;
+    } else {
+        let gate_condition = meter.clone_path(&gate)?;
+        meter.push(&mut conditions, CommitCondition::Tail { path: gate_condition, expected: gate_tail })?;
+    }
+    let retirement = meter.path(authority, "/retirement", None)?;
+    meter.push(&mut conditions, CommitCondition::Absent { path: retirement })?;
+    let mut records = meter.vec::<Bytes>(1)?;
+    let body = if release { Bytes::from_static(PUBLICATION_GATE_FREE) }
+        else { meter.bytes(PUBLICATION_GATE_ACTIVE, &[&operation.into_bytes()])? };
+    meter.push(&mut records, body)?;
+    let mut mutations = meter.vec::<CommitMutation>(1)?;
+    meter.push(&mut mutations, CommitMutation::Append { path: gate, records })?;
+    let mut identity = [0_u8; 40];
+    identity[..16].copy_from_slice(&authority.into_bytes());
+    identity[16..32].copy_from_slice(&operation.into_bytes());
+    identity[32..].copy_from_slice(&gate_tail.to_le_bytes());
+    let key = meter.stream_key(if release { b"release-publication" } else { b"reserve-publication" }, &identity)?;
+    Ok(acyclic_stream::CommitRequest { conditions, mutations, idempotency_key: key })
+}
+
+/// Hashes the already canonical, fixed-shape request using the Stream producer.
+fn reservation_request_digest(
+    request: &acyclic_stream::CommitRequest,
+    meter: &mut ForkWork<'_>,
+) -> Result<[u8; 32], OperationFailure<AuthorityStoreError>> {
+    let mut bytes = (b"acyclic.stream.request.v1\0".len() + b"commit".len()) as u64;
+    for condition in &request.conditions {
+        let (path, scalar) = match condition {
+            acyclic_stream::CommitCondition::Tail { path, .. } => (path, 8),
+            acyclic_stream::CommitCondition::Absent { path } => (path, 0),
+        };
+        bytes = bytes.checked_add(1 + 8 + path.as_str().len() as u64 + scalar)
+            .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), meter.work))?;
+    }
+    for mutation in &request.mutations {
+        let acyclic_stream::CommitMutation::Append { path, records } = mutation else {
+            return Err(OperationFailure::new(AuthorityStoreError::Corrupt("reservation request contains a non-append mutation".to_owned()), meter.work));
+        };
+        bytes = bytes.checked_add(1 + 8 + path.as_str().len() as u64 + 8)
+            .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), meter.work))?;
+        for record in records {
+            bytes = bytes.checked_add(8 + record.len() as u64)
+                .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), meter.work))?;
+        }
+    }
+    let hashing = WorkCounters { bytes_hashed: bytes, ..WorkCounters::default() };
+    meter.admit(hashing)?;
+    let digest = acyclic_stream::request::normalized_commit_digest(request);
+    meter.charge(hashing)?;
+    Ok(digest)
+}
+
+impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
+    async fn reservation_gate(
+        &self,
+        authority: AuthorityId,
+        meter: &mut ForkWork<'_>,
+    ) -> Result<(acyclic_stream::StreamPath, u64, Option<OperationId>), OperationFailure<AuthorityStoreError>> {
+        let gate = meter.path(authority, "/publication-gate", None)?;
+        let tail = self.fork_tail(meter.clone_path(&gate)?, meter).await?;
+        if tail == 0 {
+            return Err(OperationFailure::new(AuthorityStoreError::Corrupt("authority publication gate is empty".to_owned()), meter.work));
+        }
+        let record = self.fork_record(meter.clone_path(&gate)?, tail - 1, meter).await?;
+        let active = decode_publication_gate(&record.value).map_err(|error| OperationFailure::new(error, meter.work))?;
+        Ok((gate, tail, active))
+    }
+
+    async fn reservation_observation(
+        &self,
+        authority: AuthorityId,
+        operation: OperationId,
+        prior_gate_tail: u64,
+        meter: &mut ForkWork<'_>,
+    ) -> Result<(Option<acyclic_stream::IdempotencyObservation>, u64), OperationFailure<AuthorityStoreError>> {
+        let mut identity = [0_u8; 40];
+        identity[..16].copy_from_slice(&authority.into_bytes());
+        identity[16..32].copy_from_slice(&operation.into_bytes());
+        identity[32..].copy_from_slice(&prior_gate_tail.to_le_bytes());
+        let baseline = meter.allocations.live_bytes();
+        let key = meter.stream_key(b"reserve-publication", &identity)?;
+        let key_bytes = meter.allocations.live_bytes().checked_sub(baseline)
+            .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), meter.work))?;
+        let key_pointer = key.as_bytes().as_ptr() as usize;
+        let ceiling = acyclic_stream::MAX_COMMAND_BYTES as u64;
+        let record_ceiling = (acyclic_stream::MAX_ITEMS as u64).checked_mul(acyclic_stream::MAX_ITEMS as u64)
+            .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), meter.work))?;
+        let peak = meter.allocations.live_bytes().checked_add(ceiling)
+            .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), meter.work))?;
+        meter.admit(WorkCounters {
+            backend_read_operations: 1, authority_records_read: record_ceiling,
+            authority_bytes_read: ceiling, peak_allocation_bytes: peak, ..WorkCounters::default()
+        })?;
+        let result = self.provider.inspect_idempotency(key).await;
+        let mut actual = WorkCounters { backend_read_operations: 1, ..WorkCounters::default() };
+        if let Ok(Some(observation)) = &result {
+            if let acyclic_stream::IdempotencyOutcome::Commit(acyclic_stream::CommitOutcome::Committed(envelope)) = &observation.outcome {
+                for mutation in &envelope.mutations {
+                    let records = match mutation {
+                        acyclic_stream::CommittedMutation::Append(append) => &append.records,
+                        acyclic_stream::CommittedMutation::Fork(fork) => &fork.records,
+                    };
+                    actual.authority_records_read = actual.authority_records_read.checked_add(records.len() as u64)
+                        .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), meter.work))?;
+                    for record in records {
+                        actual.authority_bytes_read = actual.authority_bytes_read.checked_add(record.value.len() as u64)
+                            .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), meter.work))?;
+                    }
+                }
+            }
+        }
+        meter.charge(actual)?;
+        let retained_bytes = match &result {
+            Ok(Some(observation)) if observation.idempotency_key.as_bytes().as_ptr() as usize == key_pointer => key_bytes,
+            _ => { meter.release(key_bytes)?; 0 }
+        };
+        if matches!(&result, Ok(Some(_))) { meter.hold_opaque(ceiling)?; }
+        result.map(|observation| (observation, retained_bytes))
+            .map_err(|error| OperationFailure::new(map_stream_error(error), meter.work))
+    }
+
+    fn qualified_reservation_observation(
+        &self,
+        observation: &acyclic_stream::IdempotencyObservation,
+        authority: AuthorityId,
+        operation: OperationId,
+        gate_tail: u64,
+    ) -> bool {
+        let Some(prior) = gate_tail.checked_sub(1) else { return false; };
+        let mut identity = [0_u8; 40];
+        identity[..16].copy_from_slice(&authority.into_bytes());
+        identity[16..32].copy_from_slice(&operation.into_bytes());
+        identity[32..].copy_from_slice(&prior.to_le_bytes());
+        let key = observation.idempotency_key.as_bytes();
+        let domain = b"reserve-publication";
+        if key.len() != domain.len() + 1 + identity.len() || !key.starts_with(domain)
+            || key[domain.len()] != 0 || key[domain.len() + 1..] != identity {
+            return false;
+        }
+        let acyclic_stream::IdempotencyOutcome::Commit(acyclic_stream::CommitOutcome::Committed(envelope)) = &observation.outcome else { return false; };
+        let [acyclic_stream::CommittedMutation::Append(append)] = envelope.mutations.as_slice() else { return false; };
+        let path = append.path.as_str();
+        let prefix = b"fs/authorities/";
+        let mut encoded_authority = [0_u8; 32];
+        hex::encode_to_slice(authority.into_bytes(), &mut encoded_authority).expect("fixed authority hex width");
+        if path.len() != prefix.len() + 32 + b"/publication-gate".len()
+            || !path.as_bytes().starts_with(prefix)
+            || path.as_bytes()[prefix.len()..prefix.len() + 32] != encoded_authority
+            || !path.ends_with("/publication-gate")
+            || append.start != prior || append.end != gate_tail || append.tail != gate_tail {
+            return false;
+        }
+        let [record] = append.records.as_slice() else { return false; };
+        record.sequence == prior && record.commit_id == envelope.commit_id
+            && record.value.len() == PUBLICATION_GATE_ACTIVE.len() + 16
+            && record.value.starts_with(PUBLICATION_GATE_ACTIVE)
+            && record.value[PUBLICATION_GATE_ACTIVE.len()..] == operation.into_bytes()
+    }
+
+    async fn reservation_matches_original(
+        &self,
+        authority: AuthorityId,
+        snapshot: AuthoritySnapshot,
+        operation: OperationId,
+        gate_tail: u64,
+        meter: &mut ForkWork<'_>,
+    ) -> Result<bool, OperationFailure<AuthorityStoreError>> {
+        let Some(prior) = gate_tail.checked_sub(1) else { return Ok(false); };
+        let (observation, retained_bytes) = self.reservation_observation(authority, operation, prior, meter).await?;
+        let Some(observation) = observation else { return Ok(false); };
+        if !self.qualified_reservation_observation(&observation, authority, operation, gate_tail) {
+            drop(observation);
+            meter.release(retained_bytes)?;
+            meter.release_opaque(acyclic_stream::MAX_COMMAND_BYTES as u64)?;
+            return Ok(false);
+        }
+        let baseline = meter.allocations.live_bytes();
+        let request = reservation_request(authority, Some(snapshot), operation, prior, false, None, meter)?;
+        let digest = reservation_request_digest(&request, meter)?;
+        drop(request);
+        let bytes = meter.allocations.live_bytes().checked_sub(baseline)
+            .ok_or_else(|| OperationFailure::new(crate::WorkError::Overflow.into(), meter.work))?;
+        meter.release(bytes)?;
+        let matches = digest == observation.request_digest;
+        drop(observation);
+        meter.release(retained_bytes)?;
+        meter.release_opaque(acyclic_stream::MAX_COMMAND_BYTES as u64)?;
+        Ok(matches)
+    }
 }
 
 impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
@@ -3584,6 +3939,12 @@ mod tests {
             ReservationOutcome::Reserved(reservation) => reservation,
             outcome => panic!("unexpected reservation outcome: {outcome:?}"),
         };
+        let retry = authority
+            .reserve_publication(authority_id, head, operation_id, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .expect("unchanged source exact reservation retry")
+            .value;
+        assert!(matches!(retry, ReservationOutcome::AlreadyReserved(value) if value == reservation));
         let proposed = ProposedCommit {
             operation_id: OperationId::from_bytes([0x43; 16]),
             fingerprint: Digest::from_bytes([0x44; 32]),
@@ -3625,6 +3986,21 @@ mod tests {
             .expect("reserved writer")
             .value;
         assert!(matches!(reserved, FsAppendOutcome::Committed(_)));
+        let changed = authority
+            .head(authority_id, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .expect("changed publication head")
+            .value;
+        let stale = authority
+            .reserve_publication(authority_id, head, operation_id, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .expect("stale original head is a conflict")
+            .value;
+        assert!(matches!(stale, ReservationOutcome::Conflict { actual } if actual == changed));
+        authority
+            .reserve_publication(authority_id, changed, operation_id, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .expect_err("an active operation must not adopt a different source head");
         let denied_release = authority
             .release_publication(reservation, WorkBudget::default(), &cancellation)
             .await
@@ -3727,6 +4103,279 @@ mod tests {
             .await
             .expect("read active gate");
         assert_eq!(active, Some(reacquired.operation_id));
+    }
+
+    struct ReleaseSpy {
+        inner: Arc<acyclic_stream::MemoryStream>,
+        reads: std::sync::atomic::AtomicU64,
+        writes: std::sync::atomic::AtomicU64,
+        fail_inspect: bool,
+        cancel_inspect: Option<CancellationToken>,
+        lose_ack: bool,
+        corrupt_observation: u8,
+    }
+
+    impl ReleaseSpy {
+        fn new(inner: Arc<acyclic_stream::MemoryStream>) -> Self {
+            Self {
+                inner, reads: std::sync::atomic::AtomicU64::new(0),
+                writes: std::sync::atomic::AtomicU64::new(0),
+                fail_inspect: false, cancel_inspect: None, lose_ack: false,
+                corrupt_observation: 0,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl acyclic_stream::StreamProvider for ReleaseSpy {
+        async fn inspect_idempotency(&self, key: acyclic_stream::IdempotencyKey)
+            -> Result<Option<acyclic_stream::IdempotencyObservation>, acyclic_stream::StreamError> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.fail_inspect { return Err(acyclic_stream::StreamError::Unavailable); }
+            let mut result = self.inner.inspect_idempotency(key).await?;
+            if let Some(observation) = result.as_mut() {
+                if self.corrupt_observation == 1 {
+                    observation.idempotency_key = stream_key(b"another-release", b"identity")
+                        .map_err(|_| acyclic_stream::StreamError::InvalidArgument)?;
+                }
+                if let acyclic_stream::IdempotencyOutcome::Commit(
+                    acyclic_stream::CommitOutcome::Committed(envelope),
+                ) = &mut observation.outcome {
+                    if let Some(acyclic_stream::CommittedMutation::Append(append)) = envelope.mutations.first_mut() {
+                        match self.corrupt_observation {
+                            2 => append.path = acyclic_stream::StreamPath::new("other/gate")?,
+                            3 => append.start += 1,
+                            4 => append.end += 1,
+                            5 => append.tail += 1,
+                            6 => append.records[0].sequence += 1,
+                            7 => append.records[0].commit_id = acyclic_stream::CommitId::from_bytes([0xff; 32]),
+                            8 => append.records[0].value = Bytes::from_static(b"not-free"),
+                            9 => append.records.push(append.records[0].clone()),
+                            10 => observation.request_digest = [0; 32],
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            if let Some(cancellation) = &self.cancel_inspect { cancellation.cancel(); }
+            Ok(result)
+        }
+        async fn tail(&self, path: acyclic_stream::StreamPath) -> Result<u64, acyclic_stream::StreamError> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.tail(path).await
+        }
+        async fn read(&self, request: acyclic_stream::ReadRequest)
+            -> Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.read(request).await
+        }
+        async fn commit(&self, request: acyclic_stream::CommitRequest)
+            -> Result<acyclic_stream::CommitOutcome, acyclic_stream::StreamError> {
+            self.writes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let result = self.inner.commit(request).await?;
+            if self.lose_ack { Err(acyclic_stream::StreamError::Unavailable) } else { Ok(result) }
+        }
+        async fn bounds(&self, path: acyclic_stream::StreamPath)
+            -> Result<acyclic_stream::StreamBounds, acyclic_stream::StreamError> { self.inner.bounds(path).await }
+        async fn append(&self, request: acyclic_stream::AppendRequest)
+            -> Result<acyclic_stream::AppendOutcome, acyclic_stream::StreamError> { self.inner.append(request).await }
+        async fn fork(&self, request: acyclic_stream::ForkRequest)
+            -> Result<acyclic_stream::ForkReceipt, acyclic_stream::StreamError> { self.inner.fork(request).await }
+        async fn follow(&self, request: acyclic_stream::ReadRequest)
+            -> Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> { self.inner.follow(request).await }
+        async fn children(&self, request: acyclic_stream::ChildrenRequest)
+            -> Result<acyclic_stream::ChildStream, acyclic_stream::StreamError> { self.inner.children(request).await }
+        async fn read_commit(&self, id: acyclic_stream::CommitId)
+            -> Result<acyclic_stream::CommittedEnvelope, acyclic_stream::StreamError> { self.inner.read_commit(id).await }
+    }
+
+    async fn release_fixture()
+        -> Result<(Arc<acyclic_stream::MemoryStream>, PublicationReservation), Box<dyn std::error::Error>> {
+        let inner = Arc::new(acyclic_stream::MemoryStream::default());
+        let authority = StreamAuthorityStore::new(Arc::clone(&inner));
+        let cancellation = CancellationToken::new();
+        let id = AuthorityId::from_bytes([0xd1; 16]);
+        authority.create_authority(id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &cancellation).await?;
+        let head = authority.head(id, WorkBudget::UNBOUNDED, &cancellation).await?.value;
+        let outcome = authority.reserve_publication(id, head, OperationId::from_bytes([0xd2; 16]),
+            WorkBudget::UNBOUNDED, &cancellation).await?.value;
+        let ReservationOutcome::Reserved(reservation) = outcome else { return Err("reservation denied".into()); };
+        Ok((inner, reservation))
+    }
+
+    #[tokio::test]
+    async fn release_admits_production_and_observation_before_provider_calls()
+        -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::atomic::Ordering;
+        let (inner, reservation) = release_fixture().await?;
+        for deny in 0..5 {
+            let spy = Arc::new(ReleaseSpy::new(Arc::clone(&inner)));
+            let mut budget = WorkBudget::UNBOUNDED;
+            match deny {
+                0 => budget.bytes_copied = 39,
+                1 => budget.allocation_operations = 0,
+                2 => budget.backend_read_operations = 0,
+                3 => budget.authority_bytes_read = acyclic_stream::MAX_COMMAND_BYTES as u64 - 1,
+                _ => budget.peak_allocation_bytes = acyclic_stream::MAX_COMMAND_BYTES as u64 - 1,
+            }
+            let failure = StreamAuthorityStore::new(Arc::clone(&spy))
+                .release_publication(reservation, budget, &CancellationToken::new()).await
+                .expect_err("release must be admitted before inspecting");
+            assert!(matches!(failure.error, AuthorityStoreError::Work(_)));
+            assert_eq!(spy.reads.load(Ordering::SeqCst), 0);
+            assert_eq!(spy.writes.load(Ordering::SeqCst), 0);
+            assert_eq!(failure.work.backend_read_operations, 0);
+            assert_eq!(failure.work.backend_write_operations, 0);
+        }
+        let spy = Arc::new(ReleaseSpy::new(Arc::clone(&inner)));
+        let mut budget = WorkBudget::UNBOUNDED;
+        budget.backend_write_operations = 0;
+        let failure = StreamAuthorityStore::new(Arc::clone(&spy))
+            .release_publication(reservation, budget, &CancellationToken::new()).await
+            .expect_err("request write must be admitted before commit");
+        assert_eq!(spy.reads.load(Ordering::SeqCst), 3);
+        assert_eq!(spy.writes.load(Ordering::SeqCst), 0);
+        assert_eq!(failure.work.backend_read_operations, 3);
+        assert_eq!(failure.work.backend_write_operations, 0);
+        assert_eq!(failure.work.durability_operations, 0);
+        let mut spy = ReleaseSpy::new(inner);
+        spy.fail_inspect = true;
+        let failure = StreamAuthorityStore::new(Arc::new(spy))
+            .release_publication(reservation, WorkBudget::UNBOUNDED, &CancellationToken::new()).await
+            .expect_err("inspection failure must retain only genuine invocation");
+        assert_eq!(failure.work.backend_read_operations, 1);
+        assert_eq!(failure.work.authority_records_read, 0);
+        assert_eq!(failure.work.authority_bytes_read, 0);
+        assert_eq!(failure.work.backend_write_operations, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn release_lost_ack_recovers_original_envelope_after_gate_advance()
+        -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::atomic::Ordering;
+        let (inner, reservation) = release_fixture().await?;
+        let mut spy = ReleaseSpy::new(Arc::clone(&inner));
+        spy.lose_ack = true;
+        let spy = Arc::new(spy);
+        let failure = StreamAuthorityStore::new(Arc::clone(&spy))
+            .release_publication(reservation, WorkBudget::UNBOUNDED, &CancellationToken::new()).await
+            .expect_err("provider loses release acknowledgement");
+        assert_eq!(spy.writes.load(Ordering::SeqCst), 1);
+        assert_eq!(failure.work.backend_write_operations, 1);
+        assert_eq!(failure.work.durability_operations, 0);
+        assert_eq!(failure.work.authority_bytes_written, 0);
+        let authority = StreamAuthorityStore::new(Arc::clone(&inner));
+        let new_operation = OperationId::from_bytes([0xd3; 16]);
+        let outcome = authority.reserve_publication(reservation.authority_id, reservation.expected,
+            new_operation, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value;
+        assert!(matches!(outcome, ReservationOutcome::Reserved(_)));
+        let spy = Arc::new(ReleaseSpy::new(Arc::clone(&inner)));
+        let receipt = StreamAuthorityStore::new(Arc::clone(&spy))
+            .release_publication(reservation, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
+        assert_eq!(spy.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(spy.writes.load(Ordering::SeqCst), 0);
+        assert_eq!(receipt.work.backend_read_operations, 1);
+        assert_eq!(receipt.work.authority_records_read, 1);
+        assert_eq!(receipt.work.authority_bytes_read, PUBLICATION_GATE_FREE.len() as u64);
+        assert_eq!(receipt.work.backend_write_operations, 0);
+        assert_eq!(authority.publication_gate(reservation.authority_id).await?.1, Some(new_operation));
+        for corrupt in 1..=10 {
+            let mut spy = ReleaseSpy::new(Arc::clone(&inner));
+            spy.corrupt_observation = corrupt;
+            let spy = Arc::new(spy);
+            let failure = StreamAuthorityStore::new(Arc::clone(&spy))
+                .release_publication(reservation, WorkBudget::UNBOUNDED, &CancellationToken::new()).await
+                .expect_err("retained observation must bind exact original release");
+            assert!(matches!(failure.error, AuthorityStoreError::Corrupt(_)));
+            assert_eq!(spy.reads.load(Ordering::SeqCst), 1);
+            assert_eq!(spy.writes.load(Ordering::SeqCst), 0);
+        }
+        let cancellation = CancellationToken::new();
+        let mut spy = ReleaseSpy::new(inner);
+        spy.cancel_inspect = Some(cancellation.clone());
+        let failure = StreamAuthorityStore::new(Arc::new(spy))
+            .release_publication(reservation, WorkBudget::UNBOUNDED, &cancellation).await
+            .expect_err("cancellation retains the actual returned observation prefix");
+        assert!(matches!(failure.error, AuthorityStoreError::Cancelled));
+        assert_eq!(failure.work.backend_read_operations, 1);
+        assert_eq!(failure.work.authority_records_read, 1);
+        assert_eq!(failure.work.authority_bytes_read, PUBLICATION_GATE_FREE.len() as u64);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn release_retry_holds_opaque_observation_during_request_reconstruction()
+        -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::atomic::Ordering;
+        let (inner, reservation) = release_fixture().await?;
+        let cancellation = CancellationToken::new();
+        StreamAuthorityStore::new(Arc::clone(&inner))
+            .release_publication(reservation, WorkBudget::UNBOUNDED, &cancellation).await?;
+        let mut witness = ForkWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let key = witness.stream_key(b"release-publication", &[0_u8; 40])?;
+        let key_live = witness.allocations.live_bytes();
+        drop(key);
+        let mut budget = WorkBudget::UNBOUNDED;
+        budget.peak_allocation_bytes = acyclic_stream::MAX_COMMAND_BYTES as u64 + key_live;
+        let spy = Arc::new(ReleaseSpy::new(inner));
+        let failure = StreamAuthorityStore::new(Arc::clone(&spy))
+            .release_publication(reservation, budget, &cancellation).await
+            .expect_err("retained opaque envelope must overlap reconstructed owned request");
+        assert!(matches!(failure.error, AuthorityStoreError::Work(_)));
+        assert_eq!(spy.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(spy.writes.load(Ordering::SeqCst), 0);
+        assert_eq!(failure.work.backend_read_operations, 1);
+        assert_eq!(failure.work.authority_records_read, 1);
+        assert_eq!(failure.work.authority_bytes_read, PUBLICATION_GATE_FREE.len() as u64);
+        assert_eq!(failure.work.allocation_operations, witness.work.allocation_operations);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn release_rejects_committed_wrong_request_and_mutation_family()
+        -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::atomic::Ordering;
+        for wrong_family in [false, true] {
+            let (inner, reservation) = release_fixture().await?;
+            let gate = publication_gate_path(reservation.authority_id)?;
+            let key = publication_reservation_key(b"release-publication", reservation.authority_id,
+                reservation.operation_id, reservation.gate_tail)?;
+            if wrong_family {
+                let outcome = acyclic_stream::StreamProvider::append(inner.as_ref(), acyclic_stream::AppendRequest {
+                    path: gate, records: vec![Bytes::from_static(PUBLICATION_GATE_FREE)],
+                    if_tail: Some(reservation.gate_tail), idempotency_key: Some(key),
+                }).await?;
+                assert!(matches!(outcome, acyclic_stream::AppendOutcome::Committed(_)));
+            } else {
+                // Same gate/body/range, but not the original retirement-guarded
+                // release request: envelope shape alone must not authenticate it.
+                let outcome = acyclic_stream::StreamProvider::commit(inner.as_ref(), acyclic_stream::CommitRequest {
+                    conditions: vec![acyclic_stream::CommitCondition::Tail {
+                        path: gate.clone(), expected: reservation.gate_tail,
+                    }],
+                    mutations: vec![acyclic_stream::CommitMutation::Append {
+                        path: gate, records: vec![Bytes::from_static(PUBLICATION_GATE_FREE)],
+                    }],
+                    idempotency_key: key,
+                }).await?;
+                assert!(matches!(outcome, acyclic_stream::CommitOutcome::Committed(_)));
+            }
+            let spy = Arc::new(ReleaseSpy::new(inner));
+            let failure = StreamAuthorityStore::new(Arc::clone(&spy))
+                .release_publication(reservation, WorkBudget::UNBOUNDED, &CancellationToken::new()).await
+                .expect_err("arbitrary retained success must not release this reservation");
+            assert!(matches!(failure.error, AuthorityStoreError::Corrupt(_)));
+            assert_eq!(spy.reads.load(Ordering::SeqCst), 1);
+            assert_eq!(spy.writes.load(Ordering::SeqCst), 0);
+        }
+        let (inner, reservation) = release_fixture().await?;
+        let receipt = StreamAuthorityStore::new(inner)
+            .release_publication(reservation, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
+        assert_eq!(receipt.work.backend_write_operations, 1);
+        assert_eq!(receipt.work.durability_operations, 1);
+        assert_eq!(receipt.work.authority_bytes_written, PUBLICATION_GATE_FREE.len() as u64);
+        Ok(())
     }
 
     #[test]
@@ -3944,6 +4593,77 @@ mod tests {
         assert!(recovered.work.authority_records_appended > 0);
         drop(reject_recovery);
         assert_eq!(seals, 2);
+        Ok(())
+    }
+    #[tokio::test]
+    async fn readonly_reservation_recovers_original_head_after_authority_advance()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let stream = Arc::new(acyclic_stream::MemoryStream::default());
+        let authority = StreamAuthorityStore::new(Arc::clone(&stream));
+        let cancellation = CancellationToken::new();
+        let authority_id = AuthorityId::from_bytes([0xb1; 16]);
+        let operation_id = OperationId::from_bytes([0xb2; 16]);
+        authority.create_authority(authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &cancellation).await?;
+        let original_head = authority.head(authority_id, WorkBudget::UNBOUNDED, &cancellation).await?.value;
+        let reservation = match authority.reserve_publication(
+            authority_id, original_head, operation_id, WorkBudget::UNBOUNDED, &cancellation,
+        ).await?.value {
+            ReservationOutcome::Reserved(reservation) => reservation,
+            other => panic!("unexpected acquisition: {other:?}"),
+        };
+        authority.compare_and_append_guarded(crate::GuardedAppend {
+            authority_id, epoch: original_head.epoch, expected: original_head,
+            commit: ProposedCommit {
+                operation_id: OperationId::from_bytes([0xb3; 16]),
+                fingerprint: Digest::from_bytes([0xb4; 32]),
+                payload: Bytes::from_static(b"original-reserved-operation-effect"),
+            },
+            permit: PublicationPermit::Reservation {
+                operation_id: operation_id.into_bytes(), gate_tail: reservation.gate_tail, expected: original_head,
+            },
+        }, WorkBudget::UNBOUNDED, &cancellation).await?;
+        let advanced_head = authority.head(authority_id, WorkBudget::UNBOUNDED, &cancellation).await?.value;
+        assert_ne!(advanced_head, original_head);
+        let spy = Arc::new(ReleaseSpy::new(Arc::clone(&stream)));
+        let queried = StreamAuthorityStore::new(Arc::clone(&spy));
+        let denied = queried.publication_reservation(
+            authority_id, operation_id,
+            WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+        ).await.expect_err("no path allocation admitted");
+        assert!(matches!(denied.error, AuthorityStoreError::Work(_)));
+        assert_eq!(spy.reads.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let recovered = queried.publication_reservation(
+            authority_id, operation_id, WorkBudget::UNBOUNDED, &cancellation,
+        ).await?;
+        assert_eq!(recovered.value, Some(reservation));
+        assert_eq!(recovered.value.expect("original evidence").expected, original_head);
+        assert_eq!(recovered.work.backend_write_operations, 0);
+        assert!(recovered.work.bytes_hashed > 0);
+        assert_eq!(spy.writes.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let refused = queried.publication_reservation(
+            authority_id, operation_id,
+            WorkBudget { bytes_hashed: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+        ).await.expect_err("query proof hashing refused after actual reads");
+        assert!(matches!(refused.error, AuthorityStoreError::Work(_)));
+        assert!(refused.work.backend_read_operations > 0);
+        assert_eq!(refused.work.bytes_hashed, 0);
+        let mut corrupted = ReleaseSpy::new(Arc::clone(&stream));
+        corrupted.corrupt_observation = 10;
+        let uncertain = StreamAuthorityStore::new(Arc::new(corrupted)).publication_reservation(
+            authority_id, operation_id, WorkBudget::UNBOUNDED, &cancellation,
+        ).await.expect_err("unqualified historical conditions cannot create a proof");
+        assert!(matches!(uncertain.error, AuthorityStoreError::ReservationOriginalHeadUnavailable {
+            authority_id: actual_authority, operation_id: actual_operation, gate_tail,
+        } if actual_authority == authority_id && actual_operation == operation_id && gate_tail == reservation.gate_tail));
+        assert_eq!(uncertain.work.backend_write_operations, 0);
+        assert!(uncertain.work.bytes_hashed > 0);
+        authority.release_publication(reservation, WorkBudget::UNBOUNDED, &cancellation).await?;
+        let inactive = queried.publication_reservation(
+            authority_id, operation_id, WorkBudget::UNBOUNDED, &cancellation,
+        ).await?;
+        assert_eq!(inactive.value, None);
+        assert_eq!(inactive.work.backend_write_operations, 0);
+        assert_eq!(spy.writes.load(std::sync::atomic::Ordering::SeqCst), 0);
         Ok(())
     }
 }

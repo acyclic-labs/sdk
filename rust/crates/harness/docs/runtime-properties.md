@@ -114,6 +114,19 @@ borrowed after actual registration transfer, not re-adopted by every file alias.
 SDK record reads preflight the protocol maximum before fetching and report actual
 received bytes.
 
+Native receipt observation uses one protected launch/observation reader and the
+same qualified effect archive on the caller's original native ledger. Historic
+capture/publication counters remain receipt data, not query charges. A measured
+receipt owns its logical payload custody through physical drop and is not
+implicitly cloneable. Cold receipt-only recovery authenticates the original task,
+accepted launch and retained core effect; a terminal outcome grants observation,
+not a fresh lease, dispatch, native view, reservation or cleanup permission.
+Request/schema reads and result reads use explicit separate authenticated reader
+roles, even when a binding legitimately shares one reader between both roles.
+Missing native preparation journal evidence means physical state is unknown,
+never proof that no root was allocated. Fallible native buffer reservations keep
+their original typed allocator failure without allocating a diagnostic string.
+
 Original-root publication compares supported represented metadata and touched
 content/membership before mutation, and checks the original owner before each
 journaled physical action. An unavailable rich-metadata reader is not proof of

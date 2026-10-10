@@ -60,7 +60,9 @@ impl<'a, P: StreamProvider> NativeViewOwner<'a, P> {
 
     /// Check the original fresh owner and created WRITE custody on this same
     /// actual ledger, including bounded canonical history verification.
-    pub async fn verify_with_native_work(&self, work: &NativeMaterializationWork) -> Result<()> {
+    pub async fn verify_with_native_work(
+        &self, work: &NativeMaterializationWork,
+    ) -> Result<()> {
         self.owner.verify_with_native_work(false, work).await
     }
 
@@ -131,7 +133,10 @@ impl<'a, P: StreamProvider> NativeViewOwner<'a, P> {
             self.owner.require_volume_grant_with_native_work(volume, VolumeOperation::Write, work)
                 .map_err(NativeReservationError::Owner)?;
             {
-                let (encoded, _encoded_custody) = native_reservation_canonical(volume, work)?;
+                let (encoded, _encoded_custody) = native_canonical(volume, work).map_err(NativeReservationError::Owner)?;
+                work.charge(acyclic_fs::WorkCounters {
+                    bytes_hashed: encoded.len() as u64, ..acyclic_fs::WorkCounters::default()
+                }).map_err(NativeReservationError::Native)?;
                 let (name, _name_custody) = work.display(format_args!(
                     "harness-{}", blake3::hash(&encoded).to_hex(),
                 )).map_err(NativeReservationError::Native)?;
@@ -273,6 +278,7 @@ pub enum NativeReservationError {
     #[error("{0}")]
     Selection(&'static str),
 }
+
 
 /// Physical settlement uncertainty retains the exact cleanup capability.
 pub struct NativePublicationReservationFailure<A, O> {
@@ -449,6 +455,52 @@ pub struct NativePreparationReceipt {
     pub preparation: acyclic_fs::MaterializationPreparationObservation,
     /// Independently observed captured endpoints. Uncaptured edits remain unknown.
     pub observations: Vec<acyclic_fs::MaterializationObservation>,
+}
+
+/// A protected journal observation, never a physical-root or cleanup witness.
+pub enum NativePreparationJournalObservation {
+    /// The original record is absent. Allocation may have preceded its marker,
+    /// so this never proves that the native namespace is absent or releasable.
+    MissingJournalPhysicalStateUnknown { preparation_operation: acyclic_fs::OperationId },
+    /// Original recorded intent, allocation IDs, decisions and spent work.
+    Recorded(NativeRecordedPreparation),
+}
+
+/// Owned output from the existing preparation journal; no host paths are opened.
+pub struct NativeRecordedPreparation {
+    pub task: crate::TaskId,
+    pub original_fence: crate::scheduler::LeaseFence,
+    pub manifest: NativeViewManifest,
+    pub operation_directory: PathBuf,
+    pub journal: MaterializationJournal,
+    _custody: acyclic_fs::NativeAllocation,
+}
+
+/// Read-only journal failures preserve actual causes without formatting them.
+#[derive(Debug, thiserror::Error)]
+pub enum NativePreparationJournalError {
+    #[error(transparent)]
+    Owner(#[from] Error),
+    #[error(transparent)]
+    Native(#[from] acyclic_fs::NativeTreeMaterializationError),
+    #[error(transparent)]
+    Backend(#[from] acyclic_stream::StreamError),
+    #[error("{0}")]
+    Record(&'static str),
+}
+
+
+impl NativePreparationJournalError {
+    // Only the existing ordinary materializer adapter requires Harness Error.
+    // The new read-only query keeps this closed typed carrier throughout.
+    fn into_owner_error(self) -> Error {
+        match self {
+            Self::Owner(error) => error,
+            Self::Native(cause) => Error::NativeWork { cause, custody: None },
+            Self::Backend(error) => error.into(),
+            Self::Record(message) => Error::Storage(message.into()),
+        }
+    }
 }
 
 struct PreparedVolume<A, O> {
@@ -868,6 +920,62 @@ where
         }, &work)?.await
     }
 
+    /// Query only the original protected journal. Terminal task READ, or the
+    /// original current settlement fence, is sufficient; no WRITE, reservation,
+    /// physical path probe, replacement lease or cleanup authority is acquired.
+    /// `original_admission` is the SDK task admission operation, not a child
+    /// native command. The caller separately authenticates that command through
+    /// its sealed original task input; preparation has its own task-derived ID.
+    /// The supplied creator proof must be the protected original private scratch
+    /// producer's proof. Recorded data never authorizes original-root disposal.
+    pub async fn observe_preparation_journal<P: StreamProvider>(
+        owner: &TaskJournalOwner<P>,
+        scratch: &crate::resource_preparation::ChildScratchCreationProof,
+        original_admission: crate::OperationId,
+        work: &NativeMaterializationWork,
+    ) -> std::result::Result<acyclic_fs::OperationReceipt<NativePreparationJournalObservation>, NativePreparationJournalError> {
+        if !work.remaining()?.has_finite_allowances() {
+            return Err(NativePreparationJournalError::Record("native journal query requires a finite original work allowance"));
+        }
+        native_future_typed(|| async {
+            if owner.task_binding().0 != scratch.original_task() || owner.operation_id() != original_admission {
+                return Err(NativePreparationJournalError::Record("native journal query differs from original child or task admission operation"));
+            }
+            let (outcome, _outcome_custody) = owner.outcome_with_native_work(work).await?;
+            if outcome.is_none() { owner.verify_with_native_work(true, work).await?; }
+            owner.require_volume_grant_with_native_work(scratch.volume(), VolumeOperation::Read, work)?;
+            let operation = native_preparation_operation_with_work(owner, work)?;
+            let store = NativePreparationStore::new(owner, work.clone(), true);
+            let value = match store.load_record(operation, false).await? {
+                None => NativePreparationJournalObservation::MissingJournalPhysicalStateUnknown {
+                    preparation_operation: operation,
+                },
+                Some((journal, mut custody)) => {
+                    let (intent, intent_custody) = preparation_intent_typed(&journal, work)?;
+                    if intent.task != scratch.original_task()
+                        || !intent.manifest.volumes.iter().any(|mapping| mapping.writable
+                            && &mapping.volume == scratch.volume())
+                    {
+                        return Err(NativePreparationJournalError::Record("native journal does not retain the admitted original private scratch selection"));
+                    }
+                    custody.absorb(intent_custody)?;
+                    NativePreparationJournalObservation::Recorded(NativeRecordedPreparation {
+                        task: intent.task, original_fence: intent.original_fence,
+                        manifest: intent.manifest, operation_directory: intent.operation_directory,
+                        journal, _custody: custody,
+                    })
+                },
+            };
+            // Reauthenticate after the read, keeping both actual outcome copies
+            // and their custody live until their respective checks finish.
+            let (final_outcome, _final_outcome_custody) = owner.outcome_with_native_work(work).await?;
+            if final_outcome.is_none() { owner.verify_with_native_work(true, work).await?; }
+            owner.require_volume_grant_with_native_work(scratch.volume(), VolumeOperation::Read, work)?;
+            work.remaining()?;
+            Ok(acyclic_fs::OperationReceipt { value, work: work.receipt() })
+        }, work)?.await
+    }
+
     /// Queries the same materializer journal without adopting or repairing paths.
     pub async fn inspect_preparation<P: StreamProvider>(
         owner: &TaskJournalOwner<P>,
@@ -1074,6 +1182,16 @@ fn native_preparation_operation<P: StreamProvider>(owner: &TaskJournalOwner<P>) 
     acyclic_fs::OperationId::from_bytes(bytes)
 }
 
+fn native_preparation_operation_with_work<P: StreamProvider>(
+    owner: &TaskJournalOwner<P>, work: &NativeMaterializationWork,
+) -> std::result::Result<acyclic_fs::OperationId, acyclic_fs::NativeTreeMaterializationError> {
+    work.charge(acyclic_fs::WorkCounters {
+        bytes_hashed: (b"harness/native-preparation/v1\0".len() + 16) as u64,
+        ..acyclic_fs::WorkCounters::default()
+    })?;
+    Ok(native_preparation_operation(owner))
+}
+
 fn materializer_error(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
 }
@@ -1197,11 +1315,18 @@ async fn native_backend(
 fn preparation_intent(
     journal: &MaterializationJournal, work: &NativeMaterializationWork,
 ) -> Result<(NativePreparationIntent, acyclic_fs::NativeAllocation)> {
+    preparation_intent_typed(journal, work).map_err(NativePreparationJournalError::into_owner_error)
+}
+
+fn preparation_intent_typed(
+    journal: &MaterializationJournal, work: &NativeMaterializationWork,
+) -> std::result::Result<(NativePreparationIntent, acyclic_fs::NativeAllocation), NativePreparationJournalError> {
     let acyclic_fs::MaterializationIntent::NativePreparation { selection, original } = &journal.plan.intent else {
-        return Err(Error::Storage("native preparation original qualified intent is missing".into()));
+        return Err(NativePreparationJournalError::Record("native preparation original qualified intent is missing"));
     };
-    let (intent, custody): (NativePreparationIntent, _) = native_decoded_record(
-        original, NativeRecordSchema::PreparationIntent, work, native_intent_control_bytes,
+    let (intent, custody): (NativePreparationIntent, _) = native_decoded_record_typed(
+        original, NativeRecordSchema::PreparationIntent, work,
+        |intent| native_intent_control_bytes(intent).map_err(NativePreparationJournalError::Owner),
     )?;
     intent.manifest.validate()?;
     if selection.len() != intent.manifest.volumes.len()
@@ -1210,7 +1335,7 @@ fn preparation_intent(
                 if image.as_slice() == acyclic_fs::NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX
         ))
     {
-        return Err(Error::Storage("native preparation original selections or edit intents disagree".into()));
+        return Err(NativePreparationJournalError::Record("native preparation original selections or edit intents disagree"));
     }
     for (selected, mapping) in selection.iter().zip(&intent.manifest.volumes) {
         let (identity, _identity_custody) = native_canonical(mapping.volume.provider(), work)?;
@@ -1218,7 +1343,7 @@ fn preparation_intent(
             || selected.generation.digest().as_bytes().as_slice() != mapping.generation.as_resource().key()
             || !matches!(mapping.namespace, NativeVolumeNamespace::MaterializedDirectory)
         {
-            return Err(Error::Storage("native preparation original qualified volume differs".into()));
+            return Err(NativePreparationJournalError::Record("native preparation original qualified volume differs"));
         }
     }
     Ok((intent, custody))
@@ -1301,13 +1426,79 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
     }
 
     fn path(&self, operation: acyclic_fs::OperationId) -> Result<(acyclic_stream::StreamPath, acyclic_fs::NativeAllocation)> {
-        if operation != native_preparation_operation(self.owner) {
-            return Err(Error::Conflict("native materializer operation differs from task".into()));
+        self.path_typed(operation).map_err(NativePreparationJournalError::into_owner_error)
+    }
+
+    fn path_typed(
+        &self, operation: acyclic_fs::OperationId,
+    ) -> std::result::Result<(acyclic_stream::StreamPath, acyclic_fs::NativeAllocation), NativePreparationJournalError> {
+        if operation != native_preparation_operation_with_work(self.owner, &self.work)? {
+            return Err(NativePreparationJournalError::Record("native materializer operation differs from original task"));
         }
         let (path, custody) = self.work.display(&format_args!(
             "harness/v2/materialization/{}/{operation}", self.owner.task_binding().0,
-        )).map_err(materializer_error)?;
+        ))?;
         Ok((acyclic_stream::StreamPath::new(path)?, custody))
+    }
+
+    async fn load_record(
+        &self, operation: acyclic_fs::OperationId, adopt_original_work: bool,
+    ) -> std::result::Result<Option<(MaterializationJournal, acyclic_fs::NativeAllocation)>, NativePreparationJournalError> {
+        use futures::TryStreamExt as _;
+        self.work.charge(acyclic_fs::WorkCounters {
+            backend_read_operations: 1, ..acyclic_fs::WorkCounters::default()
+        })?;
+        let (path, _path_custody) = self.path_typed(operation)?;
+        let stream = self.owner.stream().stream(path.as_str())?;
+        let bounds = match stream.bounds().await {
+            Ok(bounds) => bounds,
+            Err(acyclic_stream::StreamError::NotFound) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let sequence = match bounds.tail.checked_sub(1) {
+            Some(sequence) => sequence,
+            // Preserve the canonical stage engine's empty-record failure. A
+            // read-only observer reports the marker's absence, never absence
+            // of the physical namespace, and does not restart preparation.
+            None if !adopt_original_work => return Ok(None),
+            None => return Err(NativePreparationJournalError::Record("empty materializer journal")),
+        };
+        // The same finite protocol admission applies before the actual fetch.
+        acyclic_fs::WorkCounters::default().admit(&acyclic_fs::WorkCounters {
+            authority_bytes_read: acyclic_stream::MAX_RECORD_BYTES as u64,
+            peak_allocation_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
+            ..acyclic_fs::WorkCounters::default()
+        }, &self.work.remaining()?).map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
+        self.work.charge(acyclic_fs::WorkCounters {
+            backend_read_operations: 1, authority_records_read: 1,
+            ..acyclic_fs::WorkCounters::default()
+        })?;
+        let mut records = stream.read(sequence, 1).await?;
+        let record = records.try_next().await?
+            .ok_or(NativePreparationJournalError::Record("missing materializer journal"))?;
+        self.work.spent(acyclic_fs::WorkCounters {
+            authority_bytes_read: record.value.len() as u64,
+            peak_allocation_bytes: record.value.len() as u64,
+            ..acyclic_fs::WorkCounters::default()
+        })?;
+        if record.value.len() > acyclic_stream::MAX_RECORD_BYTES {
+            return Err(NativePreparationJournalError::Record("materializer journal exceeds Stream record limit"));
+        }
+        let _record_custody = self.work.retain_owned(record.value.len() as u64)?;
+        let (journal, custody): (MaterializationJournal, _) = native_decoded_record_typed(
+            &record.value, NativeRecordSchema::Journal, &self.work,
+            |journal| NativeMaterializationWork::journal_control_bytes(journal).map_err(Into::into),
+        )?;
+        if record.sequence != sequence || journal.revision != bounds.tail || journal.plan.operation_id != operation {
+            return Err(NativePreparationJournalError::Record("materializer journal revision or operation changed"));
+        }
+        if !journal.is_valid_for(operation) {
+            return Err(NativePreparationJournalError::Record("materializer journal has incompatible structural progress"));
+        }
+        if adopt_original_work && !self.loaded_original.swap(true, Ordering::AcqRel) {
+            self.work.set_original_work(journal.work);
+        }
+        Ok(Some((journal, custody)))
     }
 }
 
@@ -1315,53 +1506,9 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
     type Error = Error;
 
     async fn load(&self, operation: acyclic_fs::OperationId) -> Result<Option<MaterializationJournal>> {
-        use futures::TryStreamExt as _;
-        charge_native_read(&self.work)?;
-        let (path, _path_custody) = self.path(operation)?;
-        let stream = self.owner.stream().stream(path.as_str())?;
-        let bounds = match stream.bounds().await {
-            Ok(bounds) => bounds,
-            Err(acyclic_stream::StreamError::NotFound) => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        let sequence = bounds.tail.checked_sub(1).ok_or_else(|| Error::Storage("empty materializer journal".into()))?;
-        // Stream's production protocol fixes the maximum record body. Admit
-        // that finite producer bound before fetching, without recording it as
-        // bytes actually read or allocated.
-        acyclic_fs::WorkCounters::default().admit(&acyclic_fs::WorkCounters {
-            authority_bytes_read: acyclic_stream::MAX_RECORD_BYTES as u64,
-            peak_allocation_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
-            ..acyclic_fs::WorkCounters::default()
-        }, &self.work.remaining().map_err(materializer_error)?).map_err(materializer_error)?;
-        self.work.charge(acyclic_fs::WorkCounters {
-            backend_read_operations: 1, authority_records_read: 1,
-            ..acyclic_fs::WorkCounters::default()
-        }).map_err(materializer_error)?;
-        let mut records = stream.read(sequence, 1).await?;
-        let record = records.try_next().await?.ok_or_else(|| Error::Storage("missing materializer journal".into()))?;
-        self.work.spent(acyclic_fs::WorkCounters {
-            authority_bytes_read: record.value.len() as u64,
-            peak_allocation_bytes: record.value.len() as u64,
-            ..acyclic_fs::WorkCounters::default()
-        }).map_err(materializer_error)?;
-        if record.value.len() > acyclic_stream::MAX_RECORD_BYTES {
-            return Err(Error::Storage("materializer journal exceeds Stream record limit".into()));
-        }
-        let _record_custody = self.work.retain_owned(record.value.len() as u64).map_err(materializer_error)?;
-        let (journal, _journal_custody): (MaterializationJournal, _) = native_decoded_record(
-            &record.value, NativeRecordSchema::Journal, &self.work,
-            |journal| NativeMaterializationWork::journal_control_bytes(journal).map_err(materializer_error),
-        )?;
-        if record.sequence != sequence || journal.revision != bounds.tail || journal.plan.operation_id != operation {
-            return Err(Error::Storage("materializer journal revision or operation changed".into()));
-        }
-        if !journal.is_valid_for(operation) {
-            return Err(Error::Storage("materializer journal has incompatible structural progress".into()));
-        }
-        if !self.loaded_original.swap(true, Ordering::AcqRel) {
-            self.work.set_original_work(journal.work);
-        }
-        Ok(Some(journal))
+        self.load_record(operation, true).await
+            .map(|record| record.map(|(journal, _custody)| journal))
+            .map_err(NativePreparationJournalError::into_owner_error)
     }
 
     async fn compare_and_swap(
@@ -1447,10 +1594,10 @@ enum NativeRecordSchema {
     PreparationIntent,
 }
 
-fn native_decoded_record<T: serde::de::DeserializeOwned>(
+fn native_decoded_record_typed<T: serde::de::DeserializeOwned>(
     bytes: &[u8], schema: NativeRecordSchema, work: &NativeMaterializationWork,
-    retained_bytes: impl FnOnce(&T) -> Result<u64>,
-) -> Result<(T, acyclic_fs::NativeAllocation)> {
+    retained_bytes: impl FnOnce(&T) -> std::result::Result<u64, NativePreparationJournalError>,
+) -> std::result::Result<(T, acyclic_fs::NativeAllocation), NativePreparationJournalError> {
     let maximum_slot = match schema {
         // These are every dynamic Vec element type in MaterializationJournal:
         // edits, qualified selections, preimages, and opaque byte images.
@@ -1467,7 +1614,7 @@ fn native_decoded_record<T: serde::de::DeserializeOwned>(
         NativeRecordSchema::PreparationIntent => std::mem::size_of::<NativeVolumeMapping>()
             .max(std::mem::size_of::<u8>()),
     } as u64;
-    let remaining = work.remaining().map_err(materializer_error)?;
+    let remaining = work.remaining()?;
     let bounds = crate::contract::JsonBounds {
         // Borrowed bytes already admitted at the authority/read or original
         // journal boundary; scanning is not a second physical read.
@@ -1477,92 +1624,85 @@ fn native_decoded_record<T: serde::de::DeserializeOwned>(
     };
     let mut items = 0_u64;
     let mut input_bytes = 0_u64;
-    let mut custody = work.retain_owned(0).map_err(materializer_error)?;
+    let mut custody = work.retain_owned(0)?;
     let value = crate::contract::json_from_slice_bounded_trusted(bytes, bounds, 0, &mut |charge| {
-        match charge {
-            crate::contract::JsonCodecCharge::Work { items: examined, .. } => {
-                items = items.checked_add(examined)
-                    .ok_or_else(|| Error::Storage("native record item count overflow".into()))?;
+        let result = (|| -> Result<()> {
+            match charge {
+                crate::contract::JsonCodecCharge::Work { items: examined, .. } => {
+                    items = items.checked_add(examined)
+                        .ok_or(acyclic_fs::WorkError::Overflow)
+                        .map_err(acyclic_fs::NativeTreeMaterializationError::from).map_err(native_root_error)?;
+                }
+                crate::contract::JsonCodecCharge::Read { bytes } => {
+                    input_bytes = input_bytes.checked_add(bytes)
+                        .ok_or(acyclic_fs::WorkError::Overflow)
+                        .map_err(acyclic_fs::NativeTreeMaterializationError::from).map_err(native_root_error)?;
+                }
+                crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes: scratch } => {
+                    // The lexical count includes every element/container/key.
+                    // Nonempty-vector count and total element count are each at
+                    // most items. Vec growth doubles; tiny vectors may initially
+                    // reserve up to eight slots, including the u8 minimum.
+                    let owned = items.checked_mul(10).and_then(|slots| slots.checked_mul(maximum_slot))
+                        .and_then(|slots| slots.checked_add(input_bytes))
+                        .and_then(|owned| owned.checked_add(scratch))
+                        .ok_or(acyclic_fs::WorkError::Overflow)
+                        .map_err(acyclic_fs::NativeTreeMaterializationError::from).map_err(native_root_error)?;
+                    // Audited serde JSON strings use visit_str/borrowed_str; the
+                    // Rust Unix byte and Windows WTF-8 PathBuf backends copy/move
+                    // UTF-8, not a simultaneous UTF-16 buffer. Escapes never grow
+                    // total decoded UTF-8 past the consumed JSON input.
+                    // This is an acquired quota, not a prediction reported as
+                    // physical allocation work. It covers partial serde outputs.
+                    custody.absorb(work.retain_owned(owned).map_err(native_root_error)?).map_err(native_root_error)?;
+                    return Ok(());
+                }
+                _ => {}
             }
-            crate::contract::JsonCodecCharge::Read { bytes } => {
-                input_bytes = input_bytes.checked_add(bytes)
-                    .ok_or_else(|| Error::Storage("native record input size overflow".into()))?;
-            }
-            crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes: scratch } => {
-                // The lexical count includes every element/container/key.
-                // Nonempty-vector count and total element count are each at
-                // most items. Vec growth doubles; tiny vectors may initially
-                // reserve up to eight slots, including the u8 minimum.
-                let owned = items.checked_mul(10).and_then(|slots| slots.checked_mul(maximum_slot))
-                    .and_then(|slots| slots.checked_add(input_bytes))
-                    .and_then(|owned| owned.checked_add(scratch))
-                    .ok_or_else(|| Error::Storage("native record schema bound overflow".into()))?;
-                // Audited serde JSON strings use visit_str/borrowed_str; the
-                // Rust Unix byte and Windows WTF-8 PathBuf backends copy/move
-                // UTF-8, not a simultaneous UTF-16 buffer. Escapes never grow
-                // total decoded UTF-8 past the consumed JSON input.
-                // This is an acquired quota, not a prediction reported as
-                // physical allocation work. It covers partial serde outputs.
-                custody.absorb(work.retain_owned(owned).map_err(materializer_error)?)
-                    .map_err(materializer_error)?;
-                return Ok(());
-            }
-            _ => {}
-        }
-        native_codec_charge(charge, work, &mut custody)
-    })?;
-    custody.substitute(retained_bytes(&value)?).map_err(materializer_error)?;
+            native_codec_charge_typed(charge, work, &mut custody).map_err(native_root_error)
+        })();
+        result
+    });
+    let value = match value {
+        Ok(value) => value,
+        Err(error) => return Err(NativePreparationJournalError::Owner(native_codec_error_custody(error, custody))),
+    };
+    custody.substitute(retained_bytes(&value)?)?;
     Ok((value, custody))
+}
+
+fn native_root_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
+    Error::NativeWork { cause, custody: None }
+}
+
+fn native_codec_error_custody(error: Error, custody: acyclic_fs::NativeAllocation) -> Error {
+    match error {
+        Error::NativeWork { cause, custody: None } => Error::NativeWork { cause, custody: Some(custody) },
+        // Preserve an already owned Root cause/custody whole. Codec buffers
+        // have physically dropped before this function can drop local custody.
+        error => error,
+    }
 }
 
 fn native_canonical<T: serde::Serialize + ?Sized>(
     value: &T, work: &NativeMaterializationWork,
 ) -> Result<(Vec<u8>, acyclic_fs::NativeAllocation)> {
-    let remaining = work.remaining().map_err(materializer_error)?;
+    let remaining = work.remaining().map_err(native_root_error)?;
     let bounds = crate::contract::JsonBounds {
         maximum_bytes: remaining.bytes_encoded,
         maximum_items: remaining.items_examined,
         maximum_depth: 256,
     };
-    let mut custody = work.retain_owned(0).map_err(materializer_error)?;
+    let mut custody = work.retain_owned(0).map_err(native_root_error)?;
     let bytes = crate::contract::canonical_json_bytes_bounded(value, bounds, &mut |charge| {
-        native_codec_charge(charge, work, &mut custody)
-    })?;
-    Ok((bytes, custody))
-}
-
-fn native_reservation_canonical<T: serde::Serialize + ?Sized>(
-    value: &T, work: &NativeMaterializationWork,
-) -> std::result::Result<(Vec<u8>, acyclic_fs::NativeAllocation), NativeReservationError> {
-    let remaining = work.remaining().map_err(NativeReservationError::Native)?;
-    let bounds = crate::contract::JsonBounds {
-        maximum_bytes: remaining.bytes_encoded,
-        maximum_items: remaining.items_examined,
-        maximum_depth: 256,
-    };
-    let mut custody = work.retain_owned(0).map_err(NativeReservationError::Native)?;
-    let mut native_error = None;
-    let bytes = crate::contract::canonical_json_bytes_bounded(value, bounds, &mut |charge| {
-        match native_codec_charge_typed(charge, work, &mut custody) {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                if native_error.is_none() { native_error = Some(error); }
-                // Allocation-free codec abort signal only. The actual typed
-                // ledger error below, not this marker, reaches the caller.
-                Err(Error::Storage(String::new()))
-            }
-        }
+        native_codec_charge_typed(charge, work, &mut custody).map_err(native_root_error)
     });
-    if let Some(error) = native_error { return Err(NativeReservationError::Native(error)); }
-    bytes.map(|bytes| (bytes, custody)).map_err(NativeReservationError::Owner)
+    match bytes {
+        Ok(bytes) => Ok((bytes, custody)),
+        Err(error) => Err(native_codec_error_custody(error, custody)),
+    }
 }
 
-fn native_codec_charge(
-    charge: crate::contract::JsonCodecCharge, work: &NativeMaterializationWork,
-    custody: &mut acyclic_fs::NativeAllocation,
-) -> Result<()> {
-    native_codec_charge_typed(charge, work, custody).map_err(materializer_error)
-}
 
 fn native_codec_charge_typed(
     charge: crate::contract::JsonCodecCharge, work: &NativeMaterializationWork,
@@ -1741,7 +1881,7 @@ where
 }
 
 #[inline(never)]
-fn native_future_typed<'a, T, F, B>(
+pub(super) fn native_future_typed<'a, T, F, B>(
     build: B, work: &NativeMaterializationWork,
 ) -> std::result::Result<BoxProviderFuture<'a, T>, acyclic_fs::NativeTreeMaterializationError>
 where

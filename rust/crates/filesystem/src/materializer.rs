@@ -160,6 +160,20 @@ impl NativeMaterializationWork {
         Ok(())
     }
 
+    /// Preflights additional owned logical capacity on the original live ledger.
+    /// This neither retains storage nor reports an allocation or completed work.
+    pub fn admit_retained(&self, bytes: u64) -> Result<(), NativeTreeMaterializationError> {
+        self.cancellation.check().map_err(|_| NativeTreeMaterializationError::Cancelled)?;
+        let state = self.state();
+        let peak = state.allocations.live_bytes().checked_add(bytes)
+            .ok_or(crate::WorkError::Overflow)?;
+        state.work.admit(
+            &crate::WorkCounters { peak_allocation_bytes: peak, ..crate::WorkCounters::default() },
+            &state.executable_budget(self.budget),
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn reserve_cleanup_write(&self) -> Result<NativeCleanupWrite, NativeTreeMaterializationError> {
         self.cancellation.check().map_err(|_| NativeTreeMaterializationError::Cancelled)?;
         let mut state = self.state();
@@ -285,7 +299,7 @@ impl NativeMaterializationWork {
         self.admit(copy)?;
         let allocation = self.claim(capacity as u64)?;
         let mut path = std::path::PathBuf::new();
-        path.try_reserve_exact(capacity).map_err(|error| NativeTreeMaterializationError::Allocation(error.to_string()))?;
+        path.try_reserve_exact(capacity).map_err(NativeTreeMaterializationError::AllocationFailed)?;
         path.push(root);
         if let Some(leaf) = leaf { path.push(leaf); }
         self.spent(copy)?;
@@ -378,7 +392,7 @@ impl NativeMaterializationWork {
             let custody = self.claim(bytes)?;
             self.charge(crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED })?;
             let mut owned = Vec::new();
-            owned.try_reserve_exact(name.len()).map_err(|error| NativeTreeMaterializationError::Allocation(error.to_string()))?;
+            owned.try_reserve_exact(name.len()).map_err(NativeTreeMaterializationError::AllocationFailed)?;
             owned.extend_from_slice(name);
             Ok((owned, custody))
         })?;
@@ -470,6 +484,15 @@ pub struct NativeAllocation {
     bytes: u64,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl std::fmt::Debug for NativeAllocation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("NativeAllocation")
+            .field("retained_logical_bytes", &self.bytes)
+            .finish_non_exhaustive()
+    }
+}
+
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeAllocation {
@@ -489,6 +512,9 @@ impl NativeAllocation {
 
     /// Returns this guard's currently owned byte capacity.
     pub fn bytes(&self) -> u64 { self.bytes }
+
+    /// Borrows this guard's original operation ledger without creating a meter.
+    pub const fn work(&self) -> &NativeMaterializationWork { &self.meter }
 
     /// Transfers existing custody without another allocation.
     ///
@@ -1611,7 +1637,7 @@ fn duplicate_native_string(value: &str, work: &NativeMaterializationWork, alloca
     work.admit(delta)?;
     allocation.grow(value.len() as u64)?;
     let mut output = String::new();
-    output.try_reserve_exact(value.len()).map_err(|error| NativeTreeMaterializationError::Allocation(error.to_string()))?;
+    output.try_reserve_exact(value.len()).map_err(NativeTreeMaterializationError::AllocationFailed)?;
     output.push_str(value);
     work.spent(delta)?;
     Ok(output)
@@ -1622,7 +1648,7 @@ fn native_vec_push<T>(values: &mut Vec<T>, value: T, custody: &mut NativeAllocat
     if values.len() == values.capacity() {
         let additional = values.capacity().max(1);
         custody.grow(owned_size(additional, std::mem::size_of::<T>())?)?;
-        values.try_reserve_exact(additional).map_err(|error| NativeTreeMaterializationError::Allocation(error.to_string()))?;
+        values.try_reserve_exact(additional).map_err(NativeTreeMaterializationError::AllocationFailed)?;
     }
     values.push(value);
     Ok(())
@@ -1640,7 +1666,7 @@ fn native_namespace_string(path: &crate::NamespacePath, work: &NativeMaterializa
     }
     let custody = work.claim(length as u64)?;
     let mut output = String::new();
-    output.try_reserve_exact(length).map_err(|error| NativeTreeMaterializationError::Allocation(error.to_string()))?;
+    output.try_reserve_exact(length).map_err(NativeTreeMaterializationError::AllocationFailed)?;
     work.admit(crate::WorkCounters { bytes_copied: (length - path.components().len().saturating_sub(1)) as u64, ..crate::WorkCounters::default() })?;
     for component in path.components() {
         work.charge(crate::WorkCounters { items_examined: component.as_bytes().len() as u64 + 1, ..crate::WorkCounters::default() })?;
@@ -1700,7 +1726,7 @@ fn native_absolute_string(path: &str, work: &NativeMaterializationWork) -> Resul
     let copy = crate::WorkCounters { bytes_copied: path.len() as u64, ..crate::WorkCounters::default() };
     work.admit(copy)?;
     let mut absolute = String::new();
-    absolute.try_reserve_exact(length).map_err(|error| NativeTreeMaterializationError::Allocation(error.to_string()))?;
+    absolute.try_reserve_exact(length).map_err(NativeTreeMaterializationError::AllocationFailed)?;
     absolute.push('/');
     absolute.push_str(path);
     work.spent(copy)?;
@@ -1725,7 +1751,7 @@ fn duplicate_native_bytes(value: &[u8], work: &NativeMaterializationWork, alloca
     work.admit(delta)?;
     allocation.grow(value.len() as u64)?;
     let mut output = Vec::new();
-    output.try_reserve_exact(value.len()).map_err(|error| NativeTreeMaterializationError::Allocation(error.to_string()))?;
+    output.try_reserve_exact(value.len()).map_err(NativeTreeMaterializationError::AllocationFailed)?;
     output.extend_from_slice(value);
     work.spent(delta)?;
     Ok(output)
@@ -2497,7 +2523,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
     }
 
     fn reserve_observations(&self, observations: &mut Vec<MaterializationObservation>, count: usize) -> Result<(), Self::Error> {
-        observations.try_reserve_exact(count).map_err(|error| NativeTreeMaterializationError::Allocation(error.to_string()))
+        observations.try_reserve_exact(count).map_err(NativeTreeMaterializationError::AllocationFailed)
     }
 
     fn admit_observations(&self, count: usize) -> Result<Option<NativeAllocation>, Self::Error> {
@@ -2868,7 +2894,7 @@ impl NativeRemoveWalker {
     fn new(root: NativeRemoveFrame, work: &NativeMaterializationWork) -> Result<Self, NativeTreeMaterializationError> {
         let storage = work.claim(std::mem::size_of::<NativeRemoveFrame>() as u64)?;
         let mut frames = Vec::new();
-        frames.try_reserve_exact(1).map_err(|error| NativeTreeMaterializationError::Allocation(error.to_string()))?;
+        frames.try_reserve_exact(1).map_err(NativeTreeMaterializationError::AllocationFailed)?;
         frames.push(root);
         Ok(Self { frames, storage })
     }
@@ -2887,7 +2913,7 @@ impl NativeRemoveWalker {
                     next.name = Some((child, allocation));
                     if self.frames.len() == self.frames.capacity() {
                         self.storage.grow(std::mem::size_of::<NativeRemoveFrame>() as u64)?;
-                        self.frames.try_reserve_exact(1).map_err(|error| NativeTreeMaterializationError::Allocation(error.to_string()))?;
+                        self.frames.try_reserve_exact(1).map_err(NativeTreeMaterializationError::AllocationFailed)?;
                     }
                     self.frames.push(next);
                 } else {
@@ -3182,7 +3208,7 @@ pub(crate) fn native_stat_held(parent: &cap_std::fs::Dir, leaf: &Path, work: &Na
         work.admit(copied)?;
         let _allocation = work.claim(copied.bytes_copied)?;
         let mut wide = Vec::new();
-        wide.try_reserve_exact(count).map_err(|error| NativeTreeMaterializationError::Allocation(error.to_string()))?;
+        wide.try_reserve_exact(count).map_err(NativeTreeMaterializationError::AllocationFailed)?;
         wide.extend(leaf.as_os_str().encode_wide());
         work.spent(copied)?;
         crate::native_host::stat_windows_leaf_with_work(parent, &wide, &mut &*work)
@@ -3244,7 +3270,7 @@ fn native_directory_contains(directory: &cap_std::fs::Dir, wanted: crate::Native
     let (reader, cursor) = crate::native_host::read_dir_held_with_work(directory, &mut &*work)?;
     let mut frames = Vec::new();
     let mut storage = work.claim(std::mem::size_of::<(Option<cap_std::fs::Dir>, crate::native_host::HostStatReader, NativeAllocation)>() as u64)?;
-    frames.try_reserve_exact(1).map_err(|error| NativeTreeMaterializationError::Allocation(error.to_string()))?;
+    frames.try_reserve_exact(1).map_err(NativeTreeMaterializationError::AllocationFailed)?;
     frames.push((None, reader, cursor));
     while let Some((held, reader, _cursor)) = frames.last_mut() {
         let parent = held.as_ref().unwrap_or(directory);
@@ -3258,7 +3284,7 @@ fn native_directory_contains(directory: &cap_std::fs::Dir, wanted: crate::Native
             let (reader, cursor) = crate::native_host::read_dir_held_with_work(&child, &mut &*work)?;
             if frames.len() == frames.capacity() {
                 storage.grow(std::mem::size_of::<(Option<cap_std::fs::Dir>, crate::native_host::HostStatReader, NativeAllocation)>() as u64)?;
-                frames.try_reserve_exact(1).map_err(|error| NativeTreeMaterializationError::Allocation(error.to_string()))?;
+                frames.try_reserve_exact(1).map_err(NativeTreeMaterializationError::AllocationFailed)?;
             }
             frames.push((Some(child), reader, cursor));
         }
@@ -3488,7 +3514,7 @@ fn native_hash_frame(directory: cap_std::fs::Dir, work: &NativeMaterializationWo
             let additional = names.capacity().max(1);
             let bytes = additional.checked_mul(std::mem::size_of::<(NativeWalkName, NativeAllocation)>()).ok_or(NativeTreeMaterializationError::Work(crate::WorkError::Overflow))?;
             storage.grow(bytes as u64)?;
-            names.try_reserve_exact(additional).map_err(|error| NativeTreeMaterializationError::Allocation(error.to_string()))?;
+            names.try_reserve_exact(additional).map_err(NativeTreeMaterializationError::AllocationFailed)?;
         }
         names.push(name);
     }
@@ -3552,7 +3578,7 @@ fn hash_native_entry(backend: &NativeTreeMaterializationBackend, parent: &cap_st
     let first = with_native_walk_leaf(leaf, &backend.work, |name| hash_native_entry_shallow(backend, parent, name, metadata, hasher, desired, contents))?;
     if let Some(frame) = first {
         storage.grow(std::mem::size_of::<NativeHashFrame>() as u64)?;
-        frames.try_reserve_exact(1).map_err(|error| NativeTreeMaterializationError::Allocation(error.to_string()))?;
+        frames.try_reserve_exact(1).map_err(NativeTreeMaterializationError::AllocationFailed)?;
         frames.push(frame);
     }
     while let Some(frame) = frames.last_mut() {
@@ -3568,7 +3594,7 @@ fn hash_native_entry(backend: &NativeTreeMaterializationBackend, parent: &cap_st
         if let Some(next) = next {
             if frames.len() == frames.capacity() {
                 storage.grow(std::mem::size_of::<NativeHashFrame>() as u64)?;
-                frames.try_reserve_exact(1).map_err(|error| NativeTreeMaterializationError::Allocation(error.to_string()))?;
+                frames.try_reserve_exact(1).map_err(NativeTreeMaterializationError::AllocationFailed)?;
             }
             frames.push(next);
         }
@@ -3864,6 +3890,9 @@ pub enum NativeTreeMaterializationError {
     /// A measured host buffer could not be admitted or allocated.
     #[error("native materialization allocation failed: {0}")]
     Allocation(String),
+    /// The original fallible owned buffer reservation failed.
+    #[error("native materialization allocation failed: {0}")]
+    AllocationFailed(#[source] std::collections::TryReserveError),
     /// Source metadata requires observations this native publisher cannot prove.
     #[error("native materialization cannot verify complete source metadata at '{0}'")]
     UnverifiedSourceMetadata(String),
@@ -3883,7 +3912,7 @@ fn native_check_plan(plan: &MaterializationPlan, work: &NativeMaterializationWor
         || work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::default() }),
         |capacity| {
             let mut paths = Vec::new();
-            paths.try_reserve_exact(capacity).map_err(|error| NativeTreeMaterializationError::Allocation(error.to_string()))?;
+            paths.try_reserve_exact(capacity).map_err(NativeTreeMaterializationError::AllocationFailed)?;
             Ok(paths)
         },
         |path| crate::path::is_canonical_relative_with_step(path, || work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::default() })),
@@ -4169,11 +4198,12 @@ where
             .ok_or(NativeWorkspacePublicationError::MismatchedJournal);
     }
 
+    let planning_budget = work.remaining()?;
     let changes = from_generation
-        .diff_to_bounded(to_generation, u32::MAX, work.remaining()?, cancellation)
+        .diff_to_bounded(to_generation, u32::MAX, planning_budget, cancellation)
         .await.map_err(|failure| workspace_failure(failure, &work))?;
     let changed = changes
-        .changed_paths_bounded(u32::MAX, work.remaining()?, cancellation)
+        .changed_paths_bounded(u32::MAX, planning_budget, cancellation)
         .await.map_err(|failure| workspace_failure(failure, &work))?;
     work.spent(changed.work)?;
     drop(changes);
@@ -4243,7 +4273,7 @@ where
         let edit = if install {
             allocation.grow(1)?;
             let mut image = Vec::new();
-            image.try_reserve_exact(1).map_err(|error| NativeTreeMaterializationError::Allocation(error.to_string()))?;
+            image.try_reserve_exact(1).map_err(NativeTreeMaterializationError::AllocationFailed)?;
             image.push(1);
             MaterializationEdit::Install { path, image }
         } else { MaterializationEdit::Remove { path } };

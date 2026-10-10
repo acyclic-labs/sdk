@@ -408,7 +408,7 @@ fn names_are_canonical_bounded_and_path_independent() -> Result<(), Box<dyn Erro
 }
 
 #[test]
-fn measured_workspace_names_preserve_nfc_and_actual_scratch_failure_work()
+fn measured_workspace_names_preserve_nfc_and_actual_output_failure_work()
 -> Result<(), Box<dyn Error>> {
     use unicode_normalization::UnicodeNormalization;
     let cancellation = CancellationToken::new();
@@ -431,13 +431,13 @@ fn measured_workspace_names_preserve_nfc_and_actual_scratch_failure_work()
         &cancellation,
     ) {
         Err(failure) => failure,
-        Ok(_) => return Err("normalization scratch growth unexpectedly admitted".into()),
+        Ok(_) => return Err("normalization output growth unexpectedly admitted".into()),
     };
     assert!(matches!(failure.error, WorkspaceError::Work(_)));
     assert_eq!(failure.work.allocation_operations, 1);
-    assert!(failure.work.bytes_copied >= std::mem::size_of::<(u8, char)>() as u64);
+    assert_eq!(failure.work.bytes_copied, 1);
     assert!(failure.work.items_examined > 0);
-    assert!(failure.work.peak_allocation_bytes >= std::mem::size_of::<(u8, char)>() as u64);
+    assert_eq!(failure.work.peak_allocation_bytes, 1);
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     let failure = WorkspaceName::new_measured("name", WorkBudget::UNBOUNDED, &cancelled)
@@ -2595,6 +2595,65 @@ async fn generation_reader_resolves_many_paths_from_one_pinned_root() -> Result<
     Ok(())
 }
 
+#[tokio::test]
+async fn readonly_creation_lookup_keeps_authentic_initial_generation_and_failed_work()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let config = VolumeConfig::portable(Lifecycle::Ephemeral);
+    let operation = IdempotencyKey::from_bytes([0xd4; 16]).operation_id();
+    let cancellation = CancellationToken::new();
+    let mut allowances = serde_json::to_value(WorkBudget::UNBOUNDED)?;
+    for allowance in allowances.as_object_mut().expect("budget fields").values_mut() {
+        *allowance = serde_json::json!(100_000_000_u64);
+    }
+    let budget: WorkBudget = serde_json::from_value(allowances)?;
+    let created = fs.create_workspace_with_operation_measured(
+        "readonly-original-creation", config, operation, budget, &cancellation,
+    ).await?.value;
+    let workspace = fs.open_workspace("readonly-original-creation").await?;
+    workspace.write_text("/later", "advanced head").await?;
+    let advanced = workspace.head().await?.id();
+    assert_ne!(advanced, created.id());
+    let original = fs.workspace_for_creation_operation_measured(
+        "readonly-original-creation", config, operation, budget, &cancellation,
+    ).await?;
+    original.work.verify(budget)?;
+    assert_eq!(original.value.as_ref().map(|generation| generation.id()), Some(created.id()));
+    assert_eq!(original.value.as_ref().map(|generation| generation.workspace_id()), Some(workspace.id()));
+    assert_eq!(original.work.authority_records_appended, 0);
+    assert_eq!(workspace.head().await?.id(), advanced);
+
+    let wrong_operation = IdempotencyKey::from_bytes([0xd5; 16]).operation_id();
+    let mut wrong_config = config;
+    wrong_config.lifecycle = Lifecycle::Durable;
+    for (requested_config, requested_operation) in [(config, wrong_operation), (wrong_config, operation)] {
+        let failure = fs.workspace_for_creation_operation_measured(
+            "readonly-original-creation", requested_config, requested_operation, budget, &cancellation,
+        ).await.err().expect("mismatched original creation is rejected");
+        assert_ne!(*failure.work, crate::WorkCounters::UNCHARGED);
+        failure.work.verify(budget)?;
+        assert_eq!(failure.work.authority_records_appended, 0);
+    }
+    let missing = fs.workspace_for_creation_operation_measured(
+        "readonly-missing-creation", config, operation, budget, &cancellation,
+    ).await?;
+    assert!(missing.value.is_none());
+    assert_eq!(missing.work.authority_records_appended, 0);
+    missing.work.verify(budget)?;
+    assert!(fs.open_workspace("readonly-missing-creation").await.is_err());
+
+    let mut denied = budget;
+    denied.backend_read_operations = 0;
+    let failure = fs.workspace_for_creation_operation_measured(
+        "readonly-original-creation", config, operation, denied, &cancellation,
+    ).await.err().expect("finite denial retains name admission prefix");
+    assert_ne!(*failure.work, crate::WorkCounters::UNCHARGED);
+    failure.work.verify(denied)?;
+    assert_eq!(failure.work.authority_records_appended, 0);
+    assert_eq!(workspace.head().await?.id(), advanced);
+    Ok(())
+}
+
 /// Where a fork's provider fault lands: before a call reaches the provider,
 /// or after a commit applied but before its caller learned so.
 #[derive(Clone, Copy, Debug)]
@@ -3322,7 +3381,7 @@ async fn collections_run_alongside_publications() -> Result<(), Box<dyn Error>> 
                     .write_text("/churn.txt", &round.to_string().repeat(20_000))
                     .await?
                 else {
-                    return Err(WorkspaceError::engine("churn fixture did not commit"));
+                    return Err(WorkspaceError::manual_engine("churn fixture did not commit"));
                 };
                 generation.pin(format!("churn-{round}")).await?;
                 let agent = main
@@ -3950,6 +4009,59 @@ fn measured_unicode_projection_keeps_shared_live_and_denies_before_output_alloca
     Ok(())
 }
 
+#[test]
+fn canonical_path_errors_keep_the_same_inline_cause_without_allocating_diagnostics()
+-> Result<(), Box<dyn Error>> {
+    let config = VolumeConfig::portable(Lifecycle::Ephemeral);
+    let ordinary = customer_path("/a/../b", config).expect_err("invalid canonical path");
+    let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+    let mut work = crate::WorkCounters::default();
+    let measured = customer_path_measured(
+        "/a/../b", config, &mut allocations, &mut work,
+        WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED }, &CancellationToken::new(),
+    ).expect_err("invalid canonical path must fail before allocating");
+    let (WorkspaceError::NamespacePath(ordinary), WorkspaceError::NamespacePath(measured)) = (ordinary, measured)
+        else { return Err("canonical helpers did not retain the actual typed path cause".into()); };
+    assert_eq!(ordinary, measured);
+    assert_eq!(work, crate::WorkCounters::default());
+    assert_eq!(allocations.live_bytes(), 0);
+    let wrapped = WorkspaceError::from(crate::FsError::Path(
+        crate::kernel::PathLookupError::NamespacePath(measured),
+    ));
+    assert!(matches!(wrapped, WorkspaceError::NamespacePath(_)));
+    let cancelled = WorkspaceError::from(crate::kernel::NamespacePathError::Cancelled);
+    assert!(matches!(cancelled, WorkspaceError::Cancelled(_)));
+    Ok(())
+}
+
+#[test]
+fn opaque_native_projection_error_is_typed_before_any_output_allocation()
+-> Result<(), Box<dyn Error>> {
+    let limits = VolumeConfig::portable(Lifecycle::Ephemeral).limits;
+    let path = NamespacePath::new(vec![
+        LogicalName::new(crate::kernel::NameEncoding::WindowsUtf16Le, vec![b'a', 0], 255)?,
+        LogicalName::new(crate::kernel::NameEncoding::WindowsUtf16Le, vec![0, 0xd8], 255)?,
+    ], limits)?;
+    let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+    let mut work = crate::WorkCounters::default();
+    allocations.claim_bytes(path.retained_bytes(), 0, &mut work, WorkBudget::UNBOUNDED)?;
+    let live = allocations.live_bytes();
+    let error = namespace_path_text_measured(
+        &path, &mut allocations, &mut work,
+        WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED }, &CancellationToken::new(),
+    ).expect_err("opaque native code units cannot become a Unicode string");
+    assert!(matches!(error, WorkspaceError::NamespacePath(
+        crate::kernel::NamespacePathError::NonUnicodeProjection,
+    )));
+    assert_eq!(work.items_examined, path.depth() as u64);
+    assert_eq!(work.allocation_operations, 0);
+    assert_eq!(work.bytes_copied, 0);
+    assert_eq!(work.bytes_encoded, 0);
+    assert_eq!(work.output_bytes, 0);
+    assert_eq!(allocations.live_bytes(), live);
+    Ok(())
+}
+
 #[tokio::test]
 async fn measured_selected_transaction_composes_one_finite_pinned_import()
 -> Result<(), Box<dyn Error>> {
@@ -4179,6 +4291,42 @@ async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_
 }
 
 #[tokio::test]
+async fn original_fork_retry_after_both_heads_advance_needs_no_publication_seal()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let parent = fs.create_workspace("original-fork-parent").await?;
+    parent.write_text("/file", "original").await?;
+    let frozen = parent.head().await?;
+    let key = IdempotencyKey::new();
+    let cancellation = CancellationToken::new();
+    let budget = selected_transaction_budget();
+    let first = parent.fork_measured(
+        "original-fork-child", ForkOptions::from_generation(frozen.clone(), key),
+        budget, &cancellation,
+    ).await?;
+    let child = first.value;
+    let original_child = child.head().await?;
+    parent.write_text("/file", "later parent").await?;
+    child.write_text("/file", "later child").await?;
+    let advanced_child = child.head().await?;
+    let retry = parent.fork_measured_guarded(
+        "original-fork-child", ForkOptions::from_generation(frozen, key),
+        crate::PublicationPermit::Unrestricted, budget, &cancellation,
+        |_| std::future::ready(Err(crate::OperationFailure::before_work(crate::FsError::CreationRejected))),
+    ).await?;
+    retry.work.verify(budget)?;
+    assert_eq!(retry.work.authority_records_appended, 0);
+    assert_eq!(retry.value.head().await?.id(), advanced_child.id());
+    assert_eq!(retry.value.read("/file", 32).await?.as_ref(), b"later child");
+    let creation = fs.workspace_for_creation_operation_measured(
+        "original-fork-child", child.volume.config, key.operation_id(), budget, &cancellation,
+    ).await?.value.ok_or("original creation missing")?;
+    assert_eq!(creation.id(), original_child.id());
+    assert_eq!(creation.read("/file", 32).await?.as_ref(), b"original");
+    Ok(())
+}
+
+#[tokio::test]
 async fn guarded_stale_exact_retry_resolves_committed_without_owner_reseal()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
@@ -4270,5 +4418,221 @@ async fn measured_directory_record_restore_preserves_original_ignored_descendant
     assert_eq!(workspace.stat("/tree").await?.metadata.posix_mode, Some(0o700));
     assert_eq!(workspace.read("/tree/tracked", 32).await?.as_ref(), b"dirty");
     assert_eq!(workspace.read("/tree/ignored", 32).await?.as_ref(), b"live ignored");
+    Ok(())
+}
+
+#[tokio::test]
+async fn measured_actual_reservation_retains_proof_across_cancelled_cleanup()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("measured-actual-reservation").await?;
+    let other = fs.create_workspace("other-reservation-authority").await?;
+    let original = workspace.head().await?;
+    let cancellation = CancellationToken::new();
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let budget = selected_transaction_budget();
+    let operation_id = OperationId::new();
+    let cold = workspace.reserve_publication_measured(operation_id, budget, &cancelled)
+        .await.expect_err("original cancelled token must prevent reservation");
+    assert!(matches!(cold.error, WorkspaceError::Cancelled(_)));
+    assert_eq!(*cold.work, crate::WorkCounters::UNCHARGED);
+    let reserved = workspace.reserve_publication_measured(operation_id, budget, &cancellation).await?;
+    reserved.work.verify(budget)?;
+    let reservation = reserved.value;
+    let retried = workspace.reserve_publication_measured(operation_id, budget, &cancellation).await?;
+    retried.work.verify(budget)?;
+    assert_eq!(retried.value, reservation);
+    assert_eq!(reservation.authority_id, workspace.authority_id());
+    assert_eq!(reservation.operation_id, operation_id);
+    let foreign = other.release_publication_measured(reservation, budget, &cancellation)
+        .await.expect_err("a different workspace cannot release this actual proof");
+    assert!(matches!(foreign.error, WorkspaceError::IncompatibleWorkspace));
+    assert_eq!(*foreign.work, crate::WorkCounters::UNCHARGED);
+    let failed = workspace.release_publication_measured(reservation, budget, &cancelled)
+        .await.expect_err("cancelled cleanup must not claim release");
+    assert!(matches!(failed.error, WorkspaceError::Cancelled(_)));
+    assert_eq!(*failed.work, crate::WorkCounters::UNCHARGED);
+    let blocked = workspace.reserve_publication_measured(OperationId::new(), budget, &cancellation)
+        .await.expect_err("the original reservation remains active");
+    assert!(matches!(blocked.error, WorkspaceError::StaleGeneration));
+    assert!(blocked.work.authority_records_read > 0);
+    let denied = workspace.release_publication_measured(
+        reservation, crate::WorkCounters::UNCHARGED, &cancellation,
+    ).await.expect_err("release must admit its original authority work");
+    assert!(matches!(denied.error, WorkspaceError::Work(_)));
+    let released = workspace.release_publication_measured(reservation, budget, &cancellation).await?;
+    released.work.verify(budget)?;
+    let released_retry = workspace.release_publication_measured(reservation, budget, &cancellation).await?;
+    released_retry.work.verify(budget)?;
+    let next = workspace.reserve_publication_measured(OperationId::new(), budget, &cancellation).await?;
+    workspace.release_publication_measured(next.value, budget, &cancellation).await?;
+    assert_eq!(workspace.head().await?.id(), original.id());
+    Ok(())
+}
+
+#[tokio::test]
+async fn selected_record_restore_prepares_file_to_directory_privately_before_one_seal()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let source_workspace = fs.create_workspace("source-selected-directory-shape").await?;
+    let mut source_tx = source_workspace.begin_transaction(IdempotencyKey::new()).await?;
+    source_tx.create_dir_all("/hot/empty/nested").await?;
+    source_tx.set_metadata("/hot", FileMetadata {
+        posix_mode: MetadataField::Value(0o750), ..FileMetadata::default()
+    }).await?;
+    source_tx.write("/hot/value", Bytes::from_static(b"selected source")).await?;
+    source_tx.hard_link("/hot/value", "/hot/alias").await?;
+    source_tx.commit().await?;
+    let source = source_workspace.head().await?;
+    let workspace = fs.create_workspace("target-selected-directory-shape").await?;
+    let mut target_tx = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    target_tx.write("/hot", Bytes::from_static(b"original file")).await?;
+    target_tx.hard_link("/hot", "/outside-linked").await?;
+    target_tx.write("/outside", Bytes::from_static(b"user")).await?;
+    target_tx.commit().await?;
+    let original = workspace.head().await?;
+    let paths = vec![
+        "hot".to_owned(), "hot/empty".to_owned(), "hot/empty/nested".to_owned(),
+        "hot/value".to_owned(), "hot/alias".to_owned(),
+    ];
+    let budget = selected_transaction_budget();
+    let cancellation = CancellationToken::new();
+    let rejected = workspace.restore_selected_paths_from_with_permit_measured_guarded(
+        &source, &paths, original.id(), IdempotencyKey::new(),
+        crate::PublicationPermit::Unrestricted, budget, &cancellation,
+        |_| async { Err(crate::OperationFailure::before_work(FsError::MutationNotAllowed)) },
+    ).await;
+    let Err(rejected) = rejected else { panic!("owner rejection must prevent the only publication"); };
+    rejected.work.verify(budget)?;
+    assert!(rejected.work.allocation_operations > 0);
+    assert_eq!(workspace.head().await?.id(), original.id());
+    assert_eq!(workspace.read("/hot", 32).await?.as_ref(), b"original file");
+    assert_eq!(workspace.stat("/hot").await?.file_id, workspace.stat("/outside-linked").await?.file_id);
+    let volume = workspace.volume.clone();
+    let guard_cancellation = cancellation.clone();
+    let original_id = original.id();
+    let restored = workspace.restore_selected_paths_from_with_permit_measured_guarded(
+        &source, &paths, original.id(), IdempotencyKey::new(),
+        crate::PublicationPermit::Unrestricted, budget, &cancellation, move |allowance| {
+            let volume = volume.clone();
+            let cancellation = guard_cancellation.clone();
+            async move {
+                let checked = volume.checkout(
+                    GenerationSelector::Exact(original_id), CheckoutMode::read_only_pinned(),
+                    allowance, &cancellation,
+                ).await?;
+                drop(checked.value);
+                Ok(crate::OperationReceipt { value: (), work: checked.work })
+            }
+        },
+    ).await?;
+    restored.work.verify(budget)?;
+    assert!(matches!(restored.value, TransactionCommit::Committed(_)));
+    assert_eq!(workspace.stat("/hot").await?.metadata.posix_mode, Some(0o750));
+    assert_eq!(workspace.stat("/hot/empty/nested").await?.kind, FileKind::Directory);
+    assert!(workspace.list_directory("/hot/empty/nested", None, 1).await?.entries.is_empty());
+    assert_eq!(workspace.read("/hot/value", 32).await?.as_ref(), b"selected source");
+    assert_eq!(workspace.read("/hot/alias", 32).await?.as_ref(), b"selected source");
+    assert_eq!(workspace.stat("/hot/value").await?.file_id, workspace.stat("/hot/alias").await?.file_id);
+    assert_eq!(workspace.read("/outside-linked", 32).await?.as_ref(), b"original file");
+    assert_eq!(workspace.stat("/outside-linked").await?.link_count, 1);
+    assert_eq!(workspace.read("/outside", 32).await?.as_ref(), b"user");
+    Ok(())
+}
+
+#[tokio::test]
+async fn selected_record_restore_removes_directory_descendants_before_file_replacement()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let source_workspace = fs.create_workspace("source-selected-file-shape").await?;
+    source_workspace.write("/hot", Bytes::from_static(b"replacement file")).await?;
+    let source = source_workspace.head().await?;
+    let workspace = fs.create_workspace("target-selected-file-shape").await?;
+    let mut seed = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    seed.create_dir_all("/hot/nested/empty").await?;
+    seed.write("/hot/nested/old", Bytes::from_static(b"retained outside alias")).await?;
+    seed.hard_link("/hot/nested/old", "/outside-linked").await?;
+    seed.write("/hot/top", Bytes::from_static(b"old top")).await?;
+    seed.write("/outside", Bytes::from_static(b"user")).await?;
+    seed.commit().await?;
+    let original = workspace.head().await?;
+    let paths = vec![
+        "hot/nested/empty".to_owned(), "hot/nested/old".to_owned(),
+        "hot/nested".to_owned(), "hot/top".to_owned(), "hot".to_owned(),
+    ];
+    let cancellation = CancellationToken::new();
+    let budget = selected_transaction_budget();
+    let rejected = workspace.restore_selected_paths_from_with_permit_measured_guarded(
+        &source, &paths, original.id(), IdempotencyKey::new(),
+        crate::PublicationPermit::Unrestricted, budget, &cancellation,
+        |_| async { Err(crate::OperationFailure::before_work(FsError::MutationNotAllowed)) },
+    ).await;
+    let Err(rejected) = rejected else { panic!("owner rejection must prevent subtree replacement"); };
+    rejected.work.verify(budget)?;
+    assert_eq!(workspace.head().await?.id(), original.id());
+    assert_eq!(workspace.read("/hot/nested/old", 64).await?.as_ref(), b"retained outside alias");
+    assert_eq!(workspace.stat("/outside-linked").await?.link_count, 2);
+    let volume = workspace.volume.clone();
+    let guard_cancellation = cancellation.clone();
+    let original_id = original.id();
+    let restored = workspace.restore_selected_paths_from_with_permit_measured_guarded(
+        &source, &paths, original.id(), IdempotencyKey::new(),
+        crate::PublicationPermit::Unrestricted, budget, &cancellation, move |allowance| {
+            let volume = volume.clone();
+            let cancellation = guard_cancellation.clone();
+            async move {
+                let checked = volume.checkout(
+                    GenerationSelector::Exact(original_id), CheckoutMode::read_only_pinned(),
+                    allowance, &cancellation,
+                ).await?;
+                drop(checked.value);
+                Ok(crate::OperationReceipt { value: (), work: checked.work })
+            }
+        },
+    ).await?;
+    restored.work.verify(budget)?;
+    assert!(matches!(restored.value, TransactionCommit::Committed(_)));
+    assert_eq!(workspace.read("/hot", 64).await?.as_ref(), b"replacement file");
+    assert_eq!(workspace.stat("/hot").await?.kind, FileKind::Regular);
+    assert_eq!(workspace.read("/outside-linked", 64).await?.as_ref(), b"retained outside alias");
+    assert_eq!(workspace.stat("/outside-linked").await?.link_count, 1);
+    assert_eq!(workspace.read("/outside", 64).await?.as_ref(), b"user");
+    Ok(())
+}
+
+#[tokio::test]
+async fn measured_reservation_query_is_existing_only_and_preserves_original_proof()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("readonly-reservation-query").await?;
+    let original = workspace.head().await?;
+    let operation_id = OperationId::new();
+    let cancellation = CancellationToken::new();
+    let budget = selected_transaction_budget();
+    let absent = workspace.publication_reservation_measured(operation_id, budget, &cancellation).await?;
+    absent.work.verify(budget)?;
+    assert!(absent.value.is_none());
+    let reserved = workspace.reserve_publication_measured(operation_id, budget, &cancellation).await?;
+    let found = workspace.publication_reservation_measured(operation_id, budget, &cancellation).await?;
+    found.work.verify(budget)?;
+    assert_eq!(found.value, Some(reserved.value));
+    let other = workspace.publication_reservation_measured(OperationId::new(), budget, &cancellation).await?;
+    other.work.verify(budget)?;
+    assert!(other.value.is_none());
+    let blocked = workspace.reserve_publication_measured(OperationId::new(), budget, &cancellation)
+        .await.expect_err("readonly query must not release the original gate");
+    assert!(matches!(blocked.error, WorkspaceError::StaleGeneration));
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let denied = workspace.publication_reservation_measured(operation_id, budget, &cancelled)
+        .await.expect_err("query uses the original caller cancellation");
+    assert!(matches!(denied.error, WorkspaceError::Cancelled(_)));
+    assert_eq!(*denied.work, crate::WorkCounters::UNCHARGED);
+    workspace.release_publication_measured(reserved.value, budget, &cancellation).await?;
+    let released = workspace.publication_reservation_measured(operation_id, budget, &cancellation).await?;
+    released.work.verify(budget)?;
+    assert!(released.value.is_none());
+    assert_eq!(workspace.head().await?.id(), original.id());
     Ok(())
 }

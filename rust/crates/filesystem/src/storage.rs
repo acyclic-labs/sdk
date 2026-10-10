@@ -326,6 +326,17 @@ pub enum AuthorityStoreError {
     /// Sequence arithmetic cannot represent another authority fact.
     #[error("authority sequence exhausted")]
     SequenceExhausted,
+    /// A surviving reservation identity lacks authenticated original head evidence.
+    /// This is queryable uncertainty, never permission to adopt a current head.
+    #[error("original publication reservation head is unavailable for authority {authority_id:?}, operation {operation_id:?}, gate {gate_tail}")]
+    ReservationOriginalHeadUnavailable {
+        /// Original authority selected by the reservation.
+        authority_id: AuthorityId,
+        /// Original caller-owned operation identity.
+        operation_id: OperationId,
+        /// Observed retained gate tail, not a newly generated proof.
+        gate_tail: u64,
+    },
     /// Persistent state is corrupt and cannot be safely interpreted.
     #[error("authority storage is corrupt: {0}")]
     Corrupt(String),

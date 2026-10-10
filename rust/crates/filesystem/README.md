@@ -61,8 +61,12 @@ Concurrent native read observers share the checkout's semantic proof but admit
 and report their own completed name/path DATA. Weak custody metadata follows
 the actual owned keys, including weak-only map moves, and retires when those
 keys die; inspecting completed custody neither allocates nor checks cancellation.
-Actual COW name/path buffers are admitted before copying. Inline tree control
-metadata and opaque BTree layout are not inferred as allocated DATA.
+Actual COW name/path buffers are admitted before copying. The same canonical
+short-frame helper records exact compiled frame ownership in each observer's
+pending work, including unwind, without treating frames as retained proof DATA.
+Readonly list vectors and sealed candidate proof preparation are admitted before
+construction; adopting an already prepared candidate does not allocate.
+Inline tree control metadata and opaque BTree layout are not inferred as DATA.
 
 Start with the [embedded workspace example](https://github.com/acyclic-labs/sdk/blob/main/rust/crates/filesystem/examples/embedded_workspace.rs), the [hosted example](https://github.com/acyclic-labs/sdk/blob/main/README.md), or the [Rust API](https://docs.rs/acyclic-fs/latest/acyclic_fs/). The [v2 protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/filesystem) defines compatibility.
 
