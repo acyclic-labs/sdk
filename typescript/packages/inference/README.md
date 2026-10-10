@@ -19,6 +19,66 @@ console.log(models);
 
 For custom authentication, use `new Inference(new InferenceClient(new HttpInferenceTransport(endpoint, () => ({ authorization: `Bearer ${token}` }))))`. The transport requires an absolute HTTPS URL and enforces bounded responses. The client validates protobuf responses through the bundled Rust WebAssembly contract. Import generated protobuf types and schemas from `@acyclic-labs/inference/proto`.
 
+### Static WebAssembly deployments
+
+In Workerd or another deployment that supplies a compiled module, initialize the
+same Rust descriptor before creating a native inference client or validating a
+message. The normal Node/Bun file loader remains available.
+
+```ts
+import { initializeInferenceWasm } from "@acyclic-labs/inference/wasm";
+import compiledModule from "@acyclic-labs/inference/module.wasm";
+
+// Configure the deployment bundler to import .wasm as WebAssembly.Module.
+await initializeInferenceWasm(compiledModule);
+```
+
+## Provider-compatible gateway
+
+`GatewayInferenceClient` is separate from the native context/run API. Use the
+gateway HTTPS origin and your customer's gateway authorization bearer from the
+trusted application auth flow. Use official provider request types; this client
+does not introduce a second provider schema. Never supply service credentials or
+upstream provider keys as customer authorization.
+
+```ts
+import { GatewayInferenceClient } from "@acyclic-labs/inference";
+
+// ACYCLIC_GATEWAY_ENDPOINT is an HTTPS origin, without /v1.
+// ACYCLIC_GATEWAY_TOKEN is the customer's gateway authorization bearer.
+const gateway = new GatewayInferenceClient(
+  process.env.ACYCLIC_GATEWAY_ENDPOINT!,
+  () => ({ authorization: `Bearer ${process.env.ACYCLIC_GATEWAY_TOKEN!}` }),
+);
+const models = await gateway.models(); // GET /v1/models: OpenAI model list
+if (!models.ok) throw new Error(await models.text());
+console.log(await models.json());
+
+const controller = new AbortController();
+const response = await gateway.chatCompletions(
+  JSON.stringify({ model: "your-model-id", messages: [{ role: "user", content: "Hello" }], stream: true }),
+  { signal: controller.signal },
+);
+if (!response.ok) throw new Error(await response.text());
+// Consume response.body as the provider's SSE stream; abort to stop the request.
+// controller.abort();
+```
+
+`chatCompletions`, `responses`, and `messages` POST the supplied JSON string
+unchanged to `/v1/chat/completions`, `/v1/responses`, and `/v1/messages`.
+Provider `tools`, `tool_calls`, tool results, and streaming fields are passed
+through, not translated into native inference items. Per-request `headers`
+can supply provider headers such as `anthropic-version`; authentication callback
+headers take precedence. All methods return the original `Response`, including
+HTTP errors and their status, headers, and body. Network, abort, and body-read
+errors propagate unchanged. Stream bodies are never buffered or parsed by this
+client; cancel their reader or abort the supplied signal when stopping early.
+This does not cancel a native durable `Run`, whose explicit cancellation API is
+unchanged. Rust's existing gRPC client and HTTP protobuf codec likewise retain
+their native semantics; use an HTTP provider client for gateway compatibility.
+
+
+
 ## Idle KV pins (source contract)
 
 Discover an opaque policy in `models[].idleKvProfiles`, then call

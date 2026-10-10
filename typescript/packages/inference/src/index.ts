@@ -452,5 +452,69 @@ export class InferenceTransportError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
 
+/** Per-request provider headers and cancellation, without a second provider wire schema. */
+export type GatewayRequestOptions = Pick<RequestInit, "headers" | "signal">;
+
+/**
+ * Provider-compatible gateway HTTP access. JSON and SSE bodies remain untouched.
+ * HTTP errors are returned with their status, headers, and body; fetch failures reject.
+ * The endpoint is the gateway origin (not a /v1 or /v1/inference URL).
+ */
+export class GatewayInferenceClient {
+  constructor(
+    readonly endpoint: string,
+    readonly authorization: AuthorizationHeaders,
+    readonly fetcher: typeof fetch = fetch,
+  ) {
+    let parsed: URL;
+    try {
+      parsed = new URL(endpoint);
+    } catch {
+      throw new TypeError("endpoint must be an absolute HTTPS URL");
+    }
+    if (parsed.protocol !== "https:" || parsed.username.length > 0 || parsed.password.length > 0 || /[?#]/.test(endpoint)) {
+      throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment");
+    }
+    if (parsed.pathname !== "/") {
+      throw new TypeError("gateway endpoint must be an origin without a path");
+    }
+  }
+
+  /** OpenAI-compatible curated model discovery, not native protobuf model discovery. */
+  models(options: GatewayRequestOptions = {}): Promise<Response> {
+    return this.#request("/v1/models", undefined, options);
+  }
+
+  /** Serialize the official provider request type with JSON.stringify before calling. */
+  chatCompletions(body: string, options: GatewayRequestOptions = {}): Promise<Response> {
+    return this.#request("/v1/chat/completions", body, options);
+  }
+
+  responses(body: string, options: GatewayRequestOptions = {}): Promise<Response> {
+    return this.#request("/v1/responses", body, options);
+  }
+
+  messages(body: string, options: GatewayRequestOptions = {}): Promise<Response> {
+    return this.#request("/v1/messages", body, options);
+  }
+
+  async #request(path: string, body: string | undefined, options: GatewayRequestOptions): Promise<Response> {
+    const headers = new Headers(options.headers);
+    new Headers(await this.authorization()).forEach((value, key) => headers.set(key, value));
+    const authorization = headers.get("authorization") ?? "";
+    if (!/^Bearer \S+$/i.test(authorization) || utf8Length(authorization) > MAX_BEARER_TOKEN_BYTES + "Bearer ".length) {
+      throw new InferenceTransportError(0, "authorization header must carry a bearer of at most 12 KiB");
+    }
+    if (body !== undefined) headers.set("content-type", "application/json");
+    return this.fetcher(`${this.endpoint.replace(/\/$/, "")}${path}`, {
+      method: body === undefined ? "GET" : "POST",
+      redirect: "error",
+      headers,
+      ...(body === undefined ? {} : { body }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
+  }
+}
+
 export * from "./handles.js";
 export { performanceObserver, type AcyclicObserver, type OperationEvent } from "./observe.js";

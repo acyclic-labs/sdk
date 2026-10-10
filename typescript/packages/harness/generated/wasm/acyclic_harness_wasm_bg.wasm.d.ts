@@ -22,7 +22,10 @@ export const decodeAttachmentManifest: (a: any, b: number, c: number, d: number)
 export const decodeCanonicalJson: (a: number, b: number) => [number, number, number];
 export const decodeEventPayload: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const decodeExecutionEventJson: (a: number, b: number) => [number, number, number];
+export const decodeExecutionRecordJson: (a: number, b: number) => [number, number, number];
 export const decodeJson: (a: number, b: number) => [number, number, number];
+export const decodeTurnInputJson: (a: number, b: number) => [number, number, number];
+export const decodeTurnOutputJson: (a: number, b: number) => [number, number, number];
 export const defaultCompactionPolicy: () => [number, number, number];
 export const deriveOperationUuid: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const digestCanonicalJson: (a: any) => [number, number, number, number];

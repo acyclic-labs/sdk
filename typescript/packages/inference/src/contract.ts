@@ -2,9 +2,10 @@ import { toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobu
 import { RunEventSchema, type RunEvent } from "../generated/proto/inference/v1/inference_pb.js";
 import { RUN_TERMINAL_METADATA } from "../generated/terminal-metadata.js";
 import type { RunTerminalKind, RunTerminalMetadata } from "../generated/terminal-metadata.js";
+import type * as InferenceWasmModule from "../generated/wasm/acyclic_inference_wasm.js";
+import type { WatchRunState } from "../generated/wasm/acyclic_inference_wasm.js";
 
-type InferenceWasm = typeof import("../generated/wasm/acyclic_inference_wasm.js");
-type WatchRunState = ReturnType<InferenceWasm["watch_run_start_state_wire"]>;
+type InferenceWasm = typeof InferenceWasmModule;
 
 /** `invalid` for a contract violation; `unavailable` when the Rust descriptor cannot load. */
 export type InferenceProtocolErrorCode = "invalid" | "unavailable";
@@ -36,11 +37,21 @@ export function retryableOnce<T>(load: () => Promise<T>): () => Promise<T> {
   });
 }
 
+let compiledModule: WebAssembly.Module | undefined;
+
+/** Initialize the canonical Rust descriptor from the deployment's static module. */
+export async function initializeInferenceWasm(module: WebAssembly.Module): Promise<void> {
+  compiledModule = module;
+  await loadBinding();
+}
+
 const loadBinding = retryableOnce(async (): Promise<InferenceWasm> => {
   // This path is emitted by the inference WASM build and shipped beside dist.
   const module = await import("../generated/wasm/acyclic_inference_wasm.js");
   const nodeVersion = (globalThis as { process?: { versions?: { node?: string } } }).process?.versions?.node;
-  if (typeof nodeVersion !== "string") {
+  if (compiledModule !== undefined) {
+    await module.default({ module_or_path: compiledModule });
+  } else if (typeof nodeVersion !== "string") {
     await module.default();
   } else {
     const fsModule: string = "node:fs/promises";

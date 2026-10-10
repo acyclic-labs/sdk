@@ -482,13 +482,18 @@ complete the remaining SDK goal or establish live qualification.
 PR: https://github.com/acyclic-labs/sdk/pull/223
 
 Canonical RPC inventory: `compatibility/public-rpc-matrix.json`, generated from
-the ten service descriptors by `scripts/generate-public-rpc-matrix.mjs`.
-The current inventory contains 38 target RPCs plus 17 Objects v1 RPCs pending
-removal, covering all 55 RPCs still present in source. Boolean transport fields
-indicate implemented source surfaces; `typescriptPackageExported` distinguishes
-package exposure. These fields do not establish browser or live acceptance.
-The optional `complete` mode fails on remaining legacy RPCs or missing target
-transport/package exposure; it is a surface check, not the goal completion audit.
+the current service descriptors by `node scripts/generate-public-rpc-matrix.mjs write`.
+Boolean transport fields describe inspected source presence and package exposure
+only; they do not establish browser, installed-artifact or live acceptance.
+This inventory is documentation maintenance, not a contract test. The contract
+runner retains actual schema/serialization, authenticated routing and unknown
+operation consumer tests rather than asserting generated-document freshness.
+
+Workerd consumers initialize the canonical Inference Rust descriptor explicitly:
+import `initializeInferenceWasm` from `@acyclic-labs/inference/wasm` and the
+deployment-compiled `@acyclic-labs/inference/module.wasm`, then await initialization
+before constructing clients. This uses the same shipped Rust WASM as Node and
+browsers; it does not substitute a native binding or JavaScript validation schema.
 
 ## Local evidence on 2026-09-30
 

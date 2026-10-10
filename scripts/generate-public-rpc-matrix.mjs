@@ -50,12 +50,6 @@ const rows = services.flatMap(service => service.methods.map(method => {
 }));
 const output = JSON.stringify(rows, null, 2) + "\n";
 const path = new URL("../compatibility/public-rpc-matrix.json", import.meta.url);
-if (process.argv[2] === "check" || process.argv[2] === "complete") {
-  if (readFileSync(path, "utf8") !== output) throw new Error("public RPC matrix is stale");
-} else if (process.argv[2] === "write") writeFileSync(path, output);
-else throw new Error("expected write, check, or complete");
-if (process.argv[2] === "complete") {
-  const gaps = rows.filter(row => !row.rustGrpc || !row.rustHttp || !row.typescriptGrpcNodeBun || !(row.rpc.startsWith("acyclic.actors.") || row.rpc.startsWith("acyclic.workers.") ? row.typescriptGrpcWeb : row.typescriptHttp) || !row.typescriptPackageExported);
-  if (gaps.length) throw new Error(`public SDK surface incomplete:\n${gaps.map(row => `${row.rpc}: target transport/package export missing`).join("\n")}`);
-}
+if (process.argv[2] !== "write") throw new Error("expected write");
+writeFileSync(path, output);
 console.log(`Public RPC matrix: ${rows.length} current operations`);

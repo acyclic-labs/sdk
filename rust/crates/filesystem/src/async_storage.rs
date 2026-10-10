@@ -204,6 +204,7 @@ pub async fn commit_workspace_fork_in_steps<S: AsyncAuthorityStore + ?Sized>(
             store,
             retention,
             retained,
+            PublicationPermit::Unrestricted,
             WorkCounters::default(),
             budget,
             cancellation,
@@ -237,8 +238,16 @@ pub async fn commit_workspace_fork_in_steps<S: AsyncAuthorityStore + ?Sized>(
         }
         .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
         work = add_authority(work, created.work)?;
-        let created =
-            append_first_record(store, destination, creation, work, budget, cancellation).await?;
+        let created = append_first_record(
+            store,
+            destination,
+            creation,
+            PublicationPermit::Unrestricted,
+            work,
+            budget,
+            cancellation,
+        )
+        .await?;
         Ok(crate::storage::AuthorityReceipt {
             value: if created.value {
                 WorkspaceForkOutcome::Committed
@@ -264,30 +273,44 @@ pub async fn append_first_record<S: AsyncAuthorityStore + ?Sized>(
     store: &S,
     authority: AuthorityId,
     commit: ProposedCommit,
+    permit: PublicationPermit,
     prior: WorkCounters,
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> AuthorityResult<bool> {
-    let created = store
-        .create_authority(
-            authority,
-            Epoch::GENESIS,
-            remaining_authority(prior, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(prior, std::convert::identity))?;
-    let mut work = add_authority(prior, created.work)?;
-    let head = match created.value {
-        CreateAuthorityOutcome::Created(head) | CreateAuthorityOutcome::Existing(head) => head,
+    let (head, mut work) = if permit == PublicationPermit::Unrestricted {
+        let created = store
+            .create_authority(
+                authority,
+                Epoch::GENESIS,
+                remaining_authority(prior, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(prior, std::convert::identity))?;
+        let head = match created.value {
+            CreateAuthorityOutcome::Created(head) | CreateAuthorityOutcome::Existing(head) => head,
+        };
+        (head, add_authority(prior, created.work)?)
+    } else {
+        // A guarded fallback may resolve an existing authority, but must never
+        // create even an empty header without an atomic publication predicate.
+        let existing = store
+            .head(authority, remaining_authority(prior, budget)?, cancellation)
+            .await
+            .map_err(|failure| failure.map_with_prior_work(prior, std::convert::identity))?;
+        (existing.value, add_authority(prior, existing.work)?)
     };
     let identity = (commit.operation_id, commit.fingerprint);
     let appended = store
-        .compare_and_append(
-            authority,
-            head.epoch,
-            Head::genesis(head.epoch),
-            commit,
+        .compare_and_append_guarded(
+            GuardedAppend {
+                authority_id: authority,
+                epoch: head.epoch,
+                expected: Head::genesis(head.epoch),
+                commit,
+                permit,
+            },
             remaining_authority(work, budget)?,
             cancellation,
         )
@@ -438,24 +461,36 @@ pub trait AsyncAuthorityStore: StorageProvider {
 
     /// Durably creates an authority whose first record is `commit`, or
     /// confirms that it already exists with exactly that first record.
-    /// Answers whether its first record is `commit`. Backends that can
-    /// create an authority and append to it atomically do so in one durable
-    /// commit; the default creates the authority, then appends.
+    /// Answers whether its first record is `commit`. A lease permit must be
+    /// evaluated atomically with the creation; an unsupported backend rejects
+    /// it before storage work. Unrestricted defaults create, then append.
     fn create_authority_with_first_record(
         &self,
         authority: AuthorityId,
         commit: ProposedCommit,
+        permit: PublicationPermit,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> impl Future<Output = AuthorityResult<bool>> + StorageFuture {
-        append_first_record(
-            self,
-            authority,
-            commit,
-            WorkCounters::default(),
-            budget,
-            cancellation,
-        )
+        async move {
+            if permit != PublicationPermit::Unrestricted {
+                return Err(crate::storage::AuthorityFailure::before_work(
+                    crate::storage::AuthorityStoreError::Rejected(
+                        "authority backend cannot atomically evaluate creation leases".to_owned(),
+                    ),
+                ));
+            }
+            append_first_record(
+                self,
+                authority,
+                commit,
+                permit,
+                WorkCounters::default(),
+                budget,
+                cancellation,
+            )
+            .await
+        }
     }
 
     /// Durably creates a forked workspace's authority state: the retention

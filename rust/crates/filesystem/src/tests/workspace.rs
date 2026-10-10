@@ -33,7 +33,17 @@ async fn keyed_workspace_creation_recovers_genesis_after_discarded_ack_and_later
     let fs = Fs::memory();
     let name = "original-allocation";
     let key = IdempotencyKey::from_bytes([1; 16]);
-    let created = fs.create_workspace_with_key(name, key).await?;
+    let lease = crate::OperationLease {
+        id: crate::OperationLeaseId::from_bytes([3; 16]),
+        owner: "original allocation".to_owned(),
+        expires_at_millis: u64::MAX,
+    };
+    let workspace_id = fs.workspace_id(name)?;
+    let windows = crate::OperationWindowCoordinator::new(fs.operation_window_store());
+    let permit = windows
+        .prepare_original_lease(workspace_id, &lease, 1)
+        .await?;
+    let created = fs.create_workspace_with_key(name, key, permit).await?;
     let genesis = created
         .operation_generation(key)
         .await?
@@ -48,7 +58,18 @@ async fn keyed_workspace_creation_recovers_genesis_after_discarded_ack_and_later
         .await?;
     let later_id = later_writer.head().await?.id();
     assert_ne!(later_id, genesis_id);
-    let recovered = fs.create_workspace_with_key(name, key).await?;
+    assert_eq!(
+        windows
+            .seal_original_lease_with_ticket(
+                workspace_id,
+                &lease,
+                2,
+                crate::OperationId::from_bytes([4; 16]),
+            )
+            .await?,
+        crate::OperationWindowFinish::AlreadyClosed
+    );
+    let recovered = fs.create_workspace_with_key(name, key, permit).await?;
     assert_eq!(recovered.id(), later_writer.id());
     assert_eq!(recovered.head().await?.id(), later_id);
     let original = recovered
@@ -67,7 +88,8 @@ async fn keyed_workspace_creation_recovers_genesis_after_discarded_ack_and_later
 
     let changed_key = IdempotencyKey::from_bytes([2; 16]);
     assert!(matches!(
-        fs.create_workspace_with_key(name, changed_key).await,
+        fs.create_workspace_with_key(name, changed_key, crate::PublicationPermit::Unrestricted)
+            .await,
         Err(crate::workspace::WorkspaceError::Engine(_))
     ));
     assert!(recovered.operation_generation(changed_key).await?.is_none());
@@ -79,6 +101,109 @@ async fn keyed_workspace_creation_recovers_genesis_after_discarded_ack_and_later
             .ok_or("changed-key refusal lost the original creation receipt")?
             .id(),
         genesis_id
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn original_lease_cancellation_fences_queued_genesis_and_preserves_new_owner()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let name = "cancel-before-genesis";
+    let workspace_id = fs.workspace_id(name)?;
+    let windows = crate::OperationWindowCoordinator::new(fs.operation_window_store());
+    let original = crate::OperationLease {
+        id: crate::OperationLeaseId::from_bytes([11; 16]),
+        owner: "cancelled original".to_owned(),
+        expires_at_millis: u64::MAX,
+    };
+    let original_key = IdempotencyKey::from_bytes([12; 16]);
+    let original_permit = windows
+        .prepare_original_lease(workspace_id, &original, 1)
+        .await?;
+    assert_eq!(
+        windows
+            .seal_original_lease_with_ticket(
+                workspace_id,
+                &original,
+                2,
+                crate::OperationId::from_bytes([13; 16]),
+            )
+            .await?,
+        crate::OperationWindowFinish::AlreadyClosed
+    );
+    assert!(matches!(
+        fs.create_workspace_with_key(name, original_key, original_permit)
+            .await,
+        Err(crate::workspace::WorkspaceError::Engine(_))
+    ));
+    assert!(matches!(
+        fs.open_workspace(name).await,
+        Err(crate::workspace::WorkspaceError::NotFound)
+    ));
+    assert!(matches!(
+        windows
+            .prepare_original_lease(workspace_id, &original, 3)
+            .await,
+        Err(crate::OperationWindowError::StaleLease)
+    ));
+
+    let later = crate::OperationLease {
+        id: crate::OperationLeaseId::from_bytes([14; 16]),
+        owner: "independent new owner".to_owned(),
+        expires_at_millis: u64::MAX,
+    };
+    let later_key = IdempotencyKey::from_bytes([15; 16]);
+    let later_permit = windows
+        .prepare_original_lease(workspace_id, &later, 3)
+        .await?;
+    let workspace = fs
+        .create_workspace_with_key(name, later_key, later_permit)
+        .await?;
+    let later_genesis = workspace
+        .operation_generation(later_key)
+        .await?
+        .ok_or("new owner genesis receipt")?
+        .id();
+    workspace
+        .write_text("/later.txt", "preserve later writer")
+        .await?;
+    let later_head = workspace.head().await?.id();
+    assert_ne!(later_head, later_genesis);
+    let _ = windows
+        .seal_original_lease_with_ticket(
+            workspace_id,
+            &original,
+            4,
+            crate::OperationId::from_bytes([13; 16]),
+        )
+        .await?;
+    assert!(matches!(
+        fs.create_workspace_with_key(name, original_key, original_permit)
+            .await,
+        Err(crate::workspace::WorkspaceError::Engine(_))
+    ));
+    let recovered = fs
+        .create_workspace_with_key(name, later_key, later_permit)
+        .await?;
+    assert_eq!(recovered.head().await?.id(), later_head);
+    assert_eq!(
+        recovered.read("/later.txt", 64).await?.as_ref(),
+        b"preserve later writer"
+    );
+    assert!(
+        recovered
+            .operation_generation(original_key)
+            .await?
+            .is_none()
+    );
+    assert_eq!(
+        recovered
+            .operation_generation(later_key)
+            .await?
+            .ok_or("stale cancellation lost new owner receipt")?
+            .id(),
+        later_genesis
     );
     Ok(())
 }

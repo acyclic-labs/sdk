@@ -583,6 +583,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         &self,
         authority: AuthorityId,
         commit: ProposedCommit,
+        permit: PublicationPermit,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> AuthorityResult<bool> {
@@ -597,11 +598,47 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             idempotency_key: operation_key(authority, commit.operation_id)
                 .map_err(OperationFailure::before_work)?,
         };
+        let lease_deadline = match permit {
+            PublicationPermit::Unrestricted => None,
+            PublicationPermit::Lease {
+                authority_id,
+                workspace_id,
+                lease_id,
+                expires_at_millis,
+            } => {
+                let workspace = crate::WorkspaceId::from_bytes(workspace_id);
+                if authority_id != authority.into_bytes()
+                    || crate::kernel::volume_authority_id(workspace.volume_id()) != authority
+                    || lease_id == [0; 16]
+                    || expires_at_millis == 0
+                {
+                    return authority_success(false, WorkCounters::default(), budget);
+                }
+                let path = crate::operation_window::stream_lease_path(
+                    workspace,
+                    crate::OperationLeaseId::from_bytes(lease_id),
+                    expires_at_millis,
+                )
+                .map_err(|error| OperationFailure::before_work(map_stream_error(error)))?;
+                request
+                    .conditions
+                    .push(acyclic_stream::CommitCondition::Tail { path, expected: 1 });
+                Some(expires_at_millis)
+            }
+            PublicationPermit::Reservation { .. } => {
+                return authority_success(false, WorkCounters::default(), budget);
+            }
+        };
         let (records, bytes) = first_record_commit(&mut request, authority, &commit, None)
             .map_err(OperationFailure::before_work)?;
         let mut work = authority_write_work(records, bytes);
         admit_authority(work, budget)?;
-        match self.provider.commit(request).await {
+        let committed = if let Some(deadline) = lease_deadline {
+            self.provider.commit_before(request, deadline).await
+        } else {
+            self.provider.commit(request).await
+        };
+        match committed {
             Ok(acyclic_stream::CommitOutcome::Committed(_)) => {
                 return authority_success(true, work, budget);
             }

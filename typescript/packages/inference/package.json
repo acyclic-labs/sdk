@@ -9,7 +9,9 @@
   "type": "module",
   "exports": {
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./proto": { "types": "./generated/proto/inference/v1/inference_pb.d.ts", "default": "./generated/proto/inference/v1/inference_pb.js" }
+    "./proto": { "types": "./generated/proto/inference/v1/inference_pb.d.ts", "default": "./generated/proto/inference/v1/inference_pb.js" },
+    "./wasm": { "types": "./dist/contract.d.ts", "default": "./dist/contract.js" },
+    "./module.wasm": "./generated/wasm/acyclic_inference_wasm_bg.wasm"
   },
   "files": ["dist", "generated", "CHANGELOG.md"],
   "scripts": {

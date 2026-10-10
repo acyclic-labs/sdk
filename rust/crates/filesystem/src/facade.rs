@@ -1003,6 +1003,7 @@ struct VolumeCreation {
     config: VolumeConfig,
     generation_root: ObjectId,
     operation_id: Option<OperationId>,
+    permit: PublicationPermit,
 }
 
 /// A generation whose complete closure was just proven.
@@ -2920,6 +2921,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     /// exact name and key and resolve [`crate::Workspace::operation_generation`]
     /// to recover the initial generation, not the current workspace head.
     /// Portable lifecycle defaults match [`Self::create_workspace`].
+    /// A lease permit atomically fences genesis against its original
+    /// operation-window gate; preparation does not require a generation.
     ///
     /// # Errors
     ///
@@ -2929,6 +2932,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         name: impl AsRef<str>,
         idempotency_key: crate::IdempotencyKey,
+        permit: PublicationPermit,
     ) -> Result<crate::Workspace<A, O>, crate::workspace::WorkspaceError> {
         let lifecycle = if self.inner.capabilities.durable {
             Lifecycle::Durable
@@ -2947,6 +2951,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 name,
                 VolumeConfig::portable(lifecycle),
                 Some(idempotency_key.operation_id()),
+                permit,
             ),
         )
         .await;
@@ -2971,7 +2976,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         );
         let result = crate::obs::in_span(
             &span,
-            self.create_workspace_with_config_operation(name, config, None),
+            self.create_workspace_with_config_operation(
+                name,
+                config,
+                None,
+                PublicationPermit::Unrestricted,
+            ),
         )
         .await;
         crate::obs::outcome_on(&span, result)
@@ -2982,6 +2992,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         name: impl AsRef<str>,
         config: VolumeConfig,
         operation_id: Option<OperationId>,
+        permit: PublicationPermit,
     ) -> Result<crate::Workspace<A, O>, crate::workspace::WorkspaceError> {
         let name = crate::WorkspaceName::new(name)?;
         let id = crate::WorkspaceId::derive(self.inner.workspace_namespace, &name);
@@ -2990,6 +3001,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 id.volume_id(),
                 config,
                 operation_id,
+                permit,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
             )
@@ -3496,6 +3508,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .create_authority_with_first_record(
                 authority_id,
                 commit,
+                PublicationPermit::Unrestricted,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
             )
@@ -4715,7 +4728,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         );
         let result = crate::obs::in_span(
             &span,
-            self.create_volume_with_id_operation(volume_id, config, None, budget, cancellation),
+            self.create_volume_with_id_operation(
+                volume_id,
+                config,
+                None,
+                PublicationPermit::Unrestricted,
+                budget,
+                cancellation,
+            ),
         )
         .await;
         result.observe_on(&span, "create_volume")
@@ -4726,6 +4746,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         volume_id: VolumeId,
         config: VolumeConfig,
         operation_id: Option<OperationId>,
+        permit: PublicationPermit,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Volume<A, O>> {
@@ -4755,6 +4776,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 config,
                 generation_root,
                 operation_id,
+                permit,
             },
             &proof.objects,
             proven_at,
@@ -5000,6 +5022,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     config: manifest.config,
                     generation_root: manifest.generation_root,
                     operation_id: Some(operation_id),
+                    permit: PublicationPermit::Unrestricted,
                 },
                 &manifest.objects,
                 proven_at,
@@ -5030,6 +5053,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             config,
             generation_root,
             operation_id,
+            permit,
         } = creation;
         let event = encode_volume_created(VolumeCreated {
             volume_id,
@@ -5068,6 +5092,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .create_authority_with_first_record(
                 volume_authority_id(volume_id),
                 commit,
+                permit,
                 remaining(work, budget)?,
                 cancellation,
             )

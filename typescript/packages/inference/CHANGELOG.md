@@ -6,6 +6,13 @@
 
 ## Unreleased
 
+- Add `GatewayInferenceClient` for provider-compatible model discovery, OpenAI
+  Chat/Responses, and Anthropic Messages. JSON requests and raw HTTP/SSE responses,
+  cancellation, and provider errors pass through without changing native APIs.
+- Export the existing Rust descriptor initializer at `/wasm` and its shipped
+  binary at `/module.wasm` for compiled-module deployments. Native context/run
+  codec and transport contracts are unchanged.
+
 - Reject idle-KV responses to legacy retain/renew requests; recovered inspection remains compatible with either retention mode.
 
 - Add paid idle KV policy and verified-use evidence to the canonical v1 wire

@@ -1133,14 +1133,26 @@ impl IndexedDbAuthorityStore {
     fn first_record_transaction(
         &self,
         work: WorkCounters,
+        needs_lease_window: bool,
     ) -> Result<Transaction<'_>, AuthorityFailure> {
-        self.database
-            .transaction([
+        let stores: &[&str] = if needs_lease_window {
+            &[
                 AUTHORITY_HEADS,
                 AUTHORITY_COMMITS,
                 AUTHORITY_OPERATIONS,
                 AUTHORITY_GATES,
-            ])
+                OPERATION_WINDOWS,
+            ]
+        } else {
+            &[
+                AUTHORITY_HEADS,
+                AUTHORITY_COMMITS,
+                AUTHORITY_OPERATIONS,
+                AUTHORITY_GATES,
+            ]
+        };
+        self.database
+            .transaction(stores)
             .with_mode(TransactionMode::Readwrite)
             .with_options(strict_transaction_options())
             .build()
@@ -1542,27 +1554,39 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         &self,
         authority: AuthorityId,
         commit: ProposedCommit,
+        permit: PublicationPermit,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> AuthorityResult<bool> {
         cancellation
             .check()
             .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let work = authority_fixed_read_work(HEAD_BYTES);
+        let mut work = authority_fixed_read_work(HEAD_BYTES);
         Self::admit(work, budget)?;
-        let transaction = self.first_record_transaction(work)?;
+        let transaction =
+            self.first_record_transaction(work, permit != PublicationPermit::Unrestricted)?;
         if Self::authority_exists(&transaction, authority, cancellation, work).await? {
             drop(transaction);
             let appended = acyclic_fs::append_first_record(
                 self,
                 authority,
                 commit,
+                permit,
                 work,
                 budget,
                 cancellation,
             )
             .await?;
             return Ok(appended);
+        }
+        if permit != PublicationPermit::Unrestricted {
+            let admitted = self
+                .check_lease(&transaction, authority, permit, work, budget)
+                .await?;
+            work = admitted.work;
+            if !admitted.value {
+                return Ok(AuthorityReceipt { value: false, work });
+            }
         }
         let work = self
             .write_first_record(&transaction, authority, commit, budget, cancellation, work)
@@ -1594,7 +1618,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .checked_add(authority_fixed_read_work(HEAD_BYTES))
             .map_err(|error| Self::failure(error.into(), WorkCounters::default()))?;
         Self::admit(work, budget)?;
-        let transaction = self.first_record_transaction(work)?;
+        let transaction = self.first_record_transaction(work, false)?;
         if published_prefix
             || Self::authority_exists(&transaction, fork.retention, cancellation, work).await?
             || Self::authority_exists(&transaction, fork.destination, cancellation, work).await?
@@ -3234,6 +3258,7 @@ mod tests {
                 &store,
                 volume,
                 commit,
+                PublicationPermit::Unrestricted,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
             )

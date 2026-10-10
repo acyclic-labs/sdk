@@ -14,7 +14,7 @@ import type {
   WasmTaskIdentityInput, WasmTurnPreparation, WasmModelContent, WasmModelContentPart,
   WasmModelEvent, WasmModelEventAdmission, WasmModelEventAdmissionState, WasmModelEventInput, WasmModelRole,
   WasmTaskDependencyInput,
-  McpCatalog, McpStdioRequest,
+  McpCatalog, McpStdioRequest, WasmModelToolDefinitionWire,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
   Attachment, ConversationMessage, ConversationMessageId, ConversationPage, FileDescriptor, FileRef, Limits, MessageKind, ProviderRef, ReferencedAttachments, TaskOutcomeRecord, VolumeClass, VolumeRef,
@@ -285,13 +285,13 @@ export class NativeContracts {
   }
 
   /** Project explicitly selected schemas without granting tool authority. */
-  mcpModelDefinitions(catalog: McpCatalog, maximumTools: number, maximumBytes: number): readonly import("../generated/wasm/acyclic_harness_wasm.js").WasmModelToolDefinitionWire[] {
+  mcpModelDefinitions(catalog: McpCatalog, maximumTools: number, maximumBytes: number): readonly WasmModelToolDefinitionWire[] {
     return this.native.mcpModelDefinitions(catalog, maximumTools, maximumBytes);
   }
 
   /** Pure bounded search; returned definitions convey no invocation authority. */
   searchMcpCatalog(catalog: McpCatalog, query: string, after: string | undefined,
-    maximumResults: number, maximumTools: number, maximumBytes: number): readonly import("../generated/wasm/acyclic_harness_wasm.js").WasmModelToolDefinitionWire[] {
+    maximumResults: number, maximumTools: number, maximumBytes: number): readonly WasmModelToolDefinitionWire[] {
     return this.native.searchMcpCatalog(catalog, query, after, maximumResults, maximumTools, maximumBytes);
   }
 

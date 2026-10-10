@@ -136,7 +136,7 @@
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": false,
-    "typescriptGrpcWeb": true,
+    "typescriptGrpcWeb": false,
     "typescriptPackageExported": true
   },
   {
@@ -150,7 +150,7 @@
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": false,
-    "typescriptGrpcWeb": true,
+    "typescriptGrpcWeb": false,
     "typescriptPackageExported": true
   },
   {
@@ -164,7 +164,7 @@
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": false,
-    "typescriptGrpcWeb": true,
+    "typescriptGrpcWeb": false,
     "typescriptPackageExported": true
   },
   {
@@ -178,7 +178,7 @@
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": false,
-    "typescriptGrpcWeb": true,
+    "typescriptGrpcWeb": false,
     "typescriptPackageExported": true
   },
   {
@@ -192,7 +192,7 @@
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": false,
-    "typescriptGrpcWeb": true,
+    "typescriptGrpcWeb": false,
     "typescriptPackageExported": true
   },
   {
@@ -206,7 +206,7 @@
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": false,
-    "typescriptGrpcWeb": true,
+    "typescriptGrpcWeb": false,
     "typescriptPackageExported": true
   },
   {
@@ -220,7 +220,7 @@
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": false,
-    "typescriptGrpcWeb": true,
+    "typescriptGrpcWeb": false,
     "typescriptPackageExported": true
   },
   {

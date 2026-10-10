@@ -507,7 +507,12 @@ where
         config.profile = profile;
         let workspace = self
             .filesystem
-            .create_workspace_with_config_operation(request.name, config, Some(operation_id))
+            .create_workspace_with_config_operation(
+                request.name,
+                config,
+                Some(operation_id),
+                crate::PublicationPermit::Unrestricted,
+            )
             .await
             .map_err(|error| status(&error))?;
         Ok(Response::new(wire::WorkspaceResponse {

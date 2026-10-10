@@ -489,6 +489,30 @@ export interface SearchOptions {
 }
 
 /**
+ * Durable input to any custom executor.
+ */
+export interface TurnInput {
+    /**
+     * Stable durable turn execution identity.
+     */
+    operation_id: string;
+    /**
+     * Typed provider-neutral input; canonical conversation storage still uses file refs.
+     */
+    input: WasmModelContent;
+    /**
+     * Exact, separately recorded canonical history selection for this turn.
+     * When present its last user message is the current `input`; the stock
+     * context pipeline does not synthesize a duplicate user message.
+     */
+    selected_context?: SelectedModelContext | undefined;
+    /**
+     * Maximum model/tool steps permitted for this turn.
+     */
+    max_steps: number;
+}
+
+/**
  * Durable literal-search result, independent of its model projection.
  */
 export interface SearchResult {
@@ -555,6 +579,25 @@ export interface SummaryForkCapture {
      * Original noncopied references required by the captured Context.
      */
     references: WasmFileRefWire[];
+}
+
+/**
+ * Exact history revision and ordered subset selected for one model request.
+ */
+export interface ModelContextSelection {
+    /**
+     * Number of canonical messages observed when selecting.
+     */
+    conversation_revision: bigint;
+    /**
+     * Ordered, unique message identities; omitted history is deliberate.
+     */
+    message_ids: string[];
+    /**
+     * Immutable canonical checkpoint covering history before this selection's delta.
+     * Its typed payload and publication must be resolved by the owning journal.
+     */
+    checkpoint?: WasmFileRefWire;
 }
 
 /**
@@ -744,6 +787,28 @@ export interface SkillMetadata {
 }
 
 /**
+ * Gapless replay record returned by a durable execution journal.
+ */
+export interface ExecutionRecord {
+    /**
+     * Owning turn execution.
+     */
+    operation_id: string;
+    /**
+     * Gapless one-based journal sequence.
+     */
+    sequence: bigint;
+    /**
+     * Stable per-step retry identity.
+     */
+    idempotency_key: string;
+    /**
+     * Canonical observation.
+     */
+    event: ExecutionEvent;
+}
+
+/**
  * Host-approved selection and representation. Model suggestions need host policy approval.
  */
 export interface ContextSelection {
@@ -839,6 +904,20 @@ export interface DiscoveredContext {
      * Skills in declared root and lexical directory order; duplicate names reject discovery.
      */
     skills: SkillMetadata[];
+}
+
+/**
+ * Immutable file plus optional user-visible label.
+ */
+export interface Attachment {
+    /**
+     * Version-pinned file.
+     */
+    file: WasmFileRefWire;
+    /**
+     * Optional caption; never interpreted as a path.
+     */
+    label: string | undefined;
 }
 
 /**
@@ -1279,9 +1358,45 @@ export interface ProtocolIdentity {
 export type ToolFailureKind = "executor_rejected" | "invalid_output" | "projection_rejected" | "publication_rejected";
 
 /**
+ * Terminal result produced by an executor.
+ */
+export interface TurnOutput {
+    /**
+     * User-visible assistant text.
+     */
+    text: string;
+    /**
+     * Ordered, already staged assistant attachments or published artifacts.
+     */
+    attachments?: Attachment[];
+    /**
+     * Provider-owned final metadata.
+     */
+    metadata: WasmModelJsonValue;
+    /**
+     * Number of completed model steps.
+     */
+    steps: number;
+}
+
+/**
  * The only operations this one-shot client can admit.
  */
 export type McpStdioMethod = "tools/list" | "tools/call";
+
+/**
+ * Transient model context with explicit canonical provenance.
+ */
+export interface SelectedModelContext {
+    /**
+     * Selection and exact history revision.
+     */
+    selection: ModelContextSelection;
+    /**
+     * Typed model-visible values; do not append them to conversation history.
+     */
+    messages: WasmModelMessageWire[];
+}
 
 /**
  * Tsify declarations for the provider-neutral model values.  These wrappers
@@ -2000,6 +2115,11 @@ export function decodeEventPayload(event_type: string, canonical_payload_json: U
 export function decodeExecutionEventJson(bytes: Uint8Array): ExecutionEvent;
 
 /**
+ * Projects the original journal record with its full-width sequence intact.
+ */
+export function decodeExecutionRecordJson(bytes: Uint8Array): ExecutionRecord;
+
+/**
  * Validate and project one hosted HTTP JSON success response into the public
  * JavaScript shape. Rust owns the scalar widths and tagged response schema:
  * decimal uint64 strings become `bigint`, base64 bytes become `Uint8Array`,
@@ -2022,6 +2142,16 @@ export function decodeJson(bytes: Uint8Array): any;
  * requires the decoded length to match it exactly.
  */
 export function decodeReadResponse(codec: number, data: Uint8Array, decoded_length: bigint): Uint8Array;
+
+/**
+ * Projects the canonical Rust turn DTO without granting execution authority.
+ */
+export function decodeTurnInputJson(bytes: Uint8Array): TurnInput;
+
+/**
+ * Projects the exact native result; metadata is not a compiler or billing receipt.
+ */
+export function decodeTurnOutputJson(bytes: Uint8Array): TurnOutput;
 
 /**
  * Returns the ordinary replaceable policy used by the stock Rust executor.
@@ -2436,7 +2566,10 @@ export interface InitOutput {
     readonly decodeCanonicalJson: (a: number, b: number) => [number, number, number];
     readonly decodeEventPayload: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly decodeExecutionEventJson: (a: number, b: number) => [number, number, number];
+    readonly decodeExecutionRecordJson: (a: number, b: number) => [number, number, number];
     readonly decodeJson: (a: number, b: number) => [number, number, number];
+    readonly decodeTurnInputJson: (a: number, b: number) => [number, number, number];
+    readonly decodeTurnOutputJson: (a: number, b: number) => [number, number, number];
     readonly defaultCompactionPolicy: () => [number, number, number];
     readonly deriveOperationUuid: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly digestCanonicalJson: (a: any) => [number, number, number, number];

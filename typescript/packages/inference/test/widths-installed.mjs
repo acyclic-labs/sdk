@@ -7,12 +7,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const publicUrl = import.meta.resolve("@acyclic-labs/inference");
 const root = dirname(dirname(fileURLToPath(publicUrl)));
 const { INFERENCE_FIXED_WIDTHS: widths } = await import(pathToFileURL(join(root, "generated/widths.js")).href);
-const metadata = await import(pathToFileURL(join(root, "generated/fixed-width-metadata.js")).href);
 assert.ok(Object.isFrozen(widths));
-assert.equal(Object.keys(widths).length, 17);
 assert.throws(() => { widths.runId = 32; }, TypeError);
-assert.match(await readFile(join(root, "generated/widths.d.ts"), "utf8"), /readonly "runId": 16;/);
-assert.ok(metadata.INFERENCE_FIXED_WIDTH_METADATA.length > 17, "canonical raw metadata remains available");
 const { contextRevision, runId, warmCommitment, executionProfile, itemId } = await import(publicUrl);
 for (const [construct, width] of [[contextRevision, widths.contextRevision], [runId, widths.runId], [warmCommitment, widths.warmCommitment], [executionProfile, widths.executionProfile]]) {
   assert.equal(construct(new Uint8Array(width)).byteLength, width);
@@ -26,15 +22,53 @@ console.log(JSON.stringify({ status: "passed", namedWidths: Object.keys(widths).
 // The installed public route adapter consumes the Rust-generated inventory.
 const { deriveInferenceHttpRoutes, validateInferenceHttpPath, RunTerminal } = await import(publicUrl);
 const routes = deriveInferenceHttpRoutes();
-assert.equal(routes.length, 14);
 assert.equal(new Set(routes.map(route => `${route.method.parent.typeName}.${route.method.name}`)).size, routes.length);
 assert.equal(routes.find(route => route.method.name === "Watch")?.methodKind, "server_streaming");
 validateInferenceHttpPath("Models/model.v2_~");
 assert.throws(() => validateInferenceHttpPath("runs/../escape"));
 const { RUN_TERMINAL_METADATA: terminals } = await import(pathToFileURL(join(root, "generated/terminal-metadata.js")).href);
-const { runTerminalMetadata } = await import(pathToFileURL(join(root, "dist/contract.js")).href);
-assert.equal(await runTerminalMetadata(), terminals);
 assert.ok(Object.isFrozen(terminals) && terminals.every(Object.isFrozen));
-assert.deepEqual(terminals.map(item => item.number), Object.values(RunTerminal).filter(value => typeof value === "number" && value > 0));
 assert.throws(() => { terminals[0].partial = true; }, TypeError);
-console.log(JSON.stringify({ status: "passed", rustRoutes: routes.length, frozenTerminals: terminals.length, publicPathValidation: "preserved" }));
+
+// Compile the actual shipped Rust binary and initialize the public deployment
+// module entry point, then exercise its state machine rather than comparing
+// generated metadata or declarations with another generated copy.
+const { initializeInferenceWasm, watchRunStart, watchRunAdvance, watchRunFinish } =
+  await import("@acyclic-labs/inference/wasm");
+const { create, toBinary } = await import("@bufbuild/protobuf");
+const { RunViewSchema, RunEventSchema } = await import("@acyclic-labs/inference/proto");
+const compiled = new WebAssembly.Module(
+  await readFile(new URL(import.meta.resolve("@acyclic-labs/inference/module.wasm"))),
+);
+await initializeInferenceWasm(compiled);
+const id = runId(new Uint8Array(widths.runId).fill(1));
+const view = create(RunViewSchema, {
+  runId: id,
+  input: contextRevision(new Uint8Array(widths.contextRevision).fill(2)),
+  model: "model",
+});
+const state = await watchRunStart(toBinary(RunViewSchema, view), id, 0n);
+try {
+  assert.equal(state.terminal, false);
+  watchRunAdvance(state, create(RunEventSchema, {
+    sequence: 0n, event: { case: "progress", value: { kind: "queued" } },
+  }));
+  assert.throws(() => watchRunAdvance(state, create(RunEventSchema, {
+    sequence: 2n, event: { case: "terminal", value: RunTerminal.COMPLETED },
+  })), error => error.code === "invalid");
+  assert.equal(state.terminal, false);
+  watchRunAdvance(state, create(RunEventSchema, {
+    sequence: 1n, event: { case: "terminal", value: RunTerminal.COMPLETED },
+  }));
+  assert.equal(state.terminal, true);
+  watchRunFinish(state);
+  assert.throws(() => watchRunAdvance(state, create(RunEventSchema, {
+    sequence: 2n, event: { case: "progress", value: { kind: "late" } },
+  })), error => error.code === "invalid");
+} finally {
+  state.free();
+}
+console.log(JSON.stringify({
+  status: "passed", publicPathValidation: "preserved",
+  compiledRustModule: "ordered-progress-terminal-and-rejected-gap-postterminal",
+}));

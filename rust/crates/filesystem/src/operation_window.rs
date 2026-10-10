@@ -280,6 +280,9 @@ pub enum StreamOperationWindowStoreError {
     /// Stored state is corrupt or incompatible.
     #[error("operation-window stream state is corrupt: {0}")]
     Corrupt(String),
+    /// The exact prepared token is bound to another immutable lease body.
+    #[error("original lease identity is already bound to different inputs")]
+    LeaseIdentityConflict,
 }
 
 #[cfg(feature = "distributed")]
@@ -328,6 +331,20 @@ impl<P: acyclic_stream::StreamProvider> OperationWindowStore for StreamOperation
         expected_revision: u64,
         replacement: OperationWindowSnapshot,
     ) -> Result<bool, Self::Error> {
+        self.compare_and_swap_with_original_seal(workspace_id, expected_revision, replacement, None)
+            .await
+    }
+}
+
+#[cfg(feature = "distributed")]
+impl<P: acyclic_stream::StreamProvider> StreamOperationWindowStore<P> {
+    async fn compare_and_swap_with_original_seal(
+        &self,
+        workspace_id: WorkspaceId,
+        expected_revision: u64,
+        replacement: OperationWindowSnapshot,
+        original: Option<&OperationLease>,
+    ) -> Result<bool, StreamOperationWindowStoreError> {
         if !replacement.is_valid_for(workspace_id)
             || replacement.revision != expected_revision.saturating_add(1)
         {
@@ -356,6 +373,7 @@ impl<P: acyclic_stream::StreamProvider> OperationWindowStore for StreamOperation
         }];
         let encoded = serde_json::to_vec(&replacement)
             .map_err(|error| StreamOperationWindowStoreError::Corrupt(error.to_string()))?;
+        let key = operation_window_cas_key(workspace_id, expected_revision, &encoded, original)?;
         let mut mutations = vec![acyclic_stream::CommitMutation::Append {
             path: state_path,
             records: vec![encoded.into()],
@@ -387,6 +405,11 @@ impl<P: acyclic_stream::StreamProvider> OperationWindowStore for StreamOperation
             if after.get(lease_id) == Some(lease) {
                 continue;
             }
+            if original.is_some_and(|original| {
+                original.id == *lease_id && original.expires_at_millis == lease.expires_at_millis
+            }) {
+                continue;
+            }
             let path = stream_lease_path(workspace_id, *lease_id, lease.expires_at_millis)?;
             conditions.push(acyclic_stream::CommitCondition::Tail {
                 path: path.clone(),
@@ -397,15 +420,16 @@ impl<P: acyclic_stream::StreamProvider> OperationWindowStore for StreamOperation
                 records: vec![bytes::Bytes::from_static(b"fenced")],
             });
         }
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"acyclic-operation-window-cas-v1\0");
-        hasher.update(&workspace_id.into_bytes());
-        hasher.update(&expected_revision.to_le_bytes());
-        hasher.update(
-            &serde_json::to_vec(&replacement)
-                .map_err(|error| StreamOperationWindowStoreError::Corrupt(error.to_string()))?,
-        );
-        let key = acyclic_stream::IdempotencyKey::new(hasher.finalize().as_bytes().to_vec())?;
+        if let Some(original) = original {
+            self.append_original_seal(
+                workspace_id,
+                original,
+                before.get(&original.id) == Some(original),
+                &mut conditions,
+                &mut mutations,
+            )
+            .await?;
+        }
         match self
             .provider
             .commit(acyclic_stream::CommitRequest {
@@ -419,6 +443,89 @@ impl<P: acyclic_stream::StreamProvider> OperationWindowStore for StreamOperation
             acyclic_stream::CommitOutcome::Conflict(_) => Ok(false),
         }
     }
+
+    async fn append_original_seal(
+        &self,
+        workspace_id: WorkspaceId,
+        original: &OperationLease,
+        active_original: bool,
+        conditions: &mut Vec<acyclic_stream::CommitCondition>,
+        mutations: &mut Vec<acyclic_stream::CommitMutation>,
+    ) -> Result<(), StreamOperationWindowStoreError> {
+        let path = stream_lease_path(workspace_id, original.id, original.expires_at_millis)?;
+        match self.provider.tail(path.clone()).await {
+            Err(acyclic_stream::StreamError::NotFound) => {
+                conditions.push(acyclic_stream::CommitCondition::Absent { path: path.clone() });
+                mutations.push(acyclic_stream::CommitMutation::Append {
+                    path,
+                    records: vec![
+                        bytes::Bytes::from_static(b"active"),
+                        bytes::Bytes::from_static(b"fenced"),
+                    ],
+                });
+            }
+            Ok(1) => {
+                if !active_original {
+                    let mut records = self
+                        .provider
+                        .read(acyclic_stream::ReadRequest {
+                            path: path.clone(),
+                            from: 0,
+                            limit: 1,
+                        })
+                        .await?;
+                    let record = records.next().await.transpose()?.ok_or_else(|| {
+                        StreamOperationWindowStoreError::Corrupt(
+                            "prepared original gate has no record".to_owned(),
+                        )
+                    })?;
+                    let prepared: OperationLease =
+                        serde_json::from_slice(&record.value).map_err(|error| {
+                            StreamOperationWindowStoreError::Corrupt(error.to_string())
+                        })?;
+                    if prepared != *original {
+                        return Err(StreamOperationWindowStoreError::LeaseIdentityConflict);
+                    }
+                }
+                conditions.push(acyclic_stream::CommitCondition::Tail {
+                    path: path.clone(),
+                    expected: 1,
+                });
+                mutations.push(acyclic_stream::CommitMutation::Append {
+                    path,
+                    records: vec![bytes::Bytes::from_static(b"fenced")],
+                });
+            }
+            Ok(2) => conditions.push(acyclic_stream::CommitCondition::Tail { path, expected: 2 }),
+            Ok(_) => {
+                return Err(StreamOperationWindowStoreError::Corrupt(
+                    "original lease gate has an invalid tail".to_owned(),
+                ));
+            }
+            Err(error) => return Err(error.into()),
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "distributed")]
+fn operation_window_cas_key(
+    workspace_id: WorkspaceId,
+    expected_revision: u64,
+    encoded: &[u8],
+    original: Option<&OperationLease>,
+) -> Result<acyclic_stream::IdempotencyKey, acyclic_stream::StreamError> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"acyclic-operation-window-cas-v1\0");
+    hasher.update(&workspace_id.into_bytes());
+    hasher.update(&expected_revision.to_le_bytes());
+    hasher.update(encoded);
+    if let Some(original) = original {
+        hasher.update(b"original-seal\0");
+        hasher.update(&original.id.into_bytes());
+        hasher.update(&original.expires_at_millis.to_le_bytes());
+    }
+    acyclic_stream::IdempotencyKey::new(hasher.finalize().as_bytes().to_vec())
 }
 
 #[cfg(feature = "distributed")]
@@ -1084,6 +1191,174 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
             .compare_and_swap(workspace_id, expected_revision, replacement)
             .await
             .map_err(OperationWindowError::Store)
+    }
+}
+
+#[cfg(feature = "distributed")]
+impl<P: acyclic_stream::StreamProvider> OperationWindowCoordinator<StreamOperationWindowStore<P>> {
+    /// Prepares the persisted original lease before a workspace genesis exists.
+    ///
+    /// This opens only its exact-expiry publication gate, not a mounted-view
+    /// window. Use the returned existing permit for keyed genesis and the
+    /// original-generation transaction; it conveys no independent authority.
+    /// A sealed original token cannot be reopened, including after a restart.
+    pub async fn prepare_original_lease(
+        &self,
+        workspace_id: WorkspaceId,
+        original: &OperationLease,
+        now_millis: u64,
+    ) -> Result<crate::PublicationPermit, OperationWindowError<StreamOperationWindowStoreError>>
+    {
+        if original.expires_at_millis <= now_millis {
+            return Err(OperationWindowError::InvalidExpiry);
+        }
+        if original.owner.trim().is_empty() || original.id.into_bytes() == [0; 16] {
+            return Err(OperationWindowError::LeaseIdentityConflict);
+        }
+        let path = stream_lease_path(workspace_id, original.id, original.expires_at_millis)
+            .map_err(StreamOperationWindowStoreError::from)
+            .map_err(OperationWindowError::Store)?;
+        let encoded = serde_json::to_vec(original)
+            .map_err(|error| StreamOperationWindowStoreError::Corrupt(error.to_string()))
+            .map_err(OperationWindowError::Store)?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"acyclic-original-lease-prepare-v1\0");
+        hasher.update(&workspace_id.into_bytes());
+        hasher.update(&original.id.into_bytes());
+        hasher.update(&original.expires_at_millis.to_le_bytes());
+        let key = acyclic_stream::IdempotencyKey::new(hasher.finalize().as_bytes().to_vec())
+            .map_err(StreamOperationWindowStoreError::from)
+            .map_err(OperationWindowError::Store)?;
+        let request = acyclic_stream::CommitRequest {
+            conditions: vec![acyclic_stream::CommitCondition::Absent { path: path.clone() }],
+            mutations: vec![acyclic_stream::CommitMutation::Append {
+                path: path.clone(),
+                records: vec![encoded.into()],
+            }],
+            idempotency_key: key,
+        };
+        match self
+            .store
+            .provider
+            .commit_before(request, original.expires_at_millis)
+            .await
+        {
+            Ok(acyclic_stream::CommitOutcome::Committed(_)) => {}
+            Ok(acyclic_stream::CommitOutcome::Conflict(_)) => {
+                return Err(OperationWindowError::StaleLease);
+            }
+            Err(acyclic_stream::StreamError::IdempotencyMismatch) => {
+                return Err(OperationWindowError::LeaseIdentityConflict);
+            }
+            Err(error) => return Err(OperationWindowError::Store(error.into())),
+        }
+        match self.store.provider.tail(path).await {
+            Ok(1) => Ok(crate::PublicationPermit::Lease {
+                authority_id: crate::kernel::volume_authority_id(workspace_id.volume_id())
+                    .into_bytes(),
+                workspace_id: workspace_id.into_bytes(),
+                lease_id: original.id.into_bytes(),
+                expires_at_millis: original.expires_at_millis,
+            }),
+            Ok(2) => Err(OperationWindowError::StaleLease),
+            Ok(_) => Err(OperationWindowError::IncompatibleState),
+            Err(error) => Err(OperationWindowError::Store(error.into())),
+        }
+    }
+
+    /// Durably fences the exact original lease, including before its first open.
+    ///
+    /// The supplied identity, expiry, owner and reconciliation ticket must come
+    /// from the original persisted intent, not a retry's newly minted values.
+    /// Sealing an unopened lease retains the current window phase and therefore
+    /// does not block a different lease. Closing the last already-open lease
+    /// returns the existing reconciliation obligation; its fixed ticket survives
+    /// a lost reply. The caller must finish that obligation before completing it.
+    /// Successful return means the original publication gate is durably at tail
+    /// two, atomically with any necessary window transition.
+    pub async fn seal_original_lease_with_ticket(
+        &self,
+        workspace_id: WorkspaceId,
+        original: &OperationLease,
+        now_millis: u64,
+        reconciliation_ticket: OperationId,
+    ) -> Result<OperationWindowFinish, OperationWindowError<StreamOperationWindowStoreError>> {
+        if original.expires_at_millis == 0 {
+            return Err(OperationWindowError::InvalidExpiry);
+        }
+        if original.owner.trim().is_empty()
+            || original.id.into_bytes() == [0; 16]
+            || reconciliation_ticket.into_bytes() == [0; 16]
+        {
+            return Err(OperationWindowError::LeaseIdentityConflict);
+        }
+        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+            let mut current = self.snapshot(workspace_id).await?;
+            let closes_original =
+                if let OperationWindowPhase::Active { leases, .. } = &current.phase {
+                    if let Some(existing) = leases.get(&original.id)
+                        && existing.expires_at_millis == original.expires_at_millis
+                    {
+                        if existing.owner != original.owner {
+                            return Err(OperationWindowError::LeaseIdentityConflict);
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+            if closes_original {
+                let _ = close_lease(
+                    &mut current.phase,
+                    original.id,
+                    original.expires_at_millis,
+                    now_millis,
+                    reconciliation_ticket,
+                );
+            }
+            let finish = match &current.phase {
+                OperationWindowPhase::Active { leases, .. } if closes_original => {
+                    OperationWindowFinish::StillActive {
+                        remaining: u32::try_from(leases.len()).unwrap_or(u32::MAX),
+                    }
+                }
+                OperationWindowPhase::Reconciling {
+                    ticket,
+                    pinned_parent,
+                    pending_parent,
+                    ..
+                } if *ticket == reconciliation_ticket => {
+                    OperationWindowFinish::Reconcile(OperationWindowReconcile {
+                        ticket: *ticket,
+                        pinned_parent: *pinned_parent,
+                        pending_parent: *pending_parent,
+                    })
+                }
+                _ => OperationWindowFinish::AlreadyClosed,
+            };
+            let expected = next_revision(&mut current.revision);
+            if self
+                .store
+                .compare_and_swap_with_original_seal(
+                    workspace_id,
+                    expected,
+                    current,
+                    Some(original),
+                )
+                .await
+                .map_err(|error| match error {
+                    StreamOperationWindowStoreError::LeaseIdentityConflict => {
+                        OperationWindowError::LeaseIdentityConflict
+                    }
+                    error => OperationWindowError::Store(error),
+                })?
+            {
+                return Ok(finish);
+            }
+        }
+        Err(OperationWindowError::Contended)
     }
 }
 
@@ -1807,7 +2082,19 @@ mod tests {
             .await
             .expect("second lease");
         assert_eq!(
-            windows.finish(&first, 3).await.expect("close first"),
+            windows
+                .seal_original_lease_with_ticket(
+                    workspace,
+                    &OperationLease {
+                        id: first.lease_id,
+                        owner: "first".to_owned(),
+                        expires_at_millis: first.expires_at_millis,
+                    },
+                    3,
+                    OperationId::from_bytes([70; 16]),
+                )
+                .await
+                .expect("seal original first lease"),
             OperationWindowFinish::StillActive { remaining: 1 }
         );
 
@@ -2265,5 +2552,239 @@ mod tests {
         }
         let renewed = windows.renew(&original, 11, 30).await;
         assert!(matches!(renewed, Err(OperationWindowError::StaleLease)));
+    }
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn original_lease_seal_survives_discarded_reply_and_physical_reopen() {
+        use acyclic_stream::{LocalStream, LocalStreamLimits, StreamProvider as _};
+
+        for mode in [0, 1, 2] {
+            let opened = mode == 1;
+            let directory = tempfile::tempdir().expect("local journal directory");
+            let clock = Arc::new(TestClock::default());
+            clock.0.store(10, Ordering::SeqCst);
+            let stream = Arc::new(
+                LocalStream::open_with_clock(
+                    directory.path(),
+                    LocalStreamLimits::default(),
+                    clock.clone(),
+                )
+                .await
+                .expect("physical local Stream"),
+            );
+            let windows =
+                OperationWindowCoordinator::new(StreamOperationWindowStore::new(stream.clone()));
+            let workspace = WorkspaceId::from_bytes([141; 16]);
+            let original = OperationLease {
+                id: OperationLeaseId::from_bytes([142; 16]),
+                owner: "original".to_owned(),
+                expires_at_millis: 100,
+            };
+            let ticket = OperationId::from_bytes([143; 16]);
+            if mode == 2 {
+                windows
+                    .prepare_original_lease(workspace, &original, 10)
+                    .await
+                    .expect("prepare original without genesis");
+                let changed_owner = OperationLease {
+                    owner: "different owner".to_owned(),
+                    ..original.clone()
+                };
+                assert!(matches!(
+                    windows
+                        .prepare_original_lease(workspace, &changed_owner, 10)
+                        .await,
+                    Err(OperationWindowError::LeaseIdentityConflict)
+                ));
+                assert!(matches!(
+                    windows
+                        .seal_original_lease_with_ticket(workspace, &changed_owner, 10, ticket,)
+                        .await,
+                    Err(OperationWindowError::LeaseIdentityConflict)
+                ));
+            }
+            if opened {
+                assert_eq!(
+                    windows
+                        .begin_with_lease_id(
+                            workspace,
+                            generation(1),
+                            &original.owner,
+                            10,
+                            original.expires_at_millis,
+                            original.id,
+                        )
+                        .await
+                        .expect("open original"),
+                    OperationWindowLease {
+                        workspace_id: workspace,
+                        lease_id: original.id,
+                        pinned_parent: generation(1),
+                        expires_at_millis: original.expires_at_millis,
+                    }
+                );
+            }
+            // Discard the reply, then release every provider handle. Recovery
+            // must rely on the physical journal, not the former coordinator.
+            let _ = windows
+                .seal_original_lease_with_ticket(workspace, &original, 10, ticket)
+                .await
+                .expect("durable seal");
+            drop(windows);
+            drop(stream);
+
+            let stream = Arc::new(
+                LocalStream::open_with_clock(directory.path(), LocalStreamLimits::default(), clock)
+                    .await
+                    .expect("cold reopen"),
+            );
+            let windows =
+                OperationWindowCoordinator::new(StreamOperationWindowStore::new(stream.clone()));
+            let recovered = windows
+                .seal_original_lease_with_ticket(workspace, &original, 10, ticket)
+                .await
+                .expect("recover original seal reply");
+            if opened {
+                assert_eq!(
+                    recovered,
+                    OperationWindowFinish::Reconcile(OperationWindowReconcile {
+                        ticket,
+                        pinned_parent: generation(1),
+                        pending_parent: None,
+                    })
+                );
+                windows
+                    .complete_reconcile_with_next_ticket(workspace, ticket, ticket)
+                    .await
+                    .expect("complete original reconciliation");
+            } else {
+                assert_eq!(recovered, OperationWindowFinish::AlreadyClosed);
+            }
+            assert_eq!(
+                windows.inspect(workspace).await.expect("window").phase,
+                OperationWindowPhase::Idle
+            );
+            assert_eq!(
+                stream
+                    .tail(
+                        stream_lease_path(
+                            workspace,
+                            original.lease_id,
+                            original.expires_at_millis,
+                        )
+                        .expect("original gate path"),
+                    )
+                    .await
+                    .expect("persisted original gate"),
+                2
+            );
+            assert!(matches!(
+                windows
+                    .begin_with_lease_id(
+                        workspace,
+                        generation(1),
+                        &original.owner,
+                        10,
+                        original.expires_at_millis,
+                        original.id,
+                    )
+                    .await,
+                Err(OperationWindowError::Contended)
+            ));
+            let later = windows
+                .begin_with_lease_id(
+                    workspace,
+                    generation(2),
+                    "different later writer",
+                    10,
+                    100,
+                    OperationLeaseId::from_bytes([144; 16]),
+                )
+                .await
+                .expect("different lease remains admissible");
+            assert_eq!(later.pinned_parent, generation(2));
+            assert_ne!(later.lease_id, original.id);
+        }
+    }
+
+    #[tokio::test]
+    async fn original_lease_seal_rejects_a_queued_open_without_touching_peer() {
+        let stream = Arc::new(acyclic_stream::MemoryStream::new(
+            acyclic_stream::MemoryLimits::default(),
+        ));
+        let store = StreamOperationWindowStore::new(stream);
+        let windows = OperationWindowCoordinator::new(store.clone());
+        let workspace = WorkspaceId::from_bytes([151; 16]);
+        let original = OperationLease {
+            id: OperationLeaseId::from_bytes([152; 16]),
+            owner: "original".to_owned(),
+            expires_at_millis: 100,
+        };
+        let peer = windows
+            .begin_with_lease_id(
+                workspace,
+                generation(1),
+                "peer",
+                10,
+                100,
+                OperationLeaseId::from_bytes([153; 16]),
+            )
+            .await
+            .expect("peer opens");
+        let before = windows.inspect(workspace).await.expect("peer snapshot");
+        let mut queued = before.clone();
+        queued.revision += 1;
+        if let OperationWindowPhase::Active { leases, .. } = &mut queued.phase {
+            leases.insert(original.id, original.clone());
+        } else {
+            panic!("peer must be active");
+        }
+        assert_eq!(
+            windows
+                .seal_original_lease_with_ticket(
+                    workspace,
+                    &original,
+                    10,
+                    OperationId::from_bytes([154; 16]),
+                )
+                .await
+                .expect("seal before queued original open"),
+            OperationWindowFinish::AlreadyClosed
+        );
+        assert!(
+            !store
+                .compare_and_swap(workspace, before.revision, queued)
+                .await
+                .expect("queued atomic open loses to seal")
+        );
+        let after = windows.inspect(workspace).await.expect("sealed snapshot");
+        assert_eq!(after.phase, before.phase);
+        assert_eq!(
+            windows
+                .begin_with_lease_id(
+                    workspace,
+                    peer.pinned_parent,
+                    "peer",
+                    10,
+                    peer.expires_at_millis,
+                    peer.lease_id,
+                )
+                .await
+                .expect("peer exact retry remains active"),
+            peer
+        );
+        assert!(matches!(
+            windows
+                .begin_with_lease_id(
+                    workspace,
+                    generation(1),
+                    &original.owner,
+                    10,
+                    original.expires_at_millis,
+                    original.id,
+                )
+                .await,
+            Err(OperationWindowError::Contended)
+        ));
     }
 }
