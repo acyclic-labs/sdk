@@ -53,6 +53,8 @@ hex = "0.4.3"
 http = "1.4.0"
 hyper-util = { version = "0.1.20", features = ["tokio"] }
 indexed_db_futures = { version = "0.6.4", features = ["typed-arrays"] }
+icu_properties = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
+icu_properties_data = "=2.3.0"
 jsonschema = { version = "0.58.6", default-features = false }
 js-sys = "0.3.94"
 napi = { version = "3.14.2", features = ["async", "napi8", "serde-json"] }

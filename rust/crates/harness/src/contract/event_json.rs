@@ -283,8 +283,12 @@ mod tests {
         }).is_err());
         assert!(!reserved);
         let bytes = br#"{"kind":"conversation_bound","agent":"00000000-0000-0000-0000-000000000001"}"#;
-        let error = Error::Conflict("original cancellation".into());
-        assert_eq!(event_payload_json_admission(bytes, bounds(bytes), &mut |_| Err(error.clone())).unwrap_err(), error);
+        let operation = crate::OperationId::from_bytes([92; 16]);
+        let mut error = Some(Error::Indeterminate(operation));
+        let result = event_payload_json_admission(bytes, bounds(bytes), &mut |_| {
+            Err(error.take().expect("admission must stop after its first failure"))
+        });
+        assert!(matches!(result, Err(Error::Indeterminate(original)) if original == operation));
     }
 }
 

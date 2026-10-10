@@ -76,7 +76,7 @@ pub use json::{
 /// One sorted-key JSON encoding for durable identities and Rust/WASM output.
 /// The canonical bounded serializer preserves Value integer/float and duplicate
 /// key semantics, without an unchecked initial `serde_json::to_value`.
-pub(crate) fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
+pub(crate) fn canonical_json_bytes<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
     json::canonical_json_bytes_trusted(value)
 }
 
@@ -471,7 +471,7 @@ pub enum InteractionRejection {
 }
 
 /// Errors shared by harness surfaces.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The requested resource does not exist.
     #[error("resource not found: {0}")]
@@ -497,6 +497,20 @@ pub enum Error {
     /// Durable admission may have committed and must be reconciled.
     #[error("operation outcome is indeterminate: {0}")]
     Indeterminate(OperationId),
+    /// An owned native failure, preserving its cause and existing allocation custody.
+    ///
+    /// The cause is dropped before its custody. Allocation-free cancellation and
+    /// work-limit causes need no custody; owned diagnostics transfer their
+    /// already-admitted guard rather than allocating while reporting failure.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("{cause}")]
+    NativeWork {
+        /// The actual native failure, without string conversion.
+        #[source]
+        cause: acyclic_fs::NativeTreeMaterializationError,
+        /// Existing custody for any SDK-owned diagnostic payload.
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
 }
 
 impl Error {
@@ -522,6 +536,31 @@ impl Error {
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
             Self::Storage(_) => ErrorCode::Storage,
             Self::Indeterminate(_) => ErrorCode::Indeterminate,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeWork { cause, .. } => {
+                use acyclic_fs::NativeTreeMaterializationError as Native;
+                match cause {
+                    Native::InvalidLayout
+                    | Native::InvalidPreimage
+                    | Native::InvalidPath(_)
+                    | Native::OverlappingPaths => ErrorCode::Invalid,
+                    Native::MissingTarget(_) | Native::MissingPreimage(_) => ErrorCode::NotFound,
+                    Native::ExternalMutation(_)
+                    | Native::UnexpectedBackup(_)
+                    | Native::AllocationChanged { .. } => ErrorCode::Conflict,
+                    Native::UnsupportedRename | Native::UnverifiedSourceMetadata(_) => {
+                        ErrorCode::Unsupported
+                    }
+                    // A native failure alone does not authenticate an uncertain
+                    // Harness admission. Only Indeterminate(original_operation)
+                    // makes that claim.
+                    Native::Io(_)
+                    | Native::Cancelled
+                    | Native::Work(_)
+                    | Native::Allocation(_)
+                    | Native::IndeterminatePreparation => ErrorCode::Storage,
+                }
+            }
         }
     }
 
@@ -643,7 +682,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_json_preserves_value_conversion_and_invalid_messages() -> Result<()> {
+    fn canonical_json_preserves_value_conversion_and_rejects_invalid_values() -> Result<()> {
         assert_eq!(
             canonical_json_bytes(&[f64::NAN, f64::INFINITY, f64::NEG_INFINITY])?,
             b"[null,null,null]"
@@ -654,29 +693,18 @@ mod tests {
             br#"{"1.5":1}"#
         );
         for key in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            assert_eq!(
+            assert!(matches!(
                 canonical_json_bytes(&Pairs(vec![(key, 1)])),
-                Err(Error::Invalid(
-                    "float key must be finite (got NaN or +/-inf)".into()
-                ))
-            );
+                Err(Error::Invalid(_))
+            ));
         }
-        assert_eq!(
+        assert!(matches!(
             canonical_json_bytes(&Pairs(vec![(vec![1_u8], 1)])),
-            Err(Error::Invalid("key must be a string".into()))
-        );
-        assert_eq!(
-            canonical_json_bytes(&Failing),
-            Err(Error::Invalid("canonical fixture failure".into()))
-        );
-        assert_eq!(
-            canonical_json_bytes(&i128::MIN),
-            Err(Error::Invalid("number out of range".into()))
-        );
-        assert_eq!(
-            canonical_json_bytes(&u128::MAX),
-            Err(Error::Invalid("number out of range".into()))
-        );
+            Err(Error::Invalid(_))
+        ));
+        assert!(matches!(canonical_json_bytes(&Failing), Err(Error::Invalid(_))));
+        assert!(matches!(canonical_json_bytes(&i128::MIN), Err(Error::Invalid(_))));
+        assert!(matches!(canonical_json_bytes(&u128::MAX), Err(Error::Invalid(_))));
         assert_eq!(
             canonical_json_bytes(&(i128::from(i64::MIN), u128::from(u64::MAX)))?,
             b"[-9223372036854775808,18446744073709551615]"

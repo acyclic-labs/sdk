@@ -336,10 +336,15 @@ pub struct ChildScratchCreationProof {
 #[cfg(feature = "filesystem")]
 impl ChildScratchCreationProof {
     pub(crate) fn new(identity: Arc<dyn ScratchCreationIdentity>) -> Self { Self { identity } }
+    /// Original task identity authenticated by the allocation provider.
     pub fn original_task(&self) -> crate::TaskId { self.identity.original_task() }
+    /// Agent authenticated as the owner of this scratch allocation.
     pub fn agent(&self) -> crate::AgentId { self.identity.agent() }
+    /// Exact created scratch volume; its identity is not a read or write grant.
     pub fn volume(&self) -> &crate::conversation::VolumeRef { self.identity.volume() }
+    /// Original filesystem creation operation retained by the provider.
     pub fn creation_operation(&self) -> acyclic_fs::OperationId { self.identity.creation_operation() }
+    /// Immutable initial allocation generation, never a refreshed head.
     pub fn initial_generation(&self) -> &crate::resources::GenerationRef { self.identity.initial_generation() }
     pub(crate) fn origin(&self) -> &ResourceCreationOrigin { self.identity.origin() }
     pub(crate) fn same_identity(&self, other: &Self) -> bool {

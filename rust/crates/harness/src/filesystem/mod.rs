@@ -54,7 +54,6 @@ use fork_preparer::bounded_io as fork_preparer_io;
 pub(crate) use fork_preparer::bounded_io::{PreparationIo, UploadRecord};
 mod summary_fork;
 pub use fork_preparer::{FilesystemForkPreparer, FilesystemResourceCreationProvider};
-pub(crate) use fork_preparer::PreparationIo;
 mod interaction_host;
 pub use interaction_host::FilesystemInteractionHost;
 mod project_workspaces;

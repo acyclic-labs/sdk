@@ -843,18 +843,21 @@ mod tests {
         for stop in 0..calls {
             let mut seen = 0;
             let mut live = 0u64;
-            let error = Error::Conflict(format!("cancel-{stop}"));
+            let operation = crate::OperationId::from_bytes((stop as u128).to_le_bytes());
+            let mut error = Some(Error::Indeterminate(operation));
             let result = canonical_json_bytes_bounded(&value, BOUNDS, &mut |event| {
                 if let JsonCodecCharge::Release { bytes } = event {
                     live = live.checked_sub(bytes).expect("release only admitted quota");
                     return Ok(());
                 }
-                if seen == stop { return Err(error.clone()); }
+                if seen == stop {
+                    return Err(error.take().expect("codec must stop after its first failure"));
+                }
                 seen += 1;
                 if let JsonCodecCharge::Retain { bytes } = event { live += bytes; }
                 Ok(())
             });
-            assert_eq!(result, Err(error));
+            assert!(matches!(result, Err(Error::Indeterminate(original)) if original == operation));
             assert_eq!(live, 0, "cancel schedule {stop} leaks live codec quota");
         }
         Ok(())
@@ -871,18 +874,21 @@ mod tests {
         for stop in 0..calls {
             let mut seen = 0;
             let mut live = 0u64;
-            let error = Error::Conflict(format!("ordinary-cancel-{stop}"));
+            let operation = crate::OperationId::from_bytes((stop as u128).to_le_bytes());
+            let mut error = Some(Error::Indeterminate(operation));
             let result = json_bytes_bounded_trusted(&value, BOUNDS, &mut |event| {
                 if let JsonCodecCharge::Release { bytes } = event {
                     live = live.checked_sub(bytes).expect("release only admitted quota");
                     return Ok(());
                 }
-                if seen == stop { return Err(error.clone()); }
+                if seen == stop {
+                    return Err(error.take().expect("codec must stop after its first failure"));
+                }
                 seen += 1;
                 if let JsonCodecCharge::Retain { bytes } = event { live += bytes; }
                 Ok(())
             });
-            assert_eq!(result, Err(error));
+            assert!(matches!(result, Err(Error::Indeterminate(original)) if original == operation));
             assert_eq!(live, 0);
         }
         Ok(())
@@ -917,9 +923,10 @@ mod tests {
             }
             Ok(())
         });
-        assert_eq!(failure, Err(Error::Invalid("original serializer failure".into())));
+        assert!(matches!(failure, Err(Error::Invalid(_))));
         assert_eq!(live, 0);
-        let first = Error::Conflict("first callback failure".into());
+        let operation = crate::OperationId::from_bytes([91; 16]);
+        let mut first = Some(Error::Indeterminate(operation));
         let mut copy_failures = 0;
         let failure = canonical_json_bytes_bounded(&IgnoredErrors, BOUNDS, &mut |event| {
             match event {
@@ -927,13 +934,13 @@ mod tests {
                 JsonCodecCharge::Release { bytes } => live = live.checked_sub(bytes).expect("balanced release"),
                 JsonCodecCharge::Copy { .. } => {
                     copy_failures += 1;
-                    return Err(if copy_failures == 1 { first.clone() } else { Error::Conflict("later failure".into()) });
+                    return Err(first.take().expect("codec must stop after its first failure"));
                 }
                 _ => {}
             }
             Ok(())
         });
-        assert_eq!(failure, Err(first));
+        assert!(matches!(failure, Err(Error::Indeterminate(original)) if original == operation));
         assert_eq!(copy_failures, 1);
         assert_eq!(live, 0);
     }

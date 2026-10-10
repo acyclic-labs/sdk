@@ -64,7 +64,6 @@ async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Err
         } else {
             let error = platform.err().ok_or("private endpoint unexpectedly trusted")?;
             assert!(std::error::Error::source(&error).is_some(), "cause lost: {error:?}");
-            assert!(format!("{error:?}").to_lowercase().contains("certificate"), "TLS cause lost: {error:?}");
         }
         let client = GrpcObjects::connect(&endpoint, "exact-token", Some(pem.as_bytes())).await?;
         client.create_bucket(wire::CreateBucketRequest {

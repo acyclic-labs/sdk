@@ -17,6 +17,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Arc;
 
 mod snapshot;
 pub use snapshot::Snapshot;

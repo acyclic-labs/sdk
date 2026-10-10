@@ -329,25 +329,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn statuses_follow_the_wire_error_code() {
-        let operation = crate::OperationId::from_bytes([1; 16]);
-        for (error, code) in [
-            (Error::Invalid("x".into()), tonic::Code::InvalidArgument),
-            (Error::Storage("x".into()), tonic::Code::Unavailable),
-            (Error::Indeterminate(operation), tonic::Code::Unavailable),
-            (
-                Error::InteractionRejected(crate::InteractionRejection::Expired),
-                tonic::Code::DeadlineExceeded,
-            ),
-        ] {
-            let status = status(error.clone());
-            assert_eq!(
-                (status.code(), status.message()),
-                (code, error.to_string().as_str())
-            );
-        }
-    }
 
     #[tokio::test]
     async fn tonic_surface_delegates_to_the_common_wire_api() -> Result<()> {

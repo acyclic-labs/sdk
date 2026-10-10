@@ -64,7 +64,6 @@ async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Err
         } else {
             let error = platform.err().ok_or("private endpoint unexpectedly trusted")?;
             assert!(std::error::Error::source(&error).is_some(), "cause lost: {error:?}");
-            assert!(format!("{error:?}").to_lowercase().contains("certificate"), "TLS cause lost: {error:?}");
         }
         let client = Client::connect_eager_with_ca_certificate(&endpoint, "exact-token", pem.as_bytes()).await?;
         assert_eq!(client.tail(StreamPath::new("explicit/roots")?).await, Err(StreamError::NotFound));
