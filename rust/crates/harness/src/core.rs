@@ -207,6 +207,23 @@ impl AuthorityIssuer {
         }
     }
 
+    #[cfg(feature = "filesystem")]
+    pub(crate) const fn audience(&self) -> &Authority { &self.audience }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn verifier_with_work(
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<AuthorityVerifier> {
+        match work.as_deref_mut() {
+            Some(work) => Ok(AuthorityVerifier {
+                id: work.clone_text(&self.id)?,
+                key: self.key,
+                audience: work.clone_authority(&self.audience)?,
+            }),
+            None => Ok(self.verifier()),
+        }
+    }
     /// Issues one explicit root grant.
     #[must_use]
     pub fn root(&self, id: impl Into<String>, capabilities: Capabilities) -> Scope {
