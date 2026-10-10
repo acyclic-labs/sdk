@@ -185,6 +185,7 @@ pub struct HarnessBundle {
     runtime: Arc<AgentHarness>,
     journal: Option<Arc<dyn ExecutionJournal>>,
     agent_loop: bool,
+    stock_task: bool,
 }
 
 /// Rust-first composition root. Every stock-loop dependency is explicit.
@@ -515,19 +516,7 @@ impl HarnessBuilder {
         }
         let tools = bindings.tools.clone();
         let policy = bindings.policy.clone();
-        let runtime = bindings.build()?;
-        let runtime = match (&self.model, &self.provider) {
-            (Some(model), Some(provider)) => {
-                runtime.bind_model(model.clone(), Arc::clone(provider))?
-            }
-            (None, None) => runtime,
-            _ => {
-                return Err(Error::Invalid(
-                    "model and provider must be bound together".into(),
-                ));
-            }
-        }
-        .bind_context(self.context.clone());
+        let stock_task = self.executor.is_none() && agent_loop.is_none();
         let executor = if let Some(executor) = self.executor {
             Some(executor)
         } else if agent_loop.is_some() {
@@ -540,9 +529,11 @@ impl HarnessBuilder {
             }
             let model = self
                 .model
+                .clone()
                 .ok_or_else(|| Error::Invalid("model binding is missing".into()))?;
             let provider = self
                 .provider
+                .clone()
                 .ok_or_else(|| Error::Invalid("model provider binding is missing".into()))?;
             if !capabilities.contains("model:generate") {
                 return Err(Error::Unauthorized(
@@ -551,12 +542,14 @@ impl HarnessBuilder {
             }
             tools.definitions()?;
             Some(Arc::new(
-                StockExecutor::new(model, provider, self.context, tools)
+                StockExecutor::new(model, provider, self.context.clone(), tools)
                     .with_compaction_policy(self.compaction)
                     .with_limits(self.limits)
                     .with_tool_authority(scope, policy)?,
             ) as Arc<dyn Executor>)
         };
+        register_stock_task(&mut bindings, stock_task, &executor, &journal)?;
+        let runtime = bind_runtime(bindings, self.model, self.provider, self.context)?;
         if executor.is_some() && journal.is_none() {
             return Err(Error::Invalid(
                 "execution journal binding is missing".into(),
@@ -573,8 +566,58 @@ impl HarnessBuilder {
             limits: self.limits,
             runtime,
             agent_loop: agent_loop.is_some(),
+            stock_task,
         })
     }
+}
+
+fn bind_runtime(
+    bindings: Bindings,
+    model: Option<Model>,
+    provider: Option<Arc<dyn ModelProvider>>,
+    context: ContextPipeline,
+) -> Result<Arc<AgentHarness>> {
+    let runtime = bindings.build()?;
+    let runtime = match (model, provider) {
+        (Some(model), Some(provider)) => runtime.bind_model(model, provider)?,
+        (None, None) => runtime,
+        _ => {
+            return Err(Error::Invalid(
+                "model and provider must be bound together".into(),
+            ));
+        }
+    };
+    Ok(runtime.bind_context(context))
+}
+
+fn register_stock_task(
+    bindings: &mut Bindings,
+    stock_task: bool,
+    executor: &Option<Arc<dyn Executor>>,
+    journal: &Option<Arc<dyn ExecutionJournal>>,
+) -> Result<()> {
+    if stock_task {
+        let executor = executor
+            .clone()
+            .ok_or_else(|| Error::Invalid("stock executor is missing".into()))?;
+        let journal = journal
+            .clone()
+            .ok_or_else(|| Error::Invalid("stock journal is missing".into()))?;
+        bindings.tasks.register(TaskDefinition::live(
+            "acyclic.stock_turn",
+            "2",
+            move |context, input: TurnInput| {
+                let executor = Arc::clone(&executor);
+                let journal = Arc::clone(&journal);
+                async move {
+                    executor
+                        .execute_with_context(&context, input, journal.as_ref())
+                        .await
+                }
+            },
+        )?)?;
+    }
+    Ok(())
 }
 
 impl HarnessBundle {
@@ -618,6 +661,30 @@ impl HarnessBundle {
             return Err(Error::Invalid(
                 "turn exceeds the bound model step limit".into(),
             ));
+        }
+        if self.stock_task {
+            let definition = self
+                .runtime
+                .task::<TurnInput, TurnOutput>("acyclic.stock_turn@2")?;
+            let admitted = self
+                .runtime
+                .spawn_local_with_operation(input.operation_id, &definition, input)
+                .await?;
+            let crate::runtime::RuntimeTask::Live(handle) = admitted else {
+                return Err(Error::Unsupported(
+                    "stock turn requires ordinary local task admission".into(),
+                ));
+            };
+            return match handle.result_owned().await {
+                crate::Outcome::Succeeded(result) => result,
+                crate::Outcome::Failed { message } => Err(Error::Conflict(message)),
+                crate::Outcome::Cancelled => Err(Error::InteractionRejected(
+                    crate::InteractionRejection::Cancelled,
+                )),
+                crate::Outcome::Indeterminate { operation_id } => {
+                    Err(Error::Indeterminate(operation_id))
+                }
+            };
         }
         let executor = self
             .executor
@@ -1226,6 +1293,27 @@ mod tests {
             .build()?;
         assert_eq!(bundle.name, "test");
         assert!(bundle.capabilities.contains("model:generate"));
+        assert!(
+            bundle
+                .runtime()
+                .task::<TurnInput, TurnOutput>("acyclic.stock_turn@2")
+                .is_ok()
+        );
+        assert!(matches!(bundle.run(TurnInput {
+            operation_id: crate::OperationId::new(),
+            input: crate::model::ModelContent::Text("typed failure".into()),
+            selected_context: None,
+            max_steps: 1,
+        }).await, Err(Error::Unsupported(message)) if message == "selected model context capacity is unavailable"));
+        assert!(matches!(HarnessBuilder::new()
+            .model(model.clone(), Arc::new(Provider))
+            .journal(Arc::new(UnusedJournal))
+            .grant("model:generate")
+            .task(TaskDefinition::live("acyclic.stock_turn", "2", |_context, _input: TurnInput| async {
+                Err::<TurnOutput, _>(Error::Unauthorized("caller task must not be replaced".into()))
+            })?)?
+            .build(), Err(Error::Conflict(message)) if message.contains("already registered")));
+
         let stock_executor = bundle
             .executor()
             .ok_or_else(|| Error::Storage("stock executor missing".into()))?;
@@ -1302,6 +1390,12 @@ mod tests {
                 definition_name: None,
             }))?)
             .build()?;
+        assert!(matches!(
+            custom
+                .runtime()
+                .task::<TurnInput, TurnOutput>("acyclic.stock_turn@2"),
+            Err(Error::NotFound(_))
+        ));
         assert_eq!(
             custom.runtime().tool("acyclic.filesystem")?.name,
             "acyclic.filesystem"

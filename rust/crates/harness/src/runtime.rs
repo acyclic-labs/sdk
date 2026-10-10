@@ -3311,6 +3311,7 @@ impl AgentHarness {
             Vec::new(),
             definition,
             input,
+            None,
         )
         .await
     }
@@ -3322,6 +3323,7 @@ impl AgentHarness {
         policies: Vec<(ComponentIdentity, Arc<dyn ToolPolicy>)>,
         definition: &Arc<TaskDefinition<I, O>>,
         input: I,
+        operation_id: Option<OperationId>,
     ) -> Result<RuntimeTask<O>>
     where
         I: Serialize + Send + 'static,
@@ -3332,6 +3334,44 @@ impl AgentHarness {
                 "live task closures cannot cross an execution provider; register a resumable task and admit it with a stable operation ID".into(),
             ));
         }
+        self.spawn_local_in_group(group, scope, policies, definition, input, operation_id)
+            .await
+    }
+
+    pub(crate) async fn spawn_local_with_operation<I, O>(
+        self: &Arc<Self>,
+        operation_id: OperationId,
+        definition: &Arc<TaskDefinition<I, O>>,
+        input: I,
+    ) -> Result<RuntimeTask<O>>
+    where
+        I: Serialize + Send + 'static,
+        O: Serialize + DeserializeOwned + Send + 'static,
+    {
+        self.spawn_local_in_group(
+            &self.live,
+            self.scope.clone(),
+            Vec::new(),
+            definition,
+            input,
+            Some(operation_id),
+        )
+        .await
+    }
+
+    async fn spawn_local_in_group<I, O>(
+        self: &Arc<Self>,
+        group: &TaskGroup,
+        scope: RuntimeScope,
+        policies: Vec<(ComponentIdentity, Arc<dyn ToolPolicy>)>,
+        definition: &Arc<TaskDefinition<I, O>>,
+        input: I,
+        operation_id: Option<OperationId>,
+    ) -> Result<RuntimeTask<O>>
+    where
+        I: Serialize + Send + 'static,
+        O: Serialize + DeserializeOwned + Send + 'static,
+    {
         let registered = self
             .tasks
             .get_version::<I, O>(&definition.identity.name, &definition.identity.version)?;
@@ -3358,7 +3398,7 @@ impl AgentHarness {
         let descendants = context_group.child(scope.concurrency_bound(self.concurrency));
         let (identity, receive_identity) = tokio::sync::oneshot::channel();
         let admitted = group
-            .try_spawn(async move {
+            .try_spawn_with_operation(operation_id.unwrap_or_default(), async move {
                 let task_id = receive_identity
                     .await
                     .map_err(|_| Error::Conflict("task identity was not admitted".into()))?;
@@ -4686,6 +4726,7 @@ impl TaskContext {
                 self.policy_overrides.clone(),
                 definition,
                 input,
+                None,
             )
             .await
     }
@@ -5928,6 +5969,7 @@ impl RuntimeGroup {
                 self.policy_overrides.clone(),
                 definition,
                 input,
+                None,
             )
             .await
     }
@@ -7171,6 +7213,73 @@ mod tests {
                 Ok(())
             })
         }
+    }
+
+    #[tokio::test]
+    async fn local_stock_admission_coexists_with_a_durable_execution_route() -> Result<()> {
+        struct RouteProbe {
+            spawner: Arc<dyn TaskSpawner>,
+            state: Arc<dyn TaskStateProvider>,
+        }
+        impl ExecutionProvider for RouteProbe {
+            fn identity(&self) -> ComponentIdentity {
+                ComponentIdentity {
+                    name: "test.route".into(),
+                    version: "1".into(),
+                    digest: [1; 32],
+                }
+            }
+            fn spawner(&self) -> Arc<dyn TaskSpawner> {
+                Arc::clone(&self.spawner)
+            }
+            fn state(&self) -> Arc<dyn TaskStateProvider> {
+                Arc::clone(&self.state)
+            }
+            fn qualify<'a>(
+                &'a self,
+                _: &'a TaskAdmissionRecord,
+            ) -> BoxFuture<'a, Result<ExecutionPlacement>> {
+                Box::pin(async { Err(Error::Conflict("local turn reached durable route".into())) })
+            }
+        }
+        let record = TaskAdmissionRecord::from_canonical_value(
+            serde_json::from_str(include_str!("../fixtures/v2/task-admission.json"))
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+        )?;
+        let task_id = TaskId::from_bytes([4; 16]);
+        let definition =
+            TaskDefinition::live("test.local", "1", |context, input: u64| async move {
+                Ok((context.task_id, input))
+            })?;
+        let mut bindings = Bindings::default();
+        bindings.tasks.register(definition)?;
+        let runtime = bindings.build()?;
+        let definition = runtime.task::<u64, (OperationId, u64)>("test.local@1")?;
+        let mut routed = runtime.as_ref().clone();
+        routed.execution = Some(Arc::new(RouteProbe {
+            spawner: Arc::new(SplitSpawner {
+                task_id,
+                record: record.clone(),
+            }),
+            state: Arc::new(SplitState { task_id, record }),
+        }));
+        let routed = Arc::new(routed);
+        let operation = OperationId::new();
+        assert!(matches!(
+            routed.spawn(&definition, 7).await,
+            Err(Error::Unsupported(_))
+        ));
+        let RuntimeTask::Live(handle) = routed
+            .spawn_local_with_operation(operation, &definition, 7)
+            .await?
+        else {
+            return Err(Error::Conflict("local admission changed task kind".into()));
+        };
+        assert_eq!(
+            handle.result_owned().await,
+            Outcome::Succeeded(Ok((operation, 7)))
+        );
+        Ok(())
     }
 
     struct SplitSpawner {
