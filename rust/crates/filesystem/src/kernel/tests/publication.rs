@@ -1,4 +1,19 @@
 use super::*;
+use crate::foundation::{DurableCommit, ProposedCommit, Sequence};
+use crate::kernel::{
+    Extent, ExtentKind, ExtentPage, GenerationExportManifestError, LogicalName, NameEncoding,
+    PublicationEvidenceError, TreeEntry, decode_generation_publication_evidence,
+    encode_extent_page, encode_generation_export_manifest, encode_generation_publication_evidence,
+};
+use crate::model::{Lifecycle, VolumeConfig};
+use crate::storage::{
+    AuthorityResult, ObjectFailure, ObjectRead, ObjectReadRequest, ObjectReceipt, ObjectResult,
+    ReplayLimit,
+};
+use crate::{Collection, GenerationForkSource, GuardedAppend, PublicationHold, PublicationScope};
+use sha2::{Digest as _, Sha256};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use crate::foundation::FileId;
 use crate::kernel::{
     DecodeLimits, FileKind, FileMetadata, FilePayload, FileRecord, FileTablePage, GenerationRoot,
@@ -518,5 +533,750 @@ fn async_and_sync_publication_are_identical_and_pre_cancel_is_inert()
         PublicationError::Closure(ClosureError::Storage(ObjectStoreError::Cancelled))
     ));
     assert_eq!(*failure.work, WorkCounters::default());
+    Ok(())
+}
+
+/// Two distinct sparse files share one extent object. Their logical total
+/// exceeds u64 without allocating or reading their holes.
+fn evidence_fixture() -> Result<
+    (PublishGenerationRequest, GenerationProof, GuardedAppend, VolumeConfig),
+    Box<dyn std::error::Error>,
+> {
+    let objects = MemoryObjectStore::default();
+    let volume_id = VolumeId::from_bytes([61; 16]);
+    let root_file_id = FileId::from_bytes([1; 16]);
+    let first_file_id = FileId::from_bytes([2; 16]);
+    let second_file_id = FileId::from_bytes([3; 16]);
+    let metadata = put(&objects, ObjectKind::Metadata, encode_file_metadata(metadata())?)?;
+    let extents = put(
+        &objects,
+        ObjectKind::ExtentPage,
+        encode_extent_page(
+            &ExtentPage::Leaf(vec![Extent {
+                offset: 0,
+                length: u64::MAX,
+                kind: ExtentKind::Hole,
+            }]),
+            8,
+        )?,
+    )?;
+    let tree = put(
+        &objects,
+        ObjectKind::TreePage,
+        encode_tree_page(
+            &TreePage::Leaf(vec![
+                TreeEntry {
+                    name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec(), 255)?,
+                    file_id: first_file_id,
+                    kind: FileKind::Regular,
+                },
+                TreeEntry {
+                    name: LogicalName::new(NameEncoding::Utf8, b"second".to_vec(), 255)?,
+                    file_id: second_file_id,
+                    kind: FileKind::Regular,
+                },
+            ]),
+            8,
+        )?,
+    )?;
+    let table = put(
+        &objects,
+        ObjectKind::FileTablePage,
+        encode_file_table_page(
+            &FileTablePage::Leaf(vec![
+                FileRecord {
+                    file_id: root_file_id,
+                    kind: FileKind::Directory,
+                    link_count: 1,
+                    metadata,
+                    payload: FilePayload::Directory { entries: tree },
+                },
+                FileRecord {
+                    file_id: first_file_id,
+                    kind: FileKind::Regular,
+                    link_count: 1,
+                    metadata,
+                    payload: FilePayload::Regular { logical_bytes: u64::MAX, extents },
+                },
+                FileRecord {
+                    file_id: second_file_id,
+                    kind: FileKind::Regular,
+                    link_count: 1,
+                    metadata,
+                    payload: FilePayload::Regular { logical_bytes: u64::MAX, extents },
+                },
+            ]),
+            8,
+        )?,
+    )?;
+    let root = put(
+        &objects,
+        ObjectKind::GenerationRoot,
+        encode_generation_root(&GenerationRoot {
+            volume_id,
+            root_file_id,
+            file_table: table,
+            parents: Vec::new(),
+            required_features: 0,
+        })?,
+    )?;
+    let request = PublishGenerationRequest {
+        authority_id: volume_authority_id(volume_id),
+        volume_id,
+        epoch: Epoch::new(7)?,
+        expected: Head {
+            epoch: Epoch::new(7)?,
+            sequence: Sequence::new(23),
+            digest: Digest::from_bytes([62; 32]),
+        },
+        operation_id: OperationId::from_bytes([63; 16]),
+        generation_root: root,
+    };
+    let proof = prove_generation_closure(&objects, root, limits(), WorkBudget::UNBOUNDED)?;
+    let mut expected_objects = vec![metadata, extents, tree, table, root];
+    expected_objects.sort_unstable();
+    assert_eq!(proof.objects, expected_objects);
+    assert_eq!(proof.object_count, 5);
+    assert_eq!(proof.file_count, 3);
+    assert_eq!(proof.logical_file_bytes, u128::from(u64::MAX) * 2);
+    let prepared = prepare_publication(proof.clone(), request, None, WorkBudget::UNBOUNDED)?;
+    let append = GuardedAppend {
+        authority_id: request.authority_id,
+        epoch: request.epoch,
+        expected: request.expected,
+        commit: prepared.commit,
+        permit: PublicationPermit::Unrestricted,
+    };
+    let mut config = VolumeConfig::portable(Lifecycle::Durable);
+    config.limits.maximum_objects_per_generation = 17;
+    config.limits.maximum_files_per_generation = 19;
+    Ok((request, proof, append, config))
+}
+
+#[test]
+fn publication_evidence_preserves_original_complete_closure_and_every_permit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (request, proof, mut append, config) = evidence_fixture()?;
+    for permit in [
+        PublicationPermit::Unrestricted,
+        PublicationPermit::Lease {
+            authority_id: [71; 16],
+            workspace_id: [72; 16],
+            lease_id: [73; 16],
+            expires_at_millis: u64::MAX - 1,
+        },
+        PublicationPermit::Reservation {
+            operation_id: request.operation_id.into_bytes(),
+            gate_tail: 42,
+            expected: request.expected,
+        },
+    ] {
+        append.permit = permit;
+        let encoded =
+            encode_generation_publication_evidence(&request, &proof, &append, config, 64 * 1024)?;
+        assert_eq!(encoded.sha256, <[u8; 32]>::from(Sha256::digest(&encoded.bytes)));
+        let decoded = decode_generation_publication_evidence(
+            &encoded.bytes,
+            &encoded.sha256,
+            encoded.bytes.len() as u64,
+            proof.object_count,
+        )?;
+        assert_eq!(decoded.request, request);
+        assert_eq!(decoded.append, append);
+        assert_eq!(decoded.root, proof.root);
+        assert_eq!(decoded.manifest.config, config);
+        assert_eq!(decoded.manifest.volume_id, request.volume_id);
+        assert_eq!(decoded.manifest.generation_root, request.generation_root);
+        assert_eq!(decoded.manifest.objects, proof.objects);
+        assert!(decoded.manifest.objects.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(decoded.manifest.file_count, proof.file_count);
+        assert_eq!(decoded.manifest.generation_id, proof.generation_id);
+        assert_eq!(decoded.logical_file_bytes, u128::from(u64::MAX) * 2);
+        assert_eq!(
+            encode_generation_publication_evidence(
+                &decoded.request, &proof, &decoded.append, decoded.manifest.config,
+                encoded.bytes.len() as u64,
+            )?,
+            encoded
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn publication_evidence_rejects_tampering_and_byte_and_object_bounds()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (request, proof, append, config) = evidence_fixture()?;
+    let encoded =
+        encode_generation_publication_evidence(&request, &proof, &append, config, 64 * 1024)?;
+    let mut digest = encoded.sha256;
+    digest[0] ^= 1;
+    assert!(matches!(
+        decode_generation_publication_evidence(&encoded.bytes, &digest, 64 * 1024, proof.object_count),
+        Err(PublicationEvidenceError::Mismatch)
+    ));
+    for index in [0, encoded.bytes.len() / 2, encoded.bytes.len() - 1] {
+        let mut altered = encoded.bytes.to_vec();
+        altered[index] ^= 1;
+        assert!(matches!(
+            decode_generation_publication_evidence(
+                &altered, &encoded.sha256, 64 * 1024, proof.object_count,
+            ),
+            Err(PublicationEvidenceError::Mismatch)
+        ));
+    }
+    let mut changed_append = append.clone();
+    changed_append.commit.fingerprint = Digest::from_bytes([91; 32]);
+    let changed = encode_generation_publication_evidence(
+        &request, &proof, &changed_append, config, 64 * 1024,
+    )?;
+    assert!(matches!(
+        decode_generation_publication_evidence(
+            &changed.bytes, &encoded.sha256, 64 * 1024, proof.object_count,
+        ),
+        Err(PublicationEvidenceError::Mismatch)
+    ));
+    for bound in [0, encoded.bytes.len() as u64 - 1] {
+        assert!(matches!(
+            encode_generation_publication_evidence(&request, &proof, &append, config, bound),
+            Err(PublicationEvidenceError::TooLarge)
+        ));
+        assert!(matches!(
+            decode_generation_publication_evidence(
+                &encoded.bytes, &encoded.sha256, bound, proof.object_count,
+            ),
+            Err(PublicationEvidenceError::TooLarge)
+        ));
+    }
+    for bound in [0, proof.object_count - 1] {
+        assert!(matches!(
+            decode_generation_publication_evidence(
+                &encoded.bytes, &encoded.sha256, 64 * 1024, bound,
+            ),
+            Err(PublicationEvidenceError::Manifest(GenerationExportManifestError::TooManyObjects))
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn publication_evidence_rejects_disagreeing_request_proof_and_exact_append()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (request, proof, append, config) = evidence_fixture()?;
+    for changed in [
+        PublishGenerationRequest { authority_id: AuthorityId::from_bytes([81; 16]), ..request },
+        PublishGenerationRequest { volume_id: VolumeId::from_bytes([81; 16]), ..request },
+        PublishGenerationRequest { operation_id: OperationId::from_bytes([81; 16]), ..request },
+        PublishGenerationRequest { epoch: Epoch::new(8)?, ..request },
+        PublishGenerationRequest { expected: Head::genesis(request.epoch), ..request },
+        PublishGenerationRequest {
+            generation_root: ObjectId {
+                digest: Digest::from_bytes([81; 32]),
+                ..request.generation_root
+            },
+            ..request
+        },
+    ] {
+        assert!(matches!(
+            encode_generation_publication_evidence(&changed, &proof, &append, config, 64 * 1024),
+            Err(PublicationEvidenceError::Mismatch)
+        ));
+    }
+    let mut changed = proof.clone();
+    changed.object_count += 1;
+    assert!(matches!(
+        encode_generation_publication_evidence(&request, &changed, &append, config, 64 * 1024),
+        Err(PublicationEvidenceError::Mismatch)
+    ));
+    let mut changed = proof.clone();
+    changed.root.volume_id = VolumeId::from_bytes([81; 16]);
+    assert!(matches!(
+        encode_generation_publication_evidence(&request, &changed, &append, config, 64 * 1024),
+        Err(PublicationEvidenceError::Mismatch)
+    ));
+    for changed in [
+        GuardedAppend { authority_id: AuthorityId::from_bytes([81; 16]), ..append.clone() },
+        GuardedAppend { epoch: Epoch::new(8)?, ..append.clone() },
+        GuardedAppend { expected: Head::genesis(request.epoch), ..append.clone() },
+        GuardedAppend {
+            commit: ProposedCommit {
+                operation_id: OperationId::from_bytes([81; 16]), ..append.commit.clone()
+            },
+            ..append.clone()
+        },
+        GuardedAppend {
+            commit: ProposedCommit {
+                payload: Bytes::from(encode_publication_payload(
+                    VolumeId::from_bytes([81; 16]), request.generation_root,
+                )),
+                ..append.commit.clone()
+            },
+            ..append.clone()
+        },
+    ] {
+        assert!(matches!(
+            encode_generation_publication_evidence(&request, &proof, &changed, config, 64 * 1024),
+            Err(PublicationEvidenceError::Mismatch)
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn publication_evidence_rejects_noncanonical_manifest_and_trailing_data_with_fresh_digests()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (request, proof, append, config) = evidence_fixture()?;
+    let encoded =
+        encode_generation_publication_evidence(&request, &proof, &append, config, 64 * 1024)?;
+    let mut reversed_proof = proof.clone();
+    reversed_proof.objects.reverse();
+    assert!(matches!(
+        encode_generation_publication_evidence(
+            &request, &reversed_proof, &append, config, 64 * 1024,
+        ),
+        Err(PublicationEvidenceError::Manifest(
+            GenerationExportManifestError::NonCanonicalObjectOrder,
+        ))
+    ));
+    let projection = decode_generation_publication_evidence(
+        &encoded.bytes, &encoded.sha256, 64 * 1024, proof.object_count,
+    )?;
+    let manifest = encode_generation_export_manifest(&projection.manifest)?;
+    let offset = encoded.bytes.windows(manifest.len())
+        .position(|value| value == manifest)
+        .ok_or("missing embedded manifest")?;
+    let last_two_objects = offset + manifest.len() - 66;
+    let mut unsorted = encoded.bytes.to_vec();
+    unsorted[last_two_objects..last_two_objects + 66].rotate_left(33);
+    let digest = Sha256::digest(&unsorted).into();
+    assert!(matches!(
+        decode_generation_publication_evidence(&unsorted, &digest, 64 * 1024, proof.object_count),
+        Err(PublicationEvidenceError::Manifest(
+            GenerationExportManifestError::NonCanonicalObjectOrder,
+        ))
+    ));
+    let mut duplicate = encoded.bytes.to_vec();
+    duplicate.copy_within(last_two_objects..last_two_objects + 33, last_two_objects + 33);
+    let digest = Sha256::digest(&duplicate).into();
+    assert!(matches!(
+        decode_generation_publication_evidence(&duplicate, &digest, 64 * 1024, proof.object_count),
+        Err(PublicationEvidenceError::Manifest(
+            GenerationExportManifestError::NonCanonicalObjectOrder,
+        ))
+    ));
+    let mut trailing = encoded.bytes.to_vec();
+    trailing.push(0);
+    let digest = Sha256::digest(&trailing).into();
+    assert!(matches!(
+        decode_generation_publication_evidence(&trailing, &digest, 64 * 1024, proof.object_count),
+        Err(PublicationEvidenceError::Decode(CanonicalDecodeError::TrailingBytes))
+    ));
+    let truncated = &encoded.bytes[..encoded.bytes.len() - 1];
+    let digest = Sha256::digest(truncated).into();
+    assert!(matches!(
+        decode_generation_publication_evidence(truncated, &digest, 64 * 1024, proof.object_count),
+        Err(PublicationEvidenceError::Decode(_))
+    ));
+    Ok(())
+}
+
+struct PublicationBoundary {
+    collection: Arc<Collection>,
+    events: Mutex<Vec<&'static str>>,
+}
+
+impl PublicationBoundary {
+    fn assert_held(&self) {
+        // The real collection gate, not a synthetic "hold live" flag.
+        assert!(crate::async_storage::poll_ready(self.collection.begin()).is_none());
+    }
+
+    async fn record(&self, expected: &[&'static str], event: &'static str) {
+        let mut events = self.events.lock().await;
+        assert_eq!(events.as_slice(), expected);
+        events.push(event);
+    }
+}
+
+struct CustodyObjectStore {
+    inner: MemoryObjectStore,
+    boundary: Arc<PublicationBoundary>,
+    reject_hook: bool,
+    original: Mutex<Option<(PublishGenerationRequest, GenerationProof, GuardedAppend)>>,
+}
+
+impl crate::AsyncObjectStore for CustodyObjectStore {
+    async fn put(
+        &self,
+        object_id: ObjectId,
+        bytes: Bytes,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<()> {
+        crate::AsyncObjectStore::put(&self.inner, object_id, bytes, budget, cancellation).await
+    }
+
+    async fn read(
+        &self,
+        object_id: ObjectId,
+        maximum_bytes: u64,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<ObjectRead> {
+        crate::AsyncObjectStore::read(
+            &self.inner, object_id, maximum_bytes, budget, cancellation,
+        ).await
+    }
+
+    async fn read_many(
+        &self,
+        requests: &[ObjectReadRequest],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<Vec<ObjectRead>> {
+        crate::AsyncObjectStore::read_many(&self.inner, requests, budget, cancellation).await
+    }
+
+    async fn contains(
+        &self,
+        object_id: ObjectId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<bool> {
+        crate::AsyncObjectStore::contains(&self.inner, object_id, budget, cancellation).await
+    }
+
+    fn collection(&self) -> Option<&Arc<Collection>> {
+        Some(&self.boundary.collection)
+    }
+
+    async fn flush_before_publish(
+        &self,
+        scope: PublicationScope<'_>,
+        _budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<PublicationHold> {
+        cancellation.check()
+            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+        let PublicationScope::Closure { objects, proven_at } = scope else {
+            panic!("generation publication must flush its exact proven closure");
+        };
+        let hold = self.boundary.collection.admit(objects, |_| false, proven_at).await
+            .map_err(ObjectFailure::before_work)?
+            .into_hold();
+        self.boundary.record(&[], "flush").await;
+        Ok(ObjectReceipt { value: hold, work: WorkCounters::default() })
+    }
+
+    async fn prepare_generation_publication(
+        &self,
+        request: &PublishGenerationRequest,
+        proof: &GenerationProof,
+        append: &GuardedAppend,
+        scope: PublicationScope<'_>,
+        _budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<()> {
+        cancellation.check()
+            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+        self.boundary.assert_held();
+        self.boundary.record(&["flush"], "hook").await;
+        let PublicationScope::Closure { objects, proven_at } = scope else {
+            panic!("custody hook must receive its exact proven closure");
+        };
+        assert_eq!(objects, proof.objects);
+        assert_eq!(proven_at, self.boundary.collection.sweeps());
+        assert_eq!(request.authority_id, append.authority_id);
+        assert_eq!(request.epoch, append.epoch);
+        assert_eq!(request.expected, append.expected);
+        assert_eq!(request.operation_id, append.commit.operation_id);
+        assert_eq!(append.permit, PublicationPermit::Unrestricted);
+        assert_eq!(proof.root.volume_id, request.volume_id);
+        assert_eq!(
+            append.commit.payload.as_ref(),
+            encode_publication_payload(request.volume_id, request.generation_root),
+        );
+        *self.original.lock().await = Some((*request, proof.clone(), append.clone()));
+        if self.reject_hook {
+            return Err(ObjectFailure::before_work(ObjectStoreError::Rejected(
+                "original publication custody unavailable".to_owned(),
+            )));
+        }
+        Ok(ObjectReceipt { value: (), work: WorkCounters::default() })
+    }
+}
+
+struct CustodyAuthorityStore {
+    inner: MemoryAuthorityStore,
+    boundary: Arc<PublicationBoundary>,
+}
+
+impl crate::AsyncAuthorityStore for CustodyAuthorityStore {
+    async fn fork_generation_authority(
+        &self,
+        source: GenerationForkSource,
+        destination_authority: AuthorityId,
+        operation_id: OperationId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<crate::storage::CreateAuthorityOutcome> {
+        crate::AsyncAuthorityStore::fork_generation_authority(
+            &self.inner, source, destination_authority, operation_id, budget, cancellation,
+        ).await
+    }
+
+    async fn create_authority(
+        &self,
+        authority_id: AuthorityId,
+        genesis_epoch: Epoch,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<crate::storage::CreateAuthorityOutcome> {
+        crate::AsyncAuthorityStore::create_authority(
+            &self.inner, authority_id, genesis_epoch, budget, cancellation,
+        ).await
+    }
+
+    async fn head(
+        &self,
+        authority_id: AuthorityId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<Head> {
+        crate::AsyncAuthorityStore::head(&self.inner, authority_id, budget, cancellation).await
+    }
+
+    async fn compare_and_append(
+        &self,
+        authority_id: AuthorityId,
+        epoch: Epoch,
+        expected: Head,
+        commit: ProposedCommit,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<AppendOutcome> {
+        self.boundary.assert_held();
+        self.boundary.record(&["flush", "hook"], "cas").await;
+        // Only the actual Memory authority decides whether this append commits.
+        crate::AsyncAuthorityStore::compare_and_append(
+            &self.inner, authority_id, epoch, expected, commit, budget, cancellation,
+        ).await
+    }
+
+    async fn replay(
+        &self,
+        authority_id: AuthorityId,
+        after: Sequence,
+        limit: ReplayLimit,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<Vec<DurableCommit>> {
+        crate::AsyncAuthorityStore::replay(
+            &self.inner, authority_id, after, limit, budget, cancellation,
+        ).await
+    }
+
+    async fn fence(
+        &self,
+        authority_id: AuthorityId,
+        expected: Head,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<FenceOutcome> {
+        crate::AsyncAuthorityStore::fence(
+            &self.inner, authority_id, expected, budget, cancellation,
+        ).await
+    }
+
+    async fn find_operation(
+        &self,
+        authority_id: AuthorityId,
+        operation_id: OperationId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<Option<DurableCommit>> {
+        crate::AsyncAuthorityStore::find_operation(
+            &self.inner, authority_id, operation_id, budget, cancellation,
+        ).await
+    }
+}
+
+#[test]
+fn async_publication_flushes_then_prepares_original_custody_while_hold_covers_hook_and_cas()
+-> Result<(), Box<dyn std::error::Error>> {
+    for reject_hook in [false, true] {
+        let boundary = Arc::new(PublicationBoundary {
+            collection: Arc::new(Collection::default()),
+            events: Mutex::new(Vec::new()),
+        });
+        let objects = CustodyObjectStore {
+            inner: MemoryObjectStore::default(),
+            boundary: Arc::clone(&boundary),
+            reject_hook,
+            original: Mutex::new(None),
+        };
+        let authority = CustodyAuthorityStore {
+            inner: MemoryAuthorityStore::default(),
+            boundary: Arc::clone(&boundary),
+        };
+        let volume_id = VolumeId::from_bytes([91; 16]);
+        let authority_id = volume_authority_id(volume_id);
+        let crate::storage::CreateAuthorityOutcome::Created(head) =
+            authority.inner.create_authority(authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED)?
+                .value
+        else {
+            return Err("fixture authority unexpectedly existed".into());
+        };
+        let request = PublishGenerationRequest {
+            authority_id,
+            volume_id,
+            epoch: Epoch::GENESIS,
+            expected: head,
+            operation_id: OperationId::from_bytes([92; 16]),
+            generation_root: fixture(&objects.inner, volume_id)?,
+        };
+        let result = crate::async_storage::poll_ready(publish_generation_async(
+            &objects, &authority, request, limits(), WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )).ok_or("Memory publication unexpectedly blocked")?;
+        let original = objects.original.try_lock().expect("completed hook releases original custody");
+        let (original_request, original_proof, original_append) =
+            original.as_ref().ok_or("custody hook did not receive preparation")?;
+        assert_eq!(*original_request, request);
+        if reject_hook {
+            let failure = result.err().ok_or("failed custody hook allowed publication")?;
+            assert_eq!(
+                boundary.events.try_lock().expect("publication releases event lock").as_slice(),
+                &["flush", "hook"],
+            );
+            assert_eq!(failure.work.authority_records_appended, 0);
+            assert!(matches!(
+                &failure.error,
+                PublicationError::Objects(ObjectStoreError::Rejected(message))
+                    if message == "original publication custody unavailable"
+            ));
+            assert_eq!(authority.inner.head(authority_id, WorkBudget::UNBOUNDED)?.value, head);
+            assert!(authority.inner.find_operation(
+                authority_id, request.operation_id, WorkBudget::UNBOUNDED,
+            )?.value.is_none());
+        } else {
+            let receipt = result?;
+            assert_eq!(
+                boundary.events.try_lock().expect("publication releases event lock").as_slice(),
+                &["flush", "hook", "cas"],
+            );
+            assert_eq!(&receipt.proof, original_proof);
+            let AppendOutcome::Committed(commit) = receipt.outcome else {
+                return Err("actual Memory authority did not commit".into());
+            };
+            assert_eq!(commit.operation_id, original_append.commit.operation_id);
+            assert_eq!(commit.fingerprint, original_append.commit.fingerprint);
+            assert_eq!(commit.payload, original_append.commit.payload);
+            assert_eq!(authority.inner.find_operation(
+                authority_id, request.operation_id, WorkBudget::UNBOUNDED,
+            )?.value, Some(commit.clone()));
+            assert_eq!(
+                authority.inner.head(authority_id, WorkBudget::UNBOUNDED)?.value,
+                Head { epoch: commit.epoch, sequence: commit.sequence, digest: commit.digest },
+            );
+        }
+        // Success and failure both release the hold only after the engine exits.
+        assert!(crate::async_storage::poll_ready(boundary.collection.begin()).is_some());
+    }
+    Ok(())
+}
+
+#[test]
+fn historical_publication_evidence_binds_original_memory_commit_not_later_head()
+-> Result<(), Box<dyn std::error::Error>> {
+    let objects = MemoryObjectStore::default();
+    let authority = MemoryAuthorityStore::default();
+    let volume_id = VolumeId::from_bytes([101; 16]);
+    let authority_id = volume_authority_id(volume_id);
+    let crate::storage::CreateAuthorityOutcome::Created(head) =
+        authority.create_authority(authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED)?.value
+    else {
+        return Err("fixture authority unexpectedly existed".into());
+    };
+    let request = PublishGenerationRequest {
+        authority_id,
+        volume_id,
+        epoch: Epoch::GENESIS,
+        expected: head,
+        operation_id: OperationId::from_bytes([102; 16]),
+        generation_root: fixture(&objects, volume_id)?,
+    };
+    let proof = prove_generation_closure(
+        &objects, request.generation_root, limits(), WorkBudget::UNBOUNDED,
+    )?;
+    let prepared = prepare_publication(proof.clone(), request, None, WorkBudget::UNBOUNDED)?;
+    let append = GuardedAppend {
+        authority_id,
+        epoch: request.epoch,
+        expected: head,
+        commit: prepared.commit,
+        permit: PublicationPermit::Unrestricted,
+    };
+    let evidence = crate::kernel::HistoricalGenerationEvidence::from(
+        encode_generation_publication_evidence(
+            &request, &proof, &append, VolumeConfig::portable(Lifecycle::Durable), 64 * 1024,
+        )?,
+    );
+    let AppendOutcome::Committed(original) = authority.compare_and_append(
+        authority_id, append.epoch, append.expected, append.commit.clone(), WorkBudget::UNBOUNDED,
+    )?.value else {
+        return Err("actual Memory authority did not commit original append".into());
+    };
+    let later = publish_generation(
+        &objects, &authority,
+        PublishGenerationRequest {
+            operation_id: OperationId::from_bytes([103; 16]),
+            expected: Head {
+                epoch: original.epoch,
+                sequence: original.sequence,
+                digest: original.digest,
+            },
+            ..request
+        },
+        limits(), WorkBudget::UNBOUNDED,
+    )?;
+    let AppendOutcome::Committed(later) = later.outcome else {
+        return Err("actual Memory authority did not advance".into());
+    };
+    let decoded = crate::kernel::decode_historical_generation_evidence(
+        &evidence, authority_id, &original, 64 * 1024, proof.object_count,
+    )?;
+    assert_eq!(decoded.append, append);
+    assert_eq!(decoded.root, proof.root);
+    assert_eq!(decoded.manifest.objects, proof.objects);
+    assert_eq!(decoded.logical_file_bytes, proof.logical_file_bytes);
+    assert!(matches!(
+        crate::kernel::decode_historical_generation_evidence(
+            &evidence, authority_id, &later, 64 * 1024, proof.object_count,
+        ),
+        Err(PublicationEvidenceError::Mismatch)
+    ));
+    for altered in [
+        DurableCommit { operation_id: later.operation_id, ..original.clone() },
+        DurableCommit { fingerprint: Digest::from_bytes([104; 32]), ..original.clone() },
+        DurableCommit { payload: Bytes::from_static(b"altered"), ..original.clone() },
+        DurableCommit { epoch: Epoch::new(2)?, ..original.clone() },
+        DurableCommit { sequence: later.sequence, ..original.clone() },
+        DurableCommit { previous_digest: later.digest, ..original.clone() },
+        DurableCommit { digest: later.digest, ..original.clone() },
+    ] {
+        assert!(matches!(
+            crate::kernel::decode_historical_generation_evidence(
+                &evidence, authority_id, &altered, 64 * 1024, proof.object_count,
+            ),
+            Err(PublicationEvidenceError::Mismatch)
+        ));
+    }
+    assert!(matches!(
+        crate::kernel::decode_historical_generation_evidence(
+            &evidence, AuthorityId::from_bytes([105; 16]), &original, 64 * 1024, proof.object_count,
+        ),
+        Err(PublicationEvidenceError::Mismatch)
+    ));
     Ok(())
 }
