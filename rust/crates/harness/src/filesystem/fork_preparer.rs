@@ -14,7 +14,8 @@ use crate::{
         ForkSeed, ForkSelection, InheritedConversationPrefix, PreparedForkHistory,
         PreparedSummaryFork, ReferenceGrant, ResourceRevision, SharedGrant,
     },
-    resources::{ProviderRef, WorkspaceRef},
+    resource_preparation::{ResourceCreationOrigin, TaskResourcePreparation},
+    resources::{ProviderRef, ResourceRef, WorkspaceRef},
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
@@ -31,6 +32,7 @@ const MAX_CAPTURE_BYTES: u64 = u64::MAX;
 struct AllocationClaim {
     operation_id: OperationId,
     preparation_digest: [u8; 32],
+    task_origin: Option<ResourceCreationOrigin>,
     parent: Authority,
     child: Authority,
     volume: VolumeRef,
@@ -71,6 +73,7 @@ pub struct FilesystemForkPreparer<A, O> {
     capture_providers: Vec<Arc<dyn ForkCaptureProvider>>,
     summary: Option<BoundSummary>,
     history: Option<PreparedForkHistory>,
+    task_preparation: Option<Arc<TaskResourcePreparation>>,
 }
 
 struct BoundSummary {
@@ -112,6 +115,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
             capture_providers: Vec::new(),
             summary: None,
             history: None,
+            task_preparation: None,
         })
     }
 
@@ -147,6 +151,24 @@ impl<A, O> FilesystemForkPreparer<A, O> {
         Ok(self)
     }
 
+    /// Pins an authenticated ordinary preparation task to this provider.
+    /// The existing allocation records retain its origin; raw trusted
+    /// preparation records cannot substitute for task-bound creation evidence.
+    pub fn with_task_preparation(
+        mut self,
+        preparation: Arc<TaskResourcePreparation>,
+    ) -> Result<Self> {
+        if preparation.request().provider != self.host.provider
+            || preparation.request().creation_grant != capability::FORK_PUBLISH
+        {
+            return Err(Error::Unauthorized(
+                "fork preparation task belongs to another provider or creation authority".into(),
+            ));
+        }
+        self.task_preparation = Some(preparation);
+        Ok(self)
+    }
+
     /// Registers an exact provider-owned resource capture. A provider may be
     /// bound once; unsupported selections remain explicit in the report.
     pub fn with_capture_provider(mut self, provider: Arc<dyn ForkCaptureProvider>) -> Result<Self> {
@@ -166,8 +188,93 @@ impl<A, O> FilesystemForkPreparer<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
+    /// Exact created identities for this provider's fork request, without IO.
+    pub fn creation_resources(&self, request: &ForkRequest) -> Result<Vec<ResourceRef>> {
+        request.validate()?;
+        [
+            &request.preparation.child_private_volume,
+            &request.preparation.child_project_volume,
+        ]
+        .into_iter()
+        .map(|volume| {
+            if volume.provider() != &self.host.provider {
+                return Err(Error::Invalid(
+                    "fork resource belongs to another provider".into(),
+                ));
+            }
+            Ok(
+                workspace_ref(self.host.provider.clone(), &volume.storage_name()?)?
+                    .as_resource()
+                    .clone(),
+            )
+        })
+        .collect()
+    }
+
+    fn validate_task_request(&self, request: &ForkRequest) -> Result<()> {
+        if let Some(preparation) = &self.task_preparation {
+            let bound = preparation.request();
+            let payload =
+                serde_json::to_value(request).map_err(|error| Error::Invalid(error.to_string()))?;
+            if bound.payload != payload || bound.resources != self.creation_resources(request)? {
+                return Err(Error::Unauthorized(
+                    "fork request or resources differ from the admitted preparation".into(),
+                ));
+            }
+            crate::contract::validate_json_byte_bound(request, bound.maximum_bytes)?;
+        }
+        Ok(())
+    }
+
+    async fn verify_task_lease(&self, settlement: bool) -> Result<()> {
+        if let Some(preparation) = &self.task_preparation {
+            if settlement {
+                preparation.verify_reconciliation().await?;
+            } else {
+                preparation.verify_creation().await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn verify_task_allocations(&self, request: &ForkRequest) -> Result<()> {
+        let Some(preparation) = &self.task_preparation else {
+            return Ok(());
+        };
+        let digest = *blake3::hash(&encode_record(request, MAX_REQUEST_BYTES)?).as_bytes();
+        for volume in [
+            &request.preparation.child_private_volume,
+            &request.preparation.child_project_volume,
+        ] {
+            let journal = allocation_ref(self.host.provider.clone(), volume)?;
+            let retained = read_record::<A, O, AllocationClaim>(
+                &self.host,
+                &journal,
+                "/claim.json",
+                preparation.request().maximum_bytes,
+            )
+            .await?
+            .ok_or_else(|| Error::Unauthorized("task-bound allocation is missing".into()))?;
+            let expected = AllocationClaim {
+                operation_id: request.operation_id,
+                preparation_digest: digest,
+                task_origin: Some(preparation.origin().clone()),
+                parent: request.parent.clone(),
+                child: request.child.clone(),
+                volume: volume.clone(),
+            };
+            if !same_allocation_claim(&retained, &expected) {
+                return Err(Error::Unauthorized(
+                    "allocation belongs to another preparation task".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn authorize_request(&self, request: &ForkRequest) -> Result<()> {
         request.validate()?;
+        self.validate_task_request(request)?;
         if request.parent != *self.parent.authority()
             || request.preparation.child_project_volume.provider() != &self.host.provider
         {
@@ -539,8 +646,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
     )]
     async fn prepare_inner(&self, request: ForkRequest) -> Result<ForkReport> {
         self.check_request(&request)?;
+        self.verify_task_lease(false).await?;
         let journal = self.claim(&request).await?;
         if let Some(report) = self.read_report(&journal, &request).await? {
+            self.verify_task_allocations(&request).await?;
             return Ok(report);
         }
         let source_generation = request
@@ -557,10 +666,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
             &request.preparation.child_private_volume,
             &request.preparation.child_project_volume,
         ] {
+            self.verify_task_lease(false).await?;
             self.host
                 .claim_fork_allocation(AllocationClaim {
                     operation_id: request.operation_id,
                     preparation_digest: *request_digest.as_bytes(),
+                    task_origin: self
+                        .task_preparation
+                        .as_ref()
+                        .map(|task| task.origin().clone()),
                     parent: request.parent.clone(),
                     child: request.child.clone(),
                     volume: volume.clone(),
@@ -588,6 +702,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
             "fork:{}:{request_digest}:scratch",
             request.operation_id
         ))?;
+        self.verify_task_lease(false).await?;
         let private_observation = self
             .host
             .fork_volume_pinned(
@@ -609,6 +724,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
             "fork:{}:{request_digest}:project",
             request.operation_id
         ))?;
+        self.verify_task_lease(false).await?;
         let child_project = controller
             .fork_project(
                 source_generation,
@@ -736,6 +852,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         let mut captures = Vec::with_capacity(request.selections.len());
         let mut shared_grants = Vec::new();
         for (index, selection) in request.selections.iter().enumerate() {
+            self.verify_task_lease(false).await?;
             let capture = match &selection.revision {
                 ResourceRevision::History(_) => Capture::Captured(CapturedResource {
                     source: selection.revision.clone(),
@@ -800,6 +917,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
                                 .start_capture(&journal, &request, index, selection)
                                 .await?;
                             let captured = if fresh {
+                                self.verify_task_lease(false).await?;
                                 provider.capture(&request, selection).await?
                             } else {
                                 provider
@@ -844,6 +962,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
                     !selection.required || matches!(capture, Capture::Captured(_))
                 });
         if required_captures_ready {
+            self.verify_task_lease(false).await?;
             let mut seed = report.clone().into_seed()?;
             if let Some(history) = &self.history {
                 self.parent.attest_fork_history(&mut seed, history.conversation())?;
@@ -851,6 +970,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
             }
             self.host.bind_fork_seed(&seed).await?;
         }
+        self.verify_task_lease(false).await?;
         self.commit_report(&journal, &report).await
     }
 }
@@ -956,6 +1076,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             self.claim_fork_allocation(AllocationClaim {
                 operation_id: seed.operation_id,
                 preparation_digest: digest,
+                task_origin: None,
                 parent: seed.parent.clone(),
                 child: seed.child.clone(),
                 volume: volume.clone(),
@@ -1073,7 +1194,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .await
             .map_err(map_error)?;
         match read_record::<A, O, AllocationClaim>(self, &journal, "/claim.json", u64::MAX).await? {
-            Some(prior) if prior == claim => return Ok(()),
+            Some(prior) if same_allocation_claim(&prior, &claim) => return Ok(()),
             Some(_) => {
                 return Err(Error::Conflict(
                     "fork child volume is already allocated".into(),
@@ -1099,13 +1220,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             Err(error) => return Err(error),
         }
         match read_record::<A, O, AllocationClaim>(self, &journal, "/claim.json", u64::MAX).await? {
-            Some(prior) if prior == claim => Ok(()),
+            Some(prior) if same_allocation_claim(&prior, &claim) => Ok(()),
             Some(_) => Err(Error::Conflict(
                 "fork child volume is already allocated".into(),
             )),
             None => Err(Error::Indeterminate(claim.operation_id)),
         }
     }
+}
+
+fn same_allocation_claim(retained: &AllocationClaim, requested: &AllocationClaim) -> bool {
+    let mut expected = requested.clone();
+    if let (Some(prior), Some(current)) = (&retained.task_origin, &mut expected.task_origin) {
+        // A legitimate recovery owns a new current reservation. Keep the first
+        // creation fence in the protected record; compare all other bindings.
+        current.creation_fence = prior.creation_fence.clone();
+    }
+    retained == &expected
 }
 
 fn allocation_ref(provider: ProviderRef, volume: &VolumeRef) -> Result<WorkspaceRef> {
@@ -1152,6 +1283,7 @@ where
     fn reconcile<'a>(&'a self, request: ForkRequest) -> BoxFuture<'a, Result<Option<ForkReport>>> {
         Box::pin(async move {
             self.authorize_request(&request)?;
+            self.verify_task_lease(true).await?;
             let journal = self.journal_ref(&request)?;
             match self.host.resolve(&journal).await {
                 Ok(_) => {}
@@ -1161,7 +1293,11 @@ where
             if !self.read_claim(&journal, &request).await? {
                 return Ok(None);
             }
-            self.read_report(&journal, &request).await
+            let report = self.read_report(&journal, &request).await?;
+            if report.is_some() {
+                self.verify_task_allocations(&request).await?;
+            }
+            Ok(report)
         })
     }
 }
@@ -1188,5 +1324,99 @@ async fn read_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T: Deserialize
             .map_err(|error| Error::Invalid(format!("fork journal record is invalid: {error}"))),
         Err(Error::NotFound(_)) => Ok(None),
         Err(error) => Err(error),
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod task_origin_tests {
+    use super::*;
+    use crate::conversation::{VolumeClass, VolumeOwner};
+    use crate::core::AggregateKind;
+    use crate::{AgentId, TaskId};
+
+    #[tokio::test]
+    async fn allocation_retains_creation_fence_and_rejects_foreign_task_origins() -> Result<()> {
+        let provider = ProviderRef::new("task-origin-test", "filesystem", "2")?;
+        let host = FilesystemHost::new(acyclic_fs::Fs::memory(), provider.clone())?;
+        let parent = Authority {
+            kind: AggregateKind::Task,
+            id: "parent".into(),
+        };
+        let child = Authority {
+            kind: AggregateKind::Task,
+            id: "child".into(),
+        };
+        let volume = VolumeRef::new(
+            provider,
+            "child",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(AgentId::from_bytes([71; 16])),
+        )?;
+        let origin = ResourceCreationOrigin {
+            owner: parent.clone(),
+            parent_task: TaskId::from_bytes([72; 16]),
+            preparation_task: TaskId::from_bytes([73; 16]),
+            intended_child: OperationId::from_bytes([74; 16]),
+            admission_digest: [75; 32],
+            request_digest: [76; 32],
+            creation_fence: crate::scheduler::LeaseFence {
+                reservation_id: "original".into(),
+                placement: "first-worker".into(),
+            },
+        };
+        let claim = AllocationClaim {
+            operation_id: OperationId::from_bytes([77; 16]),
+            preparation_digest: [78; 32],
+            task_origin: Some(origin),
+            parent,
+            child,
+            volume: volume.clone(),
+        };
+        host.claim_fork_allocation(claim.clone()).await?;
+        let mut recovery = claim.clone();
+        if let Some(origin) = &mut recovery.task_origin {
+            origin.creation_fence = crate::scheduler::LeaseFence {
+                reservation_id: "recovered".into(),
+                placement: "later-worker".into(),
+            };
+        }
+        host.claim_fork_allocation(recovery).await?;
+        let journal = allocation_ref(host.provider.clone(), &volume)?;
+        let retained = read_record::<_, _, AllocationClaim>(&host, &journal, "/claim.json", 65_536)
+            .await?
+            .ok_or_else(|| Error::NotFound("retained allocation".into()))?;
+        assert_eq!(retained, claim);
+        for field in 0..6 {
+            let mut changed = claim.clone();
+            let origin = changed
+                .task_origin
+                .as_mut()
+                .ok_or_else(|| Error::NotFound("test task origin".into()))?;
+            match field {
+                0 => origin.owner.id = "foreign".into(),
+                1 => origin.parent_task = TaskId::from_bytes([79; 16]),
+                2 => origin.preparation_task = TaskId::from_bytes([80; 16]),
+                3 => origin.intended_child = OperationId::from_bytes([81; 16]),
+                4 => origin.admission_digest = [82; 32],
+                _ => origin.request_digest = [83; 32],
+            }
+            assert!(matches!(
+                host.claim_fork_allocation(changed).await,
+                Err(Error::Conflict(_))
+            ));
+        }
+        let mut raw = claim.clone();
+        raw.task_origin = None;
+        assert!(matches!(
+            host.claim_fork_allocation(raw).await,
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(
+            read_record::<_, _, AllocationClaim>(&host, &journal, "/claim.json", 65_536)
+                .await?
+                .ok_or_else(|| Error::NotFound("retained allocation".into()))?,
+            claim
+        );
+        Ok(())
     }
 }
