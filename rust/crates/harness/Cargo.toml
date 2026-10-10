@@ -49,7 +49,7 @@ wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsif
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 # Provider adapters. Each pulls only its own SDK family.
 filesystem = ["dep:acyclic-fs", "acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
-filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local"]
+filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local", "dep:acyclic-native-runtime"]
 # Explicit native host composition; portable defaults never select it.
 native-execution = ["filesystem", "acyclic-fs/native-mount", "dep:acyclic-native-runtime"]
 # Optional native HTTP I/O. Browser hosts implement the same portable boundary.

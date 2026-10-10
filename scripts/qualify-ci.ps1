@@ -158,3 +158,12 @@ bun run --filter '@acyclic-labs/fs' test:composition
 Complete-Background $clippy
 Complete-Background $napi
 Complete-Background $arm64
+# The installed host creates the real local provider scenario; pipes here are
+# process E2E evidence, not a claim that an interactive PTY was exercised.
+$GraphcoderInstall = Join-Path $env:SDK_TEMP_DIR 'graphcoder-installed'
+$GraphcoderScenario = Join-Path $env:SDK_TEMP_DIR ("graphcoder-" + [Guid]::NewGuid().ToString('N'))
+cargo install --path rust/crates/harness --locked `
+    --features terminal,filesystem-local,native-execution --bin graphcoder `
+    --root $GraphcoderInstall --target-dir "$CargoTargetDir-release"
+node scripts/test-graphcoder.mjs (Join-Path $GraphcoderInstall 'bin/graphcoder.exe') `
+    --full $GraphcoderScenario

@@ -142,6 +142,18 @@ fork_join_conformance() {
     --ignored --test-threads=1 --skip support::
 }
 
+# Exercise the installed native host against its real local providers, not a
+# test-only coordinator. The script records binary, suite and scenario evidence.
+installed_graphcoder() {
+  local install_root="$SDK_TEMP_DIR/graphcoder-installed" scenario_parent
+  scenario_parent="$(mktemp -d "$SDK_TEMP_DIR/graphcoder.XXXXXXXX")"
+  cargo install --path rust/crates/harness --locked \
+    --features terminal,filesystem-local,native-execution --bin graphcoder \
+    --root "$install_root" --target-dir "$target_dir-release"
+  node scripts/test-graphcoder.mjs "$install_root/bin/graphcoder" \
+    --full "$scenario_parent/scenario"
+}
+
 case "$lane" in
   gate)
     # These crates have independent workspaces and are absent from the root.
@@ -284,6 +296,7 @@ case "$lane" in
     bash scripts/check-inference-package.sh "$SDK_ARTIFACT_DIR/packages/inference"
     bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"
     finish napi
+    installed_graphcoder
     stream_binding
     client_bindings
     bun run test
@@ -456,6 +469,7 @@ case "$lane" in
     nextest --workspace --all-features --locked
     cargo test --workspace --all-features --locked --doc
     finish napi x86_64
+    installed_graphcoder
     stream_binding
     client_bindings
     native_mount_tests
