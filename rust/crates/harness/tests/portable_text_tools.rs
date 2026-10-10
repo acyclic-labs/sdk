@@ -796,3 +796,128 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
     assert_eq!(host.resolve(&workspace).await?.generation, head);
     Ok(())
 }
+
+fn content_work_budget() -> acyclic_fs::WorkBudget {
+    acyclic_fs::WorkBudget {
+        authority_records_read: 100_000, authority_records_appended: 100_000,
+        authority_bytes_read: 16_000_000, authority_bytes_written: 16_000_000,
+        object_probes: 100_000, backend_read_operations: 100_000, backend_write_operations: 100_000,
+        durability_operations: 100_000, page_reads: 100_000, page_writes: 100_000,
+        object_bytes_read: 16_000_000, object_bytes_written: 16_000_000,
+        bytes_hashed: 16_000_000, bytes_copied: 16_000_000, bytes_encoded: 16_000_000,
+        source_bytes_read: 16_000_000, source_path_components: 100_000, source_entries_visited: 100_000,
+        output_bytes: 16_000_000, items_examined: 100_000, items_returned: 100_000,
+        allocation_operations: 100_000, peak_allocation_bytes: 16_000_000, materializations: 100_000,
+    }
+}
+
+#[cfg(feature = "filesystem-local")]
+#[tokio::test]
+#[allow(clippy::too_many_lines, reason = "production-backed lost delivery, reopen, immutable retry and adversarial bounds")]
+async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost_ack() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let options = acyclic_fs::LocalOptions::new(directory.path().join("bounded-content"));
+    let provider = ProviderRef::new("bounded-content", "filesystem", "1")?;
+    let owner = AgentId::from_bytes([91; 16]);
+    let volume = VolumeRef::new(provider.clone(), "content", VolumeClass::AgentPrivate, VolumeOwner::Agent(owner))?;
+    let issuer = AuthorityIssuer::new("bounded-content", [92; 32], Authority {
+        kind: AggregateKind::Conversation, id: "bounded-content".into(),
+    });
+    let scope = issuer.root_for_agent(owner, "owner", Capabilities::new([
+        volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?,
+    ]));
+    let read = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Read)?;
+    let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
+    let key = IdempotencyKey::new("original-content")?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    {
+        let fs = Fs::local(options.clone()).await.map_err(|error| Error::Storage(error.to_string()))?;
+        let host = FilesystemHost::new(fs, provider.clone())?;
+        host.create_volume(&volume).await?;
+        // Inject the acknowledgement fault only after the actual durable
+        // publication/readback boundary. No result ref reaches the consumer.
+        let delivered = host.put_content_measured(&volume, &write, "result.json", b"original",
+            "application/json", "original.json", 64, &key, content_work_budget(), &cancellation)
+            .await.map_err(|failure| failure.error)
+            .and_then(|_| Err::<(), _>(Error::Storage("lost content acknowledgement".into())));
+        assert!(delivered.is_err());
+        host.put_content_measured(&volume, &write, "result.json", b"later", "text/plain",
+            "later.txt", 64, &IdempotencyKey::new("later-content")?, content_work_budget(), &cancellation)
+            .await.map_err(|failure| failure.error)?;
+    }
+    let fs = Fs::local(options).await.map_err(|error| Error::Storage(error.to_string()))?;
+    let host = FilesystemHost::new(fs, provider.clone())?;
+    let recovered = host.content_for_operation_measured(&volume, &write, &key, "result.json", 64,
+        content_work_budget(), &cancellation).await.map_err(|failure| failure.error)?;
+    recovered.work.verify(content_work_budget()).map_err(|error| Error::Invalid(error.to_string()))?;
+    let original = recovered.value.ok_or_else(|| Error::Storage("committed original upload was absent".into()))?;
+    assert_eq!(original.display_name(), "original.json");
+    assert_eq!(original.descriptor().media_type(), "application/json");
+    assert_eq!(host.read_content_measured(&original, &read, 64, content_work_budget(), &cancellation)
+        .await.map_err(|failure| failure.error)?.value, b"original");
+    assert_eq!(host.put_content_measured(&volume, &write, "result.json", b"original", "application/json",
+        "original.json", 64, &key, content_work_budget(), &cancellation)
+        .await.map_err(|failure| failure.error)?.value, original);
+    for (path, media, display, bytes) in [
+        ("changed.json", "application/json", "original.json", b"original".as_slice()),
+        ("result.json", "text/plain", "original.json", b"original".as_slice()),
+        ("result.json", "application/json", "changed.json", b"original".as_slice()),
+        ("result.json", "application/json", "original.json", b"changed".as_slice()),
+    ] {
+        assert!(host.put_content_measured(&volume, &write, path, bytes, media, display, 64,
+            &key, content_work_budget(), &cancellation).await.is_err());
+    }
+    let missing = host.content_for_operation_measured(&volume, &write, &IdempotencyKey::new("never-uploaded")?,
+        "result.json", 64, content_work_budget(), &cancellation).await.map_err(|failure| failure.error)?;
+    assert_eq!(missing.value, None);
+    assert!(host.content_for_operation_measured(&volume, &write, &key, "changed.json", 64,
+        content_work_budget(), &cancellation).await.is_err());
+    assert!(host.read_content_measured(&original, &read, 1, content_work_budget(), &cancellation).await.is_err());
+    let cancelled = acyclic_fs::CancellationToken::new();
+    cancelled.cancel();
+    let failed = host.put_content_measured(&volume, &write, "cancelled", b"never", "text/plain", "never",
+        64, &IdempotencyKey::new("cancelled-content")?, content_work_budget(), &cancelled).await.unwrap_err();
+    assert_eq!(*failed.work, acyclic_fs::WorkCounters::default());
+    let mut denied = content_work_budget();
+    denied.peak_allocation_bytes = 0;
+    let failed = host.put_content_measured(&volume, &write, "denied", b"never", "text/plain", "never", 64,
+        &IdempotencyKey::new("denied-content")?, denied, &cancellation).await.unwrap_err();
+    assert_eq!(failed.work.backend_write_operations, 0);
+    assert_eq!(host.content_for_operation_measured(&volume, &write, &IdempotencyKey::new("denied-content")?,
+        "denied", 64, content_work_budget(), &cancellation).await.map_err(|failure| failure.error)?.value, None);
+    let workspace = acyclic_harness::filesystem::workspace_ref(provider, &volume.storage_name()?)?;
+    assert_eq!(host.read(&workspace, None, "/result.json", 64).await?.as_ref(), b"later");
+    Ok(())
+}
+
+#[tokio::test]
+async fn measured_content_read_accepts_exact_receipt_budget_and_preserves_quota_failure_prefix() -> Result<()> {
+    let provider = ProviderRef::new("exact-content", "filesystem", "1")?;
+    let owner = AgentId::from_bytes([93; 16]);
+    let volume = VolumeRef::new(provider.clone(), "exact", VolumeClass::AgentPrivate, VolumeOwner::Agent(owner))?;
+    let issuer = AuthorityIssuer::new("exact-content", [94; 32], Authority {
+        kind: AggregateKind::Conversation, id: "exact-content".into(),
+    });
+    let scope = issuer.root_for_agent(owner, "owner", Capabilities::new([
+        volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?,
+    ]));
+    let read = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Read)?;
+    let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
+    let host = FilesystemHost::new(Fs::memory(), provider)?;
+    host.create_volume(&volume).await?;
+    let cancel = acyclic_fs::CancellationToken::new();
+    let file = host.put_content_measured(&volume, &write, "exact", b"exact", "text/plain", "exact",
+        64, &IdempotencyKey::new("exact")?, content_work_budget(), &cancel).await.map_err(|failure| failure.error)?.value;
+    let warm = host.read_content_measured(&file, &read, 64, content_work_budget(), &cancel)
+        .await.map_err(|failure| failure.error)?;
+    let exact = host.read_content_measured(&file, &read, 64, warm.work, &cancel)
+        .await.map_err(|failure| failure.error)?;
+    assert_eq!(exact.value, b"exact");
+    exact.work.verify(warm.work).map_err(|error| Error::Invalid(error.to_string()))?;
+    let mut short = warm.work;
+    short.bytes_copied = 0;
+    let failure = host.read_content_measured(&file, &read, 64, short, &cancel).await.unwrap_err();
+    assert!(failure.work.backend_read_operations > 0 || failure.work.items_examined > 0);
+    assert!(host.read_content_measured(&file, &write, 64, content_work_budget(), &cancel).await.is_err());
+    Ok(())
+}

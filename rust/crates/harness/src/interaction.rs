@@ -97,11 +97,17 @@ impl InteractionTicket {
         let request: Interaction = crate::contract::json_from_slice(bytes).map_err(|error| {
             Error::Invalid(format!("invalid interaction request JSON: {error}"))
         })?;
+        self.validate_decoded_request(&request)?;
+        Ok(request)
+    }
+
+    pub(crate) fn validate_decoded_request(&self, request: &Interaction) -> Result<()> {
+        self.validate()?;
         request.validate()?;
         if request.kind() != self.kind {
             return Err(Error::Invalid("interaction request kind mismatch".into()));
         }
-        match (&request, &self.approval) {
+        match (request, &self.approval) {
             (
                 Interaction::Approval {
                     operation_id,
@@ -121,7 +127,7 @@ impl InteractionTicket {
                 ));
             }
         }
-        Ok(request)
+        Ok(())
     }
 
     /// Provider admission verifies a version-pinned answer against the exact request.
@@ -166,7 +172,16 @@ impl InteractionTicket {
         detail.descriptor().verify(bytes)?;
         let response: InteractionResponse = crate::contract::json_from_slice(bytes)
             .map_err(|error| Error::Invalid(format!("invalid approval decision JSON: {error}")))?;
-        request.validate_response(&response)?;
+        self.validate_decoded_decision(request, outcome, &response)
+    }
+
+    pub(crate) fn validate_decoded_decision(
+        &self, request: &Interaction, outcome: &InteractionOutcome, response: &InteractionResponse,
+    ) -> Result<()> {
+        if self.kind != InteractionKind::Approval {
+            return Err(Error::Invalid("approval decision artifact is invalid".into()));
+        }
+        request.validate_response(response)?;
         match (outcome, response) {
             (
                 InteractionOutcome::Approved,

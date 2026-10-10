@@ -1021,17 +1021,12 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         A: AsyncAuthorityStore + 'static,
         O: AsyncObjectStore + 'static,
     {
-        self.verifier.verify(responder)?;
-        if !responder
-            .capabilities()
-            .contains(capability::INTERACTION_RESOLVE)
-            || !responder
-                .capabilities()
-                .contains(&capability::interaction_respond(id))
-        {
-            return Err(Error::Unauthorized(
-                "responder lacks the exact interaction grant".into(),
-            ));
+        // Reply scopes belong to the actual conversation owner, not the
+        // execution's Task aggregate verifier. Keep its exact ticket grant.
+        self.interactions()?.verify_responder_scope(id, responder)?;
+        if let Some((owner, _)) = &self.owner {
+            owner.require_interaction_grant()?;
+            owner.verify(true).await?;
         }
         let Some((ticket, prior)) = self.interactions()?.read(id).await? else {
             return Err(Error::NotFound(format!("interaction {id}")));
@@ -1093,6 +1088,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         })?;
         let resolution_operation =
             interaction_operation(id, &format!("resolve-{expected_version}"));
+        if let Some((owner, _)) = &self.owner { owner.verify(true).await?; }
         let detail = if matches!(&response, InteractionResponse::Approval { .. }) {
             Some(
                 self.interactions()?
@@ -1115,7 +1111,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 ),
             },
         };
-        self.interactions()?
+        let result = self.interactions()?
             .resolve(
                 resolution_operation,
                 responder.clone(),
@@ -1127,7 +1123,10 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 },
             )
             .await
-            .map(|_| ())
+            .map(|_| ());
+        result?;
+        if let Some((owner, _)) = &self.owner { owner.verify(true).await?; }
+        Ok(())
     }
 
     /// Shares the existing authoritative reducer between turn admission and
@@ -1338,36 +1337,29 @@ where
         digest: [u8; 32],
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            let Some((ticket, Some(resolution))) = self.interactions()?.read(id).await? else {
-                return Err(Error::Unauthorized(
-                    "tool installation lacks a resolved approval".into(),
-                ));
-            };
-            if !matches!(&resolution.outcome, InteractionOutcome::Approved)
-                || !ticket.approval.as_ref().is_some_and(|binding| {
-                    binding.operation_id == operation && binding.action_digest == digest
-                })
-            {
-                return Err(Error::Unauthorized(
-                    "approval does not authorize this tool definition".into(),
-                ));
+            self.interactions()?.verify_approval(id, operation, digest, None).await
+        })
+    }
+
+    fn verify_measured<'a>(
+        &'a self, id: InteractionId, operation: OperationId, digest: [u8; 32],
+        budget: acyclic_fs::WorkBudget, cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>> {
+        Box::pin(async move {
+            let io = super::fork_preparer_io::PreparationIo::from_budget(budget, cancellation)
+                .map_err(|error| acyclic_fs::OperationFailure::new(error, Default::default()))?;
+            let result = async {
+                if let Some((owner, _)) = &self.owner {
+                    io.receive_content(owner.require_interaction_grant_measured(io.remaining()?, cancellation))?;
+                }
+                self.interactions()?.verify_approval(id, operation, digest, Some(&io)).await?;
+                io.remaining()?;
+                Ok(())
+            }.await;
+            match result {
+                Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
+                Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
             }
-            let request = self
-                .interactions()?
-                .read_request(id)
-                .await?
-                .ok_or_else(|| Error::Storage("approved interaction request is missing".into()))?;
-            if let Some(detail) = &resolution.detail {
-                let bytes = self
-                    .interactions()?
-                    .read_decision_detail(id)
-                    .await?
-                    .ok_or_else(|| {
-                        Error::Storage("approved interaction decision is missing".into())
-                    })?;
-                ticket.validate_decision_bytes(&request, &resolution.outcome, detail, &bytes)?;
-            }
-            Ok(())
         })
     }
 }
@@ -1493,6 +1485,41 @@ where
                 .await?;
             crate::obs::obs_record!("bytes" = bytes.len());
             Ok(bytes.to_vec())
+        })
+    }
+
+    fn load_measured<'a>(
+        &'a self, reference: &'a FileRef, budget: acyclic_fs::WorkBudget,
+        cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<u8>>, Error>> {
+        Box::pin(async move {
+            let io = super::PreparationIo::from_budget(budget, cancellation)
+                .map_err(acyclic_fs::OperationFailure::before_work)?;
+            let result = async {
+                reference.validate()?;
+                if reference.volume() != &self.volume {
+                    return Err(Error::Unauthorized("journal content belongs to another private volume".into()));
+                }
+                // The constructor verified this immutable private scope's
+                // read/write grants. Borrow it; do not mint a new grant or
+                // weaken the original journal volume/payload policy.
+                let capability = io.capability(&self.volume, "volume:read:")?;
+                if !self.scope.capabilities().contains(&capability) {
+                    return Err(Error::Unauthorized("volume operation is not granted".into()));
+                }
+                let bytes = self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(&io)).await?;
+                io.claim(bytes.len() as u64)?;
+                let copied = acyclic_fs::WorkCounters { bytes_copied: bytes.len() as u64, ..Default::default() };
+                io.preflight(copied)?;
+                io.allocation_attempt(bytes.len() as u64)?;
+                let output = bytes.to_vec();
+                io.charge(copied)?;
+                Ok(output)
+            }.await;
+            match result {
+                Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
+                Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
+            }
         })
     }
 

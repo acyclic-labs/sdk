@@ -431,6 +431,62 @@ impl AuthorityVerifier {
         Ok(())
     }
 
+    /// Authenticates the same borrowed binary Scope proof under finite work.
+    /// Signed caller-owned authority is not cloned or serialized.
+    #[cfg(feature = "filesystem")]
+    pub fn verify_measured(
+        &self, scope: &Scope, budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
+        let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
+            .map_err(acyclic_fs::OperationFailure::before_work)?;
+        let result = (|| {
+            let header = acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() };
+            io.preflight(header)?;
+            io.charge(header)?;
+            // Binary wire: kind, three length prefixes, agent/parent tags,
+            // borrowed audience/issuer/id bytes, and optional fixed identities.
+            let mut bytes = 27_u64.checked_add(self.audience.id.len() as u64)
+                .and_then(|bytes| bytes.checked_add(scope.issuer.len() as u64))
+                .and_then(|bytes| bytes.checked_add(scope.id.len() as u64))
+                .and_then(|bytes| bytes.checked_add(if scope.agent.is_some() { 16 } else { 0 }))
+                .and_then(|bytes| bytes.checked_add(if scope.parent_proof.is_some() { 32 } else { 0 }))
+                .ok_or_else(|| Error::Invalid("scope proof work overflow".into()))?;
+            let mut count = 0_u64;
+            for capability in scope.capabilities.iter() {
+                let item = acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() };
+                io.preflight(item)?;
+                bytes = bytes.checked_add(8).and_then(|bytes| bytes.checked_add(capability.len() as u64))
+                    .ok_or_else(|| Error::Invalid("scope proof work overflow".into()))?;
+                count = count.checked_add(1).ok_or_else(|| Error::Invalid("scope proof count overflow".into()))?;
+                io.charge(item)?;
+            }
+            let proof = acyclic_fs::WorkCounters { bytes_hashed: bytes, items_examined: count + 1, ..Default::default() };
+            io.preflight(proof)?;
+            let verified = self.verify(scope);
+            io.charge(proof)?;
+            verified?;
+            io.remaining()?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => Ok(acyclic_fs::OperationReceipt { value: (), work: io.receipt() }),
+            Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
+        }
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn clone_for_preparation(&self, io: &crate::filesystem::PreparationIo) -> Result<Self> {
+        let bytes = (self.id.len() as u64).checked_add(self.audience.id.len() as u64)
+            .ok_or_else(|| Error::Invalid("verifier clone ownership overflow".into()))?;
+        io.claim(bytes)?;
+        let copy = acyclic_fs::WorkCounters { bytes_copied: bytes, ..Default::default() };
+        io.preflight(copy)?;
+        let verifier = self.clone();
+        io.charge(copy)?;
+        Ok(verifier)
+    }
+
     fn attest_event(&self, event: &Event) -> Result<[u8; 32]> {
         self.attest_event_with_work(event, &mut None)
     }
@@ -1273,7 +1329,9 @@ struct ExtensionBinding {
 /// Immutable-version registry for namespaced extension implementations and state schemas.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SchemaRegistry {
-    schemas: BTreeMap<(String, u32), ExtensionBinding>,
+    // Empty registries remain const-constructible without allocation. A map
+    // exists only after successful registration; clones share immutable data.
+    schemas: Option<Arc<BTreeMap<(String, u32), ExtensionBinding>>>,
 }
 
 impl SchemaRegistry {
@@ -1281,7 +1339,7 @@ impl SchemaRegistry {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            schemas: BTreeMap::new(),
+            schemas: None,
         }
     }
 
@@ -1377,7 +1435,7 @@ impl SchemaRegistry {
             configuration_schema,
         };
         let key = (name, version);
-        if let Some(existing) = self.schemas.get(&key) {
+        if let Some(existing) = self.schemas.as_deref().and_then(|schemas| schemas.get(&key)) {
             return if existing == &binding {
                 Ok(())
             } else {
@@ -1386,7 +1444,7 @@ impl SchemaRegistry {
                 ))
             };
         }
-        self.schemas.insert(key, binding);
+        Arc::make_mut(self.schemas.get_or_insert_with(|| Arc::new(BTreeMap::new()))).insert(key, binding);
         Ok(())
     }
 
@@ -1412,7 +1470,7 @@ impl SchemaRegistry {
             }
             let binding = self
                 .schemas
-                .get(&(extension.name.clone(), extension.version))
+                .as_deref().and_then(|schemas| schemas.get(&(extension.name.clone(), extension.version)))
                 .ok_or_else(|| {
                     Error::Unsupported(format!(
                         "missing extension dependency {}@{}",
@@ -1428,7 +1486,7 @@ impl SchemaRegistry {
         for (name, version) in chosen {
             let binding = self
                 .schemas
-                .get(&(name.clone(), version))
+                .as_deref().and_then(|schemas| schemas.get(&(name.clone(), version)))
                 .ok_or_else(|| Error::Storage("selected extension binding disappeared".into()))?;
             let extension = ExtensionDependency { name, version };
             for dependency in &binding.dependencies {
@@ -1472,7 +1530,7 @@ impl SchemaRegistry {
     ) -> Result<&ExtensionBinding> {
         let binding = self
             .schemas
-            .get(&(name.to_owned(), version))
+            .as_deref().and_then(|schemas| schemas.get(&(name.to_owned(), version)))
             .ok_or_else(|| {
                 Error::Unsupported(format!("extension implementation {name}@{version}"))
             })?;
@@ -3893,6 +3951,27 @@ resolve_interaction interaction_resolved interaction:resolve";
             }
         }
         assert_eq!(actual.join("\n"), PINNED);
+    }
+
+    #[test]
+    fn registry_clones_share_until_successful_mutation_and_preserve_const_empty() -> Result<()> {
+        const EMPTY: SchemaRegistry = SchemaRegistry::new();
+        assert_eq!(EMPTY, SchemaRegistry::default());
+        let schema = json!({"type":"object"});
+        let mut original = SchemaRegistry::new();
+        original.register("example.shared", 1, schema.clone(), [1; 32], ExtensionForkPolicy::Inherit)?;
+        let mut child = original.clone();
+        assert!(Arc::ptr_eq(original.schemas.as_ref().unwrap(), child.schemas.as_ref().unwrap()));
+        child.register("example.shared", 1, schema.clone(), [1; 32], ExtensionForkPolicy::Inherit)?;
+        assert!(Arc::ptr_eq(original.schemas.as_ref().unwrap(), child.schemas.as_ref().unwrap()));
+        assert!(child.register("example.shared", 1, schema.clone(), [2; 32], ExtensionForkPolicy::Inherit).is_err());
+        assert_eq!(child, original);
+        assert!(Arc::ptr_eq(original.schemas.as_ref().unwrap(), child.schemas.as_ref().unwrap()));
+        child.register("example.child", 1, schema, [3; 32], ExtensionForkPolicy::Reset)?;
+        assert!(!Arc::ptr_eq(original.schemas.as_ref().unwrap(), child.schemas.as_ref().unwrap()));
+        assert_eq!(original.schemas.as_ref().unwrap().len(), 1);
+        assert_eq!(child.schemas.as_ref().unwrap().len(), 2);
+        Ok(())
     }
 
     #[test]

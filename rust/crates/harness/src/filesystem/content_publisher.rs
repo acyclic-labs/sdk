@@ -1,4 +1,4 @@
-use super::FilesystemHost;
+use super::{FilesystemHost, PreparationIo, UploadRecord};
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
     conversation::{ContentGrant, ContentPublisher, FileRef, VolumeOperation, VolumeRef},
@@ -58,9 +58,65 @@ where
         display_name: &'a str,
     ) -> BoxProviderFuture<'a, Result<FileRef>> {
         Box::pin(async move {
-            let retry = IdempotencyKey::new(format!("filesystem-single-file:{operation_id}"))?;
+            let retry = once_key(operation_id, None)?;
             self.stage_with_retry(path, bytes, media_type, display_name, &retry)
                 .await
+        })
+    }
+
+    fn observe_staged_once<'a>(
+        &'a self, operation_id: OperationId, maximum_bytes: u64,
+    ) -> BoxProviderFuture<'a, Result<Option<FileRef>>> {
+        Box::pin(async move {
+            let retry = once_key(operation_id, None)?;
+            self.host.observe_content_publication(&self.volume, &self.grant, &retry,
+                maximum_bytes.min(self.maximum_bytes)).await
+        })
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "complete once-publication identity and finite caller budget")]
+    fn stage_once_measured<'a>(
+        &'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
+        media_type: &'a str, display_name: &'a str, budget: acyclic_fs::WorkBudget,
+        cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> BoxProviderFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<FileRef>, Error>> {
+        Box::pin(async move {
+            let io = PreparationIo::from_budget(budget, cancellation)
+                .map_err(acyclic_fs::OperationFailure::before_work)?;
+            let result = async {
+                let retry = once_key(operation_id, Some(&io))?;
+                let file = io.receive_content(self.host.put_content_measured(&self.volume, &self.grant,
+                    path, bytes, media_type, display_name, self.maximum_bytes, &retry,
+                    io.remaining()?, cancellation).await)?;
+                io.retain_owned(file.logical_owned_bytes()?)?;
+                Ok(file)
+            }.await;
+            match result {
+                Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
+                Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
+            }
+        })
+    }
+
+    fn observe_staged_once_measured<'a>(
+        &'a self, operation_id: OperationId, maximum_bytes: u64,
+        budget: acyclic_fs::WorkBudget, cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> BoxProviderFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Option<FileRef>>, Error>> {
+        Box::pin(async move {
+            let io = PreparationIo::from_budget(budget, cancellation)
+                .map_err(acyclic_fs::OperationFailure::before_work)?;
+            let result = async {
+                let retry = once_key(operation_id, Some(&io))?;
+                let file = io.receive_content(self.host.original_content_for_operation_measured(
+                    &self.volume, &self.grant, &retry, maximum_bytes.min(self.maximum_bytes),
+                    io.remaining()?, cancellation).await)?;
+                if let Some(file) = &file { io.retain_owned(file.logical_owned_bytes()?)?; }
+                Ok(file)
+            }.await;
+            match result {
+                Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
+                Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
+            }
         })
     }
 
@@ -140,4 +196,22 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             )
             .await
     }
+}
+
+fn once_key(operation: OperationId, io: Option<&PreparationIo>) -> Result<IdempotencyKey> {
+    // OperationId's canonical UUID Display has exactly 36 ASCII bytes.
+    let length = "filesystem-single-file:".len() + 36;
+    if let Some(io) = io {
+        io.claim(length as u64)?;
+        io.preflight(acyclic_fs::WorkCounters { bytes_encoded: length as u64, bytes_copied: length as u64, items_examined: 1, ..Default::default() })?;
+        io.allocation_attempt(length as u64)?;
+    }
+    use std::fmt::Write as _;
+    let mut key = String::with_capacity(length);
+    write!(&mut key, "filesystem-single-file:{operation}")
+        .map_err(|_| Error::Invalid("original publication identity encoding failed".into()))?;
+    if let Some(io) = io {
+        io.charge(acyclic_fs::WorkCounters { bytes_encoded: key.len() as u64, bytes_copied: key.len() as u64, items_examined: 1, ..Default::default() })?;
+    }
+    IdempotencyKey::new(key)
 }

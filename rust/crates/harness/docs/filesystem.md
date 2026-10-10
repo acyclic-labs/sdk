@@ -35,6 +35,56 @@ An owner can share one pinned private file or a segment-bounded private director
 
 Use `put_content` to stage message text and attachments before appending a conversation event. Bind `FilesystemContentVerifier` to the Stream aggregate so admission checks every exact file version and refuses dangling references. Large ordered attachment lists can be staged with `put_attachment_manifest`; admission resolves the complete manifest, validates its count and canonical JSON, and verifies each member. The parent controller's `materialize_inherited_conversation` writes the selected bounded prefix into a reserved path of an empty child-private generation and returns exact read grants and attachment manifests for every child/attached reader; ordinary agent uploads cannot write there. Its canonical bytes bind both the authoritative parent messages and the attached-reader set, so changing either under the same staging key fails. The `ForkSeed` pins that private generation, and `FilesystemForkVerifier` checks that no file or directory outside the selected prefix was adopted before the fork event becomes visible. After a successful inspected join, use `merge_receipt` and bind `FilesystemProjectMergeVerifier` to the parent Stream aggregate: publication verifies the provider-owned join witness against the durable operation fingerprint, exact source/target generations, retry identity, and join ancestry, then appends the project-merge receipt and parent conversation notice atomically. The notice may be published after later project edits because it names immutable generations. No private volume or child history is merged.
 
+Content publication keeps the validated committed generation in provider-private
+custody until its retention pin is durable. The public receipt remains a
+descriptor-verified `FileRef`, not a new bearer proof or authority token.
+
+Finite producers use `put_content_measured`, `read_content_measured`, and
+`content_for_operation_measured` with one finite `WorkBudget` and cancellation
+token. Nested success and failure receipts consume the remaining allowance;
+failure retains the backend cause and spent-work prefix. Reconciliation reads
+the original operation's immutable generation, upload receipt and metadata.
+`None` proves that operation was absent, never that its path is absent at head.
+Changing path, bytes, media type, display name or expected generation cannot
+adopt an earlier upload identity. Historical refs remain pinned after head edits.
+
+The upload codec preserves the existing struct-ordered metadata bytes and
+sorted-key canonical receipt bytes. Its allowance covers logical owned
+strings, keys, container slots, encoded buffers and decoder scratch before
+growth; audited upload record decoders admit their concrete schema first.
+It excludes allocator-node overhead, global RSS and borrowed caller authority.
+Allocation-operation receipts include actual measured backend work and explicit
+upload/read byte-buffer allocation attempts, not fabricated per-JSON-node
+allocator counts. Codec bytes/items and logical retained-byte admission bound
+the other trusted serde/reference construction work. Conservative ownership
+reservations may remain live until this attempt ends; they are not an exact
+measurement of opaque allocator capacity.
+
+Trusted closed-record decoding acquires a scoped logical quota reservation in
+the same meter before Serde runs, then substitutes actual retained string/key
+capacities on success and releases the reservation on failure or cancellation.
+The peak counter includes that **actual logical reservation**, not measured
+heap/RSS or opaque allocator calls. Borrowed caller authority and shared,
+immutable schema configuration are not newly owned request memory; registry
+mutation retains ordinary copy-on-write value semantics.
+
+Finite content and approval providers opt into genuine measured capabilities.
+Custom providers without that engine return `Unsupported` before I/O; static
+composite routes select their real measured provider, without labeling a lazy
+unmeasured mount as finite. `stage_file_once_measured` and
+`observe_staged_file_once_measured` retain the original operation key and
+immutable upload metadata. A missing original operation proves only that no
+original commit was observed, not that an unresolved transport can never commit.
+
+`ToolApprovalVerifier::verify_measured` replays the same canonical interaction
+ledger and reads the original pinned approval request/decision with cumulative
+quota and cancellation. Returned replay state holds its conservative logical
+high-water allowance while artifacts are read, without claiming a concrete
+Reducer allocator footprint. Interaction replies authenticate against the
+actual conversation owner (including a child conversation), not the task's
+separate aggregate verifier; exact reply grants and original task-owner fences
+remain required.
+
 The raw Filesystem host and the `AuthorityIssuer`/verifier pair are trusted provider wiring, not reader inputs. Resolve an attached agent's signed scope against the owner's retained verifier; accepting a reader-supplied verifier would let that reader invent its own grants. The ref and its volume identity remain non-bearer even when the owner makes a directory lazily discoverable.
 
 `FsRootProjectSourceProvider::new(host, actual_service_owner, graph_root)` is an

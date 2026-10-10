@@ -4778,6 +4778,140 @@ impl TaskContext {
         .await
     }
 
+    /// Observes the original once-publication, never a refreshed source/head.
+    /// The reference itself grants no authority to read its bytes.
+    pub async fn observe_staged_file_once(&self, operation_id: OperationId) -> Result<Option<FileRef>> {
+        let writer = self.bound_content_writer(self.content_binding(None))?;
+        let file = writer.observe_staged_once(operation_id, self.scope.limits.file_bytes).await?;
+        if let Some(file) = &file {
+            self.scope.limits.validate_file(file)?;
+            if file.volume() != writer.volume() {
+                return Err(Error::Storage("original publisher receipt belongs to another volume".into()));
+            }
+        }
+        Ok(file)
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub async fn observe_staged_file_once_measured(
+        &self, operation_id: OperationId, budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Option<FileRef>>, Error> {
+        let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
+            .map_err(acyclic_fs::OperationFailure::before_work)?;
+        let result = async {
+            let writer = self.bound_content_writer_measured(self.content_binding(None), &io)?;
+            let file = io.receive_content(writer.observe_staged_once_measured(operation_id,
+                self.scope.limits.file_bytes, io.remaining()?, cancellation).await)?;
+            if let Some(file) = &file {
+                io.retain_owned(crate::filesystem::UploadRecord::logical_owned_bytes(file)?)?;
+                self.scope.limits.validate_file(file)?;
+                if file.volume() != writer.volume() {
+                    return Err(Error::Storage("original publisher receipt belongs to another volume".into()));
+                }
+            }
+            Ok(file)
+        }.await;
+        match result {
+            Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
+            Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
+        }
+    }
+
+    /// Reads through the exact original task scope and owner-backed reader.
+    #[cfg(feature = "filesystem")]
+    pub async fn read_file_measured(
+        &self, file: &FileRef, budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<u8>>, Error> {
+        let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
+            .map_err(acyclic_fs::OperationFailure::before_work)?;
+        let result = async {
+            file.validate()?;
+            self.scope.limits.validate_file(file)?;
+            if !read_granted_measured(&self.scope.grants, file, &io)? {
+                return Err(Error::Unauthorized("task scope cannot read this file".into()));
+            }
+            let reader = if let Some(reader) = self.scope.created_reference(file) {
+                reader.as_ref()
+            } else {
+                self.content_binding(Some(file.volume()))
+                    .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?.reader.as_ref()
+            };
+            let bytes = io.receive_content(reader.read_measured(file, self.scope.limits.file_bytes,
+                io.remaining()?, cancellation).await)?;
+            io.retain_owned(bytes.capacity() as u64)?;
+            let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
+            io.preflight(hash)?;
+            let verified = file.descriptor().verify(&bytes);
+            io.charge(hash)?;
+            verified?;
+            Ok(bytes)
+        }.await;
+        match result {
+            Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
+            Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
+        }
+    }
+
+    /// The same once-publication contract with real cumulative provider work.
+    #[cfg(feature = "filesystem")]
+    #[allow(clippy::too_many_arguments, reason = "complete once-publication identity and finite caller budget")]
+    pub async fn stage_file_once_measured(
+        &self, operation_id: OperationId, path: &str, bytes: &[u8],
+        media_type: &str, display_name: &str, budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<FileRef>, Error> {
+        let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
+            .map_err(acyclic_fs::OperationFailure::before_work)?;
+        let result = async {
+            if bytes.len() as u64 > self.scope.limits.file_bytes || path.len() > self.scope.limits.path_bytes {
+                return Err(Error::Invalid("file exceeds task content limits".into()));
+            }
+            let content = self.content_binding(None)
+                .ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
+            let writer = self.bound_content_writer_measured(Some(content), &io)?;
+            if !io.receive_content(content.reader.supports_measured_read(writer.volume(), io.remaining()?, cancellation))? {
+                return Err(Error::Unsupported("original content reader has no finite engine".into()));
+            }
+            let file = io.receive_content(writer.stage_once_measured(operation_id, path, bytes, media_type,
+                display_name, io.remaining()?, cancellation).await)?;
+            io.retain_owned(crate::filesystem::UploadRecord::logical_owned_bytes(&file)?)?;
+            self.scope.limits.validate_file(&file)?;
+            if file.volume() != writer.volume() || file.path() != path
+                || file.display_name() != display_name || file.descriptor().media_type() != media_type {
+                return Err(Error::Storage("content publisher returned another file identity".into()));
+            }
+            let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
+            io.preflight(hash)?;
+            let verified = file.descriptor().verify(bytes);
+            io.charge(hash)?;
+            verified?;
+            io.receive_content(content.reader.verify_measured(&file, self.scope.limits.file_bytes,
+                io.remaining()?, cancellation).await)?;
+            Ok(file)
+        }.await;
+        match result {
+            Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
+            Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
+        }
+    }
+
+    #[cfg(feature = "filesystem")]
+    fn bound_content_writer_measured<'a>(
+        &self, binding: Option<&'a ContentBindings>, io: &crate::filesystem::PreparationIo,
+    ) -> Result<&'a Arc<dyn ContentPublisher>> {
+        let content = binding.ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
+        let writer = content.writer.as_ref()
+            .ok_or_else(|| Error::Unauthorized("task has no owner-bound content writer".into()))?;
+        let capability = io.receive_content(writer.volume().capability_measured(VolumeOperation::Write,
+            io.remaining()?, &io.cancellation))?;
+        if !self.scope.grants.contains(&capability) {
+            return Err(Error::Unauthorized("task scope cannot write this volume".into()));
+        }
+        Ok(writer)
+    }
+
     /// Publishes immutable artifact bytes under a caller-retained operation ID.
     /// The artifact binding may use a different provider and owner volume.
     pub async fn stage_artifact(
@@ -5454,6 +5588,19 @@ pub(crate) fn read_granted(grants: &Capabilities, file: &FileRef) -> Result<bool
         {
             return Ok(true);
         }
+    }
+    Ok(false)
+}
+
+#[cfg(feature = "filesystem")]
+fn read_granted_measured(grants: &Capabilities, file: &FileRef, io: &crate::filesystem::PreparationIo) -> Result<bool> {
+    if grants.contains(&io.capability(file, "file:read:")?)
+        || grants.contains(&io.capability(file.volume(), "volume:read:")?) { return Ok(true); }
+    if grants.contains(&io.capability(&(file.volume(), ""), "directory:read:")?) { return Ok(true); }
+    for (slash, _) in file.path().match_indices('/') {
+        let prefix = &file.path()[..slash];
+        if !crate::conversation::is_internal_path(prefix)
+            && grants.contains(&io.capability(&(file.volume(), prefix), "directory:read:")?) { return Ok(true); }
     }
     Ok(false)
 }

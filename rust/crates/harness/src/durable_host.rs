@@ -481,6 +481,25 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(())
     }
 
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn require_interaction_grant_measured(
+        &self, budget: acyclic_fs::WorkBudget, cancellation: &acyclic_fs::CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
+        let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
+            .map_err(acyclic_fs::OperationFailure::before_work)?;
+        let result = (|| {
+            let work = acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() };
+            io.preflight(work)?;
+            let verified = self.require_interaction_grant();
+            io.charge(work)?;
+            verified
+        })();
+        match result {
+            Ok(()) => Ok(acyclic_fs::OperationReceipt { value: (), work: io.receipt() }),
+            Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
+        }
+    }
+
     pub(crate) fn task_binding(&self) -> (TaskId, &crate::scheduler::LeaseFence) {
         (self.task_id, &self.fence)
     }

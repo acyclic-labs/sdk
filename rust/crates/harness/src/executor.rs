@@ -313,6 +313,20 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     /// Reads an exact version under the journal owner's grant and verifies its descriptor.
     fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>>;
 
+    /// Optional finite-work load under the same original journal-owner grant.
+    /// Unsupported journals reject before reading or invoking an unbounded load.
+    #[cfg(feature = "filesystem")]
+    fn load_measured<'a>(
+        &'a self, _reference: &'a FileRef, _budget: acyclic_fs::WorkBudget,
+        _cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<u8>>, Error>> {
+        Box::pin(async {
+            Err(acyclic_fs::OperationFailure::before_work(Error::Unsupported(
+                "finite journal payload resolution is unavailable".into(),
+            )))
+        })
+    }
+
     /// Verifies a user-supplied file under its owner-mediated grant before turn admission.
     fn verify_input_file<'a>(&'a self, _reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
         Box::pin(async {

@@ -251,6 +251,18 @@ pub trait ToolApprovalVerifier: acyclic_stream::ProviderPlatform {
         operation_id: OperationId,
         definition_digest: [u8; 32],
     ) -> BoxFuture<'a, Result<()>>;
+
+    /// Optional actual bounded approval replay and artifact read. Missing
+    /// implementations reject before consulting any unmeasured journal.
+    #[cfg(feature = "filesystem")]
+    fn verify_measured<'a>(
+        &'a self, _interaction_id: InteractionId, _operation_id: OperationId,
+        _definition_digest: [u8; 32], _budget: acyclic_fs::WorkBudget,
+        _cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>> {
+        Box::pin(async { Err(acyclic_fs::OperationFailure::before_work(Error::Unsupported(
+            "finite original approval verification is unavailable".into()))) })
+    }
 }
 
 /// One tool assembled from three independently replaceable values.

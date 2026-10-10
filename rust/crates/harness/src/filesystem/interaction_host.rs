@@ -1,6 +1,7 @@
 //! One Filesystem/Stream bridge for the conversation-owned interaction ledger.
 
 use super::{FilesystemContentVerifier, FilesystemHost, InternalContentClass};
+use super::fork_preparer_io::{PreparationIo, UploadRecord};
 use crate::contract::capability;
 use crate::contract::next_revision;
 use crate::{
@@ -30,6 +31,54 @@ pub struct FilesystemInteractionHost<P, A, O> {
     owner_scope: Scope,
     private_volume: VolumeRef,
     maximum_bytes: u64,
+}
+
+// Decode only the closed approval wire, never an arbitrary request's JSON
+// schema. These are the existing approval enum's exact serialized fields.
+#[derive(serde::Deserialize)]
+enum ApprovalTag {
+    #[serde(rename = "approval")]
+    Approval,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApprovalRequestWire {
+    #[serde(rename = "type")]
+    _kind: ApprovalTag,
+    prompt: String,
+    operation_id: OperationId,
+    action_digest: [u8; 32],
+}
+
+impl UploadRecord for ApprovalRequestWire {
+    fn logical_owned_bytes(&self) -> Result<u64> { Ok(self.prompt.capacity() as u64) }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApprovalResponseWire {
+    #[serde(rename = "type")]
+    _kind: ApprovalTag,
+    approved: bool,
+    reason: Option<String>,
+}
+
+impl UploadRecord for ApprovalResponseWire {
+    fn logical_owned_bytes(&self) -> Result<u64> {
+        Ok(self.reason.as_ref().map_or(0, String::capacity) as u64)
+    }
+}
+
+impl<P, A, O> FilesystemInteractionHost<P, A, O> {
+    pub(super) fn verify_responder_scope(&self, id: InteractionId, scope: &Scope) -> Result<()> {
+        self.verifier.verify(scope)?;
+        if !scope.capabilities().contains(capability::INTERACTION_RESOLVE)
+            || !scope.capabilities().contains(&capability::interaction_respond(id)) {
+            return Err(Error::Unauthorized("responder lacks the exact interaction grant".into()));
+        }
+        Ok(())
+    }
 }
 
 impl<P, A, O> InteractionResolver for FilesystemInteractionHost<P, A, O>
@@ -472,6 +521,85 @@ where
         aggregate.execute(command).await
     }
 
+    pub(super) async fn verify_approval(
+        &self, id: InteractionId, operation: OperationId, digest: [u8; 32],
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        // Declared before the aggregate: its conservative logical allowance
+        // is released only after the borrowed replay result has been dropped.
+        let _replay_hold;
+        let aggregate = if let Some(io) = io {
+            io.claim(self.authority.id.len() as u64)?;
+            let verifier = self.verifier.clone_for_preparation(io)?;
+            let result = StreamAggregate::open_measured(
+                &self.stream, self.authority.clone(), verifier, self.schemas.clone(),
+                io.remaining()?, &io.cancellation,
+            ).await;
+            let peak = result.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
+            let aggregate = io.receive_content(result)?;
+            // The original replay decoder already admitted this bounded result.
+            // Transfer its logical high-water allowance while borrowing it,
+            // not an invented Reducer/RSS/allocator-node footprint.
+            _replay_hold = Some(io.reserve_decode(peak)?);
+            aggregate
+        } else {
+            _replay_hold = None;
+            self.aggregate().await?
+        };
+        let agent = aggregate.reducer().conversation()
+            .and_then(|conversation| conversation.agent)
+            .ok_or_else(|| Error::Conflict("interaction conversation is not bound to an agent".into()))?;
+        if self.private_volume.owner() != &VolumeOwner::Agent(agent) {
+            return Err(Error::Unauthorized("interaction private volume belongs to another agent".into()));
+        }
+        let Some((ticket, Some(resolution))) = aggregate.reducer().interaction(interaction_uuid(id)?) else {
+            return Err(Error::Unauthorized("tool installation lacks a resolved approval".into()));
+        };
+        if !matches!(&resolution.outcome, InteractionOutcome::Approved)
+            || !ticket.approval.as_ref().is_some_and(|binding|
+                binding.operation_id == operation && binding.action_digest == digest) {
+            return Err(Error::Unauthorized("approval does not authorize this tool definition".into()));
+        }
+        let bytes = self.read_approval_artifact(&ticket.request, io).await?;
+        let request = if let Some(io) = io {
+            let wire: ApprovalRequestWire = io.decode_json(&bytes)?;
+            let request = Interaction::Approval {
+                prompt: wire.prompt, operation_id: wire.operation_id, action_digest: wire.action_digest,
+            };
+            ticket.validate_decoded_request(&request)?;
+            request
+        } else { ticket.validate_request_bytes(&bytes)? };
+        if let Some(detail) = &resolution.detail {
+            if detail.descriptor().media_type() != "application/json" {
+                return Err(Error::Invalid("approval decision artifact is invalid".into()));
+            }
+            let bytes = self.read_approval_artifact(detail, io).await?;
+            if let Some(io) = io {
+                let wire: ApprovalResponseWire = io.decode_json(&bytes)?;
+                let response = InteractionResponse::Approval { approved: wire.approved, reason: wire.reason };
+                ticket.validate_decoded_decision(&request, &resolution.outcome, &response)?;
+            } else { ticket.validate_decision_bytes(&request, &resolution.outcome, detail, &bytes)?; }
+        }
+        if let Some(io) = io { io.remaining()?; }
+        Ok(())
+    }
+
+    async fn read_approval_artifact(
+        &self, reference: &FileRef, io: Option<&PreparationIo>,
+    ) -> Result<bytes::Bytes> {
+        if let Some(io) = io {
+            io.receive_content(ContentGrant::verify_original_volume_measured(
+                &self.verifier, &self.owner_scope, reference.volume(), VolumeOperation::Read,
+                io.remaining()?, &io.cancellation,
+            ))?;
+            self.host.read_pinned_io(reference, self.maximum_bytes, Some(io)).await
+        } else {
+            let grant = ContentGrant::verify(&self.verifier, &self.owner_scope,
+                reference.volume(), VolumeOperation::Read)?;
+            Ok(self.host.read_content(reference, &grant, self.maximum_bytes).await?.into())
+        }
+    }
+
     async fn aggregate(&self) -> Result<StreamAggregate<P>> {
         let verifier = FilesystemContentVerifier::new(
             Arc::clone(&self.host),
@@ -535,5 +663,5 @@ where
 }
 
 fn interaction_uuid(id: InteractionId) -> Result<Uuid> {
-    Uuid::parse_str(&id.to_string()).map_err(|error| Error::Invalid(error.to_string()))
+    Ok(Uuid::from_bytes(id.into_bytes()))
 }

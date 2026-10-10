@@ -304,6 +304,23 @@ impl VolumeRef {
         ))
     }
 
+    /// Computes the original capability identity through the finite codec.
+    #[cfg(feature = "filesystem")]
+    pub fn capability_measured(
+        &self, operation: VolumeOperation, budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<String>, Error> {
+        let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
+            .map_err(acyclic_fs::OperationFailure::before_work)?;
+        let result = io.capability(self, match operation {
+            VolumeOperation::Read => "volume:read:", VolumeOperation::Write => "volume:write:",
+        });
+        match result {
+            Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
+            Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
+        }
+    }
+
     /// Owner-issued read capability for a directory and its descendants.
     /// Empty prefix names the whole volume. It never implies a write.
     pub fn directory_read_capability(&self, prefix: &str) -> Result<String> {
@@ -459,6 +476,31 @@ impl ContentGrant {
             exact_file: None,
             directory_prefix: None,
         })
+    }
+
+    /// Checks the original signed whole-volume authority without cloning a
+    /// grant or minting any new proof. The caller retains its original scope.
+    #[cfg(feature = "filesystem")]
+    pub fn verify_original_volume_measured(
+        verifier: &AuthorityVerifier, scope: &Scope, volume: &VolumeRef,
+        operation: VolumeOperation, budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
+        let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
+            .map_err(acyclic_fs::OperationFailure::before_work)?;
+        let result = (|| {
+            io.receive_content(verifier.verify_measured(scope, io.remaining()?, cancellation))?;
+            if operation == VolumeOperation::Write { volume.require_writer(scope.agent())?; }
+            let capability = io.receive_content(volume.capability_measured(operation, io.remaining()?, cancellation))?;
+            if !scope.capabilities().contains(&capability) {
+                return Err(Error::Unauthorized("volume operation is not granted".into()));
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => Ok(acyclic_fs::OperationReceipt { value: (), work: io.receipt() }),
+            Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
+        }
     }
 
     /// Verifies a signed private-directory or whole-volume read grant. A
@@ -926,6 +968,129 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         })
     }
 
+    /// Capability availability only, never an authorization decision. Allows
+    /// a multi-operation finite publisher to reject missing readers before IO.
+    #[cfg(feature = "filesystem")]
+    fn supports_measured_read(
+        &self, _volume: &VolumeRef, _budget: acyclic_fs::WorkBudget,
+        _cancellation: &acyclic_fs::CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<bool>, Error> {
+        Err(acyclic_fs::OperationFailure::before_work(Error::Unsupported(
+            "finite content reader capability is unavailable".into())))
+    }
+
+    /// Optional finite-work read. Unsupported providers reject before any IO.
+    #[cfg(feature = "filesystem")]
+    fn read_measured<'a>(
+        &'a self, _reference: &'a FileRef, _maximum_bytes: u64,
+        _budget: acyclic_fs::WorkBudget, _cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> ContentFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<u8>>, Error>> {
+        Box::pin(async {
+            Err(acyclic_fs::OperationFailure::before_work(Error::Unsupported(
+                "finite content resolution is unavailable".into(),
+            )))
+        })
+    }
+
+    /// Verifies bytes through the provider's actual finite read capability.
+    #[cfg(feature = "filesystem")]
+    fn verify_measured<'a>(
+        &'a self, reference: &'a FileRef, maximum_bytes: u64,
+        budget: acyclic_fs::WorkBudget, cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> ContentFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>> {
+        Box::pin(async move {
+            let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
+                .map_err(acyclic_fs::OperationFailure::before_work)?;
+            let result = async {
+                if reference.descriptor().byte_length() > maximum_bytes {
+                    return Err(Error::Invalid("content exceeds selected byte allowance".into()));
+                }
+                let bytes = io.receive_content(self.read_measured(reference, maximum_bytes,
+                    io.remaining()?, cancellation).await)?;
+                io.retain_owned(bytes.capacity() as u64)?;
+                let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
+                io.preflight(hash)?;
+                io.charge(hash)?;
+                reference.descriptor().verify(&bytes)
+            }.await;
+            match result {
+                Ok(()) => Ok(acyclic_fs::OperationReceipt { value: (), work: io.receipt() }),
+                Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
+            }
+        })
+    }
+
+    /// Decodes a complete canonical manifest under a selected member allowance.
+    #[cfg(feature = "filesystem")]
+    fn load_complete_manifest_measured<'a>(
+        &'a self, reference: &'a FileRef, maximum_members: usize,
+        budget: acyclic_fs::WorkBudget, cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> ContentFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<Attachment>>, Error>> {
+        Box::pin(async move {
+            let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
+                .map_err(acyclic_fs::OperationFailure::before_work)?;
+            let result = async {
+                let bytes = io.receive_content(self.read_measured(reference,
+                    reference.descriptor().byte_length(), io.remaining()?, cancellation).await)?;
+                io.retain_owned(bytes.capacity() as u64)?;
+                decode_manifest_bounded(reference, &bytes, maximum_members, &io)
+            }.await;
+            match result {
+                Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
+                Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
+            }
+        })
+    }
+
+    /// Preserves the exact declared count while resolving bounded manifest bytes.
+    #[cfg(feature = "filesystem")]
+    fn load_manifest_measured<'a>(
+        &'a self, reference: &'a FileRef, item_count: u32,
+        budget: acyclic_fs::WorkBudget, cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> ContentFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<Attachment>>, Error>> {
+        Box::pin(async move {
+            let receipt = self.load_complete_manifest_measured(reference, item_count as usize, budget, cancellation).await?;
+            if receipt.value.len() != item_count as usize {
+                return Err(acyclic_fs::OperationFailure::new(Error::Invalid(
+                    "attachment manifest count is incomplete".into()), receipt.work));
+            }
+            Ok(receipt)
+        })
+    }
+
+    /// Resolves the canonical list and verifies every member with the same
+    /// effective policy, using only genuine finite provider capabilities.
+    #[cfg(feature = "filesystem")]
+    fn verify_manifest_measured<'a>(
+        &'a self, reference: &'a FileRef, item_count: u32, limits: &'a Limits,
+        budget: acyclic_fs::WorkBudget, cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> ContentFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>> {
+        Box::pin(async move {
+            let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
+                .map_err(acyclic_fs::OperationFailure::before_work)?;
+            let result = async {
+                limits.validate_file(reference)?;
+                if item_count as usize > limits.attachments {
+                    return Err(Error::Invalid("attachment manifest count exceeds limits".into()));
+                }
+                let items = io.receive_content(self.load_manifest_measured(reference, item_count, io.remaining()?, cancellation).await)?;
+                io.retain_owned(manifest_owned_bytes(&items, items.capacity())?)?;
+                for item in &items {
+                    let work = acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() };
+                    io.preflight(work)?;
+                    io.charge(work)?;
+                    limits.validate_file(&item.file)?;
+                    io.receive_content(self.verify_measured(&item.file, limits.file_bytes, io.remaining()?, cancellation).await)?;
+                }
+                Ok(())
+            }.await;
+            match result {
+                Ok(()) => Ok(acyclic_fs::OperationReceipt { value: (), work: io.receipt() }),
+                Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
+            }
+        })
+    }
+
     /// Lazily discovers an owner-private directory under an authenticated
     /// subtree boundary; the generation must remain stable across pages.
     fn list_private_directory<'a>(
@@ -1018,6 +1183,36 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
                 "operation-bound file publication is unavailable".into(),
             ))
         })
+    }
+
+    /// Observes only this writer's original once-publication. Knowing its
+    /// reference grants no read authority; failed lookups never mean absence.
+    fn observe_staged_once<'a>(
+        &'a self, _operation_id: OperationId, _maximum_bytes: u64,
+    ) -> BoxFuture<'a, Result<Option<FileRef>>> {
+        Box::pin(async { Err(Error::Unsupported("original publication observation is unavailable".into())) })
+    }
+
+    /// Optional genuine finite once-publication; never calls unmeasured stage.
+    #[cfg(feature = "filesystem")]
+    #[allow(clippy::too_many_arguments, reason = "complete once-publication identity and finite caller budget")]
+    fn stage_once_measured<'a>(
+        &'a self, _operation_id: OperationId, _path: &'a str, _bytes: &'a [u8],
+        _media_type: &'a str, _display_name: &'a str,
+        _budget: acyclic_fs::WorkBudget, _cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> ContentFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<FileRef>, Error>> {
+        Box::pin(async { Err(acyclic_fs::OperationFailure::before_work(
+            Error::Unsupported("finite once-publication is unavailable".into()))) })
+    }
+
+    /// Resolves the original operation, metadata and generation without head.
+    #[cfg(feature = "filesystem")]
+    fn observe_staged_once_measured<'a>(
+        &'a self, _operation_id: OperationId, _maximum_bytes: u64,
+        _budget: acyclic_fs::WorkBudget, _cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> ContentFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Option<FileRef>>, Error>> {
+        Box::pin(async { Err(acyclic_fs::OperationFailure::before_work(
+            Error::Unsupported("finite publication observation is unavailable".into()))) })
     }
 
     /// Publishes replacement bytes only at the immutable source generation.
@@ -1132,6 +1327,50 @@ impl CompositeContentVerifier {
 }
 
 impl ContentResidencyVerifier for CompositeContentVerifier {
+    #[cfg(feature = "filesystem")]
+    fn supports_measured_read(
+        &self, volume: &VolumeRef, budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<bool>, Error> {
+        let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
+            .map_err(acyclic_fs::OperationFailure::before_work)?;
+        let result = (|| {
+            volume.validate()?;
+            let key = io.encode_json(volume, io.remaining()?.bytes_encoded, false)?;
+            let key = std::str::from_utf8(&key).map_err(|error| Error::Invalid(error.to_string()))?;
+            let reader = self.volumes.get(key).ok_or_else(|| Error::Unsupported(
+                "finite lazy owner mounting is unavailable".into()))?;
+            io.receive_content(reader.supports_measured_read(volume, io.remaining()?, cancellation))
+        })();
+        match result {
+            Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
+            Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
+        }
+    }
+
+    #[cfg(feature = "filesystem")]
+    fn read_measured<'a>(
+        &'a self, reference: &'a FileRef, maximum_bytes: u64,
+        budget: acyclic_fs::WorkBudget, cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> ContentFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<u8>>, Error>> {
+        Box::pin(async move {
+            let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
+                .map_err(acyclic_fs::OperationFailure::before_work)?;
+            let result = async {
+                reference.validate()?;
+                let key = io.encode_json(reference.volume(), io.remaining()?.bytes_encoded, false)?;
+                let key = std::str::from_utf8(&key).map_err(|error| Error::Invalid(error.to_string()))?;
+                let reader = self.volumes.get(key).ok_or_else(|| Error::Unsupported(
+                    "finite content routing requires an explicitly bound measured owner; lazy mount lacks finite IO".into()))?;
+                io.receive_content(reader.read_measured(reference, maximum_bytes, io.remaining()?, cancellation).await)
+            }.await;
+            match result {
+                Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
+                Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
+            }
+        })
+    }
+
     fn read_private_prefix<'a>(
         &'a self,
         volume: &'a VolumeRef,
@@ -1290,6 +1529,98 @@ pub fn decode_complete_attachment_manifest(
         return Err(Error::Invalid(
             "attachment manifest is not canonical or complete".into(),
         ));
+    }
+    Ok(items)
+}
+
+#[cfg(feature = "filesystem")]
+pub(crate) fn manifest_owned_bytes(items: &[Attachment], capacity: usize) -> Result<u64> {
+    let mut bytes = capacity.checked_mul(std::mem::size_of::<Attachment>())
+        .ok_or_else(|| Error::Invalid("manifest vector ownership overflow".into()))? as u64;
+    for item in items {
+        bytes = bytes.checked_add(crate::filesystem::UploadRecord::logical_owned_bytes(&item.file)?)
+            .and_then(|bytes| bytes.checked_add(item.label.as_ref().map_or(0, |label| label.len() as u64)))
+            .ok_or_else(|| Error::Invalid("manifest field ownership overflow".into()))?;
+    }
+    Ok(bytes)
+}
+
+#[cfg(feature = "filesystem")]
+pub(crate) fn decode_manifest_bounded(
+    reference: &FileRef, bytes: &[u8], maximum_members: usize,
+    io: &crate::filesystem::PreparationIo,
+) -> Result<Vec<Attachment>> {
+    reference.validate()?;
+    if reference.descriptor().media_type() != "application/vnd.acyclic.harness.attachments+json"
+        || maximum_members > MAX_LIMIT_ATTACHMENTS {
+        return Err(Error::Invalid("attachment manifest metadata or allowance is invalid".into()));
+    }
+    let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
+    io.preflight(hash)?;
+    io.charge(hash)?;
+    reference.descriptor().verify(bytes)?;
+    let bounds = crate::contract::JsonBounds {
+        maximum_bytes: bytes.len() as u64,
+        maximum_items: io.remaining()?.items_examined,
+        maximum_depth: 256,
+    };
+    crate::contract::admit_json(bytes, bounds, &mut |charge| io.codec_charge(charge, false))?;
+    let slots = maximum_members.checked_mul(std::mem::size_of::<Attachment>())
+        .ok_or_else(|| Error::Invalid("manifest slot ownership overflow".into()))? as u64;
+    let witness = (bytes.len() as u64).max(8).checked_mul(4)
+        .and_then(|bytes| bytes.checked_add(slots))
+        .ok_or_else(|| Error::Invalid("manifest schema ownership overflow".into()))?;
+    let mut reservation = io.reserve_decode(witness)?;
+    fn guard<T, E: serde::de::Error>(result: Result<T>, failure: &mut Option<Error>) -> std::result::Result<T, E> {
+        result.map_err(|error| {
+            *failure = Some(error);
+            E::custom("manifest admission interrupted")
+        })
+    }
+    struct ManifestSeed<'a> {
+        maximum: usize, io: &'a crate::filesystem::PreparationIo, failure: &'a mut Option<Error>,
+    }
+    impl<'de> serde::de::DeserializeSeed<'de> for ManifestSeed<'_> {
+        type Value = Vec<Attachment>;
+        fn deserialize<D: Deserializer<'de>>(self, decoder: D) -> std::result::Result<Self::Value, D::Error> {
+            decoder.deserialize_seq(self)
+        }
+    }
+    impl<'de> serde::de::Visitor<'de> for ManifestSeed<'_> {
+        type Value = Vec<Attachment>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a bounded complete attachment array")
+        }
+        fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut sequence: S) -> std::result::Result<Self::Value, S::Error> {
+            guard::<_, S::Error>(self.io.allocation_attempt((self.maximum * std::mem::size_of::<Attachment>()) as u64), self.failure)?;
+            let mut items = Vec::with_capacity(self.maximum);
+            loop {
+                guard::<_, S::Error>(self.io.remaining(), self.failure)?;
+                if items.len() == self.maximum {
+                    if sequence.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                        return Err(serde::de::Error::custom("attachment manifest exceeds member allowance"));
+                    }
+                    break;
+                }
+                let Some(item) = sequence.next_element::<Attachment>()? else { break; };
+                item.validate().map_err(serde::de::Error::custom)?;
+                items.push(item);
+            }
+            Ok(items)
+        }
+    }
+    io.codec_charge(crate::contract::JsonCodecCharge::Read { bytes: bytes.len() as u64 }, false)?;
+    let mut failure = None;
+    let mut decoder = serde_json::Deserializer::from_slice(bytes);
+    decoder.disable_recursion_limit();
+    use serde::de::DeserializeSeed as _;
+    let items = ManifestSeed { maximum: maximum_members, io, failure: &mut failure }.deserialize(&mut decoder)
+        .map_err(|error| failure.take().unwrap_or_else(|| Error::Invalid(error.to_string())))?;
+    decoder.end().map_err(|error| Error::Invalid(error.to_string()))?;
+    reservation.substitute(manifest_owned_bytes(&items, items.capacity())?)?;
+    let encoded = io.encode_json(&items, io.remaining()?.bytes_encoded, false)?;
+    if encoded != bytes {
+        return Err(Error::Invalid("attachment manifest is not canonical or complete".into()));
     }
     Ok(items)
 }
@@ -1754,6 +2085,34 @@ impl ConversationState {
                 checkpoint: reference.clone(),
             }),
         })
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn history_prefix_digest_measured(
+        &self, through_sequence: u64, io: &crate::filesystem::PreparationIo,
+    ) -> Result<[u8; 32]> {
+        if self.messages.last().map_or(0, |message| message.sequence) != self.messages.len() as u64
+            || through_sequence > self.messages.len() as u64 {
+            return Err(Error::Invalid("history fingerprint requires a dense logical prefix".into()));
+        }
+        if through_sequence == self.messages.len() as u64 { return Ok(self.history_digest); }
+        let mut previous = [0; 32];
+        for message in self.messages.iter().take(through_sequence as usize) {
+            let encoded = io.encode_json(message, io.remaining()?.bytes_encoded, true)?;
+            let hash = acyclic_fs::WorkCounters {
+                bytes_hashed: encoded.len() as u64 + b"harness:conversation-prefix:v3\0".len() as u64 + 64,
+                items_examined: 1, ..Default::default()
+            };
+            io.preflight(hash)?;
+            io.charge(hash)?;
+            let digest = blake3::hash(&encoded);
+            let mut hash = blake3::Hasher::new();
+            hash.update(b"harness:conversation-prefix:v3\0");
+            hash.update(&previous);
+            hash.update(digest.as_bytes());
+            previous = *hash.finalize().as_bytes();
+        }
+        Ok(previous)
     }
 
     /// Rebuilds only a bounded, already attested selection for byte projection.

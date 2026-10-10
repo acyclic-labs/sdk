@@ -32,7 +32,7 @@ use std::{collections::BTreeSet, sync::Arc};
 use uuid::Uuid;
 
 mod created_access;
-mod bounded_io;
+pub(super) mod bounded_io;
 pub(crate) use bounded_io::PreparationIo;
 pub use created_access::FilesystemResourceCreationProvider;
 
@@ -935,7 +935,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
             self.verify_task_lease(false).await?;
             let key = IdempotencyKey::new(format!("fork:{}:{request_digest}:result",request.operation_id))?;
             let result = bounded_io::fork(
-                &self.host, source_private, private_generation, volume,
+                &self.host, source_private, &private_grant, private_generation, volume,
                 Some(Vec::new()), &key, self.io.as_ref(),
             ).await?;
             (Some(volume.clone()), Some(result.generation))
@@ -958,7 +958,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
                 request.operation_id
             ))?;
             let continuation_keys = if request.preparation.summary.is_some() {
-                super::summary_fork::summary_keys(&context_key)?.to_vec()
+                super::summary_fork::summary_keys(&context_key, None)?.to_vec()
             } else {
                 Vec::new()
             };
@@ -978,6 +978,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
                     &context_key,
                     &continuation_keys,
                     self.history.as_ref().map(PreparedForkHistory::conversation),
+                    self.io.as_ref(),
                 )
                 .await?;
             (
@@ -1000,7 +1001,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
                 .ok_or_else(|| Error::Invalid("summary fork omitted its logical prefix".into()))?;
             // Count the exact additional reader grants before either Summary
             // publication phase. Reuse original prefix grants when identical.
-            let (_, summary_references) = super::summary_fork::split_references(&bound.prepared)?;
+            let (_, summary_references) = super::summary_fork::split_references(&bound.prepared, self.io.as_ref())?;
             let mut planned_grants = reference_grants
                 .iter()
                 .map(|grant| Ok((grant.capability()?, grant.reader)))
@@ -1030,6 +1031,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
                     request.preparation.maximum_inherited_bytes,
                     request.preparation.maximum_inherited_references as usize,
                     &key,
+                    self.resolver.as_ref(),
+                    self.io.as_ref(),
                 )
                 .await?;
             let mut granted = reference_grants
