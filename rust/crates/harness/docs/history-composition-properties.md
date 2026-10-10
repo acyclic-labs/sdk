@@ -69,6 +69,22 @@ exact combined snapshot, canonical and derived-proof byte allowance; one byte
 less fails, and an insufficient event allowance fails before record IO. These
 controls qualify explicit retirement, not the pending default rollout.
 
+Fresh dispatch and resolution commands for retired terminal effects read the
+original effect projection at the current committed cut under the configured
+history allowance. The original planner borrows that one verified projection
+for provider authorization and transition validation. It does not clone the
+reducer, mutate the cache or duplicate terminal transition rules. The real
+Filesystem fixture rejects fresh dispatch/resolution as conflicts, rejects a
+missing provider grant, and rejects an allowance below the original three
+transitions without changing the aggregate revision or resident cache.
+
+Simplification audit for this boundary removed whole-reducer planning clones
+and three repeated effect lookups. One private lookup serves authorization and
+transition validation; canonical replay supplies no archival override. The
+private admission entry checks the exact command target and settled status
+before borrowing authenticated state. The store owns bounded IO and the core
+retains scope, revision, attestation, causal and transition checks.
+
 Browser consumers exercise the Rust/WASM history reader, aggregate snapshot,
 compaction accounting, fork-policy wire and generated declarations. Native
 success does not establish browser qualification. Generated declarations must

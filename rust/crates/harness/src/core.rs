@@ -1826,6 +1826,7 @@ impl Reducer {
             command,
             Migration::Unverified,
             false,
+            None,
         ))
     }
 
@@ -1838,7 +1839,7 @@ impl Reducer {
                 "verified migration planner requires a migration action".into(),
             ));
         }
-        self.plan_with_migration_boundary(command, Migration::Verified, false)
+        self.plan_with_migration_boundary(command, Migration::Verified, false, None)
     }
 
     /// Only the owning Stream adapter calls this after its authoritative identity lookup.
@@ -1870,6 +1871,41 @@ impl Reducer {
                 Migration::Unverified
             },
             true,
+            None,
+        ))
+    }
+
+    /// Selects only fresh effect transitions whose original projection may
+    /// have been retired. The owning store authenticates that projection.
+    pub(crate) fn archived_effect_for_command(&self, command: &Command) -> Option<EffectId> {
+        let effect_id = match &command.action {
+            Action::MarkEffectDispatched { effect_id, .. } => *effect_id,
+            Action::ResolveEffect { observation } => observation.effect_id,
+            _ => return None,
+        };
+        (self.effects_archived && !self.effects.contains_key(&effect_id)).then_some(effect_id)
+    }
+
+    /// Borrows one authenticated terminal projection in the original planner.
+    /// No reducer clone or cache mutation is needed for the original rejection.
+    pub(crate) fn plan_with_archived_effect(
+        &self,
+        command: &Command,
+        effect_id: EffectId,
+        effect: &EffectState,
+    ) -> Result<ApplyResult> {
+        if self.archived_effect_for_command(command) != Some(effect_id)
+            || !settled_effect(&effect.status)
+        {
+            return Err(Error::Storage(
+                "archived effect does not match terminal planning target".into(),
+            ));
+        }
+        crate::obs::outcome(self.plan_with_migration_boundary(
+            command,
+            Migration::Unverified,
+            true,
+            Some((effect_id, effect)),
         ))
     }
 
@@ -1909,6 +1945,7 @@ impl Reducer {
         command: &Command,
         migration: Migration,
         identity_checked: bool,
+        archived_effect: Option<(EffectId, &EffectState)>,
     ) -> Result<ApplyResult> {
         self.verify_command_scope(command)?;
         let intent = canonical_intent(command)?;
@@ -1938,6 +1975,7 @@ impl Reducer {
             command.scope.agent(),
             command.operation_id,
             command.action.kind(),
+            archived_effect,
         )?;
         match &command.action {
             Action::MigrateExtensionState { content, .. } => {
@@ -1969,7 +2007,7 @@ impl Reducer {
             command.causal_parent.as_ref(),
         )?;
         let revision = next_revision(self.revision)?;
-        let payload = self.transition(&command.action)?;
+        let payload = self.transition(&command.action, archived_effect)?;
         let mut event = Event {
             revision,
             operation_id: command.operation_id,
@@ -1983,6 +2021,21 @@ impl Reducer {
         Ok(ApplyResult::Applied { event })
     }
 
+    fn transition_effect<'a>(
+        &'a self,
+        effect_id: &EffectId,
+        archived: Option<(EffectId, &'a EffectState)>,
+    ) -> Result<&'a EffectState> {
+        self.effects
+            .get(effect_id)
+            .or_else(|| {
+                archived
+                    .filter(|(id, _)| id == effect_id)
+                    .map(|(_, state)| state)
+            })
+            .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))
+    }
+
     /// Authorizes one transition identically when planned and when committed.
     fn authorize(
         &self,
@@ -1990,16 +2043,14 @@ impl Reducer {
         agent: Option<AgentId>,
         operation_id: OperationId,
         (kind, subject): (TransitionKind, Subject<'_>),
+        archived_effect: Option<(EffectId, &EffectState)>,
     ) -> Result<()> {
         require(kind.spec().2)?;
         match subject {
             Subject::None => Ok(()),
             Subject::PlannedEffect => require(capability::EFFECT_PLAN),
             Subject::Effect(effect_id) => {
-                let effect = self
-                    .effects
-                    .get(effect_id)
-                    .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
+                let effect = self.transition_effect(effect_id, archived_effect)?;
                 require(&capability::effect_provider(&effect.provider))
             }
             Subject::Interaction(resolution) => {
@@ -2096,6 +2147,7 @@ impl Reducer {
             event.scope.agent(),
             event.operation_id,
             event.payload.kind(),
+            None,
         )?;
         validate_causal_parent(&self.authority, self.revision, event.causal_parent.as_ref())?;
         self.apply_payload(&event.payload, event.revision)?;
@@ -2239,6 +2291,7 @@ impl Reducer {
                 event.scope.agent(),
                 event.operation_id,
                 event.payload.kind(),
+                None,
             )?;
             validate_causal_parent(
                 &projection.authority,
@@ -2503,7 +2556,11 @@ impl Reducer {
                   its EventPayload; splitting per-arm would scatter one command's validation \
                   across many functions without clarifying any of them"
     )]
-    fn transition(&self, action: &Action) -> Result<EventPayload> {
+    fn transition(
+        &self,
+        action: &Action,
+        archived_effect: Option<(EffectId, &EffectState)>,
+    ) -> Result<EventPayload> {
         match action {
             Action::TransitionLifecycle { to, reason } => {
                 validate_lifecycle(self.lifecycle, *to)?;
@@ -2676,10 +2733,7 @@ impl Reducer {
                 effect_id,
                 attempt_id,
             } => {
-                let effect = self
-                    .effects
-                    .get(effect_id)
-                    .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
+                let effect = self.transition_effect(effect_id, archived_effect)?;
                 let may_retry = effect.status == EffectStatus::Indeterminate
                     && effect.guarantee == EffectGuarantee::IdempotentRetry;
                 if effect.status != EffectStatus::Planned && !may_retry {
@@ -2703,10 +2757,7 @@ impl Reducer {
                         "effect resolution must be terminal or indeterminate".into(),
                     ));
                 }
-                let effect = self
-                    .effects
-                    .get(&observation.effect_id)
-                    .ok_or_else(|| Error::NotFound(format!("effect {}", observation.effect_id)))?;
+                let effect = self.transition_effect(&observation.effect_id, archived_effect)?;
                 self.authority_verifier.verify_effect(observation)?;
                 validate_effect_observation(effect, observation)?;
                 if effect.attempts.last() != Some(&observation.attempt_id) {

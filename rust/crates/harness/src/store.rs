@@ -823,8 +823,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
         Ok(self)
     }
 
-    /// Sets the finite archive allowance used by task-owner effect permission
-    /// classification, including exact retries whose terminal state was retired.
+    /// Sets the finite archive allowance used by effect permission checks and
+    /// fresh transitions, including exact retries whose terminal state was retired.
     pub fn with_effect_history_read_limits(mut self, limits: HistoryReadLimits) -> Result<Self> {
         if limits.maximum_events == 0 || limits.maximum_bytes == 0 {
             return Err(Error::Invalid(
@@ -1252,6 +1252,13 @@ impl<P: StreamProvider> StreamAggregate<P> {
 
     async fn plan_command(&self, command: &Command, fresh_migration: bool) -> Result<ApplyResult> {
         if !fresh_migration {
+            if let Some(effect_id) = self.reducer.archived_effect_for_command(command)
+                && let Some(effect) = self.effect(effect_id, self.effect_history_limits).await?
+            {
+                return self
+                    .reducer
+                    .plan_with_archived_effect(command, effect_id, &effect);
+            }
             return self.reducer.plan_indexed(command, false);
         }
         if let Action::MigrateExtensionState {
