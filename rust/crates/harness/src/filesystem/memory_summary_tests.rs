@@ -902,10 +902,12 @@ async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
                 "text/plain",
                 "input.txt",
             )
-            .await?;
+            .await
+            .map_err(|error| Error::Storage(format!("retained turn {index} input: {error}")))?;
         let output = storage
             .run_conversation(&bundle, operation, input.clone(), Vec::new(), 1)
-            .await?;
+            .await
+            .map_err(|error| Error::Storage(format!("retained turn {index}: {error}")))?;
         if original.is_none() {
             original = Some((operation, input, output));
         }
