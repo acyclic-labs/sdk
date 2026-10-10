@@ -51,6 +51,7 @@ try {
       });
       if (method.name === "AddSubscription") Object.assign(init, { actorId: "browser-actor", subscription: { subscriptionId: "input", streamPath: "events/input", start: { start: { case: "cursor", value: 9007199254740993n } } }, idempotencyKey: "subscribe-browser" });
       if (method.name === "CheckpointActor") Object.assign(init, { actorId: "browser-actor", idempotencyKey: "checkpoint-browser" });
+      if (method.name === "DeleteActor") Object.assign(init, { actorId: "browser-actor", idempotencyKey: "delete-browser" });
       if (method.name === "InvokeActor") Object.assign(init, { actorId: "browser-actor", method: "POST", url: "/invoke", body: new Uint8Array([1]) });
       if (method.name === "PublishVersion") {
         const javascriptModule = new TextEncoder().encode("export default { run() {} }");
@@ -75,7 +76,7 @@ try {
       methods++;
     }
   }
-  assert.equal(methods, 15);
+  assert.equal(methods, 16);
   const inspectActor = ActorsService.methods.find(method => method.name === "InspectActor");
   await assert.rejects(new ActorsClient({ ...options, token: "wrong" }).inspectActor(create(inspectActor.input, { actorId: "browser-actor" })), error => error.code === "unauthenticated");
   const cancellation = new AbortController();

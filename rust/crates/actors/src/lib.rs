@@ -20,7 +20,7 @@ pub mod contract;
 pub mod grpc;
 /// Native HTTP client for the canonical Actors v1 Protobuf JSON service.
 ///
-/// The client exposes the same eight operations with bounded responses and
+/// The client exposes the same nine operations with bounded responses and
 /// bearer authentication. Browser bindings use the Rust-owned gRPC-Web transport
 /// through [`client::Client`]; this adapter is unavailable on `wasm32`.
 #[cfg(not(target_arch = "wasm32"))]
@@ -74,6 +74,7 @@ pub const HTTP_ROUTES: &[(&str, &str)] = &[
     ("resumeSubscription", "v1/actors/subscriptions/resume"),
     ("checkpointActor", "v1/actors/checkpoint"),
     ("invokeActor", "v1/actors/invoke"),
+    ("deleteActor", "v1/actors/delete"),
 ];
 
 /// Invalid customer-authored Actors request.
@@ -189,6 +190,15 @@ pub fn validate_update(request: &wire::UpdateActorRequest) -> Result<(), Contrac
     Ok(())
 }
 
+/// Validates a terminal Actor deletion. Identity and idempotency rules match
+/// [`validate_update`]; an exact retry with the same key succeeds again.
+pub fn validate_delete(request: &wire::DeleteActorRequest) -> Result<(), ContractError> {
+    if request.actor_id.is_empty() || !valid_idempotency_key(&request.idempotency_key) {
+        return Err(ContractError::InvalidArgument);
+    }
+    Ok(())
+}
+
 /// Validates a newly authored subscription; its cursor may not later be rewound.
 pub fn validate_add_subscription(
     request: &wire::AddSubscriptionRequest,
@@ -245,6 +255,48 @@ mod tests {
         create.subscriptions.extend(duplicate);
         assert_eq!(validate_create(&create), Err(ContractError::DuplicateName));
     }
+    #[test]
+    fn delete_requires_actor_and_bounded_idempotency_key() {
+        let valid = wire::DeleteActorRequest {
+            actor_id: "actor-a".into(),
+            idempotency_key: "delete-a".into(),
+        };
+        assert_eq!(validate_delete(&valid), Ok(()));
+        let semantic = domain::DeleteActorRequest::try_from(valid.clone()).expect("valid delete");
+        assert_eq!(semantic.actor_id().as_str(), "actor-a");
+        assert_eq!(semantic.idempotency_key(), "delete-a");
+        assert_eq!(wire::DeleteActorRequest::from(semantic), valid);
+        for invalid in [
+            wire::DeleteActorRequest {
+                actor_id: String::new(),
+                ..valid.clone()
+            },
+            wire::DeleteActorRequest {
+                idempotency_key: String::new(),
+                ..valid.clone()
+            },
+            wire::DeleteActorRequest {
+                idempotency_key: "k".repeat(257),
+                ..valid.clone()
+            },
+        ] {
+            assert_eq!(
+                validate_delete(&invalid),
+                Err(ContractError::InvalidArgument)
+            );
+            assert!(domain::DeleteActorRequest::try_from(invalid).is_err());
+        }
+        let boundary = wire::DeleteActorRequest {
+            idempotency_key: "k".repeat(256),
+            ..valid
+        };
+        assert_eq!(validate_delete(&boundary), Ok(()));
+        assert_eq!(
+            domain::DeleteActorResponse::try_from(wire::DeleteActorResponse {}),
+            Ok(domain::DeleteActorResponse::default())
+        );
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn clients_share_endpoint_and_credential_policy() {

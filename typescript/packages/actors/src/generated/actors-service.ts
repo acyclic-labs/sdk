@@ -19,6 +19,8 @@ type SemanticMessages = {
   "acyclic.actors.v1.CheckpointActorResponse": Semantic.CheckpointActorResponse;
   "acyclic.actors.v1.CreateActorRequest": Semantic.CreateActorRequest;
   "acyclic.actors.v1.CreateActorResponse": Semantic.CreateActorResponse;
+  "acyclic.actors.v1.DeleteActorRequest": Semantic.DeleteActorRequest;
+  "acyclic.actors.v1.DeleteActorResponse": Semantic.DeleteActorResponse;
   "acyclic.actors.v1.InspectActorRequest": Semantic.InspectActorRequest;
   "acyclic.actors.v1.InspectActorResponse": Semantic.InspectActorResponse;
   "acyclic.actors.v1.InvokeActorRequest": Semantic.InvokeActorRequest;

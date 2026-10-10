@@ -655,6 +655,36 @@ impl NativeActorsClient {
             Err(error) => NativeActorsOperationResult::failure(error),
         })
     }
+    #[napi(js_name = "deleteActorResult")]
+    /// Execute `DeleteActor` and return encoded bytes or structured error.
+    pub async fn delete_actor_result(
+        &self,
+        request: Buffer,
+        cancellation: Option<&NativeActorsCancellation>,
+    ) -> Result<NativeActorsOperationResult> {
+        let decoded = match decode_semantic::<wire::DeleteActorRequest, domain::DeleteActorRequest>(
+            &request,
+            "delete_actor",
+        ) {
+            Ok(value) => value,
+            Err(error) => return Ok(NativeActorsOperationResult::failure(error)),
+        };
+        let value = cancellable(
+            self.inner.delete_actor(&decoded),
+            cancellation.map(|value| value.state.clone()),
+        )
+        .await;
+        Ok(match value {
+            Ok(value) => NativeActorsOperationResult {
+                value: Some(
+                    encode(&wire::DeleteActorResponse::from(value), "delete_actor")
+                        .map_err(napi_error)?,
+                ),
+                error: None,
+            },
+            Err(error) => NativeActorsOperationResult::failure(error),
+        })
+    }
     #[napi(js_name = "invokeActorResult")]
     /// Execute `InvokeActor` and return encoded bytes or structured error.
     pub async fn invoke_actor_result(

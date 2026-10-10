@@ -1,8 +1,8 @@
 // Rust-owned semantic projections for the Actors contract.
 //
-// This module provides typed semantic boundaries for all eight Actors
+// This module provides typed semantic boundaries for all nine Actors
 // operations (create, update, inspect, add/remove/resume subscription,
-// checkpoint, and invoke), preserving the canonical wire validators and
+// checkpoint, invoke, and delete), preserving the canonical wire validators and
 // lossless enum/presence rules. Transport behavior remains in
 // [`crate::grpc`] and [`crate::http`].
 
@@ -1180,6 +1180,63 @@ impl CheckpointActorRequest {
 
 
 
+/// Deletion request. The canonical validator requires an Actor identity and a
+/// bounded idempotency key; deletion is terminal for that Actor identity.
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = DeleteActorRequest::validate_from_proto)]
+
+#[derive(Clone, Debug, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/DeleteActorRequest.ts")]
+#[ts(rename_all = "camelCase")]
+pub struct DeleteActorRequest {
+    #[wire(tag = 1, string)]
+
+    actor_id: ActorId,
+    #[wire(tag = 2)]
+    idempotency_key: String,
+}
+
+impl DeleteActorRequest {
+    /// Builds and validates a deletion request through the canonical admission path.
+    pub fn new(actor_id: ActorId, idempotency_key: String) -> Result<Self, DomainError> {
+        Self::try_from(wire::DeleteActorRequest {
+            actor_id: actor_id.as_str().to_owned(),
+            idempotency_key,
+        })
+    }
+
+    /// Re-runs the canonical request validator without recursively invoking
+    /// the semantic `TryFrom` implementation.
+    fn validate_from_proto(&self) -> Result<(), DomainError> {
+        let wire: wire::DeleteActorRequest = self.clone().into();
+        crate::validate_delete(&wire).map_err(DomainError::Contract)
+    }
+
+    /// Returns the Actor identity.
+    #[must_use]
+    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    /// Returns the idempotency key.
+    #[must_use]
+    pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
+}
+
+
+
+
+
+/// Empty deletion acknowledgement. After it, every operation on the deleted
+/// Actor identity reports `ACTOR_NOT_FOUND`; an exact retry with the same
+/// idempotency key succeeds again.
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/DeleteActorResponse.ts")]
+#[ts(type = "Record<never, never>")]
+pub struct DeleteActorResponse {}
+
+
+
+
+
 /// Typed invocation request. Method, URL, headers, and body preserve the
 /// existing wire contract without adding new validation rules.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
@@ -1284,6 +1341,7 @@ macro_rules! typescript_message_roots {
             ResumeSubscriptionRequest,
             CheckpointActorRequest,
             InvokeActorRequest,
+            DeleteActorRequest,
             CreateActorResponse,
             UpdateActorResponse,
             InspectActorResponse,
@@ -1292,6 +1350,7 @@ macro_rules! typescript_message_roots {
             ResumeSubscriptionResponse,
             CheckpointActorResponse,
             InvokeActorResponse,
+            DeleteActorResponse,
         )
     };
 }
