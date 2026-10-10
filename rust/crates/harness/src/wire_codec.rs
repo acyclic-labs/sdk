@@ -1,20 +1,24 @@
+//! Canonical typed wire conversions shared by native and WASM consumers.
+
 use crate::core::RecordedScope;
 use crate::{
-    AgentId, Capabilities, Error, OperationId, Result,
+    AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result,
     contract::canonical_json_bytes,
-    core::{AggregateKind, Authority, Event, EventPayload, EventReference, Scope},
+    core::{Action, AggregateKind, Authority, Command, Event, EventPayload, EventReference, Scope, canonical_intent},
     wire,
 };
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-use crate::{
-    IdempotencyKey,
-    core::{Action, ApplyResult, Command, canonical_intent},
-};
+use crate::core::ApplyResult;
 use prost::Message as _;
 
 const EVENT_WIRE_VERSION: &str = "2";
 
 pub(crate) fn encode_event(authority: &Authority, event: &Event) -> Result<Vec<u8>> {
+    Ok(encode_event_envelope(authority, event)?.encode_to_vec())
+}
+
+/// Constructs the exact canonical event envelope without encoding it twice.
+pub fn encode_event_envelope(authority: &Authority, event: &Event) -> Result<wire::EventEnvelope> {
     let payload = canonical_json_bytes(&event.payload)?;
     let (issuer, agent) = event.scope.wire_parts();
     Ok(wire::EventEnvelope {
@@ -38,8 +42,7 @@ pub(crate) fn encode_event(authority: &Authority, event: &Event) -> Result<Vec<u
         event_type: event.payload.tag().into(),
         canonical_payload_json: payload,
         attestation: event.attestation.to_vec(),
-    }
-    .encode_to_vec())
+    })
 }
 
 pub(crate) fn decode_event(bytes: &[u8]) -> Result<(Authority, Event)> {
@@ -101,8 +104,7 @@ pub(crate) fn decode_event(bytes: &[u8]) -> Result<(Authority, Event)> {
 }
 
 /// Decodes one canonical event payload and checks its generated discriminator.
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-pub(crate) fn decode_event_payload(event_type_name: &str, bytes: &[u8]) -> Result<EventPayload> {
+pub fn decode_event_payload(event_type_name: &str, bytes: &[u8]) -> Result<EventPayload> {
     let payload: EventPayload = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Storage(error.to_string()))?;
     if event_type_name != payload.tag() {
@@ -117,6 +119,12 @@ pub(crate) fn decode_event_payload(event_type_name: &str, bytes: &[u8]) -> Resul
 pub(crate) fn decode_command(bytes: &[u8]) -> Result<(Authority, Command)> {
     let envelope =
         wire::CommandEnvelope::decode(bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+    decode_command_envelope(envelope)
+}
+
+/// Decodes an already framed command through the same validation as WASM.
+/// This authenticates no scope: the authoritative host must verify its issuer.
+pub fn decode_command_envelope(envelope: wire::CommandEnvelope) -> Result<(Authority, Command)> {
     validate_protocol(
         envelope.protocol.as_ref(),
         &protocol_identity(),
@@ -145,7 +153,7 @@ pub(crate) fn decode_command(bytes: &[u8]) -> Result<(Authority, Command)> {
     }
     let command = Command {
         operation_id: OperationId::parse(&operation.operation_id)?,
-        idempotency_key: IdempotencyKey(operation.idempotency_key),
+        idempotency_key: IdempotencyKey::new(operation.idempotency_key)?,
         expected_revision: envelope.expected_revision,
         scope: decode_scope(
             envelope
@@ -172,8 +180,7 @@ pub(crate) fn encode_apply_result(authority: &Authority, result: &ApplyResult) -
         ApplyResult::Applied { event } => (wire::ApplyState::Applied, event),
         ApplyResult::Replayed { event } => (wire::ApplyState::Replayed, event),
     };
-    let event = wire::EventEnvelope::decode(encode_event(authority, event)?.as_slice())
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let event = encode_event_envelope(authority, event)?;
     Ok(wire::ApplyResponse {
         state: state as i32,
         event: Some(event),
@@ -220,7 +227,9 @@ pub(crate) fn validate_protocol(
     }
 }
 
-pub(crate) fn encode_authority(authority: &Authority) -> wire::Authority {
+/// Converts a semantic aggregate identity without conflating its typed kind.
+#[must_use]
+pub fn encode_authority(authority: &Authority) -> wire::Authority {
     wire::Authority {
         kind: match authority.kind {
             AggregateKind::Agent => wire::AggregateKind::Agent as i32,
@@ -363,6 +372,7 @@ mod tests {
             id: "task-1".into(),
         };
         let bytes = encode_event(&authority, &event)?;
+        assert_eq!(bytes, encode_event_envelope(&authority, &event)?.encode_to_vec());
         let mut envelope = wire::EventEnvelope::decode(bytes.as_slice())
             .map_err(|error| Error::Storage(error.to_string()))?;
         envelope
@@ -494,6 +504,45 @@ mod tests {
             actual, expected,
             "replace the native/WASM fixture with: {actual}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn native_command_envelopes_require_exact_payload_protocol_and_retry_identity() -> Result<()> {
+        let action = Action::TransitionLifecycle { to: crate::core::LifecycleState::Active, reason: None };
+        let envelope = wire::CommandEnvelope {
+            protocol: Some(protocol_identity()),
+            authority: Some(wire::Authority { kind: wire::AggregateKind::Task as i32, id: "native-source".into() }),
+            operation: Some(wire::OperationIdentity {
+                operation_id: OperationId::from_bytes([31; 16]).to_string(),
+                idempotency_key: "native-once".into(),
+            }),
+            scope: Some(wire::Scope {
+                id: "explicit-producer-scope".into(), issuer: "producer".into(),
+                capabilities: vec!["lifecycle:transition".into()], proof: vec![7; 32],
+                ..wire::Scope::default()
+            }),
+            action_type: "transition_lifecycle".into(),
+            canonical_action_json: canonical_json_bytes(&action)?,
+            ..wire::CommandEnvelope::default()
+        };
+        let (authority, command) = decode_command_envelope(envelope.clone())?;
+        assert_eq!(authority.kind, AggregateKind::Task);
+        assert_eq!(command.operation_id, OperationId::from_bytes([31; 16]));
+        assert_eq!(command.idempotency_key, IdempotencyKey::new("native-once")?);
+        let mut wrong = envelope.clone();
+        wrong.canonical_action_json = serde_json::to_vec_pretty(&action)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert!(matches!(decode_command_envelope(wrong), Err(Error::Invalid(_))));
+        let mut wrong = envelope.clone();
+        wrong.action_type = "append_custom".into();
+        assert!(matches!(decode_command_envelope(wrong), Err(Error::Invalid(_))));
+        let mut wrong = envelope.clone();
+        wrong.operation.as_mut().ok_or_else(|| Error::Invalid("operation missing".into()))?.idempotency_key.clear();
+        assert!(matches!(decode_command_envelope(wrong), Err(Error::Invalid(_))));
+        let mut wrong = envelope;
+        wrong.intent_digest = vec![0; 32];
+        assert!(matches!(decode_command_envelope(wrong), Err(Error::Conflict(_))));
         Ok(())
     }
 }

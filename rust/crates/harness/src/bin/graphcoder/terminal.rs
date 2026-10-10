@@ -13,6 +13,42 @@ use prost::Message as _;
 
 pub const MAX_FRAME_BYTES: usize = 65_536;
 pub const MAX_PAGE_EVENTS: usize = 16;
+pub const MAX_DISPLAY_BYTES: usize = 262_144;
+pub const MAX_DISPLAY_PAGES: usize = 64;
+
+/// A finite, transient scrollback. Evicted pages are recovered by an explicit
+/// archival read, never by hydrating all descendant conversations.
+#[derive(Default)]
+pub struct Scrollback {
+    pages: std::collections::VecDeque<String>,
+    bytes: usize,
+}
+
+impl Scrollback {
+    pub fn push(&mut self, page: String) -> Result<()> {
+        if page.len() > MAX_DISPLAY_BYTES {
+            return Err(Error::Invalid("rendered page exceeds display bounds".into()));
+        }
+        while self.pages.len() >= MAX_DISPLAY_PAGES
+            || self.bytes.saturating_add(page.len()) > MAX_DISPLAY_BYTES
+        {
+            if let Some(previous) = self.pages.pop_front() {
+                self.bytes -= previous.len();
+            } else {
+                break;
+            }
+        }
+        self.bytes += page.len();
+        self.pages.push_back(page);
+        Ok(())
+    }
+
+    pub fn page(&self, back: usize) -> Option<&str> {
+        self.pages.len().checked_sub(back + 1)
+            .and_then(|index| self.pages.get(index))
+            .map(String::as_str)
+    }
+}
 
 /// Dispatch exactly once. A caller must supply already scoped commands; the UI
 /// neither creates grants nor retries uncertain admission or cancellation.
@@ -96,7 +132,7 @@ pub fn render(frame: &wire::ServerFrame) -> Result<String> {
     let Some(frame) = &frame.frame else {
         return Err(Error::Invalid("response frame is missing".into()));
     };
-    match frame {
+    let output = match frame {
         Frame::Delivery(delivery) => {
             if delivery.events.len() > MAX_PAGE_EVENTS {
                 return Err(Error::Invalid(
@@ -110,26 +146,67 @@ pub fn render(frame: &wire::ServerFrame) -> Result<String> {
                 text(&delivery.generation),
             );
             for event in &delivery.events {
-                let payload = std::str::from_utf8(&event.canonical_payload_json)
-                    .map_err(|_| Error::Invalid("event payload is not UTF-8".into()))?;
-                // Typed extension/diff/approval payloads remain uninterpreted
-                // until the owning public presentation contracts land.
+                let presentation = render_payload(&event.event_type, &event.canonical_payload_json)?;
                 writeln!(
                     output,
                     "#{} {} operation={}\n{}",
                     event.revision,
                     text(&event.event_type),
                     text(&event.operation_id),
-                    text(payload),
+                    presentation,
                 )
                 .map_err(|error| Error::Invalid(error.to_string()))?;
             }
-            Ok(output)
+            output
         }
         // Debug escapes strings and preserves unknown numeric enum values.
         // In particular, accepted admission is never labelled completion.
-        frame => Ok(format!("{frame:?}\n")),
+        frame => format!("{frame:?}\n"),
+    };
+    if output.len() > MAX_DISPLAY_BYTES {
+        return Err(Error::Invalid("rendered response exceeds display bounds".into()));
     }
+    Ok(output)
+}
+
+/// Layout the existing semantic event types without resolving any referenced
+/// content, interpreting grants, or conflating task and operation identities.
+fn render_payload(event_type: &str, bytes: &[u8]) -> Result<String> {
+    use acyclic_harness::core::EventPayload;
+    let decoded = acyclic_harness::wire_codec::decode_event_payload(event_type, bytes)?;
+    let rendered = match decoded {
+        EventPayload::ConversationMessageAppended { message } => format!(
+            "transcript {:?} message={} sequence={}\ncontent {}\n",
+            message.kind, message.id, message.sequence,
+            serde_json::to_string(&message.content)
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+        ),
+        EventPayload::InteractionOpened { ticket } => format!(
+            "interaction {:?} id={} approval={:?} deadline={:?}\nrequest {}\n\
+             Decision requires an exact scoped response; displaying is not approval.\n",
+            ticket.kind, ticket.id, ticket.approval, ticket.deadline_unix_ms,
+            serde_json::to_string(&ticket.request)
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+        ),
+        EventPayload::InteractionResolved { resolution } => {
+            format!("interaction outcome {resolution:?}\n")
+        }
+        EventPayload::ForkPublished { seed } => {
+            format!("fork {seed:?}\n")
+        }
+        EventPayload::ProjectMergePublished { receipt } => format!(
+            "merge publication={} child={:?}\nsource={:?} target={:?}\n\
+             expected={:?} result={:?}\nnotice {}\n",
+            receipt.operation_id, receipt.child,
+            receipt.source_generation, receipt.target_project,
+            receipt.expected_target_generation, receipt.result_generation,
+            serde_json::to_string(&receipt.notice.content)
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+        ),
+        _ => return Ok(text(std::str::from_utf8(bytes)
+            .map_err(|_| Error::Invalid("event payload is not UTF-8".into()))?)),
+    };
+    Ok(text(&rendered))
 }
 
 #[cfg(test)]

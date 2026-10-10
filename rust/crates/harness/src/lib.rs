@@ -65,7 +65,7 @@ pub mod turn;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 pub mod wire_api;
-mod wire_codec;
+pub mod wire_codec;
 pub use wire_codec::encode_error;
 #[cfg(test)]
 #[path = "../tests/support/stream.rs"]

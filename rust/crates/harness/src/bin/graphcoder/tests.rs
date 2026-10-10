@@ -242,3 +242,36 @@ fn fixture_cursor_is_explicit_and_mutations_stay_unavailable() -> Result<()> {
     ));
     Ok(())
 }
+
+#[test]
+fn scrollback_evicts_by_pages_and_bytes_before_accepting_overflow() -> Result<()> {
+    let mut view = Scrollback::default();
+    for index in 0..=MAX_DISPLAY_PAGES {
+        view.push(index.to_string())?;
+    }
+    assert_eq!(view.page(0), Some(MAX_DISPLAY_PAGES.to_string().as_str()));
+    assert_eq!(view.page(MAX_DISPLAY_PAGES), None);
+    view.push("x".repeat(MAX_DISPLAY_BYTES))?;
+    assert_eq!(view.page(1), None);
+    assert!(matches!(view.push("x".repeat(MAX_DISPLAY_BYTES + 1)), Err(Error::Invalid(_))));
+    assert_eq!(view.page(0).map(str::len), Some(MAX_DISPLAY_BYTES));
+    Ok(())
+}
+
+#[test]
+fn typed_transcript_layout_rejects_forged_event_discriminators() -> Result<()> {
+    let api = crate::fixture::WireFixture::load()?;
+    let request = wire::client_frame::Frame::Resume(wire::ResumeRequest {
+        protocol: Some(current_protocol()), cursors: vec![api.start_cursor()],
+    });
+    let mut response = wire::ServerFrame { frame: block_on(dispatch(&api, request))? };
+    let displayed = render(&response)?;
+    assert!(displayed.contains("transcript User"));
+    let Some(wire::server_frame::Frame::Delivery(delivery)) = &mut response.frame else {
+        return Err(Error::Invalid("fixture delivery missing".into()));
+    };
+    let event = delivery.events.first_mut().ok_or_else(|| Error::Invalid("fixture event missing".into()))?;
+    event.event_type = "interaction_opened".into();
+    assert!(matches!(render(&response), Err(Error::Storage(_))));
+    Ok(())
+}
