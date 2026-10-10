@@ -6,6 +6,7 @@ test('every supported action reference is pinned and alternative YAML forms fail
   pinnedActions('workflow.yml',`  - uses: actions/checkout@${'a'.repeat(40)}\n  - uses: ./.github/actions/local\n# uses: example@main`);
   pinnedActions('workflow.yml',`  - run: |\n      echo 'uses: example@main'\n  - uses: ./.github/actions/local`);
   pinnedActions('workflow.yml',`name: 'Build uses: pinned actions'\nname: "Build, uses: pinned actions"\nname: Build uses: pinned actions`);
+  pinnedActions('workflow.yml','if: ${{ !cancelled() }}');
   for (const source of ['- {uses: actions/checkout@main}', '- "uses": actions/checkout@main',
     '- uses: actions/checkout@main', '- uses: *action', '- {"uses": actions/checkout@main}',
     '- uses: |-\n    actions/checkout@main', '- uses: >\n    actions/checkout@main',

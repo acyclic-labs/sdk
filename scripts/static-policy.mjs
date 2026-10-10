@@ -14,8 +14,9 @@ export function pinnedActions(file, source) {
     // step name or environment value is not an action reference.
     const keys = line.replace(/"(?:\\.|[^"\\])*"|'(?:''|[^'])*'/g,
       (value, offset) => /^\s*:/.test(line.slice(offset + value.length)) ? value : ' '.repeat(value.length));
-    if (/(?:^\s*(?:-\s*)?|:\s*|[{,]\s*)[&*!]/.test(keys) ||
-        /(?:^\s*(?:-\s*)?|[{,]\s*)["'][^\n]*["']\s*:/.test(keys)) {
+    const mapping = keys.replace(/\$\{\{.*?\}\}/g, '');
+    if (/(?:^\s*(?:-\s*)?|:\s*|[{,]\s*)[&*!]/.test(mapping) ||
+        /(?:^\s*(?:-\s*)?|[{,]\s*)["'][^\n]*["']\s*:/.test(mapping)) {
       throw new Error(`${file}: YAML anchors, aliases, tags and quoted mapping keys are unsupported; use ordinary block mappings`);
     }
     const key = /(?:^\s*(?:-\s*)?|[{,]\s*)(?:uses|["']uses["'])\s*:/.test(keys);
