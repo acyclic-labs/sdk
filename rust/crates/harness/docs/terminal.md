@@ -30,8 +30,11 @@ Its fields are `filesystem_root`, `stream_root` (absolute paths),
 binding contains `authority`,
 `issuer`, `key` (32 bytes), and an original signed `scope`. Keep this credential
 file private. Each `fork_sources` entry retains the original authenticated
-caller/snapshot/owner/project tuple; checkpoint-backed preparations use the
-canonical runtime's retained source resolver, never a latest-head fallback.
+caller/snapshot/owner/project/exact-request tuple for report publication binding
+and the shared factory's immutable original-source record. Preparation restoration
+is entirely that canonical source resolver at the exact admitted parent revision,
+using the SDK-sealed helper token and actual driver cancellation; the UI never
+constructs that token or substitutes a latest-head fallback.
 `tools` contains finite configured `callers`, `forks`, `merges` and a declared
 `content_budget`, consumed by the same native/browser recursive tool source.
 Empty tool bindings confer no caller capability. `native_publications` binds

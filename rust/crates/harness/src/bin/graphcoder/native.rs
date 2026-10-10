@@ -11,7 +11,7 @@ use acyclic_harness::{
     executor::TurnOutput,
     filesystem::{FilesystemContentPublisher, FilesystemContentVerifier, FilesystemForkVerifier, FilesystemHost,
         FilesystemProjectMergeVerifier, FilesystemResourceCreationProvider, FilesystemTaskRuntime,
-        ForkPreparationMachine, MailboxModelMachine, StockTurnMachine, restore_recursive_fork_source,
+        ForkPreparationMachine, MailboxModelMachine, StockTurnMachine,
         StreamHistoryForkVerifier, TaskWorkerAttempt, TaskWorkerOutcome},
     fork::{CompositeForkVerifier, ForkReport},
     model::{Model, ModelContent},
@@ -108,6 +108,7 @@ pub struct ForkSourceConfig {
     pub owner: AuthorityBinding,
     pub project: VolumeRef,
     pub snapshot: Snapshot,
+    pub request: acyclic_harness::fork::ForkRequest,
 }
 
 pub struct NativeSession {
@@ -139,6 +140,12 @@ impl NativeSession {
         for source in &config.fork_sources {
             source.owner.verifier()?;
             source.project.validate()?;
+            source.request.validate()?;
+            if source.request.parent != source.owner.authority
+                || source.request.parent_revision != source.snapshot.revision
+            {
+                return Err(Error::Unauthorized("original fork source request differs from its authenticated cut".into()));
+            }
             acyclic_harness::core::Reducer::restore(
                 source.snapshot.clone(), source.owner.verifier()?, SchemaRegistry::default(),
             )?;
@@ -306,47 +313,10 @@ impl NativeSession {
     }
 
     pub async fn resume(&self, lease: WorkLease) -> Result<String> {
-        let mut commands = self.runtime.commands().with_model(
+        let commands = self.runtime.commands().with_model(
             self.model.clone(), Arc::new(super::provider::Deterministic::new(self.config.deterministic_delay_ms)),
             Default::default(), Default::default(),
         );
-        let (task, identity) = self.runtime.harness()
-            .reconcile_admission(lease.operation.operation_id).await?
-            .ok_or_else(|| Error::NotFound("original work lease admission".into()))?;
-        if identity.name == "acyclic.fork_preparation"
-            && self.runtime.task_host().outcome(task).await?.is_none()
-        {
-            let admission = self.runtime.task_host().observe_admission(task).await?;
-            let preparation: ResourcePreparationRequest = serde_json::from_value(admission.input)
-                .map_err(|error| Error::Invalid(format!("retained fork preparation input: {error}")))?;
-            preparation.validate()?;
-            if preparation.source_checkpoint.is_none() {
-                let request = acyclic_harness::fork::ForkRequest::deserialize(&preparation.payload)
-                    .map_err(|error| Error::Invalid(format!("retained fork source request: {error}")))?;
-                let source = self.config.fork_sources.iter().find(|source| {
-                    Some(source.caller) == preparation.child.parent
-                        && source.owner.authority == request.parent
-                        && source.snapshot.revision == request.parent_revision
-                }).ok_or_else(|| Error::Unsupported(
-                    "original caller fork checkpoint/provider binding is unavailable; latest source is never substituted".into(),
-                ))?;
-                let verifier = source.owner.verifier()?;
-                let reducer = acyclic_harness::core::Reducer::restore(
-                    source.snapshot.clone(), verifier.clone(), SchemaRegistry::default(),
-                )?;
-                let fence = LeaseFence::from(&lease.reservation);
-                let context = self.runtime.task_context(task, fence.clone()).await?;
-                let owner = Arc::new(self.runtime.task_host().journal_owner(task, fence).await?);
-                let source_read = owner.restore_project_source(&context, &preparation).await?;
-                let binding = restore_recursive_fork_source(
-                    self.files.clone(), &self.stream, &reducer, verifier, source.owner.scope.clone(),
-                    source.project.clone(), self.config.stream_provider.clone(), request,
-                    HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 },
-                    source_read,
-                ).await?;
-                commands = commands.with_fork_preparer(binding.preparer);
-            }
-        }
         render_attempt(self.runtime.resume_task(lease, &commands, 16).await)
     }
 

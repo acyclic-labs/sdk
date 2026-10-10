@@ -478,11 +478,12 @@ impl Producer {
                 limits: self.config.limits, inherited_messages: 64,
                 inherited_bytes: PAYLOAD_BYTES, inherited_references: 64,
                 history_limits: HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 } },
-            source_read,
+            source_read, &self.cancellation,
         ).await?;
         let projected_reference_grants = binding.preparer.required_reference_grants(&binding.request).await?;
         let checkpoint = ForkSourceConfig { caller: parent.task, owner: parent.binding.clone(),
-            project: parent.project.clone(), snapshot: parent.aggregate.reducer().snapshot()? };
+            project: parent.project.clone(), snapshot: parent.aggregate.reducer().snapshot()?,
+            request: binding.request.clone() };
         let checkpoint_path = self.root.join("inputs").join(format!("{label}-source.json"));
         persist(&checkpoint_path, &checkpoint).await?;
         self.config.fork_sources.push(checkpoint);

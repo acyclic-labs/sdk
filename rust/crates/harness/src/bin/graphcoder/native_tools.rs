@@ -8,8 +8,9 @@ use acyclic_harness::{
     Error, Result, TaskId,
     conversation::{ConversationMessage, VolumeRef},
     filesystem::{ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller,
-        ConfiguredRecursiveFork, ConfiguredRecursiveMerge, ConfiguredRecursiveToolSource,
-        ConfiguredRecursiveToolsConfig, ForkPreparationLimits, RecursiveDefaultToolset},
+        ConfiguredRecursiveFork, ConfiguredRecursiveMerge, ConfiguredRecursiveSourceCheckpoint,
+        ConfiguredRecursiveToolSource, ConfiguredRecursiveToolsConfig, ForkPreparationLimits,
+        RecursiveDefaultToolset},
     runtime::TaskAdmissionRecord,
     store::HistoryReadLimits,
     workflow::WorkflowCommand,
@@ -84,7 +85,9 @@ impl NativeToolSource {
     /// Borrows configuration so unrelated original fork snapshots are not
     /// cloned. Only the finite provider bindings needed by the source are kept.
     pub fn new(config: &Config, stream: StreamClient<LocalStream>, files: Arc<Files>) -> Result<Arc<Self>> {
-        if config.tools.callers.len() > 64 || config.tools.forks.len() > 64 || config.tools.merges.len() > 64 {
+        if config.tools.callers.len() > 64 || config.tools.forks.len() > 64 || config.tools.merges.len() > 64
+            || config.fork_sources.len() > 64
+        {
             return Err(Error::Invalid("native tools exceed the finite producer binding limit".into()));
         }
         let configured = ConfiguredRecursiveToolsConfig {
@@ -131,6 +134,13 @@ impl NativeToolSource {
             // Native assembly installs its actual service/graph policy
             // explicitly; this browser configuration hook cannot infer a root.
             project_policy_graph_root: None,
+            original_sources: config.fork_sources.iter()
+                .filter(|source| config.tools.callers.iter().any(|caller| caller.task == source.caller))
+                .map(|source| ConfiguredRecursiveSourceCheckpoint {
+                    caller: source.caller,
+                    request: source.request.clone(),
+                    snapshot: source.snapshot.clone(),
+                }).collect(),
         };
         let source = Source::new(configured, stream, files, &config.filesystem_provider, config.limits)?;
         Ok(Arc::new(Self { source }))
