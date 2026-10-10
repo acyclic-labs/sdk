@@ -271,37 +271,24 @@ pub(super) async fn load<P: StreamProvider>(
             "projection read bounds must be positive".into(),
         ));
     }
-    let head = client.stream(head_path(authority)?.as_str())?;
-    let head_tail = match head.tail().await {
-        Ok(tail) => tail,
-        Err(StreamError::NotFound) => 0,
-        Err(error) => return Err(error.into()),
-    };
-    // Observe the checkpoint first, then pin a canonical cut. Later appends
-    // cannot move the selected checkpoint into the future of this traversal.
-    let index = if head_tail == 0 {
-        None
-    } else {
-        Some(
-            operations::one_record(client, head.path(), head_tail - 1)
-                .await?
-                .ok_or_else(|| Error::Storage("projection head is missing".into()))?,
-        )
-    };
+    // Pin the canonical cut first. Checkpoints publish atomically at every
+    // interval, so the corresponding immutable position already exists and
+    // later publications cannot change which checkpoint this read selects.
     let through_revision = tail(client, authority).await?;
-    let Some(index) = index else {
-        if through_revision >= u64::from(DEFAULT_PROJECTION_EVENTS) {
-            return Err(Error::Unsupported(
-                "canonical history requires a durable projection checkpoint".into(),
-            ));
-        }
+    let checkpoint_count = through_revision / u64::from(DEFAULT_PROJECTION_EVENTS);
+    if checkpoint_count == 0 {
         return Ok(LoadedProjection {
             snapshot: None,
             through_revision,
             consumed_bytes: 0,
             consumed_events: 0,
         });
-    };
+    }
+    let index = operations::one_record(client, &head_path(authority)?, checkpoint_count - 1)
+        .await?
+        .ok_or_else(|| {
+            Error::Unsupported("canonical history requires a durable projection checkpoint".into())
+        })?;
     let mut consumed_bytes = 0;
     charge(
         &mut consumed_bytes,
@@ -312,7 +299,7 @@ pub(super) async fn load<P: StreamProvider>(
         .map_err(|error| Error::Storage(error.to_string()))?;
     if &location.authority != authority
         || location.revision
-            != head_tail
+            != checkpoint_count
                 .checked_mul(u64::from(DEFAULT_PROJECTION_EVENTS))
                 .ok_or_else(|| Error::Storage("projection head revision overflows".into()))?
         || location.revision > through_revision
