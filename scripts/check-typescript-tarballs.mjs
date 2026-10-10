@@ -262,6 +262,7 @@ const main = async () => {
       await writeFile(join(tempRoot, "workspace-composition.mjs"),
         await readFile(join(packagesRoot, "filesystem/test/workspace-composition.mjs")));
       run("node", ["native-public-installed.mjs", join(tempRoot, "node_modules/@acyclic-labs/fs")], { cwd: tempRoot });
+      run("bun", ["native-public-installed.mjs", join(tempRoot, "node_modules/@acyclic-labs/fs")], { cwd: tempRoot });
     }
     await writeFile(join(tempRoot, "inference-widths.mjs"), await readFile(join(packagesRoot, "inference/test/widths-installed.mjs")));
     run("node", ["inference-widths.mjs"], { cwd: tempRoot });

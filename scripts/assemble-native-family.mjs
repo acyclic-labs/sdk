@@ -157,6 +157,11 @@ function assertNativeReceipt(receipt, metadata) {
   const reconstructed = normalizeBuildInputs(raw, { sourceRoot: roots[0], platform: raw.runtime.platform, targetDir: raw.target_dir, outputDir: raw.generator.options.output_dir });
   if (JSON.stringify(reconstructed) !== JSON.stringify(metadata.build_inputs) || objectDigest(reconstructed) !== receipt.published_build_inputs_sha256) fail("native receipt reconstructed build inputs differ from published recipe");
 }
+// Bun 1.4.2 has no native Windows ARM64 runtime; x64 Bun there is installer tooling.
+function nativeBunSupported(target) {
+  return target !== "aarch64-pc-windows-msvc";
+}
+
 function assertNativeRuntimeQualification(proof, metadata, companion, receiptBytes) {
   const companionAsset = `${companion.name.replace(/^@/u, "").replace("/", "-")}-${metadata.version}.tgz`;
   const expectedArchives = [parentAsset(metadata.version), companionAsset].sort();
@@ -165,6 +170,10 @@ function assertNativeRuntimeQualification(proof, metadata, companion, receiptByt
       || proof.source_commit !== metadata.source_revision || proof.source_sha256 !== metadata.source_sha256
       || proof.target !== metadata.selected_target || !companion.os.includes(proof.platform)
       || !companion.cpu.includes(proof.arch) || proof.runtime !== "node" || !/^v24\./u.test(proof.node ?? "")
+      || proof.bun?.version !== "1.4.2" || proof.bun?.platform !== proof.platform
+      || (nativeBunSupported(metadata.selected_target)
+        ? proof.bun.arch !== proof.arch || proof.bun.consumer !== "passed"
+        : proof.bun.arch !== "x64" || proof.bun.consumer !== "unsupported-native-architecture")
       || metadata.artifact.path !== `generated/native/${companion.main}`
       || !isDeepStrictEqual(proof.artifact, metadata.artifact)
       || proof.producer_receipt_sha256 !== `sha256:${createHash("sha256").update(receiptBytes).digest("hex")}`
@@ -430,5 +439,5 @@ async function main() {
 }
 
 
-return { assertNativeSet, assertCommonBindings, qualifiedCompanionManifest, qualifiedParentManifest, sourceNativeInventory, verifyNativeAssembly, assertNativeReceipt, assertNativeRuntimeQualification, writeCompanionManifest, packArchive, main };
+return { assertNativeSet, assertCommonBindings, qualifiedCompanionManifest, qualifiedParentManifest, sourceNativeInventory, verifyNativeAssembly, assertNativeReceipt, assertNativeRuntimeQualification, nativeBunSupported, writeCompanionManifest, packArchive, main };
 }

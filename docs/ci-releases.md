@@ -93,6 +93,11 @@ It also retains the exact privately tested bytes as
 loader alias. The companion uses the maintained NAPI filename for those same
 bytes. Runtime receipts accept actual Node 24 only, not Bun's Node-version
 emulation, and require distinct canonical parent/companion archives.
+Bun 1.4.2 also executes the real installed native consumer on Linux x64/ARM64,
+Darwin x64/ARM64, and Windows x64. Its version and actual architecture are
+recorded separately from Node; installation alone is not Bun runtime proof.
+Windows ARM64 is explicitly Node-native only: this Bun release has no native
+Windows ARM64 executable, and x64 Bun cannot qualify the ARM64 addon.
 
 Linux ARM64 now retains source-bound native output. Darwin Intel addons run
 under checksum-pinned Intel Node and Bun via Rosetta, not ARM Node. Windows

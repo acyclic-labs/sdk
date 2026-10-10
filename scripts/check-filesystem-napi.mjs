@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { nativeFamily } from "./native-family.mjs";
 import { createNativeProducer } from "./build-native-family.mjs";
 import { createNativeAssembler } from "./assemble-native-family.mjs";
+/** @typedef {{ version: string, platform: string, arch: string, consumer: string }} NativeBunRuntimeProof */
 
 const family = nativeFamily("filesystem");
 const producer = createNativeProducer(family);
@@ -176,6 +177,7 @@ async function qualifyAdapter(bindingPath, engineRoot) {
     schema: "acyclic.filesystem.native-runtime-qualification.v1",
     source_commit: metadata.source_revision, source_sha256: metadata.source_sha256, target: metadata.selected_target,
     platform: process.platform, arch: process.arch, runtime: "node", node: process.version,
+    bun: /** @type {NativeBunRuntimeProof | undefined} */ (undefined),
     artifact: metadata.artifact,
     producer_receipt_sha256: `sha256:${createHash("sha256").update(await readFile(receipt)).digest("hex")}`,
     retained_artifact: { path: `acyclic-fs-${version}-${process.platform}-${process.arch}.node`, sha256: metadata.artifact.sha256, bytes: metadata.artifact.bytes },
@@ -308,6 +310,31 @@ async function qualifyAdapter(bindingPath, engineRoot) {
   ], { stdio: "inherit" });
   if (nodeConsumer.error) throw nodeConsumer.error;
   if (nodeConsumer.status !== 0) throw new Error("installed native Node.js consumer qualification failed");
+  const bunIdentityResult = spawnSync(bun, ["-e", "console.log(JSON.stringify({version:Bun.version,platform:process.platform,arch:process.arch}))"], {
+    encoding: "utf8",
+  });
+  if (bunIdentityResult.error) throw bunIdentityResult.error;
+  if (bunIdentityResult.status !== 0) throw new Error("installed Bun runtime identity capture failed");
+  const bunIdentity = JSON.parse(bunIdentityResult.stdout);
+  if (bunIdentity.version !== "1.4.2" || bunIdentity.platform !== process.platform) {
+    throw new Error("native qualification requires the maintained Bun 1.4.2 runtime");
+  }
+  if (assembler.nativeBunSupported(metadata.selected_target)) {
+    if (bunIdentity.arch !== process.arch) throw new Error("native Bun consumer architecture differs from the qualified addon");
+    const bunConsumer = spawnSync(bun, [
+      fileURLToPath(new URL("../typescript/packages/filesystem/test/native-public-installed.mjs", import.meta.url)),
+      packageRoot,
+    ], { stdio: "inherit" });
+    if (bunConsumer.error) throw bunConsumer.error;
+    if (bunConsumer.status !== 0) throw new Error("installed native Bun consumer qualification failed");
+    proof.bun = { ...bunIdentity, consumer: "passed" };
+  } else {
+    if (process.platform !== "win32" || process.arch !== "arm64" || bunIdentity.arch !== "x64") {
+      throw new Error("native Bun unsupported-architecture contract differs from Windows ARM64");
+    }
+    proof.bun = { ...bunIdentity, consumer: "unsupported-native-architecture" };
+    console.log("Windows ARM64 native runtime qualified with ARM64 Node; Bun 1.4.2 x64 is installer tooling only");
+  }
   const retainedPath = join(output, proof.retained_artifact.path);
   await copyFile(bindingPath, retainedPath);
   if (`sha256:${createHash("sha256").update(await readFile(retainedPath)).digest("hex")}` !== metadata.artifact.sha256) {
