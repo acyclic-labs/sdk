@@ -61,7 +61,7 @@ jobs:
       trusted: ${{ steps.select.outputs.trusted }}
     steps:
       - name: Check out exact source
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_ref || (github.event_name == 'release' && github.event.release.tag_name || github.event.pull_request.head.sha || github.sha) }}
           fetch-depth: 0
@@ -105,61 +105,61 @@ jobs:
       # A marker records the run that qualified a lane's exact inputs.
       - name: Find gate marker
         if: env.FORCE != 'true'
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/gate.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['gate'] }}
       - name: Find linux marker
         if: env.FORCE != 'true'
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/linux.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['linux'] }}
       - name: Find web marker
         if: env.FORCE != 'true'
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/web.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['web'] }}
       - name: Find typescript marker
         if: env.FORCE != 'true'
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/typescript.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['typescript'] }}
       - name: Find linux-arm64 marker
         if: env.FORCE != 'true'
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/linux-arm64.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['linux-arm64'] }}
       - name: Find linux-musl marker
         if: env.FORCE != 'true'
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/linux-musl.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['linux-musl'] }}
       - name: Find linux-arm64-musl marker
         if: env.FORCE != 'true'
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/linux-arm64-musl.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['linux-arm64-musl'] }}
       - name: Find windows marker
         if: env.FORCE != 'true'
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/windows.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['windows'] }}
       - name: Find macos marker
         if: env.FORCE != 'true'
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/macos.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['macos'] }}
       - name: Find policy marker
         if: env.FORCE != 'true'
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/policy.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['policy'] }}
@@ -193,7 +193,7 @@ jobs:
     # limits, not a wall-clock cutoff across cold builds and package verification.
     steps:
       - name: Check out exact source
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_ref || (github.event_name == 'release' && github.event.release.tag_name || github.event.pull_request.head.sha || github.sha) }}
           fetch-depth: 1
@@ -220,7 +220,7 @@ jobs:
       actions: read
     steps:
       - name: Check out exact source
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_ref || github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
@@ -249,7 +249,7 @@ jobs:
 
       - name: Forward coverage
         if: hashFiles('forward/coverage/**') != ''
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-${{ github.run_id }}-${{ github.run_attempt }}
           path: forward/coverage
@@ -258,7 +258,7 @@ jobs:
           retention-days: 90
       - name: Forward packages-linux
         if: hashFiles('forward/packages-linux/**') != ''
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packages-linux-${{ github.run_id }}-${{ github.run_attempt }}
           path: forward/packages-linux
@@ -267,7 +267,7 @@ jobs:
           retention-days: 90
       - name: Forward packages-linux-arm64
         if: hashFiles('forward/packages-linux-arm64/**') != ''
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packages-linux-arm64-${{ github.run_id }}-${{ github.run_attempt }}
           path: forward/packages-linux-arm64
@@ -276,7 +276,7 @@ jobs:
           retention-days: 90
       - name: Forward packages-macos
         if: hashFiles('forward/packages-macos/**') != ''
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packages-macos-${{ github.run_id }}-${{ github.run_attempt }}
           path: forward/packages-macos
@@ -285,7 +285,7 @@ jobs:
           retention-days: 90
       - name: Forward stream-native-windows
         if: hashFiles('forward/stream-native-windows/**') != ''
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: stream-native-windows-${{ github.run_id }}-${{ github.run_attempt }}
           path: forward/stream-native-windows
@@ -303,61 +303,61 @@ jobs:
 
       - name: Record gate
         if: contains(fromJSON(steps.record.outputs.recorded), 'gate')
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/gate.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['gate'] }}
       - name: Record linux
         if: contains(fromJSON(steps.record.outputs.recorded), 'linux')
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/linux.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['linux'] }}
       - name: Record web
         if: contains(fromJSON(steps.record.outputs.recorded), 'web')
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/web.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['web'] }}
       - name: Record typescript
         if: contains(fromJSON(steps.record.outputs.recorded), 'typescript')
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/typescript.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['typescript'] }}
       - name: Record linux-arm64
         if: contains(fromJSON(steps.record.outputs.recorded), 'linux-arm64')
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/linux-arm64.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['linux-arm64'] }}
       - name: Record linux-musl
         if: contains(fromJSON(steps.record.outputs.recorded), 'linux-musl')
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/linux-musl.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['linux-musl'] }}
       - name: Record linux-arm64-musl
         if: contains(fromJSON(steps.record.outputs.recorded), 'linux-arm64-musl')
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/linux-arm64-musl.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['linux-arm64-musl'] }}
       - name: Record windows
         if: contains(fromJSON(steps.record.outputs.recorded), 'windows')
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/windows.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['windows'] }}
       - name: Record macos
         if: contains(fromJSON(steps.record.outputs.recorded), 'macos')
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/macos.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['macos'] }}
       - name: Record policy
         if: contains(fromJSON(steps.record.outputs.recorded), 'policy')
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/policy.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['policy'] }}
