@@ -84,7 +84,6 @@ budgets include gate IO and the encoded replay buffers retained during decoding.
 Portable provider and property tests remain compiled on this target. Only native
 process, native filesystem and socket fixtures use native-only target dependencies;
 the WASM test target uses portable Tokio features and the browser entropy backend.
-
 ## Original publication custody
 
 `AsyncObjectStore::prepare_generation_publication` receives the original `PublishGenerationRequest`, complete `GenerationProof`, exact `GuardedAppend`, and closure/sweep scope after flush and before the canonical authority CAS. The publication hold stays live through preparation and CAS; custody failure prevents CAS. Object-store decorators forward the same context to their durable provider. Default preparation establishes no hosted custody.
