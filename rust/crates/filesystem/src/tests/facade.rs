@@ -10892,6 +10892,7 @@ fn assert_authority_volume_identity_fails_closed() -> Result<(), Box<dyn std::er
     let expected_volume = VolumeId::from_bytes([222; 16]);
     let wrong_volume = VolumeId::from_bytes([223; 16]);
     let creation = DurableCommit {
+        settled_at_micros: None,
         epoch: Epoch::new(1)?,
         sequence: Sequence::new(1),
         operation_id: OperationId::from_bytes([224; 16]),

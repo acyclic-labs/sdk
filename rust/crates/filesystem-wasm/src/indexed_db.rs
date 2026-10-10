@@ -1025,6 +1025,7 @@ impl IndexedDbAuthorityStore {
             &commit.payload,
         );
         let durable = DurableCommit {
+            settled_at_micros: None,
             epoch,
             sequence,
             operation_id: commit.operation_id,

@@ -669,6 +669,7 @@ fn defensive_memory_state_failures_are_typed_and_fail_closed()
 
     let exhausted_sequence = MemoryAuthorityStore::default();
     let prior = DurableCommit {
+        settled_at_micros: None,
         epoch: Epoch::GENESIS,
         sequence: Sequence::new(u64::MAX),
         operation_id: OperationId::from_bytes([43; 16]),

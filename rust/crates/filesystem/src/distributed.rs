@@ -64,7 +64,157 @@ struct AuthoritySnapshot {
     epoch_tail: u64,
 }
 
+// Private read-only capability: retirement bypass is available only to accounting.
+struct AccountingAuthority<'a, P>(&'a StreamAuthorityStore<P>);
+
+impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for AccountingAuthority<'_, P> {
+    async fn fork_generation_authority(
+        &self, _source: crate::GenerationForkSource, _destination: AuthorityId,
+        _operation: OperationId, _budget: WorkBudget, _cancellation: &CancellationToken,
+    ) -> AuthorityResult<CreateAuthorityOutcome> {
+        Err(OperationFailure::before_work(AuthorityStoreError::Retired))
+    }
+
+    async fn create_authority(
+        &self, _authority: AuthorityId, _epoch: Epoch, _budget: WorkBudget,
+        _cancellation: &CancellationToken,
+    ) -> AuthorityResult<CreateAuthorityOutcome> {
+        Err(OperationFailure::before_work(AuthorityStoreError::Retired))
+    }
+
+    async fn head(
+        &self, authority: AuthorityId, budget: WorkBudget, cancellation: &CancellationToken,
+    ) -> AuthorityResult<Head> {
+        cancellation.check().map_err(|_| OperationFailure::before_work(AuthorityStoreError::Cancelled))?;
+        let snapshot = self.0.historical_snapshot(authority).await
+            .map_err(OperationFailure::before_work)?;
+        authority_success(snapshot.head, authority_read_work(2), budget)
+    }
+
+    async fn compare_and_append(
+        &self, _authority: AuthorityId, _epoch: Epoch, _expected: Head,
+        _commit: ProposedCommit, _budget: WorkBudget, _cancellation: &CancellationToken,
+    ) -> AuthorityResult<FsAppendOutcome> {
+        Err(OperationFailure::before_work(AuthorityStoreError::Retired))
+    }
+
+    async fn replay(
+        &self, authority: AuthorityId, after: Sequence, limit: ReplayLimit,
+        budget: WorkBudget, cancellation: &CancellationToken,
+    ) -> AuthorityResult<Vec<DurableCommit>> {
+        self.0.historical_replay(authority, after, limit, budget, cancellation).await
+    }
+
+    async fn fence(
+        &self, _authority: AuthorityId, _expected: Head, _budget: WorkBudget,
+        _cancellation: &CancellationToken,
+    ) -> AuthorityResult<FenceOutcome> {
+        Err(OperationFailure::before_work(AuthorityStoreError::Retired))
+    }
+
+    async fn find_operation(
+        &self, _authority: AuthorityId, _operation: OperationId, _budget: WorkBudget,
+        _cancellation: &CancellationToken,
+    ) -> AuthorityResult<Option<DurableCommit>> {
+        Err(OperationFailure::before_work(AuthorityStoreError::Retired))
+    }
+}
+
 impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
+    /// Reads a bounded historical accounting page, including retired authorities.
+    ///
+    /// This does not reopen ordinary authority operations. Historical hosted custody
+    /// is optional; accounting fails closed when neither original evidence nor the
+    /// exact historical object closure remains available.
+    ///
+    /// # Errors
+    ///
+    /// Returns accounting, authority, cancellation, or work-budget failures.
+    pub async fn accounting_page<O: crate::AsyncObjectStore>(
+        &self,
+        objects: &O,
+        authority_id: AuthorityId,
+        cursor: crate::accounting::AccountingCursor,
+        maximum_records: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::accounting::AccountingPage, crate::accounting::AccountingError> {
+        let historical = AccountingAuthority(self);
+        let head = historical.head(authority_id, budget, cancellation).await
+            .map_err(|failure| crate::accounting::AccountingError::Authority(failure.error.to_string()))?;
+        let remaining = head.work.remaining(budget)
+            .map_err(crate::accounting::AccountingError::Work)?;
+        let mut page = crate::accounting::accounting_page_at_head(
+            &historical, objects, authority_id, cursor, maximum_records,
+            head.value, remaining, cancellation,
+        ).await?;
+        page.work = head.work.checked_add(page.work)
+            .map_err(crate::accounting::AccountingError::Work)?;
+        Ok(page)
+    }
+
+    async fn historical_replay(
+        &self,
+        authority_id: AuthorityId,
+        after: Sequence,
+        limit: ReplayLimit,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<Vec<DurableCommit>> {
+        cancellation
+            .check()
+            .map_err(|_| OperationFailure::before_work(AuthorityStoreError::Cancelled))?;
+        if limit.records == 0 || limit.payload_bytes == 0 {
+            return Err(OperationFailure::before_work(
+                AuthorityStoreError::InvalidReplayLimit,
+            ));
+        }
+        let path = records_path(authority_id).map_err(OperationFailure::before_work)?;
+        let mut stream = self
+            .provider
+            .read(acyclic_stream::ReadRequest {
+                path,
+                from: after.get().saturating_add(1),
+                limit: limit.records,
+            })
+            .await
+            .map_err(|error| OperationFailure::before_work(map_stream_error(error)))?;
+        let mut commits = Vec::new();
+        let mut payload_bytes = 0_u64;
+        while let Some(record) = stream.next().await {
+            let record =
+                record.map_err(|error| OperationFailure::before_work(map_stream_error(error)))?;
+            let durable = decode_durable(authority_id, &record)
+                .map_err(OperationFailure::before_work)?;
+            payload_bytes = payload_bytes
+                .checked_add(u64::try_from(durable.payload.len()).unwrap_or(u64::MAX))
+                .ok_or_else(|| {
+                    OperationFailure::before_work(AuthorityStoreError::ReplayRecordTooLarge {
+                        observed: u64::MAX,
+                        maximum: limit.payload_bytes,
+                    })
+                })?;
+            if payload_bytes > limit.payload_bytes {
+                if commits.is_empty() {
+                    return Err(OperationFailure::before_work(
+                        AuthorityStoreError::ReplayRecordTooLarge {
+                            observed: payload_bytes,
+                            maximum: limit.payload_bytes,
+                        },
+                    ));
+                }
+                break;
+            }
+            commits.push(durable);
+        }
+        let work = WorkCounters {
+            authority_records_read: u64::try_from(commits.len()).unwrap_or(u64::MAX),
+            authority_bytes_read: payload_bytes,
+            backend_read_operations: 1,
+            ..WorkCounters::default()
+        };
+        authority_success(commits, work, budget)
+    }
     /// Lists up to `maximum` exact filesystem authority identities, in order.
     ///
     /// Authorities are native direct children in Stream; no filesystem record or object is read.
@@ -122,6 +272,13 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         if self.is_retired(authority_id).await? {
             return Err(AuthorityStoreError::Retired);
         }
+        self.historical_snapshot(authority_id).await
+    }
+
+    async fn historical_snapshot(
+        &self,
+        authority_id: AuthorityId,
+    ) -> Result<AuthoritySnapshot, AuthorityStoreError> {
         let records = records_path(authority_id)?;
         let epochs = epochs_path(authority_id)?;
         let record_tail = self
@@ -147,7 +304,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             Head::genesis(epoch)
         } else {
             let record = read_one(self.provider.as_ref(), records, record_tail - 1).await?;
-            let durable = decode_durable(authority_id, &record.value)?;
+            let durable = decode_durable(authority_id, &record)?;
             if durable.sequence.get().saturating_add(1) != record_tail {
                 return Err(AuthorityStoreError::Corrupt(
                     "Stream sequence does not match filesystem authority sequence".to_owned(),
@@ -244,6 +401,9 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         authority_id: AuthorityId,
         operation_id: OperationId,
     ) -> Result<Option<DurableCommit>, AuthorityStoreError> {
+        if self.is_retired(authority_id).await? {
+            return Err(AuthorityStoreError::Retired);
+        }
         let key = operation_key(authority_id, operation_id)?;
         let Some(observation) = self
             .provider
@@ -261,7 +421,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let acyclic_stream::CommitOutcome::Committed(envelope) = outcome else {
             return Ok(None);
         };
-        durable_from_operation_envelope(authority_id, operation_id, envelope).map(Some)
+        durable_from_operation_envelope(authority_id, operation_id, envelope, None).map(Some)
     }
 
     async fn existing_fork_destination(
@@ -451,6 +611,7 @@ fn first_record_commit(
     let sequence = Sequence::new(1);
     let previous = Head::genesis(epoch);
     let durable = DurableCommit {
+        settled_at_micros: None,
         epoch,
         sequence,
         operation_id: commit.operation_id,
@@ -589,6 +750,9 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         cancellation
             .check()
             .map_err(|_| OperationFailure::before_work(AuthorityStoreError::Cancelled))?;
+        if self.is_retired(authority).await.map_err(OperationFailure::before_work)? {
+            return Err(OperationFailure::before_work(AuthorityStoreError::Retired));
+        }
         // The commit carries the operation's own retry identity, so the
         // operation is found like any appended one.
         let mut request = acyclic_stream::CommitRequest {
@@ -625,7 +789,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             Ok(tail) if tail >= 2 => Some(
                 read_one(self.provider.as_ref(), records, 1)
                     .await
-                    .and_then(|record| decode_durable(authority, &record.value))
+                    .and_then(|record| decode_durable(authority, &record))
                     .map_err(|error| OperationFailure::new(error, work))?,
             ),
             Ok(_) | Err(acyclic_stream::StreamError::NotFound) => None,
@@ -1064,6 +1228,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             .checked_next()
             .map_err(|_| OperationFailure::before_work(AuthorityStoreError::SequenceExhausted))?;
         let durable = DurableCommit {
+            settled_at_micros: None,
             epoch,
             sequence,
             operation_id: commit.operation_id,
@@ -1129,7 +1294,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         };
         let mut mutations = vec![acyclic_stream::CommitMutation::Append {
             path: records,
-            records: vec![encoded],
+            records: vec![encoded.clone()],
         }];
         let mut authority_records = 1_u64;
         let mut authority_bytes = u64::try_from(durable.payload.len()).unwrap_or(u64::MAX);
@@ -1224,8 +1389,14 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             self.provider.commit(request).await
         };
         match commit_result {
-            Ok(acyclic_stream::CommitOutcome::Committed(_)) => {
-                authority_success(FsAppendOutcome::Committed(durable), work, budget)
+            Ok(acyclic_stream::CommitOutcome::Committed(envelope)) => {
+                let record = authority_record_from_envelope(
+                    authority_id, &envelope, Some((durable.sequence, encoded.as_ref())),
+                ).map_err(|error| OperationFailure::new(error, work))?;
+                let mut settled = durable;
+                settled.settled_at_micros =
+                    (record.committed_at_micros != 0).then_some(record.committed_at_micros);
+                authority_success(FsAppendOutcome::Committed(settled), work, budget)
             }
             Ok(acyclic_stream::CommitOutcome::Conflict(conflicts)) => {
                 if let Some(existing) = self
@@ -1523,59 +1694,10 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> AuthorityResult<Vec<DurableCommit>> {
-        cancellation
-            .check()
-            .map_err(|_| OperationFailure::before_work(AuthorityStoreError::Cancelled))?;
-        if limit.records == 0 || limit.payload_bytes == 0 {
-            return Err(OperationFailure::before_work(
-                AuthorityStoreError::InvalidReplayLimit,
-            ));
+        if self.is_retired(authority_id).await.map_err(OperationFailure::before_work)? {
+            return Err(OperationFailure::before_work(AuthorityStoreError::Retired));
         }
-        let path = records_path(authority_id).map_err(OperationFailure::before_work)?;
-        let mut stream = self
-            .provider
-            .read(acyclic_stream::ReadRequest {
-                path,
-                from: after.get().saturating_add(1),
-                limit: limit.records,
-            })
-            .await
-            .map_err(|error| OperationFailure::before_work(map_stream_error(error)))?;
-        let mut commits = Vec::new();
-        let mut payload_bytes = 0_u64;
-        while let Some(record) = stream.next().await {
-            let record =
-                record.map_err(|error| OperationFailure::before_work(map_stream_error(error)))?;
-            let durable = decode_durable(authority_id, &record.value)
-                .map_err(OperationFailure::before_work)?;
-            payload_bytes = payload_bytes
-                .checked_add(u64::try_from(durable.payload.len()).unwrap_or(u64::MAX))
-                .ok_or_else(|| {
-                    OperationFailure::before_work(AuthorityStoreError::ReplayRecordTooLarge {
-                        observed: u64::MAX,
-                        maximum: limit.payload_bytes,
-                    })
-                })?;
-            if payload_bytes > limit.payload_bytes {
-                if commits.is_empty() {
-                    return Err(OperationFailure::before_work(
-                        AuthorityStoreError::ReplayRecordTooLarge {
-                            observed: payload_bytes,
-                            maximum: limit.payload_bytes,
-                        },
-                    ));
-                }
-                break;
-            }
-            commits.push(durable);
-        }
-        let work = WorkCounters {
-            authority_records_read: u64::try_from(commits.len()).unwrap_or(u64::MAX),
-            authority_bytes_read: payload_bytes,
-            backend_read_operations: 1,
-            ..WorkCounters::default()
-        };
-        authority_success(commits, work, budget)
+        self.historical_replay(authority_id, after, limit, budget, cancellation).await
     }
 
     async fn fence(
@@ -1790,10 +1912,26 @@ fn durable_from_operation_envelope(
     authority_id: AuthorityId,
     operation_id: OperationId,
     envelope: acyclic_stream::CommittedEnvelope,
+    expected: Option<(Sequence, &[u8])>,
 ) -> Result<DurableCommit, AuthorityStoreError> {
+    let record = authority_record_from_envelope(authority_id, &envelope, expected)?;
+    let durable = decode_durable(authority_id, record)?;
+    if durable.operation_id != operation_id {
+        return Err(AuthorityStoreError::Corrupt(
+            "operation envelope does not bind its authority operation".to_owned(),
+        ));
+    }
+    Ok(durable)
+}
+
+fn authority_record_from_envelope<'a>(
+    authority_id: AuthorityId,
+    envelope: &'a acyclic_stream::CommittedEnvelope,
+    expected: Option<(Sequence, &[u8])>,
+) -> Result<&'a acyclic_stream::Record, AuthorityStoreError> {
     let records = records_path(authority_id)?;
     let mut retained = None;
-    for mutation in envelope.mutations {
+    for mutation in &envelope.mutations {
         let acyclic_stream::CommittedMutation::Append(append) = mutation else {
             continue;
         };
@@ -1804,17 +1942,25 @@ fn durable_from_operation_envelope(
         // record before its own.
         let record = match append.records.as_slice() {
             [record] => record,
-            [genesis, record] if decode_epoch(&genesis.value, GENESIS_DOMAIN).is_ok() => record,
+            [genesis, record] if genesis.sequence == 0
+                && record.sequence == 1
+                && decode_epoch(&genesis.value, GENESIS_DOMAIN).is_ok() => record,
             _ => {
                 return Err(AuthorityStoreError::Corrupt(
                     "operation appended an invalid authority record count".to_owned(),
                 ));
             }
         };
-        let durable = decode_durable(authority_id, &record.value)?;
-        if durable.operation_id != operation_id || retained.replace(durable).is_some() {
+        if expected.is_some_and(|(sequence, bytes)| {
+            record.sequence != sequence.get() || record.value.as_ref() != bytes
+        }) {
             return Err(AuthorityStoreError::Corrupt(
-                "operation envelope does not bind its authority operation".to_owned(),
+                "committed envelope does not match the exact proposed record".to_owned(),
+            ));
+        }
+        if retained.replace(record).is_some() {
+            return Err(AuthorityStoreError::Corrupt(
+                "operation envelope repeats its authority record".to_owned(),
             ));
         }
     }
@@ -2084,11 +2230,18 @@ async fn read_one<P: acyclic_stream::StreamProvider>(
 
 fn decode_durable(
     authority_id: AuthorityId,
-    encoded: &[u8],
+    record: &acyclic_stream::Record,
 ) -> Result<DurableCommit, AuthorityStoreError> {
-    let durable = StreamsDurableRecord::decode(encoded, STREAM_RECORD_LIMIT)
+    let mut durable = StreamsDurableRecord::decode(&record.value, STREAM_RECORD_LIMIT)
         .map_err(|error| AuthorityStoreError::Corrupt(error.to_string()))?
         .0;
+    if durable.sequence.get() != record.sequence {
+        return Err(AuthorityStoreError::Corrupt(
+            "Stream sequence does not match filesystem authority sequence".to_owned(),
+        ));
+    }
+    durable.settled_at_micros =
+        (record.committed_at_micros != 0).then_some(record.committed_at_micros);
     let expected = authority_commit_digest(
         authority_id,
         durable.epoch,
@@ -2153,6 +2306,96 @@ mod tests {
     use crate::kernel::{VolumeCreated, encode_publication_payload, encode_volume_created};
     use crate::model::{Lifecycle, VolumeConfig};
     use crate::storage::ObjectKind;
+    #[tokio::test]
+    async fn settlement_times_and_retired_accounting_use_original_stream_records() {
+        let stream = Arc::new(acyclic_stream::MemoryStream::default());
+        let authority = StreamAuthorityStore::new(Arc::clone(&stream));
+        let authority_id = AuthorityId::from_bytes([0x71; 16]);
+        let cancellation = CancellationToken::new();
+        authority.create_authority(
+            authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &cancellation,
+        ).await.expect("create authority");
+        let head = authority.head(authority_id, WorkBudget::UNBOUNDED, &cancellation)
+            .await.expect("head").value;
+        let proposed = ProposedCommit {
+            operation_id: OperationId::from_bytes([0x72; 16]),
+            fingerprint: Digest::from_bytes([0x73; 32]),
+            payload: Bytes::from_static(b"accounting settlement"),
+        };
+        let outcome = authority.compare_and_append(
+            authority_id, head.epoch, head, proposed.clone(),
+            WorkBudget::UNBOUNDED, &cancellation,
+        ).await.expect("append").value;
+        let FsAppendOutcome::Committed(durable) = outcome else {
+            panic!("expected committed record");
+        };
+        let record = read_one(stream.as_ref(), records_path(authority_id).expect("path"), 1)
+            .await.expect("exact authoritative record");
+        assert_eq!(durable.settled_at_micros,
+            (record.committed_at_micros != 0).then_some(record.committed_at_micros));
+        let limit = ReplayLimit { records: 8, payload_bytes: 1_024 };
+        assert_eq!(authority.replay(
+            authority_id, Sequence::new(0), limit, WorkBudget::UNBOUNDED, &cancellation,
+        ).await.expect("replay").value, vec![durable.clone()]);
+        assert_eq!(authority.find_operation(
+            authority_id, proposed.operation_id, WorkBudget::UNBOUNDED, &cancellation,
+        ).await.expect("find").value, Some(durable.clone()));
+        assert_eq!(authority.compare_and_append(
+            authority_id, head.epoch, head, proposed.clone(),
+            WorkBudget::UNBOUNDED, &cancellation,
+        ).await.expect("retry").value, FsAppendOutcome::AlreadyCommitted(durable.clone()));
+
+        let mut legacy = record.clone();
+        legacy.committed_at_micros = 0;
+        assert_eq!(decode_durable(authority_id, &legacy).expect("legacy").settled_at_micros, None);
+
+        let observation = acyclic_stream::StreamProvider::inspect_idempotency(
+            stream.as_ref(), operation_key(authority_id, proposed.operation_id).expect("key"),
+        ).await.expect("inspect").expect("retained operation");
+        let acyclic_stream::IdempotencyOutcome::Commit(
+            acyclic_stream::CommitOutcome::Committed(envelope)
+        ) = observation.outcome else {
+            panic!("expected committed envelope");
+        };
+        for forgery in 0..3 {
+            let mut forged = envelope.clone();
+            let append = forged.mutations.iter_mut().find_map(|mutation| match mutation {
+                acyclic_stream::CommittedMutation::Append(append)
+                    if append.path == records_path(authority_id).expect("path") => Some(append),
+                _ => None,
+            }).expect("authority append");
+            match forgery {
+                0 => append.path = records_path(AuthorityId::from_bytes([0x74; 16])).expect("other path"),
+                1 => append.records[0].sequence += 1,
+                _ => append.records[0].value = Bytes::from_static(b"forged record"),
+            }
+            assert!(matches!(durable_from_operation_envelope(
+                authority_id, proposed.operation_id, forged,
+                Some((durable.sequence, record.value.as_ref())),
+            ), Err(AuthorityStoreError::Corrupt(_))));
+        }
+
+        authority.retire_authority(authority_id, WorkBudget::UNBOUNDED, &cancellation)
+            .await.expect("retire");
+        assert!(matches!(authority.head(authority_id, WorkBudget::UNBOUNDED, &cancellation)
+            .await.expect_err("ordinary head stays retired").error, AuthorityStoreError::Retired));
+        assert!(matches!(authority.replay(
+            authority_id, Sequence::new(0), limit, WorkBudget::UNBOUNDED, &cancellation,
+        ).await.expect_err("ordinary replay stays retired").error, AuthorityStoreError::Retired));
+        assert!(matches!(authority.find_operation(
+            authority_id, proposed.operation_id, WorkBudget::UNBOUNDED, &cancellation,
+        ).await.expect_err("ordinary operation lookup stays retired").error, AuthorityStoreError::Retired));
+        assert!(matches!(authority.compare_and_append(
+            authority_id, head.epoch, head, proposed, WorkBudget::UNBOUNDED, &cancellation,
+        ).await.expect_err("ordinary retry stays retired").error, AuthorityStoreError::Retired));
+        let accounting = AccountingAuthority(&authority);
+        assert_eq!(accounting.replay(
+            authority_id, Sequence::new(0), limit, WorkBudget::UNBOUNDED, &cancellation,
+        ).await.expect("accounting retains retired history").value, vec![durable.clone()]);
+        assert_eq!(accounting.head(authority_id, WorkBudget::UNBOUNDED, &cancellation)
+            .await.expect("historical head").value.sequence, durable.sequence);
+    }
+
 
     #[tokio::test]
     async fn authority_without_publication_gate_fails_closed() {

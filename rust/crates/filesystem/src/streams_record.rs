@@ -118,6 +118,7 @@ impl StreamsDurableRecord {
             .ok_or(StreamsAuthorityRecordError::Truncated)?;
         payload.extend_from_slice(body);
         Ok(Self(DurableCommit {
+            settled_at_micros: None,
             epoch,
             sequence,
             operation_id,
