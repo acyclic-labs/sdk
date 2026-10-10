@@ -69,6 +69,8 @@ fn spec(
         owner: DurableOwner::Attached {
             authority: owner.clone(),
         },
+        owner_scope: AuthorityIssuer::new("qualification", [5; 32], owner.clone())
+            .root("original-declare", Capabilities::new(["operation:declare"])),
         entrypoint: EntrypointRef {
             name: "test.scheduler".into(),
             version: "1".into(),

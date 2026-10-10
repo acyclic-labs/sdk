@@ -141,6 +141,9 @@ pub struct OperationSpec {
     pub parent: Option<ParentLink>,
     /// Explicit durable owner.
     pub owner: DurableOwner,
+    /// Original signed owner grant retained with this immutable declaration.
+    /// Recovery authenticates this proof separately from its current grant.
+    pub owner_scope: crate::core::Scope,
     /// Restartable implementation identity.
     pub entrypoint: EntrypointRef,
     /// Dependencies that must succeed before admission.
@@ -153,6 +156,32 @@ pub struct OperationSpec {
     pub orchestration: Orchestration,
     /// Immutable, provider-owned initial state bytes.
     pub state: FileRef,
+}
+
+impl OperationSpec {
+    pub(crate) fn verify_owner(
+        &self,
+        owner: &Authority,
+        verifier: &crate::core::AuthorityVerifier,
+    ) -> Result<()> {
+        if self.owner.authority() != owner {
+            return Err(Error::Unauthorized(
+                "declaration belongs to another owner".into(),
+            ));
+        }
+        verifier.verify_audience(owner)?;
+        verifier.verify(&self.owner_scope)?;
+        if !self
+            .owner_scope
+            .capabilities()
+            .contains("operation:declare")
+        {
+            return Err(Error::Unauthorized(
+                "original owner scope lacks operation:declare".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Durable lifecycle phase.
@@ -1920,6 +1949,18 @@ mod tests {
                     id: operation_id.to_string(),
                 },
             },
+            owner_scope: crate::core::AuthorityIssuer::new(
+                "scheduler-test",
+                [9; 32],
+                Authority {
+                    kind: AggregateKind::Task,
+                    id: operation_id.to_string(),
+                },
+            )
+            .root(
+                "original-declare",
+                crate::Capabilities::new(["operation:declare"]),
+            ),
             entrypoint: EntrypointRef {
                 name: "example.task".into(),
                 version: "1".into(),

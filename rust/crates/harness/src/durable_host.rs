@@ -1365,6 +1365,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let spec = OperationSpec {
             operation_id,
+            owner_scope: self.owner_scope.clone(),
             parent: parent.map(|parent| ParentLink {
                 operation_id: OperationId::from_bytes(parent.into_bytes()),
                 slot: operation_id.to_string(),
@@ -2801,6 +2802,11 @@ mod tests {
                 SchedulerEvent::Declared {
                     spec: Box::new(OperationSpec {
                         operation_id: operation,
+                        owner_scope: if index % 2 == 0 {
+                            foreign_scope.clone()
+                        } else {
+                            scope.clone()
+                        },
                         parent: None,
                         owner: DurableOwner::Attached {
                             authority: if index % 2 == 0 {
