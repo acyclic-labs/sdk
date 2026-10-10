@@ -25,6 +25,7 @@ diffy.workspace = true
 futures.workspace = true
 hex.workspace = true
 notify = { workspace = true, optional = true }
+parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 strum.workspace = true
