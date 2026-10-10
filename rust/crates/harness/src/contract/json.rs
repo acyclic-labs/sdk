@@ -711,10 +711,12 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> ser::Serializer for Raw<'_, '_, F>
         }).map_err(Meter::<F>::error)?;
         scan.end().map_err(Meter::<F>::error)?;
         // RawValue's parser is the audited serde_json Value implementation.
-        // Its string payload totals fit input bytes; Vec capacity fits twice
-        // lexical items; map entries and geometric scratch are separate.
+        // String payload totals fit input bytes. Vector storage includes both
+        // doubling and up-to-eight initial slots per nonempty array; array
+        // count and total element count each fit lexical items. Map entries
+        // and geometric scratch are separate from these slots.
         let maximum_owned_bytes = scan.items
-            .checked_mul((2 * std::mem::size_of::<Value>() + std::mem::size_of::<(String, Value)>()) as u64)
+            .checked_mul((10 * std::mem::size_of::<Value>() + std::mem::size_of::<(String, Value)>()) as u64)
             .and_then(|nodes| (value.len() as u64).max(8).checked_mul(4).and_then(|strings| nodes.checked_add(strings)))
             .ok_or_else(|| Meter::<F>::error("JSON owned bound overflow"))?;
         meter.charge(JsonCodecCharge::Admission { maximum_owned_bytes })?;
