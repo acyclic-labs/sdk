@@ -2,7 +2,7 @@ use super::*;
 use super::tests::spec;
 use crate::store::history::HistoryWork;
 use acyclic_fs::{CancellationToken, WorkBudget};
-use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, CommitRequest, MemoryStream, StreamPath};
+use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, MemoryStream, StreamPath};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 type FaultStream = crate::test_stream::LostSessionAck<MemoryStream>;
@@ -181,15 +181,29 @@ async fn declared_content_without_measured_capability_rejects_before_ordinary_co
     Ok(())
 }
 
-fn commit_request(tail: u64, key: &str) -> Result<CommitRequest> {
+async fn commit_fixture_with_work(
+    client: &StreamClient<FaultStream>, tail: u64, key: &str, operation: OperationId,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<CommitOutcome> {
+    // Fixture-owned path/digest precede the request producer. Preserve the
+    // original two-record mutation so partial returned envelopes remain tested.
     let path = StreamPath::new("harness/v2/execution/measured-commit")?;
-    Ok(CommitRequest {
-        conditions: vec![if tail == 0 { CommitCondition::Absent { path: path.clone() } }
-            else { CommitCondition::Tail { path: path.clone(), expected: tail } }],
-        mutations: vec![CommitMutation::Append { path,
-            records: vec![Bytes::from_static(b"first"), Bytes::from_static(b"second")] }],
-        idempotency_key: stream_key(key)?,
-    })
+    if let Some(work) = work.as_deref_mut() {
+        work.hashed_bytes((b"acyclic-harness-coordinator-v3".len() + key.len()) as u64)?;
+    }
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"acyclic-harness-coordinator-v3");
+    hash.update(key.as_bytes());
+    let mut prepared = PreparedCommitRequest::new_with_digest(*hash.finalize().as_bytes(), work)?;
+    prepared.push_condition(if tail == 0 { CommitCondition::Absent { path: path.clone() } }
+        else { CommitCondition::Tail { path: path.clone(), expected: tail } })?;
+    prepared.append(path, Bytes::from_static(b"first"))?;
+    let CommitMutation::Append { records, .. } = &mut prepared.request.mutations[0] else {
+        unreachable!("the exact original append fixture");
+    };
+    reserve_prepared_vector(records, 2, &mut prepared.custody, &mut prepared.vectors)?;
+    records.push(Bytes::from_static(b"second"));
+    commit_prepared_with_work(client, prepared, operation).await
 }
 
 #[tokio::test]
@@ -206,7 +220,7 @@ async fn commit_receipts_distinguish_direct_ack_recovered_hidden_and_quota_block
         let cancellation = CancellationToken::new();
         let mut work = HistoryWork::new(allowance, &cancellation);
         work.preflight()?;
-        let result = commit_keyed_with_work(&client, commit_request(0, "measured-commit")?,
+        let result = commit_fixture_with_work(&client, 0, "measured-commit",
             operation, &mut Some(&mut work)).await;
         let counters = work.receipt();
         let io = provider.io_snapshot();
@@ -240,17 +254,17 @@ async fn repeated_commit_calls_share_one_cumulative_allowance_and_no_conflict_ac
     let mut work = HistoryWork::new(allowance, &cancellation);
     work.preflight()?;
     let operation = OperationId::from_bytes([107; 16]);
-    let first = commit_keyed_with_work(&client, commit_request(0, "first-measured-call")?,
+    let first = commit_fixture_with_work(&client, 0, "first-measured-call",
         operation, &mut Some(&mut work)).await?;
     assert!(matches!(first, CommitOutcome::Committed(_)));
-    let second = commit_keyed_with_work(&client, commit_request(2, "second-measured-call")?,
+    let second = commit_fixture_with_work(&client, 2, "second-measured-call",
         operation, &mut Some(&mut work)).await;
     assert!(matches!(second, Err(Error::Invalid(_))));
     assert_eq!(work.receipt().backend_write_operations, 1);
     assert_eq!(provider.io_snapshot().writes, 1);
     assert_eq!(work.receipt().authority_records_appended, 2);
     let mut conflict_work = HistoryWork::new(budget(), &cancellation);
-    let conflict = commit_keyed_with_work(&client, commit_request(0, "conflict-measured-call")?,
+    let conflict = commit_fixture_with_work(&client, 0, "conflict-measured-call",
         operation, &mut Some(&mut conflict_work)).await?;
     assert!(matches!(conflict, CommitOutcome::Conflict(_)));
     assert_eq!(conflict_work.receipt().authority_records_appended, 0);
@@ -450,9 +464,9 @@ async fn direct_idempotent_commit_receipts_acknowledge_without_claiming_new_dura
     let mut work = HistoryWork::new(budget(), &cancellation);
     work.preflight()?;
     let operation = OperationId::from_bytes([112; 16]);
-    let first = commit_keyed_with_work(&client, commit_request(0, "direct-repeated-ack")?,
+    let first = commit_fixture_with_work(&client, 0, "direct-repeated-ack",
         operation, &mut Some(&mut work)).await?;
-    let second = commit_keyed_with_work(&client, commit_request(0, "direct-repeated-ack")?,
+    let second = commit_fixture_with_work(&client, 0, "direct-repeated-ack",
         operation, &mut Some(&mut work)).await?;
     assert_eq!(first, second);
     // These are SDK-confirmed acknowledgment records, not physical new appends.
@@ -977,5 +991,86 @@ async fn scheduler_json_quota_guard_releases_unused_and_cancelled_reservations()
     assert_eq!(work.receipt().backend_read_operations,0);
     assert_eq!(work.receipt().backend_write_operations,0);
     assert_eq!(work.receipt().allocation_operations,0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn prepared_key_admits_before_copy_and_unused_request_releases_its_custody() -> Result<()> {
+    let cancellation = CancellationToken::new();
+    let mut allowance = budget();
+    allowance.peak_allocation_bytes = 31;
+    let mut denied = HistoryWork::new(allowance, &cancellation);
+    {
+        let mut observer = Some(&mut denied as &mut dyn crate::store::history::HistoryIo);
+        assert!(matches!(PreparedCommitRequest::new_with_digest([19; 32], &mut observer),
+            Err(Error::Invalid(_))));
+    }
+    assert_eq!(denied.receipt().allocation_operations, 0);
+    assert_eq!(denied.receipt().bytes_copied, 0);
+    allowance.peak_allocation_bytes = 32;
+    let mut work = HistoryWork::new(allowance, &cancellation);
+    for _ in 0..2 {
+        let mut observer = Some(&mut work as &mut dyn crate::store::history::HistoryIo);
+        let prepared = PreparedCommitRequest::new_with_digest([19; 32], &mut observer)?;
+        assert_eq!(prepared.custody.retained(), 32);
+        assert_eq!(prepared.request.conditions.capacity(), 0);
+        assert_eq!(prepared.request.mutations.capacity(), 0);
+        drop(prepared);
+    }
+    assert_eq!(work.receipt().allocation_operations, 2);
+    assert_eq!(work.receipt().bytes_copied, 64);
+    assert_eq!(work.receipt().peak_allocation_bytes, 32);
+    assert_eq!(work.receipt().backend_write_operations, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn prepared_append_partial_growth_releases_actual_vectors_and_prevents_record_allocation() -> Result<()> {
+    let cancellation = CancellationToken::new();
+    let key = stream_key("prepared-partial-growth")?;
+    let path = StreamPath::new("harness/v2/execution/prepared-partial-growth")?;
+    let mut allowance = budget();
+    allowance.peak_allocation_bytes = std::mem::size_of::<CommitMutation>() as u64;
+    let mut work = HistoryWork::new(allowance, &cancellation);
+    for _ in 0..2 {
+        let mut observer = Some(&mut work as &mut dyn crate::store::history::HistoryIo);
+        let mut prepared = PreparedCommitRequest::new(key.clone(), &mut observer)?;
+        assert!(matches!(prepared.append(path.clone(), Bytes::from_static(b"source-owned")),
+            Err(Error::Invalid(_))));
+        assert!(prepared.request.mutations.is_empty());
+        assert_eq!(prepared.vectors,
+            (prepared.request.mutations.capacity() * std::mem::size_of::<CommitMutation>()) as u64);
+        assert_eq!(prepared.custody.retained(), prepared.vectors);
+        drop(prepared);
+    }
+    assert_eq!(work.receipt().allocation_operations, 2);
+    assert_eq!(work.receipt().peak_allocation_bytes, allowance.peak_allocation_bytes);
+    assert_eq!(work.receipt().backend_write_operations, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn prepared_commit_cancellation_uses_the_original_ledger_before_sdk_publication() -> Result<()> {
+    let provider = Arc::new(FaultStream::default());
+    let client = StreamClient::new(provider.clone());
+    let cancellation = CancellationToken::new();
+    let mut work = HistoryWork::new(budget(), &cancellation);
+    let path = StreamPath::new("harness/v2/execution/prepared-cancel")?;
+    let result = {
+        let mut observer = Some(&mut work as &mut dyn crate::store::history::HistoryIo);
+        let mut prepared = PreparedCommitRequest::new_with_digest([23; 32], &mut observer)?;
+        prepared.push_condition(CommitCondition::Absent { path: path.clone() })?;
+        prepared.append(path, Bytes::from_static(b"source-owned"))?;
+        assert_eq!(prepared.custody.retained(), prepared.vectors + 32);
+        cancellation.cancel();
+        commit_prepared_with_work(&client, prepared, OperationId::from_bytes([127; 16])).await
+    };
+    assert!(matches!(result, Err(Error::Invalid(_))));
+    assert_eq!(work.receipt().allocation_operations, 4);
+    assert_eq!(work.receipt().bytes_copied, 32);
+    assert_eq!(work.receipt().backend_write_operations, 0);
+    assert_eq!(work.receipt().authority_records_appended, 0);
+    assert_eq!(provider.io_snapshot().writes, 0);
+    assert_eq!(provider.io_snapshot().inspections, 0);
     Ok(())
 }

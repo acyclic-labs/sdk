@@ -2832,38 +2832,125 @@ pub(crate) fn execution_path(operation: OperationId) -> Result<acyclic_stream::S
     ))?)
 }
 
+/// The original SDK request and its producer-owned logical custody. Fields
+/// remain private so callers cannot claim that an unprotected request was built.
+/// The request drops before its borrowed quota on every prepublication failure.
+pub(crate) struct PreparedCommitRequest<'a, 'b> {
+    request: acyclic_stream::CommitRequest,
+    custody: crate::wire_codec::CodecQuota<'a, 'b>,
+    vectors: u64,
+}
+
+fn reserve_prepared_vector<T>(
+    values: &mut Vec<T>,
+    capacity: usize,
+    custody: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    vectors: &mut u64,
+) -> Result<()> {
+    if capacity <= values.capacity() { return Ok(()); }
+    let old = values.capacity();
+    let requested = (capacity - old).checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| Error::Invalid("commit vector capacity overflows".into()))? as u64;
+    if let Some(work) = custody.work().as_deref_mut() {
+        work.admit_owned(requested)?;
+        work.admit_allocation(requested)?;
+    }
+    values.try_reserve_exact(capacity - values.len()).map_err(|cause| {
+        match custody.work().as_deref_mut() {
+            Some(work) => work.allocation_failure(cause),
+            None => Error::Storage(cause.to_string()),
+        }
+    })?;
+    let actual = (values.capacity() - old).checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| Error::Invalid("commit vector capacity overflows".into()))? as u64;
+    custody.adopt(actual)?;
+    *vectors = vectors.checked_add(actual)
+        .ok_or_else(|| Error::Invalid("commit vector capacity overflows".into()))?;
+    if let Some(work) = custody.work().as_deref_mut() { work.retain_owned(actual)?; }
+    Ok(())
+}
+
+impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
+    pub(crate) fn new(
+        key: StreamIdempotencyKey,
+        work: &'a mut Option<&'b mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        Ok(Self {
+            request: acyclic_stream::CommitRequest {
+                conditions: Vec::new(), mutations: Vec::new(), idempotency_key: key,
+            },
+            custody: crate::wire_codec::CodecQuota::new(work, 0)?,
+            vectors: 0,
+        })
+    }
+
+    pub(crate) fn new_with_digest(
+        digest: [u8; 32],
+        work: &'a mut Option<&'b mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+        if let Some(work) = custody.work().as_deref_mut() {
+            work.admit_owned(32)?;
+            work.admit_allocation(32)?;
+            work.copy_bytes(32)?;
+        }
+        let key = StreamIdempotencyKey::new(Bytes::copy_from_slice(&digest))?;
+        custody.adopt(32)?;
+        // Put the owned key ahead of the quota before a fallible retention hook.
+        let mut prepared = Self {
+            request: acyclic_stream::CommitRequest {
+                conditions: Vec::new(), mutations: Vec::new(), idempotency_key: key,
+            },
+            custody, vectors: 0,
+        };
+        if let Some(work) = prepared.work().as_deref_mut() { work.retain_owned(32)?; }
+        Ok(prepared)
+    }
+
+    pub(crate) fn work(&mut self) -> &mut Option<&'b mut dyn crate::store::history::HistoryIo> {
+        self.custody.work()
+    }
+
+    pub(crate) fn push_condition(&mut self, condition: acyclic_stream::CommitCondition) -> Result<()> {
+        let length = self.request.conditions.len().checked_add(1)
+            .ok_or_else(|| Error::Invalid("commit condition count overflows".into()))?;
+        reserve_prepared_vector(&mut self.request.conditions, length, &mut self.custody, &mut self.vectors)?;
+        self.request.conditions.push(condition);
+        Ok(())
+    }
+
+    pub(crate) fn append(&mut self, path: acyclic_stream::StreamPath, record: Bytes) -> Result<()> {
+        let length = self.request.mutations.len().checked_add(1)
+            .ok_or_else(|| Error::Invalid("commit mutation count overflows".into()))?;
+        reserve_prepared_vector(&mut self.request.mutations, length, &mut self.custody, &mut self.vectors)?;
+        let mut records = Vec::new();
+        reserve_prepared_vector(&mut records, 1, &mut self.custody, &mut self.vectors)?;
+        records.push(record);
+        self.request.mutations.push(acyclic_stream::CommitMutation::Append { path, records });
+        Ok(())
+    }
+}
+
 pub(crate) async fn commit_keyed<P: StreamProvider>(
     client: &StreamClient<P>,
     request: acyclic_stream::CommitRequest,
     operation: OperationId,
 ) -> Result<acyclic_stream::CommitOutcome> {
-    commit_keyed_with_work(client, request, operation, &mut None).await
+    let mut work = None;
+    let prepared = PreparedCommitRequest {
+        request, custody: crate::wire_codec::CodecQuota::new(&mut work, 0)?, vectors: 0,
+    };
+    commit_prepared_with_work(client, prepared, operation).await
 }
 
-pub(crate) async fn commit_keyed_with_work<P: StreamProvider>(
+pub(crate) async fn commit_prepared_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
-    request: acyclic_stream::CommitRequest,
+    mut prepared: PreparedCommitRequest<'_, '_>,
     operation: OperationId,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<acyclic_stream::CommitOutcome> {
-    let key = request.idempotency_key.clone();
-    let request_capacity = if work.is_some() {
-        request.mutations.iter().try_fold(
-            (request.conditions.capacity() * std::mem::size_of::<acyclic_stream::CommitCondition>()
-                + request.mutations.capacity() * std::mem::size_of::<acyclic_stream::CommitMutation>()) as u64,
-            |bytes, mutation| {
-                let records = match mutation {
-                    acyclic_stream::CommitMutation::Append { records, .. }
-                    | acyclic_stream::CommitMutation::Fork { records, .. } => records,
-                };
-                bytes.checked_add((records.capacity() * std::mem::size_of::<Bytes>()) as u64)
-                    .ok_or_else(|| Error::Invalid("commit vector capacity overflows".into()))
-            },
-        )?
-    } else { 0 };
-    if let Some(work) = work.as_deref_mut() {
-        work.retain_owned(request_capacity)?;
-        let (bytes, count) = request.mutations.iter().try_fold(
+    let key = prepared.request.idempotency_key.clone();
+    if prepared.work().is_some() {
+        let (bytes, count) = prepared.request.mutations.iter().try_fold(
             (0u64, 0u64), |(bytes, count), mutation| {
                 let records = match mutation {
                     acyclic_stream::CommitMutation::Append { records, .. }
@@ -2878,13 +2965,18 @@ pub(crate) async fn commit_keyed_with_work<P: StreamProvider>(
                 Ok::<_, Error>((bytes, count))
             },
         )?;
-        work.admit_acknowledgment(bytes, count)?;
-        work.begin_write()?;
+        if let Some(work) = prepared.work().as_deref_mut() {
+            work.admit_acknowledgment(bytes, count)?;
+            work.begin_write()?;
+        }
     }
+    let request = std::mem::replace(&mut prepared.request, acyclic_stream::CommitRequest {
+        conditions: Vec::new(), mutations: Vec::new(), idempotency_key: key.clone(),
+    });
     let committed = client.commit(request).await;
-    if let Some(work) = work.as_deref_mut() {
-        work.release_owned(request_capacity)?;
-    }
+    prepared.custody.relinquish(prepared.vectors)?;
+    prepared.vectors = 0;
+    let work = prepared.work();
     let (outcome, direct_acknowledgment) = match committed {
         Ok(outcome) => (outcome, true),
         Err(StreamError::Unavailable) => {
@@ -2988,7 +3080,7 @@ async fn append_if_execution_idle_with_work<P: StreamProvider>(
     workflow_guard: Option<(&str, u64)>,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<AppendOutcome> {
-    use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, CommittedMutation};
+    use acyclic_stream::{CommitCondition, CommitOutcome, CommittedMutation};
     let mut held = 0u64;
     let result = async {
         let path_text = formatted_text_with_work(
@@ -3017,13 +3109,7 @@ async fn append_if_execution_idle_with_work<P: StreamProvider>(
         digest.update(b"harness/v2/idle-execution\0");
         digest.update(key.as_bytes());
         digest.update(&[u8::from(matches!(guard, CommitCondition::Absent { .. }))]);
-        let mut conditions = Vec::new();
-        reserve_vector_with_work(&mut conditions, 2 + usize::from(workflow_guard.is_some()), work)?;
-        let conditions_capacity = (conditions.capacity() * std::mem::size_of::<CommitCondition>()) as u64;
-        held += conditions_capacity;
-        conditions.push(CommitCondition::Tail { path: stream.path().clone(), expected: tail });
-        conditions.push(guard);
-        if let Some((workflow_path, workflow_tail)) = workflow_guard {
+        let workflow_condition = if let Some((workflow_path, workflow_tail)) = workflow_guard {
             let path = path_with_work(workflow_path, work)?;
             held += path.as_str().len() as u64;
             if let Some(work) = work.as_deref_mut() {
@@ -3032,33 +3118,14 @@ async fn append_if_execution_idle_with_work<P: StreamProvider>(
             digest.update(b"workflow\0");
             digest.update(workflow_path.as_bytes());
             digest.update(&workflow_tail.to_le_bytes());
-            conditions.push(CommitCondition::Tail { path, expected: workflow_tail });
-        }
-        let mut records = Vec::new();
-        reserve_vector_with_work(&mut records, 1, work)?;
-        let records_capacity = (records.capacity() * std::mem::size_of::<Bytes>()) as u64;
-        held += records_capacity;
-        records.push(record.clone());
-        let mut mutations = Vec::new();
-        reserve_vector_with_work(&mut mutations, 1, work)?;
-        let mutations_capacity = (mutations.capacity() * std::mem::size_of::<CommitMutation>()) as u64;
-        held += mutations_capacity;
-        mutations.push(CommitMutation::Append { path: stream.path().clone(), records });
-        if let Some(work) = work.as_deref_mut() {
-            work.admit_allocation(32)?;
-            work.copy_bytes(32)?;
-        }
-        let idempotency_key = StreamIdempotencyKey::new(Bytes::copy_from_slice(digest.finalize().as_bytes()))?;
-        if let Some(work) = work.as_deref_mut() { work.retain_owned(32)?; }
-        held += 32;
-        let vectors = conditions_capacity + records_capacity + mutations_capacity;
-        // Transfer the admitted vectors to the original commit engine, which
-        // acquires their actual capacities immediately, without another growth.
-        if let Some(work) = work.as_deref_mut() { work.release_owned(vectors)?; }
-        held -= vectors;
-        let outcome = commit_keyed_with_work(client, acyclic_stream::CommitRequest {
-            conditions, mutations, idempotency_key,
-        }, operation, work).await?;
+            Some(CommitCondition::Tail { path, expected: workflow_tail })
+        } else { None };
+        let mut request = PreparedCommitRequest::new_with_digest(*digest.finalize().as_bytes(), work)?;
+        request.push_condition(CommitCondition::Tail { path: stream.path().clone(), expected: tail })?;
+        request.push_condition(guard)?;
+        if let Some(condition) = workflow_condition { request.push_condition(condition)?; }
+        request.append(stream.path().clone(), record.clone())?;
+        let outcome = commit_prepared_with_work(client, request, operation).await?;
         let receipt = (|| {
             let CommitOutcome::Committed(envelope) = &outcome else {
                 return Err(Error::Conflict("execution or coordinator changed before suspension".into()));
