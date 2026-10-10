@@ -42,7 +42,7 @@ The generic `Basis` must include authority/generation/revision/content identity.
 
 ## Production transition evidence
 
-`tests/client_transitions.rs` calls the real public kernel. Ten scenarios cover explicit
+`tests/client_transitions.rs` calls the real public kernel. Scenarios cover explicit
 views, stable value/basis reference identity, exact duplicate observations,
 reordered/delayed admission, missing evidence, independent concurrent hypotheses,
 different outcomes, rejection, indeterminate completion, cancellation, partial
@@ -51,6 +51,13 @@ basis, unknown/self/future/duplicate edges, authority/generation/content conflic
 wrong original operation/key, export identity recovery, unsupported correspondence,
 branch/record/edge/byte/work/visibility/retention/identity exhaustion, expiry,
 disposal and demand release.
+
+Restoration controls deserialize data into that same kernel, reject forged outcomes
+and foreign IDs, and recompute admission instead of trusting persisted byte receipts.
+One bounded native/WASM control enumerates 54 import-order, allocation-watermark,
+logical-time and work-budget combinations, checking failure atomicity and unrelated
+canonical preservation after each attempted import. This finite restore alphabet
+is not an unrestricted proof; aggregate qualification of the added controls is pending.
 
 The bounded exploration enumerates all 256 four-step traces over uncertainty,
 matching completion, conflicting completion and rejection, with three concurrent
@@ -66,9 +73,12 @@ on native and WASM. Harness `Reducer`, canonical `ConversationMessage`/`FileRef`
 original `OperationId`, `Scheduler` and real lease fences own domain semantics.
 It demonstrates message prediction plus concurrent authoritative data, provisional
 dequeue losing to another worker's admitted lease, and exact canonical tool
-call/result references invalidating a pure dependent continuation. Snapshot trust
-is explicitly an in-process host assumption. No remote auth, provider execution,
-UI equality, inference prefill or KV promotion is claimed.
+call/result references invalidating a pure dependent continuation. It also restores
+a serialized original message hypothesis against the actual Harness reducer's
+canonical message and operation revision, rejecting altered completion claims and
+requiring canonical demand and logical time before import. Snapshot trust is an
+in-process host assumption. No remote auth, provider execution, UI equality,
+inference prefill or KV promotion is claimed.
 
 Eight focused temporary source mutations were killed by test assertions:
 mislabel prediction provenance as authoritative; bypass exact basis; accept
@@ -79,8 +89,9 @@ test. A `finally` block restored the exact source. No mutation engine or new
 verification framework was added to the repository. The first controls preceded
 the final basis-sharing change; all eight controls were then repeated against final
 production blob `490df1b5eefc1038971f4c5cbec645041355f0d6` and again failed test
-assertions. The restored blob matched exactly. Relocating the public fixture did
-not change its source blob `49bbf0e157ab7b2cf756dee88e4d66ada4a9afa8`.
+assertions. The restored blob matched exactly. At that recorded foundation revision,
+relocating the public fixture retained blob `49bbf0e157ab7b2cf756dee88e4d66ada4a9afa8`;
+those historical mutation receipts do not qualify the current recovery additions.
 
 ## Measured baseline and regression acceptance
 

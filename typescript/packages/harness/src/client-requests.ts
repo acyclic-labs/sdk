@@ -51,8 +51,10 @@ export class RequestScheduler {
     return { requests: this.#jobs.size, running: this.#running, bytes: this.#bytes };
   }
 
+  /** capture runs synchronously after reservation, before queued work can start.
+   * Use it to own caller inputs without allocating copies for rejected work. */
   schedule<Value>(bytes: number, work: (signal: AbortSignal, bytes: number) => Promise<Value>,
-    signal?: AbortSignal): Promise<Value> {
+    signal?: AbortSignal, capture?: () => void): Promise<Value> {
     if (this.#disposed) return Promise.reject(new Error("request scheduler disposed"));
     if (signal?.aborted) return Promise.reject(requestAborted());
     if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > this.limits.bytes) {
@@ -87,8 +89,12 @@ export class RequestScheduler {
       };
       this.#jobs.add(job);
       this.#bytes += bytes;
-      this.#queue.push(job);
       signal?.addEventListener("abort", cancel, { once: true });
+      try { capture?.(); }
+      catch (error) { reject(error); job.detach(); this.#release(job); return; }
+      // Capture can synchronously cancel/dispose through a caller-owned proxy.
+      if (!this.#jobs.has(job)) return;
+      this.#queue.push(job);
       this.#drain();
     });
   }

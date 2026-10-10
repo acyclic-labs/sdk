@@ -62,6 +62,7 @@ enum Assumption {
 
 // Private host envelope, not a public `verified: true` flag. It has no network
 // deserializer; a real remote host must authenticate/reduce journal evidence.
+#[derive(Clone)]
 struct TrustedSnapshot {
     key: u128,
     basis: Arc<Basis>,
@@ -92,7 +93,11 @@ fn snapshot(
     }
 }
 
-struct HarnessViews;
+struct HarnessViews {
+    // Only snapshots captured after the ordinary host reducer ran may establish
+    // recovered outcomes; checkpoint bytes never populate this receipt.
+    recovery: Option<TrustedSnapshot>,
+}
 impl Domain for HarnessViews {
     type Key = u128;
     type Basis = Basis;
@@ -104,6 +109,39 @@ impl Domain for HarnessViews {
     // Pin both semantic adapter implementation and revision, separate from source basis.
     fn identity(&self) -> u128 {
         0x4841524e4553530001
+    }
+    fn restore(
+        &self,
+        fact: &Fact<u128, Basis, Projection>,
+        branch: &ClientHypothesis<Self>,
+        work: usize,
+    ) -> Result<(usize, usize), Error> {
+        if branch.prediction == PredictionOutcome::Pending
+            && branch.outcome == OperationOutcome::Unknown
+        {
+            return self.validate(fact, &branch.predicted, &branch.assumption, work);
+        }
+        let receipt = self.recovery.as_ref().ok_or(Error::Unsupported)?;
+        if work < 2 {
+            return Err(Error::Budget);
+        }
+        if branch.prediction != PredictionOutcome::Confirmed
+            || branch.outcome != OperationOutcome::Completed
+            || receipt.operation != branch.operation.map(|id| (id, OperationOutcome::Completed))
+            || receipt.operation.is_none()
+            || receipt.key != branch.key
+            || receipt.basis != fact.basis
+            || receipt.value != fact.value
+            || branch.predicted != receipt.value
+            || branch.basis.authority != receipt.basis.authority
+            || branch.basis.generation != receipt.basis.generation
+            || branch.basis.revision > receipt.basis.revision
+        {
+            return Err(Error::Unsupported);
+        }
+        // Reuse ordinary snapshot validation and its conservative accounting.
+        let checked = self.observe(receipt, Some(fact), work)?;
+        Ok((checked.fact.ok_or(Error::Missing)?.bytes, checked.work))
     }
     fn validate(
         &self,
@@ -292,7 +330,7 @@ pub fn trace() {
         retention: 100,
         visible: 8,
     };
-    let mut client = Client::new(HarnessViews, 900, 0, limits).unwrap();
+    let mut client = Client::new(HarnessViews { recovery: None }, 900, 0, limits).unwrap();
     let authority = Authority {
         kind: AggregateKind::Conversation,
         id: "conversation".into(),
@@ -371,18 +409,14 @@ pub fn trace() {
         .message(predicted.id)
         .unwrap();
     assert_eq!(reducer.operation_revision(op(2)), Some(2));
-    client
-        .observe(
-            1,
-            &snapshot(
-                1,
-                authority.clone(),
-                1,
-                Projection::Message(Some(Arc::new(canonical.clone()))),
-                Some((op(2), OperationOutcome::Completed)),
-            ),
-        )
-        .unwrap();
+    let committed = snapshot(
+        1,
+        authority.clone(),
+        1,
+        Projection::Message(Some(Arc::new(canonical.clone()))),
+        Some((op(2), OperationOutcome::Completed)),
+    );
+    client.observe(1, &committed).unwrap();
     client
         .observe(
             2,
@@ -399,6 +433,41 @@ pub fn trace() {
         client.hypothesis(branch).unwrap().prediction,
         PredictionOutcome::Confirmed
     );
+    // Recover from serialized data using the original operation's actual reducer
+    // receipt. Neither durable bytes nor UI equality authenticate completion.
+    let checkpoint = serde_json::to_vec(client.hypothesis(branch).unwrap()).unwrap();
+    let decode = || {
+        serde_json::from_slice::<ClientHypothesis<HarnessViews>>(&checkpoint).unwrap()
+    };
+    let mut recovered = Client::new(
+        HarnessViews {
+            recovery: Some(committed.clone()),
+        },
+        900,
+        client.sequence(),
+        limits,
+    )
+    .unwrap();
+    assert_eq!(recovered.restore(decode()), Err(Error::Missing));
+    recovered.observe(1, &committed).unwrap();
+    recovered.advance(10).unwrap();
+    let before = recovered.residency();
+    let mut forged = decode();
+    forged.outcome = OperationOutcome::Cancelled;
+    assert_eq!(recovered.restore(forged), Err(Error::Unsupported));
+    assert_eq!(recovered.residency(), before);
+    recovered.restore(decode()).unwrap();
+    assert_eq!(recovered.hypothesis(branch).unwrap().operation, Some(op(2)));
+    assert_eq!(
+        recovered.hypothesis(branch).unwrap().prediction,
+        PredictionOutcome::Confirmed
+    );
+    assert!(matches!(
+        recovered.view(&1, &[branch]).unwrap().provenance,
+        Provenance::Authoritative(_)
+    ));
+    assert_eq!(recovered.advance(50).unwrap(), vec![branch]);
+    assert_eq!(reducer.operation_revision(op(2)), Some(2));
     client.discard(branch).unwrap();
     assert!(matches!(
         &*client.view(&2, &[]).unwrap().value,

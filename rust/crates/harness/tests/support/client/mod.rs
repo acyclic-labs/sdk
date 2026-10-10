@@ -50,6 +50,20 @@ impl Domain for Numbers {
     fn identity(&self) -> u128 {
         self.adapter.get()
     }
+    fn restore(
+        &self,
+        fact: &Fact<u64, Basis, u64>,
+        branch: &Hypothesis<u64, Basis, u64, u64, u64>,
+        work: usize,
+    ) -> Result<(usize, usize), Error> {
+        // This fixture has no retained authoritative operation receipts.
+        if branch.prediction != PredictionOutcome::Pending
+            || branch.outcome != OperationOutcome::Unknown
+        {
+            return Err(Error::Unsupported);
+        }
+        self.validate(fact, &branch.predicted, &branch.assumption, work)
+    }
     fn validate(
         &self,
         fact: &Fact<u64, Basis, u64>,

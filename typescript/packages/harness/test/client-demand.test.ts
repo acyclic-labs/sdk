@@ -52,6 +52,30 @@ test("pre-work admission and abort keep actual unsettled provider capacity reser
   scheduler.dispose();
 });
 
+test("input capture is synchronous after admission and never runs for rejected work", async () => {
+  const scheduler = new RequestScheduler({ concurrent: 1, requests: 1, bytes: 4 });
+  const held = deferred<number>();
+  let captures = 0, starts = 0;
+  const accepted = scheduler.schedule(4, async () => { starts++; return held.promise; }, undefined,
+    () => { captures++; expect(scheduler.residency.bytes).toBe(4); });
+  expect(captures).toBe(1);
+  await expect(scheduler.schedule(4, async () => 0, undefined, () => { captures++; }))
+    .rejects.toBeInstanceOf(RequestCapacityError);
+  expect(captures).toBe(1);
+  held.resolve(7); expect(await accepted).toBe(7);
+  await expect(scheduler.schedule(4, async () => { starts++; return 0; }, undefined,
+    () => { throw new Error("capture failure"); })).rejects.toThrow("capture failure");
+  expect(scheduler.residency).toEqual({ requests: 0, running: 0, bytes: 0 });
+  const cancelled = new AbortController();
+  await expect(scheduler.schedule(4, async () => { starts++; return 0; }, cancelled.signal,
+    () => cancelled.abort())).rejects.toHaveProperty("name", "AbortError");
+  expect(scheduler.residency).toEqual({ requests: 0, running: 0, bytes: 0 });
+  await expect(scheduler.schedule(4, async () => { starts++; return 0; }, undefined,
+    () => scheduler.dispose())).rejects.toHaveProperty("name", "AbortError");
+  expect(scheduler.residency).toEqual({ requests: 0, running: 0, bytes: 0 });
+  expect(starts).toBe(1);
+});
+
 test("shared selective hydration isolates caller abort, fences stale completion and bounds warm residency", async () => {
   const scheduler = new RequestScheduler({ concurrent: 2, requests: 2, bytes: 8 });
   let reads = 0;
@@ -111,8 +135,9 @@ test("shared selective hydration isolates caller abort, fences stale completion 
   transient.dispose();
   class CompletionScheduler extends RequestScheduler {
     after: (() => void) | undefined;
-    override schedule<Value>(bytes: number, work: (signal: AbortSignal, bytes: number) => Promise<Value>, signal?: AbortSignal): Promise<Value> {
-      const promise = super.schedule(bytes, work, signal);
+    override schedule<Value>(bytes: number, work: (signal: AbortSignal, bytes: number) => Promise<Value>,
+      signal?: AbortSignal, capture?: () => void): Promise<Value> {
+      const promise = super.schedule(bytes, work, signal, capture);
       void promise.then(() => this.after?.(), () => {});
       return promise;
     }

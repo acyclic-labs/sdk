@@ -5,7 +5,7 @@
 
 use super::{
     Begin, BranchId, Client, Correspondence, Dependency, DependencyRequirement, Domain, Error,
-    Fact, Limits, Observation, Provenance,
+    Fact, Hypothesis, Limits, Observation, Provenance,
 };
 use js_sys::{Function, Object, Reflect};
 use serde::Serialize;
@@ -71,6 +71,41 @@ struct JavaScriptDomain {
     observe: Function,
     corresponds: Function,
     maximum_bytes: usize,
+    restore: Option<Function>,
+}
+
+fn hypothesis_object(branch: &super::Branch<JavaScriptDomain>) -> Result<JsValue, Error> {
+    let object: JsValue = Object::new().into();
+    set(&object, "branch", &JsValue::from_str(&id_text(branch.id)))?;
+    set(
+        &object,
+        "adapter",
+        &JsValue::from_str(&branch.adapter.to_string()),
+    )?;
+    set(&object, "key", &JsValue::from_str(&branch.key))?;
+    set(&object, "basis", &JsValue::from_str(&branch.basis))?;
+    set(
+        &object,
+        "operation",
+        &branch
+            .operation
+            .as_ref()
+            .map_or(JsValue::NULL, |o| JsValue::from_str(o)),
+    )?;
+    let edges = js_sys::Array::new();
+    for edge in &branch.dependencies {
+        let item: JsValue = Object::new().into();
+        set(&item, "branch", &JsValue::from_str(&id_text(edge.branch)))?;
+        set(&item, "requirement", &encode(&edge.requirement)?)?;
+        edges.push(&item);
+    }
+    set(&object, "dependencies", &edges)?;
+    set(&object, "expires", &encode(&branch.expires)?)?;
+    set(&object, "prediction", &encode(&branch.prediction)?)?;
+    set(&object, "outcome", &encode(&branch.outcome)?)?;
+    set(&object, "predicted", &branch.predicted)?;
+    set(&object, "assumption", &branch.assumption)?;
+    Ok(object)
 }
 
 fn text(value: &JsValue, maximum_bytes: usize) -> Result<String, Error> {
@@ -99,6 +134,27 @@ impl Domain for JavaScriptDomain {
 
     fn identity(&self) -> u128 {
         self.identity
+    }
+
+    fn restore(
+        &self,
+        fact: &Fact<String, String, JsValue>,
+        branch: &super::Branch<Self>,
+        work: usize,
+    ) -> Result<(usize, usize), Error> {
+        let callback = self.restore.as_ref().ok_or(Error::Unsupported)?;
+        let result = callback
+            .call3(
+                &JsValue::UNDEFINED,
+                &fact_object(fact)?,
+                &hypothesis_object(branch)?,
+                &encode(&work)?,
+            )
+            .map_err(|_| Error::Unsupported)?;
+        Ok((
+            decode(field(&result, "bytes")?)?,
+            decode(field(&result, "work")?)?,
+        ))
     }
 
     fn validate(
@@ -236,11 +292,96 @@ impl WasmClientViews {
             observe,
             corresponds,
             maximum_bytes: limits.bytes,
+            restore: None,
         };
         Ok(Self {
             client: Client::new(domain, namespace, sequence, limits).map_err(failure)?,
             limits,
         })
+    }
+
+    /// Configure the trusted restore validator once, before importing branches.
+    #[wasm_bindgen(js_name = enableRestore)]
+    pub fn enable_restore(&mut self, validator: Function) -> Result<(), JsValue> {
+        if self.client.domain.restore.is_some() || !self.client.branches.is_empty() {
+            return Err(failure(Error::Conflict));
+        }
+        self.client.domain.restore = Some(validator);
+        Ok(())
+    }
+
+    /// Data-only allocation watermark. Never recycles an imported identity.
+    pub fn sequence(&self) -> u64 {
+        self.client.sequence()
+    }
+
+    /// Export one explicitly selected hypothesis, preserving reference values.
+    pub fn checkpoint(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "string")] branch: &JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let id = id(&text(branch, 256).map_err(failure)?).map_err(failure)?;
+        hypothesis_object(
+            self.client
+                .hypothesis(id)
+                .ok_or_else(|| failure(Error::Missing))?,
+        )
+        .map_err(failure)
+    }
+
+    /// Import a bounded checkpoint only through the trusted domain validator.
+    pub fn restore(&mut self, checkpoint: &JsValue) -> Result<(), JsValue> {
+        let edges = field(checkpoint, "dependencies").map_err(failure)?;
+        let edges = array(&edges, self.limits.edges.min(self.limits.work)).map_err(failure)?;
+        let dependencies = edges
+            .iter()
+            .map(|edge| {
+                Ok(Dependency {
+                    branch: id(&text(&field(&edge, "branch")?, 256)?)?,
+                    requirement: decode(field(&edge, "requirement")?)?,
+                })
+            })
+            .collect::<Result<Vec<_>, Error>>()
+            .map_err(failure)?;
+        let operation = field(checkpoint, "operation").map_err(failure)?;
+        let operation = if operation.is_null() {
+            None
+        } else {
+            Some(text(&operation, self.limits.bytes).map_err(failure)?)
+        };
+        self.client
+            .restore(Hypothesis {
+                id:
+                    id(&text(&field(checkpoint, "branch").map_err(failure)?, 256)
+                        .map_err(failure)?)
+                    .map_err(failure)?,
+                adapter: text(&field(checkpoint, "adapter").map_err(failure)?, 160)
+                    .map_err(failure)?
+                    .parse()
+                    .map_err(|_| failure(Error::Conflict))?,
+                key: text(
+                    &field(checkpoint, "key").map_err(failure)?,
+                    self.limits.bytes,
+                )
+                .map_err(failure)?,
+                basis: Arc::new(
+                    text(
+                        &field(checkpoint, "basis").map_err(failure)?,
+                        self.limits.bytes,
+                    )
+                    .map_err(failure)?,
+                ),
+                operation,
+                dependencies,
+                assumption: field(checkpoint, "assumption").map_err(failure)?,
+                predicted: Arc::new(field(checkpoint, "predicted").map_err(failure)?),
+                expires: decode(field(checkpoint, "expires").map_err(failure)?).map_err(failure)?,
+                prediction: decode(field(checkpoint, "prediction").map_err(failure)?)
+                    .map_err(failure)?,
+                outcome: decode(field(checkpoint, "outcome").map_err(failure)?).map_err(failure)?,
+                bytes: 0,
+            })
+            .map_err(failure)
     }
 
     /// Begin one explicit hypothesis; values stay as JavaScript references.

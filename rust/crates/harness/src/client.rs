@@ -192,6 +192,18 @@ pub trait Domain {
 
     /// Pinned correspondence implementation identity/version.
     fn identity(&self) -> u128;
+    /// Validate a persisted hypothesis against the restored authoritative cut.
+    /// Storage alone is not evidence: verify checkpoint provenance, adapter/pins,
+    /// dependencies and both recorded outcomes through the existing domain.
+    /// Return conservative deep bytes and actual work. Unsupported by default.
+    fn restore(
+        &self,
+        _fact: &Fact<Self::Key, Self::Basis, Self::Value>,
+        _hypothesis: &ClientHypothesis<Self>,
+        _work: usize,
+    ) -> Result<(usize, usize), Error> {
+        Err(Error::Unsupported)
+    }
     /// Validate a hypothesis and return accounted bytes and actual work.
     /// No side effects, reduction or admission may occur here.
     fn validate(
@@ -291,13 +303,15 @@ pub struct View<B, V> {
 }
 
 type Record<D> = Fact<<D as Domain>::Key, <D as Domain>::Basis, <D as Domain>::Value>;
-type Branch<D> = Hypothesis<
+/// Persisted data specialized to a domain; never authoritative evidence.
+pub type ClientHypothesis<D> = Hypothesis<
     <D as Domain>::Key,
     <D as Domain>::Basis,
     <D as Domain>::Operation,
     <D as Domain>::Assumption,
     <D as Domain>::Value,
 >;
+type Branch<D> = ClientHypothesis<D>;
 type Request<D> = Begin<
     <D as Domain>::Key,
     <D as Domain>::Basis,
@@ -555,6 +569,100 @@ impl<D: Domain> Client<D> {
     /// Inspect/export a hypothesis by reference. Serialization is data only.
     pub fn hypothesis(&self, id: BranchId) -> Option<&Branch<D>> {
         self.branches.get(&id)
+    }
+
+    /// Import one data-only hypothesis after restoring its authoritative record.
+    /// Identities must belong to the host's recovered allocation watermark;
+    /// dependencies are imported first. Nothing is admitted, sent or executed.
+    pub fn restore(&mut self, mut branch: Branch<D>) -> Result<(), Error> {
+        if self.domain.identity() != self.adapter
+            || branch.adapter != self.adapter
+            || branch.id.namespace != self.namespace
+            || branch.id.sequence == 0
+            || branch.id.sequence > self.sequence
+            || self.branches.contains_key(&branch.id)
+        {
+            return Err(Error::Conflict);
+        }
+        if branch.expires <= self.now || branch.expires - self.now > self.limits.retention {
+            return Err(Error::Time);
+        }
+        if self.branches.len() >= self.limits.branches
+            || branch.dependencies.len() > self.limits.work
+            || branch.dependencies.len() > self.limits.edges.saturating_sub(self.edges)
+        {
+            return Err(Error::Budget);
+        }
+        if branch
+            .operation
+            .as_ref()
+            .is_some_and(|o| self.by_operation.contains_key(o))
+        {
+            return Err(Error::Conflict);
+        }
+        let mut unique = BTreeSet::new();
+        for edge in &branch.dependencies {
+            let parent = self.branches.get(&edge.branch).ok_or(Error::Missing)?;
+            if parent.id.namespace != branch.id.namespace
+                || parent.id.sequence >= branch.id.sequence
+                || !unique.insert(edge.branch)
+            {
+                return Err(Error::Conflict);
+            }
+            if matches!(
+                branch.prediction,
+                PredictionOutcome::Pending | PredictionOutcome::Confirmed
+            ) {
+                let eligible = match edge.requirement {
+                    DependencyRequirement::Prediction => matches!(
+                        parent.prediction,
+                        PredictionOutcome::Pending | PredictionOutcome::Confirmed
+                    ),
+                    DependencyRequirement::Confirmed => {
+                        parent.prediction == PredictionOutcome::Confirmed
+                    }
+                };
+                if !eligible {
+                    return Err(Error::Conflict);
+                }
+            }
+        }
+        let fact = self.facts.get(&branch.key).ok_or(Error::Missing)?;
+        if branch.prediction == PredictionOutcome::Pending && fact.basis != branch.basis {
+            return Err(Error::StaleBasis);
+        }
+        let allowance = self.limits.work - unique.len();
+        let (bytes, work) = self.domain.restore(fact, &branch, allowance)?;
+        if work > allowance {
+            return Err(Error::Budget);
+        }
+        let bytes = bytes
+            .checked_add(metadata_bytes::<Branch<D>>()?)
+            .and_then(|n| {
+                n.checked_add(dependency_bytes(unique.len(), branch.dependencies.capacity()).ok()?)
+            })
+            .ok_or(Error::Budget)?;
+        if bytes > self.limits.bytes.saturating_sub(self.bytes) {
+            return Err(Error::Budget);
+        }
+        branch.bytes = bytes;
+        for parent in &unique {
+            self.dependents
+                .entry(*parent)
+                .or_default()
+                .insert(branch.id);
+        }
+        self.by_key
+            .entry(branch.key.clone())
+            .or_default()
+            .insert(branch.id);
+        if let Some(operation) = &branch.operation {
+            self.by_operation.insert(operation.clone(), branch.id);
+        }
+        self.edges += unique.len();
+        self.bytes += bytes;
+        self.branches.insert(branch.id, branch);
+        Ok(())
     }
 
     fn affected(

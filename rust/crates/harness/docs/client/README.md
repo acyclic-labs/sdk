@@ -54,12 +54,20 @@ overlays are explicitly ambiguous; there is no universal last-writer-wins rule.
 `Hypothesis` is a data-only serde export with identity, adapter pin, original
 operation, exact basis, assumptions, edges, prediction, expiry and both outcomes.
 Export authorization and storage are host policy. Exporting or sharing never
-creates a fact. There is intentionally no automatic import, replay, journal or
-promotion: a future adapter must restore authoritative demand, validate current
-pins, recover original operation identity and revalidate hypotheses. Namespace
-uniqueness and atomic durable sequence checkpointing are host obligations. The
-kernel never allocates operation identities or submits retries. Idempotent
-effect admission and crash recovery continue to belong to domain journals.
+creates a fact. `Client::restore` imports one hypothesis only through the installed
+domain's trusted `restore` validator; omission returns `Unsupported`. Reconstruct
+the client with the durable `sequence()` watermark, restore independently trusted
+authoritative demand and host logical time, then import parents before children.
+The kernel checks identity, basis, dependency ordering, expiry and original
+operation uniqueness, recomputes byte/work admission and installs atomically.
+The adapter authenticates pinned provenance and both recorded outcomes using its
+existing reducer/journal receipts. The public native/WASM consumer recovers an
+original message hypothesis from serialized bytes against the actual Harness
+reducer's canonical message and operation revision; altered outcomes reject.
+Namespace uniqueness and atomic durable sequence checkpointing remain host
+obligations. The kernel never allocates operation identities, submits retries,
+admits commands or executes effects. Idempotent admission and crash recovery
+continue to belong to domain journals.
 
 Facts, basis pins and predictions hold `Arc` references; views copy references and
 provenance, not histories. Exact duplicate basis observations retain the same
@@ -91,5 +99,5 @@ has no ability to dispatch dependent effects. Any real continuation must obtain
 normal authoritative admission and recheck its domain assumptions there.
 
 Qualification and simplification evidence is recorded in [QUALIFICATION.md](QUALIFICATION.md).
-Framework bindings, transport/checkpoints, shared/durable adapters and inference
-prefill/promotion belong to later CL2–CL5 owners.
+Harness client bindings and durable transport composition reuse this same kernel;
+framework adapters never provide another rollback, recovery or authority engine.

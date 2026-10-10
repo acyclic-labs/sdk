@@ -54,28 +54,78 @@ conversation/history hydration or full-state serialization is needed. Dispose
 body demand when its owner ends, and dispose the shared scheduler only after all
 its owners have ended. Window eviction does not undo an operation or a hypothesis.
 
-## Durability producer gaps
+## Durable composition
 
-Current `AtomicClientStateStore.commit(authority, cursor, operationId?)` atomically
-updates cursor/outbox. It does not bind a recoverable projection checkpoint. A
-fresh `ProjectionStore` is empty even when `HarnessClient` loads saved cursors;
-resuming there cannot establish cursor/view correspondence. These modules make
-no claim of durable projection recovery.
+Start one `ProjectionStore` per durable authority with a `ProjectionRecovery`
+adapter. Its identity includes the security namespace, reducer/schema version and
+domain adapter. The pure encoder produces bounded immutable data, using FileRefs
+for content. The decoder validates the data against the exact authority,
+generation and revision. Use the same `IndexedDbClientStore` for outbox and
+cursors; custom stores must implement its atomic `commit` and `loadRecovery`
+contracts and enforce bounds before allocating provider results.
 
-The owning producer must expose a bounded immutable checkpoint pinned to the
-authority, generation, revision, reducer/schema and adapter identity, with atomic
-publication of its binding alongside existing cursor/outbox acknowledgement.
-Restoration must validate and install that exact checkpoint before transport
-resume. A failed/quota-exhausted publication must keep original operation recovery
-possible. No new journal or whole-history replay is an acceptable substitute.
-Existing `client.ts` IndexedDB schema/outbox hunks remain with their format owner.
+For each contiguous event, the client prepares the reduced state, commits its
+checkpoint and cursor with the original operation acknowledgement in one existing
+outbox/cursors transaction, then publishes. Capacity, storage and compare-and-swap
+failures preserve the previous published cut and retry identity. The expected
+cursor and globally allocated checkpoint version fence stale tabs, including
+same-cursor replacements and delete/recreate. Cursor-only writes cannot advance
+an existing checkpoint. Custom atomic stores return the allocated version from
+`commit` and expose it in `loadRecovery`.
+Reopening validates all saved cuts before publishing state or connecting.
+Every persisted authority requires both a checkpoint and its registered recovery
+projection: cursor-only durable data cannot reconnect an empty UI. An unregistered
+durable delivery cannot notify listeners, advance a cursor or acknowledge retries.
+Explicit authoritative `rebase` can replace an incompatible cut, still comparing
+the stored cursor/version and fencing the old connection; it requires a registered
+projection and an authoritative checkpoint, not a cursor-only reset callback.
+Memory-only cursor stores retain their live reset contract. Durable replay errors
+require authoritative recovery, with old durable data preserved on rejection.
 
-Rust `Client` permits by-reference hypothesis inspection/export and exposes its
-allocated sequence. Current `ClientViews`/WASM has no qualified bounded durable
-import/export path preserving domain pin, branch dependencies, budget accounting
-and hypothesis provenance. Durable/shared hypothesis restoration is unsupported
-until that producer contract qualifies. Do not serialize JS guesses as trusted
-canonical facts. Data persistence alone grants no authority.
+Client mutations use the existing finite scheduler instead of a promise tail:
+defaults are 128 unsettled mutations, 16 MiB retained input and 1 MiB per command
+or delivery. Inputs are bounded, then synchronously copied only after the existing
+scheduler reserves capacity, before queued work can start. Rejected work makes no
+input copy; capture failure/cancellation releases its reservation. Built-in outboxes
+default to 1024 commands and 16 MiB; IndexedDB separately accounts encoded and
+resident bytes, 64 cursors and 256 KiB per checkpoint. The sequence index supplies
+pages of at most 64 records over one fixed enqueue cut. Admission visits bounded
+records without retaining the full outbox; duplicate IDs keep their enqueue order.
+One bounded metadata record in the existing cursors store holds the monotonic
+outbox sequence and checkpoint-version allocator. It survives acknowledgements
+and cursor deletion; malformed or exhausted counters fail closed. It is disjoint
+from authority keys and excluded from their capacity count, while its data and
+read work remain bounded. Neither paging cuts nor version fences recycle IDs.
+`load()` remains a bounded compatibility collector. Configure application limits
+and enforce provider/decoder bounds before transport or IndexedDB allocations;
+post-allocation validation cannot undo those allocations.
+
+Database construction starts no IO. The existing version 3 and legacy rejection
+policy are unchanged; newly created outboxes include the sequence index.
+Existing databases lacking that index fail closed and close the rejected handle
+before network resume. There is no implicit migration, scan fallback, synthesized
+checkpoint or deletion. They require an explicit application-owned migration or
+authoritative recovery policy.
+
+`ClientViews.checkpoint(branch)` exports one selected hypothesis and `sequence()`
+exports its allocation watermark. Construct the new kernel with that watermark,
+restore verified canonical facts and logical time, then import parents before
+descendants with `restore`. The trusted domain's optional `restore` validator
+authenticates pins, adapter, dependencies and prediction/operation outcomes;
+omission is `Unsupported`. The kernel preserves original branch and operation
+IDs, recomputes byte/work admission and installs each hypothesis atomically.
+Checkpoint data grants no authority, admits no command and executes no effect.
+Fresh trusted domain evidence must establish completion and external outcomes.
+
+Legacy event listeners retain at-least-once delivery before acknowledgement;
+failure keeps the prepared projection unpublished and the event retryable.
+Callbacks must remain idempotent. Disposal during a started commit allows that
+commit to settle but stops the batch before preparing another event.
+
+`client.failure` exposes failures even during retry. Stop replay before detaching
+its durable projection. Client disposal ends owned interest; started storage/send
+work retains its reservation until settlement and may have an indeterminate
+authoritative outcome. Recover through the original operation ID.
 
 ## Simplification and evidence
 
@@ -90,7 +140,16 @@ Focused controls exercise distinct capacity/cancellation, selective hydration an
 transport failure classes with controlled pending providers. They establish
 finite modeled transitions, not a proof about arbitrary providers. Byte receipts
 and pre-work enforcement are host obligations; post-load checks alone are not a
-security boundary. Missing durability evidence remains a dependency, not PASS.
+security boundary. The installed Chromium control combines verified FileRef
+hydration, atomic projection/cursor/outbox commit followed by a full document
+reload, and native-backed hypothesis recovery before network resume. A separate
+browser realm restores a stale cut and loses a same-cursor replacement CAS;
+delete/recreate ABA, deleted-tail fixed-cut paging, listener retry ordering and
+disposal during a started durable batch exercise the same production IDB path.
+Native and TypeScript controls exercise adapter drift, untrusted outcomes,
+dependency ordering, capacity failure, allocation exhaustion, late database
+handle cleanup and original-ID preservation. These controls do not authenticate
+arbitrary host decoders; the current source still requires aggregate qualification.
 The same controls detect the reviewed original source's two cancellation bugs:
 1,000 join/cancel operations retained 1,000 callbacks, and an abort during the
 connection handoff lost cleanup. Repaired code attaches no per-reader completion

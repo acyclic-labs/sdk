@@ -17,6 +17,121 @@ wasm_bindgen_test_configure!(run_in_browser);
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
 #[cfg_attr(not(target_arch = "wasm32"), test)]
+fn persisted_hypotheses_preserve_identity_dependencies_and_recompute_budgets() {
+    let mut original = Client::new(Numbers::default(), 71, 0, limits()).unwrap();
+    original.observe(1, &evidence(1, 0, 10, None)).unwrap();
+    let parent = original
+        .begin(request(1, 0, 10, 11, Some(9), vec![]))
+        .unwrap();
+    let child = original
+        .begin(request(1, 0, 10, 12, Some(10), vec![parent]))
+        .unwrap();
+    let copy = |id| {
+        let branch = original.hypothesis(id).unwrap();
+        Hypothesis {
+            id: branch.id,
+            adapter: branch.adapter,
+            key: branch.key,
+            operation: branch.operation,
+            basis: Arc::clone(&branch.basis),
+            assumption: branch.assumption,
+            dependencies: branch.dependencies.clone(),
+            predicted: Arc::clone(&branch.predicted),
+            expires: branch.expires,
+            prediction: branch.prediction,
+            outcome: branch.outcome,
+            bytes: usize::MAX, // persisted byte receipts never control admission
+        }
+    };
+    let mut restored = Client::new(Numbers::default(), 71, original.sequence(), limits()).unwrap();
+    restored.observe(1, &evidence(1, 0, 10, None)).unwrap();
+    let before = restored.residency();
+    assert_eq!(restored.restore(copy(child)), Err(Error::Missing));
+    assert_eq!(restored.residency(), before);
+    let mut forged = copy(parent);
+    forged.outcome = OperationOutcome::Completed;
+    forged.prediction = PredictionOutcome::Confirmed;
+    assert_eq!(restored.restore(forged), Err(Error::Unsupported));
+    assert_eq!(restored.residency(), before);
+    let mut foreign = copy(parent);
+    foreign.id.namespace = 72;
+    assert_eq!(restored.restore(foreign), Err(Error::Conflict));
+    restored.restore(copy(parent)).unwrap();
+    restored.restore(copy(child)).unwrap();
+    assert_eq!(restored.residency(), original.residency());
+    assert_eq!(restored.restore(copy(parent)), Err(Error::Conflict));
+    let next = restored
+        .begin(request(1, 0, 10, 13, Some(11), vec![child]))
+        .unwrap();
+    assert_eq!(next.sequence, 3);
+    assert_eq!(restored.discard(parent).unwrap(), vec![parent, child, next]);
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+fn bounded_restore_orders_watermarks_time_and_work_preserve_unrelated_facts() {
+    let mut source = Client::new(Numbers::default(), 71, 0, limits()).unwrap();
+    source.observe(1, &evidence(1, 0, 10, None)).unwrap();
+    let parent = source
+        .begin(request(1, 0, 10, 11, Some(9), vec![]))
+        .unwrap();
+    let child = source
+        .begin(request(1, 0, 10, 12, Some(10), vec![parent]))
+        .unwrap();
+    let encoded = [parent, child].map(|id| {
+        serde_json::to_vec(source.hypothesis(id).unwrap()).unwrap()
+    });
+    let mut explored = 0;
+    for order in [[0, 1], [1, 0]] {
+        for watermark in [0, 1, 2] {
+            for tick in [0, 49, 50] {
+                for work in [1, 2, 256] {
+                    explored += 1;
+                    let mut bounded = limits();
+                    bounded.work = work;
+                    bounded.visible = bounded.visible.min(work);
+                    let mut recovered =
+                        Client::new(Numbers::default(), 71, watermark, bounded).unwrap();
+                    recovered.observe(1, &evidence(1, 0, 10, None)).unwrap();
+                    recovered.observe(2, &evidence(2, 0, 777, None)).unwrap();
+                    recovered.advance(tick).unwrap();
+                    for index in order {
+                        let mut branch: ClientHypothesis<Numbers> =
+                            serde_json::from_slice(&encoded[index]).unwrap();
+                        branch.bytes = usize::MAX;
+                        let before = recovered.residency();
+                        let expected = if branch.id.sequence > watermark {
+                            Err(Error::Conflict)
+                        } else if tick >= 50 {
+                            Err(Error::Time)
+                        } else if index == 1 && recovered.hypothesis(parent).is_none() {
+                            Err(Error::Missing)
+                        } else if index == 1 && work < 2 {
+                            Err(Error::Budget)
+                        } else {
+                            Ok(())
+                        };
+                        assert_eq!(recovered.restore(branch), expected);
+                        if expected.is_err() {
+                            assert_eq!(recovered.residency(), before);
+                        } else {
+                            let id = if index == 0 { parent } else { child };
+                            let restored = recovered.hypothesis(id).unwrap();
+                            assert_eq!(restored.outcome, OperationOutcome::Unknown);
+                            assert_eq!(restored.operation, Some(if index == 0 { 9 } else { 10 }));
+                        }
+                        assert_eq!(*recovered.view(&2, &[]).unwrap().value, 777);
+                        assert_eq!(recovered.sequence(), watermark);
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(explored, 54);
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn dependency_capacity_is_retained_and_charged_atomically() {
     let mut client = Client::new(Numbers::default(), 71, 0, limits()).unwrap();
     client.observe(1, &evidence(1, 0, 10, None)).unwrap();
