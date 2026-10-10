@@ -170,7 +170,9 @@ function assertNativeRuntimeQualification(proof, metadata, companion, receiptByt
       || proof.source_commit !== metadata.source_revision || proof.source_sha256 !== metadata.source_sha256
       || proof.target !== metadata.selected_target || !companion.os.includes(proof.platform)
       || !companion.cpu.includes(proof.arch) || proof.runtime !== "node" || !/^v24\./u.test(proof.node ?? "")
+      || !/^sha256:[0-9a-f]{64}$/u.test(proof.node_executable_sha256 ?? "")
       || proof.bun?.version !== "1.4.2" || proof.bun?.platform !== proof.platform
+      || !/^sha256:[0-9a-f]{64}$/u.test(proof.bun.executable_sha256 ?? "")
       || (nativeBunSupported(metadata.selected_target)
         ? proof.bun.arch !== proof.arch || proof.bun.consumer !== "passed"
         : proof.bun.arch !== "x64" || proof.bun.consumer !== "unsupported-native-architecture")

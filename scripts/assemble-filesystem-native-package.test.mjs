@@ -18,7 +18,8 @@ const proof = () => ({
   schema: "acyclic.filesystem.native-runtime-qualification.v1",
   source_commit: source, source_sha256: metadata.source_sha256,
   target: metadata.selected_target, platform: "linux", arch: "x64", runtime: "node", node: "v24.15.0",
-  bun: { version: "1.4.2", platform: "linux", arch: "x64", consumer: "passed" },
+  node_executable_sha256: hash("synthetic Node binary"),
+  bun: { version: "1.4.2", platform: "linux", arch: "x64", executable_sha256: hash("synthetic Bun binary"), consumer: "passed" },
   artifact: { ...artifact }, producer_receipt_sha256: hash(receipt),
   retained_artifact: { path: "acyclic-fs-0.2.0-linux-x64.node", sha256: artifact.sha256, bytes: artifact.bytes },
   archives: [{ path: "acyclic-labs-fs-0.2.0.tgz", sha256: hash("parent") }, { path: "acyclic-labs-fs-linux-x64-gnu-0.2.0.tgz", sha256: hash("companion") }],
@@ -34,6 +35,7 @@ test("filesystem runtime admission binds source, filename, bytes, triple and act
     { producer_receipt_sha256: hash("wrong compiler") }, { archives: [] },
     { runtime: "bun" }, { retained_artifact: { ...artifact, path: "wrong.node" } },
     { bun: undefined }, { bun: { ...proof().bun, arch: "arm64" } },
+    { node_executable_sha256: undefined }, { bun: { ...proof().bun, executable_sha256: undefined } },
     { bun: { ...proof().bun, consumer: "unsupported-native-architecture" } },
     { archives: [proof().archives[0], proof().archives[0]] },
     { archives: [{ ...proof().archives[0], path: "wrong.tgz" }, proof().archives[1]] },
@@ -72,7 +74,7 @@ test("Windows ARM64 retains actual Node proof without mislabeling x64 Bun as nat
   const windowsCompanion = { name: "@acyclic-labs/fs-win32-arm64-msvc", os: ["win32"], cpu: ["arm64"], main: windowsArtifact.path.slice("generated/native/".length) };
   const windowsProof = {
     ...proof(), target, platform: "win32", arch: "arm64", artifact: windowsArtifact,
-    bun: { version: "1.4.2", platform: "win32", arch: "x64", consumer: "unsupported-native-architecture" },
+    bun: { version: "1.4.2", platform: "win32", arch: "x64", executable_sha256: hash("synthetic x64 Bun installer"), consumer: "unsupported-native-architecture" },
     retained_artifact: { ...proof().retained_artifact, path: "acyclic-fs-0.2.0-win32-arm64.node" },
     archives: [proof().archives[0], { ...proof().archives[1], path: "acyclic-labs-fs-win32-arm64-msvc-0.2.0.tgz" }],
   };

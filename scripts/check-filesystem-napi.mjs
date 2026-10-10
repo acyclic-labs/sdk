@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -8,11 +9,17 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { nativeFamily } from "./native-family.mjs";
 import { createNativeProducer } from "./build-native-family.mjs";
 import { createNativeAssembler } from "./assemble-native-family.mjs";
-/** @typedef {{ version: string, platform: string, arch: string, consumer: string }} NativeBunRuntimeProof */
+/** @typedef {{ version: string, platform: string, arch: string, executable_sha256: string, consumer: string }} NativeBunRuntimeProof */
 
 const family = nativeFamily("filesystem");
 const producer = createNativeProducer(family);
 const assembler = createNativeAssembler(family);
+
+async function fileDigest(path) {
+  const digest = createHash("sha256");
+  for await (const chunk of createReadStream(path)) digest.update(chunk);
+  return `sha256:${digest.digest("hex")}`;
+}
 
 const { version } = JSON.parse(await readFile(
   new URL("../typescript/packages/filesystem/package.json", import.meta.url), "utf8",
@@ -177,6 +184,7 @@ async function qualifyAdapter(bindingPath, engineRoot) {
     schema: "acyclic.filesystem.native-runtime-qualification.v1",
     source_commit: metadata.source_revision, source_sha256: metadata.source_sha256, target: metadata.selected_target,
     platform: process.platform, arch: process.arch, runtime: "node", node: process.version,
+    node_executable_sha256: await fileDigest(process.execPath),
     bun: /** @type {NativeBunRuntimeProof | undefined} */ (undefined),
     artifact: metadata.artifact,
     producer_receipt_sha256: `sha256:${createHash("sha256").update(await readFile(receipt)).digest("hex")}`,
@@ -310,12 +318,16 @@ async function qualifyAdapter(bindingPath, engineRoot) {
   ], { stdio: "inherit" });
   if (nodeConsumer.error) throw nodeConsumer.error;
   if (nodeConsumer.status !== 0) throw new Error("installed native Node.js consumer qualification failed");
-  const bunIdentityResult = spawnSync(bun, ["-e", "console.log(JSON.stringify({version:Bun.version,platform:process.platform,arch:process.arch}))"], {
+  const bunIdentityResult = spawnSync(bun, ["-e", "console.log(JSON.stringify({version:Bun.version,platform:process.platform,arch:process.arch,executable:process.execPath}))"], {
     encoding: "utf8",
   });
   if (bunIdentityResult.error) throw bunIdentityResult.error;
   if (bunIdentityResult.status !== 0) throw new Error("installed Bun runtime identity capture failed");
-  const bunIdentity = JSON.parse(bunIdentityResult.stdout);
+  const capturedBunIdentity = JSON.parse(bunIdentityResult.stdout);
+  const bunIdentity = {
+    version: capturedBunIdentity.version, platform: capturedBunIdentity.platform, arch: capturedBunIdentity.arch,
+    executable_sha256: await fileDigest(capturedBunIdentity.executable),
+  };
   if (bunIdentity.version !== "1.4.2" || bunIdentity.platform !== process.platform) {
     throw new Error("native qualification requires the maintained Bun 1.4.2 runtime");
   }
