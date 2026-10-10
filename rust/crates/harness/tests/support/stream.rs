@@ -34,6 +34,7 @@ pub struct LostSessionAck<P = MemoryStream> {
     pub message_head_race: std::sync::Mutex<Option<acyclic_stream::CommitRequest>>,
     pub aggregate_commit_fault: std::sync::atomic::AtomicU8,
     pub aggregate_commits: std::sync::atomic::AtomicUsize,
+    pub stale_projection_head_tail: std::sync::atomic::AtomicU64,
     pub hide_aggregate_read: std::sync::atomic::AtomicBool,
 }
 impl<P> LostSessionAck<P> {
@@ -58,6 +59,7 @@ impl<P> LostSessionAck<P> {
             message_head_race: Default::default(),
             aggregate_commit_fault: Default::default(),
             aggregate_commits: Default::default(),
+            stale_projection_head_tail: Default::default(),
             hide_aggregate_read: Default::default(),
         }
     }
@@ -87,6 +89,17 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         &self,
         path: acyclic_stream::StreamPath,
     ) -> std::result::Result<u64, StreamError> {
+        if path
+            .as_str()
+            .starts_with("harness/v3/projection-checkpoints/")
+        {
+            let stale = self
+                .stale_projection_head_tail
+                .swap(0, std::sync::atomic::Ordering::SeqCst);
+            if stale != 0 {
+                return Ok(stale - 1);
+            }
+        }
         self.inner.tail(path).await
     }
     async fn bounds(

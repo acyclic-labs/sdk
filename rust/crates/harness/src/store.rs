@@ -3791,6 +3791,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn checkpoint_open_pins_canonical_cut_before_selecting_checkpoint() -> Result<()> {
+        use std::sync::atomic::Ordering;
+        let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+        let client = StreamClient::new(provider.clone());
+        let mut writer = with_content(
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
+        );
+        for cut in [64_u64, 128] {
+            while writer.reducer().revision() < cut {
+                let revision = writer.reducer().revision();
+                writer
+                    .execute(projection_command(u128::from(revision + 1), revision)?)
+                    .await?;
+            }
+            // Model the older checkpoint-tail observation made immediately
+            // before the boundary commit became visible to the canonical read.
+            provider
+                .stale_projection_head_tail
+                .store(cut / 64, Ordering::SeqCst);
+            provider.forbid_writes.store(true, Ordering::SeqCst);
+            let cold =
+                StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?;
+            assert_eq!(cold.reducer().revision(), cut);
+            assert_eq!(cold.reducer().snapshot()?.events.len(), 1);
+            assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
+            provider
+                .stale_projection_head_tail
+                .store(0, Ordering::SeqCst);
+            provider.forbid_writes.store(false, Ordering::SeqCst);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn default_cold_projection_reads_fixed_work_at_increasing_history() -> Result<()> {
         use std::sync::atomic::Ordering;
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
