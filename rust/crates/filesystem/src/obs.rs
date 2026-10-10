@@ -114,7 +114,7 @@ pub(crate) fn caller_context() -> OperationSpan {
 
 /// Carries an explicitly selected operation/ancestry context through actual work.
 #[cfg(all(
-    any(feature = "local", feature = "native-watch"),
+    any(test, feature = "local", feature = "native-watch"),
     not(target_arch = "wasm32")
 ))]
 pub(crate) fn in_context<T>(
