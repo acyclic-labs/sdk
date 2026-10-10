@@ -61,6 +61,10 @@ pub(crate) fn next_revision(revision: u64) -> Result<u64> {
 }
 
 mod json;
+mod event_json;
+pub(crate) use event_json::{
+    EventPayloadJsonAdmission, audited_serde_diagnostic_bytes, event_payload_json_admission,
+};
 pub use json::{
     JsonBounds, JsonCodecCharge, canonical_json_bytes_bounded, json_bytes_bounded_trusted,
     json_from_slice_bounded_trusted,
