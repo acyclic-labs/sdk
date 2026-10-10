@@ -1737,7 +1737,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "local")]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn durable_source_restarts_fail_closed_and_remains_gc_classifiable()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -2768,7 +2768,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "local")]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn restart_recovers_publication_missing_its_terminal_source_record()
     -> Result<(), Box<dyn std::error::Error>> {

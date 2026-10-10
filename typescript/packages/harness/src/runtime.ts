@@ -383,10 +383,7 @@ export interface HarnessRuntimeState {
   waitUntil?(taskId: RuntimeTaskId, operationId: string, deadline: Date): Promise<void>;
   /** Owner-journaled exact tool operation; the owner may use any tool executor. */
   executeTool?<Input, Output>(taskId: RuntimeTaskId, operationId: OperationId, tool: ToolRef<Input, Output>, input: Input, harness: AgentHarness): Promise<Outcome<unknown, OperationId>>;
-}
-/** Combined local host convenience; separate state and spawner bindings override it. */
-export interface HarnessRuntimeHost extends HarnessRuntimeSpawner, HarnessRuntimeState {
-  /** Replay or reconcile one exact selected turn through the durable execution journal. */
+  /** Replay or reconcile one exact selected turn through the owner's execution journal. */
   executeSelectedTurn?(operationId: OperationId, selected: SelectedModelContext, harness: AgentHarness): Promise<Outcome<RunOutput, OperationId>>;
 }
 /** Qualified placement and the exact durable authorities that can run it. */
@@ -1605,7 +1602,6 @@ export interface HarnessBindings {
   readonly interactions?: InteractionHandler;
   readonly interactionResolver?: InteractionResolver;
   readonly policy?: Policy;
-  readonly host?: HarnessRuntimeHost;
   readonly state?: HarnessRuntimeState;
   readonly spawner?: HarnessRuntimeSpawner;
   readonly execution?: HarnessExecutionProvider;
@@ -1632,7 +1628,7 @@ export class HarnessBuilder {
   readonly #toolSources = new Map<string, ErasedToolDefinition>();
   readonly #selectedTools = new Map<string, string>();
   #inheritedModelPrefix?: InheritedModelPrefix;
-  #model?: BoundModel; #loop?: AgentLoop; #context?: ContextBuilder; #interactions?: InteractionHandler; #interactionResolver?: InteractionResolver; #policy?: Policy; #host?: HarnessRuntimeHost; #state?: HarnessRuntimeState; #spawner?: HarnessRuntimeSpawner; #execution?: HarnessExecutionProvider; #content?: ContentBindings; #artifacts?: ContentBindings; #forkPreparer?: ForkPreparer; #forkPublisher?: ForkPublisher; #workspaces?: ProjectWorkspaceProvider;
+  #model?: BoundModel; #loop?: AgentLoop; #context?: ContextBuilder; #interactions?: InteractionHandler; #interactionResolver?: InteractionResolver; #policy?: Policy; #state?: HarnessRuntimeState; #spawner?: HarnessRuntimeSpawner; #execution?: HarnessExecutionProvider; #content?: ContentBindings; #artifacts?: ContentBindings; #forkPreparer?: ForkPreparer; #forkPublisher?: ForkPublisher; #workspaces?: ProjectWorkspaceProvider;
   readonly #grants: string[] = [];
   #limits: Limits = DEFAULT_LIMITS;
   #modelOutputTokens: number | undefined;
@@ -1645,7 +1641,6 @@ export class HarnessBuilder {
     if (value.interactions) this.interactions(value.interactions);
     if (value.interactionResolver) this.interactionResolver(value.interactionResolver);
     if (value.policy) this.policy(value.policy);
-    if (value.host) this.host(value.host);
     if (value.state) this.state(value.state);
     if (value.spawner) this.spawner(value.spawner);
     if (value.execution) this.execution(value.execution);
@@ -1699,7 +1694,6 @@ export class HarnessBuilder {
   interactions(value: InteractionHandler): this { this.#interactions = value; return this; }
   interactionResolver(value: InteractionResolver): this { this.#interactionResolver = value; return this; }
   policy(value: Policy): this { this.#policy = value; return this; }
-  host(value: HarnessRuntimeHost): this { this.#host = value; return this; }
   state(value: HarnessRuntimeState): this { this.#state = value; return this; }
   spawner(value: HarnessRuntimeSpawner): this { this.#spawner = value; return this; }
   execution(value: HarnessExecutionProvider): this { this.#execution = value; return this; }
@@ -1772,7 +1766,7 @@ export class HarnessBuilder {
     this.#selectedTools.set(name, revision);
     return this;
   }
-  async build(): Promise<AgentHarness> { const components: AgentHarnessComponents = { limits: this.#limits }; if (this.#modelOutputTokens !== undefined) components.modelOutputTokens = this.#modelOutputTokens; if (this.#inheritedModelPrefix) components.inheritedModelPrefix = this.#inheritedModelPrefix; if (this.#model) components.model = this.#model; if (this.#loop) components.loop = this.#loop; if (this.#context) components.context = this.#context; if (this.#interactions) components.interactions = this.#interactions; if (this.#interactionResolver) components.interactionResolver = this.#interactionResolver; if (this.#policy) components.policy = this.#policy; if (this.#host) components.host = this.#host; if (this.#execution) { if (this.#host) throw new Error("execution route conflicts with legacy durable host"); components.execution = this.#execution; components.state = this.#execution.state(); components.spawner = this.#execution.spawner(); } if (this.#state) components.state = this.#state; if (this.#spawner) components.spawner = this.#spawner; if (this.#content) components.content = this.#content; if (this.#artifacts) components.artifacts = this.#artifacts; if (this.#workspaces) {
+  async build(): Promise<AgentHarness> { const components: AgentHarnessComponents = { limits: this.#limits }; if (this.#modelOutputTokens !== undefined) components.modelOutputTokens = this.#modelOutputTokens; if (this.#inheritedModelPrefix) components.inheritedModelPrefix = this.#inheritedModelPrefix; if (this.#model) components.model = this.#model; if (this.#loop) components.loop = this.#loop; if (this.#context) components.context = this.#context; if (this.#interactions) components.interactions = this.#interactions; if (this.#interactionResolver) components.interactionResolver = this.#interactionResolver; if (this.#policy) components.policy = this.#policy; if (this.#execution) { components.execution = this.#execution; components.state = this.#execution.state(); components.spawner = this.#execution.spawner(); } if (this.#state) components.state = this.#state; if (this.#spawner) components.spawner = this.#spawner; if (this.#content) components.content = this.#content; if (this.#artifacts) components.artifacts = this.#artifacts; if (this.#workspaces) {
     if (!this.#grants.includes("fork:publish") && !this.#grants.includes("project:merge")) throw new TypeError("project workspaces require fork:publish or project:merge");
     components.workspaces = this.#workspaces;
   } if (this.#forkPreparer) {
@@ -1790,7 +1784,6 @@ export class HarnessBuilder {
     // Capture caller-owned identity values before the first async Rust
     // validation can yield. Providers may reuse and mutate their objects.
     const policyInput = structuredClone((components.policy)?.identity() ?? null);
-    const hostPolicyInput = structuredClone(components.host?.policyIdentity() ?? null);
     const statePolicyInput = structuredClone(components.state?.policyIdentity() ?? null);
     const spawnerPolicyInput = structuredClone(components.spawner?.policyIdentity() ?? null);
     const executionInput = components.execution === undefined ? null : structuredClone(components.execution.identity());
@@ -1798,9 +1791,8 @@ export class HarnessBuilder {
     const spawnerExecutionInput = structuredClone(components.spawner?.executionIdentity?.() ?? null);
     validateTaskRequirements(this.contracts, this.#tasks, this.#tools, components, this.#grants);
     const policy = await validatePolicyIdentity(policyInput);
-    if (components.host && !samePolicyIdentity(policy, await validatePolicyIdentity(hostPolicyInput))) throw new Error("runtime policy identity differs from durable host policy");
     if (components.state && !samePolicyIdentity(policy, await validatePolicyIdentity(statePolicyInput))) throw new Error("runtime policy identity differs from durable state policy");
-    if (components.spawner && !components.state && !components.host) throw new Error("durable spawner requires a state binding");
+    if (components.spawner && !components.state) throw new Error("durable spawner requires a state binding");
     if (components.spawner && !samePolicyIdentity(policy, await validatePolicyIdentity(spawnerPolicyInput))) throw new Error("runtime policy identity differs from durable spawner policy");
     if (components.execution) {
       const selected = await validatePolicyIdentity(executionInput);
@@ -1813,7 +1805,7 @@ export class HarnessBuilder {
     return new AgentHarness(this.#tasks, this.#tools, components, ExecutionScope.create().grant(...this.#grants), new Map(), this.#selectedTools, this.#toolSources, this.contracts, harnessConstruction, policy); }
 }
 
-interface AgentHarnessComponents { modelOutputTokens?: number; inheritedModelPrefix?: InheritedModelPrefix; model?: BoundModel; loop?: AgentLoop; context?: ContextBuilder; interactions?: InteractionHandler; interactionResolver?: InteractionResolver; policy?: Policy; host?: HarnessRuntimeHost; state?: HarnessRuntimeState; spawner?: HarnessRuntimeSpawner; execution?: HarnessExecutionProvider; content?: ContentBindings; artifacts?: ContentBindings; forkPreparer?: ForkPreparer; forkPublisher?: ForkPublisher; workspaces?: ProjectWorkspaceProvider; limits?: Limits }
+interface AgentHarnessComponents { modelOutputTokens?: number; inheritedModelPrefix?: InheritedModelPrefix; model?: BoundModel; loop?: AgentLoop; context?: ContextBuilder; interactions?: InteractionHandler; interactionResolver?: InteractionResolver; policy?: Policy; state?: HarnessRuntimeState; spawner?: HarnessRuntimeSpawner; execution?: HarnessExecutionProvider; content?: ContentBindings; artifacts?: ContentBindings; forkPreparer?: ForkPreparer; forkPublisher?: ForkPublisher; workspaces?: ProjectWorkspaceProvider; limits?: Limits }
 const harnessConstruction = Symbol("HarnessBuilder-owned construction");
 export class AgentHarness {
   readonly #tasks: ReadonlyMap<string, ErasedTaskDefinition>; readonly #tools: ReadonlyMap<string, ErasedRegisteredTool>;
@@ -1868,9 +1860,8 @@ export class AgentHarness {
     }
     return receipt;
   }
-  get host(): HarnessRuntimeHost | undefined { return this.components.host; }
-  get state(): HarnessRuntimeState | undefined { return this.components.state ?? this.components.host; }
-  get spawner(): HarnessRuntimeSpawner | undefined { return this.components.spawner ?? this.components.host; }
+  get state(): HarnessRuntimeState | undefined { return this.components.state; }
+  get spawner(): HarnessRuntimeSpawner | undefined { return this.components.spawner; }
   get content(): ContentBindings | undefined { return this.components.content; }
   get artifacts(): ContentBindings | undefined { return this.components.artifacts; }
   get limits(): Limits { return this.#contentLimits; }
@@ -2041,10 +2032,6 @@ export class AgentHarness {
     const policy = this.scope.policyProvider ?? this.components.policy;
     if (!samePolicyIdentity(this.#policyIdentity, await validatePolicyIdentity(policy?.identity() ?? null))) {
       throw new Error("runtime policy implementation changed after admission");
-    }
-    if (this.host && !samePolicyIdentity(this.#policyIdentity,
-      await validatePolicyIdentity(this.host.policyIdentity()))) {
-      throw new Error("durable host policy implementation changed after admission");
     }
     if (this.state && !samePolicyIdentity(this.#policyIdentity,
       await validatePolicyIdentity(this.state.policyIdentity()))) {
@@ -2232,7 +2219,6 @@ export class AgentHarness {
     delete components.forkPublisher;
     delete components.workspaces;
     if (scope.executionProvider) {
-      delete components.host;
       components.execution = scope.executionProvider;
       components.state = scope.executionProvider.state();
       components.spawner = scope.executionProvider.spawner();
@@ -2346,13 +2332,13 @@ export class AgentHarness {
       ? { kind: "succeeded", value: publishOutput(outcome.value) }
       : outcome;
   }
-  canReconcileSelectedTurn(): boolean { return this.host?.executeSelectedTurn !== undefined; }
+  canReconcileSelectedTurn(): boolean { return this.state?.executeSelectedTurn !== undefined; }
   async runSelectedContext(selectedContext: SelectedModelContext, operationId?: OperationId): Promise<RunOutput> {
-    if (this.host?.executeSelectedTurn !== undefined) {
+    if (this.state?.executeSelectedTurn !== undefined) {
       if (operationId === undefined) throw new TypeError("durable selected turns require a stable operation ID");
       validateSelectedContext(selectedContext, this.limits);
       await this.#assertPolicyIdentity();
-      const outcome = await this.host.executeSelectedTurn(operationId, selectedContext, this);
+      const outcome = await this.state.executeSelectedTurn(operationId, selectedContext, this);
       await this.#assertPolicyIdentity();
       if (outcome.kind === "indeterminate") {
         if (outcome.operationId !== operationId) throw new Error("host returned an unrelated model operation");
@@ -2669,8 +2655,7 @@ function validateTaskRequirements(
   components: AgentHarnessComponents,
   grants: readonly string[],
 ): void {
-  const durable = components.host !== undefined
-    || (components.state !== undefined && components.spawner !== undefined);
+  const durable = components.state !== undefined && components.spawner !== undefined;
   contracts.validateTaskRequirements({
     tasks: [...tasks.values()].map(definition => ({
       name: definition.name,
@@ -2689,8 +2674,8 @@ function validateTaskRequirements(
       interactions: (components.interactions !== undefined || durable) && grants.includes("interaction:route"),
       policy: components.policy !== undefined,
       host: durable,
-      state: components.state !== undefined || components.host !== undefined,
-      spawner: components.spawner !== undefined || components.host !== undefined,
+      state: components.state !== undefined,
+      spawner: components.spawner !== undefined,
       content: components.content !== undefined,
       artifacts: components.artifacts !== undefined,
       content_write: components.content?.writer !== undefined

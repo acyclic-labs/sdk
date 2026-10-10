@@ -3025,7 +3025,7 @@ mod tests {
         Ok::<(), Box<dyn std::error::Error>>(())
     }
 
-    #[cfg(feature = "local")]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn local_store_restart_resumes_committed_publication_without_republishing_roots()
     -> Result<(), Box<dyn std::error::Error>> {

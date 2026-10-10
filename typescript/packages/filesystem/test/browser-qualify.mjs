@@ -7,7 +7,7 @@
 // page is navigated only once the driver is observing it.
 //
 // Usage: node test/browser-qualify.mjs [page ...]   (default: every page)
-// CHROME selects the browser executable.
+// CHROME selects Chromium. BROWSER=firefox uses GECKODRIVER and optional FIREFOX.
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createServer } from "node:http";
@@ -15,8 +15,24 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { remoteToolFixture } from "./remote-tool-fixture.mjs";
 
-const PAGES = ["browser-smoke.html", "browser-multitab.html", "browser-publication.html", "browser-publication.html?profile=opfs", "browser-stream.html", "../harness/test/browser-wire.html"];
+const PAGES = [
+  "browser-smoke.html",
+  "browser-multitab.html",
+  "browser-publication.html",
+  "browser-publication.html?profile=opfs",
+  "browser-stream.html",
+  "../harness/test/browser-wire.html",
+  "../harness/test/browser-wasm-init-failure.html",
+  "../harness/test/browser-task.html",
+  "../harness/test/browser-task-multitab.html",
+  "../harness/test/browser-task-tool.html",
+  "../harness/test/browser-task-tool.html?profile=http",
+  "../harness/test/browser-task-tool-malformed.html",
+  "../harness/test/browser-task-model.html",
+  "../harness/test/browser-task-mail.html",
+];
 // The one deadline a page has. Pages wait on their own actors without one,
 // except for an actor to start (see `openActor`).
 const PAGE_DEADLINE_MS = 600_000;
@@ -60,7 +76,7 @@ function chromeExecutable() {
 // page: a page's "Failed to fetch" names no request, but these do.
 const anomalies = [];
 
-async function serve() {
+async function serve(remoteTool) {
   const server = createServer((request, response) => {
     const started = Date.now();
     response.on("close", () => {
@@ -70,6 +86,7 @@ async function serve() {
       }
     });
     const pathname = decodeURIComponent(new URL(request.url, "http://host").pathname);
+    if (remoteTool.handle(request, response, pathname)) return;
     const dependency = [...dependencyRoots].find(([prefix]) => pathname.startsWith(prefix));
     const base = dependency?.[1] ?? root;
     const relative = dependency === undefined ? pathname : pathname.slice(dependency[0].length);
@@ -144,6 +161,98 @@ async function launchChrome(profile) {
   return { chrome, exited, endpoint: `ws://127.0.0.1:${port}${path.trim()}` };
 }
 
+async function launchFirefox(profile) {
+  const driver = spawn(process.env.GECKODRIVER ?? "geckodriver", ["--port", "0"], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const exited = new Promise(resolveExit => driver.once("exit", resolveExit));
+  let logs = "";
+  const endpoint = await new Promise((resolveEndpoint, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`geckodriver did not listen: ${logs}`)), 30_000);
+    const receive = chunk => {
+      logs += chunk.toString();
+      const match = /Listening on (127\.0\.0\.1:\d+)/.exec(logs);
+      if (match) { clearTimeout(timeout); resolveEndpoint(`http://${match[1]}`); }
+    };
+    driver.stdout.on("data", receive);
+    driver.stderr.on("data", receive);
+    driver.once("error", error => { clearTimeout(timeout); reject(error); });
+    driver.once("exit", code => { clearTimeout(timeout); reject(new Error(`geckodriver exited ${code}: ${logs}`)); });
+  }).catch(async error => {
+    if (driver.exitCode === null) driver.kill();
+    await exited;
+    throw error;
+  });
+  const request = async (method, path, body) => {
+    const response = await fetch(`${endpoint}${path}`, {
+      method, headers: { "content-type": "application/json" },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    const result = await response.json();
+    if (!response.ok || result.value?.error) throw new Error(JSON.stringify(result.value));
+    return result.value;
+  };
+  try {
+    const firefoxOptions = {
+      args: ["-headless", "-profile", profile],
+      prefs: { "dom.disable_open_during_load": false, "dom.popup_maximum": 100 },
+      ...(process.env.FIREFOX ? { binary: process.env.FIREFOX } : {}),
+    };
+    const session = await request("POST", "/session", {
+      capabilities: { alwaysMatch: { browserName: "firefox", webSocketUrl: true, "moz:firefoxOptions": firefoxOptions } },
+    });
+    const sessionPath = `/session/${session.sessionId}`;
+    const browser = await connect(session.capabilities.webSocketUrl);
+    await browser.send("session.subscribe", { events: ["log.entryAdded"] });
+    const observer = { events: [] };
+    browser.listen(message => {
+      if (message.method !== "log.entryAdded" || message.params.level !== "error") return;
+      observer.events.push(`${message.params.type === "javascript" ? "uncaught" : "console.error"}: ${message.params.text}`);
+    });
+    return {
+      chrome: driver, exited, browser, observer,
+      request: (method, path, body) => request(method, `${sessionPath}${path}`, body),
+      close: async () => { await request("DELETE", sessionPath); browser.close(); },
+    };
+  } catch (error) {
+    if (driver.exitCode === null) driver.kill();
+    await exited;
+    throw error;
+  }
+}
+
+async function runFirefoxPage(browser, observer, origin, page) {
+  observer.events = [];
+  const events = observer.events;
+  const original = await browser.request("GET", "/window");
+  const tab = await browser.request("POST", "/window/new", { type: "tab" });
+  await browser.request("POST", "/window", { handle: tab.handle });
+  let observed;
+  let last;
+  try {
+    await browser.request("POST", "/url", { url: `${origin}/test/${page}` });
+    observed = await until(Date.now() + PAGE_DEADLINE_MS, `${page} result`, async () => {
+      const uncaught = events.find(event => event.startsWith("uncaught:"));
+      if (uncaught !== undefined) return { status: "failed", text: uncaught };
+      const value = await browser.request("POST", "/execute/sync", {
+        script: `return ${RESULT_EXPRESSION}`, args: [],
+      });
+      last = value;
+      return value?.status === "passed" || value?.status === "failed" ? value : undefined;
+    }).catch(error => {
+      throw new Error(`${error.message}; the page was waiting for: ${last?.waiting || "nothing"}`);
+    });
+  } catch (error) {
+    return { page, passed: false, text: String(error.stack ?? error), events };
+  } finally {
+    await browser.request("DELETE", "/window").catch(() => {});
+    await browser.request("POST", "/window", { handle: original }).catch(() => {});
+  }
+  return { page, passed: observed.status === "passed", text: observed.text, events };
+}
+
+const RESULT_EXPRESSION = "(() => { const node = document.querySelector('#result'); if (node === null) { const result = document.body?.dataset.result; return result ? { status: result.startsWith('failed:') ? 'failed' : result, text: result } : null; } return { status: node.dataset.status ?? null, text: node.textContent, waiting: node.dataset.waiting ?? null }; })()";
+
 async function connect(endpoint) {
   const socket = new WebSocket(endpoint);
   await new Promise((resolveOpen, reject) => {
@@ -162,7 +271,9 @@ async function connect(endpoint) {
     const handler = pending.get(message.id);
     pending.delete(message.id);
     if (message.error === undefined) handler?.resolve(message.result);
-    else handler?.reject(new Error(`${message.error.message} (${message.error.code})`));
+    else handler?.reject(new Error(typeof message.error === "string"
+      ? `${message.error}: ${message.message}`
+      : `${message.error.message} (${message.error.code})`));
   });
   return {
     send(method, params = {}, sessionId = undefined) {
@@ -216,10 +327,12 @@ async function runPage(browser, observer, origin, page) {
   let last;
   try {
     observed = await until(deadline, `${page} result`, async () => {
+      const uncaught = events.find((event) => event.startsWith("uncaught:"));
+      if (uncaught !== undefined) return { status: "failed", text: uncaught };
       const evaluated = await browser.send(
         "Runtime.evaluate",
         {
-          expression: "(() => { const node = document.querySelector('#result'); if (node === null) { const result = document.body?.dataset.result; return result ? { status: result.startsWith('failed:') ? 'failed' : result, text: result } : null; } return { status: node.dataset.status ?? null, text: node.textContent, waiting: node.dataset.waiting ?? null }; })()",
+          expression: RESULT_EXPRESSION,
           returnByValue: true,
         },
         sessionId,
@@ -230,6 +343,8 @@ async function runPage(browser, observer, origin, page) {
     }).catch((error) => {
       throw new Error(`${error.message}; the page was waiting for: ${last?.waiting || "nothing"}`);
     });
+  } catch (error) {
+    return { page, passed: false, text: String(error.stack ?? error), events };
   } finally {
     await browser.send("Target.closeTarget", { targetId }).catch(() => {});
   }
@@ -237,18 +352,23 @@ async function runPage(browser, observer, origin, page) {
 }
 
 const pages = process.argv.length > 2 ? process.argv.slice(2) : PAGES;
-const server = await serve();
+const remoteTool = remoteToolFixture();
+const server = await serve(remoteTool);
 const origin = `http://127.0.0.1:${server.address().port}`;
 const profile = mkdtempSync(join(tmpdir(), "acyclic-fs-browser-"));
 let launched;
 let failed = false;
 try {
-  launched = await launchChrome(profile);
-  const { endpoint } = launched;
-  const browser = await connect(endpoint);
-  const observer = observe(browser);
+  const firefox = process.env.BROWSER === "firefox";
+  if (process.env.BROWSER && !["chrome", "chromium", "firefox"].includes(process.env.BROWSER)) {
+    throw new Error(`unsupported BROWSER: ${process.env.BROWSER}`);
+  }
+  launched = firefox ? await launchFirefox(profile) : await launchChrome(profile);
+  const browser = firefox ? launched.browser : await connect(launched.endpoint);
+  const observer = firefox ? launched.observer : observe(browser);
   for (const page of pages) {
-    const outcome = await runPage(browser, observer, origin, page).catch((error) => ({
+    const outcome = await (firefox ? runFirefoxPage(launched, observer, origin, page)
+      : runPage(browser, observer, origin, page)).catch((error) => ({
       page,
       passed: false,
       text: String(error.stack ?? error),
@@ -262,14 +382,18 @@ try {
     }
     anomalies.length = 0;
   }
-  await browser.send("Browser.close").catch(() => {});
-  browser.close();
+  if (firefox) await launched.close();
+  else {
+    await browser.send("Browser.close").catch(() => {});
+    browser.close();
+  }
 } finally {
   if (launched !== undefined) {
     if (launched.chrome.exitCode === null) launched.chrome.kill();
     await launched.exited;
   }
   server.close();
+  remoteTool.close();
   // Chrome's helper processes can hold profile files briefly after the
   // browser itself exits; a profile that still cannot be removed is only
   // reported, since the qualification result is already known.

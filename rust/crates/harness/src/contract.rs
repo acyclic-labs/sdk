@@ -293,6 +293,7 @@ pub enum Admission<T> {
 
 /// Terminal outcome of admitted work.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum Outcome<T> {
     /// Work completed successfully.
     Succeeded(T),
@@ -306,6 +307,7 @@ pub enum Outcome<T> {
     /// Completion is uncertain.
     Indeterminate {
         /// Operation whose completion must be reconciled.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         operation_id: OperationId,
     },
 }
@@ -322,6 +324,7 @@ pub struct ProtocolIdentity {
 
 /// Deterministic capability set.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Capabilities(BTreeSet<String>);
 
 impl Capabilities {

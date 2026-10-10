@@ -7796,7 +7796,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "local")]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn incremental_capture_applies_only_changed_eligible_paths() {
         let fs = Fs::memory();

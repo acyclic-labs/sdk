@@ -4,7 +4,6 @@ import type { Authority, Command, EventReference, OperationId } from "./index.js
 import type {
   ContentBindings,
   HarnessExecutionProvider,
-  HarnessRuntimeHost,
   HarnessRuntimeSpawner,
   HarnessRuntimeState,
   InteractionHandler,
@@ -52,7 +51,6 @@ export interface ExtensionLinker {
   readonly tasks: unknown;
   readonly tools: unknown;
   readonly resumableTools: unknown;
-  durableHost(host: HarnessRuntimeHost): void | Promise<void>;
   state(state: HarnessRuntimeState): void | Promise<void>;
   spawner(spawner: HarnessRuntimeSpawner): void | Promise<void>;
   execution(execution: HarnessExecutionProvider): void | Promise<void>;

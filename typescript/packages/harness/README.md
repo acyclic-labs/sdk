@@ -60,6 +60,29 @@ Extension state is equally Rust-admitted: `extensionRecord`, `extensionConfigura
 
 Use `HarnessBuilder.limits({ ... })` to narrow the shared v2 file, path, attachment, rendering, context, model-step, per-step event, and tool-call bounds; Rust/WASM validates canonical messages with those limits before admission and model projection. Grant root capabilities with `HarnessBuilder.grant(...)`; `scoped(ExecutionScope.create().onlyGrants(...))` may only retain a subset, including none. `ExecutionScope.withLimits({ maxSteps })` may narrow the model-step ceiling further for a child scope but cannot widen the builder's ceiling.
 
+The `@acyclic-labs/harness/browser` entry exports `BrowserTaskAuthority`,
+`BrowserTaskRegistry`, `BrowserTaskRuntime`, and generated contracts over the
+ordinary Rust task runtime. Call `initializeBrowserRuntime()`, register versioned
+machines or `registerStockTurn()`, and open with explicit IndexedDB providers,
+finite limits, and a signed scope. Initialize volumes separately from admission.
+Model composition supplies the selected model's synchronous context-capacity
+and canonical request-token callbacks; missing accounting is explicitly unsupported.
+Model, tool, and mail recovery retains original operation identities and fences.
+Competing tabs and reopened workers use the same coordinator, journals and stores;
+no native filesystem or process fallback is selected.
+
+Provider batches gather every IndexedDB Blob handle before materialization can
+yield. Provider budgets include gate reads/writes, replay result and Blob-handle
+vectors, and complete retained encoded commits. Append hash/encoding work is
+admitted before it runs. Real browser controls live in `test/browser-task*.html`
+and filesystem provider WASM tests, separately from installed-package resolution.
+
+Durable local composition binds `HarnessBuilder.state(owner).spawner(admission)`
+explicitly; a qualified route binds `execution(provider)`. There is no combined
+host convenience or fallback. Exact selected-turn recovery belongs to the state
+owner's `executeSelectedTurn`; a durable state without that boundary cannot
+silently replay a turn locally.
+
 `run(prompt)` executes a live local turn even if a durable host is bound. Durable work uses `admit` with a stable operation ID and a versioned resumable task; host-backed contexts require recorded tool, interaction, timer, and child-admission boundaries.
 
 `AgentHarness.children(parent, revision, afterSlot, maximum)` asks the owner-retained state provider for direct task children, independently of conversation forks. Pages are bounded and ordered by stable slot; carry the returned revision into subsequent calls so a changed hierarchy fails explicitly instead of silently skipping a child. The stock coordinator exposes only same-owner children after authenticating the parent.

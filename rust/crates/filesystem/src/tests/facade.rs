@@ -9379,7 +9379,7 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
 
 /// A rejected open must not leave a provider opening behind it: once the live
 /// engine drops, its providers belong to the next opener at once.
-#[cfg(feature = "local")]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_rejected_open_leaves_no_provider_opening_behind_it()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -9416,7 +9416,7 @@ async fn a_rejected_open_leaves_no_provider_opening_behind_it()
     Ok(())
 }
 
-#[cfg(feature = "local")]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
 -> Result<(), Box<dyn std::error::Error>> {

@@ -116,6 +116,11 @@ pub struct ChildOperationPageRequest<'a> {
 
 /// Pull worker capacity and placement identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(
+    feature = "wasm",
+    tsify(large_number_types_as_bigints, hashmap_as_object)
+)]
 pub struct Worker {
     /// Stable worker identity.
     pub id: String,
@@ -128,12 +133,18 @@ pub struct Worker {
 
 /// Work atomically claimed from the coordinator.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct WorkLease {
     /// Complete immutable operation declaration.
     pub operation: OperationSpec,
     /// Pinned execution allocation.
     pub reservation: Reservation,
     /// Latest durable resumable checkpoint, if any.
+    #[cfg_attr(
+        feature = "wasm",
+        tsify(type = "(WasmResourceRefWire & { kind: 'checkpoint' }) | null")
+    )]
     pub checkpoint: Option<crate::resources::CheckpointRef>,
     /// Coordinator-observed revision associated with this reservation. Recovery
     /// may observe progress since the reservation's initial admission.
@@ -1369,7 +1380,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             ))
             .await?
         } else {
-            append_keyed(
+            match append_keyed(
                 (&self.stream, &self.client),
                 Bytes::copy_from_slice(&bytes),
                 Some(self.revision),
@@ -1377,7 +1388,26 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 operation_id,
                 "coordinator retry identity",
             )
-            .await?
+            .await
+            {
+                Ok(outcome) => outcome,
+                Err(error @ Error::Conflict(_)) => {
+                    // Concurrent identical events can have distinct envelope
+                    // timestamps. Reconcile the retained logical event rather
+                    // than treating envelope-byte mismatch as changed intent.
+                    self.refresh().await?;
+                    if let Some((existing_digest, existing, ..)) = self.retained_intent(key).await?
+                        && existing_digest == digest
+                        && existing == event
+                    {
+                        self.require_command_wait(&event, waiting_command, true)?;
+                        self.require_parent_owner(&event, parent_fence.as_ref())?;
+                        return self.replay_intent(&event);
+                    }
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            }
         };
         let applied = self
             .finish_append(outcome, &event, key, &digest, revision)
@@ -1977,6 +2007,7 @@ fn decode(bytes: &[u8]) -> Result<(u64, OperationId, String, [u8; 32], u64, Sche
         event,
     ))
 }
+
 
 #[cfg(not(target_arch = "wasm32"))]
 fn current_time_millis() -> Result<u64> {

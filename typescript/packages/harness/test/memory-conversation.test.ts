@@ -1,7 +1,7 @@
 import { syntheticAccounting } from "./support/model-accounting.mjs";
 import { expect, spyOn, test } from "bun:test";
 import { DEFAULT_LIMITS, ExecutionScope, GroupPolicies, Harness, IndeterminateModelTurnError, MemoryConversation, NativeContracts, TaskDefinition, TerminalModelTurnError, composeContentBindings,
-  defineTool, jsonToolProjection, descriptorFor, type AgentId, type FileRef, type HarnessRuntimeHost, type OperationId,
+  defineTool, jsonToolProjection, descriptorFor, type AgentId, type FileRef, type HarnessRuntimeSpawner, type HarnessRuntimeState, type OperationId,
   type RuntimeTaskId } from "../src/index.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "../src/private-directory-page-contract.js";
 
@@ -427,7 +427,7 @@ test("an unknown model attempt needs explicit owner abandonment before another t
 test("a durable turn host reconciles an unknown model attempt under the same selection", async () => {
   const conversation = await MemoryConversation.create({ agent });
   const requests: string[] = [];
-  const host: HarnessRuntimeHost = {
+  const host: HarnessRuntimeSpawner & HarnessRuntimeState = {
     policyIdentity: () => null,
     async executeSelectedTurn(operationId, selected) {
       requests.push(`${operationId}:${selected.selection.conversationRevision}`);
@@ -439,8 +439,8 @@ test("a durable turn host reconciles an unknown model attempt under the same sel
     async reconcileEffect() { return { state: "indeterminate" }; },
     async send(message) { return { accepted: true, messageId: message.id }; },
     async *inbox() { yield* []; },
-  };
-  const runtime = await Harness.builder(contracts).host(host).build();
+  }
+  const runtime = await Harness.builder(contracts).state(host).spawner(host).build();
   const operation = "10101010-1010-1010-1010-101010101010" as OperationId;
   const content = await conversation.stage("turns/ten/user.txt", new TextEncoder().encode("question"), "text/plain", "user.txt");
   await expect(conversation.runConversation(runtime, operation, content))
@@ -455,7 +455,7 @@ test("authoritative failed and cancelled turns close without claiming an unknown
   for (const outcome of ["failed", "cancelled"] as const) {
     const conversation = await MemoryConversation.create({ agent });
     let dispatches = 0;
-    const host: HarnessRuntimeHost = {
+    const host: HarnessRuntimeSpawner & HarnessRuntimeState = {
       policyIdentity: () => null,
       async executeSelectedTurn(operationId) {
         dispatches++;
@@ -470,8 +470,8 @@ test("authoritative failed and cancelled turns close without claiming an unknown
       async reconcileEffect() { return { state: "indeterminate" }; },
       async send(message) { return { accepted: true, messageId: message.id }; },
       async *inbox() { yield* []; },
-    };
-    const runtime = await Harness.builder(contracts).host(host).build();
+    }
+    const runtime = await Harness.builder(contracts).state(host).spawner(host).build();
     const operation = "11111111-1111-1111-1111-111111111111" as OperationId;
     const content = await conversation.stage("turns/known/user.txt", new TextEncoder().encode("question"), "text/plain", "user.txt");
     await expect(conversation.runConversation(runtime, operation, content)).rejects.toBeInstanceOf(TerminalModelTurnError);
@@ -485,7 +485,7 @@ test("authoritative failed and cancelled turns close without claiming an unknown
 test("terminal outcomes publish under tight but valid file and path limits", async () => {
   const conversation = await MemoryConversation.create({ agent });
   let dispatches = 0;
-  const host: HarnessRuntimeHost = {
+  const host: HarnessRuntimeSpawner & HarnessRuntimeState = {
     policyIdentity: () => null,
     async executeSelectedTurn(operationId) {
       dispatches++;
@@ -495,9 +495,8 @@ test("terminal outcomes publish under tight but valid file and path limits", asy
     async reconcileEffect() { return { state: "indeterminate" }; },
     async send(message) { return { accepted: true, messageId: message.id }; },
     async *inbox() { yield* []; },
-  };
-  const runtime = await Harness.builder(contracts).limits({ file_bytes: 1, path_bytes: 1, render_bytes: 1 })
-    .host(host).build();
+  }
+  const runtime = await Harness.builder(contracts).limits({ file_bytes: 1, path_bytes: 1, render_bytes: 1 }).state(host).spawner(host).build();
   const operation = "12121212-1212-1212-1212-121212121212" as OperationId;
   const content = await conversation.stage("u", new TextEncoder().encode("q"), "text/plain", "u");
   await expect(conversation.runConversation(runtime, operation, content))

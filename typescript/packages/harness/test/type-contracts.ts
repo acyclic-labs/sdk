@@ -1,5 +1,5 @@
 import type {
-  AgentHarness, AgentId, ApprovalBinding, Authority, BrowserAggregate, ClientCommand, Command, ContentBindings, ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, Event, FileRef, ProviderOperationId, HarnessRuntimeHost, Interaction, InteractionId, InteractionResolution, InteractionTicket, Policy,
+  AgentHarness, AgentId, ApprovalBinding, Authority, BrowserAggregate, ClientCommand, Command, ContentBindings, ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, Event, FileRef, ProviderOperationId, HarnessRuntimeSpawner, HarnessRuntimeState, Interaction, InteractionId, InteractionResolution, InteractionTicket, Policy,
   ForkRequest, ForkSeed, ModelContextSelection, ModelToolDefinition, NativeContracts, OperationId, PolicyDigest, ProjectMergeNotice, ProjectableConversation, ProviderJoinProof, ResourceRef, ResourceRevision, ResumableTask, RuntimeSchema, RuntimeTaskId, TaskContext,
   SharedGrant, TaskGroup, ToolRef, VolumeOwner, VolumeRef, ModelContentPart, ModelEvent, ModelRole,
   NativeModelContent, NativeModelContentPart,
@@ -170,7 +170,7 @@ const mismatchedClientFrame: ClientFrame["frame"] = { case: "resume", value: {} 
 // @ts-expect-error replaceable policies must expose a pinned implementation revision
 const unpinnedPolicy: Policy = { evaluate: async () => ({ kind: "allow" }) };
 // @ts-expect-error durable hosts must declare which policy implementation they enforce
-const unpinnedHostPolicy: Pick<HarnessRuntimeHost, "policyIdentity"> = {};
+const unpinnedHostPolicy: Pick<HarnessRuntimeState, "policyIdentity"> = {};
 // @ts-expect-error unvalidated byte arrays cannot claim a nonzero 32-byte policy digest
 const unvalidatedPolicyDigest: PolicyDigest = [1];
 // @ts-expect-error local approvals must bind a stable operation and exact action digest
@@ -257,7 +257,7 @@ function toolsNeedTypedAdmission(): void {
     inputSchema: { type: "number" }, outputSchema: { type: "number" } }, (_context, value) => value);
 }
 
-function hostRecoveryCannotInventTypes(host: HarnessRuntimeHost, id: RuntimeTaskId): void {
+function hostRecoveryCannotInventTypes(host: HarnessRuntimeSpawner & HarnessRuntimeState, id: RuntimeTaskId): void {
   // @ts-expect-error recovered task output is unknown until its pinned definition validates it
   void host.attach<number>(id, {} as AgentHarness);
   if (host.reconcileBatch) {

@@ -398,3 +398,6 @@ pub use workspace_context::{
     WorkspaceContextRegistry, WorkspaceContextRoot, WorkspaceContextState, WorkspaceContextStore,
     WorkspaceRootId, WorkspaceRoute, WorkspaceRouteKind,
 };
+
+#[cfg(all(feature = "browser", target_arch = "wasm32"))]
+pub mod browser;
