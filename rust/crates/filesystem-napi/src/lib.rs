@@ -2295,6 +2295,27 @@ impl NativeWorkspace {
             .map_err(napi_error)
     }
 
+    /// Resumes an exact original-base transaction with its persisted retry identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns foreign-generation, invalid identity, authority or storage failures.
+    #[napi(js_name = beginTransactionAt)]
+    pub async fn begin_transaction_at(
+        &self,
+        generation: &NativeGeneration,
+        idempotency_key: Buffer,
+    ) -> Result<NativeWorkspaceTransaction> {
+        let idempotency_key = native_idempotency_key(Some(idempotency_key))?;
+        self.inner
+            .begin_transaction_at(&generation.inner, idempotency_key)
+            .await
+            .map(|inner| NativeWorkspaceTransaction {
+                inner: tokio::sync::Mutex::new(inner),
+            })
+            .map_err(napi_error)
+    }
+
     /// Advances this fork onto its source workspace's current generation.
     #[napi(js_name = liveRebase)]
     pub async fn live_rebase(

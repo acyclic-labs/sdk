@@ -1,4 +1,5 @@
 import { copyBytes, copyOptionalBytes } from "./binding-values.js";
+import type { BrowserCheckpointResult, BrowserMetadataResult, BrowserExtentPlanResult, BrowserFileReadResult, BrowserMutationResult, BrowserCommitResult, BrowserLiveMutationResult, BrowserLiveTransactionResult } from "../generated/wasm/acyclic_fs_wasm.js";
 import type {
   FsChangeSet,
   FsVolumeEngine,
@@ -26,6 +27,13 @@ import type {
   Speculation,
   SpeculationMetrics,
   ResolvedFile,
+  WasmRawResolvedFile,
+  WasmRawObjectCacheStats,
+  CheckpointResult,
+  MetadataResult,
+  FileReadResult,
+  MutationResult,
+  WorkspaceForkOptions,
 } from "./contracts.js";
 
 import { decodeMergeConflict as decodeSharedMergeConflict, parseJoinResult as parseSharedJoinResult, parseMergePreparation, parseWorkspaceRebaseResult as parseSharedWorkspaceRebaseResult } from "./workspace-results.js";
@@ -38,7 +46,8 @@ import { copyBatchLookupEntries, copyDirectoryPage, copyDirectoryRecordPage, cop
   projectRawFileKind } from "./binding-results.js";
 import { bigintRecord, copyWork, copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyFileExtentPlan, copyCheckoutCommit, copyLiveMutation, copyLiveTransaction, copyTransactionResult, copyTransactionRebase, copyRebaseResult } from "./workspace-copies.js";
 import { adaptJoinPlanBase, workspaceOperations } from "./workspace-operations.js";
-import { observed, resolveObserver, type AcyclicObserver } from "./observe.js";
+import { observed, resolveObserver } from "./observe.js";
+import type { AcyclicObserver } from "./observe.js";
 
 const { adaptGeneration, rawGeneration } = createGenerationAdapter(
   copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan,
@@ -179,7 +188,7 @@ function adaptCheckout(checkout: WasmRawCheckout, o: AcyclicObserver | undefined
   };
 }
 
-function adaptResolvedFile(raw: import("./contracts.js").WasmRawResolvedFile): ResolvedFile {
+function adaptResolvedFile(raw: WasmRawResolvedFile): ResolvedFile {
   return {
     kind: projectRawFileKind(raw.kind),
     logicalBytes: raw.logicalBytes,
@@ -225,17 +234,17 @@ function adaptSpeculation(raw: WasmRawSpeculation): Speculation {
   };
 }
 
-function objectCacheStats(value: import("./contracts.js").WasmRawObjectCacheStats): ObjectCacheStats { return { hits: BigInt(value.hits), decodedHits: BigInt(value.decodedHits), misses: BigInt(value.misses), coalescedReads: BigInt(value.coalescedReads), evictions: BigInt(value.evictions), residentEntries: BigInt(value.residentEntries), residentBytes: BigInt(value.residentBytes), residentCanonicalObjects: BigInt(value.residentCanonicalObjects), residentCanonicalBytes: BigInt(value.residentCanonicalBytes), residentDecodedPages: BigInt(value.residentDecodedPages), residentDecodedBytes: BigInt(value.residentDecodedBytes), inFlight: BigInt(value.inFlight) }; }
-function copyCheckpoint(value: Awaited<ReturnType<WasmRawCheckout["checkpoint"]>>): import("./contracts.js").CheckpointResult { return { generationId: copyBytes(value.generationId), work: copyWork(value.work) }; }
-function copyMetadata(value: Awaited<ReturnType<WasmRawCheckout["readMetadata"]>>): import("./contracts.js").MetadataResult { return { canonicalBytes: copyBytes(value.canonicalBytes), work: copyWork(value.work) }; }
-function fileExtentPlan(value: Awaited<ReturnType<WasmRawCheckout["planFileExtents"]>>) {
+function objectCacheStats(value: WasmRawObjectCacheStats): ObjectCacheStats { return { hits: BigInt(value.hits), decodedHits: BigInt(value.decodedHits), misses: BigInt(value.misses), coalescedReads: BigInt(value.coalescedReads), evictions: BigInt(value.evictions), residentEntries: BigInt(value.residentEntries), residentBytes: BigInt(value.residentBytes), residentCanonicalObjects: BigInt(value.residentCanonicalObjects), residentCanonicalBytes: BigInt(value.residentCanonicalBytes), residentDecodedPages: BigInt(value.residentDecodedPages), residentDecodedBytes: BigInt(value.residentDecodedBytes), inFlight: BigInt(value.inFlight) }; }
+function copyCheckpoint(value: BrowserCheckpointResult): CheckpointResult { return { generationId: copyBytes(value.generationId), work: copyWork(value.work) }; }
+function copyMetadata(value: BrowserMetadataResult): MetadataResult { return { canonicalBytes: copyBytes(value.canonicalBytes), work: copyWork(value.work) }; }
+function fileExtentPlan(value: BrowserExtentPlanResult) {
   return copyFileExtentPlan(value, copyWork(value.work), "WASM", true);
 }
-function copyFileRead(value: Awaited<ReturnType<WasmRawCheckout["readFileRange"]>>): import("./contracts.js").FileReadResult { return { bytes: copyBytes(value.bytes), work: copyWork(value.work) }; }
-function copyMutation(value: Awaited<ReturnType<WasmRawCheckout["createFile"]>>): import("./contracts.js").MutationResult { return { fileId: copyOptionalBytes(value.fileId), work: copyWork(value.work) }; }
-function commitResult(value: Awaited<ReturnType<WasmRawCheckout["commit"]>>) { return copyCheckoutCommit(value, copyWork(value.work)); }
-function liveMutationResult(value: Awaited<ReturnType<WasmRawCheckout["resumeLive"]>>) { return copyLiveMutation(value, copyWork(value.work)); }
-function liveTransactionResult(value: Awaited<ReturnType<WasmRawCheckout["mutateLive"]>>) { return copyLiveTransaction(value, copyWork(value.work)); }
+function copyFileRead(value: BrowserFileReadResult): FileReadResult { return { bytes: copyBytes(value.bytes), work: copyWork(value.work) }; }
+function copyMutation(value: BrowserMutationResult): MutationResult { return { fileId: copyOptionalBytes(value.fileId), work: copyWork(value.work) }; }
+function commitResult(value: BrowserCommitResult) { return copyCheckoutCommit(value, copyWork(value.work)); }
+function liveMutationResult(value: BrowserLiveMutationResult) { return copyLiveMutation(value, copyWork(value.work)); }
+function liveTransactionResult(value: BrowserLiveTransactionResult) { return copyLiveTransaction(value, copyWork(value.work)); }
 
 function adaptWorkspace(handle: WasmRawWorkspace, o: AcyclicObserver | undefined): FsWorkspace {
   const raw = observeRaw(handle, o);
@@ -248,7 +257,7 @@ function adaptWorkspace(handle: WasmRawWorkspace, o: AcyclicObserver | undefined
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
       return adaptWorkspace(await raw.fork(destination, idempotencyKey), o);
     },
-    async forkAt(destination: string, generation: FsGeneration, options: import("./contracts.js").WorkspaceForkOptions = {}): Promise<FsWorkspace> {
+    async forkAt(destination: string, generation: FsGeneration, options: WorkspaceForkOptions = {}): Promise<FsWorkspace> {
       requireWorkspaceName(destination);
       return adaptWorkspace(await raw.forkAt(destination, rawGeneration(generation), {
         ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
@@ -258,6 +267,10 @@ function adaptWorkspace(handle: WasmRawWorkspace, o: AcyclicObserver | undefined
     async beginTransaction(idempotencyKey?: Uint8Array): Promise<FsTransaction> {
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
       return adaptTransaction(await raw.beginTransaction(idempotencyKey), copyTransactionRebase);
+    },
+    async beginTransactionAt(generation: FsGeneration, idempotencyKey: Uint8Array): Promise<FsTransaction> {
+      requireIdentity(idempotencyKey, "idempotency key");
+      return adaptTransaction(await raw.beginTransactionAt(rawGeneration(generation), idempotencyKey), copyTransactionRebase);
     },
     async diff(from, to, maximumChanges): Promise<FsChangeSet> {
       requirePositiveInteger(maximumChanges, "maximum changes");

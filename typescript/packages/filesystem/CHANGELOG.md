@@ -3,6 +3,7 @@
 ## 0.2.0 - Unreleased
 
 - Breaking candidate: memory and native compositions use canonical Objects v2. Existing v1 Objects roots are rejected without upgrade or overwrite; Stream history and atomic publication remain intact.
+- Exposes exact-original-base `beginTransactionAt` across hosted, native and browser/memory bindings. Durable retries reuse their owned generation, original operation key and mutation transcript instead of starting at a fresh head after reload.
 
 ## 0.1.5 - 2026-09-25
 

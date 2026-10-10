@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
+import { exerciseWorkspace } from "./workspace-composition.mjs";
 
 const packageRoot = process.env.FS_INSTALLED_PACKAGE_ROOT ?? process.argv[2];
 if (packageRoot === undefined) {
@@ -23,6 +24,7 @@ const engine = await native.openNativeFs({
 });
 
 try {
+  await exerciseWorkspace(engine);
   const workspace = await engine.createWorkspace("public-loader");
   const before = await workspace.sync();
   const committed = await workspace.write("/public-loader.txt", new TextEncoder().encode("native-loader"));

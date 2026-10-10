@@ -1,5 +1,6 @@
 import { create, toBinary } from "@bufbuild/protobuf";
-import { Code, ConnectError, createClient, type Client, type Interceptor } from "@connectrpc/connect";
+import { Code, ConnectError, createClient } from "@connectrpc/connect";
+import type { Client, Interceptor } from "@connectrpc/connect";
 import { createGrpcWebTransport } from "@connectrpc/connect-web";
 
 import { FILESYSTEM_DESCRIPTOR_DIGEST } from "../generated/descriptor-digest.js";
@@ -37,22 +38,24 @@ import {
   OperationOptionsSchema,
   RebaseStatus,
   SourceInvalidationReason as WireSourceInvalidationReason,
-  type Conflict as WireConflict,
-  type DiffResponse,
-  type FileRecordSnapshot as WireFileRecordSnapshot,
-  type GenerationRef as WireGenerationRef,
-  type JoinPlan as WireJoinPlan,
-  type LogicalName as WireLogicalName,
-  type Metadata as WireMetadata,
-  type Mutation as WireMutation,
-  type OptionalI64,
-  type OptionalU32,
-  type OptionalU64,
-  type SourceResponse as WireSourceResponse,
-  type TreeEntrySnapshot as WireTreeEntrySnapshot,
-  type WorkCounters as WireWorkCounters,
-  type Workspace as WireWorkspace,
-  type WorkspaceRef as WireWorkspaceRef,
+} from "../generated/proto/filesystem/v2/filesystem_pb.js";
+import type {
+  Conflict as WireConflict,
+  DiffResponse,
+  FileRecordSnapshot as WireFileRecordSnapshot,
+  GenerationRef as WireGenerationRef,
+  JoinPlan as WireJoinPlan,
+  LogicalName as WireLogicalName,
+  Metadata as WireMetadata,
+  Mutation as WireMutation,
+  OptionalI64,
+  OptionalU32,
+  OptionalU64,
+  SourceResponse as WireSourceResponse,
+  TreeEntrySnapshot as WireTreeEntrySnapshot,
+  WorkCounters as WireWorkCounters,
+  Workspace as WireWorkspace,
+  WorkspaceRef as WireWorkspaceRef,
 } from "../generated/proto/filesystem/v2/filesystem_pb.js";
 import type {
   DirectoryBindingChange,
@@ -88,6 +91,7 @@ import type {
   WorkspaceRebaseOptions,
   WorkspaceRebaseResult,
   WorkspaceStat,
+  WorkspaceForkOptions,
 } from "./contracts.js";
 import { secureServiceEndpoint } from "./endpoint.js";
 import { observeInterceptors, resolveObserver } from "./observe.js";
@@ -355,6 +359,10 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
     async beginTransaction(idempotencyKey) {
       return transaction(client, await currentGeneration(client, reference), idempotencyKey);
     },
+    async beginTransactionAt(generation, idempotencyKey) {
+      return transaction(client, requireGeneration(generation, client, reference.workspaceId),
+        exactBytes(idempotencyKey, 16, "idempotency key"));
+    },
     async liveRebase(options, idempotencyKey) {
       validateRebase(options);
       requirePageBound(client, options.maximumGenerations, "maximum generations");
@@ -516,7 +524,7 @@ async function fork(
   client: HostedClient,
   source: WireGenerationRef,
   destinationName: string,
-  options: import("./contracts.js").WorkspaceForkOptions = {},
+  options: WorkspaceForkOptions = {},
 ): Promise<HostedFsWorkspace> {
   requireName(destinationName);
   const response = await call(client.rpc.forkWorkspace({

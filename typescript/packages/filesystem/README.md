@@ -4,6 +4,8 @@ Versioned, forkable workspaces backed by browser, memory, hosted, or native prov
 
 Directory pagination is available on an immutable generation, not the moving workspace head. Call `const generation = await workspace.sync()` once, then page through `generation.listDirectory(path, after, maximumEntries)`; retain or pin that generation for a longer-lived walk. This prevents concurrent writes from changing the set between pages.
 
+For durable transaction retries, persist the original workspace identity, `generation.id`, 16-byte operation key and exact mutation transcript before dispatch. Reload that workspace, obtain its owned immutable handle with `await workspace.generation(originalGenerationId)`, and call `await workspace.beginTransactionAt(generation, originalOperationKey)`. Replay the same mutations and commit; do not call `beginTransaction` against a fresh head or mint a new key after a lost acknowledgement. The original-base retry retains the canonical replay, conflict and fencing semantics. It rejects generations owned by another workspace or client. Pin retained generations when retry retention outlives your provider's ordinary retention window.
+
 ```sh
 npm install @acyclic-labs/fs
 ```

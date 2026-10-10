@@ -178,6 +178,8 @@ export interface FsWorkspace {
   fork(destination: string, idempotencyKey?: Uint8Array): Promise<FsWorkspace>;
   forkAt(destination: string, generation: FsGeneration, options?: WorkspaceForkOptions): Promise<FsWorkspace>;
   beginTransaction(idempotencyKey?: Uint8Array): Promise<FsTransaction>;
+  /** Resumes the original owned immutable base with the same durable retry key. */
+  beginTransactionAt(generation: FsGeneration, idempotencyKey: Uint8Array): Promise<FsTransaction>;
   liveRebase(options: WorkspaceRebaseOptions, idempotencyKey?: Uint8Array): Promise<WorkspaceRebaseResult>;
   diff(from: FsGeneration, to: FsGeneration, maximumChanges: number): Promise<FsChangeSet>;
   joinInto(target: FsWorkspace, options: JoinOptions): Promise<FsJoinPlan>;

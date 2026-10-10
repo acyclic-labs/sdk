@@ -2,6 +2,7 @@ import { copyBytes, copyOptionalBytes, ownBytes, requireIdentity } from "./bindi
 import { adaptOperationWindowCoordinator } from "./operation-windows.js";
 import { createRequire } from "node:module";
 import { arch, platform } from "node:process";
+import type { NativeCheckpointResult, NativeExtentPlan, NativeCommitResult, NativeLiveMutationResult, NativeAuthoredLiveMutationResult } from "../generated/native/binding.js";
 import type {
   EngineCapabilities,
   FsChangeSet,
@@ -50,6 +51,10 @@ import type {
   NativeRawWorkspaceGraph,
   NativeRawWorkspaceLineageRecord,
   WasmRawJoinResult,
+  NativeSourceOptions,
+  NativeRawResolvedFile,
+  NativeRawJoinPlan,
+  WorkspaceForkOptions,
 } from "./contracts.js";
 import type {
   GenerationIdentity,
@@ -481,7 +486,7 @@ function adaptFs(raw: NativeRawFs): NativeFsEngine {
     async attachDirectory(
       name: string,
       path: string,
-      options: import("./contracts.js").NativeSourceOptions,
+      options: NativeSourceOptions,
     ): Promise<NativeFsWorkspace> {
       requireWorkspaceName(name);
       if (path.length === 0) throw new RangeError("source path must be non-empty");
@@ -637,7 +642,7 @@ function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
   };
 }
 
-function adaptResolvedFile(raw: import("./contracts.js").NativeRawResolvedFile): ResolvedFile {
+function adaptResolvedFile(raw: NativeRawResolvedFile): ResolvedFile {
   return {
     kind: projectRawFileKind(raw.kind),
     logicalBytes: raw.logicalBytes,
@@ -732,7 +737,7 @@ function copyObjectCacheStats(value: ObjectCacheStats): ObjectCacheStats {
   return { ...value };
 }
 
-function checkpointResult(value: Awaited<ReturnType<NativeRawCheckout["checkpoint"]>>) {
+function checkpointResult(value: NativeCheckpointResult) {
   return { generationId: copyBytes(value.generationId), work: parseWork(value.workJson) };
 }
 
@@ -752,7 +757,7 @@ function seekResult(value: { readonly offset: bigint | undefined; readonly workJ
   return { offset: value.offset, work: parseWork(value.workJson) };
 }
 
-function nativeFileExtentPlan(value: Awaited<ReturnType<NativeRawCheckout["planFileExtents"]>>) {
+function nativeFileExtentPlan(value: NativeExtentPlan) {
   return copyFileExtentPlan(
     nativeBoundary<Parameters<typeof copyFileExtentPlan>[0]>(value),
     parseWork(value.workJson),
@@ -760,15 +765,15 @@ function nativeFileExtentPlan(value: Awaited<ReturnType<NativeRawCheckout["planF
   );
 }
 
-function commitResult(value: Awaited<ReturnType<NativeRawCheckout["commit"]>>) {
+function commitResult(value: NativeCommitResult) {
   return copyCheckoutCommit(nativeBoundary<Parameters<typeof copyCheckoutCommit>[0]>(value), parseWork(value.workJson));
 }
 
-function liveMutationResult(value: Awaited<ReturnType<NativeRawCheckout["resumeLive"]>>) {
+function liveMutationResult(value: NativeLiveMutationResult) {
   return copyLiveMutation(nativeBoundary<Parameters<typeof copyLiveMutation>[0]>(value), parseWork(value.workJson));
 }
 
-function liveTransactionResult(value: Awaited<ReturnType<NativeRawCheckout["mutateLive"]>>) {
+function liveTransactionResult(value: NativeAuthoredLiveMutationResult) {
   return copyLiveTransaction(nativeBoundary<Parameters<typeof copyLiveTransaction>[0]>(value), parseWork(value.workJson));
 }
 
@@ -829,7 +834,7 @@ function adaptWorkspace(
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
       return adaptWorkspace(await raw.fork(destination, idempotencyKey), scope);
     },
-    async forkAt(destination: string, generation: FsGeneration, options: import("./contracts.js").WorkspaceForkOptions = {}): Promise<NativeFsWorkspace> {
+    async forkAt(destination: string, generation: FsGeneration, options: WorkspaceForkOptions = {}): Promise<NativeFsWorkspace> {
       requireWorkspaceName(destination);
       return adaptWorkspace(await raw.forkAt(
         destination,
@@ -841,6 +846,16 @@ function adaptWorkspace(
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
       return adaptTransaction(
         nativeBoundary<Parameters<typeof adaptTransaction>[0]>(await raw.beginTransaction(idempotencyKey)),
+        copyTransactionRebase,
+      );
+    },
+    async beginTransactionAt(generation: FsGeneration, idempotencyKey: Uint8Array): Promise<FsTransaction> {
+      requireIdentity(idempotencyKey, "idempotency key");
+      return adaptTransaction(
+        nativeBoundary<Parameters<typeof adaptTransaction>[0]>(await raw.beginTransactionAt(
+          nativeBoundary<Parameters<typeof raw.beginTransactionAt>[0]>(scope.rawGeneration(generation)),
+          idempotencyKey,
+        )),
         copyTransactionRebase,
       );
     },
@@ -890,7 +905,7 @@ const parseWorkspaceRebaseResult = (value: WasmRawJoinResult): WorkspaceRebaseRe
   value,
   decodeMergeConflict,
 );
-const adaptJoinPlan = (raw: import("./contracts.js").NativeRawJoinPlan): ResolvableFsJoinPlan =>
+const adaptJoinPlan = (raw: NativeRawJoinPlan): ResolvableFsJoinPlan =>
   adaptResolvableJoinPlan(nativeBoundary<Parameters<typeof adaptResolvableJoinPlan>[0]>(raw), parseJoinResult);
 
 function parseSourceResult(value: NativeRawSourceResult): SourceResult {

@@ -1117,6 +1117,32 @@ mod bindings {
             Ok(BrowserTransaction { engine })
         }
 
+        /// Resumes an exact original-base transaction with its persisted retry identity.
+        #[wasm_bindgen(js_name = beginTransactionAt)]
+        pub async fn begin_transaction_at(
+            &self,
+            generation: &BrowserGeneration,
+            idempotency_key: Vec<u8>,
+        ) -> Result<BrowserTransaction, JsValue> {
+            let key = IdempotencyKey::from_bytes(fixed_16(&idempotency_key)?);
+            let engine = match (&self.engine, &generation.engine) {
+                (BrowserWorkspaceEngine::IndexedDb(value), BrowserGenerationEngine::IndexedDb(generation)) =>
+                    BrowserTransactionEngine::IndexedDb(
+                        Box::pin(value.begin_transaction_at(generation, key)).await.map_err(js_error)?,
+                    ),
+                (BrowserWorkspaceEngine::IndexedDbOpfs(value), BrowserGenerationEngine::IndexedDbOpfs(generation)) =>
+                    BrowserTransactionEngine::IndexedDbOpfs(
+                        Box::pin(value.begin_transaction_at(generation, key)).await.map_err(js_error)?,
+                    ),
+                (BrowserWorkspaceEngine::Memory(value), BrowserGenerationEngine::Memory(generation)) =>
+                    BrowserTransactionEngine::Memory(
+                        Box::pin(value.begin_transaction_at(generation, key)).await.map_err(js_error)?,
+                    ),
+                _ => return Err(js_error("generation belongs to another filesystem")),
+            };
+            Ok(BrowserTransaction { engine })
+        }
+
         /// Advances this fork onto its source workspace's current generation.
         #[wasm_bindgen(js_name = liveRebase)]
         pub async fn live_rebase(

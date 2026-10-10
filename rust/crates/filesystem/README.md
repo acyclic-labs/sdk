@@ -4,6 +4,8 @@ Immutable, versioned workspaces with embedded and hosted backends. Generations a
 
 For a stable paginated directory walk, capture `workspace.sync().await?.into_generation()` and call `generation.list_directory(...)` for every page. The moving workspace head intentionally has no paginated directory API.
 
+Durable retry intents must retain their original immutable generation, operation key and exact mutations before dispatch. Embedded `Workspace::begin_transaction_at` and hosted `HostedWorkspace::begin_transaction_at` reopen that exact owned base. After a lost acknowledgement, reload the original generation with `generation(...)`, reuse the key and replay the same edits; beginning at a fresh head is a new transaction, not a retry. Foreign workspace/client generations are rejected, and canonical idempotency, conflicts and fencing remain enforced.
+
 ```sh
 cargo add acyclic-fs
 ```

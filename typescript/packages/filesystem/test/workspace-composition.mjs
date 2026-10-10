@@ -33,6 +33,66 @@ export async function exerciseWorkspace(engine) {
       if (error instanceof Error && error.message === "import ignored the pinned source generation") throw error;
     }
   }
+  const retryWorkspace = await engine.createWorkspace("durable-retry");
+  await retryWorkspace.write("/value", Uint8Array.of(0));
+  const retryBase = await retryWorkspace.sync();
+  await retryBase.pin("retry-original-base");
+  // Serialize before dispatch, just as a durable uploader does. Discard the
+  // acknowledgement and reconstruct only this intent after another writer wins.
+  const persistedIntent = JSON.stringify({
+    workspace: retryWorkspace.name,
+    workspaceId: [...retryWorkspace.id],
+    generationId: [...retryBase.id],
+    key: [...new Uint8Array(16).fill(51)],
+    path: "/value",
+    bytes: [1],
+  });
+  const firstAttempt = await retryWorkspace.beginTransactionAt(retryBase, new Uint8Array(16).fill(51));
+  await firstAttempt.write("/value", Uint8Array.of(1));
+  const published = await firstAttempt.commit();
+  await firstAttempt.close();
+  if (published.status !== "committed") throw new Error("original retry intent did not publish");
+  await retryWorkspace.write("/value", Uint8Array.of(3));
+  const intent = JSON.parse(persistedIntent);
+  const resumed = await engine.openWorkspace(intent.workspace);
+  if (!intent.workspaceId.every((byte, index) => byte === resumed.id[index])) {
+    throw new Error("retry adopted another workspace lifetime");
+  }
+  const original = await resumed.generation(Uint8Array.from(intent.generationId));
+  const beforeRetry = await resumed.head();
+  const replay = await resumed.beginTransactionAt(original, Uint8Array.from(intent.key));
+  await replay.write(intent.path, Uint8Array.from(intent.bytes));
+  const replayed = await replay.commit();
+  await replay.close();
+  if (replayed.status !== "already-committed"
+      || !published.generationId.every((byte, index) => byte === replayed.generationId[index])
+      || !(await resumed.head()).every((byte, index) => byte === beforeRetry[index])
+      || (await resumed.read("/value", 1n))[0] !== 3) {
+    throw new Error("lost-ACK reload retry republished or replaced its original outcome");
+  }
+  const changed = await resumed.beginTransactionAt(original, Uint8Array.from(intent.key));
+  await changed.write(intent.path, Uint8Array.of(2));
+  if ((await changed.commit()).status !== "idempotency-conflict") {
+    throw new Error("reused retry identity accepted a changed mutation transcript");
+  }
+  await changed.close();
+  const substituted = await resumed.beginTransactionAt(await resumed.sync(), Uint8Array.from(intent.key));
+  await substituted.write(intent.path, Uint8Array.from(intent.bytes));
+  if ((await substituted.commit()).status !== "idempotency-conflict") {
+    throw new Error("retry accepted a substituted current base");
+  }
+  await substituted.close();
+  const stale = await resumed.beginTransactionAt(original, new Uint8Array(16).fill(52));
+  await stale.write(intent.path, Uint8Array.of(2));
+  if ((await stale.commit()).status !== "conflict" || (await stale.rebase(16)).status !== "conflicted") {
+    throw new Error("new original-base operation bypassed concurrent-write conflicts");
+  }
+  await stale.close();
+  const foreign = await engine.createWorkspace("retry-foreign");
+  let foreignRejected = false;
+  try { await foreign.beginTransactionAt(original, new Uint8Array(16).fill(53)); }
+  catch { foreignRejected = true; }
+  if (!foreignRejected) throw new Error("original-base transaction accepted a foreign generation");
   const workspace = await engine.createWorkspace("main");
   if ("listDirectory" in workspace) {
     throw new Error("moving workspace head exposes unsafe paginated directory reads");
