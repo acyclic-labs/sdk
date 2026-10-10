@@ -233,6 +233,33 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         .collect()
     }
 
+    /// Actual Filesystem operation that created the child project, not the
+    /// enclosing Harness operation. This pure identity grants no access.
+    pub fn project_creation_operation(&self, request: &ForkRequest) -> Result<acyclic_fs::OperationId> {
+        request.validate()?;
+        struct DigestWriter { hash: blake3::Hasher, length: u64, maximum: u64 }
+        impl std::io::Write for DigestWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                let next = self.length.checked_add(bytes.len() as u64)
+                    .ok_or_else(|| std::io::Error::other("fork request byte count overflows"))?;
+                if next > self.maximum {
+                    return Err(std::io::Error::other("fork request exceeds byte limit"));
+                }
+                self.hash.update(bytes);
+                self.length = next;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let mut digest = DigestWriter {
+            hash: blake3::Hasher::new(), length: 0,
+            maximum: self.journal_limit(MAX_REQUEST_BYTES),
+        };
+        serde_json::to_writer(&mut digest, request).map_err(|error| Error::Invalid(error.to_string()))?;
+        let key = project_creation_key(request.operation_id, digest.hash.finalize())?;
+        Ok(acyclic_fs::OperationId::from_bytes(super::filesystem_key(&key).into_bytes()))
+    }
+
     /// Builds exact allocation-journal references. These are request data,
     /// never access grants; only a configured creation verifier consumes them.
     pub fn creation_proofs(
@@ -724,10 +751,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
             &self.scope,
             self.project.clone(),
         )?;
-        let project_key = IdempotencyKey::new(format!(
-            "fork:{}:{request_digest}:project",
-            request.operation_id
-        ))?;
+        let project_key = project_creation_key(request.operation_id, request_digest)?;
         self.verify_task_lease(false).await?;
         controller.require(capability::FORK_PUBLISH, VolumeOperation::Read)?;
         let child_project = bounded_io::fork(
@@ -1332,6 +1356,10 @@ where
             Ok(report)
         })
     }
+}
+
+fn project_creation_key(operation: OperationId, request_digest: blake3::Hash) -> Result<IdempotencyKey> {
+    IdempotencyKey::new(format!("fork:{operation}:{request_digest}:project"))
 }
 
 fn encode_record<T: Serialize>(value: &T, maximum_bytes: u64) -> Result<Vec<u8>> {

@@ -301,8 +301,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(())
     }
 
-    pub(crate) fn task_binding(&self) -> (TaskId, crate::scheduler::LeaseFence) {
-        (self.task_id, self.fence.clone())
+    pub(crate) fn task_binding(&self) -> (TaskId, &crate::scheduler::LeaseFence) {
+        (self.task_id, &self.fence)
     }
 
     pub(crate) async fn suspend_quiescent_execution(
@@ -378,25 +378,46 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self,
         write: crate::distributed::JournalWrite,
     ) -> Result<acyclic_stream::CommitCondition> {
+        self.condition_with_work(write, &mut None).await
+    }
+
+    async fn condition_with_work(
+        &self,
+        write: crate::distributed::JournalWrite,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<acyclic_stream::CommitCondition> {
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         if !matches!(write, crate::distributed::JournalWrite::Settlement)
             && self.deadline_epoch_ms.is_some_and(|deadline| self.host.clock.now_unix_millis() >= deadline)
         {
-            self.host.expire_task_deadline(self.task_id, Some(self.fence.clone())).await?;
+            // The measured binding preflight rejects without pretending that
+            // unobserved admission reads or durable cancellation were measured.
+            if work.is_none() {
+                self.host.expire_task_deadline(self.task_id, Some(self.fence.clone())).await?;
+            }
             return Err(Error::Indeterminate(self.operation_id()));
         }
         self.host
             .coordinator
             .lock()
             .await
-            .journal_condition(
+            .journal_condition_with_work(
                 &self.host.owner,
                 &self.host.owner_scope,
                 &self.host.verifier,
                 self.operation_id(),
                 &self.fence,
                 write,
+                work,
             )
             .await
+    }
+
+    pub(crate) async fn verify_dispatch_with_work(
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.condition_with_work(crate::distributed::JournalWrite::Fresh, work).await.map(|_| ())
     }
 
     /// Authenticates one immutable resource request under this ordinary task's
@@ -524,25 +545,49 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(())
     }
 
+    /// Binding authority comes from the authenticated original owner, never
+    /// an agent supplied in a preparation request.
+    pub(crate) fn authenticated_binding_agent(&self) -> Result<Option<crate::AgentId>> {
+        if !self.input_grants.contains(capability::CONVERSATION_BIND) {
+            return Err(Error::Unauthorized("task scope lacks conversation:bind".into()));
+        }
+        Ok(self.host.owner_scope.agent())
+    }
+
     pub(crate) async fn append_conversation(
         &self,
         publication: &crate::store::operations::IndexedPublication,
         key: &StreamKey,
         write: crate::distributed::JournalWrite,
     ) -> Result<bool> {
+        self.append_conversation_with_work(publication, key, write, &mut None).await
+    }
+
+    pub(crate) async fn append_conversation_with_work(
+        &self,
+        publication: &crate::store::operations::IndexedPublication,
+        key: &StreamKey,
+        write: crate::distributed::JournalWrite,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<bool> {
+        let fresh = !matches!(write, crate::distributed::JournalWrite::Settlement);
         let mut request = self
-            .prepare_append(
+            .prepare_append_with_work(
                 &publication.path,
                 publication.expected_tail,
                 key,
                 &publication.bytes,
                 write,
+                work,
             )
             .await?;
         publication.add_index(&mut request);
-        match crate::distributed::commit_keyed(&self.stream, request, publication.operation_id)
-            .await?
-        {
+        if fresh && self.deadline_epoch_ms.is_some_and(|deadline| self.host.clock.now_unix_millis() >= deadline) {
+            return Err(Error::Indeterminate(self.operation_id()));
+        }
+        match crate::distributed::commit_keyed_with_work(
+            &self.stream, request, publication.operation_id, work,
+        ).await? {
             acyclic_stream::CommitOutcome::Conflict(_) => Ok(false),
             acyclic_stream::CommitOutcome::Committed(envelope) => {
                 publication
@@ -604,8 +649,21 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         bytes: &Bytes,
         write: crate::distributed::JournalWrite,
     ) -> Result<acyclic_stream::CommitRequest> {
+        self.prepare_append_with_work(path, expected_tail, key, bytes, write, &mut None).await
+    }
+
+    async fn prepare_append_with_work(
+        &self,
+        path: &acyclic_stream::StreamPath,
+        expected_tail: u64,
+        key: &StreamKey,
+        bytes: &Bytes,
+        write: crate::distributed::JournalWrite,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<acyclic_stream::CommitRequest> {
         use acyclic_stream::{CommitCondition, CommitMutation};
-        let owner = self.condition(write).await?;
+        let owner = self.condition_with_work(write, work).await?;
+        if let Some(io) = work.as_deref_mut() { io.begin_call()?; }
         let target = match self.stream.bounds(path.as_str()).await {
             Ok(_) => CommitCondition::Tail {
                 path: path.clone(),
@@ -616,6 +674,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             }
             Err(error) => return Err(error.into()),
         };
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         // Conflicting transactions are retained by Stream too. A refreshed owner
         // revision gets its own recovery key; the journal's CAS and retry index
         // still prevent duplicate logical records.
@@ -623,7 +682,14 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         hash.update(b"harness/v2/owned-journal\0");
         hash.update(key.as_bytes());
         hash.update(&self.task_id.into_bytes());
-        hash.update(&crate::contract::canonical_json_bytes(&self.fence)?);
+        let encoded_fence = crate::contract::canonical_json_bytes(&self.fence)?;
+        if let Some(io) = work.as_deref_mut() {
+            io.retain_owned(encoded_fence.len() as u64)?;
+            io.encoded_bytes(encoded_fence.len() as u64)?;
+        }
+        hash.update(&encoded_fence);
+        if let Some(io) = work.as_deref_mut() { io.release_owned(encoded_fence.len() as u64); }
+        drop(encoded_fence);
         let CommitCondition::Tail { expected, .. } = &owner else {
             return Err(Error::Invalid("coordinator tail condition required".into()));
         };
@@ -4048,7 +4114,7 @@ mod tests {
         .await?;
         assert_eq!(aggregate.reducer().revision(), 3);
         assert_eq!(receipt.calls.load(Ordering::SeqCst), 1);
-        host.settle_task(task, fence, Outcome::Cancelled).await?;
+        host.settle_task(task, fence.clone(), Outcome::Cancelled).await?;
         assert!(
             effects
                 .reconcile_task_effect(&binding, command, &plan)

@@ -338,7 +338,8 @@ pub(crate) fn validate_workflow_next(
 pub trait WorkflowJournal: acyclic_stream::ProviderPlatform {
     /// Exact task lease whose coordinator condition fences every publication.
     /// Unbound workflow providers do not authorize registered task execution.
-    fn task_binding(&self) -> Option<(crate::TaskId, crate::scheduler::LeaseFence)> {
+    /// Borrows retained custody; observing ownership does not clone a lease.
+    fn task_binding(&self) -> Option<(crate::TaskId, &crate::scheduler::LeaseFence)> {
         None
     }
 

@@ -94,6 +94,9 @@ publication lease, while inherited access preserves the original proof identity.
 Workflow command and model inputs resolve through those same owner-authenticated
 bindings. Protected workflow and execution records remain in their original
 owner-controlled storage; ordinary content refs cannot substitute for them.
+`FilesystemForkPreparer::project_creation_operation` exposes the exact derived
+Filesystem creation identity for binding an already-created child to its native
+overlay. It does not authorize creation or start another fork.
 
 The filesystem task runtime enforces the originally admitted absolute deadline
 through the host's current clock and native or browser-worker timers. Expiry
@@ -105,6 +108,13 @@ the original authenticated outbox rather than reopening an execution session.
 Original atomic mail receipts are observed without another send. Cancellation
 may release capacity only after all dispatched effects are known, or the
 authenticated journal proves no dispatch occurred.
+
+Measured conversation binding threads one optional SDK-work observer through the
+original coordinator refresh, bounds and conditional append/recovery engine.
+These counters describe actual SDK calls and exposed source/encoded bytes, not
+provider-internal OS IO. The binding agent and grant come from the original task
+owner. An overdue measured fresh preflight rejects before hidden cancellation IO;
+it does not claim durable cancellation, stopped effects or released capacity.
 
 `AgentHarness::children` asks the retained task owner for a bounded page of direct children, independent of conversation forks and task dependencies. The coordinator authenticates the parent, exposes only same-owner children in stable slot order, and requires its revision on continuation so concurrent admissions cannot silently skip a child. A caller from another owner cannot declare a child under that parent merely by knowing its ID.
 

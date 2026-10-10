@@ -632,6 +632,17 @@ impl CreationFixture {
             maximum_resources: 2, maximum_work: 16_384, maximum_bytes: 16 * 1_024 * 1_024,
             payload: serde_json::to_value(&fork).map_err(|e| Error::Invalid(e.to_string()))?,
         };
+        let creation_operation = preparer.project_creation_operation(&fork)?;
+        let encoded = serde_json::to_vec(&fork).map_err(|error| Error::Invalid(error.to_string()))?;
+        let project_key = crate::IdempotencyKey::new(format!(
+            "fork:{}:{}:project", fork.operation_id, blake3::hash(&encoded),
+        ))?;
+        let digest = blake3::hash(project_key.as_str().as_bytes());
+        let mut expected = [0; 16];
+        expected.copy_from_slice(&digest.as_bytes()[..16]);
+        if expected == [0; 16] { expected[0] = 1; }
+        assert_eq!(creation_operation, acyclic_fs::OperationId::from_bytes(expected));
+        drop(encoded);
         let (preparation, _) = self.prepare(&request).await?;
         let report = preparer.with_task_preparation(Arc::new(preparation))?.prepare(fork).await?;
         let seed = report.into_seed()?;

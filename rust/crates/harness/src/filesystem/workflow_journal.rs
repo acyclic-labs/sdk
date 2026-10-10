@@ -551,7 +551,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    fn task_binding(&self) -> Option<(crate::TaskId, crate::scheduler::LeaseFence)> {
+    fn task_binding(&self) -> Option<(crate::TaskId, &crate::scheduler::LeaseFence)> {
         self.owner.as_ref().map(TaskJournalOwner::task_binding)
     }
 

@@ -214,7 +214,7 @@ impl<I, O> TaskDefinition<I, O> {
             .as_ref()
             .ok_or_else(|| Error::Unsupported("task workflow ownership is not bound".into()))?;
         host.verify_execution_owner(task_id, fence.clone()).await?;
-        if journal.task_binding() != Some((task_id, fence.clone())) {
+        if journal.task_binding() != Some((task_id, &fence)) {
             return Err(Error::Unauthorized(
                 "workflow journal is not bound to this task lease".into(),
             ));
