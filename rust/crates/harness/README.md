@@ -105,10 +105,18 @@ and concurrency permit, and reports `Outcome::Cancelled`. Dropping an ordinary
 handle detaches observation; dropping `result_owned()` instead cancels the task,
 even before the wait is polled. This does not make a live closure resumable:
 retained recovery remains the explicitly bound durable provider's responsibility.
-The Stream-backed coordinator uses the platform wall clock, including JavaScript
-time in the browser, for its monotonic retained commit timestamps. The Chrome
-`native_media_boundary` scenario uses the filesystem memory provider; it is not
-an IndexedDB/OPFS persistence qualification.
+The Stream-backed coordinator and interaction expiry admission use the canonical
+platform wall clock, including JavaScript time in the browser. Live task deadlines,
+model-stream deadlines, `TaskContext::sleep_until`, retained timer waits and default
+durable outcome polling use platform timers: Tokio natively, cancellable browser
+timers on the event loop. Browser delays longer than the signed 32-bit timer bound
+are chunked rather than wrapping into early wakeups; dropping a wait clears its
+pending browser timer and callback. Model-stream deadlines retain a monotonic
+clock across event reads rather than restarting the budget for each event.
+The Chrome `native_media_boundary` scenario uses the filesystem memory provider;
+it is not an IndexedDB/OPFS persistence qualification. Persistent worker and stock
+execution routes still explicitly reject task run deadlines where their durable
+deadline runner is not composed; live closure deadlines do not grant that support.
 
 Task and tool registries can retain several revisions under one logical name. Use `name@version` for exact task lookup; unqualified task lookup works only when unique. `ToolRegistry::select_model_version` explicitly chooses the one revision advertised to a model when several are retained; durable tool calls still resolve their own pinned revision. Ambiguity fails before stock model dispatch rather than silently choosing the newest registration.
 

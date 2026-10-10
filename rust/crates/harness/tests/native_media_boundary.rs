@@ -28,14 +28,19 @@ use acyclic_harness::{
         FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal,
         FilesystemHost, FilesystemTaskRuntime,
     },
+    live::TaskGroup,
     model::{
         FileProjectionPolicy, ImageDetail, Model, ModelAttempt, ModelContent, ModelContentPart,
         ModelDataPart, ModelDispatch, ModelEvent, ModelMessage, ModelProvider, ModelRequest,
         ModelRole, NativeConfigurationBinding, NativeMediaIntent, NativeMediaPolicy,
         PreparedModelRequest, ToolResultContent,
     },
+    registry::ComponentIdentity,
     resources::ProviderRef,
-    runtime::{ContentBindings, DurableTaskHost, RuntimeScope, TaskDefinition, TaskRegistry},
+    runtime::{
+        ContentBindings, DurableTaskHost, RuntimeScope, TaskAdmissionRecord, TaskDefinition,
+        TaskRegistry, TaskRunLimits, TaskStateProvider,
+    },
     scheduler::{LeaseFence, ResourceSnapshot, SessionLimits},
     tool::{
         Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,
@@ -45,7 +50,10 @@ use acyclic_harness::{
         MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine,
     },
 };
-use acyclic_stream::{BoxProviderFuture, BoxProviderStream, MemoryStream, StreamClient};
+use acyclic_stream::{
+    BoxProviderFuture, BoxProviderStream, MemoryStream, StreamClient, SystemUnixMillisClock,
+    UnixMillisClock as _,
+};
 use futures::stream;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -53,6 +61,51 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
+
+// Exercise the independently bound state's default wait against the real owner,
+// without supplying a mock outcome or overriding its polling implementation.
+struct ReadThroughState {
+    owner: Arc<dyn DurableTaskHost>,
+    pending_observations: AtomicUsize,
+}
+
+impl TaskStateProvider for ReadThroughState {
+    fn policy_identity(&self) -> Option<ComponentIdentity> {
+        self.owner.policy_identity()
+    }
+
+    fn observe_admission<'a>(
+        &'a self,
+        task: TaskId,
+    ) -> BoxProviderFuture<'a, Result<TaskAdmissionRecord>> {
+        self.owner.observe_admission(task)
+    }
+
+    fn resume_scope<'a>(
+        &'a self,
+        task: TaskId,
+        operation: OperationId,
+    ) -> BoxProviderFuture<'a, Result<RuntimeScope>> {
+        self.owner.resume_scope(task, operation)
+    }
+
+    fn outcome<'a>(
+        &'a self,
+        task: TaskId,
+    ) -> BoxProviderFuture<'a, Result<Option<Outcome<Value>>>> {
+        Box::pin(async move {
+            let outcome = self.owner.outcome(task).await?;
+            if outcome.is_none() {
+                self.pending_observations.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(outcome)
+        })
+    }
+
+    fn cancel<'a>(&'a self, task: TaskId) -> BoxProviderFuture<'a, Result<()>> {
+        self.owner.cancel(task)
+    }
+}
 
 struct ReaderSpy {
     inner: Arc<dyn ContentResidencyVerifier>,
@@ -555,6 +608,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
             "operation:cancel".into(),
             "model:generate".into(),
             "task:spawn:fixture.native_replay@1".into(),
+            "timer:wait".into(),
         ]),
     );
     let writer = FilesystemContentPublisher::new(
@@ -1082,6 +1136,13 @@ async fn exercise_live_native_boundary() -> Result<()> {
                 context.model_events(only_file(&original.0, &original.1), Some(16)).await?;
                 assert_eq!(adapter.counts.load(Ordering::SeqCst), counts + 1);
                 assert_eq!(adapter.generates.load(Ordering::SeqCst), generates + 1);
+                let bounded = context.scoped_run_limits(TaskRunLimits {
+                    deadline_epoch_ms: Some(SystemUnixMillisClock.now_unix_millis() + 10_000),
+                    ..TaskRunLimits::default()
+                })?;
+                bounded
+                    .model_events(only_file(&original.0, &original.1), Some(16))
+                    .await?;
                 Ok(())
             }
         },
@@ -1381,6 +1442,8 @@ where
     let mut fence = None;
     let mut first_capture = None;
     let mut completed = None;
+    let timer = OperationId::from_bytes([117; 16]);
+    let mut timer_deadline = None;
     for pass in 0..3 {
         let runtime = FilesystemTaskRuntime::open(
             stream.clone(),
@@ -1490,6 +1553,65 @@ where
                 .map_err(|_| Error::Storage("capture lock".into()))?;
             assert_eq!(captures.len(), 1);
             assert_eq!(captures.first(), first_capture.as_ref());
+        }
+        let deadline =
+            *timer_deadline.get_or_insert_with(|| SystemUnixMillisClock.now_unix_millis() + 30);
+        context.sleep_until(timer, deadline).await?;
+        assert!(SystemUnixMillisClock.now_unix_millis() >= deadline);
+        assert_eq!(
+            stream
+                .stream(format!("harness/v2/timers/{task}"))?
+                .bounds()
+                .await?
+                .tail,
+            1,
+        );
+        assert!(matches!(
+            context.sleep_until(timer, deadline + 1).await,
+            Err(Error::Conflict(_))
+        ));
+        if pass == 2 {
+            let (poll_started, poll_observed) = tokio::sync::oneshot::channel();
+            let owner = runtime.task_host().clone();
+            let poll = TaskGroup::new(1)
+                .spawn(async move {
+                    let _ = poll_started.send(());
+                    owner.wait_outcome(task).await
+                })
+                .await;
+            poll_observed
+                .await
+                .map_err(|_| Error::Storage("retained observation did not start".into()))?;
+            poll.cancel();
+            assert!(matches!(poll.result().await, Outcome::Cancelled));
+            let state = ReadThroughState {
+                owner: runtime.task_host().clone(),
+                pending_observations: AtomicUsize::new(0),
+            };
+            let settle = async {
+                context
+                    .sleep_until(
+                        OperationId::from_bytes([118; 16]),
+                        SystemUnixMillisClock.now_unix_millis() + 20,
+                    )
+                    .await?;
+                let WorkPull::Claimed(lease) = runtime.task_host().recover_work(task).await? else {
+                    return Err(Error::NotFound("original pending worker lease".into()));
+                };
+                runtime.run_task(lease, &runtime.commands(), 1).await?;
+                Ok::<(), Error>(())
+            };
+            let (owner_outcome, state_outcome, settled) = futures::join!(
+                runtime.task_host().wait_outcome(task),
+                state.wait_outcome(task),
+                settle,
+            );
+            settled?;
+            assert_eq!(owner_outcome?, Outcome::Succeeded(json!(7)));
+            assert_eq!(state_outcome?, Outcome::Succeeded(json!(7)));
+            assert!(state.pending_observations.load(Ordering::SeqCst) > 0);
+            let attached = runtime.harness().attach(task, &definition).await?;
+            assert_eq!(attached.result().await?, Outcome::Succeeded(7));
         }
         drop(execution);
         drop(runtime);

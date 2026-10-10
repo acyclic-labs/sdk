@@ -2599,10 +2599,10 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 if now >= deadline_unix_ms {
                     return Ok(());
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(
+                crate::platform_time::sleep(std::time::Duration::from_millis(
                     deadline_unix_ms.saturating_sub(now).min(60_000),
                 ))
-                .await;
+                .await?;
             }
         })
     }
