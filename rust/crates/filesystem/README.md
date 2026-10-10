@@ -12,4 +12,56 @@ Choose the backend for your deployment: embedded storage for local durability, h
 
 `WorkspaceContextRegistry` records the control-plane hierarchy of physical roots and their exact workspace identities without enumerating file contents. A context has one direct parent, but its roots can be independently adopted by another authorized context; ancestry is not a prerequisite for reference visibility. Native and browser bindings exchange the same bounded `WorkspaceContextRoot`, `WorkspaceContextRoots`, `WorkspaceContextSnapshot`, and `WorkspaceContextDiscard` protobuf records. The Rust codec rejects malformed identities, noncanonical paths, duplicate or unordered roots, invalid lifecycle states, and noncanonical encodings before adapters act on them. Context records convey routing and lineage, not permission to read or write another owner's bytes.
 
+Native materialization distinguishes an immutable `GenerationTransition { from, to }`
+from `NativePreparation`: preparation retains the actual qualified source selection
+and original full manifest/fence bytes rather than inventing a generation transition.
+Preparation, inspection and cleanup share the existing materialization journal.
+Typed root and preparation observations do not manufacture verified evidence for a
+raw backend. Ordinary `MaterializeOptions` use `expected_root_identity: None`;
+host-bound preparation supplies the actual witnessed identity and rejects replacement.
+Original creation authority, current caller grants and generation conflict checks
+remain separate requirements. Failure receipts retain completed work, including work
+performed before a cancellation or budget failure; measured helpers use the canonical
+allocation ledger rather than fixed counters.
+Native Harness preparation selects fully finite resource allowances; the low-level
+SDK still honors intentional `UNBOUNDED` allowances in the same measured engine.
+Native host root and directory witnesses retain raw 16-byte allocation identities
+across held-handle
+mutations. Unsupported platform mutations report a typed error; recursive cleanup
+checks original identities instead of treating a path as ownership. Cold namespace
+discovery uses bounded breadth-first traversal, while warm caches retain reverse
+aliases. Memory and local lazy providers use their actual stores and canonical
+treap state. A checkpoint may report cancellation or budget failure after durable
+CAS; reconciliation retains all measured work and resumes the same WAL, not a
+replacement journal.
+
+Initialize `acyclic_native_runtime::initialize_native_io_services()` and, when
+mounting, `acyclic_fs::initialize_native_mount_services()` during explicit startup,
+before supplying producer budgets. These initialize the existing native and callback
+services; measured calls never create a hidden worker pool. Cold measured calls
+report an unavailable service, and startup errors retain their original OS cause.
+An absolute native source constructor reports three physical backend reads:
+opening the root, obtaining its held identity, and discovering locality. A
+two-read allowance denies locality discovery after retaining the two completed
+reads; SDK-stage counting must not hide the identity query.
+
+Native demand pages retain immutable entries and the original cursor until
+`SourcePagePublication::accept` succeeds. Consumers reserve the publication's
+reported cleanup work before projecting entries; abort or drop restores the original
+cursor, including an unpublished first page. Publication is not authority.
+Owned native blob chunks report actual retained buffer capacity separately from
+visible byte length. Canonical ROOT, TREE, TABLE and ATTR encoders use the same
+engine for ordinary and measured calls, admitting encoding allocations and work
+before construction. Necessary short-frame future boxes likewise admit their actual
+compiled size and preserve nested failure work, rather than using a fixed estimate
+or removing the stack boundary. Cancellation remains cooperative with OS I/O;
+receipts wait for accepted workers and their retained buffers to retire.
+
+Concurrent native read observers share the checkout's semantic proof but admit
+and report their own completed name/path DATA. Weak custody metadata follows
+the actual owned keys, including weak-only map moves, and retires when those
+keys die; inspecting completed custody neither allocates nor checks cancellation.
+Actual COW name/path buffers are admitted before copying. Inline tree control
+metadata and opaque BTree layout are not inferred as allocated DATA.
+
 Start with the [embedded workspace example](https://github.com/acyclic-labs/sdk/blob/main/rust/crates/filesystem/examples/embedded_workspace.rs), the [hosted example](https://github.com/acyclic-labs/sdk/blob/main/README.md), or the [Rust API](https://docs.rs/acyclic-fs/latest/acyclic_fs/). The [v2 protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/filesystem) defines compatibility.

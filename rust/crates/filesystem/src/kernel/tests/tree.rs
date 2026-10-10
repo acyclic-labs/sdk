@@ -172,3 +172,89 @@ fn malformed_tree_page_tags_and_bounds_fail_in_shape_and_full_decoders()
     }
     Ok(())
 }
+
+#[test]
+fn measured_tree_encoding_preserves_each_name_encoding_and_internal_pages()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let names = [
+        LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 255)?,
+        LogicalName::new(NameEncoding::PosixBytes, vec![0xFF], 255)?,
+        LogicalName::new(NameEncoding::WindowsUtf16Le, vec![b'z', 0], 255)?,
+    ];
+    for name in names {
+        for page in [
+            TreePage::Leaf(vec![TreeEntry { name: name.clone(), file_id: FileId::from_bytes([7; 16]), kind: FileKind::Regular }]),
+            TreePage::Internal(vec![TreeChild { first_name: name.clone(), page: ObjectId { kind: ObjectKind::TreePage, digest: crate::foundation::Digest::from_bytes([8; 32]) } }]),
+        ] {
+            let baseline = encode_tree_page(&page, 16)?;
+            let receipt = encode_tree_page_measured(&page, 16, WorkBudget::UNBOUNDED, &cancellation, 23)?;
+            assert_eq!(receipt.value, baseline);
+            assert_eq!(decode_tree_page(&receipt.value, DecodeLimits::default())?, page);
+            assert_eq!(receipt.work.items_examined, 1);
+            assert_eq!(receipt.work.bytes_encoded, receipt.value.len() as u64);
+            let identity_bytes = if matches!(page, TreePage::Leaf(_)) { 16 } else { 32 };
+            assert_eq!(receipt.work.bytes_copied, name.as_bytes().len() as u64 + identity_bytes);
+            assert_eq!(receipt.work.allocation_operations, 1);
+            assert_eq!(receipt.work.peak_allocation_bytes, 23 + receipt.value.capacity() as u64);
+            let permit = WorkBudget {
+                items_examined: 1,
+                bytes_encoded: receipt.work.bytes_encoded,
+                bytes_copied: receipt.work.bytes_copied,
+                allocation_operations: 1,
+                peak_allocation_bytes: receipt.work.peak_allocation_bytes,
+                ..WorkBudget::UNBOUNDED
+            };
+            let finite = encode_tree_page_measured(&page, 16, permit, &cancellation, 23)?;
+            assert_eq!(finite, receipt);
+            assert_eq!(object_digest(ObjectKind::TreePage, &finite.value), tree_page_id(&page, 16)?.digest);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn measured_tree_refusals_and_invalid_pages_preserve_completed_prefixes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let page = TreePage::Leaf(vec![entry(b"a", 1)?, entry(b"b", 2)?]);
+    let failure = encode_tree_page_measured(&page, 16, WorkBudget { items_examined: 1, ..WorkBudget::UNBOUNDED }, &cancellation, 0).expect_err("second validation item refused");
+    assert!(matches!(failure.error, TreePageEncodeError::Work(_)));
+    assert_eq!(failure.work.items_examined, 1);
+    assert_eq!(failure.work.allocation_operations, 0);
+    for permit in [
+        WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED },
+        WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED },
+        WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED },
+        WorkBudget { peak_allocation_bytes: 1, ..WorkBudget::UNBOUNDED },
+    ] {
+        let failure = encode_tree_page_measured(&page, 16, permit, &cancellation, 0).expect_err("finite encoder must refuse");
+        assert!(matches!(failure.error, TreePageEncodeError::Work(_)));
+        assert_eq!(failure.work.items_examined, 2);
+        assert_eq!(failure.work.allocation_operations, 0);
+        assert_eq!(failure.work.bytes_encoded, 0);
+    }
+    let duplicate = TreePage::Leaf(vec![entry(b"a", 1)?, entry(b"a", 2)?]);
+    let failure = encode_tree_page_measured(&duplicate, 16, WorkBudget::UNBOUNDED, &cancellation, 23).expect_err("duplicate name");
+    assert!(matches!(failure.error, TreePageEncodeError::Canonical(CanonicalDecodeError::Invariant(_))));
+    assert_eq!(failure.work.items_examined, 2);
+    assert_eq!(failure.work.allocation_operations, 0);
+    assert_eq!(failure.work.peak_allocation_bytes, 23);
+    for invalid in [TreePage::Internal(Vec::new()), TreePage::Leaf(vec![entry(b"a", 1)?])] {
+        let failure = encode_tree_page_measured(&invalid, 0, WorkBudget::UNBOUNDED, &cancellation, 0).expect_err("invalid page shape or item bound");
+        assert!(matches!(failure.error, TreePageEncodeError::Canonical(CanonicalDecodeError::Invariant(_))));
+        assert_eq!(failure.work.items_examined, 0);
+        assert_eq!(failure.work.allocation_operations, 0);
+        assert_eq!(failure.work.bytes_encoded, 0);
+    }
+    let wrong_child = TreePage::Internal(vec![TreeChild { first_name: name(b"a")?, page: ObjectId { kind: ObjectKind::Blob, digest: crate::foundation::Digest::from_bytes([9; 32]) } }]);
+    let failure = encode_tree_page_measured(&wrong_child, 16, WorkBudget::UNBOUNDED, &cancellation, 0).expect_err("wrong child kind");
+    assert!(matches!(failure.error, TreePageEncodeError::Canonical(CanonicalDecodeError::Invariant(_))));
+    assert_eq!(failure.work.items_examined, 1);
+    assert_eq!(failure.work.bytes_encoded, 0);
+    cancellation.cancel();
+    let failure = encode_tree_page_measured(&wrong_child, 16, WorkBudget::UNBOUNDED, &cancellation, 91).expect_err("cancelled before validation");
+    assert!(matches!(failure.error, TreePageEncodeError::Cancelled(_)));
+    assert_eq!(*failure.work, WorkCounters::default());
+    Ok(())
+}

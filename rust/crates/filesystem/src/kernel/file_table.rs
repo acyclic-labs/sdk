@@ -10,7 +10,7 @@ use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::foundation::{FileId, usize_to_u64};
 use crate::heap_future::in_heap;
-use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
+use crate::performance::{MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError, object_digest};
 use std::fmt;
 use strum::{AsRefStr, EnumDiscriminants, EnumIter};
@@ -306,10 +306,7 @@ pub fn encode_file_table_page(
     match page {
         FileTablePage::Leaf(records) => encode_file_table_leaf_records(records, maximum_items),
         FileTablePage::Internal(children) => encode_file_table_internal_children(
-            children
-                .iter()
-                .map(|child| (child.first_file_id, child.page)),
-            maximum_items,
+            children.iter().map(|child| (child.first_file_id, child.page)), maximum_items,
         ),
     }
 }
@@ -318,34 +315,9 @@ pub(crate) fn encode_file_table_leaf_records(
     records: &[FileRecord],
     maximum_items: u32,
 ) -> Result<Vec<u8>, CanonicalDecodeError> {
-    if u32::try_from(records.len()).unwrap_or(u32::MAX) > maximum_items {
-        return Err(invariant(FileTableError::TooManyItems));
-    }
-    if records.windows(2).any(|pair| {
-        let [first, second] = pair else {
-            return false;
-        };
-        first.file_id >= second.file_id
-    }) {
-        return Err(invariant(FileTableError::NotStrictlyOrdered));
-    }
-    let mut encoded_length = DOMAIN
-        .len()
-        .checked_add(2 + 1 + 4)
-        .ok_or(CanonicalDecodeError::LengthOverflow)?;
-    for record in records {
-        record.validate().map_err(invariant)?;
-        encoded_length = encoded_length
-            .checked_add(file_record_encoded_length(*record)?)
-            .ok_or(CanonicalDecodeError::LengthOverflow)?;
-    }
-    let mut encoder = Encoder::with_exact_capacity(DOMAIN, VERSION, encoded_length)?;
-    encoder.u8(1);
-    encoder.u32(count(records.len())?);
-    for record in records {
-        encode_record(&mut encoder, *record);
-    }
-    Ok(encoder.finish())
+    encode_file_table_leaf_records_engine(records, maximum_items, WorkBudget::UNBOUNDED, None)
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error.into_canonical())
 }
 
 pub(crate) fn encode_file_table_internal_children<I>(
@@ -355,32 +327,214 @@ pub(crate) fn encode_file_table_internal_children<I>(
 where
     I: Clone + ExactSizeIterator<Item = (FileId, ObjectId)>,
 {
-    let length = children.len();
-    if length == 0 {
-        return Err(invariant(FileTableError::InvalidInternalPage));
+    encode_file_table_internal_children_engine(children, maximum_items, WorkBudget::UNBOUNDED, None)
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error.into_canonical())
+}
+
+/// Encodes a canonical page while admitting each actual validation and buffer write.
+///
+/// Borrowed page storage is caller-owned; callers retaining newly authored
+/// buffers must reserve their live bytes in the nested permit before calling.
+///
+/// # Errors
+///
+/// Returns canonical, cancellation, allocation, or budget failures with spent work.
+pub fn encode_file_table_page_measured(
+    page: &FileTablePage,
+    maximum_items: u32,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> MeasuredResult<OperationReceipt<Vec<u8>>, FileTableEncodeError> {
+    match page {
+        FileTablePage::Leaf(records) => encode_file_table_leaf_records_measured(records, maximum_items, budget, cancellation),
+        FileTablePage::Internal(children) => encode_file_table_internal_children_measured(
+            children.iter().map(|child| (child.first_file_id, child.page)),
+            maximum_items, budget, cancellation,
+        ),
     }
-    if u32::try_from(length).unwrap_or(u32::MAX) > maximum_items {
-        return Err(invariant(FileTableError::TooManyItems));
-    }
-    let mut prior = None;
-    for (file_id, page) in children.clone() {
-        if prior.is_some_and(|value| value >= file_id) || page.kind != ObjectKind::FileTablePage {
-            return Err(invariant(FileTableError::InvalidInternalPage));
+}
+
+/// Failure from an actual bounded canonical file-table encoder.
+#[derive(Debug, Error)]
+pub enum FileTableEncodeError {
+    /// Canonical validation or allocation failed.
+    #[error(transparent)]
+    Canonical(#[from] CanonicalDecodeError),
+    /// A work admission failed.
+    #[error(transparent)]
+    Work(#[from] WorkError),
+    /// Encoding was cancelled.
+    #[error(transparent)]
+    Cancelled(#[from] crate::CancellationError),
+}
+
+impl FileTableEncodeError {
+    fn into_canonical(self) -> CanonicalDecodeError {
+        match self {
+            Self::Canonical(error) => error,
+            error => CanonicalDecodeError::Invariant(error.to_string()),
         }
-        prior = Some(file_id);
     }
-    let encoded_length = length
-        .checked_mul(16 + 32)
-        .and_then(|items| DOMAIN.len().checked_add(2 + 1 + 4 + items))
-        .ok_or(CanonicalDecodeError::LengthOverflow)?;
-    let mut encoder = Encoder::with_exact_capacity(DOMAIN, VERSION, encoded_length)?;
-    encoder.u8(2);
-    encoder.u32(count(length)?);
-    for (file_id, page) in children {
-        encoder.fixed(&file_id.into_bytes());
-        encoder.fixed(page.digest.as_bytes());
+}
+
+pub(crate) fn encode_file_table_leaf_records_measured(
+    records: &[FileRecord],
+    maximum_items: u32,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> MeasuredResult<OperationReceipt<Vec<u8>>, FileTableEncodeError> {
+    encode_file_table_leaf_records_engine(records, maximum_items, budget, Some(cancellation))
+}
+
+fn encode_file_table_leaf_records_engine(
+    records: &[FileRecord],
+    maximum_items: u32,
+    budget: WorkBudget,
+    cancellation: Option<&CancellationToken>,
+) -> MeasuredResult<OperationReceipt<Vec<u8>>, FileTableEncodeError> {
+    let mut work = WorkCounters::default();
+    let result = (|| {
+        cancellation.map_or(Ok(()), CancellationToken::check)?;
+        if count(records.len())? > maximum_items {
+            return Err(invariant(FileTableError::TooManyItems).into());
+        }
+        let mut length = DOMAIN.len() + 2 + 1 + 4;
+        let mut prior = None;
+        let mut copied = 0_u64;
+        for record in records {
+            cancellation.map_or(Ok(()), CancellationToken::check)?;
+            work.charge_items(1, &budget)?;
+            if prior.is_some_and(|prior| prior >= record.file_id) {
+                return Err(invariant(FileTableError::NotStrictlyOrdered).into());
+            }
+            record.validate().map_err(invariant)?;
+            length = length.checked_add(file_record_encoded_length(*record)?)
+                .ok_or(CanonicalDecodeError::LengthOverflow)?;
+            copied = copied.checked_add(record_copied_bytes(*record))
+                .ok_or(WorkError::Overflow)?;
+            prior = Some(record.file_id);
+        }
+        cancellation.map_or(Ok(()), CancellationToken::check)?;
+        work.admit(&WorkCounters { items_examined: usize_to_u64(records.len()), bytes_encoded: usize_to_u64(length), bytes_copied: copied, ..WorkCounters::default() }, &budget)?;
+        let mut encoder = start_file_table_encoder(DOMAIN, VERSION, length, &mut work, budget)?;
+        charge_encoding(&mut work, budget, 1 + 4, 0)?;
+        encoder.u8(1);
+        encoder.u32(count(records.len())?);
+        for record in records {
+            cancellation.map_or(Ok(()), CancellationToken::check)?;
+            work.charge_items(1, &budget)?;
+            charge_encoding(&mut work, budget, file_record_encoded_length(*record)?, record_copied_bytes(*record))?;
+            encode_record(&mut encoder, *record);
+        }
+        Ok(encoder.finish())
+    })();
+    result.map(|value| OperationReceipt { value, work })
+        .map_err(|error| OperationFailure::new(error, work))
+}
+
+pub(crate) fn encode_file_table_internal_children_measured<I>(
+    children: I,
+    maximum_items: u32,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> MeasuredResult<OperationReceipt<Vec<u8>>, FileTableEncodeError>
+where
+    I: Clone + ExactSizeIterator<Item = (FileId, ObjectId)>,
+{
+    encode_file_table_internal_children_engine(children, maximum_items, budget, Some(cancellation))
+}
+
+fn encode_file_table_internal_children_engine<I>(
+    children: I,
+    maximum_items: u32,
+    budget: WorkBudget,
+    cancellation: Option<&CancellationToken>,
+) -> MeasuredResult<OperationReceipt<Vec<u8>>, FileTableEncodeError>
+where
+    I: Clone + ExactSizeIterator<Item = (FileId, ObjectId)>,
+{
+    let mut work = WorkCounters::default();
+    let result = (|| {
+        cancellation.map_or(Ok(()), CancellationToken::check)?;
+        let item_count = count(children.len())?;
+        if item_count == 0 {
+            return Err(invariant(FileTableError::InvalidInternalPage).into());
+        }
+        if item_count > maximum_items {
+            return Err(invariant(FileTableError::TooManyItems).into());
+        }
+        let mut prior = None;
+        for (file_id, page) in children.clone() {
+            cancellation.map_or(Ok(()), CancellationToken::check)?;
+            work.charge_items(1, &budget)?;
+            if prior.is_some_and(|prior| prior >= file_id) || page.kind != ObjectKind::FileTablePage {
+                return Err(invariant(FileTableError::InvalidInternalPage).into());
+            }
+            prior = Some(file_id);
+        }
+        let item_bytes = children.len().checked_mul(16 + 32)
+            .ok_or(CanonicalDecodeError::LengthOverflow)?;
+        let length = (DOMAIN.len() + 2 + 1 + 4).checked_add(item_bytes)
+            .ok_or(CanonicalDecodeError::LengthOverflow)?;
+        cancellation.map_or(Ok(()), CancellationToken::check)?;
+        work.admit(&WorkCounters { items_examined: u64::from(item_count), bytes_encoded: usize_to_u64(length), bytes_copied: usize_to_u64(item_bytes), ..WorkCounters::default() }, &budget)?;
+        let mut encoder = start_file_table_encoder(DOMAIN, VERSION, length, &mut work, budget)?;
+        charge_encoding(&mut work, budget, 1 + 4, 0)?;
+        encoder.u8(2);
+        encoder.u32(item_count);
+        for (file_id, page) in children {
+            cancellation.map_or(Ok(()), CancellationToken::check)?;
+            work.charge_items(1, &budget)?;
+            charge_encoding(&mut work, budget, 16 + 32, 16 + 32)?;
+            encoder.fixed(&file_id.into_bytes());
+            encoder.fixed(page.digest.as_bytes());
+        }
+        Ok(encoder.finish())
+    })();
+    result.map(|value| OperationReceipt { value, work })
+        .map_err(|error| OperationFailure::new(error, work))
+}
+
+fn charge_encoding(
+    work: &mut WorkCounters,
+    budget: WorkBudget,
+    encoded: usize,
+    copied: u64,
+) -> Result<(), WorkError> {
+    work.charge(&WorkCounters { bytes_encoded: usize_to_u64(encoded), bytes_copied: copied, ..WorkCounters::default() }, &budget)
+}
+
+fn start_file_table_encoder(
+    domain: &[u8],
+    version: u16,
+    length: usize,
+    work: &mut WorkCounters,
+    budget: WorkBudget,
+) -> Result<Encoder, FileTableEncodeError> {
+    let mut allocations = super::allocation::AllocationLedger::default();
+    let header = domain.len() + 2;
+    work.admit(&WorkCounters { bytes_encoded: usize_to_u64(header), ..WorkCounters::default() }, &budget)?;
+    let admitted = allocations.claim_elements::<u8>(length, work, budget)
+        .map_err(|error| error.into_work_or(FileTableEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
+    let encoder = Encoder::with_exact_capacity(domain, version, length)?;
+    charge_encoding(work, budget, header, 0)?;
+    let actual = usize_to_u64(encoder.capacity());
+    if actual > admitted {
+        allocations.claim_bytes(actual - admitted, 0, work, WorkBudget::UNBOUNDED)
+            .map_err(|error| error.into_work_or(FileTableEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
+        work.verify(budget)?;
     }
-    Ok(encoder.finish())
+    Ok(encoder)
+}
+
+fn record_copied_bytes(record: FileRecord) -> u64 {
+    16 + 32 + match record.payload {
+        FilePayload::InlineRegular(data) => usize_to_u64(data.as_bytes().len()),
+        FilePayload::Regular { .. } | FilePayload::Directory { .. }
+        | FilePayload::SymbolicLink { .. } | FilePayload::ReparsePoint { .. } => 32,
+        FilePayload::Empty | FilePayload::Device { .. } => 0,
+    }
 }
 
 pub(crate) fn file_table_page_decode_shape(
@@ -527,10 +681,47 @@ fn encode_record(encoder: &mut Encoder, record: FileRecord) {
     }
 }
 
-pub(crate) fn encode_file_record(record: FileRecord) -> Vec<u8> {
-    let mut encoder = Encoder::new(RECORD_DOMAIN, RECORD_VERSION);
-    encode_record(&mut encoder, record);
-    encoder.finish()
+pub(crate) fn encode_file_record(record: FileRecord) -> Result<Vec<u8>, CanonicalDecodeError> {
+    encode_file_record_engine(record, WorkBudget::UNBOUNDED, None)
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error.into_canonical())
+}
+
+/// Encodes a shadow record using the same exact-capacity canonical engine.
+/// The fixed-size input is allocation-free; the returned buffer carries its
+/// actual capacity and all admitted validation and encoding work.
+pub(crate) fn encode_file_record_measured(
+    record: FileRecord,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> MeasuredResult<OperationReceipt<Vec<u8>>, FileTableEncodeError> {
+    encode_file_record_engine(record, budget, Some(cancellation))
+}
+
+fn encode_file_record_engine(
+    record: FileRecord,
+    budget: WorkBudget,
+    cancellation: Option<&CancellationToken>,
+) -> MeasuredResult<OperationReceipt<Vec<u8>>, FileTableEncodeError> {
+    let mut work = WorkCounters::default();
+    let result = (|| {
+        cancellation.map_or(Ok(()), CancellationToken::check)?;
+        work.charge_items(1, &budget)?;
+        record.validate().map_err(invariant)?;
+        let length = (RECORD_DOMAIN.len() + 2).checked_add(file_record_encoded_length(record)?)
+            .ok_or(CanonicalDecodeError::LengthOverflow)?;
+        let copied = record_copied_bytes(record);
+        cancellation.map_or(Ok(()), CancellationToken::check)?;
+        work.admit(&WorkCounters { items_examined: 1, bytes_encoded: usize_to_u64(length), bytes_copied: copied, ..WorkCounters::default() }, &budget)?;
+        let mut encoder = start_file_table_encoder(RECORD_DOMAIN, RECORD_VERSION, length, &mut work, budget)?;
+        cancellation.map_or(Ok(()), CancellationToken::check)?;
+        work.charge_items(1, &budget)?;
+        charge_encoding(&mut work, budget, file_record_encoded_length(record)?, copied)?;
+        encode_record(&mut encoder, record);
+        Ok(encoder.finish())
+    })();
+    result.map(|value| OperationReceipt { value, work })
+        .map_err(|error| OperationFailure::new(error, work))
 }
 
 pub(crate) fn decode_file_record(bytes: &[u8]) -> Result<FileRecord, CanonicalDecodeError> {

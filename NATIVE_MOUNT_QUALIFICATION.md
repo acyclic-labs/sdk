@@ -28,6 +28,27 @@ The self-hosted mount runners execute only trusted `main` pushes or explicit
 manual dispatches; pull-request code is never run automatically on privileged,
 persistent mount hosts.
 
+## Measured lazy customer lifecycle
+
+Initialize `acyclic_native_runtime::initialize_native_io_services` and
+`initialize_native_mount_services` at service startup, before finite operations.
+`LazyWorkspace::mount_measured` admits the real source-backed native mount;
+`LazyMount::snapshot_measured` rejects dirty authored state rather than inventing
+an empty lazy identity. `sync_with_permit_measured_guarded` flushes actual
+callbacks and forwards the original permit and asynchronous owner guard to the
+same SDK publication engine, including recovery seals. `abandon_measured`
+retains the actual driver and destination-fence owner on failure for an explicit
+bounded retry; failure does not trigger hidden unbounded drop cleanup.
+`import_selected_measured_guarded` forwards an authenticated selected import
+through that same mount owner without exposing its private source handle.
+
+The ignored real-kernel customer regression
+`measured_lazy_customer_preserves_mixed_identity_guard_and_cleanup_custody`
+requires the native mount capability. It covers mixed authored/source reads,
+zero-budget admission, dirty-snapshot rejection, original-owner guard failure,
+bounded snapshot replay, guarded selected imports, cancellation and retained
+cleanup custody.
+
 ## Dedicated runner prerequisites
 
 - `linux-fuse`: Linux x86-64, the Rust release in `rust-toolchain.toml`, a readable/writable `/dev/fuse`, and

@@ -223,7 +223,7 @@ async fn report_apfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
             &CancellationToken::new(),
             PublicationPermit::Unrestricted,
         )
-        .await?;
+        .await?.value;
     let preparation_us = started.elapsed().as_micros();
     eprintln!("apfs preparation_us={preparation_us}");
 

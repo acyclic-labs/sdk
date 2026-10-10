@@ -8,6 +8,9 @@ use super::types::{
 };
 use crate::foundation::{FileId, usize_to_u64};
 use crate::storage::{ObjectId, ObjectKind, object_digest};
+use super::allocation::AllocationLedger;
+use crate::{CancellationToken, MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
+use thiserror::Error;
 
 const DOMAIN: &[u8; 8] = b"ACYFSTRE";
 const VERSION: u16 = 1;
@@ -26,85 +29,206 @@ pub fn encode_tree_page(
     match page {
         TreePage::Leaf(entries) => encode_tree_leaf_entries(entries, maximum_items),
         TreePage::Internal(children) => encode_tree_internal_children(
-            children.iter().map(|child| (&child.first_name, child.page)),
-            maximum_items,
+            children.iter().map(|child| (&child.first_name, child.page)), maximum_items,
         ),
     }
 }
 
-pub(crate) fn encode_tree_leaf_entries(
-    entries: &[TreeEntry],
+/// Encodes a canonical tree page with finite admission and completed-work receipts.
+/// `live_owned_bytes` is the capacity retained by the containing operation.
+/// Borrowed entries and names are not cloned. Copies count name payloads and
+/// identities/digests, while tags, lengths, and the static domain count as encoding.
+/// The ordinary encoder projects this same engine with an unbounded permit.
+///
+/// # Errors
+/// Returns validation, cancellation, allocation, or budget failures with their prefix.
+pub fn encode_tree_page_measured(
+    page: &TreePage,
     maximum_items: u32,
-) -> Result<Vec<u8>, CanonicalDecodeError> {
-    if u32::try_from(entries.len()).unwrap_or(u32::MAX) > maximum_items {
-        return Err(invariant(TreePageError::TooManyItems));
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    live_owned_bytes: u64,
+) -> MeasuredResult<OperationReceipt<Vec<u8>>, TreePageEncodeError> {
+    match page {
+        TreePage::Leaf(entries) => encode_tree_leaf_entries_measured(entries, maximum_items, budget, Some(cancellation), live_owned_bytes),
+        TreePage::Internal(children) => encode_tree_internal_children_measured(
+            children.iter().map(|child| (&child.first_name, child.page)),
+            maximum_items, budget, Some(cancellation), live_owned_bytes,
+        ),
     }
-    if entries
-        .windows(2)
-        .any(|pair| matches!(pair, [left, right] if left.name >= right.name))
-    {
-        return Err(invariant(TreePageError::NamesNotStrictlyOrdered));
-    }
-    let mut encoded_length = DOMAIN
-        .len()
-        .checked_add(2 + 1 + 4)
-        .ok_or(CanonicalDecodeError::LengthOverflow)?;
-    for entry in entries {
-        encoded_length = encoded_length
-            .checked_add(1 + 4 + 16 + 1)
-            .and_then(|value| value.checked_add(entry.name.as_bytes().len()))
-            .ok_or(CanonicalDecodeError::LengthOverflow)?;
-    }
-    let mut encoder = Encoder::with_exact_capacity(DOMAIN, VERSION, encoded_length)?;
-    encoder.u8(LEAF_TAG);
-    encoder.u32(count(entries.len())?);
-    for entry in entries {
-        encode_name(&mut encoder, &entry.name)?;
-        encoder.fixed(&entry.file_id.into_bytes());
-        encoder.u8(entry.kind.tag());
-    }
-    Ok(encoder.finish())
 }
 
-pub(crate) fn encode_tree_internal_children<'a, I>(
+/// Failure from finite canonical tree encoding.
+#[derive(Debug, Error)]
+pub enum TreePageEncodeError {
+    /// Invalid canonical page or failed owned-buffer allocation.
+    #[error(transparent)]
+    Canonical(#[from] CanonicalDecodeError),
+    /// The actual operation exceeded its permit.
+    #[error(transparent)]
+    Work(#[from] crate::WorkError),
+    /// The operation was cancelled.
+    #[error(transparent)]
+    Cancelled(#[from] crate::CancellationError),
+}
+
+fn project_encoding(result: MeasuredResult<OperationReceipt<Vec<u8>>, TreePageEncodeError>) -> Result<Vec<u8>, CanonicalDecodeError> {
+    result.map(|receipt| receipt.value).map_err(|failure| match failure.error {
+        TreePageEncodeError::Canonical(error) => error,
+        TreePageEncodeError::Work(_) => CanonicalDecodeError::LengthOverflow,
+        TreePageEncodeError::Cancelled(_) => unreachable!("unobserved cancellation"),
+    })
+}
+
+pub(crate) fn encode_tree_leaf_entries(entries: &[TreeEntry], maximum_items: u32) -> Result<Vec<u8>, CanonicalDecodeError> {
+    project_encoding(encode_tree_leaf_entries_measured(entries, maximum_items, WorkBudget::UNBOUNDED, None, 0))
+}
+
+fn encode_tree_leaf_entries_measured(
+    entries: &[TreeEntry],
+    maximum_items: u32,
+    budget: WorkBudget,
+    cancellation: Option<&CancellationToken>,
+    live_owned_bytes: u64,
+) -> MeasuredResult<OperationReceipt<Vec<u8>>, TreePageEncodeError> {
+    let mut work = WorkCounters::default();
+    let mut allocations = AllocationLedger::default();
+    let result = (|| {
+        if let Some(cancellation) = cancellation { cancellation.check()?; }
+        allocations.claim_bytes(live_owned_bytes, 0, &mut work, budget)
+            .map_err(|error| error.into_work_or(TreePageEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
+        let length = tree_leaf_encoded_length(entries, maximum_items, &mut work, budget, cancellation)?;
+        let copied = (length - DOMAIN.len() - 2 - 1 - 4 - entries.len() * 6) as u64;
+        if let Some(cancellation) = cancellation { cancellation.check()?; }
+        let mut encoder = admit_tree_encoder(length, copied, &mut allocations, &mut work, budget)?;
+        encoder.u8(LEAF_TAG);
+        encoder.u32(entries.len() as u32);
+        for entry in entries {
+            encode_name(&mut encoder, &entry.name);
+            encoder.fixed(&entry.file_id.into_bytes());
+            encoder.u8(entry.kind.tag());
+        }
+        finish_tree_encoder(encoder, length, copied, &mut work, budget)
+    })();
+    result.map(|value| OperationReceipt { value, work })
+        .map_err(|error| OperationFailure::new(error, work))
+}
+
+pub(crate) fn encode_tree_internal_children<'a, I>(children: I, maximum_items: u32) -> Result<Vec<u8>, CanonicalDecodeError>
+where I: Clone + ExactSizeIterator<Item = (&'a LogicalName, ObjectId)> {
+    project_encoding(encode_tree_internal_children_measured(children, maximum_items, WorkBudget::UNBOUNDED, None, 0))
+}
+
+fn encode_tree_internal_children_measured<'a, I>(
     children: I,
     maximum_items: u32,
-) -> Result<Vec<u8>, CanonicalDecodeError>
-where
-    I: Clone + ExactSizeIterator<Item = (&'a LogicalName, ObjectId)>,
-{
-    let length = children.len();
-    if length == 0 {
-        return Err(invariant(TreePageError::EmptyInternalPage));
+    budget: WorkBudget,
+    cancellation: Option<&CancellationToken>,
+    live_owned_bytes: u64,
+) -> MeasuredResult<OperationReceipt<Vec<u8>>, TreePageEncodeError>
+where I: Clone + ExactSizeIterator<Item = (&'a LogicalName, ObjectId)> {
+    let mut work = WorkCounters::default();
+    let mut allocations = AllocationLedger::default();
+    let result = (|| {
+        if let Some(cancellation) = cancellation { cancellation.check()?; }
+        allocations.claim_bytes(live_owned_bytes, 0, &mut work, budget)
+            .map_err(|error| error.into_work_or(TreePageEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
+        let length = tree_internal_encoded_length(children.clone(), maximum_items, &mut work, budget, cancellation)?;
+        let copied = (length - DOMAIN.len() - 2 - 1 - 4 - children.len() * 5) as u64;
+        if let Some(cancellation) = cancellation { cancellation.check()?; }
+        let mut encoder = admit_tree_encoder(length, copied, &mut allocations, &mut work, budget)?;
+        encoder.u8(INTERNAL_TAG);
+        encoder.u32(children.len() as u32);
+        for (name, page) in children {
+            encode_name(&mut encoder, name);
+            encoder.fixed(page.digest.as_bytes());
+        }
+        finish_tree_encoder(encoder, length, copied, &mut work, budget)
+    })();
+    result.map(|value| OperationReceipt { value, work })
+        .map_err(|error| OperationFailure::new(error, work))
+}
+
+fn tree_leaf_encoded_length(
+    entries: &[TreeEntry],
+    maximum_items: u32,
+    work: &mut WorkCounters,
+    budget: WorkBudget,
+    cancellation: Option<&CancellationToken>,
+) -> Result<usize, TreePageEncodeError> {
+    if count(entries.len())? > maximum_items {
+        return Err(invariant(TreePageError::TooManyItems).into());
     }
-    if u32::try_from(length).unwrap_or(u32::MAX) > maximum_items {
-        return Err(invariant(TreePageError::TooManyItems));
-    }
+    let mut length = DOMAIN.len() + 2 + 1 + 4;
     let mut prior: Option<&LogicalName> = None;
-    let mut encoded_length = DOMAIN
-        .len()
-        .checked_add(2 + 1 + 4)
-        .ok_or(CanonicalDecodeError::LengthOverflow)?;
-    for (name, page) in children.clone() {
+    for entry in entries {
+        if let Some(cancellation) = cancellation { cancellation.check()?; }
+        work.charge_items(1, &budget)?;
+        if prior.is_some_and(|name| name >= &entry.name) {
+            return Err(invariant(TreePageError::NamesNotStrictlyOrdered).into());
+        }
+        count(entry.name.as_bytes().len())?;
+        length = length.checked_add(1 + 4 + 16 + 1)
+            .and_then(|value| value.checked_add(entry.name.as_bytes().len()))
+            .ok_or(CanonicalDecodeError::LengthOverflow)?;
+        prior = Some(&entry.name);
+    }
+    Ok(length)
+}
+
+fn tree_internal_encoded_length<'a, I>(
+    children: I,
+    maximum_items: u32,
+    work: &mut WorkCounters,
+    budget: WorkBudget,
+    cancellation: Option<&CancellationToken>,
+) -> Result<usize, TreePageEncodeError>
+where I: ExactSizeIterator<Item = (&'a LogicalName, ObjectId)> {
+    if children.len() == 0 {
+        return Err(invariant(TreePageError::EmptyInternalPage).into());
+    }
+    if count(children.len())? > maximum_items {
+        return Err(invariant(TreePageError::TooManyItems).into());
+    }
+    let mut length = DOMAIN.len() + 2 + 1 + 4;
+    let mut prior: Option<&LogicalName> = None;
+    for (name, page) in children {
+        if let Some(cancellation) = cancellation { cancellation.check()?; }
+        work.charge_items(1, &budget)?;
         if prior.is_some_and(|value| value >= name) {
-            return Err(invariant(TreePageError::NamesNotStrictlyOrdered));
+            return Err(invariant(TreePageError::NamesNotStrictlyOrdered).into());
         }
         if page.kind != ObjectKind::TreePage {
-            return Err(invariant(TreePageError::WrongChildKind));
+            return Err(invariant(TreePageError::WrongChildKind).into());
         }
-        encoded_length = encoded_length
-            .checked_add(1 + 4 + 32)
+        count(name.as_bytes().len())?;
+        length = length.checked_add(1 + 4 + 32)
             .and_then(|value| value.checked_add(name.as_bytes().len()))
             .ok_or(CanonicalDecodeError::LengthOverflow)?;
         prior = Some(name);
     }
-    let mut encoder = Encoder::with_exact_capacity(DOMAIN, VERSION, encoded_length)?;
-    encoder.u8(INTERNAL_TAG);
-    encoder.u32(count(length)?);
-    for (name, page) in children {
-        encode_name(&mut encoder, name)?;
-        encoder.fixed(page.digest.as_bytes());
+    Ok(length)
+}
+
+fn admit_tree_encoder(length: usize, copied: u64, allocations: &mut AllocationLedger, work: &mut WorkCounters, budget: WorkBudget) -> Result<Encoder, TreePageEncodeError> {
+    work.admit(&WorkCounters { bytes_encoded: length as u64, bytes_copied: copied, ..WorkCounters::default() }, &budget)?;
+    let admitted = allocations.claim_elements::<u8>(length, work, budget)
+        .map_err(|error| error.into_work_or(TreePageEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
+    let encoder = Encoder::with_exact_capacity(DOMAIN, VERSION, length)?;
+    let header_bytes = (DOMAIN.len() + 2) as u64;
+    work.charge(&WorkCounters { bytes_encoded: header_bytes, ..WorkCounters::default() }, &budget)?;
+    if encoder.capacity() as u64 > admitted {
+        // Allocator excess is already physically live; record it before refusal.
+        allocations.claim_bytes(encoder.capacity() as u64 - admitted, 0, work, WorkBudget::UNBOUNDED)
+            .map_err(|error| error.into_work_or(TreePageEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
+        work.verify(budget)?;
     }
+    Ok(encoder)
+}
+
+fn finish_tree_encoder(encoder: Encoder, length: usize, copied: u64, work: &mut WorkCounters, budget: WorkBudget) -> Result<Vec<u8>, TreePageEncodeError> {
+    let body_bytes = (length - DOMAIN.len() - 2) as u64;
+    work.charge(&WorkCounters { bytes_encoded: body_bytes, bytes_copied: copied, ..WorkCounters::default() }, &budget)?;
     Ok(encoder.finish())
 }
 
@@ -237,9 +361,11 @@ pub fn tree_page_id(page: &TreePage, maximum_items: u32) -> Result<ObjectId, Can
     })
 }
 
-fn encode_name(encoder: &mut Encoder, name: &LogicalName) -> Result<(), CanonicalDecodeError> {
+/// The shared validation/length pass has already checked the name's u32 bound.
+fn encode_name(encoder: &mut Encoder, name: &LogicalName) {
     encoder.u8(name.encoding().tag());
-    encoder.bounded_bytes(name.as_bytes())
+    encoder.u32(name.as_bytes().len() as u32);
+    encoder.fixed(name.as_bytes());
 }
 
 fn decode_name(

@@ -40,29 +40,42 @@ pub async fn seal_checkout_with_permit<A: AsyncAuthorityStore, O: AsyncObjectSto
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<(), MountSourceError> {
+    seal_checkout_with_permit_measured(checkout, operation_id, permit, budget, cancellation)
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+}
+
+/// Seals the same candidate, retaining every attempted publication receipt.
+pub async fn seal_checkout_with_permit_measured<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    operation_id: OperationId,
+    permit: PublicationPermit,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> crate::MeasuredResult<crate::OperationReceipt<()>, MountSourceError> {
+    let mut work = WorkCounters::default();
+    let result = async {
+    cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
     if !checkout.has_pending_mutations() {
         return Ok(());
     }
     match checkout.mode().mutations {
-        crate::model::MutationMode::PrivateOverlay => match checkout
-            .commit_with_permit(operation_id, permit, budget, cancellation)
-            .await
-            .map_err(engine_error)?
-            .value
-        {
+        crate::model::MutationMode::PrivateOverlay => {
+            let receipt = checkout.commit_with_permit(operation_id, permit, budget, cancellation)
+                .await.map_err(|failure| publication_failure(failure, &mut work))?;
+            work = receipt.work;
+            match receipt.value {
             CheckoutCommitOutcome::Committed { .. }
             | CheckoutCommitOutcome::AlreadyCommitted { .. } => Ok(()),
             CheckoutCommitOutcome::Conflict { .. }
             | CheckoutCommitOutcome::Fenced { .. }
             | CheckoutCommitOutcome::IdempotencyConflict { .. } => Err(MountSourceError::Stale),
-        },
+            }
+        }
         crate::model::MutationMode::DirectLive if permit == PublicationPermit::Unrestricted => {
-            match checkout
-                .resume_live(operation_id, 8, 256, budget, cancellation)
-                .await
-                .map_err(engine_error)?
-                .value
-            {
+            let receipt = checkout.resume_live(operation_id, 8, 256, budget, cancellation)
+                .await.map_err(|failure| publication_failure(failure, &mut work))?;
+            work = receipt.work;
+            match receipt.value {
                 LiveMutationOutcome::Committed { .. }
                 | LiveMutationOutcome::AlreadyCommitted { .. } => Ok(()),
                 LiveMutationOutcome::Conflicted { .. }
@@ -78,6 +91,9 @@ pub async fn seal_checkout_with_permit<A: AsyncAuthorityStore, O: AsyncObjectSto
             "checkout does not admit native writes".to_owned(),
         )),
     }
+    }.await;
+    result.map(|value| crate::OperationReceipt { value, work })
+        .map_err(|error| crate::OperationFailure::new(error, work))
 }
 
 /// Publishes a checkout operation even when its only effect is the separately
@@ -89,13 +105,27 @@ pub async fn seal_checkout_with_permit_force<A: AsyncAuthorityStore, O: AsyncObj
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<(), MountSourceError> {
+    seal_checkout_with_permit_force_measured(checkout, operation_id, permit, budget, cancellation)
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+}
+
+/// Forces the same retained operation with cumulative rebase/publication work.
+pub async fn seal_checkout_with_permit_force_measured<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    operation_id: OperationId,
+    permit: PublicationPermit,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> crate::MeasuredResult<crate::OperationReceipt<()>, MountSourceError> {
+    let mut work = WorkCounters::default();
+    let result = async {
+    cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
     if checkout.mode().mutations != crate::model::MutationMode::PrivateOverlay {
         return Err(MountSourceError::Unsupported(
             "forced publication requires a private-overlay checkout".to_owned(),
         ));
     }
     const MAXIMUM_SAFE_REBASE_ATTEMPTS: usize = 8;
-    let mut work = WorkCounters::default();
     for _ in 0..MAXIMUM_SAFE_REBASE_ATTEMPTS {
         let remaining = work.remaining(budget).map_err(engine_error)?;
         let publication = if checkout.has_pending_mutations() {
@@ -107,7 +137,7 @@ pub async fn seal_checkout_with_permit_force<A: AsyncAuthorityStore, O: AsyncObj
                 .commit_with_permit_even_if_clean(operation_id, permit, remaining, cancellation)
                 .await
         }
-        .map_err(engine_error)?;
+        .map_err(|failure| publication_failure(failure, &mut work))?;
         work = work.checked_add(publication.work).map_err(engine_error)?;
         work.verify(budget).map_err(engine_error)?;
         match publication.value {
@@ -125,7 +155,7 @@ pub async fn seal_checkout_with_permit_force<A: AsyncAuthorityStore, O: AsyncObj
                         cancellation,
                     )
                     .await
-                    .map_err(engine_error)?;
+                    .map_err(|failure| publication_failure(failure, &mut work))?;
                 work = work.checked_add(decision.work).map_err(engine_error)?;
                 work.verify(budget).map_err(engine_error)?;
                 if matches!(decision.value, RebaseDecision::Conflicted { .. }) {
@@ -141,10 +171,26 @@ pub async fn seal_checkout_with_permit_force<A: AsyncAuthorityStore, O: AsyncObj
     Err(MountSourceError::Engine(
         "publication raced with repeated head advances; retry retained operation".to_owned(),
     ))
+    }.await;
+    result.map(|value| crate::OperationReceipt { value, work })
+        .map_err(|error| crate::OperationFailure::new(error, work))
 }
 
 fn engine_error(error: impl std::fmt::Display) -> MountSourceError {
     MountSourceError::Engine(error.to_string())
+}
+
+fn publication_failure(
+    failure: crate::OperationFailure<crate::FsError>,
+    work: &mut WorkCounters,
+) -> MountSourceError {
+    let failure = failure.map_with_prior_work(*work, |error| match error {
+        crate::FsError::Work(error) => MountSourceError::Work(error),
+        crate::FsError::Cancelled(_) => MountSourceError::Cancelled,
+        error => engine_error(error),
+    });
+    *work = *failure.work;
+    failure.error
 }
 
 #[cfg(test)]

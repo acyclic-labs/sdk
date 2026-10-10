@@ -233,30 +233,8 @@ pub async fn publish_generation_async<O: crate::AsyncObjectStore, A: crate::Asyn
         closure_limits,
         budget,
         cancellation,
-    )
-    .await
-}
-
-pub(crate) async fn publish_generation_async_with_context<
-    O: crate::AsyncObjectStore,
-    A: crate::AsyncAuthorityStore,
->(
-    objects: &O,
-    authority: &A,
-    request: PublishGenerationRequest,
-    operation_context: Digest,
-    closure_limits: ClosureLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<PublicationReceipt, PublicationFailure> {
-    publish_generation_async_inner(
-        objects,
-        authority,
-        request,
-        PublicationIntent::unrestricted(Some(operation_context)),
-        closure_limits,
-        budget,
-        cancellation,
+        &mut |_| async { Ok(crate::OperationReceipt { value: (), work: WorkCounters::UNCHARGED }) },
+        None,
     )
     .await
 }
@@ -281,14 +259,15 @@ pub(crate) async fn publish_generation_async_with_permit<
         closure_limits,
         budget,
         cancellation,
+        &mut |_| async { Ok(crate::OperationReceipt { value: (), work: WorkCounters::UNCHARGED }) },
+        None,
     )
     .await
 }
 
-async fn publish_generation_async_inner<
-    O: crate::AsyncObjectStore,
-    A: crate::AsyncAuthorityStore,
->(
+/// Uses the original closure/append engine with a caller-owned asynchronous
+/// check at its authority seal. Resolved lost acknowledgements never reseal.
+pub(crate) async fn publish_generation_async_guarded<O, A, F, Fut>(
     objects: &O,
     authority: &A,
     request: PublishGenerationRequest,
@@ -296,7 +275,39 @@ async fn publish_generation_async_inner<
     closure_limits: ClosureLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Result<PublicationReceipt, PublicationFailure> {
+    before_publication: &mut F,
+    resolved: Option<crate::foundation::DurableCommit>,
+) -> Result<PublicationReceipt, OperationFailure<crate::FsError>>
+where
+    O: crate::AsyncObjectStore,
+    A: crate::AsyncAuthorityStore,
+    F: FnMut(WorkBudget) -> Fut,
+    Fut: Future<Output = crate::FsResult<()>> + Send,
+{
+    publish_generation_async_inner(
+        objects, authority, request, intent, closure_limits, budget, cancellation,
+        before_publication, resolved,
+    ).await
+}
+
+async fn publish_generation_async_inner<O, A, E, F, Fut>(
+    objects: &O,
+    authority: &A,
+    request: PublishGenerationRequest,
+    intent: PublicationIntent,
+    closure_limits: ClosureLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    before_publication: &mut F,
+    resolved: Option<crate::foundation::DurableCommit>,
+) -> Result<PublicationReceipt, OperationFailure<E>>
+where
+    O: crate::AsyncObjectStore,
+    A: crate::AsyncAuthorityStore,
+    E: From<PublicationError> + crate::obs::ErrorKind,
+    F: FnMut(WorkBudget) -> Fut,
+    Fut: Future<Output = crate::MeasuredResult<crate::OperationReceipt<()>, E>> + Send,
+{
     let span = crate::obs::span!(
         DEBUG,
         "acyclic.fs.kernel.publish",
@@ -309,7 +320,8 @@ async fn publish_generation_async_inner<
         generation = crate::obs::hex(&request.generation_root.digest.as_bytes()[..8]),
     );
     let result = crate::obs::in_span(&span, async move {
-        validate_authority(request)?;
+        validate_authority(request)
+            .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, E::from))?;
         let proven_at = objects.collection_sweeps();
         let proof = prove_generation_closure_async(
             objects,
@@ -319,10 +331,32 @@ async fn publish_generation_async_inner<
             cancellation,
         )
         .await
-        .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+        .map_err(|failure| OperationFailure::new(E::from(PublicationError::from(failure.error)), *failure.work))?;
         let operation_context = permit_context(intent.operation_context, intent.permit);
-        let prepared = prepare_publication(proof, request, operation_context, budget)?;
+        let prepared = prepare_publication(proof, request, operation_context, budget)
+            .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, E::from))?;
         let mut work = prepared.work;
+        if let Some(commit) = resolved {
+            let outcome = if commit.fingerprint == prepared.commit.fingerprint {
+                AppendOutcome::AlreadyCommitted(commit)
+            } else {
+                AppendOutcome::IdempotencyConflict {
+                    committed_fingerprint: commit.fingerprint,
+                }
+            };
+            return Ok(PublicationReceipt { proof: prepared.proof, outcome, work });
+        }
+        let retained = prepared.retained_bytes;
+        let allowance = |work: WorkCounters| -> Result<WorkBudget, OperationFailure<E>> {
+            let mut remaining = work.remaining(budget)
+                .map_err(|error| OperationFailure::new(E::from(PublicationError::from(error)), work))?;
+            remaining.peak_allocation_bytes = remaining.peak_allocation_bytes.checked_sub(retained)
+                .ok_or_else(|| OperationFailure::new(E::from(PublicationError::from(WorkError::BudgetExceeded {
+                    counter: "peak_allocation_bytes", observed: retained,
+                    maximum: remaining.peak_allocation_bytes,
+                })), work))?;
+            Ok(remaining)
+        };
         // The authority CAS is the only point at which immutable bodies become
         // reachable after a crash. Drain the private staged part of exactly the
         // proven closure first; a failed drain leaves no published generation
@@ -333,37 +367,72 @@ async fn publish_generation_async_inner<
                     objects: &prepared.proof.objects,
                     proven_at,
                 },
-                work.remaining(budget)
-                    .map_err(|error| OperationFailure::new(error.into(), work))?,
+                allowance(work)?,
                 cancellation,
             )
             .await
-            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-        work = work
-            .checked_add(drained.work)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        let remaining = work
-            .remaining(budget)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
+            .map_err(|failure| match work.with_backend(*failure.work, retained) {
+                Ok(failed) => OperationFailure::new(E::from(PublicationError::from(failure.error)), failed),
+                Err(error) => OperationFailure::new(E::from(PublicationError::from(error)), work),
+            })?;
+        work = work.with_backend(drained.work, retained)
+            .map_err(|error| OperationFailure::new(E::from(PublicationError::from(error)), work))?;
+        work.verify(budget)
+            .map_err(|error| OperationFailure::new(E::from(PublicationError::from(error)), work))?;
+        let _publication_hold = drained.value;
+        let append = crate::GuardedAppend {
+            authority_id: request.authority_id,
+            epoch: request.epoch,
+            expected: request.expected,
+            commit: prepared.commit,
+            permit: intent.permit,
+        };
+        let custody = objects.prepare_generation_publication(
+            &request,
+            &prepared.proof,
+            &append,
+            crate::PublicationScope::Closure {
+                objects: &prepared.proof.objects,
+                proven_at,
+            },
+            allowance(work)?,
+            cancellation,
+        ).await.map_err(|failure| match work.with_backend(*failure.work, retained) {
+            Ok(failed) => OperationFailure::new(E::from(PublicationError::from(failure.error)), failed),
+            Err(error) => OperationFailure::new(E::from(PublicationError::from(error)), work),
+        })?;
+        work = work.with_backend(custody.work, retained)
+            .map_err(|error| OperationFailure::new(E::from(PublicationError::from(error)), work))?;
+        work.verify(budget)
+            .map_err(|error| OperationFailure::new(E::from(PublicationError::from(error)), work))?;
+        let checked = before_publication(allowance(work)?).await
+            .map_err(|failure| match work.with_backend(*failure.work, retained) {
+                Ok(failed) => OperationFailure::new(failure.error, failed),
+                Err(error) => OperationFailure::new(E::from(PublicationError::from(error)), work),
+            })?;
+        work = work.with_backend(checked.work, retained)
+            .map_err(|error| OperationFailure::new(E::from(PublicationError::from(error)), work))?;
+        work.verify(budget)
+            .map_err(|error| OperationFailure::new(E::from(PublicationError::from(error)), work))?;
+        cancellation.check().map_err(|_| OperationFailure::new(
+            E::from(PublicationError::Authority(AuthorityStoreError::Cancelled)), work,
+        ))?;
+        let remaining = allowance(work)?;
         let receipt = crate::AsyncAuthorityStore::compare_and_append_guarded(
             authority,
-            crate::GuardedAppend {
-                authority_id: request.authority_id,
-                epoch: request.epoch,
-                expected: request.expected,
-                commit: prepared.commit,
-                permit: intent.permit,
-            },
+            append,
             remaining,
             cancellation,
         )
         .await
-        .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-        work = work
-            .checked_add(receipt.work)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        .map_err(|failure| match work.with_backend(*failure.work, retained) {
+            Ok(failed) => OperationFailure::new(E::from(PublicationError::from(failure.error)), failed),
+            Err(error) => OperationFailure::new(E::from(PublicationError::from(error)), work),
+        })?;
+        work = work.with_backend(receipt.work, retained)
+            .map_err(|error| OperationFailure::new(E::from(PublicationError::from(error)), work))?;
         work.verify(budget)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
+            .map_err(|error| OperationFailure::new(E::from(PublicationError::from(error)), work))?;
         Ok(PublicationReceipt {
             proof: prepared.proof,
             outcome: receipt.value,

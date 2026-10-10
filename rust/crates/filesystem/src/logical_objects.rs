@@ -258,7 +258,9 @@ impl<P: NativeBatchObjects> AsyncObjectStore for LogicalObjectStore<P> {
             backend_read_operations: 1,
             ..WorkCounters::default()
         };
-        admit(admitted, budget)?;
+        admitted
+            .verify(budget)
+            .map_err(|error| OperationFailure::before_work(error.into()))?;
         let value = self
             .fetch(read_request(&self.bucket, object_id, maximum_bytes))
             .await

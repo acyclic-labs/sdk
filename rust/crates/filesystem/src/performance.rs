@@ -160,6 +160,20 @@ impl WorkCounters {
         additive_counters!(finite)
     }
 
+    /// Intersects two admitted allowances without increasing any counter.
+    #[must_use]
+    pub fn intersect_budget(self, other: WorkBudget) -> WorkBudget {
+        macro_rules! intersect {
+            ($($field:ident),* $(,)?) => {
+                Self {
+                    $($field: self.$field.min(other.$field),)*
+                    peak_allocation_bytes: self.peak_allocation_bytes.min(other.peak_allocation_bytes),
+                }
+            };
+        }
+        additive_counters!(intersect)
+    }
+
     /// No work at all, as a constant: [`WorkCounters::default`] usable in
     /// `const` charges such as one page read.
     pub(crate) const UNCHARGED: Self = Self {

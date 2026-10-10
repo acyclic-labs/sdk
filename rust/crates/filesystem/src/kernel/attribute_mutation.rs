@@ -80,11 +80,11 @@ impl Format for AttributeFormat {
     }
 
     fn leaf_item_encoded_length(value: &Self::Value) -> Result<usize, CanonicalDecodeError> {
-        Ok(attribute_leaf_item_encoded_length(value))
+        attribute_leaf_item_encoded_length(value)
     }
 
     fn internal_item_encoded_length(key: &Self::Key) -> Result<usize, CanonicalDecodeError> {
-        Ok(attribute_internal_item_encoded_length(key))
+        attribute_internal_item_encoded_length(key)
     }
 
     fn key_nested_bytes(key: &Self::Key) -> u64 {

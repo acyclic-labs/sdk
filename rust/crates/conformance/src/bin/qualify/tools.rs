@@ -229,6 +229,7 @@ fn restore_gen(args: &[String]) -> Result<(), Failure> {
             &mut checkout,
             &MaterializeOptions {
                 destination: destination.clone(),
+                expected_root_identity: None,
                 maximum_directory_entries: 1_024,
                 maximum_extent_spans: 65_536,
                 transfer_bytes: 8 * 1024 * 1024,
@@ -1752,6 +1753,7 @@ async fn materialize(
         &mut checkout,
         &MaterializeOptions {
             destination: destination.to_path_buf(),
+            expected_root_identity: None,
             maximum_directory_entries: 1_024,
             maximum_extent_spans: 65_536,
             transfer_bytes: 8 * 1024 * 1024,

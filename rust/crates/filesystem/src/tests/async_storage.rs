@@ -527,3 +527,279 @@ fn async_adapters_and_explicit_sequential_reads_fail_closed_before_or_at_exact_w
     assert!(matches!(over_budget.error, ObjectStoreError::Work(_)));
     Ok(())
 }
+
+#[test]
+fn default_authority_steps_reject_excess_with_the_entire_spent_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    let prior = WorkCounters {
+        backend_read_operations: 2,
+        backend_write_operations: 1,
+        authority_records_appended: 1,
+        authority_bytes_written: 7,
+        peak_allocation_bytes: 32,
+        ..WorkCounters::default()
+    };
+    let final_step = WorkCounters {
+        backend_read_operations: 1,
+        backend_write_operations: 1,
+        authority_records_appended: 1,
+        authority_bytes_written: 11,
+        peak_allocation_bytes: 48,
+        ..WorkCounters::default()
+    };
+    let mut budget = WorkBudget::UNBOUNDED;
+    budget.authority_bytes_written = 17;
+    let failure = add_authority(prior, final_step, budget)
+        .err()
+        .ok_or("excess final authority receipt succeeded")?;
+    assert!(matches!(
+        failure.error,
+        AuthorityStoreError::Work(crate::performance::WorkError::BudgetExceeded {
+            counter: "authority_bytes_written",
+            observed: 18,
+            maximum: 17,
+        })
+    ));
+    assert_eq!(*failure.work, prior.checked_add(final_step)?);
+
+    // This cap already excludes both externally held original input buffers.
+    // Sequential child peaks are maxima, not re-adopted input allocations.
+    budget.authority_bytes_written = 18;
+    budget.peak_allocation_bytes = 48;
+    let combined = add_authority(prior, final_step, budget)?;
+    assert_eq!(combined.peak_allocation_bytes, 48);
+    assert_eq!(remaining_authority(combined, budget)?.peak_allocation_bytes, 48);
+    Ok(())
+}
+
+#[test]
+fn default_first_record_failure_preserves_prior_read_and_write_work()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let prior = WorkCounters {
+        backend_read_operations: 2,
+        backend_write_operations: 1,
+        authority_bytes_read: 19,
+        authority_bytes_written: 23,
+        ..WorkCounters::default()
+    };
+    let failure = poll_ready(append_first_record(
+        &MemoryAuthorityStore::default(),
+        AuthorityId::from_bytes([0x71; 16]),
+        ProposedCommit {
+            operation_id: OperationId::from_bytes([0x72; 16]),
+            fingerprint: Digest::from_bytes([0x73; 32]),
+            payload: Bytes::from_static(b"creation"),
+        },
+        prior,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("cancelled first record suspended")?
+    .err()
+    .ok_or("cancelled first record succeeded")?;
+    assert!(matches!(failure.error, AuthorityStoreError::Cancelled));
+    assert_eq!(*failure.work, prior);
+    Ok(())
+}
+
+#[test]
+fn default_workspace_fork_preserves_both_complete_record_identities()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryAuthorityStore::default();
+    let cancellation = CancellationToken::new();
+    let fork = WorkspaceForkCommit {
+        lineage: None,
+        destination: AuthorityId::from_bytes([0x81; 16]),
+        creation: ProposedCommit {
+            operation_id: OperationId::from_bytes([0x82; 16]),
+            fingerprint: Digest::from_bytes([0x83; 32]),
+            payload: Bytes::from_static(b"creation"),
+        },
+        retention: AuthorityId::from_bytes([0x84; 16]),
+        retained: ProposedCommit {
+            operation_id: OperationId::from_bytes([0x85; 16]),
+            fingerprint: Digest::from_bytes([0x86; 32]),
+            payload: Bytes::from_static(b"retention"),
+        },
+    };
+    for _ in 0..2 {
+        let committed = poll_ready(commit_workspace_fork_in_steps(
+            &store,
+            fork.clone(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("default workspace fork suspended")??;
+        assert_eq!(committed.value, WorkspaceForkOutcome::Committed);
+    }
+    for (authority, expected) in [
+        (fork.retention, fork.retained),
+        (fork.destination, fork.creation),
+    ] {
+        let replayed = poll_ready(AsyncAuthorityStore::replay(
+            &store,
+            authority,
+            Sequence::GENESIS,
+            ReplayLimit {
+                records: 1,
+                payload_bytes: MAXIMUM_FIRST_RECORD_BYTES,
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("fork first record replay suspended")??;
+        assert_eq!(replayed.value.len(), 1);
+        let record = &replayed.value[0];
+        assert_eq!(record.sequence, Sequence::new(1));
+        assert_eq!(record.operation_id, expected.operation_id);
+        assert_eq!(record.fingerprint, expected.fingerprint);
+        assert_eq!(record.payload, expected.payload);
+    }
+    Ok(())
+}
+
+#[test]
+fn default_guarded_fork_preserves_typed_guard_failure_and_retention_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let fork = WorkspaceForkCommit {
+        lineage: None,
+        destination: AuthorityId::from_bytes([0x91; 16]),
+        creation: ProposedCommit {
+            operation_id: OperationId::from_bytes([0x92; 16]),
+            fingerprint: Digest::from_bytes([0x93; 32]),
+            payload: Bytes::from_static(b"creation"),
+        },
+        retention: AuthorityId::from_bytes([0x94; 16]),
+        retained: ProposedCommit {
+            operation_id: OperationId::from_bytes([0x95; 16]),
+            fingerprint: Digest::from_bytes([0x96; 32]),
+            payload: Bytes::from_static(b"retention"),
+        },
+    };
+    let baseline = poll_ready(append_first_record(
+        &MemoryAuthorityStore::default(), fork.retention, fork.retained.clone(),
+        WorkCounters::default(), WorkBudget::UNBOUNDED, &cancellation,
+    )).ok_or("retention baseline suspended")??;
+    let guard_work = WorkCounters {
+        backend_read_operations: 1,
+        authority_bytes_read: 13,
+        ..WorkCounters::default()
+    };
+    let mut calls = 0;
+    let mut guard = |_budget: WorkBudget| {
+        calls += 1;
+        std::future::ready(Err(crate::performance::OperationFailure::new(
+            crate::facade::FsError::WorkspaceDeleted,
+            guard_work,
+        )))
+    };
+    let store = MemoryAuthorityStore::default();
+    let failure = poll_ready(AsyncAuthorityStore::commit_workspace_fork_guarded(
+        &store, fork.clone(), PublicationPermit::Unrestricted,
+        WorkBudget::UNBOUNDED, &cancellation, &mut guard,
+    )).ok_or("guarded fork suspended")?
+        .err().ok_or("guarded fork ignored rejection")?;
+    assert!(matches!(failure.error, crate::facade::FsError::WorkspaceDeleted));
+    assert_eq!(*failure.work, baseline.work.checked_add(guard_work)?);
+    assert_eq!(calls, 1);
+    let missing = poll_ready(AsyncAuthorityStore::head(
+        &store, fork.destination, WorkBudget::UNBOUNDED, &cancellation,
+    )).ok_or("destination head suspended")?
+        .err().ok_or("guard rejection published destination")?;
+    assert!(matches!(missing.error, AuthorityStoreError::Missing));
+    Ok(())
+}
+
+#[test]
+fn default_first_record_retry_seals_after_read_and_append_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryAuthorityStore::default();
+    let cancellation = CancellationToken::new();
+    let authority = AuthorityId::from_bytes([0xa1; 16]);
+    let commit = ProposedCommit {
+        operation_id: OperationId::from_bytes([0xa2; 16]),
+        fingerprint: Digest::from_bytes([0xa3; 32]),
+        payload: Bytes::from_static(b"first"),
+    };
+    poll_ready(append_first_record(
+        &store, authority, commit.clone(), WorkCounters::default(),
+        WorkBudget::UNBOUNDED, &cancellation,
+    )).ok_or("first record setup suspended")??;
+    let baseline = poll_ready(append_first_record(
+        &store, authority, commit.clone(), WorkCounters::default(),
+        WorkBudget::UNBOUNDED, &cancellation,
+    )).ok_or("first record baseline suspended")??;
+    let mut calls = 0;
+    let mut guard = |_budget: WorkBudget| {
+        calls += 1;
+        std::future::ready(if calls == 4 {
+            Err(crate::performance::OperationFailure::before_work(
+                crate::facade::FsError::WorkspaceDeleted,
+            ))
+        } else {
+            Ok(crate::facade::FsReceipt { value: (), work: WorkCounters::default() })
+        })
+    };
+    let failure = poll_ready(append_first_record_guarded(
+        &store, authority, commit, WorkCounters::default(),
+        WorkBudget::UNBOUNDED, &cancellation, &mut guard,
+    )).ok_or("guarded first record retry suspended")?
+        .err().ok_or("first record retry skipped final seal")?;
+    assert_eq!(calls, 4);
+    assert!(matches!(failure.error, crate::facade::FsError::WorkspaceDeleted));
+    assert_eq!(*failure.work, baseline.work);
+    Ok(())
+}
+
+#[test]
+fn default_guarded_fork_rejects_managed_permit_before_retention_or_guard()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryAuthorityStore::default();
+    let cancellation = CancellationToken::new();
+    let commit = ProposedCommit {
+        operation_id: OperationId::from_bytes([0xb1; 16]),
+        fingerprint: Digest::from_bytes([0xb2; 32]),
+        payload: Bytes::from_static(b"record"),
+    };
+    let fork = WorkspaceForkCommit {
+        lineage: None,
+        destination: AuthorityId::from_bytes([0xb3; 16]),
+        creation: commit.clone(),
+        retention: AuthorityId::from_bytes([0xb4; 16]),
+        retained: commit,
+    };
+    let mut calls = 0;
+    let mut guard = |_budget: WorkBudget| {
+        calls += 1;
+        std::future::ready(Ok(crate::facade::FsReceipt {
+            value: (), work: WorkCounters::default(),
+        }))
+    };
+    let failure = poll_ready(AsyncAuthorityStore::commit_workspace_fork_guarded(
+        &store, fork.clone(),
+        PublicationPermit::Reservation {
+            operation_id: [0xb5; 16],
+            gate_tail: 1,
+            expected: Head::genesis(Epoch::GENESIS),
+        },
+        WorkBudget::UNBOUNDED, &cancellation, &mut guard,
+    )).ok_or("managed fork rejection suspended")?
+        .err().ok_or("managed fork permit was silently stripped")?;
+    assert!(matches!(
+        failure.error,
+        crate::facade::FsError::Authority(AuthorityStoreError::Rejected(_))
+    ));
+    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(calls, 0);
+    for authority in [fork.retention, fork.destination] {
+        let failure = poll_ready(AsyncAuthorityStore::head(
+            &store, authority, WorkBudget::UNBOUNDED, &cancellation,
+        )).ok_or("rejected fork authority head suspended")?
+            .err().ok_or("managed rejection created authority")?;
+        assert!(matches!(failure.error, AuthorityStoreError::Missing));
+    }
+    Ok(())
+}

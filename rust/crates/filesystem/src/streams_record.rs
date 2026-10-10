@@ -35,36 +35,65 @@ pub struct StreamsAuthorityRecord {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamsDurableRecord(pub DurableCommit);
 
+/// Validated durable fields borrowing the original provider record.
+pub(crate) struct BorrowedStreamsDurableRecord<'a> {
+    pub(crate) epoch: Epoch,
+    pub(crate) sequence: Sequence,
+    pub(crate) operation_id: OperationId,
+    pub(crate) fingerprint: Digest,
+    pub(crate) previous_digest: Digest,
+    pub(crate) digest: Digest,
+    pub(crate) payload: &'a [u8],
+}
+
 impl StreamsDurableRecord {
     /// Encodes every hash-chain field needed for constant-work head inspection.
     pub fn encode(
         commit: &DurableCommit,
         maximum_record_bytes: u64,
     ) -> Result<Bytes, StreamsAuthorityRecordError> {
+        Self::encode_with(commit, maximum_record_bytes, |domain, fields| {
+            let capacity = domain.len() + fields.iter().map(|field| field.len()).sum::<usize>();
+            let mut encoded = Vec::new();
+            encoded.try_reserve_exact(capacity)
+                .map_err(|_| StreamsAuthorityRecordError::AllocationFailed)?;
+            encoded.extend_from_slice(domain);
+            for field in fields { encoded.extend_from_slice(field); }
+            Ok(Bytes::from(encoded))
+        }).and_then(std::convert::identity)
+    }
+
+    /// Uses the canonical field writer with caller-owned allocation admission.
+    pub(crate) fn encode_with<E>(
+        commit: &DurableCommit,
+        maximum_record_bytes: u64,
+        write: impl FnOnce(&[u8], &[&[u8]]) -> Result<Bytes, E>,
+    ) -> Result<Result<Bytes, E>, StreamsAuthorityRecordError> {
+        let borrowed = BorrowedStreamsDurableRecord {
+            epoch: commit.epoch, sequence: commit.sequence, operation_id: commit.operation_id,
+            fingerprint: commit.fingerprint, previous_digest: commit.previous_digest,
+            digest: commit.digest, payload: &commit.payload,
+        };
+        Self::encode_borrowed_with(&borrowed, maximum_record_bytes, write)
+    }
+
+    /// The single canonical writer also accepts already borrowed proposal data.
+    pub(crate) fn encode_borrowed_with<E>(
+        commit: &BorrowedStreamsDurableRecord<'_>,
+        maximum_record_bytes: u64,
+        write: impl FnOnce(&[u8], &[&[u8]]) -> Result<Bytes, E>,
+    ) -> Result<Result<Bytes, E>, StreamsAuthorityRecordError> {
         let payload_bytes = u64::try_from(commit.payload.len())
             .map_err(|_| StreamsAuthorityRecordError::LengthOverflow)?;
-        let encoded_bytes = u64::try_from(DURABLE_HEADER_BYTES)
-            .unwrap_or(u64::MAX)
-            .checked_add(payload_bytes)
+        let encoded_bytes = (DURABLE_HEADER_BYTES as u64).checked_add(payload_bytes)
             .ok_or(StreamsAuthorityRecordError::LengthOverflow)?;
         validate_limit(maximum_record_bytes, encoded_bytes)?;
-        let capacity = usize::try_from(encoded_bytes)
-            .map_err(|_| StreamsAuthorityRecordError::LengthOverflow)?;
-        let mut encoded = Vec::new();
-        encoded
-            .try_reserve_exact(capacity)
-            .map_err(|_| StreamsAuthorityRecordError::AllocationFailed)?;
-        encoded.extend_from_slice(DURABLE_DOMAIN);
-        encoded.extend_from_slice(&VERSION.to_le_bytes());
-        encoded.extend_from_slice(&commit.epoch.get().to_le_bytes());
-        encoded.extend_from_slice(&commit.sequence.get().to_le_bytes());
-        encoded.extend_from_slice(&commit.operation_id.into_bytes());
-        encoded.extend_from_slice(commit.fingerprint.as_bytes());
-        encoded.extend_from_slice(commit.previous_digest.as_bytes());
-        encoded.extend_from_slice(commit.digest.as_bytes());
-        encoded.extend_from_slice(&payload_bytes.to_le_bytes());
-        encoded.extend_from_slice(&commit.payload);
-        Ok(Bytes::from(encoded))
+        Ok(write(DURABLE_DOMAIN, &[
+            &VERSION.to_le_bytes(), &commit.epoch.get().to_le_bytes(),
+            &commit.sequence.get().to_le_bytes(), &commit.operation_id.into_bytes(),
+            commit.fingerprint.as_bytes(), commit.previous_digest.as_bytes(),
+            commit.digest.as_bytes(), &payload_bytes.to_le_bytes(), commit.payload,
+        ]))
     }
 
     /// Decodes one complete durable record under a hard allocation bound.
@@ -72,6 +101,24 @@ impl StreamsDurableRecord {
         encoded: &[u8],
         maximum_record_bytes: u64,
     ) -> Result<Self, StreamsAuthorityRecordError> {
+        let borrowed = Self::decode_borrowed(encoded, maximum_record_bytes)?;
+        let mut payload = Vec::new();
+        payload.try_reserve_exact(borrowed.payload.len())
+            .map_err(|_| StreamsAuthorityRecordError::AllocationFailed)?;
+        payload.extend_from_slice(borrowed.payload);
+        Ok(Self(DurableCommit {
+            epoch: borrowed.epoch, sequence: borrowed.sequence,
+            operation_id: borrowed.operation_id, fingerprint: borrowed.fingerprint,
+            previous_digest: borrowed.previous_digest, digest: borrowed.digest,
+            payload: Bytes::from(payload),
+        }))
+    }
+
+    /// Parses canonical durable fields without allocating or copying the payload.
+    pub(crate) fn decode_borrowed(
+        encoded: &[u8],
+        maximum_record_bytes: u64,
+    ) -> Result<BorrowedStreamsDurableRecord<'_>, StreamsAuthorityRecordError> {
         let encoded_bytes = u64::try_from(encoded.len())
             .map_err(|_| StreamsAuthorityRecordError::LengthOverflow)?;
         validate_limit(maximum_record_bytes, encoded_bytes)?;
@@ -109,23 +156,13 @@ impl StreamsDurableRecord {
                 StreamsAuthorityRecordError::TrailingBytes
             });
         }
-        let mut payload = Vec::new();
-        payload
-            .try_reserve_exact(payload_len)
-            .map_err(|_| StreamsAuthorityRecordError::AllocationFailed)?;
         let body = encoded
             .get(cursor..expected_end)
             .ok_or(StreamsAuthorityRecordError::Truncated)?;
-        payload.extend_from_slice(body);
-        Ok(Self(DurableCommit {
-            epoch,
-            sequence,
-            operation_id,
-            fingerprint,
-            previous_digest,
-            digest,
-            payload: Bytes::from(payload),
-        }))
+        Ok(BorrowedStreamsDurableRecord {
+            epoch, sequence, operation_id, fingerprint, previous_digest, digest,
+            payload: body,
+        })
     }
 }
 
@@ -319,6 +356,23 @@ fn read_array<const N: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn durable_size_rejection_precedes_the_shared_writer() {
+        let original = proposal();
+        let durable = DurableCommit {
+            epoch: Epoch::GENESIS, sequence: Sequence::new(1),
+            operation_id: original.operation_id, fingerprint: original.fingerprint,
+            previous_digest: Digest::ZERO, digest: Digest::from_bytes([4; 32]), payload: original.payload,
+        };
+        let called = std::cell::Cell::new(false);
+        let result = StreamsDurableRecord::encode_with(&durable, 1, |_, _| {
+            called.set(true);
+            Ok::<Bytes, StreamsAuthorityRecordError>(Bytes::new())
+        });
+        assert!(matches!(result, Err(StreamsAuthorityRecordError::RecordTooLarge { .. })));
+        assert!(!called.get());
+    }
 
     fn proposal() -> ProposedCommit {
         ProposedCommit {

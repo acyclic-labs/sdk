@@ -4683,6 +4683,7 @@ impl NativeCheckout {
             &mut checkout,
             &MaterializeOptions {
                 destination: options.destination.into(),
+                expected_root_identity: None,
                 maximum_directory_entries: options.maximum_directory_entries.into_inner(),
                 maximum_extent_spans: options.maximum_extent_spans.into_inner(),
                 transfer_bytes: bigint_u64(&options.transfer_bytes, "transferBytes")?,

@@ -7,7 +7,7 @@ use super::{
 use crate::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
-use crate::heap_future::in_heap;
+use crate::heap_future::in_heap_measured;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::ByteRange;
 use bytes::Bytes;
@@ -33,8 +33,15 @@ pub struct FileRangeRequest {
 pub struct FileRangeRead {
     /// Exact requested bytes, with holes and allocated zeros represented as zero.
     pub bytes: Bytes,
+    /// Actual controlled output-buffer capacity retained by `bytes`.
+    pub logical_owned_bytes: u64,
     /// Complete page, blob, copy, allocation, and output work.
     pub work: WorkCounters,
+}
+
+impl FileRangeRead {
+    /// Exact logical payload capacity, measured by the producer before handoff.
+    pub fn logical_owned_bytes(&self) -> u64 { self.logical_owned_bytes }
 }
 
 /// Reads one regular-file range without materializing untouched extents.
@@ -48,29 +55,26 @@ pub async fn read_file_range_async<S: AsyncObjectStore>(
     request: FileRangeRequest,
     cancellation: &CancellationToken,
 ) -> Result<FileRangeRead, FileRangeReadFailure> {
-    in_heap(move || async move {
-        cancellation
-            .check()
-            .map_err(|_| failed(FileRangeReadError::Cancelled, WorkCounters::default()))?;
-        if request.record.kind != FileKind::Regular {
-            return Err(failed(
-                FileRangeReadError::NotRegular,
-                WorkCounters::default(),
-            ));
+    cancellation.check()
+        .map_err(|_| failed(FileRangeReadError::Cancelled, WorkCounters::UNCHARGED))?;
+    if request.record.kind != FileKind::Regular {
+        return Err(failed(FileRangeReadError::NotRegular, WorkCounters::UNCHARGED));
+    }
+    match request.record.payload {
+        FilePayload::InlineRegular(data) => read_inline(data.as_bytes(), &request),
+        FilePayload::Regular { logical_bytes, extents } => {
+            let read = in_heap_measured(
+                move |budget| async move {
+                    let request = FileRangeRequest { budget, ..request };
+                    let read = read_sparse(store, logical_bytes, extents, &request, cancellation).await?;
+                    Ok(crate::OperationReceipt { work: read.work, value: read })
+                },
+                request.budget, cancellation, FileRangeReadError::Cancelled,
+            ).await?;
+            Ok(FileRangeRead { work: read.work, ..read.value })
         }
-        match request.record.payload {
-            FilePayload::InlineRegular(data) => read_inline(data.as_bytes(), &request),
-            FilePayload::Regular {
-                logical_bytes,
-                extents,
-            } => read_sparse(store, logical_bytes, extents, &request, cancellation).await,
-            _ => Err(failed(
-                FileRangeReadError::NotRegular,
-                WorkCounters::default(),
-            )),
-        }
-    })
-    .await
+        _ => Err(failed(FileRangeReadError::NotRegular, WorkCounters::UNCHARGED)),
+    }
 }
 
 fn read_inline(
@@ -93,7 +97,7 @@ fn read_inline(
     let end = usize::try_from(end)
         .map_err(|_| failed(FileRangeReadError::InvalidRange, WorkCounters::default()))?;
     let length = usize_to_u64(end - start);
-    let work = WorkCounters {
+    let prospective = WorkCounters {
         bytes_copied: length,
         output_bytes: length,
         items_returned: 1,
@@ -101,15 +105,30 @@ fn read_inline(
         peak_allocation_bytes: length,
         ..WorkCounters::default()
     };
-    work.verify(request.budget)
-        .map_err(|error| failed(error.into(), WorkCounters::default()))?;
+    prospective.verify(request.budget)
+        .map_err(|error| failed(error.into(), WorkCounters::UNCHARGED))?;
+    let mut work = WorkCounters {
+        allocation_operations: prospective.allocation_operations,
+        ..WorkCounters::UNCHARGED
+    };
     #[allow(
         clippy::indexing_slicing,
         reason = "end <= bytes.len() is checked above (end > bytes.len() as u64 returns InvalidRange before this point) and start <= end since start and end are both derived from the same validated request.range, so bytes[start..end] cannot panic"
     )]
     let region = &bytes[start..end];
+    let mut output = Vec::new();
+    output.try_reserve_exact(region.len())
+        .map_err(|_| failed(FileRangeReadError::AllocationFailed, work))?;
+    let logical_owned_bytes = usize_to_u64(output.capacity());
+    work.peak_allocation_bytes = logical_owned_bytes;
+    work.verify(request.budget).map_err(|error| failed(error.into(), work))?;
+    output.extend_from_slice(region);
+    work.bytes_copied = length;
+    work.output_bytes = length;
+    work.items_returned = 1;
     Ok(FileRangeRead {
-        bytes: Bytes::copy_from_slice(region),
+        bytes: Bytes::from(output),
+        logical_owned_bytes,
         work,
     })
 }
@@ -139,7 +158,7 @@ async fn read_sparse<S: AsyncObjectStore>(
     let output_len = usize::try_from(request.range.length)
         .map_err(|_| failed(FileRangeReadError::InvalidRange, work))?;
     let live_output = request.range.length;
-    let initial_peak = plan
+    let mut initial_peak = plan
         .retained_allocation_bytes
         .checked_add(live_output)
         .ok_or_else(|| failed(FileRangeReadError::Work(WorkError::Overflow), work))?;
@@ -157,6 +176,11 @@ async fn read_sparse<S: AsyncObjectStore>(
     output
         .try_reserve_exact(output_len)
         .map_err(|_| failed(FileRangeReadError::AllocationFailed, work))?;
+    let logical_owned_bytes = usize_to_u64(output.capacity());
+    initial_peak = plan.retained_allocation_bytes.checked_add(logical_owned_bytes)
+        .ok_or_else(|| failed(FileRangeReadError::Work(WorkError::Overflow), work))?;
+    work.peak_allocation_bytes = work.peak_allocation_bytes.max(initial_peak);
+    work.verify(request.budget).map_err(|error| failed(error.into(), work))?;
     output.resize(output_len, 0);
     for span in &plan.spans {
         work = copy_content_span(
@@ -182,6 +206,7 @@ async fn read_sparse<S: AsyncObjectStore>(
         .map_err(|error| failed(error.into(), work))?;
     Ok(FileRangeRead {
         bytes: Bytes::from(output),
+        logical_owned_bytes,
         work,
     })
 }
@@ -203,6 +228,9 @@ async fn copy_content_span<S: AsyncObjectStore>(
     else {
         return Ok(work);
     };
+    let mut allowance = remaining(work, request.budget)?;
+    allowance.peak_allocation_bytes = allowance.peak_allocation_bytes.checked_sub(initial_peak)
+        .ok_or_else(|| failed(FileRangeReadError::Work(WorkError::Overflow), work))?;
     let nested = read_blob_range_async(
         store,
         object,
@@ -211,11 +239,18 @@ async fn copy_content_span<S: AsyncObjectStore>(
             length: span.length,
         },
         request.limits,
-        remaining(work, request.budget)?,
+        allowance,
         cancellation,
     )
     .await
-    .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
+    .map_err(|failure| {
+        let mut nested = *failure.work;
+        nested.output_bytes = 0;
+        match work.with_backend(nested, initial_peak) {
+            Ok(completed) => failed(failure.error.into(), completed),
+            Err(error) => failed(error.into(), work),
+        }
+    })?;
     let mut nested_work = nested.work;
     nested_work.output_bytes = 0;
     work = work
@@ -226,18 +261,16 @@ async fn copy_content_span<S: AsyncObjectStore>(
     let end = destination
         .checked_add(nested.bytes.len())
         .ok_or_else(|| failed(FileRangeReadError::InvalidRange, work))?;
+    let copied = WorkCounters { bytes_copied: span.length, ..WorkCounters::UNCHARGED };
+    work.admit(&copied, &request.budget)
+        .map_err(|error| failed(error.into(), work))?;
+    cancellation.check().map_err(|_| failed(FileRangeReadError::Cancelled, work))?;
     #[allow(
         clippy::indexing_slicing,
         reason = "RangeMachine::finish (range.rs) only returns an ExtentPlan when spans exactly and contiguously tile [request.range.offset, request.range.offset + request.range.length) with no gaps or overlaps (ExtentReadError::IncompleteCoverage otherwise), and BlobRangeMachine::finish (blob.rs) only returns Ok when nested.bytes.len() == span.length exactly (BlobReadError::IncompleteCoverage otherwise); together these guarantee destination..end falls within output, which was sized to request.range.length"
     )]
     output[destination..end].copy_from_slice(&nested.bytes);
-    work = add(
-        work,
-        WorkCounters {
-            bytes_copied: span.length,
-            ..WorkCounters::default()
-        },
-    )?;
+    work = add(work, copied)?;
     work.verify(request.budget)
         .map_err(|error| failed(error.into(), work))?;
     Ok(work)

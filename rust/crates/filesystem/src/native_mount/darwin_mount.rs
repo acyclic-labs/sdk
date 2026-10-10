@@ -16,6 +16,8 @@ use super::{
     ViewOrigin, ViewStamp, create_metadata, errno, metadata_or, source_error, system_time_ns,
 };
 use crate::FileId;
+use crate::demand::{DemandWork, NativeDemandReadMeter, native_demand_error};
+use crate::native_host::NativeHostWork as _;
 use crate::kernel::{FileMetadata, MetadataField};
 use bytes::Bytes;
 use std::collections::{HashMap, VecDeque};
@@ -24,7 +26,8 @@ use std::fs::Metadata;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+#[cfg(test)]
+use std::process::Command;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, RwLock, Weak};
@@ -1190,6 +1193,7 @@ pub(super) struct DarwinMountSession {
     loop_finished_before_teardown: Option<bool>,
     loop_result: Option<MountLoopResult>,
     teardown_complete: bool,
+    unmount: UnmountState,
 }
 
 #[derive(Debug)]
@@ -1237,6 +1241,9 @@ impl DarwinMountSession {
         request: &NativeMountRequest,
         source: Arc<dyn MountFilesystem>,
     ) -> Result<Self, DriverStartFailure> {
+        // The service lifetime is established during ordinary driver startup,
+        // never allocated secretly by a later bounded detach invocation.
+        acyclic_native_runtime::initialize_native_io_services().map_err(NativeMountError::from)?;
         static STARTUP: OnceLock<Mutex<()>> = OnceLock::new();
         let _startup = STARTUP.get_or_init(|| Mutex::new(())).lock().map_err(|_| {
             NativeMountError::Driver("Darwin mount startup lock is poisoned".to_owned())
@@ -1329,6 +1336,7 @@ impl DarwinMountSession {
             loop_finished_before_teardown: None,
             loop_result: None,
             teardown_complete: false,
+            unmount: UnmountState::default(),
         }
         .await_mount(&parent_metadata)
     }
@@ -1451,39 +1459,64 @@ impl DarwinMountSession {
             .ok_or_else(|| NativeMountError::Driver("Darwin mount session has stopped".to_owned()))
     }
 
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "keeps the fallible stop signature the other mount drivers share"
-    )]
+    /// Uses the bounded engine with an unlimited canonical work ledger.
     pub(super) fn stop(&mut self) -> Result<(), NativeMountError> {
+        if self.teardown_complete { return Ok(()); }
+        acyclic_native_runtime::initialize_native_io_services().map_err(NativeMountError::from)?;
+        let cancellation = crate::CancellationToken::new();
+        self.stop_measured(&mut DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation))
+    }
+
+    /// Measures actual mount-table probes, native detach, process controls and
+    /// loop teardown. A stopped observer never frees an accepted native path
+    /// or releases the destination while a late detach could still affect it.
+    pub(super) fn stop_measured(&mut self, work: &mut DemandWork) -> Result<(), NativeMountError> {
         if self.teardown_complete {
             return Ok(());
         }
+        with_detach_work(work, |meter| self.stop_with_meter(meter))
+    }
+
+    fn stop_with_meter(&mut self, meter: &Arc<DetachReadMeter>) -> Result<(), NativeMountError> {
+        meter.with_work(|work| work.check().map_err(darwin_stop_work_error))?;
         // Observe whether the provider loop failed independently before any
         // teardown action can make it exit. A detach closes the transport,
         // which ends the loop, so sampling after it races a successful detach
         // and misclassifies it as a pre-existing failure.
-        if self.loop_result.is_none() {
+        if self.loop_finished_before_teardown.is_none() {
             self.loop_finished_before_teardown =
                 Some(self.thread.is_none() || self.events.current().exited);
         }
-        let unmount = bounded_unmount(&self.destination);
+        let unmount = bounded_unmount_measured(&self.destination, &mut self.unmount, meter);
+        if matches!(&unmount, Err(NativeMountError::Work(_)))
+            || meter.with_work(|work| work.check().map_err(darwin_stop_work_error)).is_err() {
+            return unmount.and_then(|_| meter.with_work(|work| work.check().map_err(darwin_stop_work_error)));
+        }
         if self
             .loop_result
             .as_ref()
             .is_none_or(|result| matches!(result, MountLoopResult::TimedOut))
         {
             if let Some(resources) = &self.resources {
+                meter.with_work(|work| darwin_stop_admit(work, true))?;
                 // SAFETY: `resources` keeps the bridge session alive; interrupting it only
                 // signals that session's loop.
                 unsafe {
                     acyclic_fs_darwin_mount_interrupt(resources.driver_session as *mut c_void);
                 }
             }
-            let join = self.finish_thread();
+            let join = meter.with_work(|work| self.finish_thread_measured(MOUNT_LOOP_EXIT_TIMEOUT, work))?;
             self.loop_result = Some(join);
         }
-        let unmount = unmount.map_err(NativeMountError::Driver)?;
+        let unmount = unmount?;
+        if let Some(task) = &mut self.unmount.direct {
+            if poll_direct(task).is_ready() { self.unmount.direct.take(); }
+        }
+        if self.unmount.direct.is_some() || self.unmount.diskutil.is_some() {
+            return Err(NativeMountError::Driver(
+                "Darwin native detach has not finished; destination remains fenced".to_owned(),
+            ));
+        }
         let loop_finished_before_teardown =
             self.loop_finished_before_teardown.ok_or_else(|| {
                 NativeMountError::Driver("Darwin mount teardown state is absent".to_owned())
@@ -1498,29 +1531,53 @@ impl DarwinMountSession {
         result
     }
 
+    /// Last actual mount-table absence evidence, not a new physical probe.
+    /// This may coexist with retained callbacks or a still-running control;
+    /// successful stop requires those owners to have settled separately.
+    pub(super) fn namespace_detach_confirmed(&self) -> bool { self.unmount.detached }
+
     fn finish_thread(&mut self) -> MountLoopResult {
         self.finish_thread_within(MOUNT_LOOP_EXIT_TIMEOUT)
     }
 
     fn finish_thread_within(&mut self, timeout: Duration) -> MountLoopResult {
+        let cancellation = crate::CancellationToken::new();
+        self.finish_thread_measured(timeout, &mut DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation))
+            .unwrap_or(MountLoopResult::TimedOut)
+    }
+
+    fn finish_thread_measured(
+        &mut self, timeout: Duration, work: &mut DemandWork,
+    ) -> Result<MountLoopResult, NativeMountError> {
         if self.thread.is_none() {
-            return MountLoopResult::Exited(0);
+            return Ok(MountLoopResult::Exited(0));
         }
-        if !self.events.wait_until(timeout, |state| state.exited).exited {
-            // Keep the join handle, callback resources, and destination
-            // fence so a later stop can retry once callbacks have exited.
-            return MountLoopResult::TimedOut;
+        let deadline = Instant::now() + timeout;
+        while !self.events.current().exited {
+            work.check().map_err(darwin_stop_work_error)?;
+            if Instant::now() >= deadline {
+                // Keep the join handle, callback resources, and destination
+                // fence so a later stop can retry once callbacks have exited.
+                return Ok(MountLoopResult::TimedOut);
+            }
+            self.events.wait_until(Duration::from_millis(10), |state| state.exited);
         }
-        // The loop has returned: joining waits only for its thread to end.
-        let Some(thread) = self.thread.take() else {
-            return MountLoopResult::Panicked;
-        };
+        let delta = crate::WorkCounters { backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED };
+        work.admit(delta).map_err(darwin_stop_work_error)?;
+        let cleanup = if self.resources.is_some() {
+            Some(work.reserve_cleanup_write().map_err(darwin_stop_work_error)?)
+        } else { None };
+        work.record(delta).map_err(darwin_stop_work_error)?;
+        let thread = self.thread.take().expect("admitted mount loop remains owned");
         let status = match thread.join() {
             Ok(status) => MountLoopResult::Exited(status),
             Err(_) => MountLoopResult::Panicked,
         };
-        self.resources.take();
-        status
+        if let Some(cleanup) = cleanup {
+            let (_, recorded) = work.attempt_cleanup_write(cleanup, || drop(self.resources.take()));
+            recorded.map_err(darwin_stop_work_error)?;
+        }
+        Ok(status)
     }
 }
 
@@ -1581,123 +1638,465 @@ fn fuse_arguments(options: &[&CStr]) -> Vec<CString> {
     arguments
 }
 
-fn is_mounted(destination: &Path, _parent: &Metadata) -> Result<bool, String> {
-    use std::ffi::CStr;
-    use std::os::unix::ffi::OsStrExt as _;
-
-    let mut mounts = std::ptr::null_mut::<libc::statfs>();
-    // SAFETY: `getmntinfo` initializes `mounts` to an OS-owned array retained
-    // until the next call; this function consumes it before returning.
-    let count = unsafe { libc::getmntinfo(&raw mut mounts, libc::MNT_NOWAIT) };
-    if count <= 0 || mounts.is_null() {
-        return Err(format!(
-            "getmntinfo failed while querying {}: {}",
-            destination.display(),
-            std::io::Error::last_os_error()
-        ));
-    }
-    let count = usize::try_from(count)
-        .map_err(|_| "getmntinfo returned an invalid mount count".to_owned())?;
-    // SAFETY: a positive return value is the exact initialized array length.
-    let mounts = unsafe { std::slice::from_raw_parts(mounts, count) };
-    let normalized = destination
-        .parent()
-        .and_then(|parent| parent.canonicalize().ok())
-        .and_then(|parent| destination.file_name().map(|name| parent.join(name)));
-    Ok(mounts.iter().any(|mount| {
-        // SAFETY: Darwin guarantees that `f_mntonname` is NUL terminated.
-        let mounted_at = unsafe { CStr::from_ptr(mount.f_mntonname.as_ptr()) };
-        mounted_at.to_bytes() == destination.as_os_str().as_bytes()
-            || normalized
-                .as_deref()
-                .is_some_and(|path| mounted_at.to_bytes() == path.as_os_str().as_bytes())
-    }))
+fn darwin_stop_work_error(error: crate::DemandError) -> NativeMountError {
+    error.into()
 }
 
-/// Detaches `destination` directly, falling back to `diskutil unmount
-/// force` only when the direct detach leaves it mounted.
-fn bounded_unmount(destination: &Path) -> Result<UnmountEvidence, String> {
-    let parent = destination
-        .parent()
-        .and_then(|path| path.metadata().ok())
-        .ok_or_else(|| "mount parent disappeared during teardown".to_owned())?;
-    if !is_mounted(destination, &parent)? {
+/// Records an admitted SDK/native attempt at its boundary, including failures.
+fn darwin_stop_admit(work: &mut DemandWork, write: bool) -> Result<(), NativeMountError> {
+    let delta = if write {
+        crate::WorkCounters { backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED }
+    } else {
+        crate::WorkCounters { backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED }
+    };
+    work.admit(delta).map_err(darwin_stop_work_error)?;
+    work.record(delta).map_err(darwin_stop_work_error)
+}
+
+fn darwin_stop_io<T>(
+    work: &mut DemandWork, write: bool, call: impl FnOnce() -> std::io::Result<T>,
+) -> Result<T, NativeMountError> {
+    darwin_stop_admit(work, write)?;
+    call().map_err(|error| darwin_stop_work_error(error.into()))
+}
+
+/// The mount table is caller-owned, not getmntinfo's hidden reallocating array.
+/// A full result retries the count/fill pair rather than trusting truncation.
+fn is_mounted_measured(
+    destination: &Path, work: &mut DemandWork,
+) -> Result<bool, NativeMountError> {
+    let parent = destination.parent().ok_or_else(|| {
+        NativeMountError::Driver("mount parent disappeared during teardown".to_owned())
+    })?;
+    let normalized = crate::native_host::unix_name_with_work(parent.as_os_str(), work, |name, work| {
+        let delta = crate::WorkCounters { backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED };
+        work.admit(delta)?;
+        let cleanup = work.reserve_cleanup_write()?;
+        work.record(delta)?;
+        // SAFETY: name is terminated; the descriptor remains owned until its
+        // separately reserved close, including cancellation and probe failure.
+        let fd = unsafe { libc::open(name.as_ptr(), libc::O_EVTONLY | libc::O_CLOEXEC) };
+        if fd < 0 {
+            work.cancel_cleanup_write(cleanup);
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let result = (|| {
+            work.admit(delta)?;
+            work.record(delta)?;
+            let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+            if unsafe { libc::fstat(fd, metadata.as_mut_ptr()) } != 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            let size = libc::PATH_MAX as usize;
+            work.allocate(size as u64)?;
+            let mut path = vec![0u8; size];
+            let result = (|| {
+                work.admit(delta)?;
+                work.record(delta)?;
+                if unsafe { libc::fcntl(fd, libc::F_GETPATH, path.as_mut_ptr()) } < 0 {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+                let mut length = 0;
+                for byte in &path {
+                    work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
+                    if *byte == 0 { break; }
+                    length += 1;
+                }
+                if length == size { return Err(crate::DemandError::InvalidRequest); }
+                let name = destination.file_name().ok_or(crate::DemandError::InvalidRequest)?.as_bytes();
+                let separator = usize::from(length != 0 && path[length - 1] != b'/');
+                let end = length.checked_add(separator).and_then(|length| length.checked_add(name.len()))
+                    .ok_or(crate::WorkError::Overflow)?;
+                if end > size { return Err(std::io::Error::from_raw_os_error(libc::ENAMETOOLONG).into()); }
+                let copy = crate::WorkCounters { bytes_copied: name.len() as u64, ..crate::WorkCounters::UNCHARGED };
+                work.admit(copy)?;
+                if separator != 0 { path[length] = b'/'; length += 1; }
+                path[length..end].copy_from_slice(name);
+                work.record(copy)?;
+                path.truncate(end);
+                Ok(())
+            })();
+            if let Err(error) = result {
+                drop(path);
+                work.release(size as u64)?;
+                return Err(error);
+            }
+            Ok(path)
+        })();
+        let (status, recorded) = work.attempt_cleanup_write(cleanup, || unsafe { libc::close(fd) });
+        let close = recorded.and_then(|()| if status == 0 { Ok(()) } else { Err(std::io::Error::last_os_error().into()) });
+        match (result, close) {
+            (Ok(path), Ok(())) => Ok(path),
+            (Ok(path), Err(error)) => {
+                let bytes = path.capacity() as u64;
+                drop(path);
+                work.release(bytes)?;
+                Err(error)
+            }
+            (Err(error), _) => Err(error),
+        }
+    }).map_err(darwin_stop_work_error)?;
+    let normalized_bytes = normalized.capacity() as u64;
+    let result = (|| {
+        loop {
+            let count = darwin_stop_io(work, false, || {
+                let count = unsafe { libc::getfsstat(ptr::null_mut(), 0, libc::MNT_NOWAIT) };
+                if count < 0 { Err(std::io::Error::last_os_error()) } else { Ok(count as usize) }
+            })?;
+            let capacity = count.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+            let bytes = capacity.checked_mul(std::mem::size_of::<libc::statfs>())
+                .ok_or(crate::WorkError::Overflow)?;
+            let native_bytes = c_int::try_from(bytes).map_err(|_| crate::WorkError::Overflow)?;
+            work.allocate(bytes as u64).map_err(darwin_stop_work_error)?;
+            let mut mounts = Vec::<std::mem::MaybeUninit<libc::statfs>>::with_capacity(capacity);
+            let result = (|| {
+                let count = darwin_stop_io(work, false, || {
+                    let count = unsafe { libc::getfsstat(mounts.as_mut_ptr().cast(), native_bytes, libc::MNT_NOWAIT) };
+                    if count < 0 { Err(std::io::Error::last_os_error()) } else { Ok(count as usize) }
+                })?;
+                if count >= capacity { return Ok(None); }
+                // SAFETY: getfsstat initialized exactly these returned entries.
+                unsafe { mounts.set_len(count); }
+                for mount in &mounts {
+                    work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })
+                        .map_err(darwin_stop_work_error)?;
+                    let mount = unsafe { mount.assume_init_ref() };
+                    let name = unsafe { CStr::from_ptr(mount.f_mntonname.as_ptr()) }.to_bytes();
+                    if name == destination.as_os_str().as_bytes() || name == normalized {
+                        return Ok(Some(true));
+                    }
+                }
+                Ok(Some(false))
+            })();
+            drop(mounts);
+            work.release(bytes as u64).map_err(darwin_stop_work_error)?;
+            match result? { Some(mounted) => return Ok(mounted), None => {} }
+        }
+    })();
+    drop(normalized);
+    work.release(normalized_bytes).map_err(darwin_stop_work_error)?;
+    result
+}
+
+fn is_mounted(destination: &Path, _parent: &Metadata) -> Result<bool, String> {
+    let cancellation = crate::CancellationToken::new();
+    is_mounted_measured(destination, &mut DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation))
+        .map_err(|error| error.to_string())
+}
+
+#[derive(Default)]
+struct UnmountState {
+    direct: Option<acyclic_native_runtime::BlockingIoTask<std::io::Result<c_int>>>,
+    diskutil: Option<DiskutilProcess>,
+    detached: bool,
+}
+
+/// One scoped forwarding carrier, never a second work ledger. A worker may use
+/// the pointer only under this lock; sealing it waits for any accounting call
+/// and happens before the caller may use or move its DemandWork again.
+struct DetachReadMeter(Mutex<Option<usize>>);
+
+struct DetachLoan<'a>(&'a DetachReadMeter);
+
+impl Drop for DetachLoan<'_> {
+    fn drop(&mut self) { self.0.seal(); }
+}
+
+impl DetachReadMeter {
+    fn with_work<T>(
+        &self, call: impl FnOnce(&mut DemandWork) -> Result<T, NativeMountError>,
+    ) -> Result<T, NativeMountError> {
+        self.with_meter(|meter| call(&mut meter.lock()).map_err(std::io::Error::other))
+            .map_err(detach_native_error)
+    }
+
+    fn with_meter<T>(
+        &self, call: impl FnOnce(&NativeDemandReadMeter<&mut DemandWork>) -> std::io::Result<T>,
+    ) -> std::io::Result<T> {
+        let held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let address = held.ok_or_else(|| crate::demand::native_demand_read_error(crate::DemandError::Cancelled))?;
+        // SAFETY: the original work remains exclusively lent to this carrier
+        // until seal, and this mutex serializes all accesses to that loan.
+        let work = unsafe { &mut *(address as *mut DemandWork) };
+        call(&NativeDemandReadMeter(Mutex::new(work)))
+    }
+
+    fn seal(&self) {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).take();
+    }
+
+    fn attempt(&self) -> std::io::Result<()> {
+        self.with_meter(|meter| {
+            let mut held = meter.lock();
+            darwin_stop_admit(&mut held, true).map_err(std::io::Error::other)
+        })
+    }
+}
+
+fn detach_native_error(error: std::io::Error) -> NativeMountError {
+    if error.get_ref().is_some_and(|error| error.is::<NativeMountError>()) {
+        *error.into_inner().expect("detach error retains cause")
+            .downcast::<NativeMountError>().expect("typed detach cause")
+    } else { darwin_stop_work_error(native_demand_error(error)) }
+}
+
+/// One whole synchronous stop loans its original ledger to the shared native
+/// carrier. All caller phases lock that same loan, so a background completion
+/// releases its real buffers even while fallback probes are running.
+fn with_detach_work<T>(
+    work: &mut DemandWork, call: impl FnOnce(&Arc<DetachReadMeter>) -> Result<T, NativeMountError>,
+) -> Result<T, NativeMountError> {
+    let bytes = std::mem::size_of::<DetachReadMeter>() as u64;
+    work.allocate(bytes).map_err(darwin_stop_work_error)?;
+    let meter = Arc::new(DetachReadMeter(Mutex::new(Some(work as *mut DemandWork as usize))));
+    let loan = DetachLoan(&meter);
+    let result = call(&meter);
+    if Arc::strong_count(&meter) == 1 {
+        meter.with_work(|work| work.release(bytes).map_err(darwin_stop_work_error))?;
+    }
+    drop(loan);
+    result
+}
+
+macro_rules! detach_meter_method {
+    ($name:ident($($argument:ident: $kind:ty),*)) => {
+        fn $name(&self, $($argument: $kind),*) -> std::io::Result<()> {
+            self.with_meter(|meter| acyclic_native_runtime::NativeReadMeter::$name(meter, $($argument),*))
+        }
+    };
+}
+
+impl acyclic_native_runtime::NativeReadMeter for DetachReadMeter {
+    detach_meter_method!(check());
+    detach_meter_method!(allocate(bytes: u64));
+    detach_meter_method!(allocate_refcount_header());
+    detach_meter_method!(adopt(bytes: u64));
+    detach_meter_method!(examine(items: u64, bytes_copied: u64));
+    detach_meter_method!(admit_examination(items: u64, bytes_copied: u64));
+    detach_meter_method!(record_examination(items: u64, bytes_copied: u64));
+    detach_meter_method!(admit_bytes(maximum: usize));
+    detach_meter_method!(admit_read(maximum: usize));
+    detach_meter_method!(admit_operations(additional: u64));
+    detach_meter_method!(record_operations(completed: u64));
+    detach_meter_method!(record_read(bytes: usize));
+    detach_meter_method!(admit_write(maximum: usize));
+    detach_meter_method!(record_write(bytes: usize));
+    detach_meter_method!(admit_write_operations(additional: u64));
+    detach_meter_method!(record_write_operations(completed: u64));
+    detach_meter_method!(admit_durability());
+    fn release(&self, bytes: u64) {
+        let _ = self.with_meter(|meter| {
+            acyclic_native_runtime::NativeReadMeter::release(meter, bytes);
+            Ok(())
+        });
+        // A sealed invocation has already returned its live custody prefix;
+        // a late drop cannot retroactively alter that receipt.
+    }
+}
+
+struct DetachPath {
+    path: Option<CString>,
+    bytes: u64,
+    meter: Arc<DetachReadMeter>,
+}
+
+impl Drop for DetachPath {
+    fn drop(&mut self) {
+        drop(self.path.take());
+        acyclic_native_runtime::NativeReadMeter::release(&*self.meter, self.bytes);
+    }
+}
+
+fn poll_direct(
+    task: &mut acyclic_native_runtime::BlockingIoTask<std::io::Result<c_int>>,
+) -> std::task::Poll<std::io::Result<std::io::Result<c_int>>> {
+    std::pin::Pin::new(task).poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+}
+
+/// Offloads the same actual libc detach through the existing measured service.
+/// The bound stops observation, not the syscall: accepted work and its path
+/// stay owned, and a later stop must retire this task before releasing a fence.
+fn bounded_direct_unmount(
+    destination: &Path, state: &mut UnmountState, meter: &Arc<DetachReadMeter>,
+) -> Result<(), NativeMountError> {
+    if let Some(task) = &mut state.direct {
+        if poll_direct(task).is_ready() { state.direct.take(); }
+        return Ok(());
+    }
+    let path = meter.with_work(|work| {
+        let bytes = destination.as_os_str().as_bytes();
+        for byte in bytes {
+            work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })
+                .map_err(darwin_stop_work_error)?;
+            if *byte == 0 { return Err(darwin_stop_work_error(std::io::Error::from_raw_os_error(libc::EINVAL).into())); }
+        }
+        let copied = crate::WorkCounters { bytes_copied: bytes.len() as u64, ..crate::WorkCounters::UNCHARGED };
+        work.admit(copied).map_err(darwin_stop_work_error)?;
+        let length = bytes.len().checked_add(1).ok_or(crate::WorkError::Overflow)?;
+        work.allocate(length as u64).map_err(darwin_stop_work_error)?;
+        let mut path = Vec::with_capacity(length);
+        path.extend_from_slice(bytes);
+        path.push(0);
+        work.record(copied).map_err(darwin_stop_work_error)?;
+        let path = CString::from_vec_with_nul(path).expect("validated native path");
+        Ok(DetachPath { path: Some(path), bytes: length as u64, meter: Arc::clone(meter) })
+    })?;
+    let task_meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = meter.clone();
+    let task = acyclic_native_runtime::run_blocking_io_measured(move || {
+        path.meter.attempt()?;
+        // SAFETY: this accepted task owns the terminated path through the call.
+        Ok::<_, std::io::Error>(unsafe {
+            libc::unmount(path.path.as_ref().expect("owned detach path").as_ptr(), libc::MNT_FORCE)
+        })
+    }, task_meter);
+    let result = match task {
+        Ok(mut task) => {
+            let deadline = Instant::now() + DIRECT_UNMOUNT_TIMEOUT;
+            loop {
+                match poll_direct(&mut task) {
+                    std::task::Poll::Ready(result) => break result.and_then(std::convert::identity).map(|_| ()),
+                    std::task::Poll::Pending => {}
+                }
+                let check = acyclic_native_runtime::NativeReadMeter::check(&**meter);
+                if check.is_err() || Instant::now() >= deadline {
+                    state.direct = Some(task);
+                    break check;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        Err(error) => Err(error),
+    };
+    result.map_err(detach_native_error)
+}
+
+struct DiskutilProcess {
+    tree: Option<acyclic_native_runtime::ProcessTree>,
+    deadline: Instant,
+    failed_spawn: bool,
+}
+
+fn spawn_diskutil(
+    destination: &Path, custody: &mut Option<DiskutilProcess>, work: &mut DemandWork,
+) -> Result<(), NativeMountError> {
+    *custody = Some(DiskutilProcess {
+        tree: None, deadline: Instant::now() + DISKUTIL_UNMOUNT_TIMEOUT, failed_spawn: false,
+    });
+    let result = crate::native_host::unix_name_with_work(destination.as_os_str(), work, |path, work| {
+        acyclic_native_runtime::ProcessTree::spawn_closed_measured(
+            c"/usr/sbin/diskutil", &[c"unmount", c"force", path],
+            &NativeDemandReadMeter(Mutex::new(work)),
+            &mut custody.as_mut().expect("spawn custody").tree,
+        ).map_err(native_demand_error)
+    }).map_err(darwin_stop_work_error);
+    if custody.as_ref().is_some_and(|child| child.tree.is_none()) { custody.take(); }
+    if let Some(child) = custody { child.failed_spawn = result.is_err(); }
+    result
+}
+
+impl DiskutilProcess {
+    fn observe(&mut self, work: &mut DemandWork) -> Result<Option<std::process::ExitStatus>, NativeMountError> {
+        self.tree.as_mut().expect("retained process tree").try_wait_measured(&NativeDemandReadMeter(Mutex::new(work)))
+            .map_err(|error| darwin_stop_work_error(native_demand_error(error)))
+    }
+
+    fn terminate(&mut self, work: &mut DemandWork) -> Result<(), NativeMountError> {
+        self.tree.as_mut().expect("retained process tree").terminate_measured(&NativeDemandReadMeter(Mutex::new(work)))
+            .map_err(|error| darwin_stop_work_error(native_demand_error(error)))
+    }
+}
+
+/// Keeps the original direct-then-diskutil ordering, with each retry and probe
+/// admitted where it really occurs. Failed control retains the task or PID.
+fn bounded_unmount_measured(
+    destination: &Path, state: &mut UnmountState, meter: &Arc<DetachReadMeter>,
+) -> Result<UnmountEvidence, NativeMountError> {
+    let mounted = meter.with_work(|work| is_mounted_measured(destination, work))?;
+    state.detached = !mounted;
+    if let Some(child) = &mut state.diskutil {
+        if !mounted || child.failed_spawn {
+            meter.with_work(|work| child.terminate(work))?;
+            state.diskutil.take();
+        }
+    }
+    if !mounted {
+        if let Some(task) = &mut state.direct {
+            if poll_direct(task).is_ready() { state.direct.take(); }
+        }
         return Ok(UnmountEvidence::AlreadyUnmounted);
     }
-    if bounded_direct_unmount(destination, &parent)? {
-        return Ok(UnmountEvidence::Detached);
-    }
-    let mut child = acyclic_native_runtime::spawn_process_tree(
-        Command::new("/usr/sbin/diskutil")
-            .arg("unmount")
-            .arg("force")
-            .arg(destination)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null()),
-    )
-    .map_err(|error| error.to_string())?;
-    let deadline = Instant::now() + DISKUTIL_UNMOUNT_TIMEOUT;
-    let status = loop {
-        if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
-            break status;
+    if state.diskutil.is_none() {
+        bounded_direct_unmount(destination, state, meter)?;
+        if !meter.with_work(|work| is_mounted_measured(destination, work))? {
+            state.detached = true;
+            return Ok(UnmountEvidence::Detached);
         }
-        if Instant::now() >= deadline {
-            child.terminate().map_err(|error| error.to_string())?;
-            if !is_mounted(destination, &parent)? {
-                return Ok(UnmountEvidence::Detached);
-            }
-            return Err(format!(
-                "diskutil unmount exceeded its {}-second bound",
-                DISKUTIL_UNMOUNT_TIMEOUT.as_secs()
-            ));
+        meter.with_work(|work| spawn_diskutil(destination, &mut state.diskutil, work))?;
+    }
+    let (status, timed_out) = loop {
+        let child = state.diskutil.as_mut().expect("owned diskutil process");
+        let status = meter.with_work(|work| child.observe(work))?;
+        let timed_out = Instant::now() >= child.deadline;
+        if status.is_some() || timed_out {
+            meter.with_work(|work| child.terminate(work))?;
+            break (status, timed_out);
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    child.terminate().map_err(|error| error.to_string())?;
-    if !is_mounted(destination, &parent)? {
+    state.diskutil.take();
+    if !meter.with_work(|work| is_mounted_measured(destination, work))? {
+        state.detached = true;
         return Ok(UnmountEvidence::Detached);
     }
-    if !status.success() {
-        return Err(format!("diskutil unmount failed with status {status}"));
+    if timed_out {
+        return Err(NativeMountError::Driver("diskutil unmount exceeded its 4-second bound".to_owned()));
+    }
+    if let Some(status) = status.filter(|status| !status.success()) {
+        return Err(NativeMountError::Driver(format!("diskutil unmount failed with status {status}")));
     }
     let verify_deadline = Instant::now() + DISKUTIL_VISIBILITY_TIMEOUT;
-    while is_mounted(destination, &parent)? {
+    while meter.with_work(|work| is_mounted_measured(destination, work))? {
         if Instant::now() >= verify_deadline {
-            return Err("Darwin mount remained visible after diskutil unmount".to_owned());
+            return Err(NativeMountError::Driver("Darwin mount remained visible after diskutil unmount".to_owned()));
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+    state.detached = true;
     Ok(UnmountEvidence::Detached)
 }
 
-pub(super) fn recover_destination(destination: &Path) -> Result<(), NativeMountError> {
-    bounded_unmount(destination)
-        .map(|_| ())
-        .map_err(NativeMountError::Driver)
-}
+/// Native recovery controls without a provider loop. The root recovery owner
+/// must keep this value together with its original destination fence, and take
+/// both on retry before admitting another owner of that destination.
+#[derive(Default)]
+pub(super) struct DarwinRecoveryControl(UnmountState);
 
-/// Force-detaches with `unmount(2)`, as `umount -f` would without its
-/// process launch, and reports whether the destination is detached. The
-/// kernel detaches within the call, so its return is the answer; a helper
-/// thread bounds a call that a wedged transport blocks, after which the
-/// caller's fallback takes over.
-fn bounded_direct_unmount(destination: &Path, parent: &Metadata) -> Result<bool, String> {
-    let path = path_cstring(destination)
-        .map_err(|error| std::io::Error::from_raw_os_error(error).to_string())?;
-    let (detached, outcome) = std::sync::mpsc::sync_channel(1);
-    std::thread::Builder::new()
-        .name("acyclic-fs-darwin-unmount".to_owned())
-        .spawn(move || {
-            // SAFETY: `path` is a NUL-terminated path this thread owns.
-            let status = unsafe { libc::unmount(path.as_ptr(), libc::MNT_FORCE) };
-            let _ = detached.send(status);
+impl DarwinRecoveryControl {
+    pub(super) fn controls_pending(&self) -> bool {
+        self.0.direct.is_some() || self.0.diskutil.is_some()
+    }
+
+    pub(super) fn namespace_detach_confirmed(&self) -> bool { self.0.detached }
+
+    /// Runs the same admitted teardown leaves as session stop and retains
+    /// accepted control identity on every failed or cancelled attempt.
+    pub(super) fn recover_measured(
+        &mut self, destination: &Path, work: &mut DemandWork,
+    ) -> Result<(), NativeMountError> {
+        with_detach_work(work, |meter| {
+            let result = bounded_unmount_measured(destination, &mut self.0, meter);
+            if let Some(task) = &mut self.0.direct {
+                if poll_direct(task).is_ready() { self.0.direct.take(); }
+            }
+            result?;
+            if self.controls_pending() {
+                return Err(NativeMountError::Driver(
+                    "Darwin recovery detach has not finished; destination remains fenced".to_owned(),
+                ));
+            }
+            Ok(())
         })
-        .map_err(|error| error.to_string())?;
-    // The mount table decides either way: a failed or still-blocked call
-    // leaves the destination mounted for the fallback.
-    let _ = outcome.recv_timeout(DIRECT_UNMOUNT_TIMEOUT);
-    is_mounted(destination, parent).map(|mounted| !mounted)
+    }
 }
 
 fn context(address: usize) -> Result<&'static DarwinMountContext, i32> {
@@ -2798,6 +3197,130 @@ mod tests {
         crate::facade::MemoryObjectBackend,
     >;
 
+    #[test]
+    fn mount_table_probe_denies_each_real_leaf_and_releases_native_buffers() -> TestResult {
+        let temporary = tempfile::tempdir()?;
+        let cancellation = crate::CancellationToken::new();
+        let mut prefix = DemandWork::new(crate::WorkBudget {
+            backend_read_operations: 4, backend_write_operations: 1,
+            ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation);
+        assert!(matches!(is_mounted_measured(temporary.path(), &mut prefix), Err(NativeMountError::Work(_))));
+        assert_eq!(prefix.work.backend_read_operations, 4, "count call occurred, denied fill did not");
+        assert_eq!(prefix.work.backend_write_operations, 1, "the owned parent descriptor really closed");
+        assert_eq!(prefix.work.allocation_operations, 3, "CString, F_GETPATH buffer and mount array");
+        assert_eq!(prefix.live_allocation_bytes(), 0);
+        let parent_bytes = temporary.path().parent().ok_or("parent absent")?.as_os_str().len() as u64 + 1;
+        let mut memory = DemandWork::new(crate::WorkBudget {
+            peak_allocation_bytes: parent_bytes + libc::PATH_MAX as u64 - 1,
+            ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation);
+        assert!(matches!(is_mounted_measured(temporary.path(), &mut memory), Err(NativeMountError::Work(_))));
+        assert_eq!(memory.work.backend_read_operations, 2, "F_GETPATH waits for actual buffer admission");
+        assert_eq!(memory.work.backend_write_operations, 1);
+        assert_eq!(memory.work.allocation_operations, 1);
+        assert_eq!(memory.live_allocation_bytes(), 0);
+        let mut exact = DemandWork::new(crate::WorkBudget {
+            backend_read_operations: 5, backend_write_operations: 1,
+            ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation);
+        assert!(!is_mounted_measured(temporary.path(), &mut exact)?);
+        assert_eq!(exact.work.backend_read_operations, 5);
+        assert_eq!(exact.work.backend_write_operations, 1);
+        assert_eq!(exact.live_allocation_bytes(), 0);
+        cancellation.cancel();
+        let mut cancelled = DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+        assert!(is_mounted_measured(temporary.path(), &mut cancelled).is_err());
+        assert_eq!(cancelled.work, crate::WorkCounters::UNCHARGED);
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_control_publishes_only_actual_namespace_absence_evidence() -> TestResult {
+        let temporary = tempfile::tempdir()?;
+        let cancellation = crate::CancellationToken::new();
+        let mut control = DarwinRecoveryControl::default();
+        assert!(!control.namespace_detach_confirmed());
+        let mut denied = DemandWork::new(crate::WorkBudget {
+            backend_read_operations: 0, ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation);
+        assert!(matches!(control.recover_measured(temporary.path(), &mut denied), Err(NativeMountError::Work(_))));
+        assert!(!control.namespace_detach_confirmed(), "denied work is not an absence proof");
+        assert_eq!(denied.work.backend_read_operations, 0);
+        assert_eq!(denied.work.backend_write_operations, 0);
+        let mut exact = DemandWork::new(crate::WorkBudget {
+            backend_read_operations: 5, backend_write_operations: 1,
+            ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation);
+        control.recover_measured(temporary.path(), &mut exact)?;
+        assert!(control.namespace_detach_confirmed());
+        assert!(!control.controls_pending());
+        assert_eq!(exact.work.backend_read_operations, 5);
+        assert_eq!(exact.work.backend_write_operations, 1);
+        assert_eq!(exact.live_allocation_bytes(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn direct_native_detach_uses_exact_task_carriers_and_original_cancellation() -> TestResult {
+        // Inline admission makes queue contention irrelevant without replacing
+        // either the measured task machinery or the actual unmount syscall.
+        let _inline = acyclic_native_runtime::InlineBlocking::enter();
+        let temporary = tempfile::tempdir()?;
+        let cancellation = crate::CancellationToken::new();
+        let mut state = UnmountState::default();
+        let mut baseline = DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+        with_detach_work(&mut baseline, |meter| bounded_direct_unmount(temporary.path(), &mut state, meter))?;
+        assert_eq!(baseline.work.backend_write_operations, 1);
+        assert_eq!(baseline.work.backend_read_operations, 0);
+        assert_eq!(baseline.live_allocation_bytes(), 0);
+        assert!(state.direct.is_none());
+        let mut exact = DemandWork::new(crate::WorkBudget {
+            backend_write_operations: 1, backend_read_operations: 0,
+            allocation_operations: baseline.work.allocation_operations,
+            peak_allocation_bytes: baseline.work.peak_allocation_bytes,
+            items_examined: baseline.work.items_examined,
+            bytes_copied: baseline.work.bytes_copied,
+            ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation);
+        with_detach_work(&mut exact, |meter| bounded_direct_unmount(temporary.path(), &mut state, meter))?;
+        assert_eq!(exact.work, baseline.work);
+        let mut denied = DemandWork::new(crate::WorkBudget {
+            backend_write_operations: 0, ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation);
+        assert!(matches!(with_detach_work(&mut denied, |meter|
+            bounded_direct_unmount(temporary.path(), &mut state, meter)), Err(NativeMountError::Work(_))));
+        assert_eq!(denied.work.backend_write_operations, 0);
+        assert_eq!(denied.live_allocation_bytes(), 0);
+        cancellation.cancel();
+        let mut cancelled = DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+        assert!(with_detach_work(&mut cancelled, |meter|
+            bounded_direct_unmount(temporary.path(), &mut state, meter)).is_err());
+        assert_eq!(cancelled.work, crate::WorkCounters::UNCHARGED);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires a live macOS NFS mount"]
+    fn macos_measured_stop_keeps_real_driver_and_fence_after_denied_probe() -> TestResult {
+        acyclic_native_runtime::initialize_native_io_services()?;
+        let (temporary, _, mut mount) = live_mount()?;
+        let cancellation = crate::CancellationToken::new();
+        let failure = mount.stop_measured(crate::WorkBudget {
+            backend_read_operations: 0, ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation).expect_err("first physical probe is denied");
+        assert!(matches!(failure.error, NativeMountError::Work(_)));
+        assert_eq!(failure.work.backend_read_operations, 0);
+        assert_eq!(failure.work.backend_write_operations, 0);
+        std::fs::write(temporary.path().join("still-served"), b"same live driver")?;
+        assert_eq!(std::fs::read(temporary.path().join("still-served"))?, b"same live driver");
+        let stopped = mount.stop_measured(crate::WorkBudget::UNBOUNDED, &cancellation)?;
+        assert!(stopped.value);
+        assert!(stopped.work.backend_read_operations >= 5);
+        assert!(stopped.work.backend_write_operations >= 2);
+        Ok(())
+    }
+
     /// A writable context over a fresh POSIX checkout.
     fn checkout_context(
         publication: MountPublication,
@@ -3794,6 +4317,7 @@ mod tests {
             loop_finished_before_teardown: None,
             loop_result: None,
             teardown_complete: false,
+            unmount: UnmountState::default(),
         };
         let start = Instant::now();
         let result = session.finish_thread_within(Duration::from_millis(20));

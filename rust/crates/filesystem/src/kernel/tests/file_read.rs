@@ -52,6 +52,10 @@ fn inline_ranges_are_exact_and_need_no_backend_work() -> Result<(), Box<dyn std:
     ))
     .ok_or("inline read blocked")??;
     assert_eq!(&read.bytes[..], b"cde");
+    assert_eq!(read.logical_owned_bytes(), 3);
+    let shared = read.bytes.slice(1..2);
+    assert_eq!(shared.as_ref(), b"d");
+    assert_eq!(read.logical_owned_bytes(), 3, "a slice does not shrink producer custody");
     assert_eq!(read.work.backend_read_operations, 0);
     assert_eq!(read.work.output_bytes, 3);
     assert_eq!(read.work.peak_allocation_bytes, 3);
@@ -225,6 +229,7 @@ fn zero_length_inline_read_at_eof_is_allocation_free() -> Result<(), Box<dyn std
     ))
     .ok_or("zero-length inline read blocked")??;
     assert!(read.bytes.is_empty());
+    assert_eq!(read.logical_owned_bytes(), 0);
     assert_eq!(read.work.output_bytes, 0);
     assert_eq!(read.work.bytes_copied, 0);
     assert_eq!(read.work.allocation_operations, 0);
@@ -300,6 +305,21 @@ fn sparse_file_read_composes_clipped_content_holes_and_allocated_zero()
             extents: extent_root,
         },
     };
+    let denied = poll_ready(read_file_range_async(
+        &store,
+        FileRangeRequest {
+            record,
+            range: ByteRange { offset: 1, length: 8 },
+            maximum_spans: 5,
+            limits: DecodeLimits::default(),
+            budget: WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED },
+        },
+        &CancellationToken::new(),
+    )).ok_or("frame admission blocked")?
+        .expect_err("the canonical sparse future is admitted before immutable I/O");
+    assert_eq!(denied.work.allocation_operations, 0);
+    assert_eq!(denied.work.backend_read_operations, 0);
+    assert_eq!(denied.work.bytes_copied, 0);
     let read = poll_ready(read_file_range_async(
         &store,
         FileRangeRequest {
@@ -316,6 +336,7 @@ fn sparse_file_read_composes_clipped_content_holes_and_allocated_zero()
     ))
     .ok_or("sparse file read blocked")??;
     assert_eq!(&read.bytes[..], &[b'B', 0, 0, 0, 0, b'E', b'F', b'G']);
+    assert_eq!(read.logical_owned_bytes(), 8);
     assert_eq!(read.work.output_bytes, 8);
     assert_eq!(read.work.items_returned, 7);
     assert!(read.work.bytes_copied >= 6);

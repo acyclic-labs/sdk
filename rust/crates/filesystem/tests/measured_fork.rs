@@ -10,7 +10,7 @@ use acyclic_fs::storage::ObjectWrite;
 use acyclic_fs::{
     AsyncObjectStore, CancellationToken, EmbeddedCapabilities, ForkOptions, Fs, IdempotencyKey,
     MemoryAuthorityBackend, MemoryObjectBackend, ObjectId, ObjectRead, ObjectReadRequest,
-    ObjectResult, WorkBudget, WorkspaceError,
+    ObjectResult, WorkBudget, WorkCounters, WorkspaceError,
 };
 use bytes::Bytes;
 use std::error::Error;
@@ -103,31 +103,33 @@ async fn public_measured_fork_rejects_precancellation_and_foreign_generation()
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     let key = IdempotencyKey::new();
-    assert!(matches!(
-        parent
-            .fork_measured(
-                "cancel-child",
-                ForkOptions::from_generation(pinned.clone(), key),
-                finite_budget()?,
-                &cancellation
-            )
-            .await,
-        Err(WorkspaceError::Cancelled(_))
-    ));
+    let cancelled = match parent
+        .fork_measured(
+            "cancel-child",
+            ForkOptions::from_generation(pinned.clone(), key),
+            finite_budget()?,
+            &cancellation,
+        ).await {
+        Err(failure) => failure,
+        Ok(_) => return Err("precancelled fork unexpectedly succeeded".into()),
+    };
+    assert!(matches!(cancelled.error, WorkspaceError::Cancelled(_)));
+    assert_eq!(*cancelled.work, WorkCounters::default());
     assert!(fs.open_workspace("cancel-child").await.is_err());
     assert_eq!(parent.head().await?.id(), pinned.id());
     let other = fs.create_workspace("foreign-source").await?;
-    assert!(matches!(
-        parent
-            .fork_measured(
-                "foreign-child",
-                ForkOptions::from_generation(other.head().await?, IdempotencyKey::new()),
-                finite_budget()?,
-                &CancellationToken::new()
-            )
-            .await,
-        Err(WorkspaceError::ForeignGeneration)
-    ));
+    let foreign = match parent
+        .fork_measured(
+            "foreign-child",
+            ForkOptions::from_generation(other.head().await?, IdempotencyKey::new()),
+            finite_budget()?,
+            &CancellationToken::new(),
+        ).await {
+        Err(failure) => failure,
+        Ok(_) => return Err("foreign fork unexpectedly succeeded".into()),
+    };
+    assert!(matches!(foreign.error, WorkspaceError::ForeignGeneration));
+    assert_eq!(*foreign.work, WorkCounters::default());
     Ok(())
 }
 

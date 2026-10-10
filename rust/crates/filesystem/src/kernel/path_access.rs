@@ -12,7 +12,9 @@ use crate::async_storage::{self, AsyncObjectStore};
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
 use crate::heap_future::in_heap;
-use crate::model::{FilesystemProfile, VolumeConfig, VolumeConfigError};
+use crate::model::{VolumeConfig, VolumeConfigError};
+#[cfg(test)]
+use crate::model::FilesystemProfile;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
     ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectReceipt,
@@ -48,6 +50,20 @@ struct OperationReadCache<'a, S> {
     /// The table's full bound, which the operation's work accounts for
     /// whether or not it grows that far.
     metadata_bytes: u64,
+}
+
+/// Holds one existing short-frame box claim until that whole box is dropped.
+struct CacheFutureAllocation<'a, S> {
+    cache: &'a OperationReadCache<'a, S>,
+    bytes: u64,
+}
+
+impl<S> Drop for CacheFutureAllocation<'_, S> {
+    fn drop(&mut self) {
+        if self.bytes != 0 {
+            self.cache.release_external_resident_bytes(self.bytes);
+        }
+    }
 }
 
 /// Slots a new cache starts with.
@@ -184,6 +200,12 @@ impl<'a, S> OperationReadCache<'a, S> {
             .checked_add(bytes)
             .ok_or(WorkError::Overflow)?;
         Ok(state.external_resident_bytes)
+    }
+
+    fn release_external_resident_bytes(&self, bytes: u64) {
+        let mut state = self.lock_state();
+        state.external_resident_bytes = state.external_resident_bytes.checked_sub(bytes)
+            .expect("cache future custody releases after physical box destruction");
     }
 
     fn lock_state(&self) -> MutexGuard<'_, CacheState> {
@@ -748,7 +770,7 @@ pub async fn observe_path_async<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<ObservedPathLookup, PathLookupFailure> {
-    observe_path_with_terminal_async(store, generation, path, config, budget, cancellation, true)
+    observe_path_with_terminal_async(store, generation, path, config, budget, cancellation, true, None)
         .await
 }
 
@@ -767,8 +789,23 @@ pub(crate) async fn observe_path_edges_async<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<ObservedPathLookup, PathLookupFailure> {
-    observe_path_with_terminal_async(store, generation, path, config, budget, cancellation, false)
+    observe_path_with_terminal_async(store, generation, path, config, budget, cancellation, false, None)
         .await
+}
+
+pub(crate) async fn observe_path_with_data_async<S: AsyncObjectStore>(
+    store: &S,
+    generation: &super::GenerationRoot,
+    path: &NamespacePath,
+    config: VolumeConfig,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    terminal: bool,
+    data_custody: &super::ProofDataCustody,
+) -> Result<ObservedPathLookup, PathLookupFailure> {
+    observe_path_with_terminal_async(
+        store, generation, path, config, budget, cancellation, terminal, Some(data_custody),
+    ).await
 }
 
 async fn observe_path_with_terminal_async<S: AsyncObjectStore>(
@@ -779,6 +816,7 @@ async fn observe_path_with_terminal_async<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
     capture_terminal: bool,
+    data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<ObservedPathLookup, PathLookupFailure> {
     in_heap(move || async move {
         cancellation.check().map_err(|_| {
@@ -864,6 +902,7 @@ async fn observe_path_with_terminal_async<S: AsyncObjectStore>(
                 budget,
                 cancellation,
                 capture_terminal,
+                data_custody,
             },
             current,
             dependencies,
@@ -883,6 +922,7 @@ struct ObserveContext<'a, S> {
     budget: WorkBudget,
     cancellation: &'a CancellationToken,
     capture_terminal: bool,
+    data_custody: Option<&'a super::ProofDataCustody>,
 }
 
 #[allow(
@@ -891,12 +931,38 @@ struct ObserveContext<'a, S> {
 )]
 async fn observe_descendants<S: AsyncObjectStore>(
     context: ObserveContext<'_, S>,
-    mut current: FileRecord,
-    mut dependencies: Vec<Dependency>,
-    mut external_resident_bytes: u64,
-    mut work: WorkCounters,
+    current: FileRecord,
+    dependencies: Vec<Dependency>,
+    external_resident_bytes: u64,
+    work: WorkCounters,
 ) -> Result<ObservedPathLookup, PathLookupFailure> {
-    in_heap(move || async move {
+    let mut frame = CacheFutureAllocation { cache: context.cache, bytes: 0 };
+    let (mut future, _) = crate::heap_future::in_heap_admitted(
+        (context, current, dependencies, external_resident_bytes, work),
+        |state, bytes| {
+            let (context, _, _, external, work) = state;
+            context.cancellation.check().map_err(|_| OperationFailure::new(
+                PathLookupError::Tree(TreeReadError::Cancelled), *work,
+            ))?;
+            let resident = context.cache.resident_bytes()
+                .map_err(|failure| OperationFailure::new(map_cache_error(failure.error), *work))?;
+            let next = resident.checked_add(bytes)
+                .ok_or_else(|| OperationFailure::new(PathLookupError::Work(WorkError::Overflow), *work))?;
+            work.charge_allocation(u64::from(bytes != 0), next, &context.budget)
+                .map_err(|error| OperationFailure::new(error.into(), *work))?;
+            *external = context.cache.add_external_resident_bytes(bytes)
+                .map_err(|error| OperationFailure::new(error.into(), *work))?;
+            frame.bytes = bytes;
+            if let Some(custody) = context.data_custody {
+                custody.record_data_work(WorkCounters {
+                    allocation_operations: u64::from(bytes != 0),
+                    peak_allocation_bytes: next,
+                    ..WorkCounters::default()
+                }).map_err(|error| OperationFailure::new(error.into(), *work))?;
+            }
+            Ok::<(), PathLookupFailure>(())
+        },
+        |(context, mut current, mut dependencies, mut external_resident_bytes, mut work)| async move {
         let mut parent = None;
         for (index, component) in context.path.components().iter().enumerate() {
             let copied = copy_observation_name(
@@ -906,6 +972,7 @@ async fn observe_descendants<S: AsyncObjectStore>(
                 external_resident_bytes,
                 work,
                 context.budget,
+                context.data_custody,
             )?;
             let dependency_name = copied.name;
             external_resident_bytes = copied.external_resident_bytes;
@@ -1017,8 +1084,12 @@ async fn observe_descendants<S: AsyncObjectStore>(
             },
             dependencies,
         })
-    })
-    .await
+        },
+    )?;
+    let result = future.as_mut().await;
+    drop(future);
+    drop(frame);
+    result
 }
 
 /// Resolves a non-empty exact path batch through shared authenticated prefixes.
@@ -1071,6 +1142,7 @@ pub async fn lookup_paths_async<S: AsyncObjectStore>(
         config,
         budget,
         cancellation,
+        None,
     )
     .await
     .map(|observed| observed.lookup)
@@ -1100,8 +1172,38 @@ pub async fn observe_paths_async<S: AsyncObjectStore>(
         config,
         budget,
         cancellation,
+        None,
     )
     .await
+}
+
+pub(crate) async fn observe_paths_with_data_async<S: AsyncObjectStore>(
+    store: &S,
+    generation: &super::GenerationRoot,
+    paths: &[NamespacePath],
+    config: VolumeConfig,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    data_custody: &super::ProofDataCustody,
+) -> Result<ObservedPathBatch, PathLookupFailure> {
+    lookup_path_queries_async(
+        store, generation, PathQueries::Owned(paths), true, config, budget, cancellation, Some(data_custody),
+    ).await
+}
+
+/// The same observation engine over borrowed path references.
+pub(crate) async fn observe_path_refs_async<S: AsyncObjectStore>(
+    store: &S,
+    generation: &super::GenerationRoot,
+    paths: &[&NamespacePath],
+    config: VolumeConfig,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    data_custody: &super::ProofDataCustody,
+) -> Result<ObservedPathBatch, PathLookupFailure> {
+    lookup_path_queries_async(
+        store, generation, PathQueries::Borrowed(paths), true, config, budget, cancellation, Some(data_custody),
+    ).await
 }
 
 /// Resolves borrowed paths without first cloning their names into an owned batch.
@@ -1128,6 +1230,7 @@ pub async fn lookup_path_refs_async<S: AsyncObjectStore>(
         config,
         budget,
         cancellation,
+        None,
     )
     .await
     .map(|observed| observed.lookup)
@@ -1167,6 +1270,7 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
     config: VolumeConfig,
     budget: WorkBudget,
     cancellation: &CancellationToken,
+    data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<ObservedPathBatch, PathLookupFailure> {
     in_heap(move || async move {
     cancellation.check().map_err(|_| {
@@ -1359,6 +1463,7 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
                     &mut allocations,
                     &mut work,
                     budget,
+                    data_custody,
                 )?;
                 nested_bytes = nested_bytes.checked_add(owned_bytes).ok_or_else(|| {
                     OperationFailure::new(PathLookupError::Work(WorkError::Overflow), work)
@@ -1551,19 +1656,7 @@ fn validate_path(path: &NamespacePath, config: VolumeConfig) -> Result<(), PathL
         if component.as_bytes().len() > maximum_component_bytes {
             return Err(OperationFailure::before_work(PathLookupError::PathBounds));
         }
-        if !matches!(
-            (config.profile, component.encoding()),
-            (
-                FilesystemProfile::Portable | FilesystemProfile::Browser,
-                super::NameEncoding::Utf8
-            ) | (
-                FilesystemProfile::Posix,
-                super::NameEncoding::Utf8 | super::NameEncoding::PosixBytes
-            ) | (
-                FilesystemProfile::Windows,
-                super::NameEncoding::Utf8 | super::NameEncoding::WindowsUtf16Le
-            )
-        ) {
+        if !component.encoding().is_admitted_in_profile(config.profile) {
             return Err(OperationFailure::before_work(
                 PathLookupError::UnsupportedNameEncoding,
             ));
@@ -1600,26 +1693,21 @@ fn copy_batch_name(
     allocations: &mut AllocationLedger,
     work: &mut WorkCounters,
     budget: WorkBudget,
+    data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<(LogicalName, u64), PathLookupFailure> {
     let bytes = usize_to_u64(source.as_bytes().len());
-    let attempted = work
-        .checked_add(WorkCounters {
-            allocation_operations: 1,
-            ..WorkCounters::default()
-        })
-        .map_err(|error| OperationFailure::new(error.into(), *work))?;
-    attempted
-        .verify(budget)
-        .map_err(|error| OperationFailure::new(error.into(), *work))?;
-    *work = attempted;
-
-    let mut copied = Vec::new();
-    copied
-        .try_reserve_exact(source.as_bytes().len())
-        .map_err(|_| OperationFailure::new(PathLookupError::AllocationFailed, *work))?;
-    allocations
-        .claim_bytes(bytes, 0, work, budget)
+    allocations.claim_bytes(bytes, u64::from(bytes != 0), work, budget)
         .map_err(|error| allocation_failure(error, *work))?;
+    if let Some(custody) = data_custody {
+        custody.record_data_work(WorkCounters {
+            allocation_operations: u64::from(bytes != 0),
+            peak_allocation_bytes: work.peak_allocation_bytes,
+            ..WorkCounters::default()
+        }).map_err(|error| OperationFailure::new(error.into(), *work))?;
+    }
+    let mut copied = Vec::new();
+    copied.try_reserve_exact(source.as_bytes().len())
+        .map_err(|_| OperationFailure::new(PathLookupError::AllocationFailed, *work))?;
     let copied_work = work
         .checked_add(WorkCounters {
             bytes_copied: bytes,
@@ -1629,6 +1717,10 @@ fn copy_batch_name(
     copied_work
         .verify(budget)
         .map_err(|error| OperationFailure::new(error.into(), *work))?;
+    if let Some(custody) = data_custody {
+        custody.record_data_work(WorkCounters { bytes_copied: bytes, ..WorkCounters::default() })
+            .map_err(|error| OperationFailure::new(error.into(), *work))?;
+    }
     copied.extend_from_slice(source.as_bytes());
     *work = copied_work;
     let name = LogicalName::new(source.encoding(), copied, maximum_bytes)
@@ -1649,6 +1741,7 @@ fn copy_observation_name<S>(
     external_resident_bytes: u64,
     work: WorkCounters,
     budget: WorkBudget,
+    data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<CopiedObservationName, PathLookupFailure> {
     let bytes = usize_to_u64(source.as_bytes().len());
     let next_external = external_resident_bytes
@@ -1672,6 +1765,13 @@ fn copy_observation_name<S>(
         .verify(budget)
         .map_err(|error| OperationFailure::new(error.into(), work))?;
 
+    if let Some(custody) = data_custody {
+        custody.record_data_work(WorkCounters {
+            allocation_operations: 1,
+            peak_allocation_bytes: simultaneous,
+            ..WorkCounters::default()
+        }).map_err(|error| OperationFailure::new(error.into(), work))?;
+    }
     let mut copied = Vec::new();
     copied
         .try_reserve_exact(source.as_bytes().len())
@@ -1687,6 +1787,10 @@ fn copy_observation_name<S>(
     copied_work
         .verify(budget)
         .map_err(|error| OperationFailure::new(error.into(), admitted))?;
+    if let Some(custody) = data_custody {
+        custody.record_data_work(WorkCounters { bytes_copied: bytes, ..WorkCounters::default() })
+            .map_err(|error| OperationFailure::new(error.into(), admitted))?;
+    }
     copied.extend_from_slice(source.as_bytes());
     let name = LogicalName::new(source.encoding(), copied, maximum_bytes)
         .map_err(|_| OperationFailure::new(PathLookupError::KindMismatch, copied_work))?;

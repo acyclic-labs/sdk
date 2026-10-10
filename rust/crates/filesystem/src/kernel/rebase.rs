@@ -6,7 +6,9 @@ use crate::foundation::{Digest, FileId, GenerationId};
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
+use parking_lot::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
 
 /// One exact semantic region whose state can affect a checkout.
@@ -130,18 +132,173 @@ struct CapturedState {
     usage: DependencyUse,
 }
 
+/// Observer-local logical DATA custody. This control token never holds a map.
+#[derive(Debug, Default)]
+pub(crate) struct ProofDataCustody {
+    retained: AtomicU64,
+    completed_data_work: Mutex<ProofDataWorkReport>,
+}
+
+#[derive(Debug, Default)]
+struct ProofDataWorkReport {
+    total: WorkCounters,
+    pending: WorkCounters,
+    reported_retained_bytes: u64,
+    delivery_generation: u64,
+}
+
+impl ProofDataCustody {
+    pub(crate) fn retained_bytes(&self) -> u64 {
+        self.retained.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn live_data_counts(&self) -> (u64, u64) {
+        let completed = self.completed_data_work.lock();
+        (self.retained_bytes(), completed.reported_retained_bytes)
+    }
+
+    pub(crate) const fn logical_owned_bytes(&self) -> u64 {
+        std::mem::size_of::<Self>() as u64
+    }
+
+    pub(crate) fn completed_data_work(&self) -> WorkCounters {
+        self.completed_data_work.lock().total
+    }
+
+    pub(crate) fn pending_data_work(&self) -> WorkCounters {
+        self.completed_data_work.lock().pending
+    }
+
+    pub(crate) fn record_data_work(&self, work: WorkCounters) -> Result<(), WorkError> {
+        let mut completed = self.completed_data_work.lock();
+        let total = completed.total.checked_add(work)?;
+        let pending = completed.pending.checked_add(work)?;
+        completed.total = total;
+        completed.pending = pending;
+        Ok(())
+    }
+
+    /// A receipt-report cache only; operative work and allocation custody stay intact.
+    pub(crate) fn take_completed_data_work(&self) -> WorkCounters {
+        let mut completed = self.completed_data_work.lock();
+        let generation = completed.delivery_generation.checked_add(1)
+            .expect("proof DATA delivery generation exhausted");
+        completed.reported_retained_bytes = self.retained_bytes();
+        completed.delivery_generation = generation;
+        std::mem::take(&mut completed.pending)
+    }
+}
+
+/// Lives beside the actual owned key; a weak-only map move moves this claim,
+/// while a deep clone deliberately starts without the original owner's claim.
+#[derive(Debug, Default)]
+pub(crate) struct ProofDataClaim {
+    owner: Weak<ProofDataCustody>,
+    bytes: u64,
+    delivery_generation: u64,
+}
+
+impl ProofDataClaim {
+    pub(crate) fn new(owner: Option<&Arc<ProofDataCustody>>, bytes: u64) -> Self {
+        let Some(owner) = owner.filter(|_| bytes != 0) else { return Self::default(); };
+        let completed = owner.completed_data_work.lock();
+        owner.retained.fetch_add(bytes, Ordering::AcqRel);
+        Self {
+            owner: Arc::downgrade(owner), bytes,
+            delivery_generation: completed.delivery_generation,
+        }
+    }
+}
+
+impl Clone for ProofDataClaim {
+    fn clone(&self) -> Self { Self::default() }
+}
+
+impl Drop for ProofDataClaim {
+    fn drop(&mut self) {
+        if let Some(owner) = self.owner.upgrade() {
+            let mut completed = owner.completed_data_work.lock();
+            if self.delivery_generation < completed.delivery_generation {
+                completed.reported_retained_bytes = completed.reported_retained_bytes.checked_sub(self.bytes)
+                    .expect("reported proof DATA retires with its actual key");
+            }
+            owner.retained.fetch_sub(self.bytes, Ordering::AcqRel);
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CapturedValue {
+    state: CapturedState,
+    data: ProofDataClaim,
+}
+
+impl PartialEq for CapturedValue {
+    fn eq(&self, other: &Self) -> bool { self.state == other.state }
+}
+
+impl Eq for CapturedValue {}
+
+impl std::ops::Deref for CapturedValue {
+    type Target = CapturedState;
+    fn deref(&self) -> &Self::Target { &self.state }
+}
+
+impl std::ops::DerefMut for CapturedValue {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.state }
+}
+
 /// Validated, sorted, and deduplicated checkout dependency proof.
 ///
 /// Construction pays normalization cost once. Equal-generation refresh can
 /// therefore return in constant work regardless of dependency count. Copies
 /// share one proof until either side changes it, so snapshotting a proof for
 /// classification is constant work too.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct CheckoutDependencies {
-    captured: Arc<BTreeMap<DependencyRegion, CapturedState>>,
+    captured: Arc<BTreeMap<DependencyRegion, CapturedValue>>,
+    name_data_bytes: u64,
+    cloned_name_data_bytes: u64,
+    data_generation: u64,
+}
+
+impl PartialEq for CheckoutDependencies {
+    fn eq(&self, other: &Self) -> bool { self.captured == other.captured }
+}
+
+impl Eq for CheckoutDependencies {}
+
+fn dependency_name_bytes(region: &DependencyRegion, cloned: bool) -> u64 {
+    match region {
+        DependencyRegion::DirectoryName { name, .. }
+        | DependencyRegion::DirectoryRange { after: Some(name), .. } => {
+            if cloned { name.as_bytes().len() as u64 } else { name.retained_bytes() as u64 }
+        }
+        _ => 0,
+    }
 }
 
 impl CheckoutDependencies {
+    /// Arc payload allocated by construction of an empty dependency proof,
+    /// excluding allocator and Arc headers.
+    pub(crate) const fn empty_logical_owned_bytes() -> usize {
+        std::mem::size_of::<BTreeMap<DependencyRegion, CapturedValue>>()
+    }
+
+    /// Visits retained name buffers, not opaque BTree node/entry storage.
+    pub(crate) fn logical_data_with_step<E: From<WorkError>>(
+        &self,
+        mut step: impl FnMut() -> Result<(), E>,
+    ) -> Result<(usize, u64, u64), E> {
+        step()?;
+        Ok(self.logical_data())
+    }
+
+    /// Cancellation-independent observation of already completed owned data.
+    pub(crate) fn logical_data(&self) -> (usize, u64, u64) {
+        (Arc::as_ptr(&self.captured) as usize, self.data_generation, self.name_data_bytes)
+    }
+
     /// Validates and normalizes exact observations and mutation preconditions.
     ///
     /// # Errors
@@ -155,7 +312,7 @@ impl CheckoutDependencies {
         if maximum_dependencies == 0 {
             return Err(DependencyError::ZeroLimit);
         }
-        let mut captured: BTreeMap<DependencyRegion, CapturedState> = BTreeMap::new();
+        let mut captured: BTreeMap<DependencyRegion, CapturedValue> = BTreeMap::new();
         for (dependency, usage) in observations
             .into_iter()
             .map(|value| (value, DependencyUse::Observation))
@@ -182,13 +339,19 @@ impl CheckoutDependencies {
             }
             captured.insert(
                 dependency.region,
-                CapturedState {
-                    expected: dependency.expected,
-                    usage,
+                CapturedValue {
+                    state: CapturedState {
+                        expected: dependency.expected,
+                        usage,
+                    },
+                    data: ProofDataClaim::default(),
                 },
             );
         }
         Ok(Self {
+            name_data_bytes: captured.keys().map(|region| dependency_name_bytes(region, false)).sum(),
+            cloned_name_data_bytes: captured.keys().map(|region| dependency_name_bytes(region, true)).sum(),
+            data_generation: 0,
             captured: Arc::new(captured),
         })
     }
@@ -207,6 +370,10 @@ impl CheckoutDependencies {
 
     pub(crate) fn clear(&mut self) {
         self.captured = Arc::default();
+        self.name_data_bytes = 0;
+        self.cloned_name_data_bytes = 0;
+        self.data_generation = self.data_generation.checked_add(1)
+            .expect("proof allocation generation exhausted");
     }
 
     /// Whether an observation of `region` is already part of the proof.
@@ -222,14 +389,29 @@ impl CheckoutDependencies {
     }
 
     pub(crate) fn clear_mutations(&mut self) {
-        Arc::make_mut(&mut self.captured).retain(|_, state| match state.usage {
-            DependencyUse::Observation => true,
-            DependencyUse::Mutation => false,
-            DependencyUse::ObservationAndMutation => {
-                state.usage = DependencyUse::Observation;
-                true
+        let mut retained_bytes = 0_u64;
+        let mut cloned_bytes = 0_u64;
+        if Arc::strong_count(&self.captured) > 1 || Arc::weak_count(&self.captured) != 0 {
+            self.data_generation = self.data_generation.checked_add(1)
+                .expect("proof allocation generation exhausted");
+        }
+        Arc::make_mut(&mut self.captured).retain(|region, state| {
+            let keep = match state.usage {
+                DependencyUse::Observation => true,
+                DependencyUse::Mutation => false,
+                DependencyUse::ObservationAndMutation => {
+                    state.usage = DependencyUse::Observation;
+                    true
+                }
+            };
+            if keep {
+                retained_bytes += dependency_name_bytes(region, false);
+                cloned_bytes += dependency_name_bytes(region, true);
             }
+            keep
         });
+        self.name_data_bytes = retained_bytes;
+        self.cloned_name_data_bytes = cloned_bytes;
     }
 
     pub(crate) fn extend_observations(
@@ -244,6 +426,14 @@ impl CheckoutDependencies {
         )
     }
 
+    pub(crate) fn prepare_observations(
+        &self,
+        dependencies: Vec<Dependency>,
+        maximum_dependencies: u32,
+    ) -> Result<DependencyExtension, DependencyError> {
+        self.prepare(dependencies, maximum_dependencies, DependencyUse::Observation)
+    }
+
     /// Validates mutation preconditions without applying them, so a caller
     /// commits them only once its mutation has succeeded.
     pub(crate) fn prepare_mutations(
@@ -256,16 +446,82 @@ impl CheckoutDependencies {
 
     /// Applies an extension prepared against this unchanged proof.
     pub(crate) fn commit(&mut self, extension: DependencyExtension) {
+        self.commit_with_data_admission::<WorkError>(
+            extension, |_, _, _, _| Ok(()),
+        ).expect("live dependency data fits the addressable memory space");
+    }
+
+    /// Admits actual COW buffers and moved key/value data in the existing
+    /// commit engine. Opaque BTree node layout is not a logical payload.
+    pub(crate) fn commit_with_data_admission<E: From<WorkError>>(
+        &mut self,
+        extension: DependencyExtension,
+        admit: impl FnMut(u64, u64, u64, u64) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.commit_with_data_custody(extension, None, admit)
+    }
+
+    pub(crate) fn commit_with_data_custody<E: From<WorkError>>(
+        &mut self,
+        extension: DependencyExtension,
+        owner: Option<&Arc<ProofDataCustody>>,
+        mut admit: impl FnMut(u64, u64, u64, u64) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut changes = false;
+        for region in extension.staged.keys() {
+            admit(0, 0, 0, 1)?;
+            if self.captured.get(region).is_none_or(|state| state.usage.with(extension.usage) != state.usage) {
+                changes = true;
+            }
+        }
+        if !changes {
+            return Ok(());
+        }
+        let copied = Arc::strong_count(&self.captured) > 1;
+        let moved = !copied && Arc::weak_count(&self.captured) != 0;
+        let generation = if copied || moved {
+            self.data_generation.checked_add(1).ok_or(WorkError::Overflow)?
+        } else { self.data_generation };
+        if copied {
+            let mut operations = 0_u64;
+            for region in self.captured.keys() {
+                admit(0, 0, 0, 1)?;
+                operations = operations.checked_add(u64::from(dependency_name_bytes(region, true) != 0))
+                    .ok_or(WorkError::Overflow)?;
+            }
+            // Only actual name buffers are DATA. Tree layout and inline
+            // key/value control metadata are not fabricated logical buffers.
+            admit(self.cloned_name_data_bytes, operations, self.cloned_name_data_bytes, 0)?;
+            let captured = Arc::make_mut(&mut self.captured);
+            for (region, value) in captured.iter_mut() {
+                value.data = ProofDataClaim::new(owner, dependency_name_bytes(region, false));
+            }
+            self.name_data_bytes = self.cloned_name_data_bytes;
+        }
+        self.data_generation = generation;
         let DependencyExtension { staged, usage } = extension;
         let captured = Arc::make_mut(&mut self.captured);
         for (region, expected) in staged {
+            admit(0, 0, 0, 1)?;
             match captured.get_mut(&region) {
                 Some(existing) => existing.usage = existing.usage.with(usage),
                 None => {
-                    captured.insert(region, CapturedState { expected, usage });
+                    // The staged key owns its name buffer already; insertion
+                    // moves that buffer rather than allocating or copying it.
+                    let retained = dependency_name_bytes(&region, false);
+                    let name_data_bytes = self.name_data_bytes.checked_add(retained)
+                        .ok_or(WorkError::Overflow)?;
+                    let cloned_name_data_bytes = self.cloned_name_data_bytes
+                        .checked_add(dependency_name_bytes(&region, true)).ok_or(WorkError::Overflow)?;
+                    admit(retained, 0, 0, 0)?;
+                    let data = ProofDataClaim::new(owner, retained);
+                    captured.insert(region, CapturedValue { state: CapturedState { expected, usage }, data });
+                    self.name_data_bytes = name_data_bytes;
+                    self.cloned_name_data_bytes = cloned_name_data_bytes;
                 }
             }
         }
+        Ok(())
     }
 
     /// The proof of both this proof's and `other`'s operations over the same
@@ -278,12 +534,17 @@ impl CheckoutDependencies {
         }
         let mut merged = self.clone();
         let captured = Arc::make_mut(&mut merged.captured);
+        merged.name_data_bytes = merged.cloned_name_data_bytes;
+        merged.data_generation = merged.data_generation.checked_add(1)?;
         for (region, state) in other.captured.iter() {
             match captured.get_mut(region) {
                 Some(existing) if existing.expected != state.expected => return None,
                 Some(existing) => existing.usage = existing.usage.with(state.usage),
                 None => {
-                    captured.insert(region.clone(), *state);
+                    let region = region.clone();
+                    merged.name_data_bytes += dependency_name_bytes(&region, false);
+                    merged.cloned_name_data_bytes += dependency_name_bytes(&region, true);
+                    captured.insert(region, state.clone());
                 }
             }
         }
@@ -348,6 +609,27 @@ impl CheckoutDependencies {
 pub(crate) struct DependencyExtension {
     staged: BTreeMap<DependencyRegion, DependencyState>,
     usage: DependencyUse,
+}
+
+impl DependencyExtension {
+    pub(crate) fn retained_name_bytes_with_step<E: From<WorkError>>(
+        &self,
+        mut step: impl FnMut() -> Result<(), E>,
+    ) -> Result<u64, E> {
+        let mut bytes = 0_u64;
+        for region in self.staged.keys() {
+            step()?;
+            let retained = match region {
+                DependencyRegion::DirectoryName { name, .. }
+                | DependencyRegion::DirectoryRange { after: Some(name), .. } => {
+                    name.retained_bytes() as u64
+                }
+                _ => 0,
+            };
+            bytes = bytes.checked_add(retained).ok_or(WorkError::Overflow)?;
+        }
+        Ok(bytes)
+    }
 }
 
 /// Backend-independent exact-region resolver.

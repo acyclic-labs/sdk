@@ -4,6 +4,9 @@ use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder};
 use super::types::digest_object;
 use crate::foundation::{Digest, FileId, GenerationId, VolumeId};
 use crate::storage::{ObjectId, ObjectKind, object_digest};
+use crate::{CancellationToken, MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
+use super::allocation::AllocationLedger;
+use thiserror::Error;
 
 const DOMAIN: &[u8; 8] = b"ACYFSGEN";
 const VERSION: u16 = 1;
@@ -65,18 +68,107 @@ impl GenerationRoot {
 /// Rejects wrong object classes, duplicate/excess parents, and unsupported
 /// required feature bits.
 pub fn encode_generation_root(root: &GenerationRoot) -> Result<Vec<u8>, CanonicalDecodeError> {
+    encode_generation_root_with_permit(root, WorkBudget::UNBOUNDED, None, 0)
+        .map(|receipt| receipt.value)
+        .map_err(|failure| match failure.error {
+            GenerationRootEncodeError::Canonical(error) => error,
+            GenerationRootEncodeError::Work(_) => CanonicalDecodeError::LengthOverflow,
+            GenerationRootEncodeError::Cancelled(_) => unreachable!("unobserved cancellation"),
+        })
+}
+
+/// Encodes the canonical root with admission before validation and allocation.
+/// `live_owned_bytes` accounts for operation-owned buffers retained by the caller.
+/// Borrowed input is not allocated again. Copies count identity and parent bytes;
+/// scalar serialization and the static domain contribute only encoded bytes.
+/// The ordinary encoder projects this same engine with an unbounded permit.
+///
+/// # Errors
+/// Preserves completed validation and allocation work on every failure.
+pub fn encode_generation_root_measured(
+    root: &GenerationRoot,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    live_owned_bytes: u64,
+) -> MeasuredResult<OperationReceipt<Vec<u8>>, GenerationRootEncodeError> {
+    encode_generation_root_with_permit(root, budget, Some(cancellation), live_owned_bytes)
+}
+
+fn encode_generation_root_with_permit(
+    root: &GenerationRoot,
+    budget: WorkBudget,
+    cancellation: Option<&CancellationToken>,
+    live_owned_bytes: u64,
+) -> MeasuredResult<OperationReceipt<Vec<u8>>, GenerationRootEncodeError> {
+    let mut work = WorkCounters::default();
+    let mut allocations = AllocationLedger::default();
+    let result = (|| {
+        if let Some(cancellation) = cancellation { cancellation.check()?; }
+        allocations.claim_bytes(live_owned_bytes, 0, &mut work, budget)
+            .map_err(|error| error.into_work_or(GenerationRootEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
+        work.charge_items(1, &budget)?;
+        let length = generation_root_encoded_length(root)?;
+        let encoded = WorkCounters {
+            bytes_encoded: length as u64,
+            bytes_copied: (64 + root.parents.len() * 32) as u64,
+            ..WorkCounters::default()
+        };
+        work.admit(&encoded, &budget)?;
+        if let Some(cancellation) = cancellation { cancellation.check()?; }
+        let admitted = allocations.claim_elements::<u8>(length, &mut work, budget)
+            .map_err(|error| error.into_work_or(GenerationRootEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
+        let mut encoder = Encoder::with_exact_capacity(DOMAIN, VERSION, length)?;
+        let header_bytes = (DOMAIN.len() + 2) as u64;
+        work.charge(&WorkCounters { bytes_encoded: header_bytes, ..WorkCounters::default() }, &budget)?;
+        let capacity = encoder.capacity() as u64;
+        if capacity > admitted {
+            // Allocator excess is already physically live; record it before refusal.
+            allocations.claim_bytes(capacity - admitted, 0, &mut work, WorkBudget::UNBOUNDED)
+                .map_err(|error| error.into_work_or(GenerationRootEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
+            work.verify(budget)?;
+        }
+        encode_generation_root_fields(root, &mut encoder);
+        work.charge(&WorkCounters {
+            bytes_encoded: length as u64 - header_bytes,
+            bytes_copied: encoded.bytes_copied,
+            ..WorkCounters::default()
+        }, &budget)?;
+        Ok(encoder.finish())
+    })();
+    result.map(|value| OperationReceipt { value, work })
+        .map_err(|error| OperationFailure::new(error, work))
+}
+
+/// Failure from finite canonical root encoding.
+#[derive(Debug, Error)]
+pub enum GenerationRootEncodeError {
+    /// Invalid canonical root or failed owned-buffer allocation.
+    #[error(transparent)]
+    Canonical(#[from] CanonicalDecodeError),
+    /// The actual operation exceeded its permit.
+    #[error(transparent)]
+    Work(#[from] crate::WorkError),
+    /// The operation was cancelled.
+    #[error(transparent)]
+    Cancelled(#[from] crate::CancellationError),
+}
+
+pub(crate) fn generation_root_encoded_length(root: &GenerationRoot) -> Result<usize, CanonicalDecodeError> {
     root.validate()?;
-    let mut encoder = Encoder::new(DOMAIN, VERSION);
+    DOMAIN.len().checked_add(2 + 16 + 16 + 32 + 4 + 8)
+        .and_then(|length| root.parents.len().checked_mul(32).and_then(|parents| length.checked_add(parents)))
+        .ok_or(CanonicalDecodeError::LengthOverflow)
+}
+
+fn encode_generation_root_fields(root: &GenerationRoot, encoder: &mut Encoder) {
     encoder.fixed(&root.volume_id.into_bytes());
     encoder.fixed(&root.root_file_id.into_bytes());
     encoder.fixed(root.file_table.digest.as_bytes());
-    encoder
-        .u32(u32::try_from(root.parents.len()).map_err(|_| CanonicalDecodeError::LengthOverflow)?);
+    encoder.u32(root.parents.len() as u32);
     for parent in &root.parents {
         encoder.fixed(parent.digest().as_bytes());
     }
     encoder.u64(root.required_features);
-    Ok(encoder.finish())
 }
 
 /// Decodes one bounded canonical generation root.

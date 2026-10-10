@@ -136,11 +136,20 @@ impl Encoder {
         Ok(())
     }
 
+    pub(crate) fn capacity(&self) -> usize {
+        self.bytes.capacity()
+    }
+
+    pub(crate) fn remaining_capacity(&self) -> usize {
+        self.bytes.capacity() - self.bytes.len()
+    }
+
     pub(crate) fn finish(self) -> Vec<u8> {
         self.bytes
     }
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct Decoder<'a> {
     bytes: &'a [u8],
     cursor: usize,

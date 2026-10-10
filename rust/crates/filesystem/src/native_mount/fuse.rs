@@ -2274,6 +2274,7 @@ pub(super) struct FuseSession {
     core: Arc<ProjectionCore>,
     invalidator: Option<std::thread::JoinHandle<()>>,
     shutdown_failed: bool,
+    invalidator_failed: bool,
 }
 
 impl FuseSession {
@@ -2338,31 +2339,42 @@ impl FuseSession {
     /// invalidator processes them; this is the barrier for callers that must
     /// observe one through the mount immediately afterwards.
     pub(super) fn revalidate(&self) -> Result<(), NativeMountError> {
-        let stopped = || NativeMountError::Driver("session is stopped".to_owned());
-        // Every change made to the source before this call is recorded, and
-        // so notified, before the wait begins.
-        self.core.source.fence_changes().map_err(source_error)?;
+        let cancellation = crate::CancellationToken::new();
+        self.revalidate_measured(&mut crate::demand::DemandWork::new(
+            crate::WorkBudget::UNBOUNDED, &cancellation,
+        ))
+    }
+
+    /// Uses the original source fence and cache barrier. Each actual timed
+    /// wait is admitted separately; denial leaves pending invalidation intact.
+    pub(super) fn revalidate_measured(
+        &self, work: &mut crate::demand::DemandWork,
+    ) -> Result<(), NativeMountError> {
+        work.check()?;
+        self.core.source.fence_changes_with_work(&mut super::NativeMountWork { work })
+            .map_err(source_error)?;
         let poisoned = |_| NativeMountError::Driver("FUSE projection state is poisoned".to_owned());
         let mut state = self.lock_state()?;
         let target = state.invalidation.notified;
-        // A page store read before the target may land after the invalidator
-        // dropped what it superseded; it defers that drop again as it lands.
         loop {
+            work.check()?;
             if self.core.stopping.load(Ordering::Acquire) {
-                return Err(stopped());
+                return Err(NativeMountError::Driver("session is stopped".to_owned()));
             }
-            state = if state.invalidation.is_pending(target) {
-                self.core.invalidation.wait(state).map_err(poisoned)?
+            let condition = if state.invalidation.is_pending(target) {
+                &self.core.invalidation
             } else if target.is_some_and(|target| state.page_stores.precede(target)) {
-                self.core.page_stored.wait(state).map_err(poisoned)?
-            } else {
-                break;
+                &self.core.page_stored
+            } else { break; };
+            let delta = crate::WorkCounters {
+                backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
             };
+            work.work.admit(delta, work.budget)?;
+            work.record(delta)?;
+            state = condition.wait_timeout(state, Duration::from_millis(10))
+                .map_err(poisoned)?.0;
         }
-        state
-            .invalidation
-            .failure
-            .take()
+        state.invalidation.failure.take()
             .map_or(Ok(()), |error| Err(NativeMountError::Driver(error)))
     }
 
@@ -2475,6 +2487,7 @@ impl FuseSession {
             core,
             invalidator: None,
             shutdown_failed: false,
+            invalidator_failed: false,
         };
         match invalidator {
             Ok(invalidator) => {
@@ -2488,21 +2501,51 @@ impl FuseSession {
         }
     }
 
+    /// Uses the same teardown engine as bounded stop, without a work limit.
     pub(super) fn stop(&mut self) -> Result<(), NativeMountError> {
+        if self.session.is_none() && self.invalidator.is_none()
+            && !self.shutdown_failed && !self.invalidator_failed {
+            return Ok(());
+        }
+        let cancellation = crate::CancellationToken::new();
+        self.stop_measured(&mut crate::demand::DemandWork::new(
+            crate::WorkBudget::UNBOUNDED, &cancellation,
+        ))
+    }
+
+    /// Admits the actual fuser detach/join and invalidator join separately.
+    /// Existing driver state is borrowed, not a new allocation. A denied join
+    /// retains its handle; a failed consumed SDK shutdown remains a failure on
+    /// later attempts, rather than being mistaken for an already-stopped mount.
+    pub(super) fn stop_measured(
+        &mut self, work: &mut crate::demand::DemandWork,
+    ) -> Result<(), NativeMountError> {
         if self.shutdown_failed {
             return Err(NativeMountError::Driver(
                 "FUSE background session previously failed during shutdown".to_owned(),
             ));
         }
-        self.core.stopping.store(true, Ordering::Release);
-        if let Some(session) = self.session.take() {
+        if self.invalidator_failed {
+            return Err(NativeMountError::Driver(
+                "FUSE invalidator previously failed during shutdown".to_owned(),
+            ));
+        }
+        work.check().map_err(fuse_stop_work_error)?;
+        if self.session.is_some() {
+            let delta = crate::WorkCounters {
+                backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
+            };
+            work.work.admit(&delta, &work.budget).map_err(NativeMountError::Work)?;
+            self.core.stopping.store(true, Ordering::Release);
+            work.record(delta).map_err(fuse_stop_work_error)?;
+            let session = self.session.take().expect("admitted FUSE session remains owned");
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 session.umount_and_join()
             })) {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
                     self.shutdown_failed = true;
-                    return Err(NativeMountError::Driver(error.to_string()));
+                    return Err(error.into());
                 }
                 Err(_) => {
                     self.shutdown_failed = true;
@@ -2512,19 +2555,204 @@ impl FuseSession {
                 }
             }
         }
-        if let Some(invalidator) = self.invalidator.take() {
-            // Notified under the lock so the stop cannot fall between the
+        if self.invalidator.is_some() {
+            let delta = crate::WorkCounters {
+                backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
+            };
+            work.check().map_err(fuse_stop_work_error)?;
+            work.work.admit(&delta, &work.budget).map_err(NativeMountError::Work)?;
+            // Notified under the lock so stopping cannot fall between the
             // invalidator's check and its wait.
             {
                 let _state = self.core.state.lock();
+                self.core.stopping.store(true, Ordering::Release);
                 self.core.invalidation.notify_all();
             }
-            invalidator.join().map_err(|_| {
-                NativeMountError::Driver("FUSE invalidator failed during shutdown".to_owned())
-            })?;
+            work.record(delta).map_err(fuse_stop_work_error)?;
+            let invalidator = self.invalidator.take().expect("admitted invalidator remains owned");
+            if invalidator.join().is_err() {
+                self.invalidator_failed = true;
+                return Err(NativeMountError::Driver(
+                    "FUSE invalidator failed during shutdown".to_owned(),
+                ));
+            }
         }
         Ok(())
     }
+
+    /// Evidence from the consumed SDK detach, independent of a later failed
+    /// invalidator join. A failed SDK detach never becomes absence evidence.
+    pub(super) fn namespace_detach_confirmed(&self) -> bool {
+        self.session.is_none() && !self.shutdown_failed
+    }
+}
+
+/// Crash-recovery custody paired by the root owner with its original fence.
+/// This is the same finite direct-detach/helper engine for both ordinary and
+/// measured recovery; no helper identity is surrendered before actual reap.
+#[derive(Default)]
+pub(super) struct FuseRecoveryControl {
+    helper: Option<acyclic_native_runtime::ProcessTree>,
+    deadline: Option<std::time::Instant>,
+    failed_spawn: bool,
+    detached: bool,
+}
+
+impl FuseRecoveryControl {
+    pub(super) fn namespace_detach_confirmed(&self) -> bool { self.detached }
+    pub(super) fn controls_pending(&self) -> bool { self.helper.is_some() }
+
+    fn retire_helper(&mut self, work: &mut crate::demand::DemandWork) -> Result<(), NativeMountError> {
+        if let Some(helper) = &mut self.helper {
+            let meter = crate::demand::NativeDemandReadMeter(Mutex::new(work));
+            helper.terminate_measured(&meter).map_err(crate::demand::native_demand_error)?;
+        }
+        self.helper.take();
+        self.deadline = None;
+        self.failed_spawn = false;
+        Ok(())
+    }
+
+    /// Every path, retry, probe, spawn action, observation, signal, and reap is
+    /// admitted at its actual leaf. Failure retains the tree in this control,
+    /// so the caller must retain the same destination fence alongside it.
+    pub(super) fn recover_measured(
+        &mut self, destination: &Path, work: &mut crate::demand::DemandWork,
+    ) -> Result<(), NativeMountError> {
+        work.check()?;
+        let mounted = fuse_recovery_is_mounted(destination, work)?;
+        self.detached = !mounted;
+        if self.helper.is_some() && (!mounted || self.failed_spawn) { self.retire_helper(work)?; }
+        if !mounted { return Ok(()); }
+        if self.helper.is_none() {
+            // Lazy direct detach matches the fallback helper's existing -z
+            // policy. An OS denial is not an absence proof: only the following
+            // real mount probe may establish that evidence.
+            let direct = crate::native_host::unix_name_with_work(
+                destination.as_os_str(), work, |path, work| {
+                    fuse_recovery_attempt(work, true, || {
+                        // SAFETY: the admitted terminated pathname stays alive
+                        // throughout this actual native control call.
+                        if unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) } == 0 { Ok(()) }
+                        else { Err(std::io::Error::last_os_error()) }
+                    })
+                },
+            );
+            if let Err(error) = direct {
+                if !matches!(&error, crate::DemandError::Io(_)) { return Err(error.into()); }
+            }
+            if !fuse_recovery_is_mounted(destination, work)? {
+                self.detached = true;
+                return Ok(());
+            }
+            let program = fuse_recovery_helper(work)?;
+            let spawned = crate::native_host::unix_name_with_work(
+                destination.as_os_str(), work, |path, work| {
+                    let meter = crate::demand::NativeDemandReadMeter(Mutex::new(work));
+                    acyclic_native_runtime::ProcessTree::spawn_closed_measured(
+                        program, &[c"-u", c"-q", c"-z", c"--", path], &meter, &mut self.helper,
+                    ).map_err(crate::demand::native_demand_error)
+                },
+            );
+            if self.helper.is_some() {
+                self.deadline = Some(std::time::Instant::now() + Duration::from_secs(30));
+                self.failed_spawn = spawned.is_err();
+            }
+            spawned?;
+        }
+        loop {
+            let status = {
+                let helper = self.helper.as_mut().expect("accepted helper remains owned");
+                let meter = crate::demand::NativeDemandReadMeter(Mutex::new(&mut *work));
+                helper.try_wait_measured(&meter).map_err(crate::demand::native_demand_error)?
+            };
+            if status.is_some() { break; }
+            if self.deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                self.retire_helper(work)?;
+                return Err(NativeMountError::Driver(
+                    "fusermount crash recovery exceeded 30 seconds".to_owned(),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        self.retire_helper(work)?;
+        if fuse_recovery_is_mounted(destination, work)? {
+            return Err(NativeMountError::Driver(
+                "FUSE destination remained mounted after crash recovery".to_owned(),
+            ));
+        }
+        self.detached = true;
+        Ok(())
+    }
+}
+
+fn fuse_recovery_attempt<T>(
+    work: &mut crate::demand::DemandWork, write: bool,
+    call: impl FnOnce() -> std::io::Result<T>,
+) -> Result<T, crate::DemandError> {
+    let delta = if write {
+        crate::WorkCounters { backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED }
+    } else {
+        crate::WorkCounters { backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED }
+    };
+    crate::native_host::NativeHostWork::admit(work, delta)?;
+    crate::native_host::NativeHostWork::record(work, delta)?;
+    call().map_err(Into::into)
+}
+
+fn fuse_recovery_stat(
+    path: &std::ffi::CStr, work: &mut crate::demand::DemandWork,
+) -> Result<libc::stat, crate::DemandError> {
+    loop {
+        let result = fuse_recovery_attempt(work, false, || {
+            let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+            // SAFETY: pathname is terminated; success initializes all fields.
+            if unsafe { libc::stat(path.as_ptr(), metadata.as_mut_ptr()) } == 0 {
+                Ok(unsafe { metadata.assume_init() })
+            } else { Err(std::io::Error::last_os_error()) }
+        });
+        if matches!(&result, Err(crate::DemandError::Io(error))
+            if error.kind() == std::io::ErrorKind::Interrupted) { continue; }
+        return result;
+    }
+}
+
+fn fuse_recovery_is_mounted(
+    destination: &Path, work: &mut crate::demand::DemandWork,
+) -> Result<bool, NativeMountError> {
+    let parent = destination.parent().ok_or(NativeMountError::InvalidDestination)?;
+    let parent = crate::native_host::unix_name_with_work(
+        parent.as_os_str(), work, fuse_recovery_stat,
+    )?;
+    let destination = crate::native_host::unix_name_with_work(
+        destination.as_os_str(), work, fuse_recovery_stat,
+    );
+    match destination {
+        Ok(metadata) => Ok(metadata.st_dev != parent.st_dev),
+        Err(crate::DemandError::Io(error)) if error.raw_os_error() == Some(libc::ENOTCONN) => Ok(true),
+        Err(crate::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn fuse_recovery_helper(
+    work: &mut crate::demand::DemandWork,
+) -> Result<&'static std::ffi::CStr, NativeMountError> {
+    for candidate in [c"/usr/bin/fusermount3", c"/bin/fusermount3", c"/usr/bin/fusermount", c"/bin/fusermount"] {
+        work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
+        match fuse_recovery_stat(candidate, work) {
+            Ok(metadata) if metadata.st_mode & libc::S_IFMT == libc::S_IFREG => return Ok(candidate),
+            Ok(_) | Err(crate::DemandError::Io(_)) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(NativeMountError::CapabilityUnavailable(
+        "no canonical fusermount helper is available for crash recovery".to_owned(),
+    ))
+}
+
+fn fuse_stop_work_error(error: crate::DemandError) -> NativeMountError {
+    error.into()
 }
 
 /// Attribute changes one `SETATTR` requests.
@@ -5603,6 +5831,171 @@ mod tests {
     }
 
     #[test]
+    fn measured_invalidator_join_denial_cancellation_and_panic_retain_truth()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (source, _) = shared_sources()?;
+        let core = Arc::new(super::ProjectionCore::new(Arc::new(source), empty_projection_state()));
+        let mut session = super::FuseSession {
+            session: None,
+            core: Arc::clone(&core),
+            invalidator: Some(std::thread::spawn(|| {})),
+            shutdown_failed: false,
+            invalidator_failed: false,
+        };
+        let cancellation = crate::CancellationToken::new();
+        let mut denied = crate::demand::DemandWork::new(crate::WorkBudget {
+            backend_read_operations: 0, ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation);
+        assert!(matches!(session.stop_measured(&mut denied), Err(crate::NativeMountError::Work(_))));
+        assert_eq!(denied.work, crate::WorkCounters::UNCHARGED);
+        assert!(session.invalidator.is_some());
+        assert!(!core.stopping.load(super::Ordering::Acquire));
+        cancellation.cancel();
+        let mut cancelled = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+        assert!(session.stop_measured(&mut cancelled).is_err());
+        assert_eq!(cancelled.work, crate::WorkCounters::UNCHARGED);
+        assert!(session.invalidator.is_some());
+        let cancellation = crate::CancellationToken::new();
+        let mut exact = crate::demand::DemandWork::new(crate::WorkBudget {
+            backend_read_operations: 1, backend_write_operations: 0,
+            allocation_operations: 0, peak_allocation_bytes: 0,
+            ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation);
+        session.stop_measured(&mut exact)?;
+        assert_eq!(exact.work, crate::WorkCounters {
+            backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
+        });
+        session.invalidator = Some(std::thread::spawn(|| panic!("controlled invalidator shutdown failure")));
+        let mut failure = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+        assert!(session.stop_measured(&mut failure).is_err());
+        assert_eq!(failure.work.backend_read_operations, 1);
+        assert!(session.invalidator_failed);
+        assert!(session.stop().is_err(), "a consumed failed join is never success on retry");
+        Ok(())
+    }
+
+    #[test]
+    fn linux_recovery_probe_exact_paths_and_denied_prefix_preserve_evidence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let cancellation = crate::CancellationToken::new();
+        let mut control = super::FuseRecoveryControl::default();
+        let mut denied = crate::demand::DemandWork::new(crate::WorkBudget {
+            backend_read_operations: 1, backend_write_operations: 0,
+            ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation);
+        assert!(matches!(control.recover_measured(temporary.path(), &mut denied), Err(crate::NativeMountError::Work(_))));
+        assert_eq!(denied.work.backend_read_operations, 1, "only the real parent stat completed");
+        assert_eq!(denied.work.backend_write_operations, 0);
+        assert_eq!(denied.work.allocation_operations, 2, "both actual native pathnames were constructed");
+        assert_eq!(denied.live_allocation_bytes(), 0);
+        assert!(!control.namespace_detach_confirmed());
+        assert!(!control.controls_pending());
+        let path_bytes = temporary.path().as_os_str().as_encoded_bytes().len() as u64;
+        let parent_bytes = temporary.path().parent().expect("temporary parent")
+            .as_os_str().as_encoded_bytes().len() as u64;
+        let mut exact = crate::demand::DemandWork::new(crate::WorkBudget {
+            backend_read_operations: 2, backend_write_operations: 0,
+            allocation_operations: 2, peak_allocation_bytes: path_bytes + 1,
+            bytes_copied: path_bytes + parent_bytes, items_examined: path_bytes + parent_bytes,
+            ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation);
+        control.recover_measured(temporary.path(), &mut exact)?;
+        assert_eq!(exact.work.backend_read_operations, 2);
+        assert_eq!(exact.work.backend_write_operations, 0);
+        assert_eq!(exact.work.allocation_operations, 2);
+        assert_eq!(exact.live_allocation_bytes(), 0);
+        assert!(control.namespace_detach_confirmed(), "absence came from actual device probes");
+        let cancelled = crate::CancellationToken::new();
+        cancelled.cancel();
+        let mut canceled_work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancelled);
+        assert!(control.recover_measured(temporary.path(), &mut canceled_work).is_err());
+        assert_eq!(canceled_work.work, crate::WorkCounters::UNCHARGED);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires a live Linux FUSE mount"]
+    fn linux_recovery_denied_control_keeps_the_actual_provider_attached()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (source, _) = shared_sources()?;
+        let source = Arc::new(source);
+        let temporary = tempfile::tempdir()?;
+        let mut session = super::FuseSession::start(&crate::NativeMountRequest {
+            mount_id: crate::MountId::new(), volume_id: source.volume_id()?,
+            destination: temporary.path().to_path_buf(), writable: true,
+        }, source as Arc<dyn MountFilesystem>)?;
+        let cancellation = crate::CancellationToken::new();
+        let mut control = super::FuseRecoveryControl::default();
+        let mut denied = crate::demand::DemandWork::new(crate::WorkBudget {
+            backend_read_operations: 2, backend_write_operations: 0,
+            ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation);
+        assert!(matches!(control.recover_measured(temporary.path(), &mut denied), Err(crate::NativeMountError::Work(_))));
+        assert_eq!(denied.work.backend_read_operations, 2);
+        assert_eq!(denied.work.backend_write_operations, 0, "umount2 was not entered");
+        assert_eq!(denied.live_allocation_bytes(), 0);
+        assert!(!control.namespace_detach_confirmed());
+        assert!(!control.controls_pending());
+        std::fs::write(temporary.path().join("still-attached"), b"same live provider")?;
+        session.stop()?;
+        let mut exact = crate::demand::DemandWork::new(crate::WorkBudget {
+            backend_read_operations: 2, backend_write_operations: 0,
+            ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation);
+        control.recover_measured(temporary.path(), &mut exact)?;
+        assert!(control.namespace_detach_confirmed());
+        assert_eq!(exact.work.backend_read_operations, 2);
+        assert_eq!(exact.work.backend_write_operations, 0);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires a live Linux FUSE mount"]
+    fn linux_measured_stop_spends_only_real_sdk_calls_and_retains_denied_join()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (source, _) = shared_sources()?;
+        let source = Arc::new(source);
+        let temporary = tempfile::tempdir()?;
+        let mut session = super::FuseSession::start(&crate::NativeMountRequest {
+            mount_id: crate::MountId::new(),
+            volume_id: source.volume_id()?,
+            destination: temporary.path().to_path_buf(),
+            writable: true,
+        }, source as Arc<dyn MountFilesystem>)?;
+        let cancellation = crate::CancellationToken::new();
+        let mut zero = crate::demand::DemandWork::new(crate::WorkBudget {
+            backend_write_operations: 0, ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation);
+        assert!(matches!(session.stop_measured(&mut zero), Err(crate::NativeMountError::Work(_))));
+        assert_eq!(zero.work, crate::WorkCounters::UNCHARGED);
+        assert!(session.session.is_some());
+        assert!(!session.namespace_detach_confirmed());
+        std::fs::write(temporary.path().join("still-mounted"), b"admission left driver alive")?;
+        let mut detach = crate::demand::DemandWork::new(crate::WorkBudget {
+            backend_write_operations: 1, backend_read_operations: 0,
+            allocation_operations: 0, peak_allocation_bytes: 0,
+            ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation);
+        assert!(matches!(session.stop_measured(&mut detach), Err(crate::NativeMountError::Work(_))));
+        assert_eq!(detach.work, crate::WorkCounters {
+            backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
+        });
+        assert!(session.session.is_none());
+        assert!(session.invalidator.is_some());
+        assert!(session.namespace_detach_confirmed(), "successful SDK detach survives a denied later join");
+        let mut join = crate::demand::DemandWork::new(crate::WorkBudget {
+            backend_write_operations: 0, backend_read_operations: 1,
+            allocation_operations: 0, peak_allocation_bytes: 0,
+            ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation);
+        session.stop_measured(&mut join)?;
+        assert_eq!(join.work.backend_read_operations, 1);
+        assert_eq!(join.work.backend_write_operations, 0);
+        Ok(())
+    }
+
+    #[test]
     #[ignore = "requires a live Linux FUSE mount"]
     fn linux_changes_around_the_mount_reach_every_kernel_cache()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -6102,6 +6495,16 @@ mod tests {
         fn observe_view(&self, observer: Weak<dyn ViewObserver>) {
             self.inner.observe_view(observer);
         }
+        fn observe_view_with_work(
+            &self, observer: Weak<dyn ViewObserver>, work: &mut super::super::NativeMountWork<'_>,
+        ) -> Result<(), MountSourceError> {
+            self.inner.observe_view_with_work(observer, work)
+        }
+        fn fence_changes_with_work(
+            &self, work: &mut super::super::NativeMountWork<'_>,
+        ) -> Result<(), MountSourceError> {
+            self.inner.fence_changes_with_work(work)
+        }
         fn binding_epoch(&self) -> Option<u64> {
             self.inner.binding_epoch()
         }
@@ -6114,10 +6517,32 @@ mod tests {
         ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
             self.inner.acquire_binding_lease(expected_epoch)
         }
+        fn acquire_binding_lease_with_work(
+            &self, expected_epoch: Option<u64>, work: &mut super::super::NativeMountWork<'_>,
+        ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+            self.inner.acquire_binding_lease_with_work(expected_epoch, work)
+        }
         fn lookup(&self, path: &MountPath) -> Result<Option<MountLookup>, MountSourceError> {
             self.record_read(path);
             self.pass(path, &self.gated_lookup);
             self.inner.lookup(path)
+        }
+        fn lookup_with_work(
+            &self, path: &MountPath, work: &mut super::super::NativeMountWork<'_>,
+        ) -> Result<Option<MountLookup>, MountSourceError> {
+            self.inner.lookup_with_work(path, work)
+        }
+        fn lookup_pinned_with_work(
+            &self, path: &MountPath, work: &mut super::super::NativeMountWork<'_>,
+        ) -> Result<Option<(MountLookup, Option<super::super::MountContentPin>)>, MountSourceError> {
+            self.inner.lookup_pinned_with_work(path, work)
+        }
+        fn read_pinned_with_work(
+            &self, path: &MountPath, pin: super::super::MountContentPin, offset: u64, length: u64,
+            piece: u32, sink: &mut super::super::ContentSink<'_>,
+            work: &mut super::super::NativeMountWork<'_>,
+        ) -> Result<(), MountSourceError> {
+            self.inner.read_pinned_with_work(path, pin, offset, length, piece, sink, work)
         }
         fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
             self.inner.open_file(path)
@@ -6131,6 +6556,11 @@ mod tests {
         fn read_link(&self, path: &MountPath) -> Result<Bytes, MountSourceError> {
             self.inner.read_link(path)
         }
+        fn read_link_with_work(
+            &self, path: &MountPath, work: &mut super::super::NativeMountWork<'_>,
+        ) -> Result<Bytes, MountSourceError> {
+            self.inner.read_link_with_work(path, work)
+        }
         fn read_range(
             &self,
             path: &MountPath,
@@ -6138,6 +6568,11 @@ mod tests {
             length: u32,
         ) -> Result<Bytes, MountSourceError> {
             self.inner.read_range(path, offset, length)
+        }
+        fn read_range_with_work(
+            &self, path: &MountPath, offset: u64, length: u32, work: &mut super::super::NativeMountWork<'_>,
+        ) -> Result<Bytes, MountSourceError> {
+            self.inner.read_range_with_work(path, offset, length, work)
         }
         fn seek(
             &self,
@@ -6154,6 +6589,12 @@ mod tests {
             maximum_entries: u32,
         ) -> Result<MountDirectoryPage, MountSourceError> {
             self.inner.read_directory(path, cursor, maximum_entries)
+        }
+        fn read_directory_with_work(
+            &self, path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32,
+            work: &mut super::super::NativeMountWork<'_>,
+        ) -> Result<MountDirectoryPage, MountSourceError> {
+            self.inner.read_directory_with_work(path, cursor, maximum_entries, work)
         }
         fn create_file(
             &self,
@@ -6320,6 +6761,20 @@ mod tests {
             path: &MountPath,
         ) -> Result<(), MountSourceError> {
             self.inner.capture_host_subtree(source_root, path)
+        }
+        fn capture_host_paths_with_work(
+            &self, source_root: &std::path::Path, paths: &[MountPath],
+            expected_root_identity: crate::NativeRootIdentity,
+            work: &mut super::super::NativeMountWork<'_>,
+        ) -> Result<(), MountSourceError> {
+            self.inner.capture_host_paths_with_work(source_root, paths, expected_root_identity, work)
+        }
+        fn capture_host_subtree_with_work(
+            &self, source_root: &std::path::Path, path: &MountPath,
+            expected_root_identity: crate::NativeRootIdentity,
+            work: &mut super::super::NativeMountWork<'_>,
+        ) -> Result<(), MountSourceError> {
+            self.inner.capture_host_subtree_with_work(source_root, path, expected_root_identity, work)
         }
     }
 

@@ -2,25 +2,25 @@
 
 use super::{
     NATIVE_PROCESS_EFFECT_KIND, NativeProcessRequest, NativeProcessResult, NativeProcessStop,
-    NativeProcessStopKind, NativeViewManifest, NativeVolumeView,
+    NativeProcessStopKind, NativeProcessView, NativePublicationFailure, NativeViewManifest, NativeViewOwner,
 };
 use crate::{
     Error, InteractionId, OperationId, Result,
     conversation::{ContentPublisher, ContentResidencyVerifier},
-    core::{AuthorityVerifier, EffectGuarantee, EffectStatus, SchemaRegistry},
+    core::{AuthorityVerifier, EffectGuarantee, EffectStatus},
     distributed::JournalWrite,
     durable_host::TaskJournalOwner,
     effect_host::{TaskEffectPlan, task_effect_id},
     effects::{EffectDispatch, EffectObservation, EffectProvider},
-    store::StreamAggregate,
+    store::{HistoryReadLimits, HistoryReader},
     tool::ToolApprovalVerifier,
 };
-use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::{BoxProviderFuture, StreamError, StreamPath, StreamProvider};
 use bytes::Bytes;
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Cow,
     collections::BTreeSet,
     process::{Command, Stdio},
     sync::Arc,
@@ -68,21 +68,15 @@ impl NativeProcessRequest {
 
     fn validate_native_paths(&self, view: &NativeViewManifest) -> Result<()> {
         self.validate()?;
-        if &self.view != view
-            || !std::fs::canonicalize(&self.cwd)
-                .map_err(io_error)?
-                .starts_with(&view.options.root)
-        {
-            return Err(Error::Conflict("native command view or cwd changed".into()));
+        if &self.view != view {
+            return Err(Error::Conflict("native command view changed".into()));
         }
-        if !std::fs::metadata(&self.executable)
-            .map_err(io_error)?
-            .is_file()
-            || !std::fs::metadata(&self.cwd).map_err(io_error)?.is_dir()
-        {
-            return Err(Error::Invalid(
-                "native executable or cwd is unavailable".into(),
-            ));
+        // This is only the locator grammar. The prepared view checks its
+        // original held root and each no-follow directory before capture.
+        let relative = self.cwd.strip_prefix(&view.options.root)
+            .map_err(|_| Error::Conflict("native cwd is outside the selected locator".into()))?;
+        if relative.components().any(|part| !matches!(part, std::path::Component::Normal(_))) {
+            return Err(Error::Invalid("native cwd has a non-relative component".into()));
         }
         Ok(())
     }
@@ -92,8 +86,8 @@ impl NativeProcessRequest {
 pub struct NativeProcessAuthority {
     /// Original conversation authority verifier.
     pub verifier: AuthorityVerifier,
-    /// Same core schemas used by the owning conversation.
-    pub schemas: SchemaRegistry,
+    /// Explicit finite allowance for authenticated exact effect history.
+    pub history_limits: HistoryReadLimits,
     /// Owner-authenticated immutable request/schema reader.
     pub content: Arc<dyn ContentResidencyVerifier>,
     /// Owner-bound result publisher; it retains the result before returning.
@@ -104,12 +98,12 @@ pub struct NativeProcessAuthority {
 
 /// Optional provider for one retained task command. Construction launches nothing.
 /// Ordinary host processes are trusted effects, not a confinement boundary.
-pub struct NativeProcessProvider<P, A, O> {
+pub struct NativeProcessProvider<P: StreamProvider> {
     owner: Arc<TaskJournalOwner<P>>,
     command: OperationId,
     plan: TaskEffectPlan,
     request: NativeProcessRequest,
-    view: Option<Arc<NativeVolumeView<A, O>>>,
+    view: Option<Arc<dyn NativeProcessView<P>>>,
     approval: InteractionId,
     authority: Arc<NativeProcessAuthority>,
     result_schema: serde_json::Value,
@@ -117,21 +111,21 @@ pub struct NativeProcessProvider<P, A, O> {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct LaunchReceipt {
-    dispatch: EffectDispatch,
-    plan: TaskEffectPlan,
-    conversation: crate::core::Authority,
+struct LaunchReceipt<'a> {
+    dispatch: Cow<'a, EffectDispatch>,
+    plan: Cow<'a, TaskEffectPlan>,
+    conversation: Cow<'a, crate::core::Authority>,
     task: crate::TaskId,
     command: OperationId,
-    fence: crate::scheduler::LeaseFence,
+    fence: Cow<'a, crate::scheduler::LeaseFence>,
     approval: InteractionId,
     approval_digest: [u8; 32],
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum Receipt {
-    Launch(Box<LaunchReceipt>),
+enum Receipt<'a> {
+    Launch(Box<LaunchReceipt<'a>>),
     Observed(Box<NativeObservation>),
 }
 
@@ -140,19 +134,84 @@ enum Receipt {
 struct NativeObservation {
     effect: EffectObservation,
     diagnostic: Option<crate::conversation::FileRef>,
+    publication_failure: Option<NativePublicationFailure>,
+    invocation_failure: Option<String>,
+    work: acyclic_fs::WorkCounters,
 }
 
 struct NativeExecution {
     status: EffectStatus,
     diagnostic: Option<crate::conversation::FileRef>,
+    publication_failure: Option<NativePublicationFailure>,
+    invocation_failure: Option<String>,
+    work: acyclic_fs::WorkCounters,
 }
 
-impl<P, A, O> NativeProcessProvider<P, A, O>
+/// Authenticated original attempt and its durable native diagnostic.
+/// Launch-only receipts retain uncertainty; this observation conveys no authority.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeProcessReceipt {
+    /// Original task, never reconstructed from native paths.
+    pub task: crate::TaskId,
+    /// Original admitted command.
+    pub command: OperationId,
+    /// Creation/dispatch fence; legitimate recovery verifies its current fence separately.
+    pub original_fence: crate::scheduler::LeaseFence,
+    /// Retained effect status, including a launch-only indeterminate outcome.
+    pub effect: EffectObservation,
+    /// Whether process observation durably committed.
+    pub observed: bool,
+    /// Bounded OS output/cleanup artifact, when retained.
+    pub diagnostic: Option<crate::conversation::FileRef>,
+    /// Exact destination failure and already completed independent publications.
+    pub publication_failure: Option<NativePublicationFailure>,
+    /// Original capture/staging failure, not silently flattened into uncertainty.
+    pub invocation_failure: Option<String>,
+    /// Selected native view's exact filesystem capture/publication work.
+    pub work: acyclic_fs::WorkCounters,
+}
+
+impl<P> NativeProcessProvider<P>
 where
     P: StreamProvider + 'static,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
 {
+    /// Queries the same fenced launch/observation journal used by reconciliation.
+    pub async fn receipt(
+        &self,
+        attempt: crate::EffectAttemptId,
+    ) -> Result<Option<NativeProcessReceipt>> {
+        let Some(effect) = self.reconcile(attempt).await? else {
+            return Ok(None);
+        };
+        let (launch, observed) = read_receipt(&self.owner, &receipt_path(attempt)?)
+            .await?
+            .ok_or_else(|| Error::Conflict("native receipt disappeared".into()))?;
+        Ok(Some(NativeProcessReceipt {
+            task: launch.task,
+            command: launch.command,
+            original_fence: launch.fence.into_owned(),
+            effect,
+            observed: observed.is_some(),
+            work: observed.as_ref().map_or_else(acyclic_fs::WorkCounters::default, |value| value.work),
+            diagnostic: observed.as_ref().and_then(|value| value.diagnostic.clone()),
+            publication_failure: observed
+                .as_ref()
+                .and_then(|value| value.publication_failure.clone()),
+            invocation_failure: observed.and_then(|value| value.invocation_failure),
+        }))
+    }
+
+    async fn effect_state(&self, effect: crate::EffectId) -> Result<Option<crate::core::EffectState>> {
+        let reader = HistoryReader::new(
+            &self.owner.stream(),
+            self.authority.verifier.audience(),
+            self.authority.verifier.clone(),
+        )?;
+        let cursor = reader.pin(0).await?;
+        reader.effect(&cursor, effect, self.authority.history_limits).await
+    }
+
     /// Reads retained output after authenticating this exact attempt. Unknown
     /// cleanup may have a diagnostic artifact but remains indeterminate.
     pub async fn output(
@@ -196,7 +255,7 @@ where
         owner: Arc<TaskJournalOwner<P>>,
         command: OperationId,
         plan: TaskEffectPlan,
-        view: Arc<NativeVolumeView<A, O>>,
+        view: Arc<dyn NativeProcessView<P>>,
         approval: InteractionId,
         authority: NativeProcessAuthority,
     ) -> Result<Self> {
@@ -220,11 +279,14 @@ where
         owner: Arc<TaskJournalOwner<P>>,
         command: OperationId,
         plan: TaskEffectPlan,
-        view: Option<Arc<NativeVolumeView<A, O>>>,
+        view: Option<Arc<dyn NativeProcessView<P>>>,
         approval: InteractionId,
         authority: NativeProcessAuthority,
     ) -> Result<Self> {
         owner.verify(true).await?;
+        if authority.history_limits.maximum_events == 0 || authority.history_limits.maximum_bytes == 0 {
+            return Err(Error::Invalid("native effect history allowances must be finite and positive".into()));
+        }
         owner.require_effect_grants(&plan.provider, false)?;
         owner.validate_input_file(&plan.request)?;
         owner.validate_input_file(&plan.result_schema)?;
@@ -242,6 +304,7 @@ where
         plan.request.descriptor().verify(&bytes)?;
         let request: NativeProcessRequest = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Invalid(error.to_string()))?;
+        require_view_grants(&owner, &request.view)?;
         request.validate()?;
         if request
             .view
@@ -294,17 +357,10 @@ where
     async fn require_dispatch(&self, dispatch: &EffectDispatch) -> Result<()> {
         self.owner.verify(false).await?;
         let effect_id = task_effect_id(self.owner.task_binding().0, self.command)?;
-        let aggregate = StreamAggregate::open(
-            &self.owner.stream(),
-            self.authority.verifier.audience().clone(),
-            self.authority.verifier.clone(),
-            self.authority.schemas.clone(),
-        )
-        .await?;
-        let state = aggregate.reducer().effect(effect_id).ok_or_else(|| {
+        let state = self.effect_state(effect_id).await?.ok_or_else(|| {
             Error::Unauthorized("native command has no committed effect admission".into())
         })?;
-        if EffectDispatch::from_state(effect_id, state)? != *dispatch
+        if EffectDispatch::from_state(effect_id, &state)? != *dispatch
             || state.provider != self.plan.provider
             || state.effect_kind != self.plan.effect_kind
             || state.guarantee != self.plan.guarantee
@@ -328,19 +384,25 @@ where
                     .approval_digest(self.owner.task_binding().0, self.command)?,
             )
             .await?;
-        view.validate_for_dispatch().await
+        require_view_grants(&self.owner, &self.request.view)?;
+        // Physical checks follow the original durable launch receipt, so a
+        // pre-capture failure retains its spent work in the same journal.
+        if view.manifest() != &self.request.view {
+            return Err(Error::Conflict("native dispatch view changed".into()));
+        }
+        self.owner.verify(false).await.map(|_| ())
     }
 
     async fn launch(&self, dispatch: EffectDispatch) -> Result<EffectObservation> {
         self.require_dispatch(&dispatch).await?;
         let (task, fence) = self.owner.task_binding();
         let launch = LaunchReceipt {
-            dispatch: dispatch.clone(),
-            plan: self.plan.clone(),
-            conversation: self.authority.verifier.audience().clone(),
+            dispatch: Cow::Borrowed(&dispatch),
+            plan: Cow::Borrowed(&self.plan),
+            conversation: Cow::Borrowed(self.authority.verifier.audience()),
             task,
             command: self.command,
-            fence,
+            fence: Cow::Borrowed(fence),
             approval: self.approval,
             approval_digest: self.request.approval_digest(task, self.command)?,
         };
@@ -383,15 +445,13 @@ where
         let request = self.request.clone();
         let schema = self.result_schema.clone();
         tokio::spawn(async move {
-            let execution = execute(&owner, &view, &authority, &request, &dispatch, &schema)
-                .await
-                .unwrap_or(NativeExecution {
-                    status: EffectStatus::Indeterminate,
-                    diagnostic: None,
-                });
+            let execution = execute(&owner, view.as_ref(), &authority, &request, &dispatch, &schema).await;
             let observed = NativeObservation {
                 effect: observation(&dispatch, execution.status),
                 diagnostic: execution.diagnostic,
+                publication_failure: execution.publication_failure,
+                invocation_failure: execution.invocation_failure,
+                work: execution.work,
             };
             if !append_receipt(
                 &owner,
@@ -418,11 +478,9 @@ where
     }
 }
 
-impl<P, A, O> EffectProvider for NativeProcessProvider<P, A, O>
+impl<P> EffectProvider for NativeProcessProvider<P>
 where
     P: StreamProvider + 'static,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
 {
     fn id(&self) -> &str {
         &self.plan.provider
@@ -456,8 +514,8 @@ where
             };
             if launch.task != self.owner.task_binding().0
                 || launch.command != self.command
-                || launch.plan != self.plan
-                || &launch.conversation != self.authority.verifier.audience()
+                || launch.plan.as_ref() != &self.plan
+                || launch.conversation.as_ref() != self.authority.verifier.audience()
                 || launch.dispatch.effect_id != task_effect_id(launch.task, self.command)?
                 || launch.dispatch.attempt_id != attempt
                 || launch.dispatch.provider != self.plan.provider
@@ -472,19 +530,10 @@ where
                     "native receipt belongs to a different admission".into(),
                 ));
             }
-            let aggregate = StreamAggregate::open(
-                &self.owner.stream(),
-                launch.conversation.clone(),
-                self.authority.verifier.clone(),
-                self.authority.schemas.clone(),
-            )
-            .await?;
-            let state = aggregate
-                .reducer()
-                .effect(launch.dispatch.effect_id)
-                .ok_or_else(|| {
-                    Error::Unauthorized("native receipt has no retained core effect".into())
-                })?;
+            let state = self
+                .effect_state(launch.dispatch.effect_id)
+                .await?
+                .ok_or_else(|| Error::Unauthorized("native receipt has no retained core effect".into()))?;
             if state.request_digest != launch.dispatch.request_digest
                 || state.request != launch.plan.request
                 || state.provider != launch.plan.provider
@@ -610,23 +659,189 @@ async fn capture<P: StreamProvider + 'static>(
     Ok(Some(result))
 }
 
-async fn execute<P, A, O>(
+fn require_view_grants<P: StreamProvider>(
+    owner: &TaskJournalOwner<P>,
+    manifest: &NativeViewManifest,
+) -> Result<()> {
+    manifest.validate()?;
+    for mapping in &manifest.volumes {
+        owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Read)?;
+        if mapping.writable {
+            owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Write)?;
+        }
+    }
+    Ok(())
+}
+
+async fn publish_view<P: StreamProvider>(
+    owner: &TaskJournalOwner<P>,
+    view: &dyn NativeProcessView<P>,
+    admitted: &NativeViewManifest,
+) -> std::result::Result<acyclic_fs::WorkCounters, NativePublicationFailure> {
+    let failure = |error: Error| NativePublicationFailure {
+        destination: None,
+        completed: Vec::new(),
+        message: error.to_string(),
+        work: acyclic_fs::WorkCounters::default(),
+    };
+    owner.verify(false).await.map_err(failure)?;
+    if view.manifest() != admitted {
+        return Err(failure(Error::Conflict("native publication view changed".into())));
+    }
+    require_view_grants(owner, admitted).map_err(failure)?;
+    let work = view.publish(NativeViewOwner::new(owner))?.await?;
+    if view.manifest() != admitted {
+        return Err(NativePublicationFailure {
+            destination: None,
+            completed: admitted.volumes.iter().filter(|mapping| mapping.writable).cloned().collect(),
+            message: "native publication view changed after publication".into(),
+            work,
+        });
+    }
+    owner.verify(false).await.map_err(|error| NativePublicationFailure {
+        destination: None,
+        completed: admitted.volumes.iter().filter(|mapping| mapping.writable).cloned().collect(),
+        message: error.to_string(),
+        work,
+    })?;
+    Ok(work)
+}
+
+fn native_work_error(error: acyclic_fs::WorkError) -> Error {
+    Error::Storage(format!("native work accounting failed: {error}"))
+}
+
+fn retain_validation_result<T>(
+    result: acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<T>, Error>,
+    work: &mut acyclic_fs::WorkCounters,
+    frame_bytes: u64,
+) -> Result<T> {
+    let (value, spent) = match result {
+        Ok(receipt) => (Ok(receipt.value), receipt.work),
+        Err(failure) => (Err(failure.error), *failure.work),
+    };
+    merge_execution_work(work, spent, frame_bytes)?;
+    value
+}
+
+fn merge_execution_work(
+    work: &mut acyclic_fs::WorkCounters,
+    spent: acyclic_fs::WorkCounters,
+    frame_bytes: u64,
+) -> Result<()> {
+    let overlap = frame_bytes.checked_add(spent.peak_allocation_bytes)
+        .ok_or(acyclic_fs::WorkError::Overflow).map_err(native_work_error)?;
+    *work = work.checked_add(spent).map_err(native_work_error)?;
+    work.peak_allocation_bytes = work.peak_allocation_bytes.max(overlap);
+    Ok(())
+}
+
+fn execution_remaining(
+    work: acyclic_fs::WorkCounters,
+    budget: acyclic_fs::WorkBudget,
+    frame_bytes: u64,
+) -> Result<acyclic_fs::WorkBudget> {
+    let mut remaining = work.remaining(budget).map_err(native_work_error)?;
+    remaining.peak_allocation_bytes = budget.peak_allocation_bytes.checked_sub(frame_bytes)
+        .ok_or(acyclic_fs::WorkError::Overflow).map_err(native_work_error)?;
+    Ok(remaining)
+}
+
+fn invocation_failure(error: Error, work: acyclic_fs::WorkCounters) -> NativeExecution {
+    NativeExecution {
+        status: EffectStatus::Indeterminate,
+        diagnostic: None,
+        publication_failure: None,
+        invocation_failure: Some(error.to_string()),
+        work,
+    }
+}
+
+// Admission precedes construction: evaluating the large installed execution
+// future on the caller's stack would defeat this necessary heap boundary.
+#[inline(never)]
+fn box_execution<F: std::future::Future<Output = NativeExecution>>(
+    build: impl FnOnce(acyclic_fs::WorkCounters) -> F,
+    budget: acyclic_fs::WorkBudget,
+    cancellation: &acyclic_fs::CancellationToken,
+) -> std::result::Result<std::pin::Pin<Box<F>>, NativeExecution> {
+    let mut work = acyclic_fs::WorkCounters::default();
+    if let Err(error) = cancellation.check() {
+        return Err(invocation_failure(Error::Storage(error.to_string()), work));
+    }
+    let bytes = std::mem::size_of::<F>() as u64;
+    if let Err(error) = work.charge_allocation(u64::from(bytes != 0), bytes, &budget) {
+        return Err(invocation_failure(native_work_error(error), work));
+    }
+    Ok(Box::pin(build(work)))
+}
+
+async fn execute<P>(
     owner: &Arc<TaskJournalOwner<P>>,
-    view: &NativeVolumeView<A, O>,
+    view: &dyn NativeProcessView<P>,
     authority: &NativeProcessAuthority,
     request: &NativeProcessRequest,
     dispatch: &EffectDispatch,
     schema: &serde_json::Value,
-) -> Result<NativeExecution>
+) -> NativeExecution
 where
     P: StreamProvider + 'static,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
 {
+    let budget = match request.view.validation_budget() {
+        Ok(budget) => budget,
+        Err(error) => return invocation_failure(error, acyclic_fs::WorkCounters::default()),
+    };
+    match box_execution(
+        |work| execute_in_heap(owner, view, authority, request, dispatch, schema, work, budget),
+        budget,
+        view.operation_cancellation(),
+    ) {
+        Ok(future) => future.await,
+        Err(failure) => failure,
+    }
+}
+
+async fn execute_in_heap<P>(
+    owner: &Arc<TaskJournalOwner<P>>,
+    view: &dyn NativeProcessView<P>,
+    authority: &NativeProcessAuthority,
+    request: &NativeProcessRequest,
+    dispatch: &EffectDispatch,
+    schema: &serde_json::Value,
+    mut work: acyclic_fs::WorkCounters,
+    validation_budget: acyclic_fs::WorkBudget,
+) -> NativeExecution
+where
+    P: StreamProvider + 'static,
+{
+    let frame_bytes = work.peak_allocation_bytes;
+    let result: Result<NativeExecution> = async {
+    owner.verify(false).await?;
+    require_view_grants(owner, &request.view)?;
+    let available = execution_remaining(work, validation_budget, frame_bytes)?;
+    let cwd = match view.validate_working_directory(&request.cwd, available) {
+        Ok(future) => future.await,
+        Err(failure) => Err(failure),
+    };
+    retain_validation_result(cwd, &mut work, frame_bytes)?;
+    let remaining = execution_remaining(work, validation_budget, frame_bytes)?;
+    let validation = match view.validate_for_dispatch(remaining) {
+        Ok(future) => future.await,
+        Err(failure) => Err(failure),
+    };
+    retain_validation_result(validation, &mut work, frame_bytes)?;
+    work.verify(validation_budget).map_err(native_work_error)?;
+    if view.manifest() != &request.view {
+        return Err(Error::Conflict("native dispatch view changed after observation".into()));
+    }
+    owner.verify(false).await?;
     let Some(result) = capture(owner, request).await? else {
         return Ok(NativeExecution {
             status: EffectStatus::Indeterminate,
             diagnostic: None,
+            publication_failure: None,
+            invocation_failure: Some("native capture did not retain an OS outcome".into()),
+            work,
         });
     };
     let bytes = crate::contract::canonical_json_bytes(&result)?;
@@ -634,6 +849,9 @@ where
         return Ok(NativeExecution {
             status: EffectStatus::Indeterminate,
             diagnostic: None,
+            publication_failure: None,
+            invocation_failure: Some("native result exceeded its admitted byte allowance".into()),
+            work,
         });
     }
     crate::contract::validate_json_schema_value(
@@ -662,25 +880,41 @@ where
         ));
     }
     crate::effects::validate_result_bytes(schema, &result, &bytes)?;
-    if publish && view.publish(owner).await.is_err() {
-        // Retain the OS result even when independent destination publications
-        // leave an unknown or partial SDK outcome. It certifies no rollback.
-        return Ok(NativeExecution {
-            status: EffectStatus::Indeterminate,
-            diagnostic: Some(result),
-        });
+    if publish {
+        match publish_view(owner, view, &request.view).await {
+            Ok(spent) => merge_execution_work(&mut work, spent, frame_bytes)?,
+            Err(mut failure) => {
+                merge_execution_work(&mut work, failure.work, frame_bytes)?;
+                failure.work = work;
+                return Ok(NativeExecution {
+                    status: EffectStatus::Indeterminate,
+                    diagnostic: Some(result),
+                    work: failure.work,
+                    publication_failure: Some(failure),
+                    invocation_failure: None,
+                });
+            }
+        }
     }
     Ok(if cleanup_completed {
         NativeExecution {
             status: EffectStatus::Succeeded { result },
             diagnostic: None,
+            publication_failure: None,
+            invocation_failure: None,
+            work,
         }
     } else {
         NativeExecution {
             status: EffectStatus::Indeterminate,
             diagnostic: Some(result),
+            publication_failure: None,
+            invocation_failure: None,
+            work,
         }
     })
+    }.await;
+    result.unwrap_or_else(|error| invocation_failure(error, work))
 }
 
 fn receipt_path(attempt: crate::EffectAttemptId) -> Result<StreamPath> {
@@ -700,7 +934,7 @@ fn observation(dispatch: &EffectDispatch, status: EffectStatus) -> EffectObserva
     }
 }
 
-fn require_same_launch(retained: &LaunchReceipt, requested: &LaunchReceipt) -> Result<()> {
+fn require_same_launch(retained: &LaunchReceipt<'_>, requested: &LaunchReceipt<'_>) -> Result<()> {
     // A recovered task may hold a new lease; the original launch fence remains
     // evidence rather than permission to start again under the new fence.
     if retained.dispatch != requested.dispatch
@@ -719,7 +953,7 @@ fn require_same_launch(retained: &LaunchReceipt, requested: &LaunchReceipt) -> R
 async fn read_receipt<P: StreamProvider>(
     owner: &TaskJournalOwner<P>,
     path: &StreamPath,
-) -> Result<Option<(LaunchReceipt, Option<NativeObservation>)>> {
+) -> Result<Option<(LaunchReceipt<'static>, Option<NativeObservation>)>> {
     let stream = owner.stream().stream(path.as_str())?;
     let bounds = match stream.bounds().await {
         Ok(bounds) => bounds,
@@ -777,7 +1011,7 @@ async fn append_receipt<P: StreamProvider>(
     owner: &TaskJournalOwner<P>,
     path: StreamPath,
     tail: u64,
-    receipt: &Receipt,
+    receipt: &Receipt<'_>,
     write: JournalWrite,
 ) -> Result<bool> {
     let bytes = crate::contract::canonical_json_bytes(receipt)?;
@@ -798,4 +1032,51 @@ async fn append_receipt<P: StreamProvider>(
 )]
 fn io_error(error: std::io::Error) -> Error {
     Error::Storage(error.to_string())
+}
+
+#[cfg(test)]
+mod execution_admission_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn installed_execution_frame_is_admitted_before_constructing_its_future() {
+        let constructed = AtomicBool::new(false);
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let failure = box_execution(
+            |_| {
+                constructed.store(true, Ordering::SeqCst);
+                std::future::ready(invocation_failure(
+                    Error::Storage("unreachable execution".into()),
+                    acyclic_fs::WorkCounters::default(),
+                ))
+            },
+            acyclic_fs::WorkBudget::UNCHARGED,
+            &cancellation,
+        ).err().expect("the real execution frame requires owned storage");
+        assert!(!constructed.load(Ordering::SeqCst));
+        assert_eq!(failure.work, acyclic_fs::WorkCounters::default());
+        assert!(failure.invocation_failure.is_some());
+    }
+
+    #[test]
+    fn original_execution_cancellation_prevents_future_construction() {
+        let constructed = AtomicBool::new(false);
+        let cancellation = acyclic_fs::CancellationToken::new();
+        cancellation.cancel();
+        let failure = box_execution(
+            |_| {
+                constructed.store(true, Ordering::SeqCst);
+                std::future::ready(invocation_failure(
+                    Error::Storage("unreachable execution".into()),
+                    acyclic_fs::WorkCounters::default(),
+                ))
+            },
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        ).err().expect("original cancellation must reject execution admission");
+        assert!(!constructed.load(Ordering::SeqCst));
+        assert_eq!(failure.work, acyclic_fs::WorkCounters::default());
+        assert!(failure.invocation_failure.is_some());
+    }
 }

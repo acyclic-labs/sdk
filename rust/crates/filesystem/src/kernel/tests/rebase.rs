@@ -357,6 +357,110 @@ fn dependency_bounds_and_extensions_are_atomic() -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
+#[test]
+fn proof_data_custody_survives_weak_moves_and_retires_actual_cow_roots()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory_id = FileId::from_bytes([61; 16]);
+    let mut padded = Vec::with_capacity(64);
+    padded.extend_from_slice(b"old");
+    let name = LogicalName::new(NameEncoding::Utf8, padded, 64)?;
+    let original_capacity = name.retained_bytes() as u64;
+    let mut proof = CheckoutDependencies::new([], [], 8)?;
+    let first_owner = Arc::new(ProofDataCustody::default());
+    let extension = proof.prepare_observations(vec![Dependency {
+        region: DependencyRegion::DirectoryName { directory_id, name },
+        expected: DependencyState::Absent,
+    }], 8)?;
+    proof.commit_with_data_custody::<WorkError>(extension, Some(&first_owner), |_, _, _, _| Ok(()))?;
+    assert_eq!(proof.logical_data().2, original_capacity);
+    assert_eq!(first_owner.retained_bytes(), original_capacity);
+    let old_weak = Arc::downgrade(&proof.captured);
+    let generation = proof.logical_data().1;
+    let extension = proof.prepare_observations(vec![Dependency {
+        region: DependencyRegion::FileRecord(FileId::from_bytes([62; 16])),
+        expected: DependencyState::Absent,
+    }], 8)?;
+    let mut moved_copies = 0;
+    proof.commit_with_data_custody::<WorkError>(extension, Some(&first_owner), |_, _, copied, _| {
+        moved_copies += copied;
+        Ok(())
+    })?;
+    assert_eq!(moved_copies, 0, "weak-only make_mut moves the payload");
+    assert_eq!(old_weak.strong_count(), 0);
+    assert_eq!(first_owner.retained_bytes(), original_capacity);
+    assert_eq!(proof.logical_data().2, original_capacity);
+    assert_eq!(proof.logical_data().1, generation + 1);
+    let original = proof.clone();
+    let second_owner = Arc::new(ProofDataCustody::default());
+    let extension = proof.prepare_observations(vec![Dependency {
+        region: DependencyRegion::DirectoryName {
+            directory_id, name: LogicalName::new(NameEncoding::Utf8, b"x".to_vec(), 64)?,
+        },
+        expected: DependencyState::Absent,
+    }], 8)?;
+    let mut copied_bytes = 0;
+    let mut allocations = 0;
+    proof.commit_with_data_custody::<WorkError>(extension, Some(&second_owner), |_, operations, copied, _| {
+        copied_bytes += copied;
+        allocations += operations;
+        Ok(())
+    })?;
+    assert_eq!(copied_bytes, 3, "COW clones length, not excess capacity or tree layout");
+    assert_eq!(allocations, 1);
+    assert_eq!(proof.logical_data().2, 4);
+    assert_eq!(second_owner.retained_bytes(), 4);
+    assert_eq!(first_owner.retained_bytes(), original_capacity);
+    drop(original);
+    assert_eq!(first_owner.retained_bytes(), 0);
+    proof.clear();
+    assert_eq!(second_owner.retained_bytes(), 0);
+    Ok(())
+}
+
+#[test]
+fn dependency_data_budget_denies_cow_before_copy_and_eq_ignores_caches()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory_id = FileId::from_bytes([71; 16]);
+    let mut padded = Vec::with_capacity(64);
+    padded.extend_from_slice(b"key");
+    let dependency = |name| Dependency {
+        region: DependencyRegion::DirectoryName { directory_id, name },
+        expected: DependencyState::Absent,
+    };
+    let mut proof = CheckoutDependencies::new([
+        dependency(LogicalName::new(NameEncoding::Utf8, padded, 64)?),
+    ], [], 8)?;
+    let exact = CheckoutDependencies::new([
+        dependency(LogicalName::new(NameEncoding::Utf8, b"key".to_vec(), 64)?),
+    ], [], 8)?;
+    assert_eq!(proof, exact, "capacity and allocation generation are not semantic proof");
+    assert_ne!(proof.logical_data().2, exact.logical_data().2);
+    let held = proof.clone();
+    let before = proof.logical_data();
+    let extension = proof.prepare_observations(vec![Dependency {
+        region: DependencyRegion::Metadata(FileId::from_bytes([72; 16])),
+        expected: DependencyState::Absent,
+    }], 8)?;
+    let owner = Arc::new(ProofDataCustody::default());
+    let mut allocations = super::super::allocation::AllocationLedger::default();
+    let mut work = WorkCounters::default();
+    let budget = WorkBudget { peak_allocation_bytes: 2, ..WorkBudget::UNBOUNDED };
+    let denied = proof.commit_with_data_custody::<WorkError>(
+        extension, Some(&owner), |bytes, operations, _, _| {
+            allocations.claim_bytes(bytes, operations, &mut work, budget)
+                .map_err(|error| error.into_work_or(WorkError::Overflow))
+        },
+    );
+    assert!(denied.is_err());
+    assert_eq!(proof.logical_data(), before);
+    assert!(Arc::ptr_eq(&proof.captured, &held.captured));
+    assert_eq!(owner.retained_bytes(), 0);
+    assert_eq!(work.allocation_operations, 0);
+    assert_eq!(proof, held);
+    Ok(())
+}
+
+
 fn conflicting_dependencies() -> Result<(CheckoutDependencies, Probe), DependencyError> {
     let first = Dependency {
         region: DependencyRegion::FileRecord(FileId::from_bytes([31; 16])),

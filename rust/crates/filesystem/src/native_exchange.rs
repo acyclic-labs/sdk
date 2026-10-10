@@ -6,6 +6,721 @@ use thiserror::Error;
 
 use acyclic_native_runtime::durable_rename;
 
+#[cfg(feature = "native-watch")]
+use crate::native_host::NativeHostWork;
+
+#[cfg(feature = "native-watch")]
+impl From<crate::demand::DemandError> for NativeExchangeError {
+    fn from(error: crate::demand::DemandError) -> Self {
+        match error {
+            crate::demand::DemandError::Cancelled => Self::Cancelled,
+            crate::demand::DemandError::Work(error) => Self::Work(error),
+            crate::demand::DemandError::Io(error) => exchange_io_error(error),
+            error => Self::Io(std::io::Error::other(error)),
+        }
+    }
+}
+
+#[cfg(feature = "native-watch")]
+impl From<crate::materializer::NativeTreeMaterializationError> for NativeExchangeError {
+    fn from(error: crate::materializer::NativeTreeMaterializationError) -> Self {
+        match error {
+            crate::materializer::NativeTreeMaterializationError::Cancelled => Self::Cancelled,
+            crate::materializer::NativeTreeMaterializationError::Work(error) => Self::Work(error),
+            crate::materializer::NativeTreeMaterializationError::Io(error) => exchange_io_error(error),
+            error => Self::Io(std::io::Error::other(error)),
+        }
+    }
+}
+
+#[cfg(feature = "native-watch")]
+impl From<NativeExchangeError> for crate::demand::DemandError {
+    fn from(error: NativeExchangeError) -> Self {
+        match error {
+            NativeExchangeError::Cancelled => Self::Cancelled,
+            NativeExchangeError::Work(error) => Self::Work(error),
+            NativeExchangeError::Io(error) => Self::Io(error),
+            error => Self::Io(std::io::Error::other(error)),
+        }
+    }
+}
+
+#[cfg(feature = "native-watch")]
+impl From<NativeExchangeError> for crate::materializer::NativeTreeMaterializationError {
+    fn from(error: NativeExchangeError) -> Self {
+        match error {
+            NativeExchangeError::Cancelled => Self::Cancelled,
+            NativeExchangeError::Work(error) => Self::Work(error),
+            NativeExchangeError::Io(error) => Self::Io(error),
+            error => Self::Io(std::io::Error::other(error)),
+        }
+    }
+}
+
+#[cfg(feature = "native-watch")]
+fn exchange_io_error(error: std::io::Error) -> NativeExchangeError {
+    if error.get_ref().is_some_and(|inner| inner.is::<NativeExchangeError>()) {
+        match error.into_inner() {
+            Some(inner) => match inner.downcast::<NativeExchangeError>() {
+                Ok(error) => *error,
+                Err(inner) => NativeExchangeError::Io(std::io::Error::other(inner)),
+            },
+            None => NativeExchangeError::Io(std::io::Error::other("exchange error lost its payload")),
+        }
+    } else {
+        NativeExchangeError::Io(error)
+    }
+}
+
+#[cfg(feature = "native-watch")]
+fn attempted<W: NativeHostWork, T>(
+    work: &mut W,
+    delta: crate::WorkCounters,
+    operation: impl FnOnce() -> std::io::Result<T>,
+) -> Result<T, W::Error> {
+    work.admit(delta)?;
+    // The noncancellable fixed charge immediately precedes the actual call;
+    // cancellation arriving during it cannot erase the attempted operation.
+    work.record(delta)?;
+    operation().map_err(Into::into)
+}
+
+#[cfg(feature = "native-watch")]
+fn held_identity<W: NativeHostWork>(
+    parent: &cap_std::fs::Dir,
+    name: &Path,
+    work: &mut W,
+) -> Result<Option<crate::NativeRootIdentity>, W::Error> {
+    crate::native_host::entry_identity_with_work(parent, name, work)
+}
+
+/// Exchanges entries through their original held parents and the existing
+/// scratch/witness protocol. No lexical parent is reopened for a mutation.
+#[cfg(feature = "native-watch")]
+pub(crate) fn exchange_native_entries_held_measured<W: NativeHostWork>(
+    left: &cap_std::fs::Dir,
+    left_name: &Path,
+    right: &cap_std::fs::Dir,
+    right_name: &Path,
+    work: &mut W,
+) -> Result<(), W::Error>
+where W::Error: From<NativeExchangeError> {
+    validate_leaf(left_name).map_err(W::Error::from)?;
+    validate_leaf(right_name).map_err(W::Error::from)?;
+    #[cfg(unix)]
+    {
+        let roots = [
+            held_identity(left, left_name, work)?.ok_or(NativeExchangeError::InvalidLayout)?,
+            held_identity(right, right_name, work)?.ok_or(NativeExchangeError::InvalidLayout)?,
+        ];
+        exchange_kernel_held(left, left_name, right, right_name, work)?;
+        if held_identity(left, left_name, work)? != Some(roots[1])
+            || held_identity(right, right_name, work)? != Some(roots[0])
+        {
+            return Err(NativeExchangeError::IncompatibleJournal.into());
+        }
+        crate::native_host::sync_directory_held_with_work(left, work)?;
+        crate::native_host::sync_directory_held_with_work(right, work)?;
+        Ok(())
+    }
+    #[cfg(windows)]
+    exchange_windows_held(left, left_name, right, right_name, work)
+}
+
+#[cfg(feature = "native-watch")]
+fn validate_leaf(path: &Path) -> Result<(), NativeExchangeError> {
+    let mut components = path.components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+    {
+        return Err(NativeExchangeError::InvalidLayout);
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "native-watch", unix))]
+#[allow(unsafe_code, reason = "atomic exchange uses live held parents and single native leaf names")]
+fn exchange_kernel_held<W: NativeHostWork>(
+    left: &cap_std::fs::Dir, left_name: &Path,
+    right: &cap_std::fs::Dir, right_name: &Path,
+    work: &mut W,
+) -> Result<(), W::Error> {
+    use std::os::fd::AsRawFd as _;
+    crate::native_host::unix_name_with_work(left_name.as_os_str(), work, |left_name, work| {
+        crate::native_host::unix_name_with_work(right_name.as_os_str(), work, |right_name, work| {
+            attempted(work, crate::WorkCounters {
+                backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
+            }, || {
+                // SAFETY: held descriptors and NUL-terminated leaf names remain
+                // live for the whole operation; neither parent is reconstructed.
+                #[cfg(target_os = "linux")]
+                let result = unsafe { libc::syscall(libc::SYS_renameat2,
+                    left.as_raw_fd(), left_name.as_ptr(), right.as_raw_fd(),
+                    right_name.as_ptr(), libc::RENAME_EXCHANGE) };
+                #[cfg(target_os = "macos")]
+                let result = unsafe { libc::renameatx_np(left.as_raw_fd(), left_name.as_ptr(),
+                    right.as_raw_fd(), right_name.as_ptr(), libc::RENAME_SWAP) } as libc::c_long;
+                if result == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+            })
+        })
+    })
+}
+
+#[cfg(all(feature = "native-watch", windows))]
+fn write_all_measured<W: NativeHostWork>(
+    file: &mut std::fs::File, mut bytes: &[u8], work: &mut W,
+) -> Result<(), W::Error> {
+    use std::io::Write as _;
+    while !bytes.is_empty() {
+        let maximum = crate::WorkCounters {
+            backend_write_operations: 1, output_bytes: bytes.len() as u64,
+            ..crate::WorkCounters::UNCHARGED
+        };
+        work.admit(maximum)?;
+        work.record(crate::WorkCounters { backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED })?;
+        match file.write(bytes) {
+            Ok(0) => return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into()),
+            Ok(length) => {
+                work.record(crate::WorkCounters { output_bytes: length as u64, ..crate::WorkCounters::UNCHARGED })?;
+                bytes = bytes.get(length..).ok_or_else(|| std::io::Error::other("invalid native write length"))?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "native-watch", windows))]
+fn read_exact_measured<W: NativeHostWork>(
+    file: &mut std::fs::File, mut bytes: &mut [u8], work: &mut W,
+) -> Result<(), W::Error> {
+    use std::io::Read as _;
+    while !bytes.is_empty() {
+        work.admit(crate::WorkCounters {
+            backend_read_operations: 1, source_bytes_read: bytes.len() as u64,
+            ..crate::WorkCounters::UNCHARGED
+        })?;
+        work.record(crate::WorkCounters { backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED })?;
+        match file.read(bytes) {
+            Ok(0) => return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into()),
+            Ok(length) => {
+                work.record(crate::WorkCounters { source_bytes_read: length as u64, ..crate::WorkCounters::UNCHARGED })?;
+                bytes = bytes.get_mut(length..).ok_or_else(|| std::io::Error::other("invalid native read length"))?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "native-watch", windows))]
+fn write_identity_measured<W: NativeHostWork>(
+    file: &mut std::fs::File, identity: crate::NativeRootIdentity, work: &mut W,
+) -> Result<(), W::Error> {
+    let delta = crate::WorkCounters { bytes_encoded: 16, ..crate::WorkCounters::UNCHARGED };
+    work.admit(delta)?;
+    let bytes = identity.to_bytes();
+    work.record(delta)?;
+    write_all_measured(file, &bytes, work)
+}
+
+#[cfg(all(feature = "native-watch", windows))]
+fn read_identity_measured<W: NativeHostWork>(
+    file: &mut std::fs::File, work: &mut W,
+) -> Result<crate::NativeRootIdentity, W::Error> {
+    let mut bytes = [0u8; 16];
+    read_exact_measured(file, &mut bytes, work)?;
+    Ok(crate::NativeRootIdentity::from_bytes(bytes))
+}
+
+#[cfg(all(feature = "native-watch", windows))]
+fn open_witness<W: NativeHostWork>(
+    directory: &cap_std::fs::Dir, name: &Path, create: bool, work: &mut W,
+) -> Result<std::fs::File, W::Error> {
+    with_wide_leaf(name, work, |name, work| {
+        if create {
+            crate::native_host::create_windows_provisional_file_with_work(directory, name, work)
+        } else {
+            crate::native_host::open_windows_leaf_with_options_with_work(directory, name,
+                &crate::native_host::NativeOpenOptions::Read, work)
+        }
+    })
+}
+
+#[cfg(all(feature = "native-watch", windows))]
+const MEASURED_ENTRY_WITNESS: &[u8; 32] = b"acyclic-entry-exchange-v2\0\0\0\0\0\0\0";
+
+#[cfg(all(feature = "native-watch", windows))]
+fn with_service_name<W: NativeHostWork, T>(
+    name: &Path, suffix: &str, work: &mut W,
+    operation: impl FnOnce(&Path, &mut W) -> Result<T, W::Error>,
+) -> Result<T, W::Error> {
+    let bytes = name.as_os_str().as_encoded_bytes().len()
+        .checked_add(suffix.len()).and_then(|bytes| bytes.checked_add(1))
+        .ok_or(crate::WorkError::Overflow)?;
+    let allocation = work.claim(bytes as u64)?;
+    let result = (|| {
+        work.admit(crate::WorkCounters { bytes_copied: bytes as u64, ..crate::WorkCounters::UNCHARGED })?;
+        let mut service_name = std::ffi::OsString::new();
+        service_name.try_reserve_exact(bytes).map_err(std::io::Error::other)?;
+        service_name.push(".");
+        service_name.push(name);
+        service_name.push(suffix);
+        work.record(crate::WorkCounters { bytes_copied: bytes as u64, ..crate::WorkCounters::UNCHARGED })?;
+        operation(Path::new(&service_name), work)
+    })();
+    work.release(allocation)?;
+    result
+}
+
+#[cfg(all(feature = "native-watch", windows))]
+fn with_wide_leaf<W: NativeHostWork, T>(
+    name: &Path, work: &mut W,
+    operation: impl FnOnce(&[u16], &mut W) -> Result<T, W::Error>,
+) -> Result<T, W::Error> {
+    use std::os::windows::ffi::OsStrExt as _;
+    let mut length = 0usize;
+    for _ in name.as_os_str().encode_wide() {
+        work.admit(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
+        work.record(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
+        length = length.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+    }
+    let bytes = length.checked_mul(2).ok_or(crate::WorkError::Overflow)? as u64;
+    let allocation = work.claim(bytes)?;
+    let result = (|| {
+        work.admit(crate::WorkCounters { bytes_encoded: bytes, ..crate::WorkCounters::UNCHARGED })?;
+        let mut units = Vec::new();
+        units.try_reserve_exact(length).map_err(std::io::Error::other)?;
+        units.extend(name.as_os_str().encode_wide());
+        work.record(crate::WorkCounters { bytes_encoded: bytes, ..crate::WorkCounters::UNCHARGED })?;
+        operation(&units, work)
+    })();
+    work.release(allocation)?;
+    result
+}
+
+#[cfg(all(feature = "native-watch", windows))]
+fn write_native_path<W: NativeHostWork>(
+    file: &mut std::fs::File, path: &Path, work: &mut W,
+) -> Result<(), W::Error> {
+    use std::os::windows::ffi::OsStrExt as _;
+    let mut units = 0u64;
+    for _ in path.as_os_str().encode_wide() {
+        work.admit(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
+        work.record(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
+        units = units.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+    }
+    let delta = crate::WorkCounters { bytes_encoded: 8, ..crate::WorkCounters::UNCHARGED };
+    work.admit(delta)?;
+    let encoded_length = units.to_le_bytes();
+    work.record(delta)?;
+    write_all_measured(file, &encoded_length, work)?;
+    let bytes = units.checked_mul(2).ok_or(crate::WorkError::Overflow)?;
+    let allocation = work.claim(bytes)?;
+    let result = (|| {
+        let mut buffered = Vec::new();
+        buffered.try_reserve_exact(usize::try_from(bytes).map_err(|_| crate::WorkError::Overflow)?)
+            .map_err(std::io::Error::other)?;
+        for unit in path.as_os_str().encode_wide() {
+            work.admit(crate::WorkCounters { bytes_encoded: 2, ..crate::WorkCounters::UNCHARGED })?;
+            let encoded = unit.to_le_bytes();
+            buffered.extend_from_slice(&encoded);
+            work.record(crate::WorkCounters { bytes_encoded: 2, ..crate::WorkCounters::UNCHARGED })?;
+        }
+        write_all_measured(file, &buffered, work)
+    })();
+    work.release(allocation)?;
+    result
+}
+
+#[cfg(all(feature = "native-watch", windows))]
+fn with_read_native_path<W: NativeHostWork, T>(
+    file: &mut std::fs::File, remaining: &mut u64, work: &mut W,
+    operation: impl FnOnce(&Path, &mut std::fs::File, &mut u64, &mut W) -> Result<T, W::Error>,
+) -> Result<T, W::Error>
+where W::Error: From<NativeExchangeError> {
+    if *remaining < 8 { return Err(NativeExchangeError::IncompatibleJournal.into()); }
+    let mut encoded_length = [0u8; 8];
+    read_exact_measured(file, &mut encoded_length, work)?;
+    let length = u64::from_le_bytes(encoded_length);
+    let bytes = length.checked_mul(2).ok_or(crate::WorkError::Overflow)?;
+    let consumed = bytes.checked_add(8).ok_or(crate::WorkError::Overflow)?;
+    if consumed > *remaining { return Err(NativeExchangeError::IncompatibleJournal.into()); }
+    let allocation = work.claim(bytes)?;
+    let result = (|| {
+        let length = usize::try_from(length).map_err(|_| crate::WorkError::Overflow)?;
+        let mut units = Vec::new();
+        units.try_reserve_exact(length).map_err(std::io::Error::other)?;
+        units.resize(length, 0u16);
+        read_exact_measured(file, utf16_bytes_mut(&mut units), work)?;
+        #[cfg(target_endian = "big")]
+        for unit in &mut units { *unit = u16::from_le(*unit); }
+        *remaining -= consumed;
+        with_windows_path(&units, work, |path, work| operation(path, file, remaining, work))
+    })();
+    work.release(allocation)?;
+    result
+}
+
+#[cfg(all(feature = "native-watch", windows))]
+#[allow(unsafe_code, reason = "initialized u16 storage has no padding and may be filled through its byte view")]
+fn utf16_bytes_mut(units: &mut [u16]) -> &mut [u8] {
+    // SAFETY: a valid u16 slice owns exactly two initialized bytes per element.
+    // Every possible result of the read is a valid u16 value, and the exclusive
+    // borrow prevents simultaneous access through the original typed slice.
+    unsafe { std::slice::from_raw_parts_mut(units.as_mut_ptr().cast::<u8>(), units.len() * 2) }
+}
+
+#[cfg(all(feature = "native-watch", windows))]
+#[allow(unsafe_code, reason = "locally encoded WTF-8 is the Windows native OsString representation")]
+fn with_windows_path<W: NativeHostWork, T>(
+    units: &[u16], work: &mut W,
+    operation: impl FnOnce(&Path, &mut W) -> Result<T, W::Error>,
+) -> Result<T, W::Error> {
+    let mut bytes = 0usize;
+    for scalar in char::decode_utf16(units.iter().copied()) {
+        work.admit(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
+        work.record(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
+        bytes = bytes.checked_add(scalar.map_or(3, char::len_utf8)).ok_or(crate::WorkError::Overflow)?;
+    }
+    let allocation = work.claim(bytes as u64)?;
+    let result = (|| {
+        work.admit(crate::WorkCounters { bytes_encoded: bytes as u64, ..crate::WorkCounters::UNCHARGED })?;
+        let mut encoded = Vec::new();
+        encoded.try_reserve_exact(bytes).map_err(std::io::Error::other)?;
+        for scalar in char::decode_utf16(units.iter().copied()) {
+            match scalar {
+                Ok(scalar) => {
+                    let mut buffer = [0; 4];
+                    encoded.extend_from_slice(scalar.encode_utf8(&mut buffer).as_bytes());
+                }
+                Err(surrogate) => {
+                    let value = u32::from(surrogate.unpaired_surrogate());
+                    encoded.extend_from_slice(&[
+                        (0xe0 | (value >> 12)) as u8,
+                        (0x80 | ((value >> 6) & 0x3f)) as u8,
+                        (0x80 | (value & 0x3f)) as u8,
+                    ]);
+                }
+            }
+        }
+        work.record(crate::WorkCounters { bytes_encoded: bytes as u64, ..crate::WorkCounters::UNCHARGED })?;
+        // SAFETY: paired surrogates were encoded as their Unicode scalar and
+        // unpaired surrogates as well-formed WTF-8; no bytes came from a caller.
+        let path = PathBuf::from(unsafe { std::ffi::OsString::from_encoded_bytes_unchecked(encoded) });
+        operation(&path, work)
+    })();
+    work.release(allocation)?;
+    result
+}
+
+#[cfg(all(feature = "native-watch", windows))]
+#[allow(unsafe_code, reason = "reads the physical path from a live held directory handle")]
+fn with_directory_path<W: NativeHostWork, T>(
+    directory: &cap_std::fs::Dir, work: &mut W,
+    operation: impl FnOnce(&Path, &mut W) -> Result<T, W::Error>,
+) -> Result<T, W::Error> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{GetFinalPathNameByHandleW, FILE_NAME_NORMALIZED};
+    let handle = HANDLE(directory.as_raw_handle());
+    let mut capacity = attempted(work, crate::WorkCounters {
+        backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
+    }, || {
+        // SAFETY: zero-length output probes the required path capacity.
+        let length = unsafe { GetFinalPathNameByHandleW(handle, &mut [], FILE_NAME_NORMALIZED) };
+        if length == 0 { Err(std::io::Error::last_os_error()) } else { Ok(length) }
+    })?;
+    let mut operation = Some(operation);
+    loop {
+        let allocation = work.claim(u64::from(capacity).checked_mul(2).ok_or(crate::WorkError::Overflow)?)?;
+        let result = (|| {
+            let mut units = Vec::new();
+            units.try_reserve_exact(capacity as usize).map_err(std::io::Error::other)?;
+            units.resize(capacity as usize, 0u16);
+            let length = attempted(work, crate::WorkCounters {
+                backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
+            }, || {
+                // SAFETY: the slice is writable for its advertised capacity.
+                let length = unsafe { GetFinalPathNameByHandleW(handle, &mut units, FILE_NAME_NORMALIZED) };
+                if length == 0 { Err(std::io::Error::last_os_error()) } else { Ok(length) }
+            })?;
+            if length >= capacity { return Ok(Err(length.checked_add(1).ok_or(crate::WorkError::Overflow)?)); }
+            units.truncate(length as usize);
+            let operation = operation.take().ok_or_else(|| std::io::Error::other("path witness consumed twice"))?;
+            with_windows_path(&units, work, operation).map(Ok)
+        })();
+        work.release(allocation)?;
+        match result? {
+            Ok(value) => return Ok(value),
+            Err(next) => capacity = next,
+        }
+    }
+}
+
+#[cfg(all(feature = "native-watch", windows))]
+fn parent_identity<W: NativeHostWork>(
+    directory: &cap_std::fs::Dir, work: &mut W,
+) -> Result<crate::NativeRootIdentity, W::Error> {
+    crate::native_host::directory_identity_with_work(directory, work)
+}
+
+#[cfg(all(feature = "native-watch", windows))]
+fn rename_durable_held<W: NativeHostWork>(
+    from: &cap_std::fs::Dir, from_name: &Path,
+    to: &cap_std::fs::Dir, to_name: &Path, expected: crate::NativeRootIdentity, work: &mut W,
+) -> Result<(), W::Error> {
+    crate::native_host::rename_no_replace_held_if_identity_with_work(from, from_name, to, to_name,
+        expected, work)?;
+    crate::native_host::sync_directory_held_with_work(from, work)?;
+    crate::native_host::sync_directory_held_with_work(to, work)
+}
+
+#[cfg(all(feature = "native-watch", windows))]
+fn remove_owned_witness<W: NativeHostWork>(
+    parent: &cap_std::fs::Dir, name: &Path, identity: crate::NativeRootIdentity, work: &mut W,
+) -> Result<(), W::Error>
+where W::Error: From<NativeExchangeError> {
+    if held_identity(parent, name, work)? != Some(identity) {
+        return Err(NativeExchangeError::IncompatibleJournal.into());
+    }
+    with_wide_leaf(name, work, |name, work|
+        crate::native_host::remove_windows_leaf_if_identity_with_work(parent, name, false,
+            identity, work))?;
+    crate::native_host::sync_directory_held_with_work(parent, work)
+}
+
+#[cfg(all(feature = "native-watch", windows))]
+fn create_measured_entry_witness<W: NativeHostWork>(
+    left: &cap_std::fs::Dir, left_name: &Path,
+    right: &cap_std::fs::Dir, right_name: &Path,
+    witness_name: &Path, roots: [crate::NativeRootIdentity; 2], work: &mut W,
+) -> Result<crate::NativeRootIdentity, W::Error> {
+    // The newly and exclusively created handle remains delete-on-close until
+    // every witness byte is durable. No failed prefix can become restart authority.
+    let mut file = open_witness(left, witness_name, true, work)?;
+    write_all_measured(&mut file, MEASURED_ENTRY_WITNESS, work)?;
+    write_identity_measured(&mut file, parent_identity(left, work)?, work)?;
+    write_identity_measured(&mut file, parent_identity(right, work)?, work)?;
+    for identity in roots { write_identity_measured(&mut file, identity, work)?; }
+    with_directory_path(left, work, |path, work| write_native_path(&mut file, path, work))?;
+    write_native_path(&mut file, left_name, work)?;
+    with_directory_path(right, work, |path, work| write_native_path(&mut file, path, work))?;
+    write_native_path(&mut file, right_name, work)?;
+    attempted(work, crate::WorkCounters {
+        durability_operations: 1, ..crate::WorkCounters::UNCHARGED
+    }, || file.sync_all())?;
+    crate::native_host::keep_windows_created_file_with_work(&file, work)?;
+    crate::native_host::sync_directory_held_with_work(left, work)?;
+    attempted(work, crate::WorkCounters {
+        backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
+    }, || crate::NativeRootIdentity::from_file(&file))
+}
+
+#[cfg(all(feature = "native-watch", windows))]
+fn exchange_windows_held<W: NativeHostWork>(
+    left: &cap_std::fs::Dir, left_name: &Path,
+    right: &cap_std::fs::Dir, right_name: &Path, work: &mut W,
+) -> Result<(), W::Error>
+where W::Error: From<NativeExchangeError> {
+    with_service_name(left_name, ".acyclic-exchange", work, |scratch_name, work| {
+        with_service_name(left_name, ".acyclic-exchange-witness", work, |witness_name, work| {
+            if held_identity(left, witness_name, work)?.is_some()
+                && recover_entry_held(left, left_name, scratch_name, witness_name,
+                    Some((right, right_name)), work)?
+            {
+                // A surviving completed witness acknowledges its original
+                // decision; a recovered rollback proceeds with this request.
+                return Ok(());
+            }
+            if held_identity(left, scratch_name, work)?.is_some() {
+                return Err(NativeExchangeError::IncompatibleJournal.into());
+            }
+            let roots = [
+                held_identity(left, left_name, work)?.ok_or(NativeExchangeError::InvalidLayout)?,
+                held_identity(right, right_name, work)?.ok_or(NativeExchangeError::InvalidLayout)?,
+            ];
+            let witness = create_measured_entry_witness(left, left_name, right, right_name,
+                witness_name, roots, work)?;
+            // Revalidate the original physical preimages at each mutation;
+            // replacements never become newly adopted durable authority.
+            if held_identity(left, left_name, work)? != Some(roots[0])
+                || held_identity(right, right_name, work)? != Some(roots[1])
+                || held_identity(left, witness_name, work)? != Some(witness)
+            {
+                return Err(NativeExchangeError::IncompatibleJournal.into());
+            }
+            rename_durable_held(left, left_name, left, scratch_name, roots[0], work)?;
+            if held_identity(right, right_name, work)? != Some(roots[1]) {
+                return Err(NativeExchangeError::IncompatibleJournal.into());
+            }
+            rename_durable_held(right, right_name, left, left_name, roots[1], work)?;
+            if held_identity(left, scratch_name, work)? != Some(roots[0]) {
+                return Err(NativeExchangeError::IncompatibleJournal.into());
+            }
+            rename_durable_held(left, scratch_name, right, right_name, roots[0], work)?;
+            remove_owned_witness(left, witness_name, witness, work)
+        })
+    })
+}
+
+#[cfg(all(feature = "native-watch", windows))]
+fn recover_entry_held<W: NativeHostWork>(
+    left: &cap_std::fs::Dir, left_name: &Path,
+    scratch_name: &Path, witness_name: &Path,
+    requested_right: Option<(&cap_std::fs::Dir, &Path)>, work: &mut W,
+) -> Result<bool, W::Error>
+where W::Error: From<NativeExchangeError> {
+    let mut file = open_witness(left, witness_name, false, work)?;
+    let (witness_identity, witness_length) =
+        crate::native_host::file_identity_and_length_with_work(&file, work)?;
+    let mut magic = [0u8; 32];
+    read_exact_measured(&mut file, &mut magic, work)?;
+    if &magic != MEASURED_ENTRY_WITNESS {
+        return Err(NativeExchangeError::IncompatibleJournal.into());
+    }
+    let parents = [read_identity_measured(&mut file, work)?, read_identity_measured(&mut file, work)?];
+    let roots = [read_identity_measured(&mut file, work)?, read_identity_measured(&mut file, work)?];
+    if parent_identity(left, work)? != parents[0] {
+        return Err(NativeExchangeError::IncompatibleJournal.into());
+    }
+    let mut remaining = witness_length.checked_sub(96).ok_or(NativeExchangeError::IncompatibleJournal)?;
+    let published = with_read_native_path(&mut file, &mut remaining, work, |left_parent_path, file, remaining, work| {
+        if !left_parent_path.is_absolute() { return Err(NativeExchangeError::IncompatibleJournal.into()); }
+        let named_left = crate::native_host::open_root_directory_with_work(left_parent_path, work)?;
+        if parent_identity(&named_left, work)? != parents[0] {
+            return Err(NativeExchangeError::IncompatibleJournal.into());
+        }
+        with_read_native_path(file, remaining, work, |original_name, file, remaining, work| {
+        if original_name != left_name { return Err(NativeExchangeError::IncompatibleJournal.into()); }
+        with_read_native_path(file, remaining, work, |right_parent_path, file, remaining, work| {
+            if !right_parent_path.is_absolute() { return Err(NativeExchangeError::IncompatibleJournal.into()); }
+            let right = crate::native_host::open_root_directory_with_work(right_parent_path, work)?;
+            if parent_identity(&right, work)? != parents[1] {
+                return Err(NativeExchangeError::IncompatibleJournal.into());
+            }
+            with_read_native_path(file, remaining, work, |right_name, file, remaining, work| {
+                validate_leaf(right_name).map_err(W::Error::from)?;
+                if let Some((requested_parent, requested_name)) = requested_right {
+                    if requested_name != right_name || parent_identity(requested_parent, work)? != parents[1] {
+                        return Err(NativeExchangeError::IncompatibleJournal.into());
+                    }
+                }
+                let (identity, length) = crate::native_host::file_identity_and_length_with_work(file, work)?;
+                if *remaining != 0 || length != witness_length || identity != witness_identity {
+                    return Err(NativeExchangeError::IncompatibleJournal.into());
+                }
+                let current_left = held_identity(left, left_name, work)?;
+                let current_right = held_identity(&right, right_name, work)?;
+                let current_scratch = held_identity(left, scratch_name, work)?;
+                let published = match (current_left, current_right, current_scratch) {
+                    (Some(original), Some(replacement), None)
+                        if [original, replacement] == roots => false,
+                    (None, Some(replacement), Some(original))
+                        if [original, replacement] == roots => {
+                            rename_durable_held(left, scratch_name, left, left_name, roots[0], work)?;
+                            false
+                        }
+                    (Some(replacement), None, Some(original))
+                        if [original, replacement] == roots => {
+                            rename_durable_held(left, scratch_name, &right, right_name, roots[0], work)?;
+                            true
+                        }
+                    (Some(replacement), Some(original), None)
+                        if [original, replacement] == roots => true,
+                    _ => return Err(NativeExchangeError::IncompatibleJournal.into()),
+                };
+                Ok(published)
+            })
+        })
+        })
+    })?;
+    // On Windows the named deletion is complete only after the reader releases
+    // its share-delete handle. The subsequent barrier covers actual cleanup.
+    drop(file);
+    remove_owned_witness(left, witness_name, witness_identity, work)?;
+    Ok(published)
+}
+
+/// Recovers only the physical preimages named by the surviving entry witness.
+#[cfg(feature = "native-watch")]
+pub(crate) fn recover_native_entry_exchange_held_measured<W: NativeHostWork>(
+    parent: &cap_std::fs::Dir, name: &Path, work: &mut W,
+) -> Result<(), W::Error>
+where W::Error: From<NativeExchangeError> {
+    validate_leaf(name).map_err(W::Error::from)?;
+    #[cfg(windows)]
+    {
+        with_service_name(name, ".acyclic-exchange", work, |scratch_name, work|
+            with_service_name(name, ".acyclic-exchange-witness", work, |witness_name, work| {
+                if held_identity(parent, witness_name, work)?.is_none() {
+                    if held_identity(parent, scratch_name, work)?.is_some() {
+                        return Err(NativeExchangeError::IncompatibleJournal.into());
+                    }
+                    return Ok(());
+                }
+                recover_entry_held(parent, name, scratch_name, witness_name, None, work).map(|_| ())
+            }))
+    }
+    #[cfg(unix)]
+    {
+        let _ = (parent, work);
+        Ok(())
+    }
+}
+
+/// Bounded native entry exchange retaining the complete attempted prefix.
+#[cfg(feature = "native-watch")]
+pub fn exchange_native_entries_with_budget(
+    left: &Path, right: &Path, budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
+) -> crate::MeasuredResult<crate::OperationReceipt<()>, NativeExchangeError> {
+    let work = crate::materializer::NativeMaterializationWork::new(budget, cancellation);
+    exchange_native_entries_measured(left, right, &work)
+        .map(|value| crate::OperationReceipt { value, work: work.receipt() })
+        .map_err(|error| crate::OperationFailure::new(error.into(), work.receipt()))
+}
+
+/// Uses the caller's operation-wide ledger rather than starting a nested meter.
+#[cfg(feature = "native-watch")]
+pub(crate) fn exchange_native_entries_measured(
+    left: &Path, right: &Path, work: &crate::materializer::NativeMaterializationWork,
+) -> Result<(), crate::materializer::NativeTreeMaterializationError> {
+    if left == right { return Err(NativeExchangeError::InvalidLayout.into()); }
+    let left_parent = left.parent().ok_or(NativeExchangeError::InvalidLayout)?;
+    let right_parent = right.parent().ok_or(NativeExchangeError::InvalidLayout)?;
+    let left_name = left.file_name().ok_or(NativeExchangeError::InvalidLayout)?;
+    let right_name = right.file_name().ok_or(NativeExchangeError::InvalidLayout)?;
+    let mut meter = work;
+    let left = crate::native_host::open_root_directory_with_work(left_parent, &mut meter)?;
+    let right = crate::native_host::open_root_directory_with_work(right_parent, &mut meter)?;
+    exchange_native_entries_held_measured(&left, Path::new(left_name), &right, Path::new(right_name), &mut meter)
+}
+
+#[cfg(feature = "native-watch")]
+pub(crate) fn recover_native_entry_exchange_measured(
+    live: &Path, work: &crate::materializer::NativeMaterializationWork,
+) -> Result<(), crate::materializer::NativeTreeMaterializationError> {
+    let parent = live.parent().ok_or(NativeExchangeError::InvalidLayout)?;
+    let name = live.file_name().ok_or(NativeExchangeError::InvalidLayout)?;
+    let mut meter = work;
+    let parent = crate::native_host::open_root_directory_with_work(parent, &mut meter)?;
+    recover_native_entry_exchange_held_measured(&parent, Path::new(name), &mut meter)
+}
+
+/// Bounded restart recovery using the existing entry exchange witness.
+#[cfg(feature = "native-watch")]
+pub fn recover_native_entry_exchange_with_budget(
+    live: &Path, budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
+) -> crate::MeasuredResult<crate::OperationReceipt<()>, NativeExchangeError> {
+    let work = crate::materializer::NativeMaterializationWork::new(budget, cancellation);
+    recover_native_entry_exchange_measured(live, &work)
+        .map(|value| crate::OperationReceipt { value, work: work.receipt() })
+        .map_err(|error| crate::OperationFailure::new(error.into(), work.receipt()))
+}
+
 const NATIVE_EXCHANGE_JOURNAL_VERSION: u32 = 1;
 
 /// Durable whole-tree exchange phase.
@@ -125,6 +840,12 @@ pub enum NativeExchangeError {
     /// Journal serialization failed.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    /// Cancellation stopped the next native boundary.
+    #[error("native exchange cancelled")]
+    Cancelled,
+    /// The next actual operation exceeded its finite allowance.
+    #[error(transparent)]
+    Work(#[from] crate::WorkError),
 }
 
 /// Exchanges a prepared sibling tree with a live root.
@@ -197,26 +918,36 @@ fn same_prepared_request(
 /// recoverable scratch convention as whole-tree publication and refuses to
 /// overwrite a scratch entry left by an interrupted caller.
 pub fn exchange_native_entries(left: &Path, right: &Path) -> Result<(), NativeExchangeError> {
-    if left == right || left.parent().is_none() || right.parent().is_none() {
-        return Err(NativeExchangeError::InvalidLayout);
+    #[cfg(feature = "native-watch")]
+    {
+        exchange_native_entries_with_budget(left, right, crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new()).map(|_| ()).map_err(|failure| failure.error)
     }
-    if !entry_exists(left)? || !entry_exists(right)? {
-        return Err(NativeExchangeError::InvalidLayout);
+    #[cfg(not(feature = "native-watch"))]
+    {
+        if left == right || left.parent().is_none() || right.parent().is_none() {
+            return Err(NativeExchangeError::InvalidLayout);
+        }
+        if !entry_exists(left)? || !entry_exists(right)? {
+            return Err(NativeExchangeError::InvalidLayout);
+        }
+        exchange(left, right)?;
+        sync_parent(left)?;
+        if left.parent() != right.parent() { sync_parent(right)?; }
+        Ok(())
     }
-    exchange(left, right)?;
-    sync_parent(left)?;
-    if left.parent() != right.parent() {
-        sync_parent(right)?;
-    }
-    Ok(())
 }
 
-/// Resolves the two crash windows in the Windows three-rename entry exchange.
-/// Other platforms exchange entries in one kernel operation and need no
-/// scratch recovery.
-#[cfg(any(feature = "native-mount", windows))]
+/// Resolves the durable Windows three-rename entry exchange.
+#[cfg(windows)]
 pub(crate) fn recover_native_entry_exchange(live: &Path) -> Result<(), NativeExchangeError> {
-    #[cfg(windows)]
+    #[cfg(feature = "native-watch")]
+    {
+        let work = crate::materializer::NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        return recover_native_entry_exchange_measured(live, &work).map_err(Into::into);
+    }
+    #[cfg(all(windows, not(feature = "native-watch")))]
     {
         let scratch = scratch(live)?;
         let witness = entry_exchange_witness(live)?;
@@ -239,8 +970,7 @@ pub(crate) fn recover_native_entry_exchange(live: &Path) -> Result<(), NativeExc
         }
         remove_entry_exchange_witness(&witness)?;
     }
-    #[cfg(not(windows))]
-    let _ = live;
+    #[cfg(not(feature = "native-watch"))]
     Ok(())
 }
 
@@ -426,7 +1156,7 @@ fn scratch(live: &Path) -> Result<PathBuf, NativeExchangeError> {
     Ok(parent.join(format!(".{}.acyclic-exchange", name.to_string_lossy())))
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "native-watch")))]
 const ENTRY_EXCHANGE_WITNESS: &[u8] = b"acyclic-native-entry-exchange-v1\n";
 
 #[cfg(windows)]
@@ -439,7 +1169,7 @@ fn entry_exchange_witness(live: &Path) -> Result<PathBuf, NativeExchangeError> {
     )))
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "native-watch")))]
 fn validate_entry_exchange_witness(path: &Path) -> Result<(), NativeExchangeError> {
     if std::fs::read(path)? == ENTRY_EXCHANGE_WITNESS {
         Ok(())
@@ -448,7 +1178,7 @@ fn validate_entry_exchange_witness(path: &Path) -> Result<(), NativeExchangeErro
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "native-watch")))]
 fn create_entry_exchange_witness(path: &Path) -> Result<(), NativeExchangeError> {
     use std::io::Write as _;
 
@@ -462,14 +1192,14 @@ fn create_entry_exchange_witness(path: &Path) -> Result<(), NativeExchangeError>
     Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "native-watch")))]
 fn remove_entry_exchange_witness(path: &Path) -> Result<(), NativeExchangeError> {
     remove_entry(path)?;
     sync_parent(path)?;
     Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "native-watch")))]
 fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
     recover_native_entry_exchange(live)?;
     let scratch = scratch(live)?;
@@ -552,6 +1282,10 @@ fn recover_exchange(
     } else {
         return Err(NativeExchangeError::IncompatibleJournal);
     };
+    #[cfg(feature = "native-watch")]
+    if entry_exists(&entry_exchange_witness(&journal.live)?)? {
+        recover_native_entry_exchange(&journal.live)?;
+    }
     remove_journal(path)?;
     Ok(NativeExchangeOutcome {
         published: live == Some(replacement),
@@ -592,7 +1326,13 @@ fn recover_exchange(
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(feature = "native-watch")]
+fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
+    exchange_native_entries_with_budget(live, prepared, crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new()).map(|_| ()).map_err(|failure| failure.error)
+}
+
+#[cfg(all(target_os = "macos", not(feature = "native-watch")))]
 #[allow(unsafe_code, reason = "renamex_np receives two live C paths")]
 fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
     use std::os::unix::ffi::OsStrExt;
@@ -608,7 +1348,7 @@ fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(feature = "native-watch")))]
 #[allow(unsafe_code, reason = "renameat2 receives two live C paths")]
 fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
     use std::os::unix::ffi::OsStrExt;
@@ -637,6 +1377,394 @@ fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "native-watch")]
+    fn finite_entry_budget() -> crate::WorkBudget {
+        crate::WorkCounters {
+            backend_read_operations: 20_000,
+            backend_write_operations: 20_000,
+            durability_operations: 100,
+            bytes_copied: 1_000_000,
+            bytes_encoded: 1_000_000,
+            source_bytes_read: 1_000_000,
+            source_path_components: 1_000,
+            output_bytes: 1_000_000,
+            items_examined: 20_000,
+            allocation_operations: 20_000,
+            peak_allocation_bytes: 1_000_000,
+            ..crate::WorkCounters::default()
+        }
+    }
+
+    #[cfg(all(windows, feature = "native-watch"))]
+    fn measured_entry_witness_fixture(live: &Path, prepared: &Path, witness: &Path) {
+        let cancellation = crate::CancellationToken::new();
+        let ledger = crate::materializer::NativeMaterializationWork::new(finite_entry_budget(), &cancellation);
+        let mut work = &ledger;
+        let parent = crate::native_host::open_root_directory_with_work(live.parent().expect("parent"), &mut work)
+            .expect("held fixture parent");
+        let prepared_parent = crate::native_host::open_root_directory_with_work(
+            prepared.parent().expect("prepared parent"), &mut work).expect("held prepared parent");
+        let live_name = Path::new(live.file_name().expect("live name"));
+        let prepared_name = Path::new(prepared.file_name().expect("prepared name"));
+        let roots = [
+            held_identity(&parent, live_name, &mut work).expect("original identity").expect("original"),
+            held_identity(&prepared_parent, prepared_name, &mut work).expect("prepared identity").expect("prepared"),
+        ];
+        create_measured_entry_witness(&parent, live_name, &prepared_parent, prepared_name,
+            Path::new(witness.file_name().expect("witness name")), roots, &mut work)
+            .expect("durable original witness");
+    }
+
+    #[cfg(feature = "native-watch")]
+    #[test]
+    fn bounded_entry_exchange_rejects_zero_and_cancelled_work_before_io() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let live = temporary.path().join("live");
+        let prepared = temporary.path().join("prepared");
+        std::fs::write(&live, b"before").expect("original");
+        std::fs::write(&prepared, b"after").expect("prepared");
+        let cancellation = crate::CancellationToken::new();
+        let failure = exchange_native_entries_with_budget(&live, &prepared,
+            crate::WorkBudget::default(), &cancellation).expect_err("zero allowance");
+        assert_eq!(*failure.work, crate::WorkCounters::default());
+        cancellation.cancel();
+        let failure = exchange_native_entries_with_budget(&live, &prepared,
+            finite_entry_budget(), &cancellation).expect_err("cancelled");
+        assert!(matches!(failure.error, NativeExchangeError::Cancelled));
+        assert_eq!(*failure.work, crate::WorkCounters::default());
+        assert_eq!(std::fs::read(&live).expect("original preserved"), b"before");
+        assert_eq!(std::fs::read(&prepared).expect("prepared preserved"), b"after");
+    }
+
+    #[cfg(feature = "native-watch")]
+    #[test]
+    fn bounded_entry_exchange_succeeds_at_its_exact_actual_allowance() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let live = temporary.path().join("live");
+        let prepared = temporary.path().join("prepared");
+        std::fs::write(&live, b"before").expect("original");
+        std::fs::write(&prepared, b"after").expect("prepared");
+        let cancellation = crate::CancellationToken::new();
+        let measured = exchange_native_entries_with_budget(&live, &prepared,
+            finite_entry_budget(), &cancellation).expect("measured exchange");
+        assert!(measured.work.backend_write_operations > 0);
+        assert!(measured.work.durability_operations > 0);
+        let exact = exchange_native_entries_with_budget(&live, &prepared,
+            measured.work, &cancellation).expect("exact allowance");
+        assert_eq!(exact.work, measured.work);
+        assert_eq!(std::fs::read(&live).expect("original restored"), b"before");
+        assert_eq!(std::fs::read(&prepared).expect("prepared restored"), b"after");
+    }
+
+    #[cfg(all(feature = "native-watch", windows))]
+    #[test]
+    fn bounded_entry_journal_failure_cleans_only_its_provisional_handle() {
+        for deny_bytes in [true, false] {
+            let temporary = tempfile::tempdir().expect("temporary directory");
+            let live = temporary.path().join("live");
+            let prepared = temporary.path().join("prepared");
+            let witness = entry_exchange_witness(&live).expect("witness");
+            let scratch = scratch(&live).expect("scratch");
+            std::fs::write(&live, b"before").expect("original");
+            std::fs::write(&prepared, b"after").expect("prepared");
+            let mut budget = finite_entry_budget();
+            if deny_bytes { budget.output_bytes = (MEASURED_ENTRY_WITNESS.len() - 1) as u64; }
+            else { budget.durability_operations = 0; }
+            let cancellation = crate::CancellationToken::new();
+            let failure = exchange_native_entries_with_budget(&live, &prepared, budget, &cancellation)
+                .expect_err("journal admission denied before physical edits");
+            assert!(matches!(failure.error, NativeExchangeError::Work(_)));
+            assert!(failure.work.backend_write_operations > 0);
+            assert_eq!(failure.work.durability_operations, 0);
+            if deny_bytes { assert_eq!(failure.work.output_bytes, 0); }
+            else { assert!(failure.work.output_bytes > 0); }
+            assert!(!witness.exists());
+            assert!(!scratch.exists());
+            assert_eq!(std::fs::read(&live).expect("original retained"), b"before");
+            assert_eq!(std::fs::read(&prepared).expect("prepared retained"), b"after");
+            exchange_native_entries_with_budget(&live, &prepared, finite_entry_budget(), &cancellation)
+                .expect("the real durable request remains retryable");
+            assert_eq!(std::fs::read(&live).expect("published"), b"after");
+            assert_eq!(std::fs::read(&prepared).expect("displaced"), b"before");
+        }
+    }
+
+    #[cfg(all(feature = "native-watch", unix))]
+    #[test]
+    fn bounded_entry_exchange_failure_retains_the_physical_edit_prefix() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let live = temporary.path().join("live");
+        let prepared = temporary.path().join("prepared");
+        std::fs::write(&live, b"before").expect("original");
+        std::fs::write(&prepared, b"after").expect("prepared");
+        let mut budget = finite_entry_budget();
+        budget.durability_operations = 0;
+        let failure = exchange_native_entries_with_budget(&live, &prepared,
+            budget, &crate::CancellationToken::new()).expect_err("durability denied");
+        assert!(matches!(failure.error, NativeExchangeError::Work(_)));
+        assert_eq!(failure.work.backend_write_operations, 1);
+        assert_eq!(failure.work.durability_operations, 0);
+        assert_eq!(std::fs::read(&live).expect("actual published bytes"), b"after");
+        assert_eq!(std::fs::read(&prepared).expect("actual displaced bytes"), b"before");
+    }
+
+    #[cfg(all(feature = "native-watch", unix))]
+    #[test]
+    fn bounded_exchange_keeps_original_parents_when_the_lexical_root_is_replaced() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root = temporary.path().join("root");
+        let saved = temporary.path().join("saved");
+        std::fs::create_dir(&root).expect("root");
+        std::fs::write(root.join("live"), b"before").expect("original");
+        std::fs::write(root.join("prepared"), b"after").expect("prepared");
+        let ledger = crate::materializer::NativeMaterializationWork::new(
+            finite_entry_budget(), &crate::CancellationToken::new());
+        let mut work = &ledger;
+        let parent = crate::native_host::open_root_directory_with_work(&root, &mut work).expect("original held parent");
+        std::fs::rename(&root, &saved).expect("displace original root");
+        std::fs::create_dir(&root).expect("user replacement root");
+        std::fs::write(root.join("live"), b"user-live").expect("user live");
+        std::fs::write(root.join("prepared"), b"user-prepared").expect("user prepared");
+        exchange_native_entries_held_measured(&parent, Path::new("live"),
+            &parent, Path::new("prepared"), &mut work).expect("held physical exchange");
+        assert_eq!(std::fs::read(saved.join("live")).expect("held published"), b"after");
+        assert_eq!(std::fs::read(saved.join("prepared")).expect("held displaced"), b"before");
+        assert_eq!(std::fs::read(root.join("live")).expect("user live preserved"), b"user-live");
+        assert_eq!(std::fs::read(root.join("prepared")).expect("user prepared preserved"), b"user-prepared");
+    }
+
+    #[cfg(all(feature = "native-watch", windows))]
+    #[test]
+    fn bounded_entry_retry_rejects_a_different_request_without_adopting_it() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let live = temporary.path().join("live");
+        let prepared = temporary.path().join("prepared");
+        let other = temporary.path().join("other");
+        let witness = entry_exchange_witness(&live).expect("witness");
+        std::fs::write(&live, b"before").expect("original");
+        std::fs::write(&prepared, b"after").expect("prepared");
+        std::fs::write(&other, b"unrelated request").expect("other request");
+        measured_entry_witness_fixture(&live, &prepared, &witness);
+        let cancellation = crate::CancellationToken::new();
+        let failure = exchange_native_entries_with_budget(&live, &other, finite_entry_budget(), &cancellation)
+            .expect_err("original request path identity remains authoritative");
+        assert!(matches!(failure.error, NativeExchangeError::IncompatibleJournal));
+        assert_eq!(failure.work.backend_write_operations, 0);
+        assert!(witness.exists());
+        assert_eq!(std::fs::read(&live).expect("original retained"), b"before");
+        assert_eq!(std::fs::read(&prepared).expect("original preparation retained"), b"after");
+        assert_eq!(std::fs::read(&other).expect("other request retained"), b"unrelated request");
+        exchange_native_entries_with_budget(&live, &prepared, finite_entry_budget(), &cancellation)
+            .expect("original rolled-back request proceeds to actual publication");
+        assert_eq!(std::fs::read(&live).expect("original request published"), b"after");
+    }
+
+    #[cfg(all(feature = "native-watch", windows))]
+    #[test]
+    fn bounded_entry_recovery_finishes_in_the_original_other_parent() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let live_parent = temporary.path().join("checkout");
+        let prepared_parent = temporary.path().join("operation");
+        std::fs::create_dir(&live_parent).expect("checkout parent");
+        std::fs::create_dir(&prepared_parent).expect("operation parent");
+        let live = live_parent.join("live");
+        let prepared = prepared_parent.join("prepared");
+        let witness = entry_exchange_witness(&live).expect("witness");
+        let scratch = scratch(&live).expect("scratch");
+        std::fs::write(&live, b"before").expect("original");
+        std::fs::write(&prepared, b"after").expect("prepared");
+        measured_entry_witness_fixture(&live, &prepared, &witness);
+        std::fs::rename(&live, &scratch).expect("first physical edit");
+        std::fs::rename(&prepared, &live).expect("publication before interrupted displacement");
+        recover_native_entry_exchange_with_budget(&live, finite_entry_budget(),
+            &crate::CancellationToken::new()).expect("held original other-parent recovery");
+        assert_eq!(std::fs::read(&live).expect("published entry"), b"after");
+        assert_eq!(std::fs::read(&prepared).expect("original displaced entry"), b"before");
+        assert!(!scratch.exists());
+        assert!(!witness.exists());
+    }
+
+    #[cfg(all(feature = "native-watch", windows))]
+    #[test]
+    fn bounded_entry_recovery_keeps_the_same_lost_ack_decision() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let live = temporary.path().join("live");
+        let prepared = temporary.path().join("prepared");
+        let witness = entry_exchange_witness(&live).expect("witness");
+        let scratch = scratch(&live).expect("scratch");
+        std::fs::write(&live, b"before").expect("original");
+        std::fs::write(&prepared, b"after").expect("prepared");
+        measured_entry_witness_fixture(&live, &prepared, &witness);
+        std::fs::rename(&live, &scratch).expect("first rename");
+        std::fs::rename(&prepared, &live).expect("publication");
+        std::fs::rename(&scratch, &prepared).expect("displacement before lost acknowledgement");
+        let cancellation = crate::CancellationToken::new();
+        let recovered = recover_native_entry_exchange_with_budget(&live, finite_entry_budget(), &cancellation)
+            .expect("restart recovers original decision");
+        assert!(recovered.work.backend_write_operations > 0);
+        assert!(!witness.exists());
+        recover_native_entry_exchange_with_budget(&live, finite_entry_budget(), &cancellation)
+            .expect("reopened cleanup is idempotent");
+        assert_eq!(std::fs::read(&live).expect("published identity retained"), b"after");
+        assert_eq!(std::fs::read(&prepared).expect("original preimage retained"), b"before");
+    }
+
+    #[cfg(all(feature = "native-watch", windows))]
+    #[test]
+    fn bounded_entry_recovery_never_adopts_a_replacement_preimage() {
+        for completed in [false, true] {
+            let temporary = tempfile::tempdir().expect("temporary directory");
+            let live = temporary.path().join("live");
+            let prepared = temporary.path().join("prepared");
+            let witness = entry_exchange_witness(&live).expect("witness");
+            let scratch = scratch(&live).expect("scratch");
+            let saved = temporary.path().join("saved");
+            std::fs::write(&live, b"before").expect("original");
+            std::fs::write(&prepared, b"after").expect("prepared");
+            measured_entry_witness_fixture(&live, &prepared, &witness);
+            if completed {
+                std::fs::rename(&live, &scratch).expect("first rename");
+                std::fs::rename(&prepared, &live).expect("publication");
+            }
+            std::fs::rename(&live, &saved).expect("retain replaced physical entry");
+            std::fs::write(&live, b"user replacement").expect("user replacement");
+            let failure = recover_native_entry_exchange_with_budget(&live, finite_entry_budget(),
+                &crate::CancellationToken::new()).expect_err("replacement is not original authority");
+            assert!(matches!(failure.error, NativeExchangeError::IncompatibleJournal));
+            assert!(failure.work.backend_read_operations > 0);
+            assert_eq!(failure.work.backend_write_operations, 0);
+            assert_eq!(std::fs::read(&live).expect("user replacement retained"), b"user replacement");
+            assert_eq!(std::fs::read(&saved).expect("original binding retained"),
+                if completed { b"after".as_slice() } else { b"before".as_slice() });
+            assert!(witness.exists());
+            if completed { assert_eq!(std::fs::read(&scratch).expect("original preimage retained"), b"before"); }
+        }
+    }
+
+    #[cfg(all(feature = "native-watch", windows))]
+    #[test]
+    fn bounded_entry_recovery_preserves_a_replaced_physical_parent() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root = temporary.path().join("root");
+        let saved = temporary.path().join("saved");
+        std::fs::create_dir(&root).expect("root");
+        let live = root.join("live");
+        let prepared = root.join("prepared");
+        let witness = entry_exchange_witness(&live).expect("witness");
+        std::fs::write(&live, b"before").expect("original");
+        std::fs::write(&prepared, b"after").expect("prepared");
+        measured_entry_witness_fixture(&live, &prepared, &witness);
+        let ledger = crate::materializer::NativeMaterializationWork::new(
+            finite_entry_budget(), &crate::CancellationToken::new());
+        let mut work = &ledger;
+        let parent = crate::native_host::open_root_directory_with_work(&root, &mut work).expect("original held root");
+        std::fs::rename(&root, &saved).expect("displace original physical parent");
+        std::fs::create_dir(&root).expect("user replacement root");
+        std::fs::write(root.join("live"), b"user-live").expect("user live");
+        std::fs::write(root.join("prepared"), b"user-prepared").expect("user prepared");
+        recover_native_entry_exchange_held_measured(&parent, Path::new("live"), &mut work)
+            .expect_err("persisted right parent no longer names the original root");
+        assert_eq!(std::fs::read(root.join("live")).expect("user live preserved"), b"user-live");
+        assert_eq!(std::fs::read(root.join("prepared")).expect("user prepared preserved"), b"user-prepared");
+        assert_eq!(std::fs::read(saved.join("live")).expect("original preserved"), b"before");
+        assert!(saved.join(witness.file_name().expect("witness name")).exists());
+    }
+
+    #[cfg(all(feature = "native-watch", windows))]
+    #[test]
+    fn bounded_entry_cleanup_failure_reports_its_entire_read_prefix() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let live = temporary.path().join("live");
+        let prepared = temporary.path().join("prepared");
+        let witness = entry_exchange_witness(&live).expect("witness");
+        std::fs::write(&live, b"before").expect("original");
+        std::fs::write(&prepared, b"after").expect("prepared");
+        measured_entry_witness_fixture(&live, &prepared, &witness);
+        let cancellation = crate::CancellationToken::new();
+        let baseline = recover_native_entry_exchange_with_budget(&live, finite_entry_budget(), &cancellation)
+            .expect("measure actual cleanup");
+        measured_entry_witness_fixture(&live, &prepared, &witness);
+        let mut exact_prefix = baseline.work;
+        exact_prefix.backend_write_operations = 0;
+        let failure = recover_native_entry_exchange_with_budget(&live, exact_prefix, &cancellation)
+            .expect_err("reject only the actual cleanup mutation");
+        assert!(matches!(failure.error, NativeExchangeError::Work(_)));
+        assert_eq!(failure.work.backend_write_operations, 0);
+        assert_eq!(failure.work.backend_read_operations, baseline.work.backend_read_operations);
+        assert_eq!(failure.work.source_bytes_read, baseline.work.source_bytes_read);
+        assert!(witness.exists());
+        assert_eq!(std::fs::read(&live).expect("original retained"), b"before");
+        assert_eq!(std::fs::read(&prepared).expect("prepared retained"), b"after");
+        recover_native_entry_exchange_with_budget(&live, finite_entry_budget(), &cancellation)
+            .expect("retry completes owned cleanup");
+        assert!(!witness.exists());
+    }
+
+    #[cfg(all(feature = "native-watch", windows))]
+    #[test]
+    fn bounded_entry_recovery_rejects_unbounded_lengths_before_buffer_allocation() {
+        use std::io::{Seek as _, Write as _};
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let live = temporary.path().join("live");
+        let prepared = temporary.path().join("prepared");
+        let witness = entry_exchange_witness(&live).expect("witness");
+        std::fs::write(&live, b"before").expect("original");
+        std::fs::write(&prepared, b"after").expect("prepared");
+        measured_entry_witness_fixture(&live, &prepared, &witness);
+        let mut journal = std::fs::OpenOptions::new().write(true).open(&witness).expect("fixture journal");
+        journal.seek(std::io::SeekFrom::Start(96)).expect("first native path length");
+        journal.write_all(&u64::MAX.to_le_bytes()).expect("hostile durable length");
+        drop(journal);
+        let failure = recover_native_entry_exchange_with_budget(&live, finite_entry_budget(),
+            &crate::CancellationToken::new()).expect_err("overflowing buffer length rejected");
+        assert!(matches!(failure.error, NativeExchangeError::Work(crate::WorkError::Overflow)));
+        assert_eq!(failure.work.backend_write_operations, 0);
+        assert!(failure.work.peak_allocation_bytes < finite_entry_budget().peak_allocation_bytes);
+        assert_eq!(std::fs::read(&live).expect("original retained"), b"before");
+        assert_eq!(std::fs::read(&prepared).expect("prepared retained"), b"after");
+        assert!(witness.exists());
+    }
+
+    #[cfg(all(feature = "native-watch", windows))]
+    #[test]
+    fn bounded_entry_recovery_retains_journal_replacements_and_trailing_data() {
+        use std::io::Write as _;
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let live = temporary.path().join("live");
+        let prepared = temporary.path().join("prepared");
+        let witness = entry_exchange_witness(&live).expect("witness");
+        std::fs::write(&live, b"before").expect("original");
+        std::fs::write(&prepared, b"after").expect("prepared");
+        measured_entry_witness_fixture(&live, &prepared, &witness);
+        let mut journal = std::fs::OpenOptions::new().append(true).open(&witness).expect("fixture journal");
+        journal.write_all(b"user trailing bytes").expect("external journal change");
+        drop(journal);
+        let failure = recover_native_entry_exchange_with_budget(&live, finite_entry_budget(),
+            &crate::CancellationToken::new()).expect_err("noncanonical witness retained");
+        assert!(matches!(failure.error, NativeExchangeError::IncompatibleJournal));
+        assert_eq!(failure.work.backend_write_operations, 0);
+        assert!(std::fs::read(&witness).expect("journal retained").ends_with(b"user trailing bytes"));
+        assert_eq!(std::fs::read(&live).expect("original retained"), b"before");
+        assert_eq!(std::fs::read(&prepared).expect("prepared retained"), b"after");
+    }
+
+    #[cfg(all(feature = "native-watch", windows))]
+    #[test]
+    fn bounded_entry_exchange_preserves_raw_windows_names() {
+        use std::os::windows::ffi::OsStringExt as _;
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let live_name: Vec<_> = "live".encode_utf16().chain([0xd800]).collect();
+        let prepared_name: Vec<_> = "prepared".encode_utf16().chain([0xdc00]).collect();
+        let live = temporary.path().join(std::ffi::OsString::from_wide(&live_name));
+        let prepared = temporary.path().join(std::ffi::OsString::from_wide(&prepared_name));
+        std::fs::write(&live, b"before").expect("raw original name");
+        std::fs::write(&prepared, b"after").expect("raw prepared name");
+        exchange_native_entries_with_budget(&live, &prepared, finite_entry_budget(),
+            &crate::CancellationToken::new()).expect("raw native exchange");
+        assert_eq!(std::fs::read(&live).expect("raw published binding"), b"after");
+        assert_eq!(std::fs::read(&prepared).expect("raw displaced binding"), b"before");
+    }
 
     #[test]
     fn carrying_recovery_keeps_a_concurrently_recreated_live_path() {
@@ -846,8 +1974,19 @@ mod tests {
         let live = temporary.path().join("live");
         let scratch = scratch(&live).expect("scratch path");
         let witness = entry_exchange_witness(&live).expect("witness path");
-        create_entry_exchange_witness(&witness).expect("exchange witness");
-        std::fs::write(&scratch, b"before").expect("scratch entry");
+        #[cfg(not(feature = "native-watch"))]
+        {
+            create_entry_exchange_witness(&witness).expect("exchange witness");
+            std::fs::write(&scratch, b"before").expect("scratch entry");
+        }
+        #[cfg(feature = "native-watch")]
+        {
+            let prepared = temporary.path().join("prepared");
+            std::fs::write(&live, b"before").expect("original entry");
+            std::fs::write(&prepared, b"after").expect("prepared entry");
+            measured_entry_witness_fixture(&live, &prepared, &witness);
+            std::fs::rename(&live, &scratch).expect("crash after first rename");
+        }
 
         recover_native_entry_exchange(&live).expect("recover exchange");
 
@@ -862,14 +2001,28 @@ mod tests {
         let live = temporary.path().join("live");
         let scratch = scratch(&live).expect("scratch path");
         let witness = entry_exchange_witness(&live).expect("witness path");
-        create_entry_exchange_witness(&witness).expect("exchange witness");
-        std::fs::write(&live, b"after").expect("published entry");
-        std::fs::write(&scratch, b"before").expect("scratch entry");
+        #[cfg(not(feature = "native-watch"))]
+        {
+            create_entry_exchange_witness(&witness).expect("exchange witness");
+            std::fs::write(&live, b"after").expect("published entry");
+            std::fs::write(&scratch, b"before").expect("scratch entry");
+        }
+        #[cfg(feature = "native-watch")]
+        {
+            let prepared = temporary.path().join("prepared");
+            std::fs::write(&live, b"before").expect("original entry");
+            std::fs::write(&prepared, b"after").expect("prepared entry");
+            measured_entry_witness_fixture(&live, &prepared, &witness);
+            std::fs::rename(&live, &scratch).expect("first physical edit");
+            std::fs::rename(&prepared, &live).expect("crash after publication");
+        }
 
         recover_native_entry_exchange(&live).expect("recover exchange");
 
         assert_eq!(std::fs::read(&live).expect("published entry"), b"after");
         assert!(!scratch.exists());
+        #[cfg(feature = "native-watch")]
+        assert_eq!(std::fs::read(temporary.path().join("prepared")).expect("preserved preimage"), b"before");
     }
 
     #[cfg(windows)]

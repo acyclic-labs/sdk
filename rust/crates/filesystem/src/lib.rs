@@ -179,7 +179,9 @@ pub use async_storage::{
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-pub use core_state::{DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError};
+pub use core_state::{
+    DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError, MeasuredMaterializationStore,
+};
 #[cfg(feature = "distributed")]
 pub use distributed::StreamAuthorityStore;
 #[cfg(feature = "distributed")]
@@ -231,7 +233,7 @@ pub use kernel::{
     encode_generation_export_manifest,
 };
 pub use lazy_workspace::{
-    LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryPage, LazyLookup, LazyOverlay,
+    LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryPage, LazyForkOrigin, LazyForkPhase, LazyLookup, LazyOverlay,
     LazyOverlayId, LazySeekTarget, LazyShadow, LazyShadowId, LazySnapshotId, LazySnapshotRef,
     LazyStat, LazyWorkspace, LazyWorkspaceError, LazyWorkspaceState, LazyWorkspaceStore,
     MemoryLazyWorkspaceStore,
@@ -244,10 +246,17 @@ pub use materializer::{
     JournaledMaterializer, MaterializationBackend, MaterializationEdit, MaterializationError,
     MaterializationJournal, MaterializationJournalStore, MaterializationPhase, MaterializationPlan,
     MaterializationPreimage, MaterializationRecovery, MemoryMaterializationJournalStore,
+    MaterializationInspection, MaterializationRootObservation,
+    MaterializationIntent, MaterializationPreparationIdentity, MaterializationPreparationObservation,
+    MaterializationPreparationSelection,
     MemoryMaterializationJournalStoreError,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use materializer::{NativeTreeMaterializationBackend, NativeTreeMaterializationError};
+pub use materializer::{
+    NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationBackend, NativeTreeMaterializationError,
+    NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX,
+    validate_native_preparation_location,
+};
 #[cfg(all(
     feature = "local",
     feature = "native-mount",
@@ -255,7 +264,9 @@ pub use materializer::{NativeTreeMaterializationBackend, NativeTreeMaterializati
 ))]
 pub use materializer::{
     NativeWorkspacePublication, NativeWorkspacePublicationError,
-    publish_native_generation_transition, publish_native_workspace_generation,
+    load_native_materialization_journal, prepare_native_generation_transition,
+    publish_native_generation_transition, publish_native_generation_transition_with_work_guarded,
+    publish_native_workspace_generation,
 };
 #[cfg(test)]
 pub use memory::{MemoryAuthorityStore, MemoryObjectStore};
@@ -266,6 +277,7 @@ pub use merge_driver::{
     MergePlanResolutionError, MergeResolution, MergeResolutionCache, ResolutionKey,
     UnpublishedMergeCandidate, resolve_merge_plan,
 };
+pub use model::{Lifecycle, VolumeConfig};
 pub use mount::{
     MountError, MountedCheckout, MountedGeneration, MountedView, MountedViewBuilder,
     MountedViewSnapshot, RoutedCheckout,
@@ -306,10 +318,12 @@ pub use native_mount::{
     MountLookup, MountNode, MountNodeKind, MountOpenFile, MountOptions, MountPath,
     MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError, MountSparseRange,
     MountSparseSpan, MountViewLease, NativeBlockCloneAccelerationEvidence, NativeMountCapabilities,
-    NativeMountError, NativeMountKind, NativeMountRequest, NativeMountSession,
+    NativeMountCleanupState, NativeMountError, NativeMountKind, NativeMountRecoveryCleanupState,
+    NativeMountRecoveryOwner, NativeMountRequest, NativeMountSession, NativeMountWork,
     NativeMountSessionIsolation, NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
     NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
     NativeWorkingSet, SharedCheckout, SharedCheckoutState,
+    initialize_native_mount_services,
     detach_native_mount_destination_after_crash, materialize_checkout,
     materialize_checkout_host_path, materialize_checkout_path, materialize_checkout_paths,
     mount_native, mount_native_over_existing, probe_native_mount,

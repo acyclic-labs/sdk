@@ -25,11 +25,23 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Deref;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::kernel::GenerationRoot;
 use crate::storage::{ObjectId, ObjectStoreError};
+use crate::kernel::allocation::{AllocationError, AllocationLedger};
+use crate::performance::{WorkBudget, WorkCounters};
+
+#[derive(Default)]
+struct Holds {
+    slots: Vec<Slot>,
+    free: Option<usize>,
+}
+
+struct Slot {
+    held: Option<Held>,
+    next_free: Option<usize>,
+}
 
 /// Collections whose swept objects are remembered; a closure proven before
 /// all of them is refused.
@@ -42,8 +54,7 @@ pub struct Collection {
     /// Held by the one collection that runs at a time.
     running: Arc<tokio::sync::Mutex<()>>,
     state: Mutex<State>,
-    holds: Mutex<HashMap<u64, Held>>,
-    next_hold: AtomicU64,
+    holds: Mutex<Holds>,
 }
 
 #[derive(Default)]
@@ -206,21 +217,100 @@ impl Collection {
         self.holds
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .values()
-            .cloned()
+            .slots
+            .iter()
+            .filter_map(|slot| slot.held.clone())
             .collect()
     }
 
     fn register(self: &Arc<Self>, held: Held) -> Hold {
-        let id = self.next_hold.fetch_add(1, Ordering::Relaxed);
-        self.holds
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, held);
-        Hold {
-            collection: Arc::clone(self),
-            id,
+        let mut holds = self.holds.lock().unwrap_or_else(PoisonError::into_inner);
+        let id = if let Some(id) = holds.free {
+            let slot = holds.slots.get_mut(id).expect("free hold slot exists");
+            let next = slot.next_free.take();
+            slot.held = Some(held);
+            holds.free = next;
+            id
+        } else {
+            let id = holds.slots.len();
+            holds.slots.push(Slot { held: Some(held), next_free: None });
+            id
+        };
+        Hold { collection: Arc::clone(self), id }
+    }
+
+    fn register_measured(
+        self: &Arc<Self>,
+        held: Held,
+        allocations: &mut AllocationLedger,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<Hold, crate::FsError> {
+        cancellation.check()?;
+        let mut holds = self.holds.lock().unwrap_or_else(PoisonError::into_inner);
+        if holds.free.is_none() && holds.slots.len() == holds.slots.capacity() {
+            let old_capacity = holds.slots.capacity();
+            let next_capacity = old_capacity.checked_mul(2)
+                .map(|capacity| capacity.max(1))
+                .ok_or(crate::FsError::Work(crate::WorkError::Overflow))?;
+            let old_bytes = crate::foundation::usize_to_u64(
+                old_capacity.checked_mul(std::mem::size_of::<Slot>())
+                    .ok_or(crate::FsError::Work(crate::WorkError::Overflow))?,
+            );
+            allocations.claim_bytes(old_bytes, 0, work, budget).map_err(handle_allocation_error)?;
+            allocations.claim_elements::<Slot>(next_capacity, work, budget).map_err(handle_allocation_error)?;
+            let mut slots = Vec::new();
+            slots.try_reserve_exact(next_capacity).map_err(|_| crate::FsError::HandleAllocationFailed)?;
+            let actual_capacity = slots.capacity();
+            let excess = actual_capacity.checked_sub(next_capacity)
+                .ok_or(crate::FsError::HandleAllocationFailed)?;
+            if excess != 0 {
+                let excess_bytes = excess.checked_mul(std::mem::size_of::<Slot>())
+                    .map(crate::foundation::usize_to_u64)
+                    .ok_or(crate::FsError::Work(crate::WorkError::Overflow))?;
+                allocations.claim_bytes(excess_bytes, 0, work, WorkBudget::UNBOUNDED).map_err(handle_allocation_error)?;
+                work.verify(budget)?;
+            }
+            charge_handle_copy(old_bytes, work, budget)?;
+            slots.append(&mut holds.slots);
+            holds.slots = slots;
+            let new_bytes = actual_capacity.checked_mul(std::mem::size_of::<Slot>())
+                .map(crate::foundation::usize_to_u64)
+                .ok_or(crate::FsError::Work(crate::WorkError::Overflow))?;
+            allocations.release(old_bytes).map_err(handle_allocation_error)?;
+            allocations.release(new_bytes).map_err(handle_allocation_error)?;
         }
+        // The handle retains its occupied slot even when an existing free slot
+        // required no backing allocation. Free backing capacity stays global.
+        allocations.claim_bytes(crate::foundation::usize_to_u64(std::mem::size_of::<Slot>()), 0, work, budget)
+            .map_err(handle_allocation_error)?;
+        let id = if let Some(id) = holds.free {
+            let slot = holds.slots.get_mut(id).ok_or(crate::FsError::HandleAllocationFailed)?;
+            let next = slot.next_free.take();
+            slot.held = Some(held);
+            holds.free = next;
+            id
+        } else {
+            let id = holds.slots.len();
+            holds.slots.push(Slot { held: Some(held), next_free: None });
+            id
+        };
+        Ok(Hold { collection: Arc::clone(self), id })
+    }
+
+    pub(crate) fn hold_record_measured(
+        collection: Option<&Arc<Self>>,
+        record: crate::kernel::FileRecord,
+        config: crate::model::VolumeConfig,
+        allocations: &mut AllocationLedger,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<Option<Hold>, crate::FsError> {
+        collection.map(|collection| collection.register_measured(
+            Held::Record { record, config }, allocations, work, budget, cancellation,
+        )).transpose()
     }
 
     /// Keeps what a detached file's `record` reaches for as long as the
@@ -276,26 +366,34 @@ impl Drop for Collecting {
 /// An open handle's registration; dropping it releases what it holds.
 pub(crate) struct Hold {
     collection: Arc<Collection>,
-    id: u64,
+    id: usize,
 }
 
 impl Hold {
+    pub(crate) fn logical_owned_bytes(&self) -> u64 {
+        let holds = self.collection.holds.lock().unwrap_or_else(PoisonError::into_inner);
+        let held = holds.slots.get(self.id).and_then(|slot| slot.held.as_ref())
+            .expect("live hold remains registered until drop");
+        held_owned_bytes(held)
+    }
+
     fn update(&self, held: Held) {
-        self.collection
-            .holds
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(self.id, held);
+        let mut holds = self.collection.holds.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(slot) = holds.slots.get_mut(self.id) {
+            slot.held = Some(held);
+        }
     }
 }
 
 impl Drop for Hold {
     fn drop(&mut self) {
-        self.collection
-            .holds
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.id);
+        let mut holds = self.collection.holds.lock().unwrap_or_else(PoisonError::into_inner);
+        let next = holds.free;
+        if let Some(slot) = holds.slots.get_mut(self.id) {
+            slot.held = None;
+            slot.next_free = next;
+            holds.free = Some(self.id);
+        }
     }
 }
 
@@ -329,6 +427,48 @@ impl CheckoutRoots {
             config,
             hold,
         }
+    }
+
+    pub(crate) fn new_measured(
+        collection: Option<&Arc<Collection>>,
+        config: crate::model::VolumeConfig,
+        base: ObjectId,
+        working: GenerationRoot,
+        allocations: &mut AllocationLedger,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<Self, crate::FsError> {
+        let hold = match collection {
+            Some(collection) => {
+                let held_working = clone_generation_root(&working, allocations, work, budget)?;
+                Some(collection.register_measured(
+                    Held::Checkout(HeldRoots { base, working: held_working, config }),
+                    allocations, work, budget, cancellation,
+                )?)
+            }
+            None => None,
+        };
+        Ok(Self { base, working, config, hold })
+    }
+
+    pub(crate) fn replicate_measured(
+        &self,
+        allocations: &mut AllocationLedger,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<Self, crate::FsError> {
+        let working = clone_generation_root(&self.working, allocations, work, budget)?;
+        Self::new_measured(
+            self.hold.as_ref().map(|hold| &hold.collection), self.config,
+            self.base, working, allocations, work, budget, cancellation,
+        )
+    }
+
+    pub(crate) fn logical_owned_bytes(&self) -> u64 {
+        crate::foundation::usize_to_u64(self.working.parents.capacity() * std::mem::size_of::<crate::GenerationId>())
+            + self.hold.as_ref().map_or(0, Hold::logical_owned_bytes)
     }
 
     /// The generation the checkout is based on.
@@ -379,6 +519,56 @@ impl Deref for CheckoutRoots {
     }
 }
 
+fn held_owned_bytes(held: &Held) -> u64 {
+    let parents = match held {
+        Held::Checkout(roots) => roots.working.parents.capacity() * std::mem::size_of::<crate::GenerationId>(),
+        Held::Record { .. } => 0,
+    };
+    crate::foundation::usize_to_u64(std::mem::size_of::<Slot>() + parents)
+}
+
+pub(crate) fn handle_allocation_error(error: AllocationError) -> crate::FsError {
+    error.into_work_or(crate::FsError::HandleAllocationFailed)
+}
+
+pub(crate) fn charge_handle_copy(
+    bytes: u64,
+    work: &mut WorkCounters,
+    budget: WorkBudget,
+) -> Result<(), crate::FsError> {
+    let charged = work.checked_add(WorkCounters { bytes_copied: bytes, ..WorkCounters::default() })?;
+    charged.verify(budget)?;
+    *work = charged;
+    Ok(())
+}
+
+pub(crate) fn clone_generation_root(
+    root: &GenerationRoot,
+    allocations: &mut AllocationLedger,
+    work: &mut WorkCounters,
+    budget: WorkBudget,
+) -> Result<GenerationRoot, crate::FsError> {
+    allocations.claim_elements::<crate::GenerationId>(root.parents.len(), work, budget)
+        .map_err(handle_allocation_error)?;
+    let mut parents = Vec::new();
+    parents.try_reserve_exact(root.parents.len()).map_err(|_| crate::FsError::HandleAllocationFailed)?;
+    let excess = parents.capacity().saturating_sub(root.parents.len()) * std::mem::size_of::<crate::GenerationId>();
+    if excess != 0 {
+        allocations.claim_bytes(crate::foundation::usize_to_u64(excess), 0, work, WorkBudget::UNBOUNDED)
+            .map_err(handle_allocation_error)?;
+        work.verify(budget)?;
+    }
+    charge_handle_copy(
+        crate::foundation::usize_to_u64(root.parents.len() * std::mem::size_of::<crate::GenerationId>()),
+        work, budget,
+    )?;
+    parents.extend_from_slice(&root.parents);
+    Ok(GenerationRoot {
+        volume_id: root.volume_id, root_file_id: root.root_file_id, file_table: root.file_table,
+        parents, required_features: root.required_features,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,6 +579,82 @@ mod tests {
             kind: ObjectKind::Blob,
             digest: crate::foundation::Digest::from_bytes([byte; 32]),
         }
+    }
+
+    fn checkout_hold() -> Held {
+        Held::Checkout(HeldRoots {
+            base: object(1),
+            working: GenerationRoot {
+                volume_id: crate::VolumeId::new(),
+                root_file_id: crate::FileId::new(),
+                file_table: ObjectId { kind: ObjectKind::FileTablePage, ..object(2) },
+                parents: Vec::new(),
+                required_features: 0,
+            },
+            config: crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral),
+        })
+    }
+
+    #[test]
+    fn bounded_registration_preserves_roots_and_reuses_vacant_slots()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let collection = Arc::new(Collection::default());
+        let cancellation = crate::CancellationToken::new();
+        let mut work = WorkCounters::default();
+        let mut allocations = AllocationLedger::default();
+        assert!(collection.register_measured(
+            checkout_hold(), &mut allocations, &mut work, WorkBudget::default(), &cancellation,
+        ).is_err());
+        assert!(collection.held().is_empty());
+        assert_eq!(work, WorkCounters::default());
+
+        let mut work = WorkCounters::default();
+        let mut allocations = AllocationLedger::default();
+        let held = collection.register_measured(
+            checkout_hold(), &mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation,
+        )?;
+        assert_eq!(collection.held().len(), 1);
+        assert_eq!(work.allocation_operations, 1);
+        assert_eq!(held.logical_owned_bytes(), crate::foundation::usize_to_u64(std::mem::size_of::<Slot>()));
+
+        let mut extra = Vec::new();
+        loop {
+            let full = {
+                let holds = collection.holds.lock().unwrap_or_else(PoisonError::into_inner);
+                holds.slots.len() == holds.slots.capacity()
+            };
+            if full {
+                break;
+            }
+            extra.push(collection.register(checkout_hold()));
+        }
+        let retained_roots = collection.held().len();
+
+        let mut limited = WorkBudget::UNBOUNDED;
+        limited.bytes_copied = 0;
+        let mut failed_work = WorkCounters::default();
+        let mut allocations = AllocationLedger::default();
+        assert!(collection.register_measured(
+            checkout_hold(), &mut allocations, &mut failed_work, limited, &cancellation,
+        ).is_err());
+        assert_eq!(collection.held().len(), retained_roots, "failed growth does not unregister old roots");
+        assert_eq!(failed_work.allocation_operations, 1, "the attempted backing allocation remains measured");
+        drop(held);
+        drop(extra);
+        assert!(collection.held().is_empty());
+
+        let mut reused_work = WorkCounters::default();
+        let mut allocations = AllocationLedger::default();
+        let mut reuse_budget = WorkBudget::UNBOUNDED;
+        reuse_budget.allocation_operations = 0;
+        let reused = collection.register_measured(
+            checkout_hold(), &mut allocations, &mut reused_work, reuse_budget, &cancellation,
+        )?;
+        assert_eq!(reused_work.allocation_operations, 0);
+        assert_eq!(collection.held().len(), 1);
+        drop(reused);
+        assert!(collection.held().is_empty());
+        Ok(())
     }
 
     #[tokio::test]

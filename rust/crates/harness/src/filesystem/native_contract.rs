@@ -10,7 +10,8 @@ use std::{collections::BTreeMap, path::PathBuf};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeViewOptions {
-    /// Existing empty absolute directory owned by the embedding host.
+    /// Absolute owner namespace root, preallocated and witnessed by the host.
+    /// Preparation preserves unrelated user data and rejects root replacement.
     pub root: PathBuf,
     /// Caller-selected positive bound; no fixed volume count is built in.
     pub maximum_volumes: u32,
@@ -27,6 +28,9 @@ pub struct NativeVolumeMapping {
     pub volume: VolumeRef,
     /// Pinned immutable source revision.
     pub generation: GenerationRef,
+    /// Actual mechanism for this independently selected volume. Snapshot
+    /// evidence is required only for an existing owner-authenticated lazy mount.
+    pub namespace: NativeVolumeNamespace,
     /// Absolute native path, used directly by the command.
     pub path: PathBuf,
     /// Explicit source/destination authority.
@@ -35,27 +39,127 @@ pub struct NativeVolumeMapping {
     pub authority_revision: [u8; 32],
 }
 
-/// Materialized namespace semantics admitted with a command and its approval.
-/// All directories reside on the host filesystem: cross-directory rename follows
-/// that filesystem, and destination publications are independent. This is a
-/// materialized view, never a claim that an OS mount driver is running.
+/// Exact native namespace; destination publications remain independent.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeViewManifest {
-    /// Actual namespace mechanism, bound into admission and approval.
-    pub kind: NativeNamespaceKind,
     /// Exact root and finite view bounds.
     pub options: NativeViewOptions,
     /// Ordered dynamically selected volume mappings.
     pub volumes: Vec<NativeVolumeMapping>,
 }
 
-/// Namespace semantics implemented by this optional adapter.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NativeNamespaceKind {
-    /// Ordinary host directories with independent SDK destination publication.
-    MaterializedDirectories,
+/// Namespace semantics for one independently owned volume. A mixed view has
+/// mixed entries, never a synthetic aggregate mechanism or snapshot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum NativeVolumeNamespace {
+    /// Ordinary host directory with its existing SDK publication owner.
+    MaterializedDirectory,
+    /// Actual existing demand-backed mount. This observation is not authority
+    /// to create, adopt, or reopen a mount without its original owner.
+    LazyMount {
+        /// Original exact lazy overlay/shadow and source commitments.
+        snapshot: acyclic_fs::LazySnapshotRef,
+    },
+}
+
+impl NativeViewOptions {
+    pub(super) fn budget_for_volume_count(&self, count: usize) -> Result<WorkBudget> {
+        use crate::Error;
+        let budget = self.work_per_volume;
+        if !budget.has_finite_allowances() || count == 0 {
+            return Err(Error::Invalid("native work requires finite nonempty allowances".into()));
+        }
+        let count = u64::try_from(count).map_err(|error| Error::Storage(error.to_string()))?;
+        macro_rules! scale {
+            ($($field:ident),* $(,)?) => {
+                WorkBudget {
+                    $($field: budget.$field.checked_mul(count)
+                        .ok_or_else(|| Error::Storage("native total allowance overflow".into()))?,)*
+                    peak_allocation_bytes: budget.peak_allocation_bytes,
+                }
+            };
+        }
+        let scaled = scale!(
+            authority_records_read, authority_records_appended, authority_bytes_read,
+            authority_bytes_written, object_probes, backend_read_operations,
+            backend_write_operations, durability_operations, page_reads, page_writes,
+            object_bytes_read, object_bytes_written, bytes_hashed, bytes_copied,
+            bytes_encoded, source_bytes_read, source_path_components, source_entries_visited,
+            output_bytes, items_examined, items_returned, allocation_operations, materializations,
+        );
+        if !scaled.has_finite_allowances() {
+            return Err(Error::Invalid("native total allowances must remain finite".into()));
+        }
+        Ok(scaled)
+    }
+}
+
+impl NativeViewManifest {
+    /// One finite validation span for the actual original selection. Root
+    /// observation and serial per-volume checks consume this same allowance.
+    pub fn validation_budget(&self) -> Result<WorkBudget> {
+        self.validate()?;
+        self.options.budget_for_volume_count(self.volumes.len())
+    }
+
+    /// Validate selection shape and finite bounds without opening native paths.
+    /// This does not authenticate a view; its host owner must verify the exact
+    /// pins against the existing mount and provider before dispatch/publication.
+    pub fn validate(&self) -> Result<()> {
+        use crate::Error;
+        use std::path::Component;
+
+        if !self.options.root.is_absolute()
+            || self.options.maximum_volumes == 0
+            || self.volumes.is_empty()
+            || self.volumes.len() as u64 > u64::from(self.options.maximum_volumes)
+            || !self.options.work_per_volume.has_finite_allowances()
+            || self
+                .options
+                .root
+                .components()
+                .any(|part| matches!(part, Component::ParentDir))
+        {
+            return Err(Error::Invalid(
+                "invalid native view selection or bounds".into(),
+            ));
+        }
+        for (index, mapping) in self.volumes.iter().enumerate() {
+            mapping.volume.validate()?;
+            mapping.generation.validate()?;
+            if mapping.generation.as_resource().provider() != mapping.volume.provider()
+                || !mapping.path.is_absolute()
+                || mapping.path == self.options.root
+                || !mapping.path.starts_with(&self.options.root)
+                || mapping
+                    .path
+                    .components()
+                    .any(|part| matches!(part, Component::ParentDir))
+                || self.volumes.iter().take(index).any(|prior| {
+                    mapping.path.starts_with(&prior.path) || prior.path.starts_with(&mapping.path)
+                })
+            {
+                return Err(Error::Invalid(
+                    "native volume selection overlaps or escapes its root".into(),
+                ));
+            }
+        }
+        for mapping in &self.volumes {
+            if let NativeVolumeNamespace::LazyMount { snapshot } = &mapping.namespace
+                && (snapshot.workspace_id.into_bytes() == [0; 16]
+                    || snapshot.source.identity == [0; 16]
+                    || snapshot.authored_generation.digest().as_bytes().as_slice()
+                        != mapping.generation.as_resource().key())
+            {
+                return Err(Error::Invalid(
+                    "lazy native snapshot differs from its selected generation".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Versioned effect kind supported by the optional one-shot process provider.
@@ -69,7 +173,7 @@ pub struct NativeProcessRequest {
     pub executable: PathBuf,
     /// Ordered arguments, passed directly without implicit shell expansion.
     pub argv: Vec<String>,
-    /// Absolute working directory within the selected materialized view.
+    /// Absolute working directory within the selected native view.
     pub cwd: PathBuf,
     /// Complete environment after clearing the inherited host environment.
     pub environment: BTreeMap<String, String>,
