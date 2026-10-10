@@ -4720,6 +4720,10 @@ mod tests {
         let view = runtime.block_on(mounted_view_of(Arc::clone(&demand), "lost-changes"))?;
         let a = mounted(&["a"]);
         assert!(view.lookup(&a)?.is_some());
+        let continuation = view
+            .read_directory(&MountPath::root(), None, 1)?
+            .next_cursor
+            .ok_or("the source page must continue through the authored phase")?;
         let stamp = view.view_stamp().ok_or("a watched view carries stamps")?;
         let read = demand.lookups();
         SourceChangeRecorder {
@@ -4728,6 +4732,10 @@ mod tests {
         }
         .source_changed(&[SourceChange::Everything]);
         assert!(!view.unchanged_since(&a, None, stamp));
+        assert!(matches!(
+            view.read_directory(&MountPath::root(), Some(&continuation), 1),
+            Err(MountSourceError::Stale)
+        ));
         assert!(view.lookup(&a)?.is_some());
         assert!(demand.lookups() > read, "everything is read again");
         Ok(())
@@ -5249,7 +5257,14 @@ mod tests {
         std::fs::create_dir(source.path().join("empty"))?;
         std::fs::write(source.path().join("a"), b"a")?;
         let runtime = tokio::runtime::Runtime::new()?;
-        let view = runtime.block_on(mounted_view(source.path(), "empty-pages"))?;
+        // Exercise native paging without asynchronous host reports: a report
+        // between pages correctly makes a continuation stale, even if it
+        // repeats a creation that preceded the watch.
+        let demand = Arc::new(Counted::new(
+            runtime.block_on(native_source(source.path()))?,
+            false,
+        ));
+        let view = runtime.block_on(mounted_view_of(demand, "empty-pages"))?;
         let empty = view.read_directory(&mounted(&["empty"]), None, 64)?;
         assert!(empty.entries.is_empty());
         assert!(empty.next_cursor.is_none(), "an empty page continues");
