@@ -789,6 +789,40 @@ impl MachinesProvider for GrpcProvider {
         )
     }
     #[tracing::instrument(
+        name = "acyclic.machines.read_output",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    async fn read_output(
+        &self,
+        machine: MachineId,
+        offset: u64,
+        limit: u32,
+    ) -> Result<MachineOutput, ProviderError> {
+        obs::finish(
+            async {
+                if limit == 0 || limit > MAX_OUTPUT_READ_BYTES {
+                    return Err(ProviderError::Invalid(
+                        "output read limit must be 1..=65536".into(),
+                    ));
+                }
+                let value = self
+                    .client()
+                    .read_output(wire::ReadOutputRequest {
+                        protocol: Some(protocol()),
+                        machine: Some(encode_machine(machine)),
+                        offset,
+                        limit,
+                    })
+                    .await
+                    .map_err(|error| read_error(&error))?
+                    .into_inner();
+                decode_machine_output(value, machine, offset, limit)
+            }
+            .await,
+        )
+    }
+    #[tracing::instrument(
         name = "acyclic.machines.recover",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
@@ -1716,6 +1750,30 @@ fn read_error(value: &tonic::Status) -> ProviderError {
     }
 }
 
+fn decode_machine_output(
+    value: wire::MachineOutput,
+    machine: MachineId,
+    offset: u64,
+    limit: u32,
+) -> Result<MachineOutput, ProviderError> {
+    let length = u64::try_from(value.data.len())
+        .map_err(|_| ProviderError::Rejected("output read is malformed".into()))?;
+    if decode_machine(value.machine.as_ref())? != machine
+        || value.offset < offset
+        || length > u64::from(limit)
+        || value.offset.checked_add(length).is_none()
+    {
+        return Err(ProviderError::Rejected(
+            "output read substituted its machine or range".into(),
+        ));
+    }
+    Ok(MachineOutput {
+        machine,
+        offset: value.offset,
+        data: value.data,
+    })
+}
+
 fn decode_usage_receipt(
     value: wire::UsageReceipt,
     machine: MachineId,
@@ -1889,6 +1947,12 @@ mod tests {
             _request: Request<wire::UsageRequest>,
         ) -> Result<Response<wire::UsageReceipt>, Status> {
             Err(Status::unimplemented("usage"))
+        }
+        async fn read_output(
+            &self,
+            _request: Request<wire::ReadOutputRequest>,
+        ) -> Result<Response<wire::MachineOutput>, Status> {
+            Err(Status::unimplemented("read_output"))
         }
 
         async fn cancel(
@@ -2111,6 +2175,7 @@ mod tests {
         observe!(list_machines, ListMachinesRequest);
         observe!(events, EventsRequest);
         observe!(usage, UsageRequest);
+        observe!(read_output, ReadOutputRequest);
         observe!(cancel, OperationRequest);
         observe!(inspect_operation, OperationRequest);
         let mut stream = client
@@ -2119,7 +2184,7 @@ mod tests {
             .await?
             .into_inner();
         assert!(stream.message().await?.is_none());
-        assert_eq!(observed.load(Ordering::SeqCst), 19);
+        assert_eq!(observed.load(Ordering::SeqCst), 20);
         let _ = shutdown_tx.send(());
         server.await??;
         Ok(())
@@ -2677,6 +2742,31 @@ mod tests {
                 Ok(capability)
             );
         }
+    }
+
+    #[test]
+    fn output_reads_reject_substituted_machine_and_range() {
+        let machine = MachineId::parse("00000000-0000-0000-0000-000000000001")
+            .unwrap_or_else(|_| unreachable!());
+        let other = MachineId::parse("00000000-0000-0000-0000-000000000002")
+            .unwrap_or_else(|_| unreachable!());
+        let read = |machine: MachineId, offset: u64, data: &[u8]| wire::MachineOutput {
+            machine: Some(encode_machine(machine)),
+            offset,
+            data: data.to_vec(),
+        };
+        assert_eq!(
+            decode_machine_output(read(machine, 12, b"ready"), machine, 10, 5),
+            Ok(MachineOutput {
+                machine,
+                offset: 12,
+                data: b"ready".to_vec(),
+            })
+        );
+        assert!(decode_machine_output(read(other, 10, b""), machine, 10, 5).is_err());
+        assert!(decode_machine_output(read(machine, 9, b""), machine, 10, 5).is_err());
+        assert!(decode_machine_output(read(machine, 10, b"ready!"), machine, 10, 5).is_err());
+        assert!(decode_machine_output(read(machine, u64::MAX, b"x"), machine, 10, 5).is_err());
     }
 
     #[test]

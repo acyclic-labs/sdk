@@ -365,6 +365,25 @@ message UsageReceipt {
   bytes receipt = 10;
 }
 
+// Reads a machine's guest console output: the bytes the guest wrote to its console, in
+// order. `offset` counts bytes from the machine's first console byte; `limit` bounds the
+// returned data (1..=65536 bytes). A provider retains a bounded window of the most recent
+// output, so a reply may start after the requested offset when older bytes are gone. A reply
+// with no data at the current end means nothing newer has been written yet.
+message ReadOutputRequest {
+  ProtocolVersion protocol = 1;
+  MachineId machine = 2;
+  uint64 offset = 3;
+  uint32 limit = 4;
+}
+message MachineOutput {
+  MachineId machine = 1;
+  // Offset of the first byte of `data`, at or after the requested offset. The next read
+  // continues at `offset` plus the length of `data`.
+  uint64 offset = 2;
+  bytes data = 3;
+}
+
 service MachinesService {
   rpc QualifyImage(QualifyImageRequest) returns (ImageQualification);
   rpc Create(CreateMachineRequest) returns (MachineAdmission);
@@ -385,4 +404,5 @@ service MachinesService {
   rpc Cancel(OperationRequest) returns (OperationState);
   rpc InspectOperation(OperationRequest) returns (OperationState);
   rpc WatchOperation(OperationRequest) returns (stream OperationState);
+  rpc ReadOutput(ReadOutputRequest) returns (MachineOutput);
 }

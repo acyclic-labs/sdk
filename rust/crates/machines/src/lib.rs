@@ -55,6 +55,8 @@ pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 pub const MAX_FORK_CHILDREN: u32 = 1_024;
 /// Maximum events returned in one page.
 pub const MAX_EVENT_PAGE_SIZE: u32 = 1_024;
+/// Maximum guest console output bytes returned by one read.
+pub const MAX_OUTPUT_READ_BYTES: u32 = 64 * 1024;
 /// Default automatic idle suspension delay.
 pub const DEFAULT_IDLE_SUSPEND: Duration = Duration::from_secs(15);
 
@@ -453,6 +455,16 @@ pub struct EventPage {
     pub next_sequence: Option<u64>,
 }
 
+/// Guest console output read at one offset.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MachineOutput {
+    pub machine: MachineId,
+    /// Offset of the first byte of `data` in the machine's console output, at or after the
+    /// requested offset. The next read continues at `offset + data.len()`.
+    pub offset: u64,
+    pub data: Vec<u8>,
+}
+
 /// Immutable usage receipt over one half-open interval.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct UsageReceipt {
@@ -705,6 +717,22 @@ pub trait MachinesProvider: Send + Sync {
         start_unix_ms: u64,
         end_unix_ms: u64,
     ) -> Result<UsageReceipt, ProviderError>;
+    /// Reads up to `limit` (1..=[`MAX_OUTPUT_READ_BYTES`]) bytes of the machine's guest console
+    /// output from `offset`. A provider retains a bounded window of recent output, so the
+    /// returned offset may be later than requested; empty data at the current end means
+    /// nothing newer has been written. A provider without console capture returns
+    /// [`ProviderError::Unsupported`], which is this method's default.
+    async fn read_output(
+        &self,
+        machine: MachineId,
+        offset: u64,
+        limit: u32,
+    ) -> Result<MachineOutput, ProviderError> {
+        let _ = (machine, offset, limit);
+        Err(ProviderError::Unsupported(
+            "this Machines provider does not capture console output".into(),
+        ))
+    }
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError>;
     async fn recover_operation(&self, key: IdempotencyKey) -> Result<OperationId, ProviderError>;
     async fn inspect_operation(
@@ -823,6 +851,13 @@ impl Machine {
         self.machines
             .provider
             .usage(self.id, start_unix_ms, end_unix_ms)
+            .await
+    }
+    /// Reads guest console output from `offset`; see [`MachinesProvider::read_output`].
+    pub async fn read_output(&self, offset: u64, limit: u32) -> Result<MachineOutput, ProviderError> {
+        self.machines
+            .provider
+            .read_output(self.id, offset, limit)
             .await
     }
     pub async fn checkpoint(&self, key: IdempotencyKey) -> Result<Checkpoint, ProviderError> {
@@ -1641,6 +1676,27 @@ impl MachinesProvider for SimulatedMachines {
             lineage_receipt_sha256: [0; 32],
             egress_bytes: 0,
             receipt: Vec::new(),
+        })
+    }
+    /// A simulated machine runs no guest, so its console output is always empty.
+    async fn read_output(
+        &self,
+        machine: MachineId,
+        offset: u64,
+        limit: u32,
+    ) -> Result<MachineOutput, ProviderError> {
+        if limit == 0 || limit > MAX_OUTPUT_READ_BYTES {
+            return Err(ProviderError::Invalid(
+                "output read limit must be 1..=65536".into(),
+            ));
+        }
+        if !self.state.lock().await.machines.contains_key(&machine) {
+            return Err(ProviderError::NotFound(machine.to_string()));
+        }
+        Ok(MachineOutput {
+            machine,
+            offset,
+            data: Vec::new(),
         })
     }
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
