@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {pinnedActions,rustFormatNeeded} from './static-policy.mjs';
+
+test('every supported action reference is pinned and alternative YAML forms fail closed',()=>{
+  pinnedActions('workflow.yml',`  - uses: actions/checkout@${'a'.repeat(40)}\n  - uses: ./.github/actions/local\n# uses: example@main`);
+  for (const source of ['- {uses: actions/checkout@main}', '- "uses": actions/checkout@main',
+    '- uses: actions/checkout@main', '- uses: *action', '- {"uses": actions/checkout@main}']) {
+    assert.throws(()=>pinnedActions('workflow.yml',source));
+  }
+});
+test('formatter settings and nested Rust changes select formatting',()=>{
+  for (const file of ['rustfmt.toml','.rustfmt.toml','rust/crates/harness/rustfmt.toml',
+    'rust-toolchain.toml','rust/crates/harness/src/lib.rs']) assert.equal(rustFormatNeeded([file]),true,file);
+  assert.equal(rustFormatNeeded(['README.md']),false);
+});
