@@ -29,6 +29,9 @@ use std::{
 
 impl NativeProcessRequest {
     fn validate(&self) -> Result<()> {
+        if self.standard_input.is_some() && self.mcp_stdio.is_some() {
+            return Err(Error::Invalid("literal stdin and MCP exchange are mutually exclusive".into()));
+        }
         if let Some(exchange) = &self.mcp_stdio {
             exchange.validate()?;
         }
@@ -102,7 +105,7 @@ pub struct NativeProcessProvider<P: StreamProvider> {
     owner: Arc<TaskJournalOwner<P>>,
     command: OperationId,
     plan: TaskEffectPlan,
-    request: NativeProcessRequest,
+    request: Arc<NativeProcessRequest>,
     view: Option<Arc<dyn NativeProcessView<P>>>,
     approval: InteractionId,
     authority: Arc<NativeProcessAuthority>,
@@ -321,6 +324,9 @@ where
                 "native result bound exceeds retained task file allowance".into(),
             ));
         }
+        if request.standard_input.as_ref().is_some_and(|input| input.len() as u64 > owner.input_limits().file_bytes) {
+            return Err(Error::Unauthorized("native stdin exceeds retained task file allowance".into()));
+        }
         if let Some(view) = &view {
             request.validate_native_paths(view.manifest())?;
         }
@@ -346,7 +352,7 @@ where
             owner,
             command,
             plan,
-            request,
+            request: Arc::new(request),
             view,
             approval,
             authority: Arc::new(authority),
@@ -442,7 +448,7 @@ where
             Error::Unsupported("native dispatch requires a prepared view".into())
         })?);
         let authority = Arc::clone(&self.authority);
-        let request = self.request.clone();
+        let request = Arc::clone(&self.request);
         let schema = self.result_schema.clone();
         tokio::spawn(async move {
             let execution = execute(&owner, view.as_ref(), &authority, &request, &dispatch, &schema).await;
@@ -556,11 +562,11 @@ where
 
 async fn capture<P: StreamProvider + 'static>(
     owner: &Arc<TaskJournalOwner<P>>,
-    request: &NativeProcessRequest,
+    request: &Arc<NativeProcessRequest>,
 ) -> Result<Option<NativeProcessResult>> {
     owner.verify(false).await?;
     let check_owner = Arc::clone(owner);
-    let invocation = request.clone();
+    let invocation = Arc::clone(request);
     let runtime = tokio::runtime::Handle::current();
     let output = tokio::task::spawn_blocking(move || {
         let mut command = Command::new(&invocation.executable);
@@ -569,7 +575,7 @@ async fn capture<P: StreamProvider + 'static>(
             .current_dir(&invocation.cwd)
             .env_clear()
             .envs(&invocation.environment)
-            .stdin(if invocation.mcp_stdio.is_some() {
+            .stdin(if invocation.mcp_stdio.is_some() || invocation.standard_input.is_some() {
                 Stdio::piped()
             } else {
                 Stdio::null()
@@ -622,6 +628,8 @@ async fn capture<P: StreamProvider + 'static>(
                     })
                 },
             )
+        } else if let Some(input) = &invocation.standard_input {
+            process.wait_with_input_observed(timeout, maximum_output, input, poll)
         } else {
             process.wait_with_output_observed(timeout, maximum_output, poll)
         };
@@ -780,7 +788,7 @@ async fn execute<P>(
     owner: &Arc<TaskJournalOwner<P>>,
     view: &dyn NativeProcessView<P>,
     authority: &NativeProcessAuthority,
-    request: &NativeProcessRequest,
+    request: &Arc<NativeProcessRequest>,
     dispatch: &EffectDispatch,
     schema: &serde_json::Value,
 ) -> NativeExecution
@@ -805,7 +813,7 @@ async fn execute_in_heap<P>(
     owner: &Arc<TaskJournalOwner<P>>,
     view: &dyn NativeProcessView<P>,
     authority: &NativeProcessAuthority,
-    request: &NativeProcessRequest,
+    request: &Arc<NativeProcessRequest>,
     dispatch: &EffectDispatch,
     schema: &serde_json::Value,
     mut work: acyclic_fs::WorkCounters,

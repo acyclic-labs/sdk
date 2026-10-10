@@ -57,9 +57,287 @@ impl<'a, P: StreamProvider> NativeViewOwner<'a, P> {
     pub(super) const fn new(owner: &'a TaskJournalOwner<P>) -> Self {
         Self { owner }
     }
-    /// Reject cancellation or replacement of the original reservation fence.
-    pub async fn verify(&self) -> Result<()> {
-        self.owner.verify(false).await.map(|_| ())
+
+    /// Check the original fresh owner and created WRITE custody on this same
+    /// actual ledger, including bounded canonical history verification.
+    pub async fn verify_with_native_work(&self, work: &NativeMaterializationWork) -> Result<()> {
+        self.owner.verify_with_native_work(false, work).await
+    }
+
+    /// Require the exact original normalized grant without exposing its signer.
+    pub fn require_volume_grant_with_native_work(
+        &self, volume: &VolumeRef, operation: VolumeOperation, work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        self.owner.require_volume_grant_with_native_work(volume, operation, work)
+    }
+
+    /// Reserve a real SDK gate for the original qualified destination and
+    /// immutable generation. Receipts already include all work on `work`.
+    #[allow(clippy::too_many_arguments, reason = "original selection, work and cleanup tokens must not be substituted")]
+    pub async fn reserve_publication<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+        &self, workspace: acyclic_fs::Workspace<A, O>, volume: &VolumeRef,
+        original_generation: acyclic_fs::GenerationId, original_operation: acyclic_fs::OperationId,
+        work: &NativeMaterializationWork, cancellation: &acyclic_fs::CancellationToken,
+        cleanup_cancellation: &acyclic_fs::CancellationToken,
+    ) -> std::result::Result<
+        acyclic_fs::OperationReceipt<NativePublicationReservation<A, O>>,
+        NativePublicationReservationFailure<A, O>,
+    > {
+        let receipt = self.acquire_publication(
+            workspace, volume, original_generation, original_operation, work,
+            cancellation, cleanup_cancellation, NativePublicationAcquisition::Reserve,
+        ).await?;
+        match receipt.value {
+            Some(value) => Ok(acyclic_fs::OperationReceipt { value, work: receipt.work }),
+            None => Err(NativePublicationReservationFailure {
+                error: NativeReservationError::Selection("native reservation acknowledgement has no original proof"),
+                cleanup_error: None,
+                work: receipt.work, cleanup: None, unwitnessed_workspace: None,
+            }),
+        }
+    }
+
+    /// Observe only an already active gate for the original filesystem operation.
+    /// Missing gates remain absent; neither acquisition nor failure cleanup writes.
+    #[allow(clippy::too_many_arguments, reason = "recovery retains the same original selection and lifetime tokens")]
+    pub async fn recover_publication<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+        &self, workspace: acyclic_fs::Workspace<A, O>, volume: &VolumeRef,
+        original_generation: acyclic_fs::GenerationId, original_operation: acyclic_fs::OperationId,
+        work: &NativeMaterializationWork, cancellation: &acyclic_fs::CancellationToken,
+        cleanup_cancellation: &acyclic_fs::CancellationToken,
+    ) -> std::result::Result<
+        acyclic_fs::OperationReceipt<Option<NativePublicationReservation<A, O>>>,
+        NativePublicationReservationFailure<A, O>,
+    > {
+        self.acquire_publication(
+            workspace, volume, original_generation, original_operation, work,
+            cancellation, cleanup_cancellation, NativePublicationAcquisition::ReadonlyExisting,
+        ).await
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "one engine validates both original acquisition decisions")]
+    async fn acquire_publication<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+        &self, workspace: acyclic_fs::Workspace<A, O>, volume: &VolumeRef,
+        original_generation: acyclic_fs::GenerationId, original_operation: acyclic_fs::OperationId,
+        work: &NativeMaterializationWork, cancellation: &acyclic_fs::CancellationToken,
+        cleanup_cancellation: &acyclic_fs::CancellationToken, mode: NativePublicationAcquisition,
+    ) -> std::result::Result<
+        acyclic_fs::OperationReceipt<Option<NativePublicationReservation<A, O>>>,
+        NativePublicationReservationFailure<A, O>,
+    > {
+        let mut reservation = None;
+        let result = match native_future_typed(|| async {
+            self.owner.verify_with_native_work(false, work).await.map_err(NativeReservationError::Owner)?;
+            self.owner.require_volume_grant_with_native_work(volume, VolumeOperation::Write, work)
+                .map_err(NativeReservationError::Owner)?;
+            {
+                let (encoded, _encoded_custody) = native_reservation_canonical(volume, work)?;
+                let (name, _name_custody) = work.display(format_args!(
+                    "harness-{}", blake3::hash(&encoded).to_hex(),
+                )).map_err(NativeReservationError::Native)?;
+                if workspace.name().as_str() != name {
+                    return Err(NativeReservationError::Selection("native reservation workspace differs from original volume"));
+                }
+            }
+            cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)
+                .map_err(NativeReservationError::Native)?;
+            let budget = work.remaining().map_err(NativeReservationError::Native)?;
+            let acquired = match mode {
+                NativePublicationAcquisition::Reserve => workspace
+                    .reserve_publication_measured(original_operation, budget, cancellation).await
+                    .map(|receipt| acyclic_fs::OperationReceipt { value: Some(receipt.value), work: receipt.work }),
+                NativePublicationAcquisition::ReadonlyExisting => workspace
+                    .publication_reservation_measured(original_operation, budget, cancellation).await,
+            };
+            match acquired {
+                Ok(receipt) => {
+                    // Own the real proof before any fallible accounting,
+                    // cancellation, owner, or selected-generation check.
+                    reservation = receipt.value;
+                    work.spent(receipt.work).map_err(NativeReservationError::Native)?;
+                }
+                Err(failure) => {
+                    let error = NativeReservationError::Sdk(failure.error);
+                    work.spent(*failure.work).map_err(NativeReservationError::Native)?;
+                    return Err(error);
+                }
+            }
+            self.owner.verify_with_native_work(false, work).await.map_err(NativeReservationError::Owner)?;
+            self.owner.require_volume_grant_with_native_work(volume, VolumeOperation::Write, work)
+                .map_err(NativeReservationError::Owner)?;
+            if reservation.is_none() {
+                return Ok(());
+            }
+            let head = match workspace.head_measured(
+                work.remaining().map_err(NativeReservationError::Native)?, cancellation,
+            ).await {
+                Ok(receipt) => {
+                    work.spent(receipt.work).map_err(NativeReservationError::Native)?;
+                    receipt.value
+                }
+                Err(failure) => {
+                    let error = NativeReservationError::Sdk(failure.error);
+                    work.spent(*failure.work).map_err(NativeReservationError::Native)?;
+                    return Err(error);
+                }
+            };
+            if head.id() != original_generation {
+                return Err(NativeReservationError::Selection("native reservation generation differs from original selection"));
+            }
+            drop(head);
+            self.owner.verify_with_native_work(false, work).await.map_err(NativeReservationError::Owner)?;
+            self.owner.require_volume_grant_with_native_work(volume, VolumeOperation::Write, work)
+                .map_err(NativeReservationError::Owner)?;
+            cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)
+                .map_err(NativeReservationError::Native)?;
+            work.remaining().map_err(NativeReservationError::Native)?;
+            Ok(())
+        }, work) {
+            Ok(future) => future.await,
+            Err(error) => Err(NativeReservationError::Native(error)),
+        };
+        let error = match result {
+            Ok(()) => return Ok(acyclic_fs::OperationReceipt {
+                value: reservation.map(|reservation| NativePublicationReservation {
+                    cleanup: NativePublicationCleanup { workspace, reservation },
+                }),
+                work: work.receipt(),
+            }),
+            Err(error) => error,
+        };
+        if let Some(reservation) = reservation {
+            let cleanup = NativePublicationCleanup { workspace, reservation };
+            if matches!(mode, NativePublicationAcquisition::ReadonlyExisting) {
+                return Err(NativePublicationReservationFailure {
+                    error, cleanup_error: None,
+                    work: work.receipt(), cleanup: Some(cleanup), unwitnessed_workspace: None,
+                });
+            }
+            match cleanup.release(work, cleanup_cancellation).await {
+                Ok(receipt) => Err(NativePublicationReservationFailure {
+                    error, cleanup_error: None,
+                    work: receipt.work, cleanup: None, unwitnessed_workspace: None,
+                }),
+                Err(failure) => Err(NativePublicationReservationFailure {
+                    error, cleanup_error: Some(failure.error), work: failure.work,
+                    cleanup: failure.cleanup, unwitnessed_workspace: failure.unwitnessed_workspace,
+                }),
+            }
+        } else {
+            Err(NativePublicationReservationFailure {
+                error, cleanup_error: None,
+                work: work.receipt(), cleanup: None, unwitnessed_workspace: Some(workspace),
+            })
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum NativePublicationAcquisition {
+    Reserve,
+    ReadonlyExisting,
+}
+
+impl<P: StreamProvider> TaskJournalOwner<P> {
+    /// Borrow the original owner without exposing its signer or journal.
+    /// This guard is not a grant, approval, or SDK publication reservation.
+    pub fn native_view_owner(&self) -> NativeViewOwner<'_, P> { NativeViewOwner::new(self) }
+}
+
+/// An authenticated SDK reservation for an original native destination.
+/// This does not replace task grants, approval, or current owner verification.
+pub struct NativePublicationReservation<A, O> {
+    cleanup: NativePublicationCleanup<A, O>,
+}
+
+/// Only settlement of an already acquired real SDK reservation is permitted.
+/// In particular, an unsuccessful factory never exposes a publication permit.
+pub struct NativePublicationCleanup<A, O> {
+    workspace: acyclic_fs::Workspace<A, O>,
+    reservation: acyclic_fs::PublicationReservation,
+}
+
+/// Allocation-free reservation failure classification with original causes.
+#[derive(Debug, thiserror::Error)]
+pub enum NativeReservationError {
+    /// Original Root owner/grant/codec error, moved without formatting.
+    #[error(transparent)]
+    Owner(Error),
+    /// Actual native ledger, cancellation, admission, or IO failure.
+    #[error(transparent)]
+    Native(acyclic_fs::NativeTreeMaterializationError),
+    /// Actual SDK reservation/replay/release cause, including typed uncertainty.
+    #[error(transparent)]
+    Sdk(acyclic_fs::WorkspaceError),
+    /// Fixed immutable selection mismatch, with no allocated diagnostic.
+    #[error("{0}")]
+    Selection(&'static str),
+}
+
+/// Physical settlement uncertainty retains the exact cleanup capability.
+pub struct NativePublicationReservationFailure<A, O> {
+    pub error: NativeReservationError,
+    /// Additional actual release failure; `error` remains the factory's cause.
+    pub cleanup_error: Option<NativeReservationError>,
+    pub work: acyclic_fs::WorkCounters,
+    pub cleanup: Option<NativePublicationCleanup<A, O>>,
+    /// Original SDK workspace retained without any witnessed gate proof.
+    /// This never yields a permit or claims physical settlement.
+    pub unwitnessed_workspace: Option<acyclic_fs::Workspace<A, O>>,
+}
+
+impl<A, O> NativePublicationReservation<A, O> {
+    /// Copies only the actual SDK gate identity and its authenticated head.
+    pub const fn permit(&self) -> PublicationPermit {
+        PublicationPermit::Reservation {
+            operation_id: self.cleanup.reservation.operation_id.to_bytes(),
+            gate_tail: self.cleanup.reservation.gate_tail,
+            expected: self.cleanup.reservation.expected,
+        }
+    }
+
+    /// Transfer the exact reservation into settlement-only custody.
+    pub fn into_cleanup(self) -> NativePublicationCleanup<A, O> { self.cleanup }
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NativePublicationCleanup<A, O> {
+    /// Release this actual gate using the caller's original cleanup token.
+    /// Any failed or ambiguous release returns this same capability for retry.
+    pub async fn release(
+        self, work: &NativeMaterializationWork, cancellation: &acyclic_fs::CancellationToken,
+    ) -> std::result::Result<acyclic_fs::OperationReceipt<()>, NativePublicationReservationFailure<A, O>> {
+        let result = match work.remaining().map_err(NativeReservationError::Native) {
+            Ok(budget) => match native_future_typed(
+                || self.workspace.release_publication_measured(self.reservation, budget, cancellation), work,
+            ) {
+                Ok(future) => future.await.map_err(|failure| {
+                    let error = NativeReservationError::Sdk(failure.error);
+                    match work.spent(*failure.work) {
+                        Ok(()) => error,
+                        Err(error) => NativeReservationError::Native(error),
+                    }
+                }),
+                Err(error) => Err(NativeReservationError::Native(error)),
+            },
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(receipt) => match work.spent(receipt.work).map_err(NativeReservationError::Native) {
+                Ok(()) => Ok(acyclic_fs::OperationReceipt { value: (), work: work.receipt() }),
+                // The gate was actually released, even if final accounting
+                // rejects admission. Do not advertise a live cleanup owner.
+                Err(error) => Err(NativePublicationReservationFailure {
+                    error, cleanup_error: None,
+                    work: work.receipt(), cleanup: None,
+                    unwitnessed_workspace: None,
+                }),
+            },
+            Err(error) => Err(NativePublicationReservationFailure {
+                error, cleanup_error: None,
+                work: work.receipt(), cleanup: Some(self),
+                unwitnessed_workspace: None,
+            }),
+        }
     }
 }
 
@@ -1253,30 +1531,63 @@ fn native_canonical<T: serde::Serialize + ?Sized>(
     Ok((bytes, custody))
 }
 
+fn native_reservation_canonical<T: serde::Serialize + ?Sized>(
+    value: &T, work: &NativeMaterializationWork,
+) -> std::result::Result<(Vec<u8>, acyclic_fs::NativeAllocation), NativeReservationError> {
+    let remaining = work.remaining().map_err(NativeReservationError::Native)?;
+    let bounds = crate::contract::JsonBounds {
+        maximum_bytes: remaining.bytes_encoded,
+        maximum_items: remaining.items_examined,
+        maximum_depth: 256,
+    };
+    let mut custody = work.retain_owned(0).map_err(NativeReservationError::Native)?;
+    let mut native_error = None;
+    let bytes = crate::contract::canonical_json_bytes_bounded(value, bounds, &mut |charge| {
+        match native_codec_charge_typed(charge, work, &mut custody) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                if native_error.is_none() { native_error = Some(error); }
+                // Allocation-free codec abort signal only. The actual typed
+                // ledger error below, not this marker, reaches the caller.
+                Err(Error::Storage(String::new()))
+            }
+        }
+    });
+    if let Some(error) = native_error { return Err(NativeReservationError::Native(error)); }
+    bytes.map(|bytes| (bytes, custody)).map_err(NativeReservationError::Owner)
+}
+
 fn native_codec_charge(
     charge: crate::contract::JsonCodecCharge, work: &NativeMaterializationWork,
     custody: &mut acyclic_fs::NativeAllocation,
 ) -> Result<()> {
+    native_codec_charge_typed(charge, work, custody).map_err(materializer_error)
+}
+
+fn native_codec_charge_typed(
+    charge: crate::contract::JsonCodecCharge, work: &NativeMaterializationWork,
+    custody: &mut acyclic_fs::NativeAllocation,
+) -> std::result::Result<(), acyclic_fs::NativeTreeMaterializationError> {
     use crate::contract::JsonCodecCharge;
     match charge {
         JsonCodecCharge::Work { bytes, items } => work.charge(acyclic_fs::WorkCounters {
             bytes_encoded: bytes, items_examined: items, ..acyclic_fs::WorkCounters::default()
-        }).map_err(materializer_error),
+        }),
         JsonCodecCharge::Copy { bytes } => work.charge(acyclic_fs::WorkCounters {
             bytes_copied: bytes, ..acyclic_fs::WorkCounters::default()
-        }).map_err(materializer_error),
-        JsonCodecCharge::Read { .. } => work.remaining().map(|_| ()).map_err(materializer_error),
+        }),
+        JsonCodecCharge::Read { .. } => work.remaining().map(|_| ()),
         JsonCodecCharge::Retain { bytes } => {
             if bytes != 0 {
-                custody.absorb(work.claim(bytes).map_err(materializer_error)?).map_err(materializer_error)?;
+                custody.absorb(work.claim(bytes)?)?;
             }
             Ok(())
         }
-        JsonCodecCharge::Release { bytes } => custody.release(bytes).map_err(materializer_error),
+        JsonCodecCharge::Release { bytes } => custody.release(bytes),
         JsonCodecCharge::Admission { maximum_owned_bytes } => {
-            acyclic_fs::WorkCounters::default().admit(&acyclic_fs::WorkCounters {
+            Ok(acyclic_fs::WorkCounters::default().admit(&acyclic_fs::WorkCounters {
                 peak_allocation_bytes: maximum_owned_bytes, ..acyclic_fs::WorkCounters::default()
-            }, &work.remaining().map_err(materializer_error)?).map_err(materializer_error)
+            }, &work.remaining()?)?)
         }
     }
 }
@@ -1425,10 +1736,21 @@ where
     F: Future<Output = T> + Send + 'a,
     B: FnOnce() -> F,
 {
+    native_future_typed(build, work)
+        .map_err(|error| acyclic_fs::OperationFailure::new(materializer_error(error), work.receipt()))
+}
+
+#[inline(never)]
+fn native_future_typed<'a, T, F, B>(
+    build: B, work: &NativeMaterializationWork,
+) -> std::result::Result<BoxProviderFuture<'a, T>, acyclic_fs::NativeTreeMaterializationError>
+where
+    F: Future<Output = T> + Send + 'a,
+    B: FnOnce() -> F,
+{
     // Admission precedes constructing the potentially deep preparation frame.
     // Keep the claim live across every nested child until that frame drops.
-    let allocation = work.claim(std::mem::size_of::<NativeOwnedFuture<F>>() as u64)
-        .map_err(|error| acyclic_fs::OperationFailure::new(materializer_error(error), work.receipt()))?;
+    let allocation = work.claim(std::mem::size_of::<NativeOwnedFuture<F>>() as u64)?;
     Ok(Box::pin(NativeOwnedFuture { future: build(), _allocation: allocation }))
 }
 

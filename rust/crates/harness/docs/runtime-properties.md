@@ -13,7 +13,8 @@ Portable request, result and namespace data are available with `filesystem`;
 OS dispatch additionally requires `native-execution` on a native target.
 
 Approval covers the exact executable, ordered arguments, working directory,
-selected environment after `env_clear`, output/control allowances and ordered
+selected environment after `env_clear`, exact optional literal stdin bytes,
+output/control allowances and ordered
 volume manifest. The host must maintain the selected executable path's integrity;
 the request does not attest executable binary contents. The manifest pins generations, authority revision digests,
 paths and per-volume work allowances. Host credentials and publication permits
@@ -29,6 +30,12 @@ must be outside the materialized view: staging the durable result otherwise
 changes a pinned destination head or the protected source volume. Construction
 rejects this unsupported configuration before dispatch. Result-schema storage
 is independent of result storage and needs only its retained read permission.
+`standard_input: None` retains ordinary closed-stdin capture; `Some([])` is
+explicit EOF and a nonempty value is delivered literally through the existing
+nonblocking process collector. It is mutually exclusive with MCP exchange.
+There is no `@` argument rewriting, shell escaping or protocol substitution.
+The pinned approval/request digest includes the input, and the existing task
+payload limit bounds its retained byte length.
 
 The existing conversation effect plan and dispatch must commit before the native
 launch receipt. Only the launch-receipt winner starts the process. An observed

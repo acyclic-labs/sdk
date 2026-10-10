@@ -709,15 +709,23 @@ where
         maximum_output_bytes: 8192,
         maximum_result_bytes: 65_536,
         mcp_stdio: None,
+        standard_input: None,
         view: view.manifest().clone(),
     };
-    if mode == "mcp-approval" {
+    if mode == "mcp-approval" || mode.starts_with("mcp-stdin-") {
         request.mcp_stdio = Some(crate::mcp::stdio::McpStdioRequest {
             initialization: OperationId::from_bytes([71; 16]),
             operation: OperationId::from_bytes([72; 16]),
             method: crate::mcp::stdio::McpStdioMethod::CallTool,
             params: serde_json::json!({"name":"echo","arguments":{}}),
             maximum_bytes: 4096,
+        });
+    }
+    if mode.starts_with("stdin-") || mode.starts_with("mcp-stdin-") {
+        request.standard_input = Some(if mode.ends_with("-empty") {
+            Vec::new()
+        } else {
+            vec![0, 255, b'\n', b'x']
         });
     }
     if mode == "bash" || mode == "mutate-source-bash" || mode == "many-bash" {
@@ -2139,7 +2147,14 @@ fn native_process_child() -> std::result::Result<(), Box<dyn std::error::Error>>
         std::fs::write("ready", b"ready")?;
         std::thread::sleep(std::time::Duration::from_secs(30));
     } else {
-        let input = std::fs::read("src/input.txt")?;
+        let input = if mode.starts_with("stdin-") {
+            use std::io::Read as _;
+            let mut input = Vec::new();
+            std::io::stdin().read_to_end(&mut input)?;
+            input
+        } else {
+            std::fs::read("src/input.txt")?
+        };
         std::fs::write("dst/output.txt", input)?;
         std::fs::write("dst/auxiliary.txt", std::fs::read("aux/input.txt")?)?;
         println!("approved stdout");
@@ -2183,6 +2198,8 @@ async fn changed_invocations_cannot_use_the_original_approval() -> Result<()> {
         "mcp-method",
         "mcp-params",
         "mcp-bytes",
+        "stdin-bytes",
+        "stdin-empty",
     ] {
         let mut fixture = process_fixture(
             if change.starts_with("mcp-") {
@@ -2206,6 +2223,8 @@ async fn changed_invocations_cannot_use_the_original_approval() -> Result<()> {
             "bounds" => request.timeout_ms += 1,
             "authority" => request.view.volumes[0].authority_revision[0] ^= 1,
             "volume-order" => request.view.volumes.swap(0, 1),
+            "stdin-bytes" => request.standard_input = Some(vec![0, 255, b'\n']),
+            "stdin-empty" => request.standard_input = Some(Vec::new()),
             change if change.starts_with("mcp-") => {
                 let exchange = request
                     .mcp_stdio
@@ -2256,9 +2275,11 @@ async fn absent_stdio_preserves_legacy_approval_and_stopped_mcp_remains_uncertai
     let legacy =
         serde_json::to_value(&request).map_err(|error| Error::Invalid(error.to_string()))?;
     assert!(legacy.get("mcp_stdio").is_none());
+    assert!(legacy.get("standard_input").is_none());
     let decoded: NativeProcessRequest = serde_json::from_value(legacy.clone())
         .map_err(|error| Error::Invalid(error.to_string()))?;
     assert!(decoded.mcp_stdio.is_none());
+    assert!(decoded.standard_input.is_none());
     assert_eq!(
         request.approval_digest(fixture.owner.task_binding().0, fixture.command)?,
         crate::contract::canonical_json_digest(&(
@@ -3449,5 +3470,180 @@ async fn native_allocation_recovery_never_adopts_pending_directory_identity() ->
     assert!(failed.work.authority_bytes_read > 0);
     assert_eq!(failed.work.backend_write_operations, 0);
     assert!(fixture.allocation.operation_directory.join("target").is_dir());
+    Ok(())
+}
+
+#[tokio::test]
+async fn literal_stdin_approval_binds_exact_bytes_and_explicit_empty_eof() -> Result<()> {
+    let fixture = process_fixture("write", true).await?;
+    let mut request = fixture.request().await?;
+    let task = fixture.owner.task_binding().0;
+    let absent = request.approval_digest(task, fixture.command)?;
+    request.standard_input = Some(Vec::new());
+    let eof = request.approval_digest(task, fixture.command)?;
+    assert_ne!(absent, eof);
+    request.standard_input = Some(vec![0, 255, b'\n', b'x']);
+    let literal = request.approval_digest(task, fixture.command)?;
+    assert_ne!(eof, literal);
+    let encoded = crate::contract::canonical_json_bytes(&request)?;
+    let decoded: NativeProcessRequest = crate::contract::json_from_slice(&encoded)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(decoded.standard_input.as_deref(), Some([0, 255, b'\n', b'x'].as_slice()));
+    request.standard_input = Some(vec![0, 254, b'\n', b'x']);
+    assert_ne!(literal, request.approval_digest(task, fixture.command)?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn approved_literal_stdin_reaches_eof_without_terminating_the_process() -> Result<()> {
+    for (mode, expected) in [
+        ("stdin-empty", [].as_slice()),
+        ("stdin-bytes", [0, 255, b'\n', b'x'].as_slice()),
+    ] {
+        let fixture = process_fixture(mode, true).await?;
+        let effects = fixture.effects(fixture.provider().await?)?;
+        let status = effects.run_task_effect(
+            &fixture.owner, fixture.command, fixture.plan.clone(),
+        ).await?;
+        let EffectStatus::Succeeded { result } = status else {
+            return Err(Error::Storage(format!("literal stdin did not finish normally: {status:?}")));
+        };
+        let output: NativeProcessResult = crate::contract::json_from_slice(
+            &fixture.content.read(&result).await?,
+        ).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert!(output.success && output.stop.is_none());
+        assert_eq!(output.exit_code, Some(0));
+        // The real child only writes its artifact after read_to_end observes
+        // EOF, then prints this sentinel and exits normally.
+        assert!(String::from_utf8_lossy(&output.stdout).contains("approved stdout"));
+        let destination = workspace_ref(
+            fixture.destination.provider().clone(), &fixture.destination.storage_name()?,
+        )?;
+        assert_eq!(fixture.files.read(&destination, None, "/output.txt", 64).await?.as_ref(), expected);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn even_exactly_approved_mcp_requests_cannot_also_supply_literal_stdin() -> Result<()> {
+    for mode in ["mcp-stdin-empty", "mcp-stdin-bytes"] {
+        // These exact bytes and the MCP descriptor are present before the real
+        // original approval is issued; denial is not an approval mismatch.
+        let fixture = process_fixture(mode, true).await?;
+        let request = fixture.request().await?;
+        assert!(request.mcp_stdio.is_some() && request.standard_input.is_some());
+        assert!(fixture.provider().await.is_err());
+        assert!(!fixture.view.manifest().options.root.join("dst/output.txt").exists());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_publication_factory_pins_original_generation_and_retains_denied_cleanup() -> Result<()> {
+    for stale in [false, true] {
+        let fixture = process_fixture("write", true).await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let cleanup_cancellation = acyclic_fs::CancellationToken::new();
+        let budget = fixture.view.manifest().validation_budget()?;
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|failure| Error::Storage(failure.to_string()))?;
+        let destination = workspace_ref(
+            fixture.destination.provider().clone(), &fixture.destination.storage_name()?,
+        )?;
+        let opened = fixture.files.open_measured(
+            &destination, work.remaining().map_err(|error| Error::Storage(error.to_string()))?, &cancellation,
+        ).await.map_err(|failure| Error::Storage(failure.to_string()))?;
+        work.spent(opened.work).map_err(|error| Error::Storage(error.to_string()))?;
+        let workspace = opened.value;
+        let mapping = fixture.view.manifest().volumes.iter().find(|mapping| mapping.volume == fixture.destination)
+            .ok_or_else(|| Error::NotFound("original destination mapping".into()))?;
+        let selected = fixture.files.generation_measured(
+            &workspace, &mapping.generation,
+            work.remaining().map_err(|error| Error::Storage(error.to_string()))?, &cancellation,
+        ).await.map_err(|failure| Error::Storage(failure.to_string()))?;
+        work.spent(selected.work).map_err(|error| Error::Storage(error.to_string()))?;
+        let original_generation = selected.value.id();
+        drop(selected);
+        let operation = acyclic_fs::OperationId::from_bytes([91; 16]);
+        let before_query = work.receipt().backend_write_operations;
+        let missing = fixture.owner.native_view_owner().recover_publication(
+            workspace.clone(), &fixture.destination, original_generation, operation,
+            &work, &cancellation, &cleanup_cancellation,
+        ).await.map_err(|failure| Error::Storage(failure.error.to_string()))?;
+        assert!(missing.value.is_none());
+        assert_eq!(missing.work.backend_write_operations, before_query);
+        let recovery_workspace = workspace.clone();
+        if stale {
+            fixture.files.write(&destination, "/concurrent.txt", b"new original head").await?;
+        }
+        // The host declares this distinct original filesystem operation before
+        // requesting its actual gate; it is neither a task fence nor prep ID.
+        let reserved = fixture.owner.native_view_owner().reserve_publication(
+            workspace, &fixture.destination, original_generation, operation,
+            &work, &cancellation, &cleanup_cancellation,
+        ).await;
+        if stale {
+            let failed = reserved.err().ok_or_else(|| Error::Storage("stale mapped generation received a permit".into()))?;
+            assert!(failed.error.to_string().contains("differs from original selection"));
+            assert!(failed.cleanup.is_none() && failed.cleanup_error.is_none());
+            assert!(failed.unwitnessed_workspace.is_none());
+            assert!(failed.work.backend_read_operations > 0);
+            // The actual SDK write succeeds only after the mismatched gate
+            // has really been released, not merely marked cleanup-complete.
+            fixture.files.write(&destination, "/release-check.txt", b"settled").await?;
+        } else {
+            let receipt = reserved.map_err(|failure| Error::Storage(failure.error.to_string()))?;
+            assert!(matches!(receipt.value.permit(), acyclic_fs::PublicationPermit::Reservation {
+                operation_id, ..
+            } if operation_id == operation.to_bytes()));
+            let before_query = work.receipt().backend_write_operations;
+            let source_mapping = fixture.view.manifest().volumes.iter()
+                .find(|mapping| mapping.volume == fixture.source)
+                .ok_or_else(|| Error::NotFound("original source generation mapping".into()))?;
+            let source_digest = source_mapping.generation.as_resource().key().try_into()
+                .map_err(|_| Error::Invalid("original source generation digest width".into()))?;
+            let other_original_generation = acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(source_digest));
+            assert_ne!(other_original_generation, original_generation);
+            let mismatched = fixture.owner.native_view_owner().recover_publication(
+                recovery_workspace.clone(), &fixture.destination, other_original_generation, operation,
+                &work, &cancellation, &cleanup_cancellation,
+            ).await.err().ok_or_else(|| Error::Storage("readonly query adopted a different original generation".into()))?;
+            assert!(matches!(mismatched.error, crate::filesystem::NativeReservationError::Selection(_)));
+            assert!(mismatched.cleanup.is_some());
+            assert_eq!(mismatched.work.backend_write_operations, before_query);
+            // Read-only failure drops no physical gate: the next query still
+            // returns the identical real proof held by the original owner.
+            drop(mismatched);
+            let reopened = fixture.owner.native_view_owner().recover_publication(
+                recovery_workspace.clone(), &fixture.destination, original_generation, operation,
+                &work, &cancellation, &cleanup_cancellation,
+            ).await.map_err(|failure| Error::Storage(failure.error.to_string()))?;
+            let recovered = reopened.value.ok_or_else(|| Error::NotFound("actual original SDK gate after query".into()))?;
+            assert_eq!(recovered.permit(), receipt.value.permit());
+            assert_eq!(reopened.work.backend_write_operations, before_query);
+            drop(recovered);
+            let foreign = fixture.owner.native_view_owner().recover_publication(
+                recovery_workspace, &fixture.destination, original_generation,
+                acyclic_fs::OperationId::from_bytes([92; 16]),
+                &work, &cancellation, &cleanup_cancellation,
+            ).await.map_err(|failure| Error::Storage(failure.error.to_string()))?;
+            assert!(foreign.value.is_none());
+            assert_eq!(foreign.work.backend_write_operations, before_query);
+            let mut denied_budget = budget;
+            denied_budget.allocation_operations = 1;
+            let denied_work = acyclic_fs::NativeMaterializationWork::new(denied_budget, &cleanup_cancellation)
+                .map_err(|failure| Error::Storage(failure.to_string()))?;
+            let failed = receipt.value.into_cleanup().release(&denied_work, &cleanup_cancellation).await
+                .err().ok_or_else(|| Error::Storage("cleanup frame denial was not exercised".into()))?;
+            assert_eq!(failed.work.backend_write_operations, 0);
+            assert!(matches!(failed.error, crate::filesystem::NativeReservationError::Native(_)));
+            let retained = failed.cleanup.ok_or_else(|| Error::Storage("denied cleanup dropped actual SDK gate custody".into()))?;
+            let cleanup_work = acyclic_fs::NativeMaterializationWork::new(budget, &cleanup_cancellation)
+                .map_err(|failure| Error::Storage(failure.to_string()))?;
+            retained.release(&cleanup_work, &cleanup_cancellation).await
+                .map_err(|failure| Error::Storage(failure.error.to_string()))?;
+            fixture.files.write(&destination, "/release-check.txt", b"settled").await?;
+        }
+    }
     Ok(())
 }
