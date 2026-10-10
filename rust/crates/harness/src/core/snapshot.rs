@@ -219,9 +219,6 @@ pub(crate) fn event_clone_reservation(event: &Event) -> Result<u64> {
     source_inventory(event)
 }
 
-pub(crate) fn scope_clone_owned_bytes(scope: &super::Scope) -> Result<u64> {
-    source_inventory(scope)
-}
 
 pub(crate) fn fork_seed_clone_reservation(seed: &ForkSeed) -> Result<u64> {
     source_inventory(seed)
@@ -258,7 +255,7 @@ pub struct Snapshot {
 // keys cannot be represented by JSON object keys. UUID-keyed maps remain maps.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Projection {
+struct Projection<C = ConversationState> {
     lifecycle: LifecycleState,
     active_extensions: Vec<ExtensionDependency>,
     active_extension_revision: Option<u64>,
@@ -272,12 +269,63 @@ struct Projection {
     effects_archived: bool,
     forks: Vec<(Authority, ForkSeed)>,
     published_merges: BTreeSet<(String, Vec<u8>)>,
-    conversation: ConversationState,
+    conversation: C,
     latest_context_checkpoint: Option<FileRef>,
     interactions: BTreeMap<uuid::Uuid, (InteractionTicket, Option<InteractionResolution>)>,
     // Rebuild the retry map from the authenticated cache, without applying
     // payloads. This avoids storing every retained Event a second time.
     bindings: Vec<(ExtensionDependency, [u8; 32])>,
+}
+
+/// The original snapshot DTO, deferring only its observed conversation rebuild.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SnapshotWire {
+    format_version: u32,
+    authority: Authority,
+    revision: u64,
+    events: Vec<Event>,
+    projection: Projection<crate::conversation::ConversationStateWire>,
+    state_digest: [u8; 32],
+    attestation: [u8; 32],
+}
+
+// Deferring reconstruction removes caches; it never enlarges the guarded DTO.
+const _: () = {
+    assert!(std::mem::size_of::<SnapshotWire>() <= std::mem::size_of::<Snapshot>());
+    assert!(std::mem::size_of::<Projection<crate::conversation::ConversationStateWire>>()
+        <= std::mem::size_of::<Projection>());
+};
+
+impl SnapshotWire {
+    pub(crate) fn into_snapshot_with_work(
+        self,
+        maximum_encoded_bytes: u64,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(Snapshot, u64)> {
+        let Projection {
+            lifecycle, active_extensions, active_extension_revision, extension_states,
+            configured_extensions, active_configurations, effects, indexed_terminal_effects,
+            effects_archived, forks, published_merges, conversation, latest_context_checkpoint,
+            interactions, bindings,
+        } = self.projection;
+        let (conversation, cache_bytes) = ConversationState::from_wire_with_work(
+            conversation, maximum_encoded_bytes, work)?;
+        Ok((Snapshot {
+            format_version: self.format_version,
+            authority: self.authority,
+            revision: self.revision,
+            events: self.events,
+            projection: Projection {
+                lifecycle, active_extensions, active_extension_revision, extension_states,
+                configured_extensions, active_configurations, effects, indexed_terminal_effects,
+                effects_archived, forks, published_merges, conversation, latest_context_checkpoint,
+                interactions, bindings,
+            },
+            state_digest: self.state_digest,
+            attestation: self.attestation,
+        }, cache_bytes))
+    }
 }
 
 fn is_false(value: &bool) -> bool {
@@ -286,6 +334,15 @@ fn is_false(value: &bool) -> bool {
 
 impl Snapshot {
     pub(crate) const LOGICAL_SCHEMA_SLOT_BYTES: u64 = CloneInventory::SLOT;
+
+    /// One original Serde parse after the closed snapshot admission has succeeded.
+    pub(crate) fn decode_admitted_wire(bytes: &[u8]) -> serde_json::Result<SnapshotWire> {
+        let mut decoder = serde_json::Deserializer::from_slice(bytes);
+        decoder.disable_recursion_limit();
+        let value = SnapshotWire::deserialize(&mut decoder)?;
+        decoder.end()?;
+        Ok(value)
+    }
 }
 
 #[derive(Serialize)]

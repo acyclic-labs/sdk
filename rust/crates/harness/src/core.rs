@@ -156,7 +156,20 @@ impl Scope {
     }
 
     pub(crate) fn logical_clone_owned_bytes(&self) -> Result<u64> {
-        snapshot::scope_clone_owned_bytes(self)
+        let strings = (self.id.len() as u64).checked_add(self.issuer.len() as u64)
+            .ok_or_else(|| Error::Invalid("scope clone strings overflow".into()))?;
+        self.capabilities.iter().try_fold(strings, |bytes, capability| {
+            bytes.checked_add(std::mem::size_of::<String>() as u64)
+                .and_then(|bytes| bytes.checked_add(capability.len() as u64))
+                .ok_or_else(|| Error::Invalid("scope clone slots overflow".into()))
+        })
+    }
+
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        let capabilities = self.capabilities.logical_owned_bytes()?;
+        (self.id.capacity() as u64).checked_add(self.issuer.capacity() as u64)
+            .and_then(|bytes| bytes.checked_add(capabilities))
+            .ok_or_else(|| Error::Invalid("scope owned byte count overflows".into()))
     }
 
     pub(crate) fn from_wire(
@@ -224,6 +237,7 @@ impl AuthorityIssuer {
             None => Ok(self.verifier()),
         }
     }
+
     /// Issues one explicit root grant.
     #[must_use]
     pub fn root(&self, id: impl Into<String>, capabilities: Capabilities) -> Scope {
@@ -240,6 +254,45 @@ impl AuthorityIssuer {
         capabilities: Capabilities,
     ) -> Scope {
         self.issue(id.into(), capabilities, Some(agent), None)
+    }
+
+    #[cfg(feature = "filesystem")]
+    /// Signs the same root grant on the caller's original admitted work ledger.
+    pub(crate) fn root_for_agent_with_work(
+        &self,
+        agent: AgentId,
+        id: &str,
+        capabilities: &Capabilities,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Scope> {
+        let id = match work.as_deref_mut() {
+            Some(work) => work.clone_text(id)?,
+            None => id.to_owned(),
+        };
+        if let Some(work) = work.as_deref_mut() {
+            let owned = capabilities.iter().try_fold(0_u64, |bytes, capability| {
+                bytes.checked_add(std::mem::size_of::<String>() as u64)
+                    .and_then(|bytes| bytes.checked_add(capability.len() as u64))
+                    .ok_or_else(|| Error::Invalid("grant clone byte count overflows".into()))
+            })?;
+            work.admit_owned(owned)?;
+            for capability in capabilities.iter() {
+                work.admit_allocation(capability.len() as u64)?;
+                work.copy_bytes(capability.len() as u64)?;
+            }
+        }
+        let capabilities = capabilities.clone();
+        if let Some(work) = work.as_deref_mut() {
+            work.retain_owned(capabilities.logical_owned_bytes()?)?;
+        }
+        let proof = scope_proof_with_work(
+            &self.key, &self.audience, &self.id, &id, &capabilities,
+            Some(agent), None, work)?;
+        let issuer = match work.as_deref_mut() {
+            Some(work) => work.clone_text(&self.id)?,
+            None => self.id.clone(),
+        };
+        Ok(Scope { id, capabilities, issuer, agent: Some(agent), parent_proof: None, proof })
     }
 
     /// Issues a root grant after resolving all explicit hierarchy policy layers.
@@ -425,6 +478,11 @@ impl AuthorityVerifier {
         &self.audience
     }
 
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        (self.id.capacity() as u64).checked_add(self.audience.id.capacity() as u64)
+            .ok_or_else(|| Error::Invalid("verifier owned byte count overflows".into()))
+    }
+
     pub(crate) fn clone_with_work(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
@@ -468,19 +526,9 @@ impl AuthorityVerifier {
         &self, audience: &Authority, scope: &Scope,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        if let Some(work) = work.as_deref_mut() {
-            let fixed = 1 + 8 + audience.id.len() as u64
-                + 8 + scope.issuer.len() as u64 + 8 + scope.id.len() as u64
-                + 1 + u64::from(scope.agent.is_some()) * 16
-                + 1 + u64::from(scope.parent_proof.is_some()) * 32;
-            let bytes = scope.capabilities.iter().try_fold(fixed, |total, capability| {
-                total.checked_add(8 + capability.len() as u64)
-                    .ok_or_else(|| Error::Invalid("scope hash byte count overflows".into()))
-            })?;
-            work.hashed_bytes(bytes)?;
-        }
-        let expected = scope_proof(&self.key, audience, &scope.issuer, &scope.id,
-            &scope.capabilities, scope.agent, scope.parent_proof);
+        let expected = scope_proof_with_work(
+            &self.key, audience, &scope.issuer, &scope.id,
+            &scope.capabilities, scope.agent, scope.parent_proof, work)?;
         if scope.issuer != self.id || scope.proof != expected {
             return Err(Error::Unauthorized("scope proof is invalid".into()));
         }
@@ -4046,6 +4094,34 @@ fn validate_lifecycle(from: LifecycleState, to: LifecycleState) -> Result<()> {
     } else {
         Err(Error::Conflict("invalid lifecycle transition".into()))
     }
+}
+
+#[allow(clippy::too_many_arguments, reason = "the original closed signed-grant fields")]
+fn scope_proof_with_work(
+    key: &[u8; 32],
+    audience: &Authority,
+    issuer: &str,
+    id: &str,
+    capabilities: &Capabilities,
+    agent: Option<AgentId>,
+    parent_proof: Option<[u8; 32]>,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<[u8; 32]> {
+    if let Some(work) = work.as_deref_mut() {
+        let fixed = 1_u64.checked_add(8)
+            .and_then(|bytes| bytes.checked_add(audience.id.len() as u64))
+            .and_then(|bytes| bytes.checked_add(8 + issuer.len() as u64))
+            .and_then(|bytes| bytes.checked_add(8 + id.len() as u64))
+            .and_then(|bytes| bytes.checked_add(1 + u64::from(agent.is_some()) * 16))
+            .and_then(|bytes| bytes.checked_add(1 + u64::from(parent_proof.is_some()) * 32))
+            .ok_or_else(|| Error::Invalid("scope hash byte count overflows".into()))?;
+        let bytes = capabilities.iter().try_fold(fixed, |total, capability| {
+            total.checked_add(8 + capability.len() as u64)
+                .ok_or_else(|| Error::Invalid("scope hash byte count overflows".into()))
+        })?;
+        work.hashed_bytes(bytes)?;
+    }
+    Ok(scope_proof(key, audience, issuer, id, capabilities, agent, parent_proof))
 }
 
 fn scope_proof(

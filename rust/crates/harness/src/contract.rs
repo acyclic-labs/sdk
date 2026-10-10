@@ -130,6 +130,22 @@ pub(crate) fn canonical_json_digest<T: Serialize>(value: &T) -> Result<[u8; 32]>
     Ok(*blake3::hash(&canonical_json_bytes(value)?).as_bytes())
 }
 
+/// The same canonical digest, charging its actual original encoder/hash work.
+pub(crate) fn canonical_json_digest_with_work<T: Serialize + ?Sized>(
+    value: &T,
+    maximum_bytes: u64,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<[u8; 32]> {
+    let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let bytes = crate::store::history::canonical_bytes_with_work(
+        value, maximum_bytes, custody.work())?;
+    custody.adopt(bytes.capacity() as u64)?;
+    if let Some(work) = custody.work().as_deref_mut() {
+        work.hashed_bytes(bytes.len() as u64)?;
+    }
+    Ok(*blake3::hash(&bytes).as_bytes())
+}
+
 /// One JSON Schema admission rule shared by host task/tool execution and the
 /// WASM facade before untrusted model values reach typed executors.
 pub(crate) fn validate_json_schema_value(
@@ -537,6 +553,14 @@ impl Capabilities {
     /// Iterates in canonical lexical order.
     pub fn iter(&self) -> impl Iterator<Item = &str> {
         self.0.iter().map(String::as_str)
+    }
+
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        self.0.iter().try_fold(0_u64, |bytes, capability| {
+            bytes.checked_add(std::mem::size_of::<String>() as u64)
+                .and_then(|bytes| bytes.checked_add(capability.capacity() as u64))
+                .ok_or_else(|| Error::Invalid("capability owned byte count overflows".into()))
+        })
     }
 
     /// Returns the deterministic intersection of two grants.

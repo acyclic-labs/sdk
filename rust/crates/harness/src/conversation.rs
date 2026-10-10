@@ -1977,7 +1977,7 @@ struct ArchivedConversationPrefix {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ConversationStateWire {
+pub(crate) struct ConversationStateWire {
     agent: Option<AgentId>,
     messages: Vec<ConversationMessage>,
     #[serde(default)]
@@ -1988,6 +1988,17 @@ impl TryFrom<ConversationStateWire> for ConversationState {
     type Error = Error;
 
     fn try_from(wire: ConversationStateWire) -> Result<Self> {
+        Self::from_wire_with_work(wire, 1, &mut None).map(|(state, _)| state)
+    }
+}
+
+impl ConversationState {
+    pub(crate) fn from_wire_with_work(
+        wire: ConversationStateWire,
+        maximum_encoded_bytes: u64,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(Self, u64)> {
+        let mut cache = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut by_id = BTreeMap::new();
         if let Some(prefix) = &wire.archived_prefix {
             prefix.checkpoint.validate()?;
@@ -2023,6 +2034,12 @@ impl TryFrom<ConversationStateWire> for ConversationState {
             cache.adopt(bytes)?;
         }
         for (position, message) in wire.messages.iter().enumerate() {
+            if let Some(work) = cache.work().as_deref_mut() {
+                work.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                if !by_id.contains_key(&message.id) {
+                    work.admit_owned(std::mem::size_of::<(Uuid, usize)>() as u64)?;
+                }
+            }
             message.validate()?;
             if message.sequence <= previous
                 || (wire.archived_prefix.is_some()
@@ -2034,15 +2051,25 @@ impl TryFrom<ConversationStateWire> for ConversationState {
                 ));
             }
             previous = message.sequence;
-            history_digest = advance_history_digest(history_digest, message)?;
+            if let Some(work) = cache.work().as_deref_mut() {
+                let bytes = std::mem::size_of::<(Uuid, usize)>() as u64;
+                work.retain_owned(bytes)?;
+                cache.adopt(bytes)?;
+            }
+            history_digest = advance_history_digest_with_work(
+                history_digest, message, maximum_encoded_bytes, cache.work())?;
             prefix_digests.push(history_digest);
         }
-        let pending_user = wire
-            .messages
-            .iter()
-            .rev()
-            .find(|message| message.kind == MessageKind::User)
-            .map(|message| message.id);
+        let mut pending_user = None;
+        for message in wire.messages.iter().rev() {
+            if let Some(work) = cache.work().as_deref_mut() {
+                work.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            }
+            if message.kind == MessageKind::User {
+                pending_user = Some(message.id);
+                break;
+            }
+        }
         let mut state = Self {
             agent: wire.agent,
             messages: wire.messages,
@@ -2054,9 +2081,15 @@ impl TryFrom<ConversationStateWire> for ConversationState {
             ..Self::default()
         };
         for position in 0..state.messages.len() {
-            state.index_turn(position);
+            if let Some(work) = cache.work().as_deref_mut() {
+                work.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            }
+            let retained = state.index_turn_with_work(position, cache.work())?;
+            cache.adopt(retained)?;
         }
-        Ok(state)
+        let retained = cache.retained();
+        cache.transfer();
+        Ok((state, retained))
     }
 }
 
@@ -2265,11 +2298,20 @@ impl ConversationState {
         })
     }
 
+    fn index_turn(&mut self, position: usize) {
+        self.index_turn_with_work(position, &mut None)
+            .expect("ordinary cache indexing has no work observer failure");
+    }
+
     #[expect(
         clippy::indexing_slicing,
         reason = "only append-after-push and decode's in-bounds enumeration call this private indexer"
     )]
-    fn index_turn(&mut self, position: usize) {
+    fn index_turn_with_work(
+        &mut self, position: usize,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<u64> {
+        let mut cache = crate::wire_codec::CodecQuota::new(work, 0)?;
         let message = &self.messages[position];
         if matches!(
             message.kind,
@@ -2307,9 +2349,20 @@ impl ConversationState {
                 self.pending_user = None;
             }
             if outcome {
-                self.outcomes.entry(parent).or_insert(position);
+                if let std::collections::btree_map::Entry::Vacant(entry) = self.outcomes.entry(parent) {
+                    let bytes = std::mem::size_of::<(Uuid, usize)>() as u64;
+                    if let Some(work) = cache.work().as_deref_mut() { work.admit_owned(bytes)?; }
+                    entry.insert(position);
+                    if let Some(work) = cache.work().as_deref_mut() {
+                        work.retain_owned(bytes)?;
+                        cache.adopt(bytes)?;
+                    }
+                }
             }
         }
+        let retained = cache.retained();
+        cache.transfer();
+        Ok(retained)
     }
 
     pub(crate) fn unresolved_user(&self) -> Option<Uuid> {
@@ -2492,9 +2545,20 @@ std::thread_local! {
 }
 
 fn advance_history_digest(previous: [u8; 32], message: &ConversationMessage) -> Result<[u8; 32]> {
+    advance_history_digest_with_work(previous, message, 1, &mut None)
+}
+
+fn advance_history_digest_with_work(
+    previous: [u8; 32], message: &ConversationMessage, maximum_encoded_bytes: u64,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<[u8; 32]> {
     #[cfg(test)]
     HISTORY_HASH_CALLS.with(|calls| calls.set(calls.get() + 1));
-    let digest = crate::contract::canonical_json_digest(message)?;
+    let digest = crate::contract::canonical_json_digest_with_work(
+        message, maximum_encoded_bytes, work)?;
+    if let Some(work) = work.as_deref_mut() {
+        work.hashed_bytes(b"harness:conversation-prefix:v3\0".len() as u64 + 64)?;
+    }
     let mut hash = blake3::Hasher::new();
     hash.update(b"harness:conversation-prefix:v3\0");
     hash.update(&previous);

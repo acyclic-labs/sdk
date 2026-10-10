@@ -104,20 +104,20 @@ pub(super) fn encode_metadata_quota(authority: &Authority, event: &Event) -> Res
 
 /// A quota guard is private producer custody. It releases on every error,
 /// including cancellation; output custody can be transferred to its owner.
-pub(super) struct Quota<'a, 'b> {
+pub(crate) struct Quota<'a, 'b> {
     work: &'a mut Option<&'b mut dyn HistoryIo>,
     bytes: u64,
 }
 
 impl<'a, 'b> Quota<'a, 'b> {
-    pub(super) fn new(work: &'a mut Option<&'b mut dyn HistoryIo>, bytes: u64) -> Result<Self> {
+    pub(crate) fn new(work: &'a mut Option<&'b mut dyn HistoryIo>, bytes: u64) -> Result<Self> {
         if let Some(work) = work.as_deref_mut() {
             work.admit_owned(bytes)?;
             work.retain_owned(bytes)?;
         }
         Ok(Self { work, bytes })
     }
-    pub(super) fn work(&mut self) -> &mut Option<&'b mut dyn HistoryIo> { self.work }
+    pub(crate) fn work(&mut self) -> &mut Option<&'b mut dyn HistoryIo> { self.work }
     pub(super) fn replace(&mut self, bytes: u64) -> Result<()> {
         if bytes <= self.bytes {
             if let Some(work) = self.work.as_deref_mut() { work.release_owned(self.bytes - bytes)?; }
@@ -129,17 +129,26 @@ impl<'a, 'b> Quota<'a, 'b> {
         self.bytes = bytes;
         Ok(())
     }
-    pub(super) fn adopt(&mut self, bytes: u64) -> Result<()> {
+    pub(crate) fn adopt(&mut self, bytes: u64) -> Result<()> {
         self.bytes = self.bytes.checked_add(bytes)
             .ok_or_else(|| Error::Storage("event quota custody overflows".into()))?;
         Ok(())
     }
+    /// Releases an allowance whose protected stage has ended, before its successor.
+    pub(crate) fn relinquish(&mut self, bytes: u64) -> Result<()> {
+        let remaining = self.bytes.checked_sub(bytes)
+            .ok_or_else(|| Error::Storage("codec release exceeds custody".into()))?;
+        if let Some(work) = self.work.as_deref_mut() { work.release_owned(bytes)?; }
+        self.bytes = remaining;
+        Ok(())
+    }
+    pub(crate) fn retained(&self) -> u64 { self.bytes }
     pub(super) fn transfer_part(&mut self, bytes: u64) -> Result<()> {
         self.bytes = self.bytes.checked_sub(bytes)
             .ok_or_else(|| Error::Storage("event quota transfer exceeds custody".into()))?;
         Ok(())
     }
-    pub(super) fn transfer(&mut self) { self.bytes = 0; }
+    pub(crate) fn transfer(&mut self) { self.bytes = 0; }
 }
 impl Drop for Quota<'_, '_> {
     fn drop(&mut self) {

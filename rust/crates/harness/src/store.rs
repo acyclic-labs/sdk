@@ -2012,14 +2012,34 @@ impl<P: StreamProvider> StreamAggregate<P> {
 }
 
 fn stream_idempotency_key(path: &str, value: &IdempotencyKey) -> Result<StreamIdempotencyKey> {
+    stream_idempotency_key_with_work(path, value, &mut None)
+}
+
+fn stream_idempotency_key_with_work(
+    path: &str,
+    value: &IdempotencyKey,
+    work: &mut Option<&mut dyn history::HistoryIo>,
+) -> Result<StreamIdempotencyKey> {
+    if let Some(work) = work.as_deref_mut() {
+        let bytes = b"acyclic-harness-stream-append-v2".len()
+            .checked_add(16)
+            .and_then(|bytes| bytes.checked_add(path.len()))
+            .and_then(|bytes| bytes.checked_add(value.0.len()))
+            .ok_or_else(|| Error::Invalid("stream retry digest length overflows".into()))?;
+        work.hashed_bytes(bytes as u64)?;
+        work.admit_allocation(32)?;
+        work.copy_bytes(32)?;
+    }
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"acyclic-harness-stream-append-v2");
     hasher.update(&(path.len() as u64).to_le_bytes());
     hasher.update(path.as_bytes());
     hasher.update(&(value.0.len() as u64).to_le_bytes());
     hasher.update(value.0.as_bytes());
-    StreamIdempotencyKey::new(Bytes::copy_from_slice(hasher.finalize().as_bytes()))
-        .map_err(|error| Error::Invalid(error.to_string()))
+    let key = StreamIdempotencyKey::new(Bytes::copy_from_slice(hasher.finalize().as_bytes()))
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    if let Some(work) = work.as_deref_mut() { work.retain_owned(32)?; }
+    Ok(key)
 }
 
 #[cfg(test)]

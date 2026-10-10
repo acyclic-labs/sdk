@@ -91,26 +91,37 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
         self.validate_causal_reference_with_work(event.causal_parent.as_ref(), work).await?;
         let publication = checkpoints::publication_with_work(&self.client, &self.reducer, &event, work).await?;
-        let key = stream_idempotency_key(self.stream.path().as_str(), &command.idempotency_key)?;
+        let key = stream_idempotency_key_with_work(
+            self.stream.path().as_str(), &command.idempotency_key, work)?;
+        let reservation = if work.is_some() { crate::core::event_clone_reservation(&event)? } else { 0 };
+        if let Some(work) = work.as_deref_mut() { work.admit_owned(reservation)?; }
         let fork_guard = if let Action::PublishFork { seed } = &command.action {
             Some(self.fork_verifier.as_ref().ok_or_else(|| Error::Unsupported("fork seed verifier is not bound".into()))?
                 .activate_with_work(seed, work).await?)
         } else { None };
         let appended = owner.append_conversation_with_work(&publication, &key, write, work).await;
+        drop(key);
+        let released_key = match work.as_deref_mut() {
+            Some(work) => work.release_owned(32),
+            None => Ok(()),
+        };
         match appended {
-            Ok(true) => {},
+            Ok(true) => {
+                released_key.map_err(|_| Error::Indeterminate(command.operation_id))?;
+            },
             Ok(false) => {
+                let _ = released_key;
                 if let Some(guard) = fork_guard.as_deref() { crate::fork::release_fork_guard_with_work(guard, work).await?; }
                 return Err(Error::Conflict("task publication lost its owner or conversation tail".into()));
             }
             Err(error) => {
+                let _ = released_key;
                 if !matches!(error, Error::Indeterminate(_)) {
                     if let Some(guard) = fork_guard.as_deref() { crate::fork::release_fork_guard_with_work(guard, work).await?; }
                 }
                 return Err(error);
             }
         }
-        let reservation = if work.is_some() { crate::core::event_clone_reservation(&event)? } else { 0 };
         if let Some(work) = work.as_deref_mut() { work.retain_owned(reservation)?; }
         let applied = self.reducer.apply_committed_with_work(event.clone(), work)
             .and_then(|result| self.reducer.mark_indexed_terminal_effect(&event).map(|()| result));

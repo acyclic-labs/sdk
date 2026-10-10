@@ -4,12 +4,10 @@ use super::HistoryIo;
 use crate::{Error, Result, core::{Authority, Event}};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, WorkCounters};
 use std::mem::size_of;
-use std::cell::RefCell;
 
 pub(crate) struct NativeHistoryIo<'a> {
     work: &'a NativeMaterializationWork,
     custody: NativeAllocation,
-    native_failure: RefCell<Option<NativeTreeMaterializationError>>,
 }
 
 fn error(cause: std::collections::TryReserveError) -> Error {
@@ -22,19 +20,16 @@ fn error(cause: std::collections::TryReserveError) -> Error {
 pub(crate) fn native_work_io(
     work: &NativeMaterializationWork,
 ) -> std::result::Result<NativeHistoryIo<'_>, NativeTreeMaterializationError> {
-    Ok(NativeHistoryIo { work, custody: work.retain_owned(0)?, native_failure: RefCell::new(None) })
+    Ok(NativeHistoryIo { work, custody: work.retain_owned(0)? })
 }
 
 impl NativeHistoryIo<'_> {
-    // Only the immediate native caller may unwrap this scoped marker. It is
-    // never publication/reconciliation evidence or a transport error.
-    pub(crate) fn take_native_failure(&self) -> Option<NativeTreeMaterializationError> {
-        self.native_failure.borrow_mut().take()
+    /// Transfers the same ledger's retained source payloads to their last user.
+    pub(crate) fn into_custody(self) -> NativeAllocation {
+        self.custody
     }
-    fn native_error(&self, error: NativeTreeMaterializationError) -> Error {
-        let mut first = self.native_failure.borrow_mut();
-        if first.is_none() { *first = Some(error); }
-        Error::Indeterminate(crate::OperationId::from_bytes([0; 16]))
+    fn native_error(&self, cause: NativeTreeMaterializationError) -> Error {
+        Error::NativeWork { cause, custody: None }
     }
     fn charge(&self, delta: WorkCounters) -> Result<()> {
         self.work.charge(delta).map_err(|error| self.native_error(error))
@@ -175,21 +170,26 @@ impl HistoryIo for NativeHistoryIo<'_> {
     fn verify_content<'a>(&'a mut self, verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
         reference: &'a crate::conversation::FileRef) -> crate::conversation::ContentFuture<'a, Result<()>> {
         Box::pin(async move {
-            let result = verifier.verify_measured(reference, reference.descriptor().byte_length(), self.remaining()?, self.cancellation()).await;
-            match result {
-                Ok(receipt) => self.receive_work(receipt.work),
-                Err(failure) => { let _ = self.receive_work(*failure.work); Err(failure.error) }
+            if !verifier.supports_native_read(reference.volume(), self.work)?
+            {
+                return Err(Error::Unsupported("content verifier does not expose the original native work boundary".into()));
             }
+            verifier.verify_with_native_work(reference, reference.descriptor().byte_length(), self.work)
+                .await
         })
     }
     fn read_content<'a>(&'a mut self, verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
         reference: &'a crate::conversation::FileRef) -> crate::conversation::ContentFuture<'a, Result<Vec<u8>>> {
         Box::pin(async move {
-            let result = verifier.read_measured(reference, reference.descriptor().byte_length(), self.remaining()?, self.cancellation()).await;
-            match result {
-                Ok(receipt) => { self.receive_work(receipt.work)?; self.retain(receipt.value.capacity() as u64)?; Ok(receipt.value) }
-                Err(failure) => { let _ = self.receive_work(*failure.work); Err(failure.error) }
+            if !verifier.supports_native_read(reference.volume(), self.work)?
+            {
+                return Err(Error::Unsupported("content verifier does not expose the original native work boundary".into()));
             }
+            let (bytes, guard) = verifier.read_with_native_work(
+                reference, reference.descriptor().byte_length(), self.work,
+            ).await?;
+            self.custody.absorb(guard).map_err(|error| self.native_error(error))?;
+            Ok(bytes)
         })
     }
 }
@@ -231,19 +231,17 @@ mod tests {
             .expect("original meter control allocation");
         let prefix = work.receipt();
         let mut io = native_work_io(&work).expect("zero-byte original custody transfer");
-        assert!(matches!(io.begin_call(), Err(Error::Indeterminate(operation))
-            if operation == crate::OperationId::from_bytes([0; 16])));
-        assert!(matches!(io.take_native_failure(),
-            Some(NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+        assert!(matches!(io.begin_call(), Err(Error::NativeWork {
+            cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
                 counter: "backend_read_operations", ..
-            }))));
+            }), custody: None,
+        })));
         assert_eq!(work.receipt(), prefix);
-        assert!(io.take_native_failure().is_none());
-        assert!(io.admit_owned(1).is_err());
-        assert!(matches!(io.take_native_failure(),
-            Some(NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+        assert!(matches!(io.admit_owned(1), Err(Error::NativeWork {
+            cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
                 counter: "peak_allocation_bytes", ..
-            }))));
+            }), custody: None,
+        })));
         assert_eq!(work.receipt(), prefix);
     }
 
@@ -255,8 +253,9 @@ mod tests {
         let mut io = native_work_io(&work).expect("zero-byte original custody transfer");
         let prefix = work.receipt();
         cancellation.cancel();
-        assert!(io.check_cancellation().is_err());
-        assert!(matches!(io.take_native_failure(), Some(NativeTreeMaterializationError::Cancelled)));
+        assert!(matches!(io.check_cancellation(), Err(Error::NativeWork {
+            cause: NativeTreeMaterializationError::Cancelled, custody: None,
+        })));
         io.release_owned(0).expect("custody cleanup does not consult cancellation");
         assert_eq!(work.receipt(), prefix);
         assert!(matches!(native_work_io(&work), Err(NativeTreeMaterializationError::Cancelled)));

@@ -124,12 +124,57 @@ impl<P: StreamProvider> HistoryReader<P> {
         authority: &Authority,
         verifier: AuthorityVerifier,
     ) -> Result<Self> {
+        Self::new_owned(client, authority, verifier, &mut None)
+    }
+
+    pub(crate) fn new_with_work(
+        client: &StreamClient<P>,
+        authority: &Authority,
+        verifier: &AuthorityVerifier,
+        work: Option<&mut dyn HistoryIo>,
+    ) -> Result<Self> {
+        let mut work = work;
         verifier.verify_audience(authority)?;
-        Ok(Self {
-            client: client.clone(),
-            stream: client.stream(authority.stream_path()?)?,
-            verifier,
-        })
+        let verifier = verifier.clone_with_work(&mut work)?;
+        Self::new_owned(client, authority, verifier, &mut work)
+    }
+
+    fn new_owned(
+        client: &StreamClient<P>,
+        authority: &Authority,
+        verifier: AuthorityVerifier,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Self> {
+        verifier.verify_audience(authority)?;
+        let path = authority.stream_path_with_work(work)?;
+        let temporary_bytes = path.capacity() as u64;
+        let stream: Result<_> = (|| {
+            if let Some(work) = work.as_deref_mut() {
+                // StreamPath::new validates this text and copies it into Arc<str>.
+                // Charge its known character payload, not an allocator/Arc header.
+                work.admit_allocation(path.len() as u64)?;
+                work.copy_bytes(path.len() as u64)?;
+            }
+            Ok(client.stream(&path)?)
+        })();
+        let path_bytes = path.len() as u64;
+        drop(path);
+        if let Some(work) = work.as_deref_mut() {
+            let released = work.release_owned(temporary_bytes);
+            match stream {
+                Ok(stream) => {
+                    released?;
+                    work.retain_owned(path_bytes)?;
+                    Ok(Self { client: client.clone(), stream, verifier })
+                }
+                Err(error) => {
+                    let _ = released;
+                    Err(error)
+                }
+            }
+        } else {
+            Ok(Self { client: client.clone(), stream: stream?, verifier })
+        }
     }
 
     /// Explicitly hydrates one finite logical prefix for fork grant capture.
@@ -261,25 +306,46 @@ impl<P: StreamProvider> HistoryReader<P> {
             &parent.client, parent.verifier.audience(), &parent.verifier,
             seed.operation_id, limits.maximum_bytes, work).await?;
         let publication = publication.ok_or_else(|| Error::Conflict("child has no original parent publication".into()))?;
-        if publication.revision != causal.revision
-            || !matches!(&publication.payload, crate::core::EventPayload::ForkPublished { seed: published } if published.as_ref() == seed)
-        {
+        let publication_matches = publication.revision == causal.revision
+            && matches!(&publication.payload, crate::core::EventPayload::ForkPublished { seed: published } if published.as_ref() == seed);
+        let publication_owned = if work.is_some() {
+            crate::core::event_clone_reservation(&publication)?
+        } else { 0 };
+        drop(publication);
+        let released_publication = match work.as_deref_mut() {
+            Some(work) => work.release_owned(publication_owned),
+            None => Ok(()),
+        };
+        if !publication_matches {
+            let _ = released_publication;
             return Err(Error::Conflict("child differs from the original parent publication".into()));
         }
-        drop(publication);
+        released_publication?;
         let remaining = limits.maximum_bytes.checked_sub(consumed).filter(|bytes| *bytes > 0)
             .ok_or_else(|| Error::Invalid("published child verification exceeds byte allowance".into()))?;
         let (binding, _) = super::operations::find_operation_bounded_with_work(
             &self.client, self.verifier.audience(), &self.verifier, operation, remaining, work).await?;
         let binding = binding.ok_or_else(|| Error::Conflict("child lacks its original fork binding".into()))?;
-        if binding.revision != 1 || binding.revision > cut
-            || binding.scope.agent() != Some(seed.child_agent)
-            || binding.causal_parent.as_ref() != Some(&causal)
-            || !matches!(binding.payload, crate::core::EventPayload::ConversationBound { agent } if agent == seed.child_agent)
-        {
+        let binding_matches = binding.revision == 1 && binding.revision <= cut
+            && binding.scope.agent() == Some(seed.child_agent)
+            && binding.causal_parent.as_ref() == Some(&causal)
+            && matches!(&binding.payload, crate::core::EventPayload::ConversationBound { agent } if *agent == seed.child_agent);
+        let released_owned = if work.is_some() {
+            crate::core::event_clone_reservation(&binding)?
+                .checked_add(causal.authority.id.capacity() as u64)
+                .ok_or_else(|| Error::Invalid("child verification custody overflows".into()))?
+        } else { 0 };
+        drop(binding);
+        drop(causal);
+        let released_binding = match work.as_deref_mut() {
+            Some(work) => work.release_owned(released_owned),
+            None => Ok(()),
+        };
+        if !binding_matches {
+            let _ = released_binding;
             return Err(Error::Conflict("child lacks its original fork binding".into()));
         }
-        Ok(())
+        released_binding
     }
 
     /// Resolves a globally unique admitted operation without restoring its aggregate.

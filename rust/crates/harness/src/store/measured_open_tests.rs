@@ -37,6 +37,44 @@ mod measured_open_tests {
         Ok((provider, client))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_reader_constructor_rejects_before_copy_and_transfers_original_custody() -> Result<()> {
+        use acyclic_fs::{NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
+        let provider = Arc::new(Provider::default());
+        let client = StreamClient::new(provider.clone());
+        let cancellation = CancellationToken::new();
+        let mut denied = budget();
+        denied.bytes_copied = 0;
+        let native = NativeMaterializationWork::new(denied, &cancellation)
+            .expect("original accounting state");
+        let prefix = native.receipt();
+        let mut io = history::native_work_io(&native).expect("empty custody");
+        assert!(matches!(HistoryReader::new_with_work(
+            &client, &authority(), &issuer().verifier(), Some(&mut io)),
+            Err(Error::NativeWork {
+                cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                    counter: "bytes_copied", ..
+                }), custody: None,
+            })));
+        assert_eq!(native.receipt(), prefix);
+        drop(io);
+        let native = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("original accounting state");
+        let mut io = history::native_work_io(&native).expect("empty custody");
+        let reader = HistoryReader::new_with_work(
+            &client, &authority(), &issuer().verifier(), Some(&mut io))?;
+        let custody = io.into_custody();
+        assert!(custody.bytes() >= authority().stream_path()?.len() as u64);
+        assert!(native.receipt().bytes_copied >= authority().stream_path()?.len() as u64);
+        let sdk = provider.io_snapshot();
+        assert_eq!(sdk.reads + sdk.tails as u64 + sdk.writes + sdk.inspections
+            + sdk.commit_reads + sdk.other_calls, 0);
+        drop(reader);
+        drop(custody);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn prepared_publication_preserves_atomic_indexes_and_preallocation_denial() -> Result<()> {
         let provider = Arc::new(Provider::default());
@@ -148,8 +186,8 @@ mod measured_open_tests {
         assert_eq!(receipt.work.items_returned, 6);
         assert!(receipt.work.bytes_copied >= payload_bytes);
         assert!(receipt.work.bytes_hashed >= 2 * payload_bytes);
-        // The first raw chunk coexists with the assembly buffer and raw head
-        // plus canonical anchor. Opaque decoded snapshot allocations are excluded.
+        // The first raw chunk coexists with assembly, raw head, canonical anchor,
+        // and the concrete snapshot schema's admitted typed/cache/scratch payloads.
         assert!(receipt.work.peak_allocation_bytes >= loaded.consumed_bytes + payload_bytes);
         assert!(receipt.work.allocation_operations > 0);
         assert_eq!(io.writes + io.inspections + io.commit_reads + io.other_calls, 0);

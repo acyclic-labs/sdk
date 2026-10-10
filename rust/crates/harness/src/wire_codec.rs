@@ -11,6 +11,7 @@ use crate::{
 use crate::core::ApplyResult;
 use prost::Message as _;
 mod admission;
+pub(crate) use admission::Quota as CodecQuota;
 #[cfg(all(test, feature = "filesystem"))]
 #[path = "wire_codec/admission_tests.rs"]
 mod admission_tests;
