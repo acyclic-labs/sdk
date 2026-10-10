@@ -856,6 +856,19 @@ async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
         context_messages: 8,
         ..Limits::default()
     };
+    let instructions = Arc::new(Context {
+        messages: [
+            "Keep the user's constraints.",
+            "Preserve original references.",
+        ]
+        .into_iter()
+        .map(|text| crate::model::ModelMessage {
+            role: crate::model::ModelRole::System,
+            content: crate::model::ModelContent::Text(text.into()),
+        })
+        .collect(),
+        ..Context::default()
+    });
     let build_bundle = |storage: &MemoryHarnessStorage| -> Result<crate::bundle::HarnessBundle> {
         storage
             .builder()
@@ -865,6 +878,15 @@ async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
             )
             .grant("model:generate")
             .limits(limits)
+            .context(crate::context::ContextPipeline::new([Arc::new(
+                crate::context::SourceStage::new(
+                    "instructions",
+                    "1",
+                    instructions.clone(),
+                    crate::context::ContextPlacement::Prepend,
+                ),
+            )
+                as Arc<dyn crate::context::ContextStage>]))
             .build()
     };
     let mut bundle = build_bundle(&storage)?;

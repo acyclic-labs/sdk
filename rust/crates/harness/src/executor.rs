@@ -1481,15 +1481,30 @@ impl StockExecutor {
                 }
                 // Leave room for the response and the next canonical user input.
                 // Small messages can exhaust the admitted count before token capacity.
-                let message_pressure = projection.canonical.is_some()
-                    && projection.context.messages.len() > 1
-                    && projection.context.messages.len() > self.compaction_message_limit(true);
-                if !message_pressure
-                    && !policy.needs_compaction(accounting.capacity, input_tokens)?
-                {
+                let token_pressure = policy.needs_compaction(accounting.capacity, input_tokens)?;
+                let possible_message_pressure = projection.canonical.is_some()
+                    && projection.context.messages.len() > self.compaction_message_limit(true, 0);
+                if !possible_message_pressure && !token_pressure {
                     return Ok(prepared);
                 }
-                self.compact_response(journal, input, step, projection, accounting)
+                let source = match &projection.canonical {
+                    Some(reference) => {
+                        load_json::<crate::context::Context>(journal, reference).await?
+                    }
+                    None => projection.context.clone(),
+                };
+                let stage_messages = projection
+                    .context
+                    .messages
+                    .len()
+                    .saturating_sub(source.messages.len());
+                let message_pressure = projection.canonical.is_some()
+                    && source.messages.len() > 1
+                    && source.messages.len() > self.compaction_message_limit(true, stage_messages);
+                if !message_pressure && !token_pressure {
+                    return Ok(prepared);
+                }
+                self.compact_response(journal, input, step, projection, accounting, source)
                     .await
             }
             _ => Err(Error::Storage(
@@ -1597,10 +1612,11 @@ impl StockExecutor {
         Ok(None)
     }
 
-    fn compaction_message_limit(&self, canonical: bool) -> usize {
+    fn compaction_message_limit(&self, canonical: bool, stage_messages: usize) -> usize {
         self.limits
             .context_messages
             .saturating_sub(if canonical { 2 } else { 0 })
+            .saturating_sub(stage_messages)
     }
 
     async fn compact_response(
@@ -1610,13 +1626,10 @@ impl StockExecutor {
         step: u32,
         projection: ResponseProjection,
         accounting: ContextAccounting,
+        context: crate::context::Context,
     ) -> Result<crate::model::PreparedModelRequest> {
         let crate::context::CompactionPolicy::Threshold(policy) = &self.compaction else {
             return Err(Error::Invalid("automatic compaction is disabled".into()));
-        };
-        let context = match &projection.canonical {
-            Some(reference) => load_json::<crate::context::Context>(journal, reference).await?,
-            None => projection.context.clone(),
         };
         let canonical_request = crate::model::PreparedModelRequest::prepare(
             self.request_from_context(&context)?,
@@ -1633,7 +1646,14 @@ impl StockExecutor {
             &context,
             &count,
             accounting.capacity,
-            self.compaction_message_limit(projection.canonical.is_some()),
+            self.compaction_message_limit(
+                projection.canonical.is_some(),
+                projection
+                    .context
+                    .messages
+                    .len()
+                    .saturating_sub(context.messages.len()),
+            ),
         )?;
         let mut source = context.clone();
         source.messages.truncate(through);
