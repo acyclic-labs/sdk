@@ -12,7 +12,12 @@ New-Item -ItemType Directory -Force -Path `
     $env:SDK_TEMP_DIR, $env:SDK_ARTIFACT_DIR, $env:TOOLS_DIR, `
     "$env:SDK_TEMP_DIR/observability" | Out-Null
 . .\scripts\ensure-bun.ps1
-bun install --frozen-lockfile
+# Match optional native tooling to the actual Node runtime, not the x64 Bun installer.
+if ($Lane -eq 'windows-arm64') {
+    bun install --frozen-lockfile --cpu=arm64 --os=win32
+} else {
+    bun install --frozen-lockfile
+}
 
 if ($Lane -eq 'windows-arm64') {
     if ((node -p 'process.arch') -ne 'arm64' -or (node -p 'process.platform') -ne 'win32') {
