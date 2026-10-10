@@ -97,6 +97,17 @@ After a restart, `AgentHarness::attach(task_id, &definition)` asks the durable h
 
 Durable observation distinguishes ordinary pending work (`None`) from a terminal `Indeterminate` outcome. `RuntimeTask::result` waits for a terminal observation before join, race, first-success, or quorum counts that task as complete. Hosts may replace the bounded-poll wait with provider completion notifications. Long-lived Stream coordinators refresh foreign commits before observation and reconcile a repeated operation against the committed intent.
 
+Live Rust task groups use Tokio on native hosts and the JavaScript event loop on
+`wasm32`; browser tasks do not require a Tokio runtime or `LocalSet`. Browser
+provider futures can retain event-loop-owned values across asynchronous reads.
+Cancelling a task or its ancestor drops the running future, releases its admission
+and concurrency permit, and reports `Outcome::Cancelled`. Dropping an ordinary
+handle detaches observation; dropping `result_owned()` instead cancels the task,
+even before the wait is polled. This does not make a live closure resumable:
+retained recovery remains the explicitly bound durable provider's responsibility.
+The Chrome `native_media_boundary` scenario uses the filesystem memory provider;
+it is not an IndexedDB/OPFS persistence qualification.
+
 Task and tool registries can retain several revisions under one logical name. Use `name@version` for exact task lookup; unqualified task lookup works only when unique. `ToolRegistry::select_model_version` explicitly chooses the one revision advertised to a model when several are retained; durable tool calls still resolve their own pinned revision. Ambiguity fails before stock model dispatch rather than silently choosing the newest registration.
 
 Assemble each tool explicitly from `Tool { definition, executor, projection }` and register it with `ToolRegistry::register` or `HarnessBuilder::tool`. The selected definition pins its revision and independent argument, canonical result and projection schemas. A bundle can contain a single tool without implementing other coding operations. Fork and merge remain parent-controlled workspace operations.

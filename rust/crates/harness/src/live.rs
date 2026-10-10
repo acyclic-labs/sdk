@@ -8,10 +8,54 @@ use std::{
     future::Future,
     sync::{Arc, Mutex, Weak},
 };
-use tokio::{
-    sync::{Semaphore, oneshot},
-    task::{AbortHandle, JoinHandle},
-};
+use tokio::sync::{Semaphore, oneshot};
+#[cfg(not(target_arch = "wasm32"))]
+use tokio::task::{AbortHandle, JoinHandle};
+#[cfg(target_arch = "wasm32")]
+use futures::future::{AbortHandle, Abortable};
+
+#[cfg(not(target_arch = "wasm32"))]
+type TaskJoin<T> = JoinHandle<Outcome<T>>;
+
+#[cfg(target_arch = "wasm32")]
+struct TaskJoin<T> {
+    abort: AbortHandle,
+    outcome: oneshot::Receiver<Outcome<T>>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl<T> TaskJoin<T> {
+    fn abort_handle(&self) -> AbortHandle {
+        self.abort.clone()
+    }
+
+    fn abort(&self) {
+        self.abort.abort();
+    }
+}
+
+fn spawn_task<T, F>(future: F) -> TaskJoin<T>
+where
+    T: Send + 'static,
+    F: Future<Output = Outcome<T>> + acyclic_stream::ProviderTask + 'static,
+{
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        tokio::spawn(future)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let (abort, registration) = AbortHandle::new_pair();
+        let (send, outcome) = oneshot::channel();
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = Abortable::new(future, registration)
+                .await
+                .unwrap_or(Outcome::Cancelled);
+            let _ = send.send(result);
+        });
+        TaskJoin { abort, outcome }
+    }
+}
 
 struct ActiveGuard {
     id: OperationId,
@@ -94,13 +138,13 @@ impl TaskGroup {
             Admission::Accepted(handle) => handle,
             Admission::Rejected { reason } => TaskHandle {
                 id: OperationId::new(),
-                join: Some(tokio::spawn(
+                join: Some(spawn_task(
                     async move { Outcome::Failed { message: reason } },
                 )),
             },
             Admission::Indeterminate { operation_id } => TaskHandle {
                 id: operation_id,
-                join: Some(tokio::spawn(async move {
+                join: Some(spawn_task(async move {
                     Outcome::Indeterminate { operation_id }
                 })),
             },
@@ -159,10 +203,7 @@ impl TaskGroup {
                 },
             }
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        let join = tokio::spawn(task);
-        #[cfg(target_arch = "wasm32")]
-        let join = tokio::task::spawn_local(task);
+        let join = spawn_task(task);
         admission.active.insert(id, join.abort_handle());
         drop(admission);
         let _ = start.send(());
@@ -251,7 +292,7 @@ impl TaskGroup {
 /// Addressable handle for an admitted live task.
 pub struct TaskHandle<T> {
     id: OperationId,
-    join: Option<JoinHandle<Outcome<T>>>,
+    join: Option<TaskJoin<T>>,
 }
 
 impl<T> TaskHandle<T> {
@@ -279,7 +320,7 @@ impl<T> TaskHandle<T> {
                 }
             }
         }
-        let guard = CancelOnDrop(self.join.as_ref().map(JoinHandle::abort_handle));
+        let guard = CancelOnDrop(self.join.as_ref().map(|join| join.abort_handle()));
         async move {
             let mut guard = guard;
             let outcome = self.result().await;
@@ -295,12 +336,21 @@ impl<T> TaskHandle<T> {
                 message: "task handle has no join".into(),
             };
         };
-        match join.await {
-            Ok(outcome) => outcome,
-            Err(error) if error.is_cancelled() => Outcome::Cancelled,
-            Err(error) => Outcome::Failed {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            match join.await {
+                Ok(outcome) => outcome,
+                Err(error) if error.is_cancelled() => Outcome::Cancelled,
+                Err(error) => Outcome::Failed {
+                    message: error.to_string(),
+                },
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            join.outcome.await.unwrap_or_else(|error| Outcome::Failed {
                 message: error.to_string(),
-            },
+            })
         }
     }
 }
