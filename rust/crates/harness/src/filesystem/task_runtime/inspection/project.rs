@@ -266,7 +266,13 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let accounted = match &result { Ok(_) => self.io.charge(work), Err(_) => self.io.spent(work) };
         if let Err(error) = accounted { return Err(OperationFailure::new(error, work)); }
         if let Err(error) = self.guard().await { return Err(OperationFailure::new(error, work)); }
-        result.map_err(|failure| OperationFailure::new(Error::Storage(failure.error.to_string()), *failure.work))
+        result.map_err(|failure| {
+            let error = match failure.error.semantic_error() {
+                acyclic_fs::LazyWorkspaceError::NotFound => Error::NotFound("selected native path".into()),
+                _ => Error::Storage(failure.error.to_string()),
+            };
+            OperationFailure::new(error, *failure.work)
+        })
     }
 
     fn native_budget(&self, budget: WorkBudget) -> Result<WorkBudget> {

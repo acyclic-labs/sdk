@@ -183,6 +183,9 @@ as an empty filesystem. Native methods retain genuine SDK success/failure
 receipts; charge constructor `project_work()` once, then each returned receipt
 once. Cumulative `project_work()` includes selected filesystem/SDK-buffer work,
 not coordinator journal authentication or opaque-provider physical I/O.
+Only the SDK's typed `LazyWorkspaceError::NotFound` becomes selected-path
+`Error::NotFound`; stale/unavailable source errors are never inferred as absence.
+Original-owner/cancellation rejection after the SDK await takes precedence.
 Selected-import preparation produces the real immutable-source plan: committing
 into caller-owned destination storage still requires its original write
 authority, exact-root approval and concurrent-edit protection.
