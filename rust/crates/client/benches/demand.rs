@@ -50,5 +50,47 @@ fn selective_reconciliation(bencher: Bencher, records: u64) {
             }
             client
         })
-        .bench_local_values(|mut client| client.observe(0, &evidence(0, 1, 12, None)).unwrap());
+        .bench_local_values(|mut client| {
+            let changes = client.observe(0, &evidence(0, 1, 12, None)).unwrap();
+            (client, changes) // output disposal occurs outside timed work
+        });
+}
+
+#[divan::bench(args = [1, 8, 16])]
+fn canonical_reconciliation(bencher: Bencher, records: u64) {
+    bencher
+        .with_inputs(|| {
+            let mut client = Client::new(Numbers::default(), 1, 0, limits()).unwrap();
+            for key in 0..records {
+                client.observe(key, &evidence(key, 0, 10, None)).unwrap();
+            }
+            client
+        })
+        .bench_local_values(|mut client| {
+            let changes = client.observe(0, &evidence(0, 1, 12, None)).unwrap();
+            (client, changes)
+        });
+}
+
+#[divan::bench(args = [1, 8, 16])]
+fn cold_canonical_demand(bencher: Bencher, records: u64) {
+    bencher.bench_local(|| {
+        let mut client = Client::new(Numbers::default(), 1, 0, limits()).unwrap();
+        for key in 0..records {
+            client.observe(key, &evidence(key, 0, 10, None)).unwrap();
+        }
+        client
+    });
+}
+
+#[divan::bench(args = [1, 8, 16])]
+fn cold_speculative_demand(bencher: Bencher, records: u64) {
+    bencher.bench_local(|| {
+        let mut client = Client::new(Numbers::default(), 1, 0, limits()).unwrap();
+        for key in 0..records {
+            client.observe(key, &evidence(key, 0, 10, None)).unwrap();
+            client.begin(request(key, 0, 10, 11, None, vec![])).unwrap();
+        }
+        client
+    });
 }

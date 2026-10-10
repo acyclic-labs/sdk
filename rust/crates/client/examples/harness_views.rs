@@ -64,7 +64,7 @@ enum Assumption {
 // deserializer; a real remote host must authenticate/reduce journal evidence.
 struct TrustedSnapshot {
     key: u128,
-    basis: Basis,
+    basis: Arc<Basis>,
     value: Arc<Projection>,
     operation: Option<(OperationId, OperationOutcome)>,
 }
@@ -81,12 +81,12 @@ fn snapshot(
             .unwrap();
     TrustedSnapshot {
         key,
-        basis: Basis {
+        basis: Arc::new(Basis {
             authority,
             generation: [1; 16],
             revision,
             content,
-        },
+        }),
         value: Arc::new(value),
         operation,
     }

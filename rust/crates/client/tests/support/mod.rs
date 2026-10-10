@@ -10,6 +10,9 @@ pub struct Basis {
     pub content: u64,
 }
 
+const DEEP_BYTES: usize =
+    std::mem::size_of::<Basis>() + std::mem::size_of::<u64>() + 4 * std::mem::size_of::<usize>(); // two Arc payloads and their refcount headers
+
 #[derive(Clone)]
 pub struct Evidence {
     pub key: u64,
@@ -59,7 +62,7 @@ impl Domain for Numbers {
             return Err(Error::Conflict);
         }
         self.visits.set(self.visits.get() + 1);
-        Ok((64, 1))
+        Ok((DEEP_BYTES, 1))
     }
     fn observe(
         &self,
@@ -81,7 +84,7 @@ impl Domain for Numbers {
                     || evidence.basis.revision < old.basis.revision
                     || evidence.basis.revision > old.basis.revision + 1
                     || (evidence.basis.revision == old.basis.revision
-                        && evidence.basis != old.basis))
+                        && evidence.basis != *old.basis))
             {
                 return Err(Error::Conflict);
             }
@@ -89,9 +92,9 @@ impl Domain for Numbers {
         Ok(Observation {
             fact: evidence.publish.then(|| Fact {
                 key: evidence.key,
-                basis: evidence.basis.clone(),
+                basis: Arc::new(evidence.basis.clone()),
                 value: Arc::new(evidence.value),
-                bytes: 64,
+                bytes: DEEP_BYTES,
             }),
             operation: evidence.operation,
             work: 1,
@@ -105,6 +108,9 @@ impl Domain for Numbers {
     ) -> Result<(Correspondence, usize), Error> {
         if work == 0 {
             return Err(Error::Budget);
+        }
+        if *canonical == u64::MAX {
+            return Err(Error::Unsupported);
         }
         self.visits.set(self.visits.get() + 1);
         Ok((
@@ -164,7 +170,7 @@ pub fn request(
 ) -> Begin<u64, Basis, u64, u64, u64> {
     Begin {
         key,
-        basis: evidence(key, revision, original, None).basis,
+        basis: Arc::new(evidence(key, revision, original, None).basis),
         operation,
         assumption: original,
         predicted: Arc::new(predicted),

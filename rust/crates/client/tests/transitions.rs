@@ -16,6 +16,174 @@ wasm_bindgen_test_configure!(run_in_browser);
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
 #[cfg_attr(not(target_arch = "wasm32"), test)]
+fn confirmed_only_edges_require_correspondence_and_never_revive() {
+    let mut client = Client::new(Numbers::default(), 71, 0, limits()).unwrap();
+    for key in 1..=3 {
+        client.observe(key, &evidence(key, 0, 10, None)).unwrap();
+    }
+    let root = client
+        .begin(request(1, 0, 10, 11, Some(9), vec![]))
+        .unwrap();
+    let confirmed_edge = Dependency {
+        branch: root,
+        requirement: DependencyRequirement::Confirmed,
+    };
+    let mut child_request = request(2, 0, 10, 12, None, vec![]);
+    child_request.dependencies.push(confirmed_edge);
+    assert_eq!(client.begin(child_request), Err(Error::Conflict));
+    client
+        .observe(1, &status(1, 9, OperationOutcome::Indeterminate))
+        .unwrap();
+    // Reordered admission does not clear uncertainty or establish correspondence.
+    client
+        .observe(1, &status(1, 9, OperationOutcome::Admitted))
+        .unwrap();
+    assert_eq!(
+        client.hypothesis(root).unwrap().outcome,
+        OperationOutcome::Indeterminate
+    );
+    let mut child_request = request(2, 0, 10, 12, None, vec![]);
+    child_request.dependencies.push(confirmed_edge);
+    assert_eq!(client.begin(child_request), Err(Error::Conflict));
+    client
+        .observe(
+            1,
+            &evidence(1, 1, 11, Some((9, OperationOutcome::Completed))),
+        )
+        .unwrap();
+    let mut child_request = request(2, 0, 10, 12, None, vec![]);
+    child_request.dependencies.push(confirmed_edge);
+    let child = client.begin(child_request).unwrap();
+    let grandchild = client
+        .begin(request(3, 0, 10, 13, None, vec![child]))
+        .unwrap();
+    let duplicate = client
+        .observe(
+            1,
+            &evidence(1, 1, 11, Some((9, OperationOutcome::Completed))),
+        )
+        .unwrap();
+    assert!(!duplicate.authoritative && duplicate.hypotheses.is_empty());
+    // Later canonical state invalidates confirmed source correspondence too.
+    client
+        .observe(
+            1,
+            &evidence(1, 2, 20, Some((9, OperationOutcome::Completed))),
+        )
+        .unwrap();
+    for id in [root, child, grandchild] {
+        assert_eq!(
+            client.hypothesis(id).unwrap().prediction,
+            PredictionOutcome::Invalidated
+        );
+    }
+    assert_eq!(
+        client.hypothesis(root).unwrap().outcome,
+        OperationOutcome::Completed
+    );
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+fn resource_and_work_follow_active_demand_not_lifetime() {
+    let mut client = Client::new(Numbers::default(), 71, 0, limits()).unwrap();
+    let mut resident = 0;
+    for revision in 0..10_000 {
+        let changes = client
+            .observe(1, &evidence(1, revision, revision, None))
+            .unwrap();
+        assert_eq!(changes.work, 1);
+        assert!(changes.authoritative && changes.hypotheses.is_empty());
+        if revision == 0 {
+            resident = client.residency().0;
+        }
+        assert_eq!(client.residency(), (resident, 1, 0, 0));
+    }
+    let root = client
+        .begin(request(1, 9999, 9999, 10_000, None, vec![]))
+        .unwrap();
+    for key in 2..=16 {
+        client.observe(key, &evidence(key, 0, 10, None)).unwrap();
+        client.begin(request(key, 0, 10, 11, None, vec![])).unwrap();
+    }
+    let changes = client.observe(1, &evidence(1, 10_000, 77, None)).unwrap();
+    assert_eq!(changes.work, 3); // adapter + one keyed root + one closure node
+    assert_eq!(changes.hypotheses, vec![root]);
+    client.advance(50).unwrap();
+    for key in 1..=16 {
+        client.release(&key).unwrap();
+    }
+    assert_eq!(client.residency(), (0, 0, 0, 0));
+    let baseline_sequence = client.sequence();
+    for _ in 0..1000 {
+        client.observe(1, &evidence(1, 0, 10, None)).unwrap();
+        let id = client
+            .begin(request(1, 0, 10, 11, None, vec![]))
+            .unwrap_err();
+        assert_eq!(id, Error::Time); // expired absolute expiry, no hidden timer/reset
+        client.release(&1).unwrap();
+    }
+    assert_eq!(client.sequence(), baseline_sequence);
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+fn missing_wrong_authority_generation_operation_and_finite_bounds() {
+    let mut bounds = limits();
+    bounds.records = 1;
+    let mut client = Client::new(Numbers::default(), 71, 0, bounds).unwrap();
+    assert_eq!(client.view(&1, &[]).err(), Some(Error::Missing));
+    assert_eq!(
+        client.begin(request(1, 0, 10, 11, None, vec![])),
+        Err(Error::Missing)
+    );
+    client.observe(1, &evidence(1, 0, 10, None)).unwrap();
+    let id = client
+        .begin(request(1, 0, 10, 11, Some(9), vec![]))
+        .unwrap();
+    let before = client.residency();
+    assert_eq!(
+        client.observe(2, &evidence(2, 0, 10, None)),
+        Err(Error::Budget)
+    );
+    for field in 0..3 {
+        let mut wrong = evidence(1, 1, 11, None);
+        match field {
+            0 => wrong.basis.authority = 2,
+            1 => wrong.basis.generation = 2,
+            _ => wrong.basis.content = 12,
+        }
+        assert_eq!(client.observe(1, &wrong), Err(Error::Conflict));
+        assert_eq!(client.residency(), before);
+    }
+    assert_eq!(
+        client.observe(2, &status(2, 9, OperationOutcome::Completed)),
+        Err(Error::Conflict)
+    );
+    assert_eq!(client.view(&1, &vec![id; 9]).err(), Some(Error::Budget));
+    let mut expired = request(1, 0, 10, 11, None, vec![]);
+    expired.expires = 101;
+    assert_eq!(client.begin(expired), Err(Error::Time));
+    let mut edge_bounds = limits();
+    edge_bounds.edges = 1;
+    let mut edges = Client::new(Numbers::default(), 72, 0, edge_bounds).unwrap();
+    edges.observe(1, &evidence(1, 0, 10, None)).unwrap();
+    let a = edges.begin(request(1, 0, 10, 11, None, vec![])).unwrap();
+    let b = edges.begin(request(1, 0, 10, 12, None, vec![])).unwrap();
+    assert_eq!(
+        edges.begin(request(1, 0, 10, 13, None, vec![a, b])),
+        Err(Error::Budget)
+    );
+    let mut exhausted = Client::new(Numbers::default(), 73, u64::MAX, limits()).unwrap();
+    exhausted.observe(1, &evidence(1, 0, 10, None)).unwrap();
+    assert_eq!(
+        exhausted.begin(request(1, 0, 10, 11, None, vec![])),
+        Err(Error::Budget)
+    );
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn pure_begin_explicit_view_uncertainty_and_stable_snapshots() {
     let domain = Numbers::default();
     let visits = domain.visits.clone();
@@ -40,6 +208,11 @@ fn pure_begin_explicit_view_uncertainty_and_stable_snapshots() {
         &original.value,
         &client.view(&1, &[]).unwrap().value
     ));
+    let repeated = client.view(&1, &[]).unwrap();
+    match (&original.provenance, &repeated.provenance) {
+        (Provenance::Authoritative(a), Provenance::Authoritative(b)) => assert!(Arc::ptr_eq(a, b)),
+        _ => panic!("canonical views require authoritative provenance"),
+    }
     client
         .observe(
             1,
@@ -65,6 +238,28 @@ fn pure_begin_explicit_view_uncertainty_and_stable_snapshots() {
             .hypotheses
             .is_empty()
     );
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+fn unsupported_correspondence_is_explicit_and_observation_can_resume_after_discard() {
+    let mut client = Client::new(Numbers::default(), 71, 0, limits()).unwrap();
+    client.observe(1, &evidence(1, 0, 10, None)).unwrap();
+    let root = client
+        .begin(request(1, 0, 10, 11, Some(9), vec![]))
+        .unwrap();
+    let before = client.residency();
+    let actual = evidence(1, 1, u64::MAX, Some((9, OperationOutcome::Completed)));
+    assert_eq!(client.observe(1, &actual), Err(Error::Unsupported));
+    assert_eq!(client.residency(), before);
+    assert_eq!(*client.view(&1, &[]).unwrap().value, 10);
+    assert_eq!(
+        client.hypothesis(root).unwrap().outcome,
+        OperationOutcome::Unknown
+    );
+    client.discard(root).unwrap();
+    client.observe(1, &actual).unwrap();
+    assert_eq!(*client.view(&1, &[]).unwrap().value, u64::MAX);
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]

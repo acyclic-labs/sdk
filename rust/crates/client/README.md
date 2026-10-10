@@ -61,7 +61,7 @@ uniqueness and atomic durable sequence checkpointing are host obligations. The
 kernel never allocates operation identities or submits retries. Idempotent
 effect admission and crash recovery continue to belong to domain journals.
 
-Facts and predictions hold `Arc` references; views copy references and small
+Facts, basis pins and predictions hold `Arc` references; views copy references and
 provenance, not histories. Exact duplicate basis observations retain the same
 value identity. Caller-held snapshots survive reconciliation. Per-key and
 per-operation indexes target affected roots; reverse edges traverse descendants
