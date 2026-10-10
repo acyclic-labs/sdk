@@ -10,6 +10,7 @@ use std::{
 pub(crate) use tracing::{Span, field::Empty};
 /// wasm32 records nothing.
 #[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy)]
 pub(crate) struct Span;
 
 /// A result with a stable, path-free `error.kind` for a failure.
