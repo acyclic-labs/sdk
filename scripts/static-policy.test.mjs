@@ -8,6 +8,7 @@ test('every supported action reference is pinned and alternative YAML forms fail
   pinnedActions('workflow.yml',`name: 'Build uses: pinned actions'\nname: "Build, uses: pinned actions"\nname: Build uses: pinned actions`);
   pinnedActions('workflow.yml','if: ${{ !cancelled() }}');
   pinnedActions('workflow.yml','if: ${{\n  !cancelled()\n}}');
+  pinnedActions('workflow.yml',"if: ${{ !cancelled() &&\n  needs.build.result == 'success' }}");
   for (const source of ['- {uses: actions/checkout@main}', '- "uses": actions/checkout@main',
     '- uses: actions/checkout@main', '- uses: *action', '- {"uses": actions/checkout@main}',
     '- uses: |-\n    actions/checkout@main', '- uses: >\n    actions/checkout@main',
