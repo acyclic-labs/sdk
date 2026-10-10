@@ -15,6 +15,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { remoteToolFixture } from "./remote-tool-fixture.mjs";
 
 const PAGES = ["browser-smoke.html", "browser-multitab.html", "browser-publication.html", "browser-publication.html?profile=opfs", "browser-stream.html", "../harness/test/browser-wire.html"];
 // The one deadline a page has. Pages wait on their own actors without one,
@@ -60,7 +61,7 @@ function chromeExecutable() {
 // page: a page's "Failed to fetch" names no request, but these do.
 const anomalies = [];
 
-async function serve() {
+async function serve(remoteTool) {
   const server = createServer((request, response) => {
     const started = Date.now();
     response.on("close", () => {
@@ -70,6 +71,7 @@ async function serve() {
       }
     });
     const pathname = decodeURIComponent(new URL(request.url, "http://host").pathname);
+    if (remoteTool.handle(request, response, pathname)) return;
     const dependency = [...dependencyRoots].find(([prefix]) => pathname.startsWith(prefix));
     const base = dependency?.[1] ?? root;
     const relative = dependency === undefined ? pathname : pathname.slice(dependency[0].length);
@@ -241,7 +243,8 @@ async function runPage(browser, observer, origin, page) {
 }
 
 const pages = process.argv.length > 2 ? process.argv.slice(2) : PAGES;
-const server = await serve();
+const remoteTool = remoteToolFixture();
+const server = await serve(remoteTool);
 const origin = `http://127.0.0.1:${server.address().port}`;
 const profile = mkdtempSync(join(tmpdir(), "acyclic-fs-browser-"));
 let launched;
@@ -274,6 +277,7 @@ try {
     await launched.exited;
   }
   server.close();
+  remoteTool.close();
   // Chrome's helper processes can hold profile files briefly after the
   // browser itself exits; a profile that still cannot be removed is only
   // reported, since the qualification result is already known.

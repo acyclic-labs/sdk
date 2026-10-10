@@ -47,6 +47,20 @@ struct MailEvent {
     payload: FileRef,
 }
 
+// Derived receipt only: the original mailbox bytes and shared commit remain
+// authoritative. Its fixed metadata permits a bounded two-record lookup.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MailLocation {
+    sender: TaskId,
+    message_id: OperationId,
+    recipient: TaskId,
+    sequence: u64,
+    value_digest: [u8; 32],
+}
+
+const MAX_MAIL_LOCATION_BYTES: usize = 1024;
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TimerEvent {
@@ -710,34 +724,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         message_id: OperationId,
         payload: FileRef,
     ) -> Result<()> {
-        let owner = self.journal_owner(sender, fence.clone()).await?;
+        // Validate the original task/lease before retaining or observing mail.
+        self.journal_owner(sender, fence.clone()).await?;
         let bytes = Bytes::from(
             self.mail_bytes(sender, recipient, message_id, payload)
                 .await?,
         );
-        let path = acyclic_stream::StreamPath::new(format!("harness/v2/mail/{recipient}"))?;
-        let key = Self::event_key("mail", recipient, message_id)?;
-        loop {
-            self.verify_owner(sender, &fence, false).await?;
-            let (tail, found) = self.mail_state(recipient, message_id, &bytes).await?;
-            if found {
-                self.verify_owner(sender, &fence, false).await?;
-                return Ok(());
-            }
-            if owner
-                .append(
-                    path.clone(),
-                    tail,
-                    &key,
-                    bytes.clone(),
-                    crate::distributed::JournalWrite::Fresh,
-                )
-                .await?
-            {
-                self.verify_owner(sender, &fence, false).await?;
-                return Ok(());
-            }
-        }
+        self.publish_mail(sender, recipient, message_id, bytes, Some(fence))
+            .await
     }
 
     /// Starts or reattaches the exact already-admitted lease. This does not
@@ -1637,7 +1631,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     fn mailbox(&self, task_id: TaskId) -> Result<acyclic_stream::Stream<P>> {
         self.stream
-            .stream(format!("harness/v2/mail/{task_id}"))
+            .stream(format!("harness/v2/mail/by-recipient/{task_id}"))
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 
@@ -1858,49 +1852,230 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         crate::contract::canonical_json_bytes(&event)
     }
 
-    async fn mail_state(
+    fn mail_location_path(
+        sender: TaskId,
+        message: OperationId,
+    ) -> Result<acyclic_stream::StreamPath> {
+        Ok(acyclic_stream::StreamPath::new(format!(
+            "harness/v2/mail/by-intent/{sender}/{message}"
+        ))?)
+    }
+
+    async fn observe_mail_location(
         &self,
+        sender: TaskId,
         recipient: TaskId,
-        message_id: OperationId,
+        message: OperationId,
         bytes: &[u8],
-    ) -> Result<(u64, bool)> {
-        let mailbox = self.mailbox(recipient)?;
-        let tail = match mailbox.bounds().await {
-            Ok(bounds) => bounds.tail,
-            Err(StreamError::NotFound) => 0,
+    ) -> Result<bool> {
+        let location = self
+            .stream
+            .stream(Self::mail_location_path(sender, message)?.as_str())?;
+        let records = match location.read(0, 2).await {
+            Ok(records) => records.try_collect::<Vec<_>>().await?,
+            Err(StreamError::NotFound) => return Ok(false),
             Err(error) => return Err(error.into()),
         };
-        let mut after = 0;
-        let mut found = false;
-        while after < tail {
-            let page = mailbox
-                .read(after, (tail - after).min(64) as u32)
-                .await?
-                .try_collect::<Vec<_>>()
-                .await?;
-            if page.is_empty() || page.len() > 64 {
-                return Err(Error::Storage("invalid mail replay page".into()));
+        let [record] = records.as_slice() else {
+            return Err(Error::Storage(
+                "mail location must contain one record".into(),
+            ));
+        };
+        if record.sequence != 0 || record.value.len() > MAX_MAIL_LOCATION_BYTES {
+            return Err(Error::Storage(
+                "mail location exceeds its bounded format".into(),
+            ));
+        }
+        let retained: MailLocation = crate::contract::json_from_slice(&record.value)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        if retained.sender != sender
+            || retained.message_id != message
+            || crate::contract::canonical_json_bytes(&retained)?.as_slice() != record.value.as_ref()
+        {
+            return Err(Error::Storage("mail location identity differs".into()));
+        }
+        let mailbox = self.mailbox(retained.recipient)?;
+        let original = mailbox
+            .read(retained.sequence, 1)
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
+        let [original] = original.as_slice() else {
+            return Err(Error::Storage("mail location source is absent".into()));
+        };
+        if original.sequence != retained.sequence
+            || original.commit_id != record.commit_id
+            || blake3::hash(&original.value).as_bytes() != &retained.value_digest
+        {
+            return Err(Error::Storage(
+                "mail location differs from its atomic source".into(),
+            ));
+        }
+        // Equality with the already validated canonical event checks the whole
+        // payload, including its immutable generation, without decoding a body
+        // from an untrusted location. No receipt grants publication authority.
+        if retained.recipient != recipient || original.value.as_ref() != bytes {
+            return Err(Error::Conflict("mail identity reused".into()));
+        }
+        Ok(true)
+    }
+
+    fn mail_location(
+        sender: TaskId,
+        recipient: TaskId,
+        message: OperationId,
+        sequence: u64,
+        bytes: &[u8],
+    ) -> Result<(MailLocation, Bytes)> {
+        let location = MailLocation {
+            sender,
+            message_id: message,
+            recipient,
+            sequence,
+            value_digest: *blake3::hash(bytes).as_bytes(),
+        };
+        let encoded = Bytes::from(crate::contract::canonical_json_bytes(&location)?);
+        if encoded.len() > MAX_MAIL_LOCATION_BYTES {
+            return Err(Error::Invalid(
+                "mail location exceeds its bounded format".into(),
+            ));
+        }
+        Ok((location, encoded))
+    }
+
+    fn mail_commit_key(
+        location: &MailLocation,
+        fence: &Option<crate::scheduler::LeaseFence>,
+        conditions: &[acyclic_stream::CommitCondition],
+    ) -> Result<StreamKey> {
+        use acyclic_stream::CommitCondition;
+        // Conflict receipts are retained too. The physical key includes every
+        // exact CAS; the immutable location fences the logical intent.
+        let physical = crate::contract::canonical_json_bytes(&(
+            location,
+            fence,
+            conditions
+                .iter()
+                .map(|condition| match condition {
+                    CommitCondition::Tail { path, expected } => (path.as_str(), Some(*expected)),
+                    CommitCondition::Absent { path } => (path.as_str(), None),
+                })
+                .collect::<Vec<_>>(),
+        ))?;
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"acyclic.harness.mail-publication.v1\0");
+        hash.update(&physical);
+        Ok(StreamKey::new(Bytes::copy_from_slice(
+            hash.finalize().as_bytes(),
+        ))?)
+    }
+
+    async fn publish_mail(
+        &self,
+        sender: TaskId,
+        recipient: TaskId,
+        message: OperationId,
+        bytes: Bytes,
+        fence: Option<crate::scheduler::LeaseFence>,
+    ) -> Result<()> {
+        use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, CommitRequest};
+        let mailbox = self.mailbox(recipient)?;
+        let location_path = Self::mail_location_path(sender, message)?;
+        loop {
+            if let Some(fence) = &fence {
+                self.verify_owner(sender, fence, false).await?;
             }
-            for record in page {
-                if record.sequence != after || after >= tail {
-                    return Err(Error::Storage("mail replay sequence differs".into()));
+            if self
+                .observe_mail_location(sender, recipient, message, &bytes)
+                .await?
+            {
+                if let Some(fence) = &fence {
+                    self.verify_owner(sender, fence, false).await?;
                 }
-                let event: MailEvent = crate::contract::json_from_slice(&record.value)
-                    .map_err(|error| Error::Storage(error.to_string()))?;
-                event.payload.validate()?;
-                if crate::contract::canonical_json_bytes(&event)? != record.value.as_ref() {
-                    return Err(Error::Storage("mail event is not canonical JSON".into()));
+                return Ok(());
+            }
+            let (tail, target) = match mailbox.bounds().await {
+                Ok(bounds) => (
+                    bounds.tail,
+                    CommitCondition::Tail {
+                        path: mailbox.path().clone(),
+                        expected: bounds.tail,
+                    },
+                ),
+                Err(StreamError::NotFound) => (
+                    0,
+                    CommitCondition::Absent {
+                        path: mailbox.path().clone(),
+                    },
+                ),
+                Err(error) => return Err(error.into()),
+            };
+            let (location, location_bytes) =
+                Self::mail_location(sender, recipient, message, tail, &bytes)?;
+            let conditions = vec![
+                target,
+                CommitCondition::Absent {
+                    path: location_path.clone(),
+                },
+            ];
+            #[cfg(feature = "filesystem")]
+            let conditions = {
+                let mut conditions = conditions;
+                if let Some(fence) = &fence {
+                    conditions.push(
+                        self.coordinator
+                            .lock()
+                            .await
+                            .journal_condition(
+                                &self.owner,
+                                &self.owner_scope,
+                                &self.verifier,
+                                OperationId::from_bytes(sender.into_bytes()),
+                                fence,
+                                crate::distributed::JournalWrite::Fresh,
+                            )
+                            .await?,
+                    );
                 }
-                if event.message_id == message_id {
-                    if found || record.value.as_ref() != bytes {
-                        return Err(Error::Conflict("mail identity reused".into()));
+                conditions
+            };
+            #[cfg(not(feature = "filesystem"))]
+            if fence.is_some() {
+                return Err(Error::Unsupported(
+                    "owned mail publication is not bound".into(),
+                ));
+            }
+            let key = Self::mail_commit_key(&location, &fence, &conditions)?;
+            let request = CommitRequest {
+                conditions,
+                mutations: vec![
+                    CommitMutation::Append {
+                        path: mailbox.path().clone(),
+                        records: vec![bytes.clone()],
+                    },
+                    CommitMutation::Append {
+                        path: location_path.clone(),
+                        records: vec![location_bytes],
+                    },
+                ],
+                idempotency_key: key,
+            };
+            match crate::distributed::commit_keyed(&self.stream, request, message).await? {
+                CommitOutcome::Conflict(_) => continue,
+                CommitOutcome::Committed(_) => {
+                    if !self
+                        .observe_mail_location(sender, recipient, message, &bytes)
+                        .await?
+                    {
+                        return Err(Error::Storage("committed mail receipt is absent".into()));
                     }
-                    found = true;
+                    if let Some(fence) = &fence {
+                        self.verify_owner(sender, fence, false).await?;
+                    }
+                    return Ok(());
                 }
-                after += 1;
             }
         }
-        Ok((tail, found))
     }
 
     async fn timer_state(
@@ -2454,22 +2629,12 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         payload: FileRef,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            let bytes = self
-                .mail_bytes(sender, recipient, message_id, payload)
-                .await?;
-            let mailbox = self.mailbox(recipient)?;
-            loop {
-                let (tail, found) = self.mail_state(recipient, message_id, &bytes).await?;
-                if found {
-                    return Ok(());
-                }
-                if self
-                    .publish_control_at(&mailbox, "mail", recipient, message_id, &bytes, Some(tail))
-                    .await?
-                {
-                    return Ok(());
-                }
-            }
+            let bytes = Bytes::from(
+                self.mail_bytes(sender, recipient, message_id, payload)
+                    .await?,
+            );
+            self.publish_mail(sender, recipient, message_id, bytes, None)
+                .await
         })
     }
 
