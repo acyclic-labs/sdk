@@ -187,6 +187,7 @@ cargo install --path rust/crates/harness --locked --features terminal,filesystem
 node scripts/test-graphcoder.mjs ABSOLUTE_INSTALLED_BINARY
 node scripts/test-graphcoder.mjs ABSOLUTE_INSTALLED_BINARY ABSOLUTE_NATIVE_CONFIG
 node scripts/test-graphcoder.mjs ABSOLUTE_INSTALLED_BINARY --full ABSOLUTE_FRESH_SCENARIO_DIR
+node scripts/test-graphcoder-pty.mjs ABSOLUTE_INSTALLED_BINARY --fresh ABSOLUTE_SEPARATE_FRESH_SCENARIO_DIR --evidence ABSOLUTE_FRESH_EVIDENCE_DIR
 ```
 
 Retain exact source, installed binary and suite hashes, argv, exit status and raw
@@ -195,13 +196,14 @@ not PTY evidence. Do not substitute a pipe, mocked terminal or unit test for the
 required actual Windows ConPTY / Linux / WSL / macOS PTY interaction.
 
 The `--full` installed lane invokes the same installed binary's
-`--prepare-scenario ABSOLUTE_FRESH_SCENARIO_DIR` helper. For a separate actual PTY
-lane, invoke that helper directly and use the config path in its returned
-`scenario-json` manifest. Do not precreate the same scenario directory before
-`--full`. The helper creates actual local providers, an attached source root,
-original signed scopes, finite task/model budgets, prepared child admissions,
-real history, mailbox payloads and a native publication plan. It emits references
-and original leases, not prerecorded outcomes or a second runtime.
+`--prepare-scenario ABSOLUTE_FRESH_SCENARIO_DIR` helper. The separate actual PTY
+lane's `--fresh` option invokes that same helper in a different fresh directory;
+alternatively pass `--manifest ABSOLUTE_GENUINE_MANIFEST` instead of `--fresh`.
+Do not precreate the same scenario directory before either fresh invocation.
+The helper creates actual local providers, an attached source root, original
+signed scopes, finite task/model budgets, prepared child admissions, real history,
+mailbox payloads and a native publication plan. It emits references and original
+leases, not prerecorded outcomes or a second runtime.
 
 The four-agent graph is a logical root, two children and a grandchild. Bootstrap
 seed, preparation helpers and mailbox helper are explicitly distinct task roles.
@@ -225,25 +227,28 @@ that token while retaining the same preparation future. Source authorization
 callbacks borrow it, and the original journal owner remains the authority for
 task/fence cancellation. A service-wide dummy token is not substituted.
 
-For an actual installed PTY, launch the absolute installed binary with
-`--session CONFIG.json` in the qualification runner's real native PTY (for
-example its `pty: true` process option), without `--headless`. Retain all original
-typed task, agent, admission-operation and lease identities separately. Exercise
-prompt/queued input and scrolling, direct-child paging, original root process
-death/resume, mailbox wait and committed one-item consumption, safe-boundary
-steering, caller/source-selective history and file access, actual cross-source
-preparation/publication/admission, inherited-history/private-scratch isolation,
-exact-ref diffs, explicit approval and native writeback with concurrent-edit
-preservation. The script's pipe lane supplies process regressions and controls,
-but never proves terminal interaction or substitutes its generated fixture for
-the public producer APIs exercised by the runtime.
+The actual PTY runner uses the operating system's `/usr/bin/script` PTY on
+Linux/WSL/macOS and `graphcoder-conpty.ps1`'s real Windows `CreatePseudoConsole`
+and process attribute attachment. It requires the native runtime banner and
+`terminal-mode stdin-is-terminal=true interactive=true headless=false` marker
+with the actual runtime PID, not a pipe or pseudoterminal-shaped mock. Retain raw
+terminal bytes, platform/launch metadata and exact source/binary/suite hashes.
+Without `--headless`, it exercises prompt/queued input and cancellation,
+scrolling/paging, original root process death/resume, typed identities, selective
+history/files, cross-source admission, diffs and approval/native writeback.
+Its separate positive fixture uses the tenth ordinary task for a cancelled live
+prompt, leaving tasks 11/12 for cross preparation/child; it completes 12 terminal
+outcomes with six actual generations. The independent `--full` lane still owns
+the seven-generation mailbox/steering scenario and separate negative-11 store.
+Neither lane increases an admitted budget or substitutes a new runtime engine.
 
 Fault controls: configure a nonzero bounded deterministic delay; kill the
-installed process after its flushed original lease claim, reopen with the same
-config, and supply that exact retained lease for reconciliation. Negative controls
-must include a forged scope/owner, stale generation/revision, wrong command kind,
-wrong task identity, altered lease/fence, ungranted file/ref, denied approval,
-terminal-control payload and oversized input/page. A timeout/launch failure is
+actual installed runtime PID after its flushed, durably observed model dispatch
+barrier, reopen with the same config, and supply its exact retained original
+lease for reconciliation. Negative controls must include a forged scope/owner,
+stale generation/revision, wrong command kind, wrong task identity, altered
+lease/fence, ungranted file/ref, denied approval, terminal-control payload and
+oversized input/page. A timeout/launch failure is
 never an acceptable negative-test result. Native producer fault injection owns
 interrupted publication, filesystem dispatch and merge acknowledgements; UI code
 does not invent such outcomes or automatically repeat them.
