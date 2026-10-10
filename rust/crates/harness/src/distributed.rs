@@ -2509,6 +2509,144 @@ fn decode(bytes: &[u8]) -> Result<(u64, OperationId, String, [u8; 32], u64, Sche
     decode_with_work(bytes, &mut None)
 }
 
+// Closed to SchedulerEvent's original Deserialize schema and serde 1.0.229's
+// Content carrier. This is logical quota, not observed allocation or SDK/OS IO.
+// Reachable DTO/serde changes require updating this concrete admission audit.
+struct SchedulerEventJsonAdmission<'a,'w> {
+    input: &'a [u8],
+    work: &'w mut dyn crate::store::history::HistoryIo,
+    maximum_owned_bytes: u64,
+    held: u64,
+}
+
+impl<'a,'w> SchedulerEventJsonAdmission<'a,'w> {
+    fn prepare(input: &'a [u8], work: &'w mut dyn crate::store::history::HistoryIo) -> Result<Self> {
+        use crate::contract::JsonCodecCharge;
+        let mut input_bytes = 0u64;
+        let mut items = 0u64;
+        crate::contract::admit_json(input, crate::contract::JsonBounds {
+            maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
+            maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64 + 1,
+            maximum_depth: 256,
+        }, &mut |charge| {
+            match charge {
+                JsonCodecCharge::Read {bytes} => input_bytes = input_bytes.checked_add(bytes)
+                    .ok_or_else(|| Error::Invalid("scheduler JSON byte admission overflows".into()))?,
+                JsonCodecCharge::Work {items:count,..} => items = items.checked_add(count)
+                    .ok_or_else(|| Error::Invalid("scheduler JSON item admission overflows".into()))?,
+                _ => {},
+            }
+            work.codec_charge(charge)
+        })?;
+        let multiply = |value:u64, factor:u64| value.checked_mul(factor)
+            .ok_or_else(|| Error::Invalid("scheduler JSON ownership admission overflows".into()));
+        const fn largest(slots:&[usize]) -> usize {
+            let mut maximum = 0;
+            let mut index = 0;
+            while index < slots.len() {
+                if slots[index] > maximum {maximum = slots[index];}
+                index += 1;
+            }
+            maximum
+        }
+        // Exactly the variable typed elements: dependencies/cancel OperationIds,
+        // scope capabilities, resource quantities, placement pairs, descriptor/
+        // resource-key bytes and arbitrary schema Value. BTree payload slots
+        // count; opaque node headers/allocator slack/RSS do not.
+        const TYPED_SLOT:usize = largest(&[
+            std::mem::size_of::<OperationId>(), std::mem::size_of::<u8>(),
+            std::mem::size_of::<String>(), std::mem::size_of::<(String,u64)>(),
+            std::mem::size_of::<(String,String)>(), std::mem::size_of::<serde_json::Value>(),
+            std::mem::size_of::<(String,serde_json::Value)>(),
+        ]);
+        const CONTENT_SLOT:usize = largest(&[
+            std::mem::size_of::<serde::__private229::de::Content<'static>>(),
+            std::mem::size_of::<(serde::__private229::de::Content<'static>,
+                serde::__private229::de::Content<'static>)>(),
+        ]);
+        // Outer SchedulerEvent, one outcome/owner/orchestration carrier and
+        // adjacent VolumeOwner. DurableOwner and Orchestration are parallel;
+        // no longer tagged chain occurs in any of the 17 original variants.
+        // JSON Content doesn't produce its non-JSON Some/Newtype box variants.
+        const CONTENT_LAYERS:u64 = 3;
+        // <=2 elements plus eight initial Vec slots per nonempty collection;
+        // total collections/elements <= lexical tokens, including duplicate keys.
+        let slots = multiply(items, 2 + 8)?;
+        let content_bytes = multiply(multiply(slots, CONTENT_SLOT as u64)?, CONTENT_LAYERS)?;
+        let typed_bytes = multiply(slots, TYPED_SLOT as u64)?;
+        const VALUE_SLOT:usize = largest(&[std::mem::size_of::<serde_json::Value>(),
+            std::mem::size_of::<(String,serde_json::Value)>()]);
+        let value_overlap = multiply(slots, VALUE_SLOT as u64)?;
+        // Every Content pass, Value pass and typed output can own source strings.
+        // Decoded escaping never exceeds source bytes; scratch growth is <=2x.
+        let strings = multiply(input_bytes, CONTENT_LAYERS + 2)?;
+        let scratch = multiply(input_bytes.max(8), 2)?;
+        const LABELS:&str = concat!(
+            "SchedulerEvent SessionConfigured ModelDispatchClaimed Declared WaitingForCapacity ",
+            "Admitted PartiallyAdmitted Rejected Started Checkpointed WaitingForChildren ",
+            "WorkflowSuspended WorkflowResumed ReconciliationResumed LeaseReleased ",
+            "CancellationRequested Completed Orchestrated ",
+            "session_configured model_dispatch_claimed declared waiting_for_capacity admitted ",
+            "partially_admitted rejected started checkpointed waiting_for_children workflow_suspended ",
+            "workflow_resumed reconciliation_resumed lease_released cancellation_requested completed orchestrated ",
+            "operation_id limits active_tasks total_tasks depth model_steps attempt_id step request_digest ",
+            "fence ceiling spec reservation reason checkpoint workflow_revision waiting_command input recursive ",
+            "outcome execution_duration_ns expected_revision cancel reducer reduction_digest reservation_id ",
+            "placement id admitted parent slot owner owner_scope entrypoint dependencies resources orchestration ",
+            "state authority kind attached detached leaf join race quorum reduce required name version digest ",
+            "result_schema capabilities agent issuer parent_proof proof Succeeded Failed Cancelled Indeterminate message ",
+            "namespace family provider key volume path descriptor display_name sha256 byte_length media_type class ",
+            "workspace generation artifact sandbox checkpoint stream context run project session agent ",
+            "user agent_private session_shared Authority Scope SessionLimits DurableOwner ParentLink ",
+            "EntrypointRef Orchestration Reservation LeaseFence Outcome VolumeClass VolumeOwner VolumeRefWire ",
+            "FileDescriptorWire FileRefWire ProviderRefWire ResourceRefWire ResourceKind Capabilities ",
+            "conversation turn task ",
+            "provider identity is invalid resource key is empty resource version is invalid typed resource kind mismatch ",
+            "SHA-256 digest must contain exactly 32 bytes file or volume label is invalid ",
+            "volume-relative path is invalid file byte length exceeds cross-language precision media type is invalid ",
+            "invalid request: storage failure: a valid UUID string an array of length 32 ",
+        );
+        // Four punctuation bytes per label, conservatively at most one label
+        // per source character. Shared codec bounds actual dynamic interpolation
+        // and the two overlapping diagnostic buffers before serde constructs them.
+        let diagnostics = crate::contract::audited_serde_diagnostic_bytes(
+            input_bytes, LABELS.len() as u64 * 5,
+        )?;
+        // Declared's Box<OperationSpec> is the only fixed heap-owned pointee.
+        let maximum_owned_bytes = [content_bytes, typed_bytes, value_overlap, strings,
+            scratch, diagnostics, std::mem::size_of::<OperationSpec>() as u64]
+            .into_iter().try_fold(0u64, |total, bytes| total.checked_add(bytes)
+                .ok_or_else(|| Error::Invalid("scheduler JSON quota admission overflows".into())))?;
+        work.codec_charge(JsonCodecCharge::Admission {maximum_owned_bytes})?;
+        Ok(Self {input, work, maximum_owned_bytes, held:maximum_owned_bytes})
+    }
+
+    fn decode(mut self) -> Result<SchedulerEvent> {
+        // Cancellation retains its original typed first cause; serde is not
+        // involved in converting lexical/quota/cancellation failures.
+        self.work.check_cancellation()?;
+        let event:SchedulerEvent = crate::contract::json_from_slice(self.input)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        self.work.check_cancellation()?;
+        let retained = event.logical_owned_bytes()?;
+        let slack = self.maximum_owned_bytes.checked_sub(retained)
+            .ok_or_else(|| Error::Invalid("scheduler decoder exceeds its audited schema reservation".into()))?;
+        self.work.release_owned(slack)?;
+        self.held = retained;
+        // Transfer only the actual typed output; errors or unused witnesses
+        // release their reservation through producer-local custody.
+        self.held = 0;
+        Ok(event)
+    }
+}
+
+impl Drop for SchedulerEventJsonAdmission<'_,'_> {
+    fn drop(&mut self) {
+        // Cleanup cannot replace a cancellation/quota/serde first cause.
+        let _ = self.work.release_owned(self.held);
+    }
+}
+
 fn decode_with_work(
     bytes: &[u8],
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -2541,13 +2679,11 @@ fn decode_with_work(
     if *blake3::hash(&envelope.canonical_event_json).as_bytes() != digest {
         return Err(Error::Storage("scheduler event digest mismatch".into()));
     }
-    let event: SchedulerEvent = crate::contract::json_from_slice(&envelope.canonical_event_json)
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    if let Some(work) = work.as_deref_mut() {
-        // This reports the actual original decoder output, not an allocation
-        // estimate or a claim that serde's allocation was preadmitted.
-        work.retain_owned(event.logical_owned_bytes()?)?;
-    }
+    let event = match work.as_deref_mut() {
+        Some(work) => SchedulerEventJsonAdmission::prepare(&envelope.canonical_event_json, work)?.decode()?,
+        None => crate::contract::json_from_slice(&envelope.canonical_event_json)
+            .map_err(|error| Error::Storage(error.to_string()))?,
+    };
     let committed_at_ms = envelope
         .committed_at_ms
         .filter(|time| *time > 0)

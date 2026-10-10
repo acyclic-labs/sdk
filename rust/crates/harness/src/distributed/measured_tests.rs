@@ -854,3 +854,101 @@ async fn measured_original_declaration_publishes_and_replays_with_real_filesyste
     assert_eq!(ordinary.scheduler(), coordinator.scheduler());
     Ok(())
 }
+
+#[tokio::test]
+async fn scheduler_json_admission_guards_all_original_variants_without_second_decode_or_io() -> Result<()> {
+    use crate::{resources::CheckpointRef, scheduler::{Orchestration, Reservation, SessionLimits}};
+    let operation = OperationId::from_bytes([125;16]);
+    let mut declaration = spec(operation, 0)?;
+    declaration.entrypoint.result_schema = serde_json::json!({
+        "type":"object", "properties":{"nested":{"type":"array","items":{"enum":["escape\n\"\\","x"]}}},
+    });
+    declaration.orchestration = Orchestration::Reduce {reducer:declaration.entrypoint.clone()};
+    declaration.placement.insert("zone".into(),"placement".into());
+    declaration.resources.0.insert("memory".into(),1);
+    let file = declaration.state.clone();
+    let entrypoint = declaration.entrypoint.clone();
+    let fence = LeaseFence {reservation_id:"original-json-reservation".into(),placement:"worker".into()};
+    let reservation = Reservation {id:fence.reservation_id.clone(),placement:fence.placement.clone(),
+        admitted:declaration.resources.clone()};
+    let checkpoint = CheckpointRef::new(file.volume().provider().clone(),
+        b"original-checkpoint".to_vec(),Some("1".into()))?;
+    let events = vec![
+        SchedulerEvent::SessionConfigured {operation_id:operation,
+            limits:SessionLimits {active_tasks:1,total_tasks:2,depth:1,model_steps:1}},
+        SchedulerEvent::ModelDispatchClaimed {operation_id:operation,attempt_id:operation,
+            step:1,request_digest:[3;32],fence:fence.clone(),ceiling:1},
+        SchedulerEvent::Declared {spec:Box::new(declaration)},
+        SchedulerEvent::WaitingForCapacity {operation_id:operation},
+        SchedulerEvent::Admitted {operation_id:operation,reservation:reservation.clone()},
+        SchedulerEvent::PartiallyAdmitted {operation_id:operation,reservation},
+        SchedulerEvent::Rejected {operation_id:operation,reason:"original rejection".into()},
+        SchedulerEvent::Started {operation_id:operation,fence:fence.clone()},
+        SchedulerEvent::Checkpointed {operation_id:operation,checkpoint,fence:fence.clone()},
+        SchedulerEvent::WaitingForChildren {operation_id:operation,fence:fence.clone()},
+        SchedulerEvent::WorkflowSuspended {operation_id:operation,fence:fence.clone(),
+            workflow_revision:1,waiting_command:Some(operation)},
+        SchedulerEvent::WorkflowResumed {operation_id:operation,workflow_revision:1,input:file.clone()},
+        SchedulerEvent::ReconciliationResumed {operation_id:operation,fence:fence.clone()},
+        SchedulerEvent::LeaseReleased {operation_id:operation,fence:fence.clone()},
+        SchedulerEvent::CancellationRequested {operation_id:operation,recursive:true},
+        SchedulerEvent::Completed {operation_id:operation,outcome:crate::Outcome::Succeeded(file.clone()),
+            fence:Some(fence),execution_duration_ns:Some(7)},
+        SchedulerEvent::Orchestrated {operation_id:operation,expected_revision:1,
+            outcome:crate::Outcome::Succeeded(file),cancel:vec![operation;17],
+            reducer:Some(entrypoint),reduction_digest:Some([4;32])},
+    ];
+    // The frozen original enum has exactly these 17 variants.
+    assert_eq!(events.len(),17);
+    for event in events {
+        let bytes = crate::contract::canonical_json_bytes(&event)?;
+        let cancellation = CancellationToken::new();
+        let mut work = HistoryWork::new(budget(),&cancellation);
+        work.preflight()?;
+        let admission = SchedulerEventJsonAdmission::prepare(&bytes,&mut work)?;
+        let maximum = admission.maximum_owned_bytes;
+        let decoded = admission.decode()?;
+        assert_eq!(decoded,event);
+        assert!(maximum >= decoded.logical_owned_bytes()?);
+        assert_eq!(crate::contract::canonical_json_bytes(&decoded)?,bytes);
+        assert_eq!(work.receipt().backend_read_operations,0);
+        assert_eq!(work.receipt().backend_write_operations,0);
+        assert_eq!(work.receipt().authority_records_read,0);
+        assert_eq!(work.receipt().allocation_operations,0);
+        assert!(work.receipt().items_examined > 0);
+        assert!(work.receipt().peak_allocation_bytes >= maximum);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn scheduler_json_admission_quota_cancel_and_duplicate_faults_precede_original_serde() -> Result<()> {
+    let duplicate = br#"{"kind":"lease_released","operation_id":"00000000-0000-0000-0000-000000000001","fence":{"reservation_id":"a","reservation_id":"b","placement":"worker"}}"#;
+    for mode in 0..3 {
+        let cancellation = CancellationToken::new();
+        if mode == 0 {cancellation.cancel();}
+        let mut allowance = budget();
+        if mode == 1 {allowance.peak_allocation_bytes = 0;}
+        let mut work = HistoryWork::new(allowance,&cancellation);
+        let admitted = SchedulerEventJsonAdmission::prepare(duplicate,&mut work);
+        if mode == 2 {
+            let admission = admitted?;
+            assert!(admission.maximum_owned_bytes > duplicate.len() as u64);
+            let expected = crate::contract::json_from_slice::<SchedulerEvent>(duplicate)
+                .expect_err("duplicate original fence field");
+            let actual = admission.decode().expect_err("original serde must reject the same duplicate");
+            assert_eq!(actual.to_string(),Error::Storage(expected.to_string()).to_string());
+        } else {
+            assert!(matches!(&admitted,Err(Error::Invalid(_))));
+            drop(admitted);
+        }
+        assert_eq!(work.receipt().backend_read_operations,0);
+        assert_eq!(work.receipt().backend_write_operations,0);
+        assert_eq!(work.receipt().allocation_operations,0);
+    }
+    let deep = format!("{}0{}","[".repeat(257),"]".repeat(257));
+    let cancellation = CancellationToken::new();
+    let mut work = HistoryWork::new(budget(),&cancellation);
+    assert!(SchedulerEventJsonAdmission::prepare(deep.as_bytes(),&mut work).is_err());
+    Ok(())
+}
