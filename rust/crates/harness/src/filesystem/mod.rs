@@ -87,7 +87,7 @@ mod configured_recursive_tools;
 pub use configured_recursive_tools::{
     ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller,
     ConfiguredRecursiveFork, ConfiguredRecursiveMerge, ConfiguredRecursiveToolsConfig,
-    ConfiguredRecursiveToolSource,
+    ConfiguredRecursiveToolSource, ConfiguredRecursiveSourceCheckpoint,
 };
 pub use default_tools::{
     recursive_default_tools, RecursiveDefaultToolset, RecursiveDefaultToolSource,

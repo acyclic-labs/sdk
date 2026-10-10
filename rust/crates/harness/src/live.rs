@@ -8,10 +8,50 @@ use std::{
     future::Future,
     sync::{Arc, Mutex, Weak},
 };
-use tokio::{
-    sync::{Semaphore, oneshot},
-    task::{AbortHandle, JoinHandle},
-};
+use tokio::sync::{Semaphore, oneshot};
+#[cfg(not(target_arch = "wasm32"))]
+use tokio::task::{AbortHandle, JoinHandle};
+#[cfg(target_arch = "wasm32")]
+use futures::future::{AbortHandle, Abortable};
+
+mod timer;
+pub(crate) use timer::{sleep_millis, timeout_until};
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod browser_tests;
+
+#[cfg(not(target_arch = "wasm32"))]
+type LiveJoin<T> = JoinHandle<Outcome<T>>;
+
+#[cfg(target_arch = "wasm32")]
+struct LiveJoin<T> {
+    outcome: oneshot::Receiver<Outcome<T>>,
+    abort: AbortHandle,
+}
+#[cfg(target_arch = "wasm32")]
+impl<T> LiveJoin<T> {
+    fn abort(&self) { self.abort.abort(); }
+    fn abort_handle(&self) -> AbortHandle { self.abort.clone() }
+}
+
+fn spawn_live<T, F>(task: F) -> LiveJoin<T>
+where
+    T: Send + 'static,
+    F: Future<Output = Outcome<T>> + acyclic_stream::ProviderTask + 'static,
+{
+    #[cfg(not(target_arch = "wasm32"))]
+    { tokio::spawn(task) }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let (abort, registration) = AbortHandle::new_pair();
+        let (sender, outcome) = oneshot::channel();
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = Abortable::new(task, registration).await.unwrap_or(Outcome::Cancelled);
+            let _ = sender.send(result);
+        });
+        LiveJoin { outcome, abort }
+    }
+}
 
 struct ActiveGuard {
     id: OperationId,
@@ -94,13 +134,11 @@ impl TaskGroup {
             Admission::Accepted(handle) => handle,
             Admission::Rejected { reason } => TaskHandle {
                 id: OperationId::new(),
-                join: Some(tokio::spawn(
-                    async move { Outcome::Failed { message: reason } },
-                )),
+                join: Some(spawn_live(async move { Outcome::Failed { message: reason } })),
             },
             Admission::Indeterminate { operation_id } => TaskHandle {
                 id: operation_id,
-                join: Some(tokio::spawn(async move {
+                join: Some(spawn_live(async move {
                     Outcome::Indeterminate { operation_id }
                 })),
             },
@@ -159,10 +197,7 @@ impl TaskGroup {
                 },
             }
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        let join = tokio::spawn(task);
-        #[cfg(target_arch = "wasm32")]
-        let join = tokio::task::spawn_local(task);
+        let join = spawn_live(task);
         admission.active.insert(id, join.abort_handle());
         drop(admission);
         let _ = start.send(());
@@ -251,7 +286,7 @@ impl TaskGroup {
 /// Addressable handle for an admitted live task.
 pub struct TaskHandle<T> {
     id: OperationId,
-    join: Option<JoinHandle<Outcome<T>>>,
+    join: Option<LiveJoin<T>>,
 }
 
 impl<T> TaskHandle<T> {
@@ -279,7 +314,7 @@ impl<T> TaskHandle<T> {
                 }
             }
         }
-        let guard = CancelOnDrop(self.join.as_ref().map(JoinHandle::abort_handle));
+        let guard = CancelOnDrop(self.join.as_ref().map(|join| join.abort_handle()));
         async move {
             let mut guard = guard;
             let outcome = self.result().await;
@@ -295,12 +330,18 @@ impl<T> TaskHandle<T> {
                 message: "task handle has no join".into(),
             };
         };
+        #[cfg(not(target_arch = "wasm32"))]
         match join.await {
             Ok(outcome) => outcome,
             Err(error) if error.is_cancelled() => Outcome::Cancelled,
             Err(error) => Outcome::Failed {
                 message: error.to_string(),
             },
+        }
+        #[cfg(target_arch = "wasm32")]
+        match join.outcome.await {
+            Ok(outcome) => outcome,
+            Err(error) => Outcome::Failed { message: error.to_string() },
         }
     }
 }

@@ -733,7 +733,21 @@ pub struct TaskChildrenPage {
     pub next_after: Option<String>,
 }
 
+/// Canonical ordinary task identity for a caller-retained admission operation.
+/// This is not an agent-ID conversion and grants no execution authority.
+#[must_use]
+pub fn task_id_for_admission(operation: OperationId) -> TaskId {
+    TaskId::from_bytes(operation.into_bytes())
+}
+
 impl TaskAdmissionRecord {
+    /// Canonical task identity of this ordinary admission. Agent, source and
+    /// tool/effect identities must not be substituted for this operation.
+    #[must_use]
+    pub fn task_id(&self) -> TaskId {
+        task_id_for_admission(self.operation_id)
+    }
+
     /// Constructs and validates an exact admission envelope from the fields
     /// supplied by an SDK boundary. Identity derivation and all invariants are
     /// deliberately owned here so native and WASM callers share one path.
@@ -1087,7 +1101,7 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
                 if let Some(outcome) = self.outcome(task_id).await? {
                     return Ok(outcome);
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                crate::live::sleep_millis(delay_ms).await?;
                 delay_ms = delay_ms.saturating_mul(2).min(1_000);
             }
         })
@@ -1216,7 +1230,7 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
                 if let Some(outcome) = self.outcome(task_id).await? {
                     return Ok(outcome);
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                crate::live::sleep_millis(delay_ms).await?;
                 delay_ms = delay_ms.saturating_mul(2).min(1_000);
             }
         })
@@ -1655,21 +1669,15 @@ impl TaskRunLimits {
         Ok(())
     }
 
-    fn remaining(&self) -> Result<Option<std::time::Duration>> {
+    fn check_deadline(&self) -> Result<()> {
         let Some(deadline) = self.deadline_epoch_ms else {
-            return Ok(None);
+            return Ok(());
         };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| Error::Invalid("system time precedes Unix epoch".into()))?
-            .as_millis();
-        if u128::from(deadline) <= now {
+        let now = acyclic_stream::UnixMillisClock::now_unix_millis(&acyclic_stream::SystemUnixMillisClock);
+        if deadline <= now {
             return Err(Error::Invalid("task deadline has expired".into()));
         }
-        Ok(Some(std::time::Duration::from_millis(
-            u64::try_from(u128::from(deadline) - now)
-                .map_err(|_| Error::Invalid("task deadline is not representable".into()))?,
-        )))
+        Ok(())
     }
 
     fn allows(&self, child: &Self) -> Result<()> {
@@ -1999,6 +2007,17 @@ impl RuntimeScope {
             .map(|binding| &binding.binding)
     }
 
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn created_reference(
+        &self,
+        file: &FileRef,
+    ) -> Option<&Arc<dyn crate::conversation::ContentResidencyVerifier>> {
+        self.created_access.as_ref()?.references.iter()
+            .find(|binding| &binding.file == file)
+            .map(|binding| &binding.reader)
+    }
+
+    #[cfg(feature = "filesystem")]
     pub(crate) fn created_access(&self) -> Option<Arc<crate::resource_preparation::CreatedResourceAccess>> {
         self.created_access.clone()
     }
@@ -2760,7 +2779,7 @@ impl AgentHarness {
                 Error::Unsupported("resource-derived admission state is not bound".into())
             })?;
             let admitted = state.resume_scope(
-                TaskId::from_bytes(observed.operation_id.into_bytes()), observed.operation_id,
+                observed.task_id(), observed.operation_id,
             ).await?;
             let observed_digest = crate::contract::canonical_json_digest(
                 &observed.canonical_value(),
@@ -3287,12 +3306,16 @@ impl AgentHarness {
             ));
         }
         for definition in resumable_tools.definitions() {
-            if tools
-                .get_version(&definition.name, &definition.revision)
-                .is_some()
-            {
+            if let Some(adapter) = tools.get_version(&definition.name, &definition.revision) {
+                let pinned = resumable_tools.get(&definition.name, &definition.revision)
+                    .ok_or_else(|| Error::Invalid("resumable registry differs from its catalog".into()))?;
+                if adapter.definition == *definition
+                    && adapter.executor.resumable_machine_identity().as_ref() == Some(pinned.machine.identity())
+                {
+                    continue;
+                }
                 return Err(Error::Conflict(format!(
-                    "tool {}@{} has both live and resumable implementations",
+                    "tool {}@{} has different live and resumable implementations",
                     definition.name, definition.revision,
                 )));
             }
@@ -3618,24 +3641,21 @@ impl AgentHarness {
                 let task_id = receive_identity
                     .await
                     .map_err(|_| Error::Conflict("task identity was not admitted".into()))?;
-                let remaining = scope.run_limits().remaining()?;
+                scope.run_limits().check_deadline()?;
+                let deadline = scope.run_limits().deadline_epoch_ms;
                 let run = handler(
-                    TaskContext {
-                        harness: runtime,
-                        task_id,
-                        durable_task: None,
-                        descendants,
-                        scope,
-                        policy_overrides: policies,
-                        owned_interactions: None,
-                        model_steps: Arc::new(AtomicUsize::new(0)),
-                    },
+                    TaskContext { harness: runtime,
+                    task_id,
+                    durable_task: None,
+                    descendants,
+                    scope,
+                    policy_overrides: policies,
+                    owned_interactions: None,
+                    model_steps: Arc::new(AtomicUsize::new(0)), owned_mailbox: None, output_content:None },
                     input,
                 );
-                let output = match remaining {
-                    Some(duration) => tokio::time::timeout(duration, run)
-                        .await
-                        .map_err(|_| Error::Invalid("task deadline has expired".into()))??,
+                let output = match deadline {
+                    Some(deadline) => crate::live::timeout_until(deadline, run).await??,
                     None => run.await?,
                 };
                 drop(extension_leases);
@@ -3785,7 +3805,7 @@ impl AgentHarness {
 
     /// Builds the stock child request from the existing registered metadata.
     #[cfg(feature = "filesystem")]
-    pub(crate) fn registered_child_admission(
+    pub fn registered_child_admission(
         &self,
         operation: OperationId,
         name: &str,
@@ -3971,16 +3991,14 @@ impl AgentHarness {
         let scope = self.scope.resume_sealed(admitted, operation_id)?;
         let group = self.live.child(scope.concurrency_bound(self.concurrency));
         let descendants = group.child(scope.concurrency_bound(self.concurrency));
-        Ok(TaskContext {
-            harness: Arc::clone(self),
-            task_id: operation_id,
-            durable_task: Some(task_id),
-            descendants,
-            scope,
-            policy_overrides: Vec::new(),
-            owned_interactions: None,
-            model_steps: Arc::new(AtomicUsize::new(0)),
-        })
+        Ok(TaskContext { harness: Arc::clone(self),
+        task_id: operation_id,
+        durable_task: Some(task_id),
+        descendants,
+        scope,
+        policy_overrides: Vec::new(),
+        owned_interactions: None,
+        model_steps: Arc::new(AtomicUsize::new(0)), owned_mailbox: None, output_content:None })
     }
 }
 
@@ -4072,6 +4090,21 @@ fn validate_task_dependencies(
     validate_task_requirements(&task_requirements, &available_tools, &environment, &grants)
 }
 
+/// One admitted task's mailbox borrowed from its current owner token. This is
+/// not a registry and cannot accept a caller-selected sender or fence.
+pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
+    fn validate_scope(&self, scope: &RuntimeScope) -> Result<()>;
+    #[cfg(feature = "filesystem")]
+    fn task_binding(&self) -> (TaskId, crate::scheduler::LeaseFence);
+    fn send<'a>(
+        &'a self, recipient: TaskId, operation: OperationId, payload: FileRef,
+    ) -> BoxFuture<'a, Result<crate::durable_host::MailSendAck>>;
+    fn inbox<'a>(&'a self, after: u64, maximum: usize) -> BoxFuture<'a, Result<Vec<InboxItem>>>;
+    fn read_received<'a>(
+        &'a self, receive_operation: OperationId, item: &'a InboxItem,
+    ) -> BoxFuture<'a, Result<Vec<u8>>>;
+}
+
 /// Capability-scoped context passed to live task code.
 #[derive(Clone)]
 pub struct TaskContext {
@@ -4082,6 +4115,8 @@ pub struct TaskContext {
     scope: RuntimeScope,
     policy_overrides: Vec<(ComponentIdentity, Arc<dyn ToolPolicy>)>,
     owned_interactions: Option<Arc<dyn InteractionRouter>>,
+    owned_mailbox: Option<Arc<dyn OwnedTaskMailbox>>,
+    output_content: Option<ContentBindings>,
     model_steps: Arc<AtomicUsize>,
 }
 
@@ -4092,6 +4127,77 @@ enum ContentPublication<'a> {
 }
 
 impl TaskContext {
+    /// Selects a trusted host-provided output binding under the unchanged task
+    /// authority. An authenticated created volume must use its exact sealed
+    /// reader/writer handles, not a replacement root publisher.
+    pub fn with_content_bindings(mut self, binding: ContentBindings) -> Result<Self> {
+        let writer = binding.writer.as_ref()
+            .ok_or_else(|| Error::Unauthorized("output binding has no writer".into()))?;
+        if !self.scope.grants().contains(&writer.volume().capability(VolumeOperation::Write)?) {
+            return Err(Error::Unauthorized("task cannot select this output volume".into()));
+        }
+        if let Some(sealed) = self.scope.created_content(Some(writer.volume())) {
+            if sealed.writer.as_ref().is_none_or(|original| !Arc::ptr_eq(original, writer))
+                || !Arc::ptr_eq(&sealed.reader, &binding.reader)
+            {
+                return Err(Error::Unauthorized("output differs from authenticated created binding".into()));
+            }
+        }
+        self.output_content = Some(binding);
+        Ok(self)
+    }
+
+    /// Selects an existing authenticated created destination without cloning
+    /// the harness, widening grants or acquiring another owner reservation.
+    pub fn with_output_volume(self, volume: &VolumeRef) -> Result<Self> {
+        let binding = self.scope.created_content(Some(volume))
+            .ok_or_else(|| Error::Unauthorized("output volume has no admitted creation binding".into()))?
+            .clone();
+        self.with_content_bindings(binding)
+    }
+
+    /// Returns only the exact creator-authenticated handles already admitted
+    /// to this task. No service-journal or harness-content fallback is permitted.
+    pub fn created_content_bindings(&self, volume: &VolumeRef) -> Result<ContentBindings> {
+        volume.validate()?;
+        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+            if !self.scope.grants().contains(&volume.capability(operation)?) {
+                return Err(Error::Unauthorized("task lacks original created-content read/write authority".into()));
+            }
+        }
+        let binding = self.scope.created_content(Some(volume))
+            .ok_or_else(|| Error::Unauthorized("volume has no authenticated task creation binding".into()))?;
+        if binding.writer.as_ref().is_none_or(|writer| writer.volume() != volume) {
+            return Err(Error::Unauthorized("created content lacks its exact admitted writer".into()));
+        }
+        Ok(binding.clone())
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn with_owned_mailbox(
+        mut self, task: TaskId, mailbox: Arc<dyn OwnedTaskMailbox>,
+    ) -> Result<Self> {
+        if self.durable_task != Some(task) {
+            return Err(Error::Unauthorized("mailbox owner differs from task context".into()));
+        }
+        self.owned_mailbox = Some(mailbox);
+        Ok(self)
+    }
+
+    /// Returns only the original owner fence already bound to this exact task
+    /// context. It never reacquires or guesses a worker lease.
+    #[cfg(feature = "filesystem")]
+    pub fn owned_task_fence(&self) -> Result<crate::scheduler::LeaseFence> {
+        let owner = self.owned_mailbox.as_ref()
+            .ok_or_else(|| Error::Unauthorized("task context has no original owner".into()))?;
+        owner.validate_scope(&self.scope)?;
+        let (task, fence) = owner.task_binding();
+        if self.durable_task != Some(task) {
+            return Err(Error::Unauthorized("task context differs from original owner".into()));
+        }
+        Ok(fence)
+    }
+
     #[cfg(feature = "filesystem")]
     pub(crate) fn with_owned_interactions(
         mut self,
@@ -4291,11 +4397,8 @@ impl TaskContext {
                 "task scope lacks model:generate".into(),
             ));
         }
-        let deadline = self
-            .scope
-            .run_limits()
-            .remaining()?
-            .map(|remaining| tokio::time::Instant::now() + remaining);
+        self.scope.run_limits().check_deadline()?;
+        let deadline = self.scope.run_limits().deadline_epoch_ms;
         let binding = self
             .harness
             .model
@@ -4377,9 +4480,7 @@ impl TaskContext {
         let mut stream = binding.provider.generate(request, dispatch);
         loop {
             let next = match deadline {
-                Some(deadline) => tokio::time::timeout_at(deadline, stream.next())
-                    .await
-                    .map_err(|_| Error::Invalid("task deadline has expired".into()))?,
+                Some(deadline) => crate::live::timeout_until(deadline, stream.next()).await?,
                 None => stream.next().await,
             };
             let Some(event) = next else { break };
@@ -4451,7 +4552,9 @@ impl TaskContext {
     }
 
     fn content_binding(&self, volume: Option<&VolumeRef>) -> Option<&ContentBindings> {
-        self.scope.created_content(volume).or(self.harness.content.as_ref())
+        self.output_content.as_ref().filter(|binding| {
+            volume.is_none_or(|volume| binding.writer.as_ref().is_some_and(|writer| writer.volume() == volume))
+        }).or_else(|| self.scope.created_content(volume)).or(self.harness.content.as_ref())
     }
 
     /// Reads one immutable file through the owner's authenticated provider.
@@ -4562,8 +4665,7 @@ impl TaskContext {
         path: &str,
     ) -> Result<()> {
         volume.validate()?;
-        if volume.class() != VolumeClass::AgentPrivate
-            || crate::conversation::is_internal_path(path)
+        if crate::conversation::is_internal_path(path)
             || (!path.is_empty() && crate::conversation::validate_content_path(path).is_err())
             || (!granted_prefix.is_empty()
                 && crate::conversation::validate_content_path(granted_prefix).is_err())
@@ -4593,6 +4695,12 @@ impl TaskContext {
             return Err(Error::Unauthorized(
                 "task scope cannot read this file".into(),
             ));
+        }
+        #[cfg(feature = "filesystem")]
+        if let Some(reader) = self.scope.created_reference(file) {
+            let bytes = reader.read(file).await?;
+            file.descriptor().verify(&bytes)?;
+            return Ok(bytes);
         }
         let content =
             binding.ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?;
@@ -5181,26 +5289,29 @@ impl TaskContext {
         .await
     }
 
-    /// Sends one immutable ref to a task; the host enforces recipient access.
+    /// Sends a donor-authorized parcel under the retained owner fence and route.
     pub async fn send(
         &self,
         recipient: TaskId,
         message_id: OperationId,
         payload: FileRef,
-    ) -> Result<()> {
+    ) -> Result<crate::durable_host::MailSendAck> {
         payload.validate()?;
-        if !self.scope.grants.contains(capability::MAIL_SEND) {
-            return Err(Error::Unauthorized("task scope lacks mail:send".into()));
-        }
-        let sender = self
-            .durable_task
-            .ok_or_else(|| Error::Unsupported("mail requires a durable task".into()))?;
-        let host = self
-            .harness
-            .state
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("durable task state is not bound".into()))?;
-        host.send(sender, recipient, message_id, payload).await
+        let mailbox = self.owned_mailbox.as_ref()
+            .ok_or_else(|| Error::Unauthorized("mail requires a retained task mailbox owner".into()))?;
+        mailbox.validate_scope(&self.scope)?;
+        mailbox.send(recipient, message_id, payload).await
+    }
+
+    /// Reads only one retained parcel selected by this task's original receive
+    /// command. This transports bytes; it does not grant donor file access.
+    pub async fn read_received_mail(
+        &self, receive_operation: OperationId, item: &InboxItem,
+    ) -> Result<Vec<u8>> {
+        let mailbox = self.owned_mailbox.as_ref()
+            .ok_or_else(|| Error::Unauthorized("parcel read requires a retained mailbox owner".into()))?;
+        mailbox.validate_scope(&self.scope)?;
+        mailbox.read_received(receive_operation, item).await
     }
 
     /// Reads a bounded durable inbox page after the last observed sequence.
@@ -5208,21 +5319,13 @@ impl TaskContext {
         if limit == 0 {
             return Err(Error::Invalid("inbox page bound is invalid".into()));
         }
-        if !self.scope.grants.contains(capability::MAIL_READ) {
-            return Err(Error::Unauthorized("task scope lacks mail:read".into()));
-        }
-        let task = self
-            .durable_task
-            .ok_or_else(|| Error::Unsupported("inbox requires a durable task".into()))?;
-        let host = self
-            .harness
-            .state
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("durable task state is not bound".into()))?;
-        host.inbox(task, after, limit).await
+        let mailbox = self.owned_mailbox.as_ref()
+            .ok_or_else(|| Error::Unauthorized("inbox requires a retained task mailbox owner".into()))?;
+        mailbox.validate_scope(&self.scope)?;
+        mailbox.inbox(after, limit).await
     }
 
-    /// Waits at a recorded absolute timer boundary; live tasks use Tokio time.
+    /// Waits at a recorded absolute boundary or the actual live executor timer.
     pub async fn sleep_until(
         &self,
         operation_id: OperationId,
@@ -5242,14 +5345,8 @@ impl TaskContext {
                 .ok_or_else(|| Error::Unsupported("durable task state is not bound".into()))?;
             host.wait_until(task, operation_id, deadline_unix_ms).await
         } else {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|error| Error::Invalid(error.to_string()))?
-                .as_millis();
-            let remaining = u128::from(deadline_unix_ms).saturating_sub(now);
-            let remaining = u64::try_from(remaining).unwrap_or(u64::MAX);
-            tokio::time::sleep(std::time::Duration::from_millis(remaining)).await;
-            Ok(())
+            let now = acyclic_stream::UnixMillisClock::now_unix_millis(&acyclic_stream::SystemUnixMillisClock);
+            crate::live::sleep_millis(deadline_unix_ms.saturating_sub(now)).await
         }
     }
 
@@ -7183,16 +7280,14 @@ mod tests {
             Model::new("root", "model", "1", Value::Null)?,
             root_provider.clone(),
         )?;
-        let context = TaskContext {
-            harness,
-            task_id: OperationId::new(),
-            durable_task: None,
-            descendants: TaskGroup::new(2),
-            scope,
-            policy_overrides: Vec::new(),
-            owned_interactions: None,
-            model_steps: Arc::new(AtomicUsize::new(0)),
-        };
+        let context = TaskContext { harness,
+        task_id: OperationId::new(),
+        durable_task: None,
+        descendants: TaskGroup::new(2),
+        scope,
+        policy_overrides: Vec::new(),
+        owned_interactions: None,
+        model_steps: Arc::new(AtomicUsize::new(0)), owned_mailbox: None, output_content:None };
         let message = ModelMessage {
             role: crate::model::ModelRole::User,
             content: crate::model::ModelContent::Text("hello".into()),
@@ -7365,16 +7460,14 @@ mod tests {
             None,
             Some(root_policy),
         )?;
-        let context = TaskContext {
-            harness,
-            task_id: OperationId::new(),
-            durable_task: None,
-            descendants: TaskGroup::new(1),
-            scope,
-            policy_overrides: Vec::new(),
-            owned_interactions: None,
-            model_steps: Arc::new(AtomicUsize::new(0)),
-        };
+        let context = TaskContext { harness,
+        task_id: OperationId::new(),
+        durable_task: None,
+        descendants: TaskGroup::new(1),
+        scope,
+        policy_overrides: Vec::new(),
+        owned_interactions: None,
+        model_steps: Arc::new(AtomicUsize::new(0)), owned_mailbox: None, output_content:None };
         let narrowed = context.scoped_policy(child_policy)?;
         let definition = ToolDefinition {
             name: "test.echo".into(),
@@ -8480,22 +8573,20 @@ mod tests {
         };
         let task = TaskId::from_bytes([42; 16]);
         let scope = RuntimeScope::default();
-        let context = TaskContext {
-            harness: AgentHarness::new(
-                TaskRegistry::default(),
-                ToolRegistry::new(),
-                scope.clone(),
-                1,
-                None,
-            )?,
-            task_id: OperationId::from_bytes([41; 16]),
-            durable_task: Some(task),
-            descendants: TaskGroup::new(1),
-            scope,
-            policy_overrides: Vec::new(),
-            owned_interactions: None,
-            model_steps: Arc::new(AtomicUsize::new(0)),
-        };
+        let context = TaskContext { harness: AgentHarness::new(
+            TaskRegistry::default(),
+            ToolRegistry::new(),
+            scope.clone(),
+            1,
+            None,
+        )?,
+        task_id: OperationId::from_bytes([41; 16]),
+        durable_task: Some(task),
+        descendants: TaskGroup::new(1),
+        scope,
+        policy_overrides: Vec::new(),
+        owned_interactions: None,
+        model_steps: Arc::new(AtomicUsize::new(0)), owned_mailbox: None, output_content:None };
         let definition = ToolDefinition {
             name: "test.echo".into(),
             revision: "1".into(),
