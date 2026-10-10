@@ -954,6 +954,33 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         destination: impl AsRef<str>,
         options: ForkOptions<A, O>,
     ) -> Result<Self, WorkspaceError> {
+        self.fork_measured(
+            destination,
+            options,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+    }
+
+    /// Forks one exact generation under caller-supplied work and cancellation
+    /// limits, returning the existing engine's successful work receipt.
+    /// Reuse the same destination, pinned generation, selection and idempotency
+    /// key to reconcile an uncertain publication. A failed call can leave staged
+    /// objects, or a committed workspace if cancellation follows publication.
+    ///
+    /// # Errors
+    ///
+    /// Rejects foreign generations, invalid destinations, exhausted work,
+    /// cancellation, incompatible retries and storage/publication failures.
+    pub async fn fork_measured(
+        &self,
+        destination: impl AsRef<str>,
+        options: ForkOptions<A, O>,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<Self>, WorkspaceError> {
         let span = crate::obs::span!(
             INFO,
             "acyclic.fs.workspace.fork",
@@ -967,41 +994,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                 if options.generation.workspace.id != self.id {
                     return Err(WorkspaceError::ForeignGeneration);
                 }
-                self.fork_measured(
-                    destination,
-                    options,
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
+                let destination = WorkspaceName::new(destination)?;
+                in_heap(|| {
+                    self.volume.fs.fork_workspace_measured(
+                        destination,
+                        &options.generation,
+                        options.idempotency_key,
+                        options.paths,
+                        budget,
+                        cancellation,
+                    )
+                })
                 .await
-                .map(|receipt| receipt.value)
             })
             .await,
         )
-    }
-
-    pub(crate) async fn fork_measured(
-        &self,
-        destination: impl AsRef<str>,
-        options: ForkOptions<A, O>,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<Self>, WorkspaceError> {
-        if options.generation.workspace.id != self.id {
-            return Err(WorkspaceError::ForeignGeneration);
-        }
-        let destination = WorkspaceName::new(destination)?;
-        in_heap(|| {
-            self.volume.fs.fork_workspace_measured(
-                destination,
-                &options.generation,
-                options.idempotency_key,
-                options.paths,
-                budget,
-                cancellation,
-            )
-        })
-        .await
     }
 
     /// Opens one sparse atomic transaction against the current generation.
