@@ -45,7 +45,7 @@ test("offline lifecycle stages the complete package and private runtime without 
   assert.equal(f.calls[2].opts.cwd, f.consumer);
   assert.equal(f.calls[2].opts.env.ERL_FLAGS, "+S 1:1 +fnu");
   assert.equal(f.calls[2].argv.includes(join(f.sdk, "ebin")), true);
-  assert.equal(readFileSync(join(f.sdk, "authority/stream/v2/stream.proto.bin"), "utf8"), "Rust descriptor stream");
+  assert.equal(readFileSync(join(f.sdk, "authority/stream/v1/stream.proto.bin"), "utf8"), "Rust descriptor stream");
   assert.equal(result.compiled_sdk_sha256["actors_pb.beam"], sha256("compiled actors_pb.erl"));
   assert.equal(result.unknown_descriptor_extensions_qualified, false);
   assert.equal(existsSync(join(f.args.output, "qualification.json")), true);

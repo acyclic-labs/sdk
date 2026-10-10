@@ -26,7 +26,7 @@ export function fixture(t) {
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const authority = join(root, "authority"); mkdirSync(authority);
   const inputs = new Map(), families = [];
-  for (const [name, version] of [["actors", 1], ["workers", 1], ["stream", 2]]) {
+  for (const [name, version] of [["actors", 1], ["workers", 1], ["stream", 1]]) {
     const source = `${name}/v${version}/${name}.proto`, descriptor = source + ".bin";
     const schema = Buffer.from(`syntax = "proto3";\npackage acyclic.${name}.v${version};\nservice ${name[0].toUpperCase() + name.slice(1)}Service {\n}\n`);
     for (const [file, bytes] of [[source, schema], [descriptor, Buffer.from("Rust descriptor " + name)]]) {

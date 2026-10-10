@@ -11,7 +11,7 @@ import { verifyRuntime, verifyTools, verifyTree } from "./inventory.mjs";
 const directory = dirname(fileURLToPath(import.meta.url));
 const read = name => readFileSync(join(directory, name));
 const qualificationPins = JSON.parse(read("../toolchains/qualification.json"));
-export const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v2/stream.proto"];
+export const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"];
 export const controls = ["rpc_route_control.erl", "compare_descriptor.erl", "installed_provenance.erl"];
 const fixtures = controls.map(name => "../tests/fixtures/consumer/" + name);
 const sourceNames = [...new Set(["qualify.mjs", "package.mjs", "inventory.mjs", ...producerSources,
@@ -43,7 +43,7 @@ export function qualify(args, { command = spawnSync, onProgress = () => {}, tool
   toolIndexBytes = read("../toolchains/generator-files.json"), dependencyIndexBytes = read("../toolchains/dependency-files.json") } = {}) {
   if (command === spawnSync && (process.platform !== "linux" || process.arch !== "x64")) throw new Error("installed Erlang qualification requires Linux x86_64");
   const admitted = readPackage(args);
-  if (targets.length !== admitted.approved.manifest.families.length || targets.some(name => !admitted.approved.descriptors.has(name))) throw new Error("installed controls require the accepted Actors v1, Workers v1 and Stream v2 foundation");
+  if (targets.length !== admitted.approved.manifest.families.length || targets.some(name => !admitted.approved.descriptors.has(name))) throw new Error("installed controls require Actors v1, Workers v1 and Stream v1 exports");
   const inputs = Object.fromEntries(["package", "receipt", "authority", "runtime-root", "runtime-inventory", "tool-home", "dependencies"].map(name => [name, realpathSync(args[name])]));
   const output = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
   try { lstatSync(output); throw new Error("qualification output must be absent"); }

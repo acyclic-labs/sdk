@@ -11,7 +11,7 @@ run() ->
     ets:new(rpc_vectors,[named_table,public,set]),
     Services=[{actors_pb,'acyclic.actors.v1.ActorsService',acyclic_actors_v_1_actors_service_client},
               {workers_pb,'acyclic.workers.v1.WorkersService',acyclic_workers_v_1_workers_service_client},
-              {stream_pb,'acyclic.stream.v2.StreamService',acyclic_stream_v_2_stream_service_client}],
+              {stream_pb,'acyclic.stream.v1.StreamService',acyclic_stream_v_1_stream_service_client}],
     Paths=init:get_plain_arguments(),3=length(Paths),
     lists:foreach(fun({{Pb,S,_},Path})->admit_vectors(Pb,S,Path) end,lists:zip(Services,Paths)),
     Specs=[begin
