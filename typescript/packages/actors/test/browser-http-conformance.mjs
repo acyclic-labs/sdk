@@ -72,6 +72,7 @@ function actorWorkerResponse(method, input) {
     assert.equal(input.subscription.start.start.value, 9007199254740993n);
   }
   if (method.name === "CheckpointActor") { assert.equal(input.actorId, "browser-actor"); assert.equal(input.idempotencyKey, "checkpoint-browser"); return { actor: { actorId: input.actorId, codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu", state: 1, checkpointEpoch: 9n, configurationRevision: 1n } }; }
+  if (method.name === "DeleteActor") { assert.equal(input.actorId, "browser-actor"); assert.equal(input.idempotencyKey, "delete-browser"); return {}; }
   if (method.name === "InvokeActor") return { status: 201, body: new Uint8Array([5]) };
   if (method.name === "InvokeVersion") { assert.deepEqual(Uint8Array.from(input.versionSha256), new Uint8Array(32).fill(1)); return { resolvedSha256: input.versionSha256 }; }
   if (method.name === "InvokeDeployment") { assert.equal(input.alias, "current"); return { resolvedSha256: new Uint8Array(32).fill(2), resolvedRevision: 8n }; }

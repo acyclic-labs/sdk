@@ -506,6 +506,15 @@ operation!(
     wire::InvokeActorResponse,
     validate_none
 );
+operation!(
+    delete_actor,
+    wire_delete_actor,
+    domain::DeleteActorRequest,
+    wire::DeleteActorRequest,
+    domain::DeleteActorResponse,
+    wire::DeleteActorResponse,
+    crate::validate_delete
+);
 
 #[cfg(test)]
 mod tests {

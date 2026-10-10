@@ -112,6 +112,20 @@
     "typescriptPackageExported": true
   },
   {
+    "rpc": "acyclic.actors.v1.ActorsService/DeleteActor",
+    "kind": "unary",
+    "request": "acyclic.actors.v1.DeleteActorRequest",
+    "response": "acyclic.actors.v1.DeleteActorResponse",
+    "contractStatus": "target",
+    "httpOperation": "v1/actors/delete",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": false,
+    "typescriptGrpcWeb": true,
+    "typescriptPackageExported": true
+  },
+  {
     "rpc": "acyclic.workers.v1.WorkersService/PublishVersion",
     "kind": "unary",
     "request": "acyclic.workers.v1.PublishVersionRequest",

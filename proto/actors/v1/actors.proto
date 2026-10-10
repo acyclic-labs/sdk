@@ -86,6 +86,13 @@ message CreateActorResponse {
   ActorObservation actor = 1;
 }
 
+message DeleteActorRequest {
+  string actor_id = 1;
+  string idempotency_key = 2;
+}
+
+message DeleteActorResponse {}
+
 message Error {
   ErrorCode code = 1;
   string message = 2;
@@ -187,4 +194,5 @@ service ActorsService {
   rpc ResumeSubscription(ResumeSubscriptionRequest) returns (ResumeSubscriptionResponse);
   rpc CheckpointActor(CheckpointActorRequest) returns (CheckpointActorResponse);
   rpc InvokeActor(InvokeActorRequest) returns (InvokeActorResponse);
+  rpc DeleteActor(DeleteActorRequest) returns (DeleteActorResponse);
 }

@@ -322,4 +322,17 @@ impl ActorsClient {
             .await
             .map(|value| encode(wire::InvokeActorResponse::from(value)))
     }
+
+    /// Execute `DeleteActor` with an encoded protobuf request.
+    pub async fn delete_actor(
+        &self,
+        request: &[u8],
+        signal: Option<JsValue>,
+    ) -> Result<Vec<u8>, JsValue> {
+        let request =
+            decode_semantic::<wire::DeleteActorRequest, domain::DeleteActorRequest>(request)?;
+        self.run(signal, self.inner.delete_actor(&request))
+            .await
+            .map(|value| encode(wire::DeleteActorResponse::from(value)))
+    }
 }

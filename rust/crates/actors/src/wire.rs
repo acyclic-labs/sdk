@@ -9,6 +9,7 @@ pub use crate::contract::{
     CheckpointActorRequestProto as CheckpointActorRequest,
     CheckpointActorResponseProto as CheckpointActorResponse,
     CreateActorRequestProto as CreateActorRequest, CreateActorResponseProto as CreateActorResponse,
+    DeleteActorRequestProto as DeleteActorRequest, DeleteActorResponseProto as DeleteActorResponse,
     ErrorCode, HeaderProto as Header, InspectActorRequestProto as InspectActorRequest,
     InspectActorResponseProto as InspectActorResponse,
     InvokeActorRequestProto as InvokeActorRequest, InvokeActorResponseProto as InvokeActorResponse,

@@ -107,6 +107,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     actors_grpc.invoke_actor(request.clone()).await?;
     actors_http.invoke_actor(&request).await?;
+    let request = actors::wire::DeleteActorRequest {
+        actor_id: "actor-a".into(),
+        idempotency_key: "delete-a".into(),
+    };
+    actors_grpc.delete_actor(request.clone()).await?;
+    actors_http.delete_actor(&request).await?;
     let request = workers::wire::PublishVersionRequest {
         ..Default::default()
     };

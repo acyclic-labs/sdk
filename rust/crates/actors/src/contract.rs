@@ -61,8 +61,9 @@ pub fn render_proto_files(root: impl AsRef<std::path::Path>) -> std::io::Result<
 pub use generated::{
     ActorLimitsProto, ActorObservationProto, ActorState, AddSubscriptionRequestProto,
     AddSubscriptionResponseProto, BindingProto, CheckpointActorRequestProto,
-    CheckpointActorResponseProto, CreateActorRequestProto, CreateActorResponseProto, ErrorCode,
-    HeaderProto, InspectActorRequestProto, InspectActorResponseProto, InvokeActorRequestProto,
+    CheckpointActorResponseProto, CreateActorRequestProto, CreateActorResponseProto,
+    DeleteActorRequestProto, DeleteActorResponseProto, ErrorCode, HeaderProto,
+    InspectActorRequestProto, InspectActorResponseProto, InvokeActorRequestProto,
     InvokeActorResponseProto, RemoveSubscriptionRequestProto, RemoveSubscriptionResponseProto,
     ResumeSubscriptionRequestProto, ResumeSubscriptionResponseProto, ServiceErrorProto,
     SubscriptionObservationProto, SubscriptionSpecProto, SubscriptionStartProto, SubscriptionState,

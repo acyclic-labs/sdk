@@ -40,7 +40,7 @@ try {
   await invalidArgument(() => new ActorsClient({ ...options, token: "bad\nheader" }).transport);
   const client = new ActorsClient(options);
   assert.equal(await client.transport, mode === "native" ? "grpc" : "grpc-web");
-  for (const operation of ["createActor", "updateActor", "inspectActor", "addSubscription", "removeSubscription", "resumeSubscription", "checkpointActor", "invokeActor"]) {
+  for (const operation of ["createActor", "updateActor", "inspectActor", "addSubscription", "removeSubscription", "resumeSubscription", "checkpointActor", "invokeActor", "deleteActor"]) {
     await invalidArgument(() => client[operation]({}));
   }
   if (mode === "native") {
@@ -57,7 +57,7 @@ try {
     inner.free();
   }
   assert.equal(requests, 0, "invalid requests must be rejected before RPC dispatch");
-  console.log(JSON.stringify({ status: "passed", mode, configErrors: 2, semanticOperations: 8, malformedWire: 1, requests }));
+  console.log(JSON.stringify({ status: "passed", mode, configErrors: 2, semanticOperations: 9, malformedWire: 1, requests }));
 } finally {
   if (mode === "wasm") await rename(movedNative, nativeRoot);
   for (const socket of sockets) socket.destroy();

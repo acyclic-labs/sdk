@@ -19,6 +19,8 @@
         ResumeSubscriptionResponseProto,
         CheckpointActorRequestProto,
         CheckpointActorResponseProto,
+        DeleteActorRequestProto,
+        DeleteActorResponseProto,
         HeaderProto,
         InvokeActorRequestProto,
         InvokeActorResponseProto,
@@ -35,4 +37,5 @@ pub enum ActorsService {
     ResumeSubscription { request: ResumeSubscriptionRequestProto, response: ResumeSubscriptionResponseProto },
     CheckpointActor { request: CheckpointActorRequestProto, response: CheckpointActorResponseProto },
     InvokeActor { request: InvokeActorRequestProto, response: InvokeActorResponseProto },
+    DeleteActor { request: DeleteActorRequestProto, response: DeleteActorResponseProto },
 }

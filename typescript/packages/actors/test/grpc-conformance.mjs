@@ -64,6 +64,10 @@ function inspectActorRequest(method, request) {
     assert.equal(request.actorId, "actor-a");
     assert.equal(request.idempotencyKey, "checkpoint-a");
   }
+  if (method.name === "DeleteActor") {
+    assert.equal(request.actorId, "actor-a");
+    assert.equal(request.idempotencyKey, "delete-a");
+  }
 }
 
 function inspectResponse(method, response) {
@@ -120,6 +124,7 @@ if (process.argv.includes("--client")) {
         idempotencyKey: "subscribe-a",
       });
       if (method.name === "CheckpointActor") Object.assign(initializer, { actorId: "actor-a", idempotencyKey: "checkpoint-a" });
+      if (method.name === "DeleteActor") Object.assign(initializer, { actorId: "actor-a", idempotencyKey: "delete-a" });
       if (method.name === "InvokeActor") Object.assign(initializer, { actorId: "actor-a", method: "POST", url: "/invoke", body: new Uint8Array([1]) });
       if (method.name === "SubmitJob") Object.assign(initializer, {
         target: { target: { case: "deploymentAlias", value: "current" } },
@@ -264,7 +269,7 @@ try {
   });
   assert.equal(seen.size, expected);
   for (const [method, calls] of seen) assert.equal(calls, method.includes(".workers.") ? 5 : method.includes(".actors.") ? 3 : 2, method);
-  assert.equal(httpSeen.size, 15);
+  assert.equal(httpSeen.size, 16);
   if (await (await actorsClient(options)).transport === "grpc-web") {
     assert.ok(wasmRequests.length > 0, "WASM conformance must exercise the browser transport");
     assert.ok(wasmRequests.every(path => path?.startsWith("/acyclic.actors.v1.ActorsService/")), wasmRequests.join(", "));

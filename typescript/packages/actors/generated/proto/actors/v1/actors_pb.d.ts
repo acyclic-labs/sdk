@@ -250,6 +250,39 @@ export declare type CreateActorResponse = Message<"acyclic.actors.v1.CreateActor
 export declare const CreateActorResponseSchema: GenMessage<CreateActorResponse>;
 
 /**
+ * @generated from message acyclic.actors.v1.DeleteActorRequest
+ */
+export declare type DeleteActorRequest = Message<"acyclic.actors.v1.DeleteActorRequest"> & {
+  /**
+   * @generated from field: string actor_id = 1;
+   */
+  actorId: string;
+
+  /**
+   * @generated from field: string idempotency_key = 2;
+   */
+  idempotencyKey: string;
+};
+
+/**
+ * Describes the message acyclic.actors.v1.DeleteActorRequest.
+ * Use `create(DeleteActorRequestSchema)` to create a new message.
+ */
+export declare const DeleteActorRequestSchema: GenMessage<DeleteActorRequest>;
+
+/**
+ * @generated from message acyclic.actors.v1.DeleteActorResponse
+ */
+export declare type DeleteActorResponse = Message<"acyclic.actors.v1.DeleteActorResponse"> & {
+};
+
+/**
+ * Describes the message acyclic.actors.v1.DeleteActorResponse.
+ * Use `create(DeleteActorResponseSchema)` to create a new message.
+ */
+export declare const DeleteActorResponseSchema: GenMessage<DeleteActorResponse>;
+
+/**
  * @generated from message acyclic.actors.v1.Error
  */
 export declare type Error = Message<"acyclic.actors.v1.Error"> & {
@@ -833,5 +866,13 @@ export declare const ActorsService: GenService<{
     methodKind: "unary";
     input: typeof InvokeActorRequestSchema;
     output: typeof InvokeActorResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.actors.v1.ActorsService.DeleteActor
+   */
+  deleteActor: {
+    methodKind: "unary";
+    input: typeof DeleteActorRequestSchema;
+    output: typeof DeleteActorResponseSchema;
   },
 }>;

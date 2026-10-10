@@ -47,7 +47,9 @@ mod wire {
         CheckpointActorRequestProto as CheckpointActorRequest,
         CheckpointActorResponseProto as CheckpointActorResponse,
         CreateActorRequestProto as CreateActorRequest,
-        CreateActorResponseProto as CreateActorResponse, HeaderProto as Header,
+        CreateActorResponseProto as CreateActorResponse,
+        DeleteActorRequestProto as DeleteActorRequest,
+        DeleteActorResponseProto as DeleteActorResponse, HeaderProto as Header,
         InspectActorRequestProto as InspectActorRequest,
         InspectActorResponseProto as InspectActorResponse,
         InvokeActorRequestProto as InvokeActorRequest,
@@ -85,6 +87,14 @@ fn validate_update(_: &wire::UpdateActorRequest) -> Result<(), ContractError> {
     reason = "The build-time contract schema references these validator hooks by path"
 )]
 fn validate_add_subscription(_: &wire::AddSubscriptionRequest) -> Result<(), ContractError> {
+    Ok(())
+}
+
+#[allow(
+    dead_code,
+    reason = "The build-time contract schema references these validator hooks by path"
+)]
+fn validate_delete(_: &wire::DeleteActorRequest) -> Result<(), ContractError> {
     Ok(())
 }
 
