@@ -216,13 +216,13 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
   };
   return {
     capabilities,
-    async createWorkspace(name) {
+    async createWorkspace(name, idempotencyKey) {
       assertOpen(client);
       requireName(name);
       const response = await call(client.rpc.createWorkspace({
         name,
         profile: FilesystemProfile.PORTABLE,
-        operation: operation(),
+        operation: operation(idempotencyKey),
       }));
       return workspace(client, required(response.workspace, "created workspace"));
     },

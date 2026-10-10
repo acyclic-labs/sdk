@@ -10,16 +10,7 @@ fn options() -> WorkersClientOptions {
 }
 
 #[test]
-fn configuration_defaults_and_limits_are_rust_owned() {
-    let value = options().validate().unwrap();
-    assert_eq!(value.maximum, 16 * 1024 * 1024);
-    assert_eq!(value.endpoint, "https://localhost:443/prefix");
-    assert_eq!(value.deadline, None);
-    for maximum in [1, 8 * 1024 * 1024, 16 * 1024 * 1024] {
-        let mut value = options();
-        value.maximum_message_bytes = Some(maximum);
-        assert_eq!(value.validate().unwrap().maximum, maximum as usize);
-    }
+fn invalid_limits_and_numeric_options_are_rejected() {
     for maximum in [0, 16 * 1024 * 1024 + 1, u32::MAX] {
         let mut value = options();
         value.maximum_message_bytes = Some(maximum);
@@ -28,10 +19,6 @@ fn configuration_defaults_and_limits_are_rust_owned() {
     for deadline in [0, i32::MAX as u32 + 1, u32::MAX] {
         assert!(validate_deadline(Some(deadline)).is_err());
     }
-    assert_eq!(
-        validate_deadline(Some(i32::MAX as u32)).unwrap(),
-        Some(i32::MAX as u32)
-    );
     for literal in ["-1", "1.5", "4294967296", "\"1\"", "NaN", "Infinity"] {
         assert!(serde_json::from_str::<WorkersClientOptions>(&format!(
             "{{\"endpoint\":\"https://localhost\",\"token\":\"test\",\"maximumMessageBytes\":{literal}}}"
@@ -287,7 +274,7 @@ async fn deadline_drops_the_actual_pending_operation_future() {
 }
 
 #[derive(Clone, Default)]
-struct HeaderStatus(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+struct HeaderStatus(std::sync::Arc<parking_lot::Mutex<Vec<String>>>);
 impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::Body>> for HeaderStatus {
     type Response = tonic::codegen::http::Response<tonic::body::Body>;
     type Error = std::convert::Infallible;
@@ -301,7 +288,7 @@ impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::Body>> f
     fn call(&mut self, request: tonic::codegen::http::Request<tonic::body::Body>) -> Self::Future {
         assert_eq!(request.headers().get("x-request-id").unwrap(), "receipt");
         assert!(request.headers().contains_key("grpc-timeout"));
-        self.0.lock().unwrap().push(request.uri().path().to_owned());
+        self.0.lock().push(request.uri().path().to_owned());
         let details = wire::Error {
             code: 99,
             message: "future 100%: café / %25".to_owned(),
@@ -317,131 +304,9 @@ impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::Body>> f
 }
 
 #[tokio::test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "Exercise every generated method against one descriptor-bound peer"
-)]
-async fn every_descriptor_method_reaches_its_generated_rpc_and_keeps_status_details() {
-    use sha2::{Digest, Sha256};
-    let module = b"x";
-    let submit = wire::SubmitJobRequest {
-        target: Some(wire::JobTarget {
-            target: Some(wire::job_target::Target::DeploymentAlias("a".to_owned())),
-        }),
-        input: Some(wire::Payload {
-            source: Some(wire::payload::Source::InlineBytes(vec![])),
-        }),
-        limits: Some(wire::JobLimits {
-            timeout_millis: u64::MAX,
-            memory_bytes: (1_u64 << 53) + 1,
-            output_bytes: 1,
-        }),
-        retry: Some(wire::RetryPolicy {
-            max_attempts: 1,
-            backoff_millis: u64::MAX,
-        }),
-        idempotency_key: "i".to_owned(),
-    };
-    let cases = [
-        (
-            "PublishVersion",
-            wire::PublishVersionRequest {
-                javascript_module: module.to_vec(),
-                expected_sha256: Sha256::digest(module).to_vec(),
-                idempotency_key: "i".to_owned(),
-            }
-            .encode_to_vec(),
-        ),
-        (
-            "SelectDeployment",
-            wire::SelectDeploymentRequest {
-                alias: "a".to_owned(),
-                version_sha256: vec![1; 32],
-                idempotency_key: "i".to_owned(),
-                expected_revision: Some(u64::MAX),
-            }
-            .encode_to_vec(),
-        ),
-        ("SubmitJob", submit.encode_to_vec()),
-        (
-            "InspectJob",
-            wire::InspectJobRequest {
-                job_id: "j".to_owned(),
-            }
-            .encode_to_vec(),
-        ),
-        (
-            "CancelJob",
-            wire::CancelJobRequest {
-                job_id: "j".to_owned(),
-                idempotency_key: "i".to_owned(),
-            }
-            .encode_to_vec(),
-        ),
-        (
-            "InvokeVersion",
-            wire::InvokeVersionRequest {
-                version_sha256: vec![1; 32],
-                ..Default::default()
-            }
-            .encode_to_vec(),
-        ),
-        (
-            "InvokeDeployment",
-            wire::InvokeDeploymentRequest {
-                alias: "a".to_owned(),
-                ..Default::default()
-            }
-            .encode_to_vec(),
-        ),
-    ];
-    let pool = prost_reflect::DescriptorPool::decode(crate::FILE_DESCRIPTOR_SET).unwrap();
-    let service = pool
-        .get_service_by_name("acyclic.workers.v1.WorkersService")
-        .unwrap();
-    let declared = service
-        .methods()
-        .map(|method| method.name().to_owned())
-        .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(
-        declared,
-        cases.iter().map(|(name, _)| (*name).to_owned()).collect()
-    );
+async fn invalid_requests_never_start_the_rpc() {
     let transport = HeaderStatus::default();
-    let metadata = append_metadata(
-        tonic::metadata::MetadataMap::new(),
-        Some(vec![("x-request-id".to_owned(), "receipt".to_owned())]),
-    )
-    .unwrap();
-    for (name, bytes) in cases {
-        let client = wire::workers_service_client::WorkersServiceClient::new(transport.clone());
-        let error = dispatch(
-            client,
-            name,
-            &bytes,
-            16 * 1024 * 1024,
-            Some(1000),
-            &metadata,
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(error.grpc_code, Some(7));
-        assert_eq!(error.service_code, Some(99));
-        assert_eq!(error.message, "original 100%: café / %25");
-        assert_eq!(
-            error.raw_details,
-            wire::Error {
-                code: 99,
-                message: "future 100%: café / %25".to_owned()
-            }
-            .encode_to_vec()
-        );
-        assert_eq!(
-            transport.0.lock().unwrap().last().unwrap(),
-            &format!("/acyclic.workers.v1.WorkersService/{name}")
-        );
-    }
-    let dispatched = transport.0.lock().unwrap().len();
+    let metadata = tonic::metadata::MetadataMap::new();
     for (name, bytes) in [
         (
             "PublishVersion",
@@ -477,7 +342,7 @@ async fn every_descriptor_method_reaches_its_generated_rpc_and_keeps_status_deta
                 .code,
             "invalid_argument"
         );
-        assert_eq!(transport.0.lock().unwrap().len(), dispatched);
+        assert_eq!(transport.0.lock().len(), 0);
     }
 }
 

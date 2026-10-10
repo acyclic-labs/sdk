@@ -13,12 +13,6 @@ pub(crate) fn path(value: String) -> Result<StreamPath, StreamError> {
     StreamPath::new(value)
 }
 
-#[cfg(any(
-    feature = "grpc",
-    feature = "local",
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
 pub(crate) fn optional_key(value: Option<Bytes>) -> Result<Option<IdempotencyKey>, StreamError> {
     value.map(IdempotencyKey::new).transpose()
 }
@@ -50,12 +44,6 @@ pub(crate) fn condition_wire(value: CommitCondition) -> wire::CommitCondition {
     }
 }
 
-#[cfg(any(
-    feature = "grpc",
-    feature = "local",
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
 pub(crate) fn condition_from_wire(
     value: wire::CommitCondition,
 ) -> Result<CommitCondition, StreamError> {
@@ -95,12 +83,6 @@ pub(crate) fn mutation_wire(value: CommitMutation) -> wire::CommitMutation {
     }
 }
 
-#[cfg(any(
-    feature = "grpc",
-    feature = "local",
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
 pub(crate) fn mutation_from_wire(
     value: wire::CommitMutation,
 ) -> Result<CommitMutation, StreamError> {
@@ -280,12 +262,6 @@ pub(crate) fn fork_receipt_wire(value: &ForkReceipt) -> wire::ForkReceipt {
     }
 }
 
-#[cfg(any(
-    feature = "grpc",
-    feature = "local",
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
 /// Decodes an append request from its generated wire representation.
 pub fn append_from_wire(value: wire::AppendRequest) -> Result<crate::AppendRequest, StreamError> {
     Ok(crate::AppendRequest {
@@ -296,12 +272,6 @@ pub fn append_from_wire(value: wire::AppendRequest) -> Result<crate::AppendReque
     })
 }
 
-#[cfg(any(
-    feature = "grpc",
-    feature = "local",
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
 /// Decodes a fork request from its generated wire representation.
 pub fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequest, StreamError> {
     Ok(crate::ForkRequest {
@@ -312,11 +282,6 @@ pub fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequest, St
     })
 }
 
-#[cfg(any(
-    feature = "grpc",
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
 /// Decodes a read request from its generated wire representation.
 pub fn read_from_wire(value: wire::ReadRequest) -> Result<crate::ReadRequest, StreamError> {
     Ok(crate::ReadRequest {
@@ -333,11 +298,6 @@ pub(crate) fn follow_from_wire(
     Ok((path(value.path)?, value.from))
 }
 
-#[cfg(any(
-    feature = "grpc",
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
 /// Decodes a children request from its generated wire representation.
 pub fn children_from_wire(
     value: wire::ChildrenRequest,
@@ -348,11 +308,6 @@ pub fn children_from_wire(
     })
 }
 
-#[cfg(any(
-    feature = "grpc",
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
 /// Decodes a paginated children request from its generated wire representation.
 pub fn children_page_from_wire(
     value: wire::ChildrenPageRequest,
@@ -393,12 +348,6 @@ pub fn children_page_to_wire(value: crate::ChildrenPage) -> wire::ChildrenPageRe
     }
 }
 
-#[cfg(any(
-    feature = "grpc",
-    feature = "local",
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
 /// Decodes a commit request from its generated wire representation.
 pub fn commit_from_wire(value: wire::CommitRequest) -> Result<crate::CommitRequest, StreamError> {
     Ok(crate::CommitRequest {

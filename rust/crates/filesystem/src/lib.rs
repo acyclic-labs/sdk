@@ -85,7 +85,7 @@ pub mod distributed;
 #[cfg(feature = "distributed")]
 mod logical_objects;
 #[cfg(feature = "distributed")]
-pub use logical_objects::LogicalObjectStore;
+pub use logical_objects::{LogicalObjectStore, RemoteLogicalObjectStore};
 #[cfg(feature = "distributed")]
 mod distributed_fs;
 pub mod facade;

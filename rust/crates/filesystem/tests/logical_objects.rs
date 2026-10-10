@@ -261,3 +261,48 @@ async fn v2_fs_never_accepts_substituted_content_or_replays_collected_bytes()
     assert_eq!(result.value.bytes, wanted.bytes);
     Ok(())
 }
+
+#[tokio::test]
+async fn remote_batches_isolate_equal_digests_and_account_for_every_rpc()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_fs::RemoteLogicalObjectStore;
+    let (provider, bucket) = MemoryObjects::with_bucket("remote-tenants", MemoryOptions::default())?;
+    let provider = Arc::new(provider);
+    let tenant = |prefix: &str| {
+        RemoteLogicalObjectStore::new(provider.clone(), bucket.clone())
+            .with_key_prefix(prefix.to_owned())
+    };
+    let first = tenant("tenants/first/")?;
+    let second = tenant("tenants/second/")?;
+    let cancel = CancellationToken::new();
+    let writes = [write(b"first"), write(b"second"), write(b"first")];
+    let result = first.put_many(&writes, WorkBudget::UNBOUNDED, &cancel).await?;
+    assert_eq!(result.work.backend_write_operations, 2);
+    assert_eq!(result.work.backend_read_operations, 0);
+    assert!(!second.contains(writes[0].object_id, WorkBudget::UNBOUNDED, &cancel).await?.value);
+    let replay = first.put_many(&writes, WorkBudget::UNBOUNDED, &cancel).await?;
+    assert_eq!(replay.work.backend_write_operations, 2);
+    assert_eq!(replay.work.backend_read_operations, 2);
+    let reads = writes.iter().map(|value| ObjectReadRequest {
+        object_id: value.object_id, maximum_bytes: 8,
+    }).collect::<Vec<_>>();
+    let result = first.read_many(&reads, WorkBudget::UNBOUNDED, &cancel).await?;
+    assert_eq!(result.work.backend_read_operations, 3);
+    for (read, expected) in result.value.iter().zip(&writes) {
+        assert_eq!(read.bytes, expected.bytes);
+    }
+    let failure = first.read_many(&reads, WorkBudget {
+        backend_read_operations: 1, ..WorkBudget::UNBOUNDED
+    }, &cancel).await.err().ok_or("read exceeded remaining physical budget")?;
+    assert_eq!(failure.work.backend_read_operations, 1);
+    let same_content = second.put_many(&writes, WorkBudget::UNBOUNDED, &cancel).await?;
+    assert_eq!(same_content.work.backend_read_operations, 0);
+    let listed = provider.list(wire::ListObjectsRequest {
+        bucket: Some(bucket.clone()), page_size: 10, ..Default::default()
+    }).await?;
+    assert_eq!(listed.entries.len(), 4);
+    for invalid in ["/", "../", "tenant", "tenants//bad/", "tenants/./", "tenants/../", "tenants\\bad/"] {
+        assert!(tenant(invalid).is_err());
+    }
+    Ok(())
+}

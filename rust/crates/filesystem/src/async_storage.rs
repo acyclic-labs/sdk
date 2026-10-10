@@ -616,9 +616,10 @@ pub trait AsyncObjectStore: StorageProvider {
 
     /// Asynchronously admits an ordered bounded group of verified immutable objects.
     ///
-    /// Implementations with a real batch primitive override this method. A
-    /// backend without one rejects the operation instead of hiding repeated
-    /// single-object operations behind the batch contract.
+    /// Implementations with a real batch primitive override this method. Remote
+    /// adapters may explicitly opt into ordered individual writes, reporting
+    /// every physical operation and retaining prefix work on failure. The default
+    /// rejects unsupported groups; repeated RPCs must never be billed as one batch.
     fn put_many(
         &self,
         writes: &[ObjectWrite],

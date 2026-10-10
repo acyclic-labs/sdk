@@ -2989,6 +2989,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let result = crate::obs::in_span(&span, async move {
             let name = crate::WorkspaceName::new(name)?;
             let id = crate::WorkspaceId::derive(self.inner.workspace_namespace, &name);
+            let workspace_error = |failure: OperationFailure<FsError>| {
+                if matches!(failure.error, FsError::WorkspaceDeleted) {
+                    crate::workspace::WorkspaceError::NotFound
+                } else {
+                    crate::workspace::WorkspaceError::engine(failure)
+                }
+            };
             let volume = self
                 .open_volume(
                     id.volume_id(),
@@ -2996,12 +3003,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     &CancellationToken::new(),
                 )
                 .await
-                .map_err(crate::workspace::WorkspaceError::engine)?
+                .map_err(workspace_error)?
                 .value;
             volume
                 .resolve_head_generation(WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .await
-                .map_err(crate::workspace::WorkspaceError::engine)?;
+                .map_err(workspace_error)?;
             Ok(crate::Workspace {
                 name,
                 id,

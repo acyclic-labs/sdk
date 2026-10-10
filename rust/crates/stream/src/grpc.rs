@@ -279,10 +279,19 @@ impl Client {
         Ok(configured)
     }
 
-    fn from_channels(
+    /// Uses caller-authenticated channels (for example rotating platform SVID
+    /// mTLS). The caller owns channel TLS identity; the ordinary account bearer
+    /// and all canonical operation validation remain unchanged.
+    pub fn from_channels(
         channels: Arc<[Channel]>,
         bearer_token: impl AsRef<str>,
     ) -> Result<Self, ConnectError> {
+        if channels.is_empty() {
+            return Err(ConnectError::NoEndpoints);
+        }
+        if channels.len() > MAX_ENDPOINTS {
+            return Err(ConnectError::EndpointLimit);
+        }
         let authorization = Self::authorization(bearer_token.as_ref())?;
         Ok(Self::from_authorization(channels, authorization))
     }
@@ -1460,32 +1469,7 @@ fn error_status(error: &StreamError) -> Status {
 }
 
 fn status(error: &tonic::Status) -> StreamError {
-    match error.code() {
-        Code::InvalidArgument if error.message() == "invalid_path" => StreamError::InvalidPath,
-        Code::InvalidArgument if error.message() == "limit_exceeded" => StreamError::LimitExceeded,
-        Code::InvalidArgument => StreamError::InvalidArgument,
-        Code::NotFound => StreamError::NotFound,
-        Code::AlreadyExists => StreamError::AlreadyExists,
-        Code::OutOfRange => StreamError::OutOfRange,
-        Code::FailedPrecondition if error.message() == "hierarchy_changed" => {
-            StreamError::HierarchyChanged
-        }
-        Code::PermissionDenied | Code::Unauthenticated => StreamError::AccessDenied,
-        Code::ResourceExhausted => StreamError::Capacity,
-        Code::FailedPrecondition if error.message() == "idempotency_mismatch" => {
-            StreamError::IdempotencyMismatch
-        }
-        Code::FailedPrecondition if error.message() == "prefix_not_retained" => {
-            StreamError::PrefixNotRetained
-        }
-        Code::FailedPrecondition if error.message() == "deadline_elapsed" => {
-            StreamError::DeadlineElapsed
-        }
-        Code::Unimplemented if error.message() == "unsupported_capability" => {
-            StreamError::Unsupported
-        }
-        _ => StreamError::Unavailable,
-    }
+    crate::http_response::error_from_grpc(error.code() as u8, error.message())
 }
 
 fn read_response(value: wire::ReadResponse) -> Result<VecDeque<Record>, StreamError> {

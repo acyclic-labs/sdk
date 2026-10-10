@@ -17,14 +17,10 @@ pub mod request;
 // it available for contract tests without pulling in JS bindings.
 #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub mod http;
-// Request projection is shared by the native HTTP client and the browser adapter.
+// Hosted request projection is shared by gRPC servers, HTTP clients and browsers.
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod browser;
-#[cfg(any(
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
-mod http_codec;
+pub mod http_codec;
 mod http_validation;
 #[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
 mod journal;

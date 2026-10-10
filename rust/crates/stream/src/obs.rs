@@ -126,17 +126,20 @@ impl<T: futures::Stream> futures::Stream for Scoped<T> {
     }
 }
 
+#[cfg(any(test, feature = "http", feature = "local"))]
 /// A failure with a stable, path-free kind to record as `error.kind`.
 pub(crate) trait ErrorKind {
     fn kind(&self) -> &'static str;
 }
 
+#[cfg(any(test, feature = "http", feature = "local"))]
 impl ErrorKind for crate::StreamError {
     fn kind(&self) -> &'static str {
         self.code()
     }
 }
 
+#[cfg(any(test, feature = "http", feature = "local"))]
 /// Records `outcome` and, on failure, `error.kind` on the owned operation span.
 pub(crate) fn finish<T, E: ErrorKind>(span: &Span, result: Result<T, E>) -> Result<T, E> {
     match &result {

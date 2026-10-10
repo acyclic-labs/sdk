@@ -52,6 +52,11 @@ bearer authentication, message bounds and deadlines. The server still owns clien
 identity authorization. Credentials are supplied in memory, with no SDK file or
 infrastructure lookup.
 
+Private service consumers that already configure an SVID/mTLS `tonic::transport::Channel`
+can use `GrpcObjects::from_channel(channel, token)`. The caller owns transport
+authentication; the same sensitive bearer, canonical validation, message limits
+and finite request/transfer deadlines still apply.
+
 Use conditional writes and idempotency keys for retryable mutations. Listings
 are bounded, query-bound pages over current keys rather than captured snapshots.
 Multipart uploads require an explicit completion manifest; staging and aborting

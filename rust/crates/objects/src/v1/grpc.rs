@@ -51,6 +51,30 @@ pub struct GrpcObjects {
     transfer_timeout: std::time::Duration,
 }
 impl GrpcObjects {
+    /// Uses a caller-configured channel, including private SVID/mTLS channels.
+    /// The caller owns endpoint and transport authentication; the canonical
+    /// bearer, request deadlines and message limits remain unchanged.
+    ///
+    /// # Errors
+    /// Rejects an empty, oversized or invalid ASCII bearer credential.
+    pub fn from_channel(channel: Channel, token: &str) -> Result<Self, ConnectError> {
+        Ok(Self {
+            channel,
+            authorization: Self::authorization(token)?,
+            transfer_timeout: REQUEST_TIMEOUT,
+        })
+    }
+
+    fn authorization(token: &str) -> Result<MetadataValue<Ascii>, ConnectError> {
+        if token.trim().is_empty() || token.len() > super::MAX_BEARER_TOKEN_BYTES {
+            return Err(ConnectError::InvalidConfiguration);
+        }
+        let mut authorization: MetadataValue<Ascii> = format!("Bearer {token}")
+            .parse()
+            .map_err(|_| ConnectError::InvalidConfiguration)?;
+        authorization.set_sensitive(true);
+        Ok(authorization)
+    }
     /// Sets the finite deadline for streamed PUT, multipart parts and complete GET bodies.
     /// Metadata operations retain their 30-second deadline. The default transfer
     /// deadline is 30 seconds; large-body callers may select up to 30 minutes.
@@ -237,15 +261,10 @@ impl GrpcObjects {
                 .is_none_or(|authority| authority.as_str().contains('@'))
             || endpoint.uri().query().is_some()
             || endpoint.uri().path() != "/"
-            || token.trim().is_empty()
-            || token.len() > super::MAX_BEARER_TOKEN_BYTES
         {
             return Err(ConnectError::InvalidConfiguration);
         }
-        let mut authorization: MetadataValue<Ascii> = format!("Bearer {token}")
-            .parse()
-            .map_err(|_| ConnectError::InvalidConfiguration)?;
-        authorization.set_sensitive(true);
+        let authorization = Self::authorization(token)?;
         let mut tls = ClientTlsConfig::new().with_webpki_roots();
         if let Some(ca) = ca {
             if ca.is_empty() || ca.len() > super::MAX_PEM_BYTES {
@@ -679,5 +698,29 @@ impl ObjectsProvider for GrpcObjects {
             },
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod channel_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn caller_channel_preserves_sensitive_bearer_and_bounds() {
+        let channel = Endpoint::from_static("https://private.example").connect_lazy();
+        for token in ["", " ", "bad\ncredential"] {
+            assert!(matches!(GrpcObjects::from_channel(channel.clone(), token),
+                Err(ConnectError::InvalidConfiguration)));
+        }
+        let oversized = "x".repeat(super::super::MAX_BEARER_TOKEN_BYTES + 1);
+        assert!(matches!(GrpcObjects::from_channel(channel.clone(), &oversized),
+            Err(ConnectError::InvalidConfiguration)));
+        let client = GrpcObjects::from_channel(channel, "test-credential").unwrap();
+        assert!(client.authorization.is_sensitive());
+        assert_eq!(client.authorization.to_str().unwrap(), "Bearer test-credential");
+        assert_eq!(client.transfer_timeout, REQUEST_TIMEOUT);
+        let request = client.authenticated(());
+        assert_eq!(request.metadata().get("authorization"), Some(&client.authorization));
+        assert!(request.metadata().get("grpc-timeout").is_some());
     }
 }

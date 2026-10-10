@@ -730,6 +730,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             );
         }
         let request = fork_generation_commit_request(
+            destination_authority,
             ForkDestinationPaths {
                 root: destination_root,
                 records: destination_records,
@@ -1871,11 +1872,15 @@ struct ForkDestinationPaths {
 /// Builds the one atomic commit that materializes a forked authority's root,
 /// records, epochs, generation locator, and lineage fork in a single request.
 fn fork_generation_commit_request(
+    destination_authority: AuthorityId,
     destination: ForkDestinationPaths,
     source_lineage: acyclic_stream::StreamPath,
     forked_at: u64,
     operation_id: OperationId,
 ) -> Result<acyclic_stream::CommitRequest, OperationFailure<AuthorityStoreError>> {
+    let mut identity = [0; 32];
+    identity[..16].copy_from_slice(&destination_authority.into_bytes());
+    identity[16..].copy_from_slice(&operation_id.into_bytes());
     Ok(acyclic_stream::CommitRequest {
         conditions: vec![
             acyclic_stream::CommitCondition::Absent {
@@ -1925,7 +1930,7 @@ fn fork_generation_commit_request(
                 records: vec![Bytes::from_static(PUBLICATION_GATE_FREE)],
             },
         ],
-        idempotency_key: stream_key(b"fork-authority", &operation_id.into_bytes())
+        idempotency_key: stream_key(b"fork-authority", &identity)
             .map_err(OperationFailure::before_work)?,
     })
 }

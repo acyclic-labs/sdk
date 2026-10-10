@@ -1,10 +1,18 @@
-//! Shared Rust-owned hosted Stream request projection for native and browser clients.
+//! SDK-owned hosted Stream request decoding and client request projection.
+type Result<T = ()> = std::result::Result<T, &'static str>;
+mod server;
+pub use server::{HTTP_ROUTES, decode};
+
+#[cfg(any(all(feature = "http", not(target_arch = "wasm32")), all(feature = "wasm", target_arch = "wasm32")))]
+pub(crate) use client::encode;
+
+#[cfg(any(test, all(feature = "http", not(target_arch = "wasm32")), all(feature = "wasm", target_arch = "wasm32")))]
+mod client {
+use super::Result;
 use crate::http_response::{json_bytes, json_object, json_string, json_u64};
 use crate::{MAX_COMMAND_BYTES, TOKEN_OPERATIONS, memory, wire, wire_codec};
 use prost::Message;
 use serde_json::Value;
-type Result<T = ()> = std::result::Result<T, &'static str>;
-
 fn optional_key_json(value: Option<&crate::IdempotencyKey>) -> Option<Value> {
     value.map(|value| json_bytes(value.as_bytes()))
 }
@@ -236,6 +244,14 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
                 ("limit", Value::from(request.limit)),
             ]))
         }
+        "follow" => {
+            let request = wire::FollowRequest::decode(input).map_err(|_| "invalid_argument")?;
+            let path = wire_codec::path(request.path).map_err(|_| "invalid_path")?;
+            Ok(json_object(vec![
+                ("path", json_string(path.to_string())),
+                ("from", json_u64(request.from)),
+            ]))
+        }
         "children" => {
             let request = wire::ChildrenRequest::decode(input).map_err(|_| "invalid_argument")?;
             let request = wire_codec::children_from_wire(request).map_err(|error| error.code())?;
@@ -314,4 +330,5 @@ mod tests {
         assert!(projected.pointer("/options/deadlineUnixMillis").is_none());
         Ok(())
     }
+}
 }

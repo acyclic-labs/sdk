@@ -272,22 +272,28 @@ impl<A, O> FilesystemWireService<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
-    async fn workspace(
+    fn workspace_reference(
         &self,
         reference: Option<wire::WorkspaceRef>,
-    ) -> Result<Workspace<A, O>, Status> {
+    ) -> Result<wire::WorkspaceRef, Status> {
         let reference = required(reference, "workspace")?;
-        let workspace = self
-            .filesystem
-            .open_workspace(&reference.name)
-            .await
-            .map_err(|error| status(&error))?;
-        if workspace.id().into_bytes().as_slice() != reference.workspace_id {
+        let id = self.filesystem.workspace_id(&reference.name)
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        if id.into_bytes().as_slice() != reference.workspace_id {
             return Err(Status::failed_precondition(
                 "workspace name and identity disagree",
             ));
         }
-        Ok(workspace)
+        Ok(reference)
+    }
+
+    async fn workspace(
+        &self,
+        reference: Option<wire::WorkspaceRef>,
+    ) -> Result<Workspace<A, O>, Status> {
+        let reference = self.workspace_reference(reference)?;
+        self.filesystem.open_workspace(&reference.name).await
+            .map_err(|error| status(&error))
     }
 
     async fn source_scope(
@@ -533,9 +539,9 @@ where
     ) -> Result<Response<wire::MutationResponse>, Status> {
         self.admit(&request)?;
         let request = request.into_inner();
-        let workspace = self.workspace(request.workspace).await?;
-        let outcome = workspace
-            .delete(operation(request.operation)?)
+        let reference = self.workspace_reference(request.workspace)?;
+        let outcome = self.filesystem
+            .delete_workspace(&reference.name, operation(request.operation)?)
             .await
             .map_err(|error| status(&error))?;
         let status = match outcome {
@@ -2705,6 +2711,47 @@ mod tests {
         ] {
             assert_eq!(response.generation.as_ref(), Some(&head));
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn delete_retries_accept_retirement_but_reject_foreign_references()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let service = FilesystemWireService::new(Fs::memory(), FilesystemWireLimits::default())?;
+        let workspace = service
+            .create_workspace(Request::new(wire::CreateWorkspaceRequest {
+                name: "delete-retry".to_owned(),
+                profile: wire::FilesystemProfile::Portable as i32,
+                operation: operation(1),
+            }))
+            .await?
+            .into_inner()
+            .workspace
+            .and_then(|workspace| workspace.workspace)
+            .ok_or("missing workspace reference")?;
+        let delete = wire::DeleteWorkspaceRequest {
+            workspace: Some(workspace.clone()),
+            operation: operation(2),
+        };
+        assert_eq!(
+            service.delete_workspace(Request::new(delete.clone())).await?.into_inner().status,
+            wire::MutationStatus::Committed as i32,
+        );
+        let retired = service.open_workspace(Request::new(wire::OpenWorkspaceRequest {
+            selector: Some(wire::open_workspace_request::Selector::Name(workspace.name.clone())),
+        })).await.err().ok_or("retired workspace reopened")?;
+        assert_eq!(retired.code(), tonic::Code::NotFound);
+        assert_eq!(
+            service.delete_workspace(Request::new(delete)).await?.into_inner().status,
+            wire::MutationStatus::AlreadyCommitted as i32,
+        );
+        let mut foreign = workspace;
+        foreign.workspace_id[0] ^= 1;
+        let rejected = service.delete_workspace(Request::new(wire::DeleteWorkspaceRequest {
+            workspace: Some(foreign),
+            operation: operation(2),
+        })).await.err().ok_or("foreign reference accepted after retirement")?;
+        assert_eq!(rejected.code(), tonic::Code::FailedPrecondition);
         Ok(())
     }
 

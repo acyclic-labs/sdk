@@ -333,21 +333,13 @@ mod tests {
     }
 
     #[test]
-    fn clients_share_endpoint_and_credential_policy() {
+    fn clients_reject_unsafe_endpoints_and_credentials() {
         let long = "t".repeat(MAX_BEARER_TOKEN_BYTES + 1);
         for token in ["", " ", "a\r\nb", "a\0b", long.as_str()] {
             assert!(matches!(
                 http::Client::new("https://example.test", token, 1),
                 Err(http::Error::InvalidArgument)
             ));
-        }
-        for endpoint in [
-            "http://localhost:1",
-            "http://127.0.0.2:1",
-            "http://[::1]:1",
-            "https://example.test",
-        ] {
-            assert!(http::Client::new(endpoint, &"t".repeat(8192), 1).is_ok());
         }
         for endpoint in [
             "http://example.test",

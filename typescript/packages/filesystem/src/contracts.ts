@@ -139,7 +139,7 @@ export interface HostedFsWorkspace extends FsWorkspace {
 
 export interface HostedFsEngine extends FsEngine {
   readonly capabilities: HostedFsCapabilities;
-  createWorkspace(name: string): Promise<HostedFsWorkspace>;
+  createWorkspace(name: string, idempotencyKey?: Uint8Array): Promise<HostedFsWorkspace>;
   openWorkspace(name: string): Promise<HostedFsWorkspace>;
 }
 

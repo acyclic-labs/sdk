@@ -3,6 +3,8 @@ use crate::{http_validation::validate, wire};
 use prost::Message;
 use serde_json::Value;
 type Result<T> = std::result::Result<T, &'static str>;
+mod streaming;
+pub use streaming::{Collection, StreamProjection};
 
 pub(crate) fn json_object(entries: Vec<(&str, Value)>) -> Value {
     Value::Object(
@@ -57,7 +59,7 @@ fn encode_base64(value: &[u8]) -> String {
     output
 }
 
-/// Encode a generated response for one canonical HTTP route.
+/// Encode a generated unary response for one canonical HTTP route.
 /// Successful Commit includes its complete immutable envelope atomically.
 /// This projects already admitted outcomes; it does not authorize or publish them.
 /// # Errors
@@ -75,6 +77,8 @@ pub fn encode(route: &str, input: &[u8], maximum_bytes: usize) -> Result<Vec<u8>
 }
 pub(crate) fn value(route: &str, input: &[u8]) -> Result<Option<Value>> {
     let value = match route {
+        "tail" => json_u64(wire::TailResponse::decode(input)
+            .map_err(|_| "invalid_response")?.tail),
         "append" => {
             append_value(wire::AppendResponse::decode(input).map_err(|_| "invalid_response")?)?
         }
@@ -302,4 +306,26 @@ fn observation_value(value: wire::InspectIdempotencyResponse) -> Result<Option<V
         ),
         ("outcome", outcome),
     ])))
+}
+
+/// Shared canonical gRPC status mapping used by gRPC and hosted HTTP clients.
+/// The message argument is the decoded gRPC message, not its HTTP percent form.
+pub fn error_from_grpc(code: u8, message: &str) -> crate::StreamError {
+    use crate::StreamError as E;
+    match (code, message) {
+        (3, "invalid_path") => E::InvalidPath,
+        (3, "limit_exceeded") => E::LimitExceeded,
+        (3, _) => E::InvalidArgument,
+        (5, _) => E::NotFound,
+        (6, _) => E::AlreadyExists,
+        (11, _) => E::OutOfRange,
+        (9, "hierarchy_changed") => E::HierarchyChanged,
+        (7 | 16, _) => E::AccessDenied,
+        (8, _) => E::Capacity,
+        (9, "idempotency_mismatch") => E::IdempotencyMismatch,
+        (9, "prefix_not_retained") => E::PrefixNotRetained,
+        (9, "deadline_elapsed") => E::DeadlineElapsed,
+        (12, "unsupported_capability") => E::Unsupported,
+        _ => E::Unavailable,
+    }
 }

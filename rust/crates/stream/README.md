@@ -18,6 +18,20 @@ The `http` feature provides `http::HttpStream`, implementing the same provider i
 
 Native servers can use `http_response::encode(route, protobuf_bytes, maximum_json_bytes)` to project generated append, fork, Commit, commit-read, child-page and retry-observation responses through the same Rust code used by WASM. The successful Commit retains its existing `ok`, `commitId`, `tails` and `forks` fields and adds the complete `envelope`. The encoder does not authorize or durably accept mutations.
 
+`http_codec::HTTP_ROUTES` lists exactly the ten hosted StreamService RPC
+projections. `http_codec::decode` reverses the SDK request JSON into generated
+protobuf without moving provider validation or authorization into the adapter.
+`http_response::StreamProjection` expands compressed read/follow and children
+batches into canonical JSON elements, checking cross-frame cursor/order bounds;
+`Collection` bounds finite JSON arrays. Native front doors can expose these
+same elements as JSON, NDJSON or SSE. Follow is streaming-only and emits an
+accepted head even when idle; cancellation must propagate to the underlying RPC.
+Token issuance remains account-authority-owned, not a fabricated Stream RPC.
+
+Private consumers may supply their own SVID/mTLS channels with
+`grpc::Client::from_channels(channels, bearer)`. The caller owns channel
+authentication; bearer validation and canonical request bounds remain unchanged.
+
 Replicated providers can use `request::append_digest`, `request::fork_digest`, and `request::commit_digest` for the canonical state-independent validation and retry digest. Commit normalization sorts participants and rejects duplicate paths; providers still own atomic authorization, state checks, admission, durability and deadline decisions.
 
 `preparation::append`, `preparation::fork`, and `preparation::commit` construct canonical outcomes and immutable envelopes from pre-commit existence/tails, an accepted commit ID and commit timestamp. Coordinated preparation requires explicit observations for every participant and fork source; missing observations are invalid. Forks always use the source's pre-commit prefix, including when that commit also appends to the source. The memory provider shares these condition, authority and record construction helpers. Providers must perform retry lookup first and obtain observations, authorize, reserve capacity and publish atomically; preparation itself performs no durable acceptance or retention.
@@ -36,4 +50,4 @@ The [Rust API](https://docs.rs/acyclic-stream/latest/acyclic_stream/) and [v1 pr
 
 The native `acyclic.stream.http.follow` span lives with the cursor. Its `rev`, `queued`, and `phase` fields distinguish startup tail validation, read work, idle sleep, and time awaiting the consumer. HTTP call spans include response body consumption; abandoning a pending physical request records `outcome = "err"` and `error.kind = "cancelled"`. A trace-level `follow.poll` child also includes page decoding and validation, and a debug-level `follow.sleep` child attributes the idle wait. Polling and destruction preserve the visible follow's originating subscriber. A terminal error records its stable code; a dropped cursor records `terminal = "dropped"` without claiming successful completion or a particular cancellation cause. No paths, credentials, or record contents are recorded.
 
-The current HTTP contract has no long-poll route. With instantaneous reads and uniformly timed arrivals, a fixed idle interval `d` costs `1/d` reads per second and adds mean detection delay `d/2`. Any polling schedule guaranteeing a maximum blind interval `d` needs at least `1/d` reads per second in that model. The 250 ms default therefore costs four idle reads per second and adds 125 ms mean detection delay in the ideal model; startup requires one tail and one immediate read. Network/server time, decoding, scheduling, and consumer backpressure add latency, so these figures are not wall-clock guarantees. Increasing the delay trades latency for load; it cannot improve both within this protocol.
+`HttpStream::follow` uses bounded polling rather than the front door's streaming Follow route. With instantaneous reads and uniformly timed arrivals, a fixed idle interval `d` costs `1/d` reads per second and adds mean detection delay `d/2`. Any polling schedule guaranteeing a maximum blind interval `d` needs at least `1/d` reads per second in that model. The 250 ms default therefore costs four idle reads per second and adds 125 ms mean detection delay in the ideal model; startup requires one tail and one immediate read. Network/server time, decoding, scheduling, and consumer backpressure add latency, so these figures are not wall-clock guarantees. Increasing the polling delay trades latency for load; it cannot improve both within this polling protocol.

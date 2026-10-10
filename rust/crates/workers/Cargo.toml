@@ -47,6 +47,7 @@ tonic-prost.workspace = true
 
 [dev-dependencies]
 http-body = "1.1.0"
+parking_lot = "0.12"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability" }
