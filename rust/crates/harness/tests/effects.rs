@@ -878,6 +878,84 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     ));
     assert_eq!(short_provider.observation_reads.load(Ordering::SeqCst), 0);
     assert_eq!(short_provider.observation_writes.load(Ordering::SeqCst), 0);
+
+    // A fresh archived transition shares the configured read allowance and
+    // cannot hydrate the cache or append when its proof exceeds that allowance.
+    let archived_revision = aggregate.reducer().revision();
+    aggregate = aggregate.with_effect_history_read_limits(HistoryReadLimits {
+        maximum_events: 2,
+        maximum_bytes: 32 * 1024 * 1024,
+    })?;
+    ordinal += 1;
+    assert!(matches!(
+        aggregate
+            .execute(fresh(
+                ordinal,
+                archived_revision,
+                Action::MarkEffectDispatched {
+                    effect_id,
+                    attempt_id: EffectAttemptId::from_bytes([243; 16]),
+                },
+            ))
+            .await,
+        Err(acyclic_harness::Error::Invalid(_))
+    ));
+    assert_eq!(aggregate.reducer().revision(), archived_revision);
+    assert!(aggregate.reducer().effect(effect_id).is_none());
+    aggregate = aggregate.with_effect_history_read_limits(HistoryReadLimits {
+        maximum_events: 64,
+        maximum_bytes: 32 * 1024 * 1024,
+    })?;
+
+    // A fresh command targeting known archived state must reach the original
+    // provider authorization and terminal transition check, not cached absence.
+    ordinal += 1;
+    assert!(matches!(
+        aggregate
+            .execute(fresh(
+                ordinal,
+                aggregate.reducer().revision(),
+                Action::MarkEffectDispatched {
+                    effect_id,
+                    attempt_id: EffectAttemptId::from_bytes([244; 16]),
+                }
+            ))
+            .await,
+        Err(acyclic_harness::Error::Conflict(_))
+    ));
+    ordinal += 1;
+    assert!(matches!(
+        aggregate
+            .execute(fresh(
+                ordinal,
+                aggregate.reducer().revision(),
+                Action::ResolveEffect {
+                    observation: attestation.clone(),
+                }
+            ))
+            .await,
+        Err(acyclic_harness::Error::Conflict(_))
+    ));
+    ordinal += 1;
+    let mut denied = fresh(
+        ordinal,
+        aggregate.reducer().revision(),
+        Action::MarkEffectDispatched {
+            effect_id,
+            attempt_id: EffectAttemptId::from_bytes([245; 16]),
+        },
+    );
+    denied.scope = issuer.root_for_agent(
+        AgentId::from_bytes([61; 16]),
+        "no-provider-grant",
+        Capabilities::new(["effect:run"]),
+    );
+    assert!(matches!(
+        aggregate.execute(denied).await,
+        Err(acyclic_harness::Error::Unauthorized(_))
+    ));
+    assert_eq!(aggregate.reducer().resident_terminal_effect_count(), 2);
+    assert_eq!(aggregate.reducer().resident_effect_count(), 5);
     let revision = aggregate.reducer().revision();
     assert!(aggregate.reducer().effect(effect_id).is_none());
     assert!(matches!(
