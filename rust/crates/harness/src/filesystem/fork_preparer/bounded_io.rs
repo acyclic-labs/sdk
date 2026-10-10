@@ -5,9 +5,9 @@ use acyclic_fs::{CancellationToken, OperationFailure, OperationReceipt, WorkBudg
 use std::sync::Mutex;
 
 /// The pinned Filesystem creation contract interprets maximum_work as the
-/// allowance for each physical non-byte counter, and maximum_bytes as the
-/// allowance for each physical byte counter. Counters aggregate across the
-/// complete attempt, including work receipts on failed boundaries.
+/// allowance for each SDK-observed non-byte counter, and maximum_bytes as the
+/// allowance for each SDK-observed byte counter. Opaque provider work is not
+/// invented as physical I/O; receipts aggregate across the complete attempt.
 pub(crate) struct PreparationIo {
     budget: WorkBudget,
     work: Mutex<(WorkCounters, u64)>,
@@ -33,12 +33,88 @@ impl DecodeReservation<'_> {
         self.bytes = 0;
         Ok(())
     }
+    /// Transfers an already admitted allowance to returned SDK-owned custody.
+    pub(crate) fn into_retained(mut self) {
+        self.bytes = 0;
+    }
 }
 
 impl Drop for DecodeReservation<'_> {
     fn drop(&mut self) {
         let mut state = self.io.work.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         state.1 = state.1.checked_sub(self.bytes).expect("decode reservation belongs to its live ledger");
+    }
+}
+
+/// Audited closed Harness DTOs only, including their Value/string/vector
+/// containers. This is not an arbitrary DeserializeOwned heap sandbox.
+pub(crate) trait PreparationRecord: serde::de::DeserializeOwned + Serialize {
+    fn maximum_slot_bytes() -> u64;
+}
+
+pub(crate) fn preparation_slot_bytes<T>() -> u64 {
+    [
+        std::mem::size_of::<T>(),
+        std::mem::size_of::<crate::model::ModelMessage>(),
+        std::mem::size_of::<crate::model::ModelContentPart>(),
+        std::mem::size_of::<crate::model::NativeConfigurationBinding>(),
+        std::mem::size_of::<crate::tool::ToolDefinition>(),
+        std::mem::size_of::<crate::conversation::Attachment>(),
+        std::mem::size_of::<FileRef>(),
+        std::mem::size_of::<serde_json::Value>(),
+        std::mem::size_of::<(String, serde_json::Value)>(),
+        std::mem::size_of::<(String, FileRef)>(),
+    ].into_iter().max().unwrap_or(0) as u64
+}
+
+macro_rules! audited_preparation_records {
+    ($($record:ty),+ $(,)?) => {$(
+        impl PreparationRecord for $record {
+            fn maximum_slot_bytes() -> u64 { preparation_slot_bytes::<Self>() }
+        }
+    )+};
+}
+
+audited_preparation_records!(
+    crate::context::Context,
+    crate::context::CanonicalContextCheckpoint,
+    crate::context::CompactionReference,
+    crate::executor::ResponseProjection,
+    crate::model::ModelEvent,
+    crate::model::ModelRequest,
+    crate::model::ModelContent,
+    crate::model::ModelContentPart,
+    crate::fork::InheritedConversationPrefix,
+    serde_json::Value,
+    crate::core::ExtensionConfiguration,
+);
+
+pub(crate) struct ReservedDecoded<'a, T> {
+    pub(crate) value: T,
+    _reservation: DecodeReservation<'a>,
+}
+
+impl<T> std::ops::Deref for ReservedDecoded<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T { &self.value }
+}
+
+impl<T> std::ops::DerefMut for ReservedDecoded<'_, T> {
+    fn deref_mut(&mut self) -> &mut T { &mut self.value }
+}
+
+impl<T> ReservedDecoded<'_, T> {
+    pub(crate) fn into_inner(self) -> T {
+        let Self { value, _reservation } = self;
+        drop(_reservation);
+        value
+    }
+
+    pub(crate) fn into_retained(mut self) -> T {
+        // Transfer actual held logical quota to this attempt's DTO custody.
+        // It is conservative allowance, not an allocator-capacity assertion.
+        self._reservation.bytes = 0;
+        self.value
     }
 }
 impl PreparationIo {
@@ -77,6 +153,23 @@ impl PreparationIo {
 
     pub(crate) fn receipt(&self) -> WorkCounters {
         self.work.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0
+    }
+    /// Current admitted live logical custody, excluding already released buffers.
+    pub(crate) fn owned_bytes(&self) -> Result<u64> {
+        self.work.lock().map(|state| state.1)
+            .map_err(|_| Error::Storage("creation IO accounting is poisoned".into()))
+    }
+
+
+    // Honest ordinary convenience uses the same engine without pretending its
+    // allowance is finite. Measured public entry points use from_budget.
+    pub(crate) fn for_unmeasured(cancellation: &CancellationToken) -> Result<Self> {
+        cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
+        Ok(Self {
+            budget: WorkBudget::UNBOUNDED,
+            work: Mutex::new((WorkCounters::default(), 0)),
+            cancellation: cancellation.clone(),
+        })
     }
 
     pub(crate) fn preflight(&self, next: WorkCounters) -> Result<()> {
@@ -123,6 +216,12 @@ impl PreparationIo {
 
     pub(crate) fn reserve_decode(&self, bytes: u64) -> Result<DecodeReservation<'_>> {
         self.claim(bytes)?;
+        Ok(DecodeReservation { io: self, bytes })
+    }
+
+    pub(crate) fn guard_owned(&self, bytes: u64) -> Result<DecodeReservation<'_>> {
+        let state = self.work.lock().map_err(|_| Error::Storage("creation IO accounting is poisoned".into()))?;
+        if bytes > state.1 { return Err(Error::Invalid("owned buffer exceeds retained quota".into())); }
         Ok(DecodeReservation { io: self, bytes })
     }
 
@@ -207,13 +306,21 @@ impl PreparationIo {
     }
 
     pub(crate) fn capability<T: Serialize>(&self, value: &T, prefix: &str) -> Result<String> {
+        let _encoded_hold;
         let encoded = self.encode_json(value, self.remaining()?.bytes_encoded, true)?;
+        _encoded_hold = self.guard_owned(encoded.len() as u64)?;
         let hash = WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() };
         self.preflight(hash)?;
+        let digest = blake3::hash(&encoded);
         self.charge(hash)?;
-        self.claim((prefix.len() + 64) as u64)?;
-        self.allocation_attempt((prefix.len() + 64) as u64)?;
-        Ok(format!("{prefix}{}", blake3::hash(&encoded).to_hex()))
+        let length = prefix.len().checked_add(64)
+            .ok_or_else(|| Error::Invalid("capability length overflow".into()))?;
+        self.claim(length as u64)?;
+        self.allocation_attempt(length as u64)?;
+        let mut key = String::with_capacity(length);
+        key.push_str(prefix);
+        key.push_str(&digest.to_hex());
+        Ok(key)
     }
 
     // Audited closed serde derives only: upload records and approval-only wires.
@@ -239,6 +346,45 @@ impl PreparationIo {
         reservation.as_mut().ok_or_else(|| Error::Invalid("trusted decode omitted admission".into()))?
             .substitute(value.logical_owned_bytes()?)?;
         Ok(value)
+    }
+
+    pub(crate) fn decode_preparation<T: PreparationRecord>(
+        &self, bytes: &[u8],
+    ) -> Result<ReservedDecoded<'_, T>> {
+        let bounds = crate::contract::JsonBounds {
+            maximum_bytes: bytes.len() as u64,
+            maximum_items: self.remaining()?.items_examined,
+            maximum_depth: 128,
+        };
+        let mut items = 0_u64;
+        let mut reservation = None;
+        let value = crate::contract::json_from_slice_bounded_trusted(bytes, bounds, 0, &mut |next| {
+            match next {
+                crate::contract::JsonCodecCharge::Work { items: count, .. } => {
+                    items = items.checked_add(count)
+                        .ok_or_else(|| Error::Invalid("preparation DTO item count overflow".into()))?;
+                    self.codec_charge(next, false)
+                }
+                crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes } => {
+                    // Concrete slots cover initial/geometric Vec slack and the
+                    // internally-tagged serde temporary representation. Strings
+                    // and scratch are separate; allocator nodes/RSS excluded.
+                    let owned = items.checked_mul(T::maximum_slot_bytes())
+                        .and_then(|slots| slots.checked_mul(8))
+                        .and_then(|slots| (bytes.len() as u64).checked_mul(4)
+                            .and_then(|strings| slots.checked_add(strings)))
+                        .and_then(|owned| owned.checked_add(maximum_owned_bytes))
+                        .and_then(|owned| owned.checked_add(std::mem::size_of::<T>() as u64))
+                        .ok_or_else(|| Error::Invalid("preparation DTO ownership overflow".into()))?;
+                    reservation = Some(self.reserve_decode(owned)?);
+                    Ok(())
+                }
+                next => self.codec_charge(next, false),
+            }
+        })?;
+        let _reservation = reservation
+            .ok_or_else(|| Error::Invalid("preparation DTO decode omitted reservation".into()))?;
+        Ok(ReservedDecoded { value, _reservation })
     }
 
     pub(crate) fn codec_charge(&self, next: crate::contract::JsonCodecCharge, encode: bool) -> Result<()> {
@@ -309,14 +455,14 @@ impl UploadRecord for (FileRef, Option<crate::resources::GenerationRef>) {
     }
 }
 
-pub(super) fn strings(io: &PreparationIo, values: &[&str]) -> Result<()> {
+pub(in crate::filesystem) fn strings(io: &PreparationIo, values: &[&str]) -> Result<()> {
     for value in values {
         io.claim(value.len() as u64)?;
     }
     Ok(())
 }
 
-pub(super) fn file_ref(
+pub(in crate::filesystem) fn file_ref(
     volume: &VolumeRef, path: &str, version: &str, descriptor: &FileDescriptor,
     display_name: &str, io: Option<&PreparationIo>,
 ) -> Result<FileRef> {
@@ -331,18 +477,18 @@ pub(super) fn file_ref(
     FileRef::new(volume.clone(), path, version, descriptor.clone(), display_name)
 }
 
-pub(super) fn clone_file(reference: &FileRef, io: Option<&PreparationIo>) -> Result<FileRef> {
+pub(in crate::filesystem) fn clone_file(reference: &FileRef, io: Option<&PreparationIo>) -> Result<FileRef> {
     file_ref(reference.volume(), reference.path(), reference.version(), reference.descriptor(), reference.display_name(), io)
 }
 
-pub(super) fn reference_key(reference: &FileRef, io: Option<&PreparationIo>) -> Result<String> {
+pub(in crate::filesystem) fn reference_key(reference: &FileRef, io: Option<&PreparationIo>) -> Result<String> {
     match io {
         Some(io) => io.capability(reference, "file:read:"),
         None => reference.read_capability(),
     }
 }
 
-pub(super) fn item(io: Option<&PreparationIo>, logical_bytes: u64) -> Result<()> {
+pub(in crate::filesystem) fn item(io: Option<&PreparationIo>, logical_bytes: u64) -> Result<()> {
     if let Some(io) = io {
         let work = WorkCounters { items_examined: 1, ..Default::default() };
         io.preflight(work)?;
@@ -352,7 +498,7 @@ pub(super) fn item(io: Option<&PreparationIo>, logical_bytes: u64) -> Result<()>
     Ok(())
 }
 
-pub(super) async fn operation_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(in crate::filesystem) async fn operation_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, reference: &WorkspaceRef, key: &IdempotencyKey, io: Option<&PreparationIo>,
 ) -> Result<Option<acyclic_fs::Generation<A, O>>> {
     match io {
@@ -367,22 +513,40 @@ pub(super) async fn operation_generation<A: AsyncAuthorityStore, O: AsyncObjectS
     }
 }
 
-pub(super) fn content_workspace(
+pub(in crate::filesystem) fn content_workspace(
     host_provider: &crate::resources::ProviderRef, volume: &VolumeRef,
     io: Option<&PreparationIo>,
 ) -> Result<WorkspaceRef> {
-    let Some(io) = io else { return workspace_ref(host_provider.clone(), &volume.storage_name()?); };
-    let encoded = io.encode_json(volume, io.remaining()?.bytes_encoded, true)?;
-    let hash = WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() };
-    io.preflight(hash)?;
-    io.charge(hash)?;
-    strings(io, &[host_provider.namespace(), host_provider.family(), host_provider.version()])?;
-    io.claim(72)?;
-    io.claim(72)?;
-    let name = format!("harness-{}", blake3::hash(&encoded).to_hex());
+    let _name_hold;
+    let name = volume_storage_name(volume, io)?;
+    _name_hold = io.map(|io| io.guard_owned(name.len() as u64)).transpose()?;
+    if let Some(io) = io {
+        strings(io, &[host_provider.namespace(), host_provider.family(), host_provider.version()])?;
+        io.claim(name.len() as u64)?;
+    }
     workspace_ref(host_provider.clone(), &name)
 }
-pub(super) async fn open<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+
+pub(in crate::filesystem) fn volume_storage_name(
+    volume: &VolumeRef, io: Option<&PreparationIo>,
+) -> Result<String> {
+    let Some(io) = io else { return volume.storage_name(); };
+    let _encoded_hold;
+    let encoded = io.encode_json(volume, io.remaining()?.bytes_encoded, true)?;
+    _encoded_hold = io.guard_owned(encoded.len() as u64)?;
+    let hash = WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() };
+    io.preflight(hash)?;
+    let digest = blake3::hash(&encoded);
+    io.charge(hash)?;
+    io.claim(72)?;
+    io.allocation_attempt(72)?;
+    let mut name = String::with_capacity(72);
+    name.push_str("harness-");
+    name.push_str(&digest.to_hex());
+    Ok(name)
+}
+
+pub(crate) async fn open<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, reference: &WorkspaceRef, io: &PreparationIo,
 ) -> Result<acyclic_fs::Workspace<A, O>> {
     reference.validate()?;
@@ -392,7 +556,7 @@ pub(super) async fn open<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     io.receive(host.filesystem.open_workspace_measured(name, io.remaining()?, &io.cancellation).await)
 }
 
-pub(super) async fn generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(crate) async fn generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, workspace: &acyclic_fs::Workspace<A, O>,
     reference: &crate::resources::GenerationRef, io: &PreparationIo,
 ) -> Result<acyclic_fs::Generation<A, O>> {
@@ -406,7 +570,7 @@ pub(super) async fn generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     ).await)
 }
 
-pub(super) async fn read<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(in crate::filesystem) async fn read<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, reference: &WorkspaceRef, path: &str, maximum_bytes: u64,
     io: Option<&PreparationIo>,
 ) -> Result<bytes::Bytes> {
@@ -415,7 +579,7 @@ pub(super) async fn read<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     io.receive(workspace.read_measured(path, maximum_bytes, io.remaining()?, &io.cancellation).await)
 }
 
-pub(super) async fn resolve<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(in crate::filesystem) async fn resolve<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, reference: &WorkspaceRef, io: Option<&PreparationIo>,
 ) -> Result<super::super::WorkspaceObservation> {
     let Some(io) = io else { return host.resolve(reference).await; };
@@ -429,7 +593,7 @@ pub(super) async fn resolve<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     })
 }
 
-pub(super) async fn create<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, name: &str, key: &IdempotencyKey, io: Option<&PreparationIo>,
 ) -> Result<()> {
     let Some(io) = io else {
@@ -451,7 +615,7 @@ pub(super) async fn create<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     Ok(())
 }
 
-pub(super) async fn apply<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(in crate::filesystem) async fn apply<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, reference: &WorkspaceRef,
     expected: Option<&crate::resources::GenerationRef>, mutations: &[WorkspaceMutation],
     key: &IdempotencyKey, io: Option<&PreparationIo>,
@@ -461,7 +625,7 @@ pub(super) async fn apply<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host.generation_ref(&generation)
 }
 
-pub(super) async fn apply_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(in crate::filesystem) async fn apply_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, reference: &WorkspaceRef,
     expected: Option<&crate::resources::GenerationRef>, mutations: &[WorkspaceMutation],
     key: &IdempotencyKey, io: &PreparationIo,
@@ -511,7 +675,7 @@ pub(super) async fn apply_generation<A: AsyncAuthorityStore, O: AsyncObjectStore
     }
 }
 
-pub(super) fn generation_ref<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(in crate::filesystem) fn generation_ref<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, generation: &acyclic_fs::Generation<A, O>,
     io: Option<&PreparationIo>,
 ) -> Result<crate::resources::GenerationRef> {
@@ -522,7 +686,7 @@ pub(super) fn generation_ref<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host.generation_ref(generation)
 }
 
-pub(super) async fn retain<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     _host: &FilesystemHost<A, O>, generation: &acyclic_fs::Generation<A, O>, io: &PreparationIo,
 ) -> Result<()> {
     io.claim(64)?;
@@ -532,7 +696,7 @@ pub(super) async fn retain<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     Ok(())
 }
 
-pub(super) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, source: &VolumeRef, grant: &ContentGrant,
     source_generation: &crate::resources::GenerationRef, child: &VolumeRef,
     paths: Option<Vec<String>>, key: &IdempotencyKey, io: Option<&PreparationIo>,
@@ -618,5 +782,160 @@ mod tests {
         assert_eq!(host.read(&initial.workspace, Some(&selected_generation), "/value.txt", 32).await?,
             bytes::Bytes::from_static(b"selected"));
         Ok(())
+    }
+}
+/// Borrows the original preparation ledger; there is no second meter.
+pub(crate) struct PreparationHistoryIo<'a> {
+    io: &'a PreparationIo,
+}
+
+impl PreparationIo {
+    pub(crate) fn history_io(&self) -> PreparationHistoryIo<'_> {
+        PreparationHistoryIo { io: self }
+    }
+}
+
+impl PreparationHistoryIo<'_> {
+    fn charged(&self, delta: WorkCounters) -> Result<()> {
+        self.io.preflight(delta)?;
+        self.io.charge(delta)
+    }
+
+    fn reserve<T>(&self, values: &mut Vec<T>, maximum: usize) -> Result<()> {
+        if values.len() < values.capacity() { return Ok(()); }
+        let old = values.capacity();
+        let target = old.checked_mul(2).unwrap_or(maximum).max(4).min(maximum);
+        if target <= old { return Err(Error::Invalid("history vector exceeds declared maximum".into())); }
+        let bytes = target.checked_sub(old).and_then(|count| count.checked_mul(std::mem::size_of::<T>()))
+            .ok_or_else(|| Error::Invalid("history vector ownership overflow".into()))? as u64;
+        self.io.claim(bytes)?;
+        self.io.allocation_attempt()?;
+        values.try_reserve_exact(target - values.len()).map_err(|error| Error::Storage(error.to_string()))?;
+        let actual = (values.capacity() - old).checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(|| Error::Invalid("history vector ownership overflow".into()))? as u64;
+        if actual > bytes { self.io.claim(actual - bytes)?; }
+        else { self.io.release(bytes - actual)?; }
+        Ok(())
+    }
+}
+
+impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
+    fn check_cancellation(&self) -> Result<()> {
+        self.io.cancellation.check().map_err(|error| Error::Storage(error.to_string()))
+    }
+    fn begin_call(&mut self) -> Result<()> {
+        self.charged(WorkCounters { backend_read_operations: 1, ..Default::default() })
+    }
+    fn begin_write(&mut self) -> Result<()> {
+        self.charged(WorkCounters { backend_write_operations: 1, ..Default::default() })
+    }
+    fn receive_record(&mut self, bytes: u64) -> Result<()> {
+        // Preserve actual received work even if cancellation/quota now rejects it.
+        self.io.charge(WorkCounters { authority_records_read: 1, bytes_read: bytes,
+            items_examined: 1, ..Default::default() })?;
+        self.io.retain_owned(bytes)
+    }
+    fn release_record(&mut self, bytes: u64) -> Result<()> { self.io.release(bytes) }
+    fn retain_owned(&mut self, bytes: u64) -> Result<()> { self.io.retain_owned(bytes) }
+    fn admit_owned(&self, bytes: u64) -> Result<()> {
+        self.check_cancellation()?;
+        if bytes > self.io.remaining()?.peak_allocation_bytes {
+            return Err(Error::Invalid("history exceeds live logical byte allowance".into()));
+        }
+        Ok(())
+    }
+    fn release_owned(&mut self, bytes: u64) -> Result<()> { self.io.release(bytes) }
+    fn clone_authority(&mut self, authority: &crate::core::Authority) -> Result<crate::core::Authority> {
+        Ok(crate::core::Authority { kind: authority.kind, id: self.clone_text(&authority.id)? })
+    }
+    fn clone_text(&mut self, text: &str) -> Result<String> {
+        self.io.claim(text.len() as u64)?;
+        self.io.preflight(WorkCounters { bytes_copied: text.len() as u64, ..Default::default() })?;
+        if !text.is_empty() { self.io.allocation_attempt()?; }
+        let mut copy = String::with_capacity(text.len());
+        copy.push_str(text);
+        self.io.charge(WorkCounters { bytes_copied: text.len() as u64, ..Default::default() })?;
+        Ok(copy)
+    }
+    fn reserve_events(&mut self, values: &mut Vec<crate::core::Event>, maximum: usize) -> Result<()> { self.reserve(values, maximum) }
+    fn reserve_records(&mut self, values: &mut Vec<acyclic_stream::Record>, maximum: usize) -> Result<()> { self.reserve(values, maximum) }
+    fn reserve_messages(&mut self, values: &mut Vec<crate::conversation::ConversationMessage>, maximum: usize) -> Result<()> { self.reserve(values, maximum) }
+    fn reserve_values(&mut self, values: &mut Vec<serde_json::Value>, maximum: usize) -> Result<()> { self.reserve(values, maximum) }
+    fn reserve_bytes(&mut self, values: &mut Vec<u8>, capacity: usize) -> Result<()> {
+        if capacity <= values.capacity() { return Ok(()); }
+        let old = values.capacity();
+        self.io.claim((capacity - old) as u64)?;
+        self.io.allocation_attempt()?;
+        values.try_reserve_exact(capacity - values.len()).map_err(|error| Error::Storage(error.to_string()))?;
+        if values.capacity() > capacity { self.io.claim((values.capacity() - capacity) as u64)?; }
+        Ok(())
+    }
+    fn reserve_text(&mut self, text: &mut String, capacity: usize) -> Result<()> {
+        if capacity <= text.capacity() { return Ok(()); }
+        let old = text.capacity();
+        self.io.claim((capacity - old) as u64)?;
+        self.io.allocation_attempt()?;
+        text.try_reserve_exact(capacity - text.len()).map_err(|error| Error::Storage(error.to_string()))?;
+        if text.capacity() > capacity { self.io.claim((text.capacity() - capacity) as u64)?; }
+        Ok(())
+    }
+    fn admit_allocation(&mut self, bytes: u64) -> Result<()> {
+        self.admit_owned(bytes)?;
+        if bytes != 0 { self.io.allocation_attempt()?; }
+        Ok(())
+    }
+    fn copy_bytes(&mut self, bytes: u64) -> Result<()> {
+        self.charged(WorkCounters { bytes_copied: bytes, ..Default::default() })
+    }
+    fn encoded_bytes(&mut self, bytes: u64) -> Result<()> {
+        self.io.charge(WorkCounters { bytes_encoded: bytes, ..Default::default() })
+    }
+    fn admit_encoding(&self, bytes: u64) -> Result<()> {
+        self.io.preflight(WorkCounters { bytes_encoded: bytes, ..Default::default() })
+    }
+    fn codec_charge(&mut self, charge: crate::contract::JsonCodecCharge) -> Result<()> {
+        match charge {
+            crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes } => self.io.claim(maximum_owned_bytes),
+            _ => self.io.codec_charge(charge, true),
+        }
+    }
+    fn hashed_bytes(&mut self, bytes: u64) -> Result<()> {
+        self.charged(WorkCounters { bytes_hashed: bytes, ..Default::default() })
+    }
+    fn admit_acknowledgment(&self, bytes: u64, count: u64) -> Result<()> {
+        self.io.preflight(WorkCounters { authority_bytes_written: bytes, authority_records_appended: count, ..Default::default() })
+    }
+    fn acknowledged(&mut self, bytes: u64, count: u64) -> Result<()> {
+        self.io.charge(WorkCounters { authority_bytes_written: bytes, authority_records_appended: count, ..Default::default() })
+    }
+    fn admit_output(&self, bytes: u64, count: u64) -> Result<()> {
+        self.io.preflight(WorkCounters { output_bytes: bytes, items_returned: count, ..Default::default() })
+    }
+    fn stage_output(&mut self, bytes: u64, count: u64) -> Result<()> { self.admit_output(bytes, count) }
+    fn return_output(&mut self, bytes: u64, count: u64) -> Result<()> {
+        self.charged(WorkCounters { output_bytes: bytes, items_returned: count, ..Default::default() })
+    }
+    fn remaining(&self) -> Result<WorkBudget> { self.io.remaining() }
+    fn cancellation(&self) -> &CancellationToken { &self.io.cancellation }
+    fn receive_work(&mut self, mut work: WorkCounters) -> Result<()> {
+        work.output_bytes = 0;
+        work.items_returned = 0;
+        self.io.spent(work)
+    }
+    fn verify_content<'a>(&'a mut self, verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
+        reference: &'a FileRef) -> crate::conversation::ContentFuture<'a, Result<()>> {
+        Box::pin(async move {
+            self.io.receive_content(verifier.verify_measured(reference, reference.descriptor().byte_length(),
+                self.io.remaining()?, &self.io.cancellation).await)
+        })
+    }
+    fn read_content<'a>(&'a mut self, verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
+        reference: &'a FileRef) -> crate::conversation::ContentFuture<'a, Result<Vec<u8>>> {
+        Box::pin(async move {
+            let bytes = self.io.receive_content(verifier.read_measured(reference, reference.descriptor().byte_length(),
+                self.io.remaining()?, &self.io.cancellation).await)?;
+            self.io.retain_owned(bytes.capacity() as u64)?;
+            Ok(bytes)
+        })
     }
 }

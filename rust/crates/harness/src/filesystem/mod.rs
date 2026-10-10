@@ -51,7 +51,7 @@ mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
 mod fork_preparer;
 use fork_preparer::bounded_io as fork_preparer_io;
-pub(crate) use fork_preparer::bounded_io::{PreparationIo, UploadRecord};
+pub(crate) use fork_preparer::bounded_io::{PreparationIo, UploadRecord, PreparationRecord, ReservedDecoded, DecodeReservation};
 mod summary_fork;
 pub use fork_preparer::{FilesystemForkPreparer, FilesystemResourceCreationProvider};
 mod interaction_host;
