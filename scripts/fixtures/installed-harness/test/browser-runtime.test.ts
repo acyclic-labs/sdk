@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import {
   BrowserTaskAuthority, BrowserTaskRegistry, BrowserTaskRuntime,
   initializeBrowserRuntime, type BrowserTaskOptions, type BrowserWorkLease, type BrowserRecoveredWork,
+  type BrowserTaskOutcome,
 } from "@acyclic-labs/harness/browser";
 
 // Package-resolution/consumer qualification. Real Chromium tests separately
@@ -56,7 +57,7 @@ test("installed browser entry executes the ordinary registered runtime", async (
     const recovery: BrowserRecoveredWork = await runtime.recoverWork(unrelated);
     expect(recovery).toEqual({ kind: "idle" });
     expect(await runtime.runOperation(worker, admission.task_id, 2)).toBeNull();
-    const expected: Awaited<ReturnType<BrowserTaskRuntime["outcome"]>> = { Succeeded: 7n };
+    const expected: BrowserTaskOutcome = { Succeeded: 7n };
     expect(await runtime.outcome(admission.task_id)).toEqual(expected);
     const tick = await runtime.workerTick(worker, null, 8, 2);
     expect(tick.work?.kind).toBe("completed");

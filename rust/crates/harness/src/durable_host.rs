@@ -2,7 +2,7 @@
 
 use crate::contract::capability;
 use crate::{
-    Admission, BatchId, EffectId, Error, IdempotencyKey, InteractionId, OperationId, Outcome,
+    Admission, BatchId, Capabilities, EffectId, Error, IdempotencyKey, InteractionId, OperationId, Outcome,
     Result, TaskId,
     conversation::{ContentResidencyVerifier, FileRef},
     core::{Authority, AuthorityVerifier, Scope},
@@ -112,7 +112,7 @@ fn worker_key(
 /// specialized wait, mail, interaction, and effect providers can be composed
 /// around this boundary without giving callers a coordinator handle.
 pub struct CoordinatorTaskHost<P> {
-    coordinator: Mutex<DistributedCoordinator<P>>,
+    coordinator: Arc<Mutex<DistributedCoordinator<P>>>,
     stream: StreamClient<P>,
     payloads: Arc<dyn SchedulerPayloadStore>,
     reader: Arc<dyn ContentResidencyVerifier>,
@@ -128,6 +128,49 @@ pub struct CoordinatorTaskHost<P> {
     interactions: Option<Arc<dyn ExecutionJournal>>,
     effects: Option<Arc<dyn DurableEffectObserver>>,
     session_limits: Option<crate::scheduler::SessionLimits>,
+    resource_creation: Vec<Arc<dyn crate::resource_preparation::ResourceCreationProvider>>,
+}
+
+struct CreatedTaskPublicationLease<P> {
+    coordinator: Arc<Mutex<DistributedCoordinator<P>>>,
+    owner: Authority,
+    scope: Scope,
+    verifier: AuthorityVerifier,
+    operation: OperationId,
+    fence: Option<crate::scheduler::LeaseFence>,
+    clock: Arc<dyn UnixMillisClock>,
+    deadline_epoch_ms: Option<u64>,
+}
+
+impl<P: StreamProvider> crate::resource_preparation::CreatedTaskLease
+    for CreatedTaskPublicationLease<P>
+{
+    fn verify(&self) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            let mut coordinator = self.coordinator.lock().await;
+            coordinator.refresh().await?;
+            let operation = coordinator.observe_operation(
+                &self.owner, &self.scope, &self.verifier, self.operation,
+            )?;
+            let fence = self.fence.as_ref().ok_or_else(|| {
+                Error::Conflict("created resource task has no current execution owner".into())
+            })?;
+            crate::scheduler::require_execution_owner(&operation, fence, false)?;
+            if self.deadline_epoch_ms.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline) {
+                coordinator.cancel_operation(
+                    &self.owner, &self.scope, &self.verifier, self.operation,
+                    IdempotencyKey::new(format!("task-cancel:{}", self.operation))?, true,
+                ).await?;
+                return Err(Error::Indeterminate(self.operation));
+            }
+            Ok(())
+        })
+    }
+    fn fence(&self) -> Result<crate::scheduler::LeaseFence> {
+        self.fence.clone().ok_or_else(|| {
+            Error::Conflict("created resource task has no execution reservation".into())
+        })
+    }
 }
 
 /// One worker's exact task lease, bound to the coordinator's own Stream provider.
@@ -142,6 +185,7 @@ pub struct TaskJournalOwner<P> {
     maximum_payload_bytes: u64,
     output_schema: Value,
     input_grants: crate::Capabilities,
+    deadline_epoch_ms: Option<u64>,
     input_limits: crate::conversation::Limits,
     extensions: Option<crate::core::ExtensionAdmission>,
     extension_schemas: Option<crate::core::SchemaRegistry>,
@@ -302,6 +346,12 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self,
         write: crate::distributed::JournalWrite,
     ) -> Result<acyclic_stream::CommitCondition> {
+        if !matches!(write, crate::distributed::JournalWrite::Settlement)
+            && self.deadline_epoch_ms.is_some_and(|deadline| self.host.clock.now_unix_millis() >= deadline)
+        {
+            self.host.expire_task_deadline(self.task_id, Some(self.fence.clone())).await?;
+            return Err(Error::Indeterminate(self.operation_id()));
+        }
         self.host
             .coordinator
             .lock()
@@ -344,11 +394,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if admission.input != input
             || request.child.parent != Some(parent_task)
             || request.child.operation_id == admission.operation_id
-            || request
-                .child
-                .resource_proofs
-                .iter()
-                .any(|proof| proof.preparation != self.task_id)
+            || request.child.resource_proofs.iter().any(|proof| {
+                request.resources.contains(&proof.resource) && proof.preparation != self.task_id
+            })
             || !self.input_grants.contains(&request.creation_grant)
         {
             return Err(Error::Unauthorized(
@@ -1218,7 +1266,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<()> {
         let operation_id = OperationId::from_bytes(task.into_bytes());
         let admission = self.admission(operation_id).await?;
-        self.verify_owner(task, &fence, true).await?;
+        let settlement = matches!(&outcome, Outcome::Cancelled | Outcome::Indeterminate { .. });
+        self.verify_owner(task, &fence, settlement).await?;
         let digest = crate::contract::canonical_json_digest(&outcome)?;
         let key = IdempotencyKey::new(format!(
             "task-settle:{operation_id}:{}:{}",
@@ -1244,20 +1293,27 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             Outcome::Cancelled => Outcome::Cancelled,
             Outcome::Indeterminate { operation_id } => Outcome::Indeterminate { operation_id },
         };
-        self.coordinator
-            .lock()
-            .await
-            .apply(
-                operation_id,
-                key,
-                crate::scheduler::SchedulerEvent::Completed {
-                    operation_id,
-                    outcome,
-                    fence: Some(fence),
-                    execution_duration_ns: None,
-                },
-            )
-            .await?;
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.refresh().await?;
+        if !settlement
+            && admission.run_limits.deadline_epoch_ms.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline)
+        {
+            coordinator.cancel_operation(
+                &self.owner, &self.owner_scope, &self.verifier, operation_id,
+                IdempotencyKey::new(format!("task-cancel:{operation_id}"))?, true,
+            ).await?;
+            return Err(Error::Indeterminate(operation_id));
+        }
+        let current = coordinator.observe_operation(
+            &self.owner, &self.owner_scope, &self.verifier, operation_id,
+        )?;
+        crate::scheduler::require_execution_owner(&current, &fence, settlement)?;
+        coordinator.apply(
+            operation_id, key,
+            crate::scheduler::SchedulerEvent::Completed {
+                operation_id, outcome, fence: Some(fence), execution_duration_ns: None,
+            },
+        ).await?;
         Ok(())
     }
 
@@ -1267,6 +1323,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         fence: &crate::scheduler::LeaseFence,
         settlement: bool,
     ) -> Result<()> {
+        if !settlement {
+            let operation = OperationId::from_bytes(task_id.into_bytes());
+            let admitted = self.read_retained_admission(operation).await?;
+            if admitted.run_limits.deadline_epoch_ms.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline) {
+                self.expire_task_deadline(task_id, Some(fence.clone())).await?;
+                return Err(Error::Indeterminate(operation));
+            }
+        }
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh().await?;
         let operation = coordinator.observe_operation(
@@ -1313,6 +1377,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             output_schema: admission.output_schema,
             input_grants: admission.grants,
             input_limits: admission.limits,
+            deadline_epoch_ms: admission.run_limits.deadline_epoch_ms,
             extensions: admission.extensions,
             extension_schemas: self.root_scope.extension_schema_registry(),
             extension_runtime: self.root_scope.extension_runtime(),
@@ -1359,7 +1424,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ));
         }
         Ok(Self {
-            coordinator: Mutex::new(coordinator),
+            coordinator: Arc::new(Mutex::new(coordinator)),
             stream,
             payloads,
             reader,
@@ -1375,7 +1440,95 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             interactions: None,
             effects: None,
             session_limits: None,
+            resource_creation: Vec::new(),
         })
+    }
+
+    /// Current trusted wall clock shared by admission, workers and effect gates.
+    #[must_use]
+    pub fn now_unix_millis(&self) -> u64 {
+        self.clock.now_unix_millis()
+    }
+
+    /// Reads the configured owner's exact current operation without granting
+    /// dispatch, publication or another reservation.
+    pub async fn observe_task(&self, task: TaskId) -> Result<crate::scheduler::OperationState> {
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.refresh().await?;
+        coordinator.observe_operation(
+            &self.owner, &self.owner_scope, &self.verifier,
+            OperationId::from_bytes(task.into_bytes()),
+        )
+    }
+
+    /// Cancels only when the original admitted absolute deadline has elapsed.
+    /// A supplied fence must still own the exact reservation; uncertain effects
+    /// and their original reservation remain available for reconciliation.
+    pub async fn expire_task_deadline(
+        &self,
+        task: TaskId,
+        fence: Option<crate::scheduler::LeaseFence>,
+    ) -> Result<()> {
+        let operation = OperationId::from_bytes(task.into_bytes());
+        let admission = self.read_retained_admission(operation).await?;
+        let deadline = admission.run_limits.deadline_epoch_ms.ok_or_else(|| {
+            Error::Invalid("task has no admitted deadline".into())
+        })?;
+        if self.clock.now_unix_millis() < deadline {
+            return Err(Error::Conflict("task deadline has not elapsed".into()));
+        }
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.refresh().await?;
+        let state = coordinator.observe_operation(
+            &self.owner, &self.owner_scope, &self.verifier, operation,
+        )?;
+        if state.outcome.as_ref().is_some_and(|outcome| !matches!(outcome, Outcome::Indeterminate { .. })) {
+            return Ok(());
+        }
+        if let Some(fence) = fence {
+            if state.reservation.as_ref().map(crate::scheduler::LeaseFence::from).as_ref() != Some(&fence) {
+                return Err(Error::Conflict("deadline observer does not own the current reservation".into()));
+            }
+        }
+        if state.cancellation_requested {
+            return Ok(());
+        }
+        coordinator.cancel_operation(
+            &self.owner, &self.owner_scope, &self.verifier, operation,
+            IdempotencyKey::new(format!("task-cancel:{operation}"))?, true,
+        ).await?;
+        Ok(())
+    }
+
+    /// Registers one explicitly trusted, revision-pinned creation verifier.
+    /// Raw proof references never install authority or provider bindings.
+    pub fn with_resource_creation_provider(
+        mut self,
+        provider: Arc<dyn crate::resource_preparation::ResourceCreationProvider>,
+    ) -> Result<Self> {
+        provider.provider().validate()?;
+        if self.resource_creation.iter().any(|bound| bound.provider() == provider.provider()) {
+            return Err(Error::Invalid("resource creation provider is already registered".into()));
+        }
+        self.resource_creation.push(provider);
+        Ok(self)
+    }
+
+    pub(crate) fn with_resource_creation_providers(
+        mut self,
+        providers: Vec<Arc<dyn crate::resource_preparation::ResourceCreationProvider>>,
+    ) -> Result<Self> {
+        if !self.resource_creation.is_empty() {
+            return Err(Error::Conflict("resource creation registry is already configured".into()));
+        }
+        for (index, provider) in providers.iter().enumerate() {
+            provider.provider().validate()?;
+            if providers[..index].iter().any(|bound| bound.provider() == provider.provider()) {
+                return Err(Error::Invalid("resource creation provider is registered twice".into()));
+            }
+        }
+        self.resource_creation = providers;
+        Ok(self)
     }
 
     /// Requires these immutable shared ceilings for every root admitted by this
@@ -1408,9 +1561,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         admission: TaskAdmissionRecord,
         parent_fence: Option<crate::scheduler::LeaseFence>,
     ) -> Result<Admission<TaskId>> {
-        if !admission.resource_proofs.is_empty() {
-            return Err(Error::Unsupported(
-                "resource proof verifier is not bound".into(),
+        admission.validate()?;
+        if !admission.resource_proofs.is_empty()
+            && parent_fence.is_none()
+            && self.retained_declaration(admission.operation_id).await?.is_none()
+        {
+            return Err(Error::Unauthorized(
+                "created resource admission requires the current parent execution fence".into(),
             ));
         }
         let operation_id = admission.operation_id;
@@ -1418,12 +1575,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let machine = admission.machine.clone();
         let output_schema = admission.output_schema.clone();
         let parent = admission.parent;
-        let scope = RuntimeScope::new(admission.grants.clone(), admission.limits)?
-            .with_run_limits(admission.run_limits)?
-            .with_replayed_extensions(admission.extensions.clone())?;
-        self.root_scope
-            .narrow(scope.grants().clone(), scope.limits())?
-            .with_run_limits(scope.run_limits())?;
+        let scope = self.authenticated_scope(&admission).await?;
         self.validate_parent_scope(parent, &scope).await?;
         if parent.is_some() {
             require_descendant_grant(scope.grants(), &identity)?;
@@ -1577,6 +1729,124 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self
     }
 
+    async fn authenticated_scope(&self, admission: &TaskAdmissionRecord) -> Result<RuntimeScope> {
+        let mut visited = BTreeSet::new();
+        let access = self.verify_created_access(admission, &mut visited).await?;
+        self.root_scope.with_created_access(admission, access)
+    }
+
+    fn verify_created_access<'a>(
+        &'a self,
+        admission: &'a TaskAdmissionRecord,
+        visited: &'a mut BTreeSet<OperationId>,
+    ) -> BoxFuture<'a, Result<Option<crate::resource_preparation::CreatedResourceAccess>>> {
+        Box::pin(async move {
+            if admission.resource_proofs.is_empty() {
+                return Ok(None);
+            }
+            if !visited.insert(admission.operation_id) {
+                return Err(Error::Unauthorized("resource preparation proof is cyclic".into()));
+            }
+            let parent = admission.parent.ok_or_else(|| {
+                Error::Unauthorized("created resource admission has no parent".into())
+            })?;
+            let parent_admission = self.read_retained_admission(
+                OperationId::from_bytes(parent.into_bytes()),
+            ).await?;
+            let mut receipts = Vec::with_capacity(admission.resource_proofs.len());
+            for proof in &admission.resource_proofs {
+                let provider = self.resource_creation.iter().find(|provider| {
+                    provider.provider() == &proof.provider
+                }).ok_or_else(|| Error::Unsupported("resource proof verifier is not bound".into()))?;
+                let preparation = self.read_retained_admission(
+                    OperationId::from_bytes(proof.preparation.into_bytes()),
+                ).await?;
+                let request: crate::resource_preparation::ResourcePreparationRequest =
+                    serde_json::from_value(preparation.input.clone())
+                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                request.validate()?;
+                if preparation.parent != request.child.parent
+                    || preparation.operation_id.into_bytes() != proof.preparation.into_bytes()
+                    || request.provider != proof.provider
+                    || !request.resources.contains(&proof.resource)
+                    || !request.child.resource_proofs.contains(proof)
+                    || !preparation.grants.contains(&request.creation_grant)
+                {
+                    return Err(Error::Unauthorized("resource proof differs from admitted preparation".into()));
+                }
+                let preparation_access = self.verify_created_access(&preparation, visited).await?;
+                self.root_scope.with_created_access(&preparation, preparation_access)?;
+                let preparation_parent = preparation.parent.ok_or_else(|| {
+                    Error::Unauthorized("resource preparation has no original parent".into())
+                })?;
+                let original_parent = self.read_retained_admission(
+                    OperationId::from_bytes(preparation_parent.into_bytes()),
+                ).await?;
+                if !original_parent.grants.contains(&request.creation_grant)
+                    || !preparation.grants.is_subset_of(&original_parent.grants)
+                {
+                    return Err(Error::Unauthorized("creation authority was not narrowed from the parent".into()));
+                }
+                let inherited = request.child != *admission;
+                if inherited {
+                    if !parent_admission.resource_proofs.contains(proof) {
+                        return Err(Error::Unauthorized("created resource proof is not inherited from the parent".into()));
+                    }
+                    let original_child = self.read_retained_admission(request.child.operation_id).await?;
+                    if original_child != request.child {
+                        return Err(Error::Unauthorized("created resource origin admission changed".into()));
+                    }
+                }
+                {
+                    let mut coordinator = self.coordinator.lock().await;
+                    coordinator.refresh().await?;
+                    let prepared = coordinator.observe_operation(
+                        &self.owner, &self.owner_scope, &self.verifier, preparation.operation_id,
+                    )?;
+                    if prepared.cancellation_requested
+                        || !matches!(prepared.outcome, Some(Outcome::Succeeded(_)))
+                    {
+                        return Err(Error::Unauthorized("resource preparation did not succeed".into()));
+                    }
+                    if inherited {
+                        let mut cursor = Some(OperationId::from_bytes(parent.into_bytes()));
+                        let mut lineage = BTreeSet::new();
+                        let mut found = false;
+                        while let Some(operation) = cursor {
+                            if operation == request.child.operation_id {
+                                found = true;
+                                break;
+                            }
+                            if !lineage.insert(operation) {
+                                return Err(Error::Conflict("indexed operation lineage is cyclic".into()));
+                            }
+                            let state = coordinator.observe_operation(
+                                &self.owner, &self.owner_scope, &self.verifier, operation,
+                            )?;
+                            cursor = state.spec.parent.map(|link| link.operation_id);
+                        }
+                        if !found {
+                            return Err(Error::Unauthorized("resource proof belongs to another child lineage".into()));
+                        }
+                    }
+                }
+                let receipt = provider.verify(&request, proof).await?;
+                if receipt.origin.owner != self.owner
+                    || receipt.origin.parent_task != preparation_parent
+                    || receipt.origin.preparation_task != proof.preparation
+                    || receipt.origin.intended_child != request.child.operation_id
+                    || receipt.origin.admission_digest != crate::contract::canonical_json_digest(&preparation)?
+                    || receipt.origin.request_digest != crate::contract::canonical_json_digest(&request)?
+                {
+                    return Err(Error::Unauthorized("resource allocation provenance changed".into()));
+                }
+                receipts.push(receipt);
+            }
+            visited.remove(&admission.operation_id);
+            crate::resource_preparation::CreatedResourceAccess::consume(admission, receipts).map(Some)
+        })
+    }
+
     async fn read_json(&self, reference: &FileRef) -> Result<Value> {
         reference.validate()?;
         if reference.descriptor().media_type() != "application/json" {
@@ -1641,7 +1911,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             })
     }
 
-    async fn admission(&self, operation_id: OperationId) -> Result<TaskAdmissionRecord> {
+    async fn read_retained_admission(&self, operation_id: OperationId) -> Result<TaskAdmissionRecord> {
         let spec = self
             .retained_declaration(operation_id)
             .await?
@@ -1666,11 +1936,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let value = self.read_admission_json(&spec.state).await?;
         let admission = TaskAdmissionRecord::from_canonical_value(value)?;
-        if !admission.resource_proofs.is_empty() {
-            return Err(Error::Unsupported(
-                "resource proof verifier is not bound".into(),
-            ));
-        }
         if admission.policy != self.policy.as_ref().map(|policy| policy.identity()) {
             return Err(Error::Conflict(
                 "durable task policy differs from its admission".into(),
@@ -1684,9 +1949,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "retained task extensions differ from owner bindings".into(),
             ));
         }
-        self.root_scope
-            .narrow(admission.grants.clone(), admission.limits)?
-            .with_run_limits(admission.run_limits)?;
         if admission.operation_id != operation_id
             || admission.task.name != spec.entrypoint.name
             || admission.task.version != spec.entrypoint.version
@@ -1714,6 +1976,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         )?;
         Ok(admission)
     }
+    async fn admission(&self, operation_id: OperationId) -> Result<TaskAdmissionRecord> {
+        let admission = self.read_retained_admission(operation_id).await?;
+        self.authenticated_scope(&admission).await?;
+        Ok(admission)
+    }
+
 
     async fn validate_parent_scope(
         &self,
@@ -1722,9 +1990,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<()> {
         if let Some(parent) = parent {
             let admitted = self
-                .admission(OperationId::from_bytes(parent.into_bytes()))
+                .read_retained_admission(OperationId::from_bytes(parent.into_bytes()))
                 .await?;
-            RuntimeScope::new(admitted.grants, admitted.limits)?
+            let allowed = Capabilities::new(admitted.grants.iter().chain(
+                scope.created_grants().into_iter().flat_map(Capabilities::iter),
+            ));
+            RuntimeScope::new(allowed, admitted.limits)?
                 .with_run_limits(admitted.run_limits)?
                 .narrow(scope.grants().clone(), scope.limits())?
                 .with_run_limits(scope.run_limits())?;
@@ -1882,7 +2153,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(())
     }
 
-    fn validate_batch(&self, request: &DurableBatchRequest) -> Result<()> {
+    async fn validate_batch(&self, request: &DurableBatchRequest) -> Result<()> {
         request.validate()?;
         if request.execution.is_some()
             || request.policy != self.policy.as_ref().map(|policy| policy.identity())
@@ -1902,9 +2173,22 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &request.output_schema,
             None,
         )?;
-        self.root_scope
-            .narrow(request.scope.grants().clone(), request.scope.limits())?
-            .with_run_limits(request.scope.run_limits())?;
+        if request.scope.resource_proofs().is_empty() {
+            self.root_scope.narrow(request.scope.grants().clone(), request.scope.limits())?
+                .with_run_limits(request.scope.run_limits())?;
+        } else if request.inputs.is_empty() {
+            let parent = request.parent.ok_or_else(|| Error::Unauthorized("created batch has no parent".into()))?;
+            let admitted = self.read_retained_admission(OperationId::from_bytes(parent.into_bytes())).await?;
+            if request.scope.resource_proofs().iter().any(|proof| !admitted.resource_proofs.contains(proof)) {
+                return Err(Error::Unauthorized("empty batch resource proofs differ from parent".into()));
+            }
+            self.authenticated_scope(&admitted).await?
+                .narrow(request.scope.grants().clone(), request.scope.limits())?
+                .with_run_limits(request.scope.run_limits())?;
+        } else {
+            let first = request.member_admission(0)?;
+            self.authenticated_scope(&first).await?;
+        }
         if request.parent.is_some() {
             require_descendant_grant(request.scope.grants(), &request.task)?;
         }
@@ -2326,6 +2610,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 }
 
 impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
+    fn admit_owned<'a>(
+        &'a self,
+        request: TaskAdmissionRecord,
+        fence: crate::scheduler::LeaseFence,
+    ) -> BoxFuture<'a, Result<Admission<TaskId>>> {
+        Box::pin(async move { CoordinatorTaskHost::admit_owned(self, request, fence).await })
+    }
+
     fn verify_dispatch_owner<'a>(
         &'a self,
         task_id: TaskId,
@@ -2476,7 +2768,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         request: DurableBatchRequest,
     ) -> BoxFuture<'a, Result<Option<Vec<Admission<TaskId>>>>> {
         Box::pin(async move {
-            self.validate_batch(&request)?;
+            self.validate_batch(&request).await?;
             let Some(retained) = self.retained_batch(request.batch_id).await? else {
                 return Ok(None);
             };
@@ -2536,7 +2828,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                     "batch manifest has another identity".into(),
                 ));
             }
-            self.validate_batch(&request)?;
+            self.validate_batch(&request).await?;
             Ok(Some(request))
         })
     }
@@ -2546,7 +2838,13 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         request: DurableBatchRequest,
     ) -> BoxFuture<'a, Result<Vec<Admission<TaskId>>>> {
         Box::pin(async move {
-            self.validate_batch(&request)?;
+            let parent_fence = if request.scope.resource_proofs().is_empty() {
+                None
+            } else {
+                let parent = request.parent.ok_or_else(|| Error::Unauthorized("created batch has no parent".into()))?;
+                Some(request.scope.current_creation_parent_fence(parent).await?)
+            };
+            self.validate_batch(&request).await?;
             self.validate_parent_scope(request.parent, &request.scope)
                 .await?;
             self.commit_batch(&request).await?;
@@ -2572,7 +2870,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                             });
                             continue;
                         }
-                        let admitted = self.admit(member).await?;
+                        let admitted = self.admit_record(member, parent_fence.clone()).await?;
                         if self
                             .retained_batch_cancellation(request.batch_id)
                             .await?
@@ -2647,11 +2945,29 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                     "task identity does not match its admission".into(),
                 ));
             }
-            let admission = self.admission(operation_id).await?;
-            self.root_scope
-                .narrow(admission.grants, admission.limits)?
-                .with_run_limits(admission.run_limits)?
-                .with_replayed_extensions(admission.extensions)
+            let admission = self.read_retained_admission(operation_id).await?;
+            let scope = self.authenticated_scope(&admission).await?;
+            if admission.resource_proofs.is_empty() {
+                return Ok(scope);
+            }
+            let fence = {
+                let mut coordinator = self.coordinator.lock().await;
+                coordinator.refresh().await?;
+                let operation = coordinator.observe_operation(
+                    &self.owner, &self.owner_scope, &self.verifier, operation_id,
+                )?;
+                operation.reservation.as_ref().map(crate::scheduler::LeaseFence::from)
+            };
+            Ok(scope.with_created_publication_lease(Arc::new(CreatedTaskPublicationLease {
+                coordinator: self.coordinator.clone(),
+                owner: self.owner.clone(),
+                scope: self.owner_scope.clone(),
+                verifier: self.verifier.clone(),
+                operation: operation_id,
+                fence,
+                clock: self.clock.clone(),
+                deadline_epoch_ms: admission.run_limits.deadline_epoch_ms,
+            })))
         })
     }
 
@@ -3026,6 +3342,8 @@ mod tests {
 
     #[cfg(feature = "filesystem")]
     mod resource_preparation;
+    #[cfg(feature = "filesystem")]
+    mod created_resource_access;
 
     struct MemoryPayloads {
         volume: VolumeRef,

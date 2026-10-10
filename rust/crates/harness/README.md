@@ -75,6 +75,25 @@ A replacement executor can coexist with the same pinned tool registry used by ty
 
 Durable task admission has an operation-only reconciliation path: `HarnessBundle::reconcile_admission` observes a committed task ID and pinned implementation without resending the input. A confirmed absence returns `None`; missing content for a committed admission is an error, not an absent operation. `HarnessBuilder::state` and `spawner` may bind retained observation and admission independently; `durable_host` supplies both as a combined local convenience. An independent spawner requires the state provider to attest the entire owner-retained `TaskAdmissionRecord` before the runtime exposes an accepted handle; an operation ID need not equal its task ID. Unobserved batch members stay individually indeterminate. The typed `attach` call checks the registered definition before exposing the task result.
 
+Task and batch admissions retain explicit `resource_proofs`, empty when no
+creation-derived authority is requested. A configured `ResourceCreationProvider`
+verifies the existing preparation task, original allocation generation and
+protected provider records. The coordinator authenticates its original parent,
+creation fence and intended child before sealing exact grants and content
+bindings into that child's scope. Caller-built proof refs alone grant nothing.
+`FilesystemResourceCreationProvider` uses the ordinary workspace, content verifier
+and publisher; `open_with_creation_providers` composes it into the same filesystem
+task runtime. Child writes and new child admission require their current retained
+publication lease, while inherited access preserves the original proof identity.
+
+The filesystem task runtime enforces the originally admitted absolute deadline
+through the host's current clock and native or browser-worker timers. Expiry
+records cancellation but does not claim an uncertain command stopped.
+`reconcile_task` only observes already retained command intents under their
+original lease with caller-selected command and wait bounds; it cannot execute
+a new command, advance a machine or reset the deadline. Only known settlement
+can release the retained reservation.
+
 `AgentHarness::children` asks the retained task owner for a bounded page of direct children, independent of conversation forks and task dependencies. The coordinator authenticates the parent, exposes only same-owner children in stable slot order, and requires its revision on continuation so concurrent admissions cannot silently skip a child. A caller from another owner cannot declare a child under that parent merely by knowing its ID.
 
 `Bindings::local()` starts without authority or implicit providers. `HarnessBuilder::bindings` installs its scope, registries, provider boundaries, and concurrency together. An imported binding scope can only be narrowed; configure local root grants on `HarnessBuilder` before building, or construct the desired scope in the binding set before importing it. Later builder calls can register more tasks and tools.

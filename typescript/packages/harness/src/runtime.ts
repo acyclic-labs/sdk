@@ -911,6 +911,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
         requirements,
         machine_digest: machineDigest,
         parent: this.parentTaskId ?? null,
+        resource_proofs: [],
         grants: [...this.#harness.scope.grants].sort(),
         limits: nativeLimits(this.#harness.limits),
         run_limits: nativeRunLimits(this.#harness.scope.limits),

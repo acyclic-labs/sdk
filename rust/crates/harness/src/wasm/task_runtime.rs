@@ -155,6 +155,24 @@ struct WasmBrowserTick {
     work: Option<WasmBrowserWork>,
 }
 
+#[derive(Serialize, Tsify)]
+struct WasmBrowserLeaseFence {
+    reservation_id: String,
+    placement: String,
+}
+
+#[derive(Serialize, Tsify)]
+struct WasmBrowserTaskObservation {
+    task_id: String,
+    operation_id: String,
+    #[tsify(type = "WasmTaskRunLimitsWire")]
+    run_limits: crate::runtime::TaskRunLimits,
+    cancellation_requested: bool,
+    #[tsify(type = "WasmBrowserLeaseFence | null")]
+    reservation: Option<WasmBrowserLeaseFence>,
+}
+
+
 #[derive(Deserialize, Tsify)]
 #[serde(deny_unknown_fields)]
 #[tsify(large_number_types_as_bigints)]
@@ -654,7 +672,7 @@ impl WasmTaskRuntime {
             .map_err(|error| js_error(Error::Storage(error.to_string())))?,
         ));
         let limits = options.session_limits;
-        let runtime = FilesystemTaskRuntime::open(
+        let runtime = FilesystemTaskRuntime::open_with_creation_providers(
             stream,
             filesystem.clone(),
             options.volume.clone(),
@@ -672,6 +690,13 @@ impl WasmTaskRuntime {
             },
             options.concurrency as usize,
             options.maximum_payload_bytes,
+            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            None,
+            vec![Arc::new(
+                crate::filesystem::FilesystemResourceCreationProvider::new(
+                    filesystem.clone(), owner.issuer.clone(),
+                ).map_err(js_error)?,
+            )],
         )
         .await
         .map_err(js_error)?;
@@ -922,6 +947,71 @@ impl WasmTaskRuntime {
                 .resume_task(lease, &self.commands(), maximum_transitions)
                 .await,
         ))
+    }
+
+    /// Reconciles original admitted effects only. The finite observation
+    /// allowance never resets the task's deadline or permits fresh dispatch.
+    #[wasm_bindgen(unchecked_return_type = "WasmBrowserWork")]
+    pub async fn reconcile(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "WorkLease")] lease: JsValue,
+        maximum_commands: u32,
+        maximum_wait_millis: u32,
+    ) -> std::result::Result<JsValue, JsValue> {
+        let lease: WorkLease = from_js(lease)?;
+        work_to_js(&work_value(
+            self.runtime.reconcile_task(
+                lease, &self.commands(), maximum_commands, maximum_wait_millis,
+            ).await,
+        ))
+    }
+
+    /// Reads the exact original admission deadline and current owner fence.
+    /// Observation does not dispatch, advance a machine or acquire capacity.
+    #[wasm_bindgen(js_name = observeTask, unchecked_return_type = "WasmBrowserTaskObservation")]
+    pub async fn observe_task(&self, task: String) -> std::result::Result<JsValue, JsValue> {
+        let task = TaskId::parse(&task).map_err(js_error)?;
+        let admission = self.runtime.task_host().observe_admission(task).await.map_err(js_error)?;
+        let state = self.runtime.task_host().observe_task(task).await.map_err(js_error)?;
+        to_js(&WasmBrowserTaskObservation {
+            task_id: task.to_string(),
+            operation_id: admission.operation_id.to_string(),
+            run_limits: admission.run_limits,
+            cancellation_requested: state.cancellation_requested,
+            reservation: state.reservation.map(|reservation| WasmBrowserLeaseFence {
+                reservation_id: reservation.id, placement: reservation.placement,
+            }),
+        })
+    }
+
+    /// Reads canonical admission data; raw references remain non-bearer metadata.
+    #[wasm_bindgen(js_name = observeAdmission, unchecked_return_type = "WasmTaskAdmissionWire")]
+    pub async fn observe_admission(&self, task: String) -> std::result::Result<JsValue, JsValue> {
+        let task = TaskId::parse(&task).map_err(js_error)?;
+        let admission = self.runtime.task_host().observe_admission(task).await.map_err(js_error)?;
+        super::to_js_admitted(&admission.canonical_value())
+    }
+
+    /// Admits one canonical record under the exact current parent lease.
+    /// The ordinary owner authenticates creation evidence before deriving access.
+    #[wasm_bindgen(js_name = admitRecord, unchecked_return_type = "WasmBrowserAdmission")]
+    pub async fn admit_record(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "WasmTaskAdmissionWire")] admission: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "WasmBrowserLeaseFence")] parent_fence: JsValue,
+    ) -> std::result::Result<JsValue, JsValue> {
+        let admission = crate::runtime::TaskAdmissionRecord::from_canonical_value(
+            from_js::<Value>(admission)?,
+        ).map_err(js_error)?;
+        let fence: crate::scheduler::LeaseFence = from_js(parent_fence)?;
+        let admission = match self.runtime.task_host().admit_owned(admission, fence).await.map_err(js_error)? {
+            Admission::Accepted(task) => WasmBrowserAdmission::Accepted { task_id: task.to_string() },
+            Admission::Rejected { reason } => WasmBrowserAdmission::Rejected { reason },
+            Admission::Indeterminate { operation_id } => WasmBrowserAdmission::Indeterminate {
+                operation_id: operation_id.to_string(),
+            },
+        };
+        to_js(&admission)
     }
 
     /// Observes only; absence does not dispatch or replay an uncertain effect.

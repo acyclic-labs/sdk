@@ -71,6 +71,21 @@ Model, tool, and mail recovery retains original operation identities and fences.
 Competing tabs and reopened workers use the same coordinator, journals and stores;
 no native filesystem or process fallback is selected.
 
+Deadlines retain their originally admitted absolute time. The browser host reads
+the current wall clock in windows and workers and bounds pending execution with
+worker-compatible timers. Expiry records cancellation without inventing a stopped
+effect or releasing its reservation. `observeTask(taskId)` exposes the original
+run limits and retained lease; `reconcile(lease, maximumCommands, maximumWaitMillis)`
+only observes existing command intents. It cannot advance a machine or dispatch
+a new effect. Late callbacks and reopened workers retain the original fence.
+
+`admitRecord(record, parentFence)` submits the canonical Rust admission, including
+`resource_proofs`. Proof refs are untrusted data, not capabilities. The same owner
+host verifies task-bound preparation, the original allocation generation and
+current parent fence through its registered IndexedDB filesystem creation
+provider before deriving exact child content bindings. Ordinary task, model and
+content operations use those bindings; new resources do not broaden the root scope.
+
 Provider batches gather every IndexedDB Blob handle before materialization can
 yield. Provider budgets include gate reads/writes, replay result and Blob-handle
 vectors, and complete retained encoded commits. Append hash/encoding work is

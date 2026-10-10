@@ -220,7 +220,7 @@ impl<I, O> TaskDefinition<I, O> {
             ));
         }
         let retained = host.observe_admission(task_id).await?;
-        context.harness.validate_observed_admission(&retained)?;
+        context.harness.validate_observed_admission(&retained).await?;
         if retained.task != self.identity
             || retained.machine != *machine.identity()
             || retained.input_schema != self.input_schema
@@ -612,7 +612,7 @@ impl TaskRegistry {
             None,
             None,
             None,
-        )
+        ).and_then(|record| record.with_resource_proofs(scope.resource_proofs().to_vec()))
     }
 
     pub(crate) fn validate_durable_admission(
@@ -999,6 +999,16 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
             Err(Error::Unsupported(
                 "durable task admission is not bound".into(),
             ))
+        })
+    }
+    /// Admits a child under its exact current parent's execution fence.
+    fn admit_owned<'a>(
+        &'a self,
+        _request: TaskAdmissionRecord,
+        _fence: crate::scheduler::LeaseFence,
+    ) -> BoxFuture<'a, Result<Admission<TaskId>>> {
+        Box::pin(async {
+            Err(Error::Unsupported("owned child admission is not bound".into()))
         })
     }
     /// Resolves an uncertain admission by its original operation alone. `None`
@@ -1397,6 +1407,16 @@ pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
         &'a self,
         request: TaskAdmissionRecord,
     ) -> BoxFuture<'a, Result<Admission<TaskId>>>;
+    /// Publishes a child only while this exact original parent lease is current.
+    fn admit_owned<'a>(
+        &'a self,
+        _request: TaskAdmissionRecord,
+        _fence: crate::scheduler::LeaseFence,
+    ) -> BoxFuture<'a, Result<Admission<TaskId>>> {
+        Box::pin(async {
+            Err(Error::Unsupported("owned child spawner is not bound".into()))
+        })
+    }
     /// Observes one possibly lost admission without resubmission.
     fn reconcile_admission<'a>(
         &'a self,
@@ -1472,6 +1492,13 @@ impl TaskSpawner for HostTaskSpawner {
         request: TaskAdmissionRecord,
     ) -> BoxFuture<'a, Result<Admission<TaskId>>> {
         self.0.admit(request)
+    }
+    fn admit_owned<'a>(
+        &'a self,
+        request: TaskAdmissionRecord,
+        fence: crate::scheduler::LeaseFence,
+    ) -> BoxFuture<'a, Result<Admission<TaskId>>> {
+        self.0.admit_owned(request, fence)
     }
     fn reconcile_admission<'a>(
         &'a self,
@@ -1678,6 +1705,8 @@ pub struct RuntimeScope {
     extensions_sealed: bool,
     extension_runtime: Option<Arc<ExtensionRuntime>>,
     extension_schemas: Option<SchemaRegistry>,
+    resource_proofs: Vec<crate::resource_preparation::ResourceCreationProofRef>,
+    created_access: Option<Arc<crate::resource_preparation::CreatedResourceAccess>>,
 }
 
 impl RuntimeScope {
@@ -1692,6 +1721,8 @@ impl RuntimeScope {
             extensions_sealed: false,
             extension_runtime: None,
             extension_schemas: None,
+            resource_proofs: Vec::new(),
+            created_access: None,
         })
     }
 
@@ -1720,6 +1751,8 @@ impl RuntimeScope {
             extensions_sealed: true,
             extension_runtime: self.extension_runtime.clone(),
             extension_schemas: self.extension_schemas.clone(),
+            resource_proofs: self.resource_proofs.clone(),
+            created_access: self.created_access.clone(),
         })
     }
 
@@ -1842,6 +1875,104 @@ impl RuntimeScope {
         }
         self.extensions_sealed = true;
         Ok(self)
+    }
+
+    /// Exact durable proof references retained for descendant scope attenuation.
+    /// References alone do not seal a scope or install content handles.
+    #[must_use]
+    pub fn resource_proofs(&self) -> &[crate::resource_preparation::ResourceCreationProofRef] {
+        &self.resource_proofs
+    }
+
+    pub(crate) fn with_created_access(
+        &self,
+        admission: &TaskAdmissionRecord,
+        access: Option<crate::resource_preparation::CreatedResourceAccess>,
+    ) -> Result<Self> {
+        let mut permitted = self.clone();
+        if let Some(access) = access {
+            if access.operation != admission.operation_id
+                || access.admission_digest != crate::contract::canonical_json_digest(
+                    &admission.canonical_value(),
+                )?
+                || access.proofs != admission.resource_proofs
+            {
+                return Err(Error::Unauthorized("created resource seal changed admission".into()));
+            }
+            permitted.grants = Capabilities::new(
+                self.grants.iter().chain(access.grants.iter()),
+            );
+            permitted.resource_proofs = access.proofs.clone();
+            permitted.created_access = Some(Arc::new(access));
+        } else if !admission.resource_proofs.is_empty() {
+            return Err(Error::Unauthorized("created resource proof is not authenticated".into()));
+        }
+        permitted.narrow(admission.grants.clone(), admission.limits)?
+            .with_run_limits(admission.run_limits)?
+            .with_replayed_extensions(admission.extensions.clone())
+    }
+
+    fn resume_sealed(&self, admitted: Self, operation: OperationId) -> Result<Self> {
+        let mut permitted = self.clone();
+        if let Some(access) = &admitted.created_access {
+            if access.operation != operation || access.proofs != admitted.resource_proofs {
+                return Err(Error::Unauthorized("created resource seal belongs to another task".into()));
+            }
+            permitted.grants = Capabilities::new(
+                self.grants.iter().chain(access.grants.iter()),
+            );
+            permitted.resource_proofs = admitted.resource_proofs.clone();
+            permitted.created_access = admitted.created_access.clone();
+        } else if !admitted.resource_proofs.is_empty() {
+            return Err(Error::Unauthorized("unsealed created resource scope".into()));
+        }
+        permitted.narrow(admitted.grants, admitted.limits)?
+            .with_run_limits(admitted.run_limits)?
+            .with_replayed_extensions(admitted.extensions)
+    }
+
+    pub(crate) async fn current_creation_parent_fence(&self, parent: TaskId) -> Result<crate::scheduler::LeaseFence> {
+        let access = self.created_access.as_ref().ok_or_else(|| {
+            Error::Unauthorized("created child has no inherited parent seal".into())
+        })?;
+        if access.operation.into_bytes() != parent.into_bytes() {
+            return Err(Error::Unauthorized("created child seal belongs to another parent".into()));
+        }
+        let lease = access.publication_lease.as_ref().ok_or_else(|| {
+            Error::Unauthorized("created child parent lease is not bound".into())
+        })?;
+        lease.verify().await?;
+        lease.fence()
+    }
+
+    pub(crate) fn created_grants(&self) -> Option<&Capabilities> {
+        self.created_access.as_ref().map(|access| &access.grants)
+    }
+
+    pub(crate) fn with_created_publication_lease(
+        mut self,
+        lease: Arc<dyn crate::resource_preparation::CreatedTaskLease>,
+    ) -> Self {
+        if let Some(access) = &mut self.created_access {
+            Arc::make_mut(access).publication_lease = Some(lease);
+        }
+        self
+    }
+
+    async fn verify_created_write(&self, volume: &VolumeRef) -> Result<()> {
+        if self.created_content(Some(volume)).is_some() {
+            let lease = self.created_access.as_ref()
+                .and_then(|access| access.publication_lease.as_ref())
+                .ok_or_else(|| Error::Unauthorized("created resource publication lease is not bound".into()))?;
+            lease.verify().await?;
+        }
+        Ok(())
+    }
+
+    fn created_content(&self, volume: Option<&VolumeRef>) -> Option<&ContentBindings> {
+        self.created_access.as_ref()?.content.iter().find(|binding| {
+            volume.map_or(binding.default_writer, |volume| &binding.volume == volume)
+        }).map(|binding| &binding.binding)
     }
 
     /// Returns the exact effective grants.
@@ -2584,7 +2715,7 @@ pub(crate) fn validate_child_page<'a>(
 }
 
 impl AgentHarness {
-    fn validate_observed_admission(&self, observed: &TaskAdmissionRecord) -> Result<()> {
+    async fn validate_observed_admission(&self, observed: &TaskAdmissionRecord) -> Result<()> {
         observed.validate()?;
         self.tasks.validate_durable_admission(
             &observed.task,
@@ -2593,9 +2724,26 @@ impl AgentHarness {
             &observed.output_schema,
             Some(&observed.input),
         )?;
-        self.scope
-            .narrow(observed.grants.clone(), observed.limits)?
-            .with_run_limits(observed.run_limits)?;
+        if observed.resource_proofs.is_empty() {
+            self.scope.narrow(observed.grants.clone(), observed.limits)?
+                .with_run_limits(observed.run_limits)?;
+        } else {
+            let state = self.state.as_ref().ok_or_else(|| {
+                Error::Unsupported("resource-derived admission state is not bound".into())
+            })?;
+            let admitted = state.resume_scope(
+                TaskId::from_bytes(observed.operation_id.into_bytes()), observed.operation_id,
+            ).await?;
+            let observed_digest = crate::contract::canonical_json_digest(
+                &observed.canonical_value(),
+            )?;
+            if admitted.created_access.as_ref().is_none_or(|access| {
+                access.admission_digest != observed_digest
+            }) {
+                return Err(Error::Unauthorized("resource scope seal differs from observed admission".into()));
+            }
+            self.scope.resume_sealed(admitted, observed.operation_id)?;
+        }
         if observed.policy != self.policy_identity
             || observed.extensions.as_ref() != self.scope.extensions()
         {
@@ -2661,7 +2809,7 @@ impl AgentHarness {
                 "operation belongs to another admission request".into(),
             ));
         }
-        self.validate_observed_admission(&observed)?;
+        self.validate_observed_admission(&observed).await?;
         let extension_leases = self.retain_task_extensions_existing(definition, scope)?;
         Ok(Some(Admission::Accepted(RuntimeTask::Durable {
             task_id,
@@ -2758,7 +2906,7 @@ impl AgentHarness {
             .as_ref()
             .ok_or_else(|| Error::Unsupported("durable task state host is not bound".into()))?;
         match host.observe_admission(task_id).await {
-            Ok(observed) if observed == *expected => self.validate_observed_admission(&observed),
+            Ok(observed) if observed == *expected => self.validate_observed_admission(&observed).await,
             Ok(_) => Err(Error::Conflict(
                 "spawner and state host admission bindings differ".into(),
             )),
@@ -3522,7 +3670,7 @@ impl AgentHarness {
                 "spawner reconciled another operation".into(),
             ));
         }
-        self.validate_observed_admission(&admission)?;
+        self.validate_observed_admission(&admission).await?;
         let identity = admission.task.clone();
         let registered = self
             .tasks
@@ -3535,7 +3683,7 @@ impl AgentHarness {
             ));
         }
         match host.observe_admission(task_id).await {
-            Ok(observed) if observed == admission => self.validate_observed_admission(&observed)?,
+            Ok(observed) if observed == admission => self.validate_observed_admission(&observed).await?,
             Ok(_) => {
                 return Err(Error::Conflict(
                     "spawner and state host admission bindings differ".into(),
@@ -3569,7 +3717,7 @@ impl AgentHarness {
             .as_ref()
             .ok_or_else(|| Error::Unsupported("durable task state is not bound".into()))?;
         let observed = host.observe_admission(task_id).await?;
-        self.validate_observed_admission(&observed)?;
+        self.validate_observed_admission(&observed).await?;
         if observed.task != definition.identity
             || observed.output_schema != definition.output_schema
         {
@@ -3637,7 +3785,7 @@ impl AgentHarness {
             .as_ref()
             .ok_or_else(|| Error::Unsupported("durable task state is not bound".into()))?;
         let retained = state.observe_admission(task_id).await?;
-        self.validate_observed_admission(&retained)?;
+        self.validate_observed_admission(&retained).await?;
         let entry = self
             .tasks
             .0
@@ -3730,7 +3878,7 @@ impl AgentHarness {
             self.policy_identity.clone(),
             scope.extensions().cloned(),
             None,
-        )?;
+        )?.with_resource_proofs(scope.resource_proofs().to_vec())?;
         // Reconcile an already committed operation before checking extension
         // admission state. This path must remain available after a local or
         // registry-wide disable; only the subsequent new-admission path is
@@ -3752,7 +3900,16 @@ impl AgentHarness {
             expected.execution = Some(placement);
         }
         let extension_leases = self.retain_task_extensions(definition, &scope)?;
-        Ok(match spawner.admit(expected.clone()).await? {
+        let admitted = if expected.resource_proofs.is_empty() {
+            spawner.admit(expected.clone()).await?
+        } else {
+            let parent = parent.ok_or_else(|| {
+                Error::Unauthorized("created child admission has no parent".into())
+            })?;
+            let fence = scope.current_creation_parent_fence(parent).await?;
+            spawner.admit_owned(expected.clone(), fence).await?
+        };
+        Ok(match admitted {
             Admission::Accepted(task_id) => {
                 self.verify_spawner_admission(task_id, &expected).await?;
                 Admission::Accepted(RuntimeTask::Durable {
@@ -3783,12 +3940,7 @@ impl AgentHarness {
             .as_ref()
             .ok_or_else(|| Error::Unsupported("durable task state is not bound".into()))?;
         let admitted = host.resume_scope(task_id, operation_id).await?;
-        let run_limits = admitted.run_limits();
-        let scope = self
-            .scope
-            .narrow(admitted.grants, admitted.limits)?
-            .with_run_limits(run_limits)?
-            .with_replayed_extensions(admitted.extensions)?;
+        let scope = self.scope.resume_sealed(admitted, operation_id)?;
         let group = self.live.child(scope.concurrency_bound(self.concurrency));
         let descendants = group.child(scope.concurrency_bound(self.concurrency));
         Ok(TaskContext {
@@ -3841,6 +3993,11 @@ fn validate_task_dependencies(
             available_tools.insert((name.to_owned(), version.to_owned()));
         }
     }
+    let created_default = scope.created_content(None);
+    let content = created_default.or(content);
+    let artifacts = created_default.or(artifacts);
+    let created_read = scope.created_access.as_ref()
+        .is_some_and(|access| !access.content.is_empty());
     let content_write = content
         .and_then(|binding| binding.writer.as_ref())
         .is_some_and(|writer| {
@@ -3877,8 +4034,8 @@ fn validate_task_dependencies(
         host: has_host,
         state: has_state,
         spawner: has_spawner,
-        content: content.is_some(),
-        artifacts: artifacts.is_some(),
+        content: content.is_some() || created_read,
+        artifacts: artifacts.is_some() || created_read,
         content_write,
         artifacts_write,
         extensions,
@@ -4044,12 +4201,9 @@ impl TaskContext {
         if files.is_empty() {
             return Ok(());
         }
-        let content = self
-            .harness
-            .content
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?;
         for (binding, (schemas, expected)) in configurations.iter().zip(proofs) {
+            let content = self.content_binding(Some(binding.configuration.content.volume()))
+                .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?;
             let bytes = content.reader.read(&binding.configuration.content).await?;
             schemas.verify_configuration_binding(
                 &binding.configuration,
@@ -4063,7 +4217,9 @@ impl TaskContext {
                 .iter()
                 .any(|binding| &binding.configuration.content == file)
             {
-                content.reader.verify(file).await?;
+                self.content_binding(Some(file.volume()))
+                    .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?
+                    .reader.verify(file).await?;
             }
         }
         Ok(())
@@ -4266,18 +4422,24 @@ impl TaskContext {
         })
     }
 
+    fn content_binding(&self, volume: Option<&VolumeRef>) -> Option<&ContentBindings> {
+        self.scope.created_content(volume).or(self.harness.content.as_ref())
+    }
+
     /// Reads one immutable file through the owner's authenticated provider.
     /// A ref alone does not grant access; the effective task scope must retain
     /// a whole-volume, exact-file, or bounded-directory read capability.
     pub async fn read_file(&self, file: &FileRef) -> Result<Vec<u8>> {
-        self.read_bound_file(self.harness.content.as_ref(), file)
+        self.read_bound_file(self.content_binding(Some(file.volume())), file)
             .await
     }
 
     /// Resolves an immutable artifact without coupling its provider to the
     /// workspace/content binding. The same owner-mediated grant is required.
     pub async fn read_artifact(&self, file: &FileRef) -> Result<Vec<u8>> {
-        self.read_bound_file(self.harness.artifacts.as_ref(), file)
+        self.read_bound_file(
+            self.scope.created_content(Some(file.volume())).or(self.harness.artifacts.as_ref()), file,
+        )
             .await
     }
 
@@ -4299,10 +4461,7 @@ impl TaskContext {
                 "private directory page limit is invalid".into(),
             ));
         }
-        let content = self
-            .harness
-            .content
-            .as_ref()
+        let content = self.content_binding(Some(volume))
             .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?;
         let page = content
             .reader
@@ -4351,10 +4510,7 @@ impl TaskContext {
         if path.is_empty() {
             return Err(Error::Invalid("private file path is empty".into()));
         }
-        let content = self
-            .harness
-            .content
-            .as_ref()
+        let content = self.content_binding(Some(volume))
             .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?;
         let (file, bytes) = content
             .reader
@@ -4428,7 +4584,7 @@ impl TaskContext {
         display_name: &str,
     ) -> Result<FileRef> {
         self.stage_bound_file(
-            self.harness.content.as_ref(),
+            self.content_binding(None),
             operation_id,
             path,
             bytes,
@@ -4437,6 +4593,31 @@ impl TaskContext {
             ContentPublication::PathBound,
         )
         .await
+    }
+
+    /// Publishes to an explicitly selected authenticated created volume.
+    /// Selecting a volume cannot retarget an inherited owner-bound writer.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "exact volume, retry identity, body and file metadata stay explicit"
+    )]
+    pub async fn stage_file_in(
+        &self,
+        volume: &VolumeRef,
+        operation_id: OperationId,
+        path: &str,
+        bytes: &[u8],
+        media_type: &str,
+        display_name: &str,
+    ) -> Result<FileRef> {
+        let binding = self.content_binding(Some(volume));
+        if self.bound_content_writer(binding)?.volume() != volume {
+            return Err(Error::Unauthorized("selected volume is not the bound destination".into()));
+        }
+        self.stage_bound_file(
+            binding, operation_id, path, bytes, media_type, display_name,
+            ContentPublication::PathBound,
+        ).await
     }
 
     /// Publishes one exact file contract per operation through its original writer.
@@ -4450,7 +4631,7 @@ impl TaskContext {
         display_name: &str,
     ) -> Result<FileRef> {
         self.stage_bound_file(
-            self.harness.content.as_ref(),
+            self.content_binding(None),
             operation_id,
             path,
             bytes,
@@ -4472,7 +4653,7 @@ impl TaskContext {
         display_name: &str,
     ) -> Result<FileRef> {
         self.stage_bound_file(
-            self.harness.artifacts.as_ref(),
+            self.scope.created_content(None).or(self.harness.artifacts.as_ref()),
             operation_id,
             path,
             bytes,
@@ -4498,7 +4679,7 @@ impl TaskContext {
             ));
         }
         self.stage_bound_file(
-            self.harness.content.as_ref(),
+            self.content_binding(Some(source.volume())),
             operation_id,
             source.path(),
             bytes,
@@ -4532,7 +4713,7 @@ impl TaskContext {
 
     /// Checks the original content destination without reading or publishing bytes.
     pub(crate) fn authorize_content_publication(&self, source: Option<&FileRef>) -> Result<()> {
-        let writer = self.bound_content_writer(self.harness.content.as_ref())?;
+        let writer = self.bound_content_writer(self.content_binding(source.map(FileRef::volume)))?;
         if source.is_some_and(|source| source.volume() != writer.volume()) {
             return Err(Error::Unauthorized(
                 "source differs from the owner-bound destination".into(),
@@ -4563,6 +4744,7 @@ impl TaskContext {
         let content =
             binding.ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
         let writer = self.bound_content_writer(Some(content))?;
+        self.scope.verify_created_write(writer.volume()).await?;
         let file = match publication {
             ContentPublication::Replacement(source) => {
                 if source.volume() != writer.volume() || source.path() != path {
@@ -4584,6 +4766,7 @@ impl TaskContext {
                     .await?
             }
         };
+        self.scope.verify_created_write(writer.volume()).await?;
         self.scope.limits.validate_file(&file)?;
         if file.volume() != writer.volume()
             || file.path() != path
@@ -5240,6 +5423,7 @@ struct DurableBatchWire {
     input_schema: Value,
     output_schema: Value,
     parent: Option<TaskId>,
+    resource_proofs: Vec<crate::resource_preparation::ResourceCreationProofRef>,
     grants: Capabilities,
     limits: Limits,
     run_limits: TaskRunLimits,
@@ -5304,6 +5488,20 @@ impl DurableBatchRequest {
         Ok(request)
     }
 
+    /// Retains proof references in a request without granting a scope or
+    /// installing content handles. The state owner authenticates every member.
+    pub fn with_resource_proofs(
+        mut self,
+        proofs: Vec<crate::resource_preparation::ResourceCreationProofRef>,
+    ) -> Result<Self> {
+        if self.scope.resource_proofs != proofs {
+            self.scope.created_access = None;
+        }
+        self.scope.resource_proofs = proofs;
+        self.validate()?;
+        Ok(self)
+    }
+
     /// Validates the complete retained manifest before any child is observed
     /// or admitted. A syntactically valid JSON envelope is not sufficient.
     pub fn validate(&self) -> Result<()> {
@@ -5318,6 +5516,16 @@ impl DurableBatchRequest {
             return Err(Error::Invalid(
                 "batch implementation identity is invalid".into(),
             ));
+        }
+        if !self.scope.resource_proofs.is_empty() && self.parent.is_none() {
+            return Err(Error::Invalid("created batch scope has no parent".into()));
+        }
+        let mut resources = BTreeSet::new();
+        for proof in &self.scope.resource_proofs {
+            proof.validate()?;
+            if !resources.insert(crate::contract::canonical_json_bytes(&proof.resource)?) {
+                return Err(Error::Invalid("batch repeats a created resource proof".into()));
+            }
         }
         validate_task_schemas(&self.input_schema, &self.output_schema, true)?;
         self.scope.limits().validate()?;
@@ -5348,9 +5556,10 @@ impl DurableBatchRequest {
         if wire.contract != "harness.batch.v2" {
             return Err(Error::Invalid("unsupported batch contract".into()));
         }
-        let scope = RuntimeScope::new(wire.grants, wire.limits)?
+        let mut scope = RuntimeScope::new(wire.grants, wire.limits)?
             .with_run_limits(wire.run_limits)?
             .with_replayed_extensions(wire.extensions)?;
+        scope.resource_proofs = wire.resource_proofs;
         let request = Self {
             group_id: wire.group_id,
             batch_id: wire.batch_id,
@@ -5385,6 +5594,7 @@ impl DurableBatchRequest {
             "input_schema": self.input_schema,
             "output_schema": self.output_schema,
             "parent": self.parent,
+            "resource_proofs": self.scope.resource_proofs(),
             "grants": self.scope.grants(),
             "limits": self.scope.limits(),
             "run_limits": self.scope.run_limits(),
@@ -5402,7 +5612,7 @@ impl DurableBatchRequest {
             .get(index)
             .ok_or_else(|| Error::Invalid("batch member index is missing".into()))?;
         Ok(TaskAdmissionRecord {
-            resource_proofs: Vec::new(),
+            resource_proofs: self.scope.resource_proofs().to_vec(),
             operation_id: self.operation_id(index),
             task: self.task.clone(),
             machine: self.machine.clone(),
@@ -6594,6 +6804,7 @@ mod tests {
                     "input_schema",
                     "output_schema",
                     "parent",
+                    "resource_proofs",
                     "grants",
                     "limits",
                     "run_limits",
@@ -6616,6 +6827,7 @@ mod tests {
                     "input_schema",
                     "output_schema",
                     "parent",
+                    "resource_proofs",
                     "grants",
                     "limits",
                     "run_limits",
@@ -7636,7 +7848,7 @@ mod tests {
         changed_schema.input_schema =
             serde_json::json!({"type": "object", "additionalProperties": true});
         assert!(matches!(
-            harness.validate_observed_admission(&changed_schema),
+            harness.validate_observed_admission(&changed_schema).await,
             Err(Error::Conflict(_))
         ));
         Ok(())

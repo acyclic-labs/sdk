@@ -495,6 +495,8 @@ struct WasmBatchAdmissionInput {
     machine_digest: Vec<u8>,
     #[tsify(type = "string | null")]
     parent: Option<TaskId>,
+    #[tsify(type = "readonly WasmResourceCreationProofRefWire[]")]
+    resource_proofs: Vec<crate::resource_preparation::ResourceCreationProofRef>,
     #[tsify(type = "readonly string[]")]
     grants: Vec<String>,
     limits: WasmLimitsInput,
@@ -739,6 +741,7 @@ export interface WasmDurableBatchWire {
     readonly input_schema: WasmToolJsonSchema;
     readonly output_schema: WasmToolJsonSchema;
     readonly parent: string | null;
+    readonly resource_proofs: readonly WasmResourceCreationProofRefWire[];
     readonly grants: readonly string[];
     readonly limits: WasmNativeLimitsWire;
     readonly run_limits: WasmTaskRunLimitsWire;
@@ -1104,6 +1107,7 @@ fn durable_batch_request_from_input(
         input.policy,
         input.execution,
     )
+    .and_then(|request| request.with_resource_proofs(input.resource_proofs))
     .map_err(js_error)
 }
 

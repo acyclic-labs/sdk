@@ -292,6 +292,35 @@ where
         clock: Arc<dyn UnixMillisClock>,
         policy: Option<Arc<dyn ToolPolicy>>,
     ) -> Result<Self> {
+        Self::open_with_creation_providers(
+            stream, filesystem, volume, verifier, signed, scope, tasks, machines, tools,
+            session_limits, concurrency, maximum_payload_bytes, clock, policy, Vec::new(),
+        ).await
+    }
+
+    /// Composes a fixed set of trusted resource creation verifiers into the
+    /// ordinary owner before it is shared. Proof refs alone never install access.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "explicit existing provider, policy, clock and authority boundaries"
+    )]
+    pub async fn open_with_creation_providers(
+        stream: StreamClient<P>,
+        filesystem: Arc<FilesystemHost<A, O>>,
+        volume: VolumeRef,
+        verifier: AuthorityVerifier,
+        signed: Scope,
+        scope: RuntimeScope,
+        tasks: TaskRegistry,
+        machines: MachineRegistry,
+        tools: ToolRegistry,
+        session_limits: SessionLimits,
+        concurrency: usize,
+        maximum_payload_bytes: u64,
+        clock: Arc<dyn UnixMillisClock>,
+        policy: Option<Arc<dyn ToolPolicy>>,
+        creation_providers: Vec<Arc<dyn crate::resource_preparation::ResourceCreationProvider>>,
+    ) -> Result<Self> {
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
             filesystem.clone(),
             volume.clone(),
@@ -320,7 +349,8 @@ where
             machines,
             clock,
         )?
-        .with_session_limits(session_limits)?;
+        .with_session_limits(session_limits)?
+        .with_resource_creation_providers(creation_providers)?;
         if let Some(policy) = &policy {
             host = host.with_policy(policy.clone())?;
         }

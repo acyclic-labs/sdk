@@ -92,12 +92,15 @@ impl ResourcePreparationRequest {
         }
         let mut proved = BTreeSet::new();
         for proof in &self.child.resource_proofs {
-            if proof.provider != self.provider {
-                return Err(Error::Invalid(
-                    "child proof belongs to another creation provider".into(),
-                ));
+            let identity = crate::contract::canonical_json_bytes(&proof.resource)?;
+            if identities.contains(&identity) {
+                if proof.provider != self.provider {
+                    return Err(Error::Invalid(
+                        "child proof belongs to another creation provider".into(),
+                    ));
+                }
+                proved.insert(identity);
             }
-            proved.insert(crate::contract::canonical_json_bytes(&proof.resource)?);
         }
         if proved != identities {
             return Err(Error::Invalid(
@@ -260,6 +263,8 @@ pub(crate) struct CreatedResourceAccess {
     pub(crate) admission_digest: [u8; 32],
     pub(crate) grants: crate::Capabilities,
     pub(crate) content: Vec<CreatedContentBinding>,
+    pub(crate) proofs: Vec<ResourceCreationProofRef>,
+    pub(crate) publication_lease: Option<std::sync::Arc<dyn CreatedTaskLease>>,
 }
 
 impl CreatedResourceAccess {
@@ -277,7 +282,6 @@ impl CreatedResourceAccess {
         for (proof, receipt) in admission.resource_proofs.iter().zip(receipts) {
             if receipt.resource != proof.resource || receipt.evidence != proof.evidence
                 || receipt.origin.preparation_task != proof.preparation
-                || receipt.origin.intended_child != admission.operation_id
                 || receipt.allocation_generation.as_resource().provider() != &proof.provider
             {
                 return Err(Error::Unauthorized("created resource receipt changed identity".into()));
@@ -320,11 +324,16 @@ impl CreatedResourceAccess {
         }
         Ok(Self {
             operation: admission.operation_id,
-            admission_digest: *blake3::hash(
-                &crate::contract::canonical_json_bytes(&admission.canonical_value()?)?
-            ).as_bytes(),
+            admission_digest: crate::contract::canonical_json_digest(&admission.canonical_value())?,
             grants: crate::Capabilities::new(labels),
+            proofs: admission.resource_proofs.clone(),
             content,
+            publication_lease: None,
         })
     }
+}
+
+pub(crate) trait CreatedTaskLease: acyclic_stream::ProviderPlatform {
+    fn verify(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<()>>;
+    fn fence(&self) -> Result<crate::scheduler::LeaseFence>;
 }

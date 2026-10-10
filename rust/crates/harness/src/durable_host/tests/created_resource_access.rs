@@ -618,6 +618,12 @@ async fn ordinary_task_io_uses_verified_created_volume_without_root_grant_wideni
     assert_eq!(file.volume(), &created.private);
     assert_ne!(file.volume(), &created.project);
     assert_eq!(context.read_file(&file).await?, b"created private bytes");
+    let artifact = context.stage_artifact(
+        OperationId::from_bytes([100; 16]), "ordinary/artifact.txt", b"created artifact bytes",
+        "text/plain", "artifact.txt",
+    ).await?;
+    assert_eq!(artifact.volume(), &created.private);
+    assert_eq!(context.read_artifact(&artifact).await?, b"created artifact bytes");
     // Publication changes the mutable head; authentication retains the original
     // immutable allocation generation, not the latest child content generation.
     let reopened = fixture.harness.durable_context(task, created.request.child.operation_id).await?;
@@ -626,6 +632,10 @@ async fn ordinary_task_io_uses_verified_created_volume_without_root_grant_wideni
     assert_eq!(read_only.read_file(&file).await?, b"created private bytes");
     assert!(read_only.stage_file(
         OperationId::from_bytes([94; 16]), "ordinary/denied.txt", b"denied", "text/plain", "denied.txt",
+    ).await.is_err());
+    assert!(read_only.stage_artifact(
+        OperationId::from_bytes([101; 16]), "ordinary/denied-artifact.txt", b"denied",
+        "text/plain", "denied-artifact.txt",
     ).await.is_err());
     let no_access = reopened.scoped(Capabilities::default(), reopened.scope().limits())?;
     assert!(no_access.read_file(&file).await.is_err());
