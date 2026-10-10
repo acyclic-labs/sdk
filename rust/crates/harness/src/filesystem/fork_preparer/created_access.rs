@@ -32,6 +32,7 @@ struct AuthenticatedAllocation {
     origin: ResourceCreationOrigin,
     volume: VolumeRef,
     generation: GenerationRef,
+    prepared_generation: GenerationRef,
     agent: crate::AgentId,
     default_writer: bool,
 }
@@ -114,7 +115,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             return Err(Error::Unauthorized("created allocation does not authenticate the original task request".into()));
         }
         original_origin = Some(origin.clone());
-        let generation = if volume_index == 0 {
+        let prepared_generation = if volume_index == 0 {
             seed.child_private_generation.clone()
         } else {
             seed.resources.iter().find_map(|resource| match &resource.revision {
@@ -124,10 +125,26 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         };
         let workspace = workspace_ref(host.provider.clone(), &volume.storage_name()?)?;
         let original_workspace = bounded_io::open(host, &workspace, &io).await?;
-        bounded_io::generation(host, &original_workspace, &generation, &io).await?;
+        bounded_io::generation(host, &original_workspace, &prepared_generation, &io).await?;
+        let creation_key = IdempotencyKey::new(format!(
+            "fork:{}:{}:{}", fork.operation_id, hex::encode(digest),
+            if volume_index == 0 { "scratch" } else { "project" },
+        ))?;
+        let initial = io.receive(original_workspace.operation_generation_measured(
+            super::super::filesystem_key(&creation_key), io.remaining()?, &io.cancellation,
+        ).await)?.ok_or_else(|| Error::Unauthorized("original fork allocation operation is missing".into()))?;
+        let generation = host.generation_ref(&initial)?;
+        let captured_generation = seed.resources.iter().find_map(|resource| match &resource.revision {
+            ResourceRevision::PrivateVolume { volume: captured, generation, .. }
+            | ResourceRevision::Project { volume: captured, generation } if captured == volume => Some(generation),
+            _ => None,
+        }).ok_or_else(|| Error::Unauthorized("original allocated volume is absent from the seed".into()))?;
+        if captured_generation != &generation {
+            return Err(Error::Unauthorized("seed capture differs from the original allocation operation".into()));
+        }
         if volume_index == index {
             selected = Some(AuthenticatedAllocation {
-                origin: origin.clone(), volume: volume.clone(), generation,
+                origin: origin.clone(), volume: volume.clone(), generation, prepared_generation,
                 agent: fork.child_agent, default_writer: volume_index == 0,
             });
         }
@@ -155,6 +172,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
                 host: self.host.clone(), owner: self.issuer.verifier().audience().clone(),
                 request: request.clone(), proof: proof.clone(),
                 origin: allocation.origin.clone(), generation: allocation.generation.clone(),
+                prepared_generation: allocation.prepared_generation,
                 volume: allocation.volume.clone(),
                 reader: FilesystemContentVerifier::new(self.host.clone(), self.issuer.verifier(), scope.clone(), request.maximum_bytes)?,
                 writer: FilesystemContentPublisher::new(self.host.clone(), allocation.volume.clone(), &self.issuer.verifier(), &scope, request.maximum_bytes)?,
@@ -180,6 +198,7 @@ struct CreatedFilesystemAccess<A, O> {
     proof: ResourceCreationProofRef,
     origin: ResourceCreationOrigin,
     generation: GenerationRef,
+    prepared_generation: GenerationRef,
     volume: VolumeRef,
     reader: FilesystemContentVerifier<A, O>,
     writer: FilesystemContentPublisher<A, O>,
@@ -191,7 +210,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CreatedFilesystemAccess<A, O> 
             return Err(Error::Unauthorized("created content handle names another volume".into()));
         }
         let current = authenticate(&self.host, &self.owner, &self.request, &self.proof).await?;
-        if current.origin != self.origin || current.generation != self.generation || current.volume != self.volume {
+        if current.origin != self.origin || current.generation != self.generation
+            || current.prepared_generation != self.prepared_generation || current.volume != self.volume
+        {
             return Err(Error::Unauthorized("original created allocation evidence changed".into()));
         }
         Ok(())
