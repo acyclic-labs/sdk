@@ -908,14 +908,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .await?;
             let actual: InheritedConversationPrefix = crate::contract::json_from_slice(&bytes)
                 .map_err(|_| Error::Invalid("inherited conversation is malformed".into()))?;
-            let expected = InheritedConversationPrefix::select(
-                seed.parent.clone(),
-                seed.parent_revision,
-                seed.inherited_through_sequence,
-                &seed.attached_agents,
-                conversation,
-            )?;
-            if actual != expected || actual.canonical_bytes()?.as_slice() != bytes.as_ref() {
+            let selected = if seed.inherited_through_sequence < conversation.resident_after_sequence() {
+                if seed.history_witness != Some(verifier.fork_history_proof(seed)?) {
+                    return Err(Error::Unauthorized("archived fork activation requires its original witness".into()));
+                }
+                // The signed seed pins this file's exact descriptor/digest.
+                // Earlier retired cuts cannot be recomputed from a resident suffix.
+                actual.format_version == 3
+                    && actual.parent == seed.parent
+                    && actual.parent_revision == seed.parent_revision
+                    && actual.parent_agent == parent_agent
+                    && actual.through_sequence == seed.inherited_through_sequence
+                    && actual.attached_agents == seed.attached_agents
+            } else {
+                actual == InheritedConversationPrefix::select(
+                    seed.parent.clone(), seed.parent_revision, seed.inherited_through_sequence,
+                    &seed.attached_agents, conversation,
+                )?
+            };
+            if !selected || actual.canonical_bytes()?.as_slice() != bytes.as_ref() {
                 return Err(Error::Conflict(
                     "inherited conversation differs from the selected parent prefix".into(),
                 ));

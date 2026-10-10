@@ -161,8 +161,9 @@ struct ProofContext<'a, S> {
     budget: WorkBudget,
     work: WorkCounters,
     objects: HashSet<ObjectId>,
-    blob_lengths: HashMap<ObjectId, u64>,
-    extent_lengths: HashMap<ObjectId, u64>,
+    // ObjectId includes its kind: complete blob and extent proofs can share
+    // one invocation-owned length table without a second allocation domain.
+    proven_lengths: HashMap<ObjectId, u64>,
     cancellation: &'a CancellationToken,
 }
 
@@ -179,8 +180,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             budget,
             work: WorkCounters::default(),
             objects: HashSet::new(),
-            blob_lengths: HashMap::new(),
-            extent_lengths: HashMap::new(),
+            proven_lengths: HashMap::new(),
             cancellation,
         }
     }
@@ -439,7 +439,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         Self::require_kind(root, ObjectKind::ExtentPage)?;
         // Reuse only a complete proof in this invocation. The declared length is
         // part of the proof: a shared root cannot authenticate a different span.
-        if let Some(length) = self.extent_lengths.get(&root) {
+        if let Some(length) = self.proven_lengths.get(&root) {
             return if *length == size {
                 Ok(())
             } else {
@@ -488,13 +488,13 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 }
             }
         }
-        self.extent_lengths.insert(root, size);
+        self.proven_lengths.insert(root, size);
         Ok(())
     }
 
     async fn prove_blob(&mut self, root: ObjectId) -> Result<u64, ClosureError> {
         Self::require_kind(root, ObjectKind::Blob)?;
-        if let Some(length) = self.blob_lengths.get(&root) {
+        if let Some(length) = self.proven_lengths.get(&root) {
             return Ok(*length);
         }
         let mut pending = vec![(root, 0_u64, None)];
@@ -531,7 +531,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             }
         }
         let length = root_length.ok_or(ClosureError::RoutingBoundsMismatch)?;
-        self.blob_lengths.insert(root, length);
+        self.proven_lengths.insert(root, length);
         Ok(length)
     }
 
