@@ -5,7 +5,7 @@
 )]
 use acyclic_stream::{AppendOutcome, MemoryStream, StreamError, StreamProvider};
 use bytes::Bytes;
-const COORDINATOR_PATH: &str = "harness/v2/coordinator/events";
+const COORDINATOR_PATH: &str = "harness/v3/coordinator/events";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum ExecutionFaultMode {
@@ -120,7 +120,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         let location = request
             .path
             .as_str()
-            .starts_with("harness/v2/coordinator/intent-locations/");
+            .starts_with("harness/v3/coordinator/intent-locations/");
         let fault = if location {
             self.location_fault
                 .swap(0, std::sync::atomic::Ordering::SeqCst)
@@ -182,7 +182,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         if request
             .path
             .as_str()
-            .starts_with("harness/v2/coordinator/intent-locations/")
+            .starts_with("harness/v3/coordinator/intent-locations/")
             && self
                 .hide_location_read
                 .swap(false, std::sync::atomic::Ordering::SeqCst)

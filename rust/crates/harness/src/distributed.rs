@@ -30,9 +30,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const COORDINATOR_PATH: &str = "harness/v2/coordinator/events";
-const COORDINATOR_WIRE_VERSION: &str = "2";
-const COORDINATOR_WIRE_CONTRACT: &[u8] = b"acyclic.harness.coordinator.scheduler-event-envelope.v2";
+const COORDINATOR_PATH: &str = "harness/v3/coordinator/events";
+const COORDINATOR_WIRE_VERSION: &str = "3";
+const COORDINATOR_WIRE_CONTRACT: &[u8] = b"acyclic.harness.coordinator.scheduler-event-envelope.v3";
 const READ_PAGE_SIZE: u32 = 1_024;
 const MAX_CACHED_INTENTS: usize = 64;
 
@@ -51,7 +51,7 @@ struct IntentLocation {
 
 fn intent_location_path(key: &str) -> String {
     format!(
-        "harness/v2/coordinator/intent-locations/{}",
+        "harness/v3/coordinator/intent-locations/{}",
         blake3::hash(key.as_bytes()).to_hex()
     )
 }
@@ -337,11 +337,7 @@ pub async fn observe_declaration<P: StreamProvider>(
             "declaration operation identity differs".into(),
         ));
     }
-    if spec.owner.authority() != owner {
-        return Err(Error::Unauthorized(
-            "declaration belongs to another owner".into(),
-        ));
-    }
+    spec.verify_owner(owner, verifier)?;
     Ok(Some(*spec))
 }
 
@@ -476,7 +472,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         })
     }
 
-    /// Opens and replays the public coordinator implementation.
+    /// Opens and replays the owner-proof coordinator history (version 3).
+    /// Legacy version-2 histories remain separate; their missing original
+    /// owner grants are never synthesized or adopted into this history.
     pub async fn open(
         client: &StreamClient<P>,
         content_verifier: Arc<dyn ContentResidencyVerifier>,
@@ -731,6 +729,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 has_more = true;
                 break;
             }
+            child.spec.verify_owner(owner, verifier)?;
             entries.push(ChildOperationLink {
                 slot: slot.to_owned(),
                 operation_id: child.spec.operation_id,
@@ -838,6 +837,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         if declared_owner != owner {
             return Err(Error::NotFound(format!("operation {operation_id}")));
         }
+        operation.spec.verify_owner(owner, verifier)?;
         Ok(operation)
     }
 
@@ -1059,6 +1059,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "declaration owner does not match authenticated owner".into(),
             ));
         }
+        spec.verify_owner(owner, verifier)?;
         if let Some(parent) = &spec.parent {
             self.refresh().await?;
             self.authorize_operation(
@@ -1106,6 +1107,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "session declaration owner is invalid".into(),
             ));
         }
+        spec.verify_owner(owner, verifier)?;
         if spec.parent.is_some() {
             return Err(Error::Invalid("session declaration must be a root".into()));
         }
@@ -1562,15 +1564,32 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "owned pull requires operation:declare and operation:observe".into(),
             ));
         }
-        self.pull_for(worker, Some(owner), operation_id).await
+        self.pull_for(worker, Some((owner, verifier)), operation_id)
+            .await
+    }
+
+    fn verify_pull_owner(
+        &self,
+        authorization: Option<(&Authority, &AuthorityVerifier)>,
+        operation_id: OperationId,
+    ) -> Result<()> {
+        if let Some((owner, verifier)) = authorization {
+            self.scheduler
+                .operation(operation_id)
+                .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?
+                .spec
+                .verify_owner(owner, verifier)?;
+        }
+        Ok(())
     }
 
     async fn pull_for(
         &mut self,
         worker: &Worker,
-        owner: Option<&Authority>,
+        authorization: Option<(&Authority, &AuthorityVerifier)>,
         target: Option<OperationId>,
     ) -> Result<WorkPull> {
+        let owner = authorization.map(|(owner, _)| owner);
         self.refresh().await?;
         if worker.id.trim().is_empty() {
             return Err(Error::Invalid("worker identity is empty".into()));
@@ -1581,6 +1600,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 .operation(target)
                 .filter(|state| owner.is_some_and(|owner| state.spec.owner.authority() == owner))
                 .ok_or_else(|| Error::NotFound(format!("operation {target}")))?;
+            self.verify_pull_owner(authorization, target)?;
             // A partial reservation is already an owned attempt. Neither a fresh
             // admission nor dependency rejection may replace or release it.
             if state.reservation.is_some() || state.cancellation_requested {
@@ -1595,6 +1615,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             None => self.scheduler.next_blocked_by_dependencies(owner),
         };
         if let Some(operation_id) = blocked {
+            self.verify_pull_owner(authorization, operation_id)?;
             self.apply(
                 operation_id,
                 IdempotencyKey::new(format!("dependency-rejected:{operation_id}"))?,
@@ -1624,6 +1645,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .operation(operation_id)
             .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?
             .clone();
+        self.verify_pull_owner(authorization, operation_id)?;
         let operation = state.spec.clone();
         let revision = next_revision(self.revision)?;
         let reservation = Reservation {
@@ -2115,7 +2137,7 @@ async fn append_if_execution_idle<P: StreamProvider>(
 
 fn stream_key(key: &str) -> Result<StreamIdempotencyKey> {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"acyclic-harness-coordinator-v2");
+    hasher.update(b"acyclic-harness-coordinator-v3");
     hasher.update(key.as_bytes());
     StreamIdempotencyKey::new(Bytes::copy_from_slice(hasher.finalize().as_bytes()))
         .map_err(|error| Error::Invalid(error.to_string()))
@@ -2206,7 +2228,7 @@ mod tests {
         let operation = OperationId::from_bytes([1; 16]);
         let declaration = spec(operation, 0)?;
         let owner = declaration.owner.authority().clone();
-        let issuer = AuthorityIssuer::new("declaration-observer", [9; 32], owner.clone());
+        let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
         let scope = issuer.root("observe", Capabilities::new(["operation:observe"]));
         let verifier = issuer.verifier();
         let key = IdempotencyKey::new("point-declaration")?;
@@ -2393,7 +2415,7 @@ mod tests {
             kind: AggregateKind::Task,
             id: "owner".into(),
         };
-        let issuer = AuthorityIssuer::new("intent-cache-test", [9; 32], owner.clone());
+        let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
         let scope = issuer.root(
             "declare",
             Capabilities::new(["operation:declare", "operation:observe"]),
@@ -2567,7 +2589,7 @@ mod tests {
                 kind: AggregateKind::Task,
                 id: "owner".into(),
             };
-            let issuer = AuthorityIssuer::new("owned-child-test", [9; 32], owner.clone());
+            let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
             let signed = issuer.root(
                 "declare",
                 Capabilities::new(["operation:declare", "operation:observe"]),
@@ -2734,7 +2756,7 @@ mod tests {
                 kind: AggregateKind::Task,
                 id: "owner".into(),
             };
-            let issuer = AuthorityIssuer::new("selected-wake-test", [9; 32], owner.clone());
+            let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
             let signed = issuer.root(
                 "wake",
                 Capabilities::new(["operation:wake", "operation:observe"]),
@@ -2980,6 +3002,11 @@ mod tests {
         }
     }
 
+    fn declaration_scope(owner: &Authority) -> Scope {
+        AuthorityIssuer::new("test-runtime", [9; 32], owner.clone())
+            .root("original-declare", Capabilities::new(["operation:declare"]))
+    }
+
     fn spec(operation_id: OperationId, cpu: u64) -> Result<OperationSpec> {
         Ok(OperationSpec {
             operation_id,
@@ -2990,6 +3017,15 @@ mod tests {
                     id: "owner".into(),
                 },
             },
+            owner_scope: AuthorityIssuer::new(
+                "test-runtime",
+                [9; 32],
+                Authority {
+                    kind: AggregateKind::Task,
+                    id: "owner".into(),
+                },
+            )
+            .root("original-declare", Capabilities::new(["operation:declare"])),
             entrypoint: EntrypointRef {
                 name: "example.task".into(),
                 version: "1".into(),
@@ -3021,6 +3057,159 @@ mod tests {
                 IdempotencyKey::new(key)?,
             )
             .await
+    }
+
+    #[tokio::test]
+    async fn original_owner_proof_survives_reopen_and_rejects_replaced_key() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let operation_id = OperationId::from_bytes([91; 16]);
+        let original = spec(operation_id, 0)?;
+        let owner = original.owner.authority().clone();
+        let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
+        let renewed = issuer.root(
+            "renewed-current-grant",
+            Capabilities::new(["operation:declare", "operation:observe", "operation:cancel"]),
+        );
+        let key = IdempotencyKey::new("original-owner-proof")?;
+        let mut coordinator =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        declare(&mut coordinator, original.clone(), key.as_str()).await?;
+        let mut reopened =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        let replaced = AuthorityIssuer::new("test-runtime", [8; 32], owner.clone());
+        let replacement = replaced.root("renewed-current-grant", renewed.capabilities().clone());
+        assert!(matches!(
+            observe_declaration(
+                &client,
+                &owner,
+                &replacement,
+                &replaced.verifier(),
+                operation_id,
+                &key
+            )
+            .await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert!(matches!(
+            reopened.observe_operation(&owner, &replacement, &replaced.verifier(), operation_id),
+            Err(Error::Unauthorized(_))
+        ));
+        let worker = Worker {
+            id: "owner-proof-worker".into(),
+            available: ResourceSnapshot::default(),
+            labels: BTreeMap::new(),
+        };
+        let revision = reopened.revision();
+        assert!(matches!(
+            reopened
+                .pull_owned_operation(
+                    &owner,
+                    &replacement,
+                    &replaced.verifier(),
+                    &worker,
+                    operation_id
+                )
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert!(matches!(
+            reopened
+                .pull_owned(&owner, &replacement, &replaced.verifier(), &worker)
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert_eq!(reopened.revision(), revision);
+        assert!(
+            reopened
+                .scheduler()
+                .operation(operation_id)
+                .is_some_and(|state| state.reservation.is_none())
+        );
+        assert_eq!(
+            observe_declaration(
+                &client,
+                &owner,
+                &renewed,
+                &issuer.verifier(),
+                operation_id,
+                &key
+            )
+            .await?,
+            Some(original.clone())
+        );
+        assert_eq!(
+            reopened
+                .declare_operation(&owner, &renewed, &issuer.verifier(), original, key)
+                .await?,
+            CoordinatorApply::Replayed
+        );
+        assert!(matches!(
+            reopened
+                .pull_owned_operation(&owner, &renewed, &issuer.verifier(), &worker, operation_id)
+                .await?,
+            WorkPull::Claimed(_)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn original_owner_proof_is_mandatory_and_authenticated() -> Result<()> {
+        let original = spec(OperationId::from_bytes([92; 16]), 0)?;
+        let owner = original.owner.authority();
+        let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
+        original.verify_owner(owner, &issuer.verifier())?;
+        let foreign = Authority {
+            kind: AggregateKind::Task,
+            id: "foreign".into(),
+        };
+        let wrong_audience = AuthorityIssuer::new("test-runtime", [9; 32], foreign.clone());
+        assert!(matches!(
+            original.verify_owner(owner, &wrong_audience.verifier()),
+            Err(Error::Unauthorized(_))
+        ));
+        assert!(matches!(
+            original.verify_owner(&foreign, &issuer.verifier()),
+            Err(Error::Unauthorized(_))
+        ));
+        let mut json =
+            serde_json::to_value(&original).map_err(|error| Error::Invalid(error.to_string()))?;
+        json.as_object_mut()
+            .ok_or_else(|| Error::Invalid("spec object".into()))?
+            .remove("owner_scope");
+        assert!(serde_json::from_value::<OperationSpec>(json).is_err());
+        let legacy_protocol = wire::ProtocolIdentity {
+            version: "2".into(),
+            descriptor_digest: blake3::hash(
+                b"acyclic.harness.coordinator.scheduler-event-envelope.v2",
+            )
+            .to_hex()
+            .to_string(),
+        };
+        assert!(
+            validate_protocol(
+                Some(&legacy_protocol),
+                &coordinator_protocol_identity(),
+                Error::Storage,
+            )
+            .is_err()
+        );
+        let mut json =
+            serde_json::to_value(&original).map_err(|error| Error::Invalid(error.to_string()))?;
+        json["owner_scope"]["id"] = serde_json::json!("tampered-original-grant");
+        let tampered: OperationSpec =
+            serde_json::from_value(json).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert!(matches!(
+            tampered.verify_owner(owner, &issuer.verifier()),
+            Err(Error::Unauthorized(_))
+        ));
+        let mut insufficient = original.clone();
+        insufficient.owner_scope =
+            issuer.root("observe-only", Capabilities::new(["operation:observe"]));
+        assert!(matches!(
+            insufficient.verify_owner(owner, &issuer.verifier()),
+            Err(Error::Unauthorized(_))
+        ));
+        Ok(())
     }
 
     #[tokio::test]
@@ -3154,6 +3343,7 @@ mod tests {
                 id: "foreign".into(),
             },
         };
+        foreign_child.owner_scope = declaration_scope(foreign_child.owner.authority());
         foreign_child.parent = Some(ParentLink {
             operation_id: parent,
             slot: "uninvited-child".into(),
@@ -3357,7 +3547,7 @@ mod tests {
             kind: AggregateKind::Task,
             id: "owner".into(),
         };
-        let issuer = AuthorityIssuer::new("runtime", [9; 32], owner.clone());
+        let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
         let scope = issuer.root(
             "operation-control",
             Capabilities::new(["operation:observe", "operation:cancel"]),
@@ -3504,6 +3694,15 @@ mod tests {
                     id: "owner".into(),
                 },
             },
+            owner_scope: AuthorityIssuer::new(
+                "test-runtime",
+                [9; 32],
+                Authority {
+                    kind: AggregateKind::Task,
+                    id: "owner".into(),
+                },
+            )
+            .root("original-declare", Capabilities::new(["operation:declare"])),
             entrypoint: EntrypointRef {
                 name: "example.task".into(),
                 version: "1".into(),
@@ -3658,7 +3857,7 @@ mod tests {
             kind: AggregateKind::Task,
             id: "owner".into(),
         };
-        let issuer = AuthorityIssuer::new("split-session", [9; 32], owner.clone());
+        let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
         let signed = issuer.root("owner", Capabilities::new(["operation:declare"]));
         let limits = crate::scheduler::SessionLimits {
             active_tasks: 1,
@@ -3722,13 +3921,14 @@ mod tests {
                 id: "foreign".into(),
             },
         };
+        other.owner_scope = declaration_scope(other.owner.authority());
         declare(&mut coordinator, other, "foreign-pull").await?;
         declare(&mut coordinator, spec(owned, 1)?, "owned-pull").await?;
         let owner = Authority {
             kind: AggregateKind::Task,
             id: "owner".into(),
         };
-        let issuer = AuthorityIssuer::new("owned-pull", [9; 32], owner.clone());
+        let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
         let scope = issuer.root(
             "admit",
             Capabilities::new(["operation:observe", "operation:declare"]),
@@ -3791,6 +3991,7 @@ mod tests {
                 id: "foreign".into(),
             },
         };
+        other.owner_scope = declaration_scope(other.owner.authority());
         other.dependencies.insert(owned);
         declare(&mut coordinator, other, "foreign-blocked").await?;
         assert!(matches!(
@@ -3834,7 +4035,7 @@ mod tests {
             kind: AggregateKind::Task,
             id: "owner".into(),
         };
-        let issuer = AuthorityIssuer::new("target-pull", [9; 32], owner.clone());
+        let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
         let scope = issuer.root(
             "admit",
             Capabilities::new(["operation:observe", "operation:declare"]),
@@ -3998,7 +4199,7 @@ mod tests {
                 kind: AggregateKind::Task,
                 id: "owner".into(),
             };
-            let issuer = AuthorityIssuer::new("partial-target", [9; 32], owner.clone());
+            let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
             let scope = issuer.root(
                 "admit",
                 Capabilities::new(["operation:observe", "operation:declare"]),
@@ -4055,7 +4256,7 @@ mod tests {
                 kind: AggregateKind::Task,
                 id: "owner".into(),
             };
-            let issuer = AuthorityIssuer::new("fault-pull", [9; 32], owner.clone());
+            let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
             let scope = issuer.root(
                 "admit",
                 Capabilities::new(["operation:observe", "operation:declare"]),
@@ -4319,7 +4520,7 @@ mod tests {
                 kind: AggregateKind::Task,
                 id: "owner".into(),
             };
-            let issuer = AuthorityIssuer::new("lost-session-ack", [9; 32], owner.clone());
+            let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
             let signed = issuer.root("owner", Capabilities::new(["operation:declare"]));
             let limits = crate::scheduler::SessionLimits {
                 active_tasks: 1,
@@ -4445,7 +4646,7 @@ mod tests {
             kind: AggregateKind::Task,
             id: "owner".into(),
         };
-        let issuer = AuthorityIssuer::new("atomic-budget", [9; 32], owner.clone());
+        let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
         let signed = issuer.root("owner", Capabilities::new(["operation:declare"]));
         let verifier = issuer.verifier();
         let one = crate::scheduler::SessionLimits {
@@ -4620,7 +4821,7 @@ mod tests {
             kind: AggregateKind::Task,
             id: "owner".into(),
         };
-        let issuer = AuthorityIssuer::new("budget-test", [9; 32], owner.clone());
+        let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
         let scope = issuer.root("budget", Capabilities::new(["operation:declare"]));
         let limits = crate::scheduler::SessionLimits {
             active_tasks: 2,

@@ -413,6 +413,8 @@ pub fn trace() {
     let mut scheduler = Scheduler::default();
     let spec = OperationSpec {
         operation_id: op(20),
+        owner_scope: AuthorityIssuer::new("example", [7; 32], task_authority.clone())
+            .root("host", Capabilities::new(["task:declare"])),
         parent: None,
         owner: DurableOwner::Attached {
             authority: task_authority.clone(),
