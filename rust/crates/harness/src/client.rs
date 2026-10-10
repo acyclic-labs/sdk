@@ -459,6 +459,14 @@ impl<D: Domain> Client<D> {
             .checked_add(metadata_bytes::<Branch<D>>()?)
             .and_then(|n| {
                 n.checked_add(
+                    request
+                        .dependencies
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<Dependency>())?,
+                )
+            })
+            .and_then(|n| {
+                n.checked_add(
                     unique
                         .len()
                         .checked_mul(metadata_bytes::<Dependency>().ok()?)?,
@@ -785,6 +793,7 @@ impl<D: Domain> Client<D> {
         }
         let mut work = 0;
         let affected = self.affected(BTreeSet::from([id]), &mut work)?;
+        self.charge_removal(id, &mut work)?;
         for child in &affected {
             if *child != id
                 && let Some(branch) = self.branches.get_mut(child)
@@ -794,6 +803,18 @@ impl<D: Domain> Client<D> {
         }
         self.remove(id);
         Ok(affected.into_iter().collect())
+    }
+
+    fn charge_removal(&self, id: BranchId, work: &mut usize) -> Result<(), Error> {
+        let branch = self.branches.get(&id).ok_or(Error::Missing)?;
+        // Removal visits incoming edges in addition to the outgoing closure.
+        *work = work
+            .checked_add(branch.dependencies.len())
+            .ok_or(Error::Budget)?;
+        if *work > self.limits.work {
+            return Err(Error::Budget);
+        }
+        Ok(())
     }
 
     fn remove(&mut self, id: BranchId) {
@@ -838,6 +859,9 @@ impl<D: Domain> Client<D> {
             .map(|b| b.id)
             .collect();
         let affected = self.affected(expired.clone(), &mut work)?;
+        for id in &expired {
+            self.charge_removal(*id, &mut work)?;
+        }
         for id in &affected {
             if let Some(branch) = self.branches.get_mut(id) {
                 branch.prediction = PredictionOutcome::Invalidated;

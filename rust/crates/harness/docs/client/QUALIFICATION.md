@@ -184,10 +184,46 @@ passed the following affected closure checks:
   comparison threshold. This host was shared with other builds; maxima remain
   scheduling evidence rather than a latency guarantee.
 
-The historical eight mutation controls apply to the same executable kernel:
+At the initial relocation snapshot, the historical eight mutation controls applied to the same executable kernel:
 relocation changes only documentation, import paths and package declarations,
 not transition logic. Subsequent receipt-only edits to this qualification file
 change no production, test, example, benchmark, normalized manifest or lock input.
 
 Open: required exact-head SDK Qualification, qualified PR merge, and independent
 actual-main SHA/tree verification. An open gate is not a pass.
+## Review budget repairs
+
+The initial PR head `1933cbcb3f08d4143ed11553bc60799c97b04bed` passed SDK
+Qualification run `38030985850`. Review then identified two valid budget defects,
+so that head's receipts are historical, not repair qualification: caller-owned
+spare dependency capacity escaped byte accounting, and incoming-edge removal
+work was omitted. Neither earlier tests nor source arguments detected these.
+
+`begin` now charges retained vector capacity with checked multiplication/addition
+in addition to conservative per-edge index metadata. `discard` and `advance`
+precharge incoming dependency cleanup before changing any hypothesis, index or
+tick. Charges include edges whose parent might be removed earlier in the same
+expiry batch, so planning remains conservative and independent of removal order.
+
+Two production regression scenarios cover empty vectors with huge capacity,
+retained bounded capacity, exact/one-byte-short limits, aggregate arithmetic
+overflow, failure without sequence/operation reservation, a four-node complete
+older-parent DAG (14 units fail, 20 succeed), shared roots and a dependent chain,
+repeated failed discard/expiry, unchanged canonical values/status/indexes/ticks,
+recovered operation identity and repeated successful disposal. A safe nonzero-size
+Vec cannot allocate beyond isize::MAX; the overflow trace instead uses a valid
+small vector and a conservative near-maximum adapter estimate, exercising checked
+aggregate accounting without manufacturing an invalid allocation.
+
+All ten temporary mutation controls compiled and failed test assertions on the
+repaired source: the prior eight plus replacing retained capacity with length and
+omitting cleanup preflight. Disk exhaustion interrupted the first cleanup-control
+compile; that attempt was not counted. After removing only this worktree's obsolete
+native build cache, cleanup was rerun and assertion-killed. The exact source was
+restored in finally. The mock numeric adapter adds only a configurable conservative
+prediction byte estimate for the overflow trace, with unchanged normal estimates
+and allocation ownership. There is no new production engine or verification framework.
+
+Open for the repaired runtime: renewed thirteen-test platform/browser/archive
+consumer gates, strict lint, allocation/timing comparison, exact-head SDK
+Qualification, qualified merge and independent actual-main verification.

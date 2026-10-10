@@ -72,8 +72,8 @@ invalidation requires explicit consumer reevaluation through a new `begin`.
 Limits bound records, branches, edges, accounted bytes, mutation work, retention
 and visible overlays. Adapter work and branch/edge visits are reported by
 `Changes`; bounded map lookups additionally cost logarithmic time. Retention
-maintenance scans only the bounded resident branch set. Byte accounting charges
-adapter-declared deep allocations plus conservative sparse index metadata, not
+maintenance scans only the bounded resident branch set and precharges incoming-edge cleanup before mutation. Byte accounting charges
+adapter-declared deep allocations, the retained dependency vector capacity and conservative sparse index metadata, not
 allocator RSS. Adapters account cloned keys/operations and immutable projections;
 external domain journals and caller snapshots have their own limits. Large bodies
 remain content references. All fallible planning precedes publication, so explicit

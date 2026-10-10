@@ -17,6 +17,142 @@ wasm_bindgen_test_configure!(run_in_browser);
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
 #[cfg_attr(not(target_arch = "wasm32"), test)]
+fn dependency_capacity_is_retained_and_charged_atomically() {
+    let mut client = Client::new(Numbers::default(), 71, 0, limits()).unwrap();
+    client.observe(1, &evidence(1, 0, 10, None)).unwrap();
+    let before = client.residency();
+    let mut oversized = request(1, 0, 10, 11, Some(9), vec![]);
+    oversized.dependencies = Vec::with_capacity(limits().bytes);
+    assert_eq!(client.begin(oversized), Err(Error::Budget));
+    assert_eq!(client.residency(), before);
+    assert_eq!(client.sequence(), 0);
+    // A failed creation did not reserve the original operation identity.
+    let mut retained = request(1, 0, 10, 11, Some(9), vec![]);
+    retained.dependencies = Vec::with_capacity(128);
+    let capacity_bytes = retained.dependencies.capacity() * std::mem::size_of::<Dependency>();
+    let id = client.begin(retained).unwrap();
+    assert!(client.residency().0 >= before.0 + capacity_bytes);
+    let charged = client.residency().0;
+    assert_eq!(
+        client.hypothesis(id).unwrap().dependencies.capacity() * std::mem::size_of::<Dependency>(),
+        capacity_bytes
+    );
+    client.discard(id).unwrap();
+    assert_eq!(client.residency(), before);
+    for difference in [0, 1] {
+        let mut bounded = limits();
+        bounded.bytes = charged - difference;
+        bounded.edges = 1;
+        let mut client = Client::new(Numbers::default(), 71, 0, bounded).unwrap();
+        client.observe(1, &evidence(1, 0, 10, None)).unwrap();
+        let mut retained = request(1, 0, 10, 11, Some(9), vec![]);
+        retained.dependencies = Vec::with_capacity(128);
+        let result = client.begin(retained);
+        if difference == 0 {
+            assert_eq!(result.unwrap().sequence, 1);
+            assert_eq!(client.residency().0, charged);
+        } else {
+            assert_eq!(result, Err(Error::Budget));
+            assert_eq!(client.residency(), before);
+            assert_eq!(client.sequence(), 0);
+        }
+    }
+    // A safe Vec cannot have a backing size beyond isize::MAX. Exercise checked
+    // aggregate capacity accounting with a conservative near-maximum adapter
+    // estimate, without allocating that estimate or constructing an invalid Vec.
+    let domain = Numbers::default();
+    let metadata = charged - before.0 - capacity_bytes - domain.prediction_bytes;
+    let domain = Numbers {
+        prediction_bytes: usize::MAX - metadata,
+        ..domain
+    };
+    let mut client = Client::new(domain, 71, 0, limits()).unwrap();
+    client.observe(1, &evidence(1, 0, 10, None)).unwrap();
+    let mut overflow = request(1, 0, 10, 11, Some(9), vec![]);
+    overflow.dependencies = Vec::with_capacity(1);
+    assert_eq!(client.begin(overflow), Err(Error::Budget));
+    assert_eq!(client.residency(), before);
+    assert_eq!(client.sequence(), 0);
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+fn incoming_cleanup_work_is_checked_before_discard_or_expiry() {
+    for budget in [14, 20] {
+        let mut bounded = limits();
+        bounded.work = budget;
+        bounded.visible = 4;
+        let mut client = Client::new(Numbers::default(), 71, 0, bounded).unwrap();
+        let mut ids = Vec::new();
+        for key in 1..=4 {
+            client.observe(key, &evidence(key, 0, 10, None)).unwrap();
+            ids.push(
+                client
+                    .begin(request(key, 0, 10, 11, None, ids.clone()))
+                    .unwrap(),
+            );
+        }
+        let before = client.residency();
+        let expired = client.advance(50);
+        if budget == 14 {
+            assert_eq!(expired, Err(Error::Budget));
+            assert_eq!(client.residency(), before);
+            for id in &ids {
+                assert_eq!(
+                    client.hypothesis(*id).unwrap().prediction,
+                    PredictionOutcome::Pending
+                );
+            }
+            // Failed expiry also leaves the host tick unchanged.
+            assert!(client.advance(0).is_ok());
+        } else {
+            assert_eq!(expired.unwrap(), ids);
+            assert_eq!(client.residency().2, 0);
+            assert_eq!(client.residency().3, 0);
+            assert!(client.advance(50).unwrap().is_empty());
+            assert_eq!(client.discard(*ids.first().unwrap()), Err(Error::Missing));
+        }
+    }
+    let mut bounded = limits();
+    bounded.work = 3;
+    bounded.visible = 3;
+    let mut client = Client::new(Numbers::default(), 71, 0, bounded).unwrap();
+    client.observe(1, &evidence(1, 0, 10, None)).unwrap();
+    let a = client.begin(request(1, 0, 10, 11, None, vec![])).unwrap();
+    let b = client.begin(request(1, 0, 10, 11, None, vec![])).unwrap();
+    let leaf = client
+        .begin(request(1, 0, 10, 11, Some(9), vec![a, b]))
+        .unwrap();
+    let child = client
+        .begin(request(1, 0, 10, 11, None, vec![leaf]))
+        .unwrap();
+    let before = client.residency();
+    assert_eq!(client.discard(leaf), Err(Error::Budget));
+    assert_eq!(client.residency(), before);
+    assert_eq!(
+        client.hypothesis(leaf).unwrap().prediction,
+        PredictionOutcome::Pending
+    );
+    assert_eq!(client.discard(leaf), Err(Error::Budget));
+    assert_eq!(
+        client.hypothesis(child).unwrap().prediction,
+        PredictionOutcome::Pending
+    );
+    assert_eq!(*client.view(&1, &[]).unwrap().value, 10);
+    assert_eq!(client.release(&1), Err(Error::Conflict));
+    assert_eq!(
+        client.begin(request(1, 0, 10, 11, Some(9), vec![])),
+        Err(Error::Conflict)
+    );
+    // Reverse edges and the operation index remain usable after repeated failure.
+    assert_eq!(client.discard(child).unwrap(), vec![child]);
+    assert_eq!(client.discard(leaf).unwrap(), vec![leaf]);
+    assert_eq!(client.discard(leaf), Err(Error::Missing));
+    assert!(client.begin(request(1, 0, 10, 11, Some(9), vec![])).is_ok());
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn confirmed_only_edges_require_correspondence_and_never_revive() {
     let mut client = Client::new(Numbers::default(), 71, 0, limits()).unwrap();
     for key in 1..=3 {

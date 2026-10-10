@@ -27,6 +27,7 @@ pub struct Evidence {
 pub struct Numbers {
     pub visits: Rc<Cell<usize>>,
     pub adapter: Rc<Cell<u128>>,
+    pub prediction_bytes: usize,
 }
 
 impl Default for Numbers {
@@ -34,6 +35,7 @@ impl Default for Numbers {
         Self {
             visits: Rc::new(Cell::new(0)),
             adapter: Rc::new(Cell::new(1)),
+            prediction_bytes: DEEP_BYTES,
         }
     }
 }
@@ -62,7 +64,7 @@ impl Domain for Numbers {
             return Err(Error::Conflict);
         }
         self.visits.set(self.visits.get() + 1);
-        Ok((DEEP_BYTES, 1))
+        Ok((self.prediction_bytes, 1))
     }
     fn observe(
         &self,
