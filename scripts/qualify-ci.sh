@@ -461,6 +461,8 @@ case "$lane" in
       bun run --filter '@acyclic-labs/fs' test:browser
     CHROME="$(command -v google-chrome || command -v chromium)" \
       bun run --filter '@acyclic-labs/harness' test:browser:mcp
+    CHROME="$(command -v google-chrome || command -v chromium)" \
+      bun run --filter '@acyclic-labs/harness' test:client:browser
     ;;
   typescript)
     # Family admission resolves the locked Cargo graph offline before WASM

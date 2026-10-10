@@ -36,6 +36,8 @@ export * from "./project.js";
 export * from "./interaction.js";
 export * from "./extension.js";
 export * from "./client.js";
+export * from "./client-views.js";
+export type { ClientSnapshot } from "./client-snapshot.js";
 export * from "./pagination.js";
 export * from "./wire-transport.js";
 export { performanceObserver, type AcyclicObserver, type OperationEvent } from "./observe.js";

@@ -1329,6 +1329,50 @@ export class WasmBrowserHistoryReader {
 }
 
 /**
+ * Browser facade. All transitions, bounds and reconciliation use Client<D>.
+ */
+export class WasmClientViews {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Explicit logical retention tick, never a hidden timer.
+     */
+    advance(now: bigint): any;
+    /**
+     * Begin one explicit hypothesis; values stay as JavaScript references.
+     */
+    begin(metadata: any, predicted: any, assumption: any): string;
+    /**
+     * Remove one local prediction; never cancels a durable effect.
+     */
+    discard(branch: string): any;
+    /**
+     * Pure construction; callbacks run only on explicit transitions.
+     */
+    constructor(identity: string, namespace: string, sequence: bigint, limits: any, validate: Function, observe: Function, corresponds: Function);
+    /**
+     * Narrow changed hypothesis IDs and work; no full-state export.
+     */
+    observe(key: string, evidence: any): any;
+    /**
+     * Release an unreferenced demanded record.
+     */
+    release(key: string): void;
+    /**
+     * Resident record/branch/edge counts and conservatively accounted bytes.
+     */
+    residency(): any;
+    /**
+     * Inspect outcome metadata without serializing hypothesis bodies.
+     */
+    status(branch: string): any;
+    /**
+     * Select only one demanded record and explicitly supplied overlays.
+     */
+    view(key: string, overlays: any): any;
+}
+
+/**
  * Bounded Rust-owned content state for the WASM `MemoryConversation` adapter.
  * The native filesystem provider uses the same crate-level core while
  * retaining its signed provider-generation proof around delegated reads.
@@ -2140,6 +2184,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_wasmbrowseraggregate_free: (a: number, b: number) => void;
     readonly __wbg_wasmbrowserhistoryreader_free: (a: number, b: number) => void;
+    readonly __wbg_wasmclientviews_free: (a: number, b: number) => void;
     readonly __wbg_wasmcontentstore_free: (a: number, b: number) => void;
     readonly __wbg_wasmmcphttpinitialization_free: (a: number, b: number) => void;
     readonly __wbg_wasmmcphttptransport_free: (a: number, b: number) => void;
@@ -2225,6 +2270,15 @@ export interface InitOutput {
     readonly wasmbrowserhistoryreader_operationEvent: (a: number, b: any) => any;
     readonly wasmbrowserhistoryreader_pin: (a: number, b: bigint) => any;
     readonly wasmbrowserhistoryreader_readPage: (a: number, b: any, c: any) => any;
+    readonly wasmclientviews_advance: (a: number, b: any) => [number, number, number];
+    readonly wasmclientviews_begin: (a: number, b: any, c: any, d: any) => [number, number, number, number];
+    readonly wasmclientviews_discard: (a: number, b: any) => [number, number, number];
+    readonly wasmclientviews_new: (a: any, b: any, c: any, d: any, e: any, f: any, g: any) => [number, number, number];
+    readonly wasmclientviews_observe: (a: number, b: any, c: any) => [number, number, number];
+    readonly wasmclientviews_release: (a: number, b: any) => [number, number];
+    readonly wasmclientviews_residency: (a: number) => [number, number, number];
+    readonly wasmclientviews_status: (a: number, b: any) => [number, number, number];
+    readonly wasmclientviews_view: (a: number, b: any, c: any) => [number, number, number];
     readonly wasmcontentstore_generation: (a: number) => [number, number, number];
     readonly wasmcontentstore_has: (a: number, b: any) => [number, number, number];
     readonly wasmcontentstore_list: (a: number, b: number, c: number, d: any, e: number, f: number, g: number) => [number, number, number];
