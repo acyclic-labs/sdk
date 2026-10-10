@@ -108,7 +108,7 @@ fn chunk_path(authority: &Authority, chunk: &ProjectionChunk) -> Result<StreamPa
     ))?)
 }
 
-async fn stage_chunk<P: StreamProvider>(
+pub(super) async fn stage_immutable_record<P: StreamProvider>(
     client: &StreamClient<P>,
     path: StreamPath,
     bytes: Bytes,
@@ -139,17 +139,18 @@ async fn stage_chunk<P: StreamProvider>(
         {
             return Ok(());
         }
-        return Err(Error::Storage("projection chunk receipt is invalid".into()));
+        return Err(Error::Storage("immutable record receipt is invalid".into()));
     }
     // A competing publication may stage identical content. Its immutable bytes
     // must match; only the later canonical commit makes the checkpoint visible.
     if operations::one_record(client, &path, 0)
         .await?
         .is_some_and(|record| record.value == bytes)
+        && client.stream(path.as_str())?.tail().await? == 1
     {
         Ok(())
     } else {
-        Err(Error::Conflict("projection chunk identity differs".into()))
+        Err(Error::Conflict("immutable record identity differs".into()))
     }
 }
 
@@ -202,7 +203,7 @@ pub(super) async fn publication<P: StreamProvider>(
         ));
     }
     for (descriptor, chunk) in location.chunks.iter().zip(chunks) {
-        stage_chunk(
+        stage_immutable_record(
             client,
             chunk_path(&location.authority, descriptor)?,
             Bytes::copy_from_slice(chunk),

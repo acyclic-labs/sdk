@@ -296,11 +296,28 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         .try_collect::<Vec<_>>()
         .await?;
     assert_eq!(indexes.len(), 3);
-    let bytes = canonical_bytes
+    let legacy_bytes = canonical_bytes
         + indexes
             .iter()
             .map(|record| record.value.len() as u64)
             .sum::<u64>();
+    let probe_reader = HistoryReader::new(&stream, &authority, issuer.verifier())?;
+    provider.observation_bytes.store(0, Ordering::SeqCst);
+    probe_reader
+        .effect(
+            &probe_reader.pin(0).await?,
+            effect_id,
+            HistoryReadLimits {
+                maximum_events: 3,
+                maximum_bytes: 1_000_000,
+            },
+        )
+        .await?;
+    let bytes = provider.observation_bytes.load(Ordering::SeqCst);
+    assert!(
+        bytes > legacy_bytes,
+        "complete cut proof must be included in byte accounting"
+    );
     let limits = HistoryReadLimits {
         maximum_events: 3,
         maximum_bytes: bytes,
@@ -310,8 +327,39 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         .effect(effect_id)
         .cloned()
         .ok_or_else(|| acyclic_harness::Error::Invalid("completed effect missing".into()))?;
+    let original_cut = probe_reader.pin(0).await?;
+    provider.forbid_writes.store(true, Ordering::SeqCst);
+    provider.hide_effect_node_read.store(true, Ordering::SeqCst);
+    assert!(
+        probe_reader
+            .effect(&original_cut, effect_id, limits)
+            .await
+            .is_err()
+    );
+    provider
+        .hide_effect_node_read
+        .store(false, Ordering::SeqCst);
+    provider
+        .hide_effect_transition_position
+        .store(3, Ordering::SeqCst);
+    assert!(
+        probe_reader
+            .effect(&original_cut, effect_id, limits)
+            .await
+            .is_err()
+    );
+    provider
+        .hide_effect_transition_position
+        .store(0, Ordering::SeqCst);
+    assert_eq!(
+        probe_reader
+            .effect(&original_cut, effect_id, limits)
+            .await?,
+        Some(completed.clone())
+    );
+    provider.forbid_writes.store(false, Ordering::SeqCst);
     for atomic in [false, true] {
-        let copied = copied_effect_history(&authority, &raw, &indexes, atomic).await?;
+        let copied = copied_effect_history(&stream, &authority, &raw, &indexes, atomic).await?;
         let copied_reader = HistoryReader::new(&copied, &authority, issuer.verifier())?;
         let result = copied_reader
             .effect(&copied_reader.pin(0).await?, effect_id, limits)
@@ -352,19 +400,42 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             provider.forbid_writes.store(true, Ordering::SeqCst);
             provider.observation_reads.store(0, Ordering::SeqCst);
             provider.observation_maximum.store(0, Ordering::SeqCst);
+            provider.observation_tails.store(0, Ordering::SeqCst);
             let cold = HistoryReader::new(&stream, &authority, issuer.verifier())?;
             let cursor = cold.pin(0).await?;
             assert_eq!(
                 cold.effect(&cursor, effect_id, limits).await?,
                 Some(completed.clone())
             );
-            assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 6);
+            assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 9);
+            assert_eq!(provider.observation_tails.load(Ordering::SeqCst), 3);
             assert_eq!(provider.observation_maximum.load(Ordering::SeqCst), 1);
         }
     }
     let reader = HistoryReader::new(&stream, &authority, issuer.verifier())?;
     let cursor = reader.pin(0).await?;
     for (cut, expected) in [(1, planned), (2, dispatched), (3, completed.clone())] {
+        let pinned = HistoryCursor {
+            through_revision: cut,
+            ..cursor.clone()
+        };
+        provider.observation_bytes.store(0, Ordering::SeqCst);
+        reader
+            .effect(
+                &pinned,
+                effect_id,
+                HistoryReadLimits {
+                    maximum_events: u32::try_from(cut)
+                        .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?,
+                    maximum_bytes: 1_000_000,
+                },
+            )
+            .await?;
+        let exact = HistoryReadLimits {
+            maximum_events: u32::try_from(cut)
+                .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?,
+            maximum_bytes: provider.observation_bytes.load(Ordering::SeqCst),
+        };
         assert_eq!(
             reader
                 .effect(
@@ -373,12 +444,41 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                         ..cursor.clone()
                     },
                     effect_id,
-                    limits
+                    exact
                 )
                 .await?,
             Some(expected)
         );
+        assert!(
+            reader
+                .effect(
+                    &pinned,
+                    effect_id,
+                    HistoryReadLimits {
+                        maximum_bytes: exact.maximum_bytes - 1,
+                        ..exact
+                    }
+                )
+                .await
+                .is_err()
+        );
     }
+    provider.observation_bytes.store(0, Ordering::SeqCst);
+    reader
+        .effect(
+            &cursor,
+            effect_id,
+            HistoryReadLimits {
+                maximum_events: 3,
+                maximum_bytes: 1_000_000,
+            },
+        )
+        .await?;
+    let bytes = provider.observation_bytes.load(Ordering::SeqCst);
+    let limits = HistoryReadLimits {
+        maximum_events: 3,
+        maximum_bytes: bytes,
+    };
     provider.observation_reads.store(0, Ordering::SeqCst);
     assert!(
         reader
@@ -393,7 +493,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             .await
             .is_err()
     );
-    assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 3);
     assert!(
         reader
             .effect(
@@ -431,7 +531,8 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             .await
             .is_err()
     );
-    assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 2);
+    // The authenticated cut and node precede the first original transition pair.
+    assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 5);
     for fault in 1..=4 {
         provider.history_read_fault.store(fault, Ordering::SeqCst);
         assert!(reader.effect(&cursor, effect_id, limits).await.is_err());
@@ -440,11 +541,11 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             Some(completed.clone())
         );
     }
-    assert!(
+    assert_eq!(
         reader
             .effect(&cursor, EffectId::from_bytes([99; 16]), limits)
-            .await
-            .is_err()
+            .await?,
+        None
     );
     assert_eq!(
         reader
@@ -511,6 +612,50 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         if position == 0 {
             continue;
         }
+        let gap = if position == 1 {
+            let planned = aggregate
+                .reducer()
+                .effect(id)
+                .cloned()
+                .ok_or_else(|| acyclic_harness::Error::Invalid("gap effect missing".into()))?;
+            ordinal += 1;
+            aggregate
+                .execute(fresh(
+                    ordinal,
+                    aggregate.reducer().revision(),
+                    Action::TransitionLifecycle {
+                        to: LifecycleState::Active,
+                        reason: None,
+                    },
+                ))
+                .await?;
+            provider.forbid_writes.store(true, Ordering::SeqCst);
+            let reader = HistoryReader::new(&stream, &authority, issuer.verifier())?;
+            let cursor = reader.pin(0).await?;
+            provider.observation_bytes.store(0, Ordering::SeqCst);
+            reader
+                .effect(
+                    &cursor,
+                    id,
+                    HistoryReadLimits {
+                        maximum_events: 1,
+                        maximum_bytes: 1_000_000,
+                    },
+                )
+                .await?;
+            let exact = HistoryReadLimits {
+                maximum_events: 1,
+                maximum_bytes: provider.observation_bytes.load(Ordering::SeqCst),
+            };
+            assert_eq!(
+                reader.effect(&cursor, id, exact).await?,
+                Some(planned.clone())
+            );
+            provider.forbid_writes.store(false, Ordering::SeqCst);
+            Some((cursor, exact, planned))
+        } else {
+            None
+        };
         ordinal += 1;
         aggregate
             .execute(fresh(
@@ -522,6 +667,25 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 },
             ))
             .await?;
+        if let Some((cursor, exact, planned)) = gap {
+            provider.forbid_writes.store(true, Ordering::SeqCst);
+            let reader = HistoryReader::new(&stream, &authority, issuer.verifier())?;
+            assert_eq!(reader.effect(&cursor, id, exact).await?, Some(planned));
+            assert!(
+                reader
+                    .effect(
+                        &cursor,
+                        id,
+                        HistoryReadLimits {
+                            maximum_bytes: exact.maximum_bytes - 1,
+                            ..exact
+                        }
+                    )
+                    .await
+                    .is_err()
+            );
+            provider.forbid_writes.store(false, Ordering::SeqCst);
+        }
         if position == 2 {
             let state = aggregate
                 .reducer()
@@ -614,9 +778,39 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             assert!(snapshot_bytes < 32 * 1_024);
             assert!(reads <= 4 + 2 * 64);
             assert!(maximum <= 64);
+            let probe = HistoryReadLimits {
+                maximum_events: 3,
+                maximum_bytes: 1_000_000,
+            };
+            let archive_reader = HistoryReader::new(&stream, &authority, issuer.verifier())?;
+            let archive_cut = archive_reader.pin(0).await?;
+            provider.observation_bytes.store(0, Ordering::SeqCst);
             assert_eq!(
-                cold.effect(effect_id, limits).await?,
+                archive_reader
+                    .effect(&archive_cut, effect_id, probe)
+                    .await?,
                 Some(completed.clone())
+            );
+            let exact = HistoryReadLimits {
+                maximum_events: 3,
+                maximum_bytes: provider.observation_bytes.load(Ordering::SeqCst),
+            };
+            assert_eq!(
+                cold.effect(effect_id, exact).await?,
+                Some(completed.clone())
+            );
+            assert!(
+                archive_reader
+                    .effect(
+                        &archive_cut,
+                        effect_id,
+                        HistoryReadLimits {
+                            maximum_bytes: exact.maximum_bytes - 1,
+                            ..exact
+                        }
+                    )
+                    .await
+                    .is_err()
             );
             if retained > 1 {
                 assert!(cold.reducer().effect(effect_id).is_none());
@@ -989,11 +1183,48 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         stream.stream(authority.stream_path()?)?.tail().await?,
         revision
     );
-    assert_eq!(aggregate.effect(effect_id, limits).await?, Some(completed));
+    let final_reader = HistoryReader::new(&stream, &authority, issuer.verifier())?;
+    let final_cut = final_reader.pin(0).await?;
+    provider.observation_bytes.store(0, Ordering::SeqCst);
+    assert_eq!(
+        final_reader
+            .effect(
+                &final_cut,
+                effect_id,
+                HistoryReadLimits {
+                    maximum_events: 3,
+                    maximum_bytes: 1_000_000
+                }
+            )
+            .await?,
+        Some(completed.clone())
+    );
+    let final_limits = HistoryReadLimits {
+        maximum_events: 3,
+        maximum_bytes: provider.observation_bytes.load(Ordering::SeqCst),
+    };
+    assert_eq!(
+        aggregate.effect(effect_id, final_limits).await?,
+        Some(completed)
+    );
+    assert!(
+        final_reader
+            .effect(
+                &final_cut,
+                effect_id,
+                HistoryReadLimits {
+                    maximum_bytes: final_limits.maximum_bytes - 1,
+                    ..final_limits
+                }
+            )
+            .await
+            .is_err()
+    );
     Ok(())
 }
 
-async fn copied_effect_history(
+async fn copied_effect_history<P: acyclic_stream::StreamProvider>(
+    source: &StreamClient<P>,
     authority: &Authority,
     canonical: &[acyclic_stream::Record],
     indexes: &[acyclic_stream::Record],
@@ -1023,6 +1254,62 @@ async fn copied_effect_history(
     let index_path = StreamPath::new(format!(
         "harness/v2/effect-transitions/tasks/effect-task/{effect}"
     ))?;
+    let path = authority.stream_path()?;
+    let (version, suffix) = path
+        .strip_prefix("harness/")
+        .and_then(|path| path.split_once('/'))
+        .ok_or_else(|| acyclic_harness::Error::Invalid("copy root authority is invalid".into()))?;
+    let root_prefix = format!("harness/{version}/effect-heads/{suffix}");
+    let root_path = StreamPath::new(format!("{root_prefix}/cuts"))?;
+    let certificates = source
+        .stream(root_path.as_str())?
+        .read(0, 3)
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
+    assert_eq!(certificates.len(), canonical.len());
+    let mut pending = Vec::new();
+    for record in &certificates {
+        let value: serde_json::Value = serde_json::from_slice(&record.value)
+            .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
+        if let Some(hash) = value.get("root").filter(|hash| !hash.is_null()) {
+            pending.push(
+                serde_json::from_value::<[u8; 32]>(hash.clone())
+                    .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?,
+            );
+        }
+    }
+    let mut copied = BTreeSet::new();
+    while let Some(hash) = pending.pop() {
+        if !copied.insert(hash) {
+            continue;
+        }
+        let path = format!(
+            "{root_prefix}/nodes/{}",
+            blake3::Hash::from_bytes(hash).to_hex()
+        );
+        let node = source
+            .stream(&path)?
+            .read(0, 1)
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
+        assert_eq!(node.len(), 1);
+        let node = node
+            .first()
+            .ok_or_else(|| acyclic_harness::Error::Invalid("proof node missing".into()))?;
+        let value: serde_json::Value = serde_json::from_slice(&node.value)
+            .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
+        for field in ["left", "right"] {
+            if let Some(hash) = value.get(field) {
+                pending.push(
+                    serde_json::from_value::<[u8; 32]>(hash.clone())
+                        .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?,
+                );
+            }
+        }
+        client.stream(path)?.append(node.value.clone()).await?;
+    }
     if atomic {
         for (position, (event, index)) in canonical.iter().zip(indexes).enumerate() {
             let expected = position as u64;
@@ -1038,6 +1325,7 @@ async fn copied_effect_history(
                     conditions: vec![
                         condition(canonical_path.clone()),
                         condition(index_path.clone()),
+                        condition(root_path.clone()),
                     ],
                     mutations: vec![
                         CommitMutation::Append {
@@ -1048,6 +1336,20 @@ async fn copied_effect_history(
                             path: index_path.clone(),
                             records: vec![index.value.clone()],
                         },
+                        CommitMutation::Append {
+                            path: root_path.clone(),
+                            records: vec![
+                                certificates
+                                    .get(position)
+                                    .ok_or_else(|| {
+                                        acyclic_harness::Error::Invalid(
+                                            "cut certificate missing".into(),
+                                        )
+                                    })?
+                                    .value
+                                    .clone(),
+                            ],
+                        },
                     ],
                     idempotency_key: acyclic_stream::IdempotencyKey::new(format!(
                         "copy-effect-{position}"
@@ -1057,6 +1359,17 @@ async fn copied_effect_history(
             assert!(matches!(result, CommitOutcome::Committed(_)));
         }
     } else {
+        client
+            .stream(root_path.as_str())?
+            .append_batch(
+                certificates
+                    .iter()
+                    .map(|record| record.value.clone())
+                    .collect(),
+                Some(0),
+                None,
+            )
+            .await?;
         client
             .stream(canonical_path.as_str())?
             .append_batch(

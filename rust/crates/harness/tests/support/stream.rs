@@ -23,6 +23,8 @@ pub struct LostSessionAck<P = MemoryStream> {
     pub hide_location_read: std::sync::atomic::AtomicBool,
     pub forbid_writes: std::sync::atomic::AtomicBool,
     pub observation_reads: std::sync::atomic::AtomicUsize,
+    pub observation_bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    pub observation_tails: std::sync::atomic::AtomicUsize,
     pub observation_maximum: std::sync::atomic::AtomicU32,
     pub observation_writes: std::sync::atomic::AtomicUsize,
     pub execution_race: std::sync::atomic::AtomicBool,
@@ -30,6 +32,8 @@ pub struct LostSessionAck<P = MemoryStream> {
     pub execution_fault: std::sync::atomic::AtomicU8,
     pub execution_tail: std::sync::atomic::AtomicU64,
     pub execution_faults: std::sync::atomic::AtomicUsize,
+    pub hide_effect_node_read: std::sync::atomic::AtomicBool,
+    pub hide_effect_transition_position: std::sync::atomic::AtomicU64,
     pub history_read_fault: std::sync::atomic::AtomicU8,
     pub message_head_race: std::sync::Mutex<Option<acyclic_stream::CommitRequest>>,
     pub aggregate_commit_fault: std::sync::atomic::AtomicU8,
@@ -48,6 +52,8 @@ impl<P> LostSessionAck<P> {
             hide_location_read: Default::default(),
             forbid_writes: Default::default(),
             observation_reads: Default::default(),
+            observation_bytes: Default::default(),
+            observation_tails: Default::default(),
             observation_maximum: Default::default(),
             observation_writes: Default::default(),
             execution_race: Default::default(),
@@ -55,6 +61,8 @@ impl<P> LostSessionAck<P> {
             execution_fault: Default::default(),
             execution_tail: Default::default(),
             execution_faults: Default::default(),
+            hide_effect_node_read: Default::default(),
+            hide_effect_transition_position: Default::default(),
             history_read_fault: Default::default(),
             message_head_race: Default::default(),
             aggregate_commit_fault: Default::default(),
@@ -89,6 +97,8 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         &self,
         path: acyclic_stream::StreamPath,
     ) -> std::result::Result<u64, StreamError> {
+        self.observation_tails
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if path
             .as_str()
             .starts_with("harness/v3/projection-checkpoints/")
@@ -227,13 +237,34 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         if let Some(commit) = head_race {
             self.inner.commit(commit).await?;
         }
+        if (request.path.as_str().contains("/effect-heads/")
+            && request.path.as_str().contains("/nodes/")
+            && self
+                .hide_effect_node_read
+                .load(std::sync::atomic::Ordering::SeqCst))
+            || (request.path.as_str().contains("/effect-transitions/")
+                && self
+                    .hide_effect_transition_position
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    == request.from.saturating_add(1))
+        {
+            return Ok(Box::pin(futures::stream::empty()));
+        }
         let fault = self
             .history_read_fault
             .swap(0, std::sync::atomic::Ordering::SeqCst);
-        if fault == 0 {
-            return self.inner.read(request).await;
-        }
         use futures::TryStreamExt as _;
+        if fault == 0 {
+            let delivered = self.observation_bytes.clone();
+            return Ok(Box::pin(self.inner.read(request).await?.inspect_ok(
+                move |record| {
+                    delivered.fetch_add(
+                        record.value.len() as u64,
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
+                },
+            )));
+        }
         let mut records = self
             .inner
             .read(request)
