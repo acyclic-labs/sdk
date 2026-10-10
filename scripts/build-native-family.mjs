@@ -434,9 +434,14 @@ const quoteCommandArg = value => {
   return /[\\s"&|<>^]/u.test(text) ? "\\\"" + text.replaceAll("\\\"", "\\\"\\\"") + "\\\"" : text;
 };
 const commandLine = ["call", command, ...commandArgs].map(quoteCommandArg).join(" ");
+const jobserver = environment.CARGO_MAKEFLAGS?.match(/--jobserver-(?:auth|fds)=(\\d+),(\\d+)/u);
+const descriptors = process.platform === "win32" || !jobserver ? [] : jobserver.slice(1).map(Number);
+const stdio = Array(Math.max(2, ...descriptors) + 1).fill("ignore");
+stdio.splice(0, 3, "inherit", "inherit", "inherit");
+for (const descriptor of descriptors) stdio[descriptor] = descriptor;
 const result = batch
-  ? spawnSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", commandLine], { env: environment, stdio: "inherit", windowsVerbatimArguments: true })
-  : spawnSync(command, commandArgs, { env: environment, stdio: "inherit" });
+  ? spawnSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", commandLine], { env: environment, stdio, windowsVerbatimArguments: true })
+  : spawnSync(command, commandArgs, { env: environment, stdio });
 if (result.error) throw result.error;
 process.exit(result.status ?? 1);
 `;
