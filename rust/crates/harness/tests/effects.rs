@@ -1329,6 +1329,9 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 && io.receipt_bytes <= 1_048_576
         );
         assert!(io.other_calls <= 512 && io.inspections <= 512 && io.commit_reads <= 512);
+        if bit == 128 {
+            println!("effect_root_publication_maximum_depth io={io:?}");
+        }
         assert_eq!(aggregate.reducer().resident_effect_count(), 5);
     }
     let worst_completed = worst_completed
