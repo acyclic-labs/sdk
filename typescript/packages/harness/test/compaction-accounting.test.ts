@@ -128,3 +128,40 @@ test("Rust execution checkpoint wire preserves ref-only observations and rejects
   }
   expect(() => contracts.decodeExecutionEventJson(new TextEncoder().encode(JSON.stringify(event)))).toThrow();
 });
+
+test("canonical native turn records retain full-width values and existing Rust serde boundaries", () => {
+  const operation = "09090909-0909-0909-0909-090909090909";
+  const sequence = (1n << 53n) + 19n;
+  const record = {
+    operation_id: operation, sequence, idempotency_key: "original-turn:started",
+    event: { kind: "started", request_digest: Array.from({ length: 32 }, () => 7) },
+  };
+  const bytes = contracts.encodeCanonicalJson(record);
+  const decoded = contracts.decodeExecutionRecordJson(bytes);
+  expect(decoded.sequence).toBe(sequence);
+  expect(decoded.operation_id).toBe(operation);
+  expect(contracts.encodeCanonicalJson(decoded)).toEqual(bytes);
+  const input = { operation_id: operation, input: "original input", selected_context: null, max_steps: 3 };
+  expect(contracts.decodeTurnInputJson(contracts.encodeCanonicalJson(input))).toEqual(input);
+  // TurnInput currently ignores unknown serde fields; decoding them never grants scope.
+  expect(contracts.decodeTurnInputJson(contracts.encodeCanonicalJson({ ...input, private_scope: "untrusted" }))).toEqual(input);
+  const maximum = (1n << 64n) - 1n;
+  const output = {
+    text: "original output", attachments: [], steps: 3,
+    metadata: { provider_integer: maximum,
+      opaque_descriptor: { sha256: [], byte_length: maximum, media_type: "provider-data" } },
+  };
+  const outputBytes = contracts.encodeCanonicalJson(output);
+  const decodedOutput = contracts.decodeTurnOutputJson(outputBytes);
+  expect(decodedOutput.metadata).toEqual(output.metadata);
+  expect(contracts.encodeCanonicalJson(decodedOutput)).toEqual(outputBytes);
+  expect(Object.isFrozen(decodedOutput.metadata)).toBe(true);
+  for (const malformed of [
+    { ...record, sequence: -1n },
+    { ...record, sequence: maximum + 1n },
+    { ...record, event: { kind: "invented_native_effect" } },
+    { ...record, event: { ...record.event, private_scope: "untrusted" } },
+  ]) {
+    expect(() => contracts.decodeExecutionRecordJson(contracts.encodeCanonicalJson(malformed))).toThrow();
+  }
+});

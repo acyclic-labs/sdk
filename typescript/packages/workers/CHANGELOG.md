@@ -4,6 +4,7 @@
 
 - Align the unified SDK candidate with the breaking Objects v2 public package transition.
 - Initialize the canonical WASM binding from a bundled `WebAssembly.Module` in runtimes without filesystem loading or dynamic compilation.
+- Export the Rust-generated readonly `semantic` namespace, matching Actors, so publication acknowledgements retain the exact client result contract without protobuf DTO copies.
 
 ## Unreleased
 

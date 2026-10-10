@@ -3,6 +3,7 @@
 ## 0.2.0 - Unreleased
 
 - Align the unified SDK candidate and Objects content adapter with the breaking Objects v2 public package transition.
+- Export Rust-generated native turn inputs, outputs and journal records with the existing canonical JSON codec and lossless full-width integer projections.
 
 ## Unreleased
 

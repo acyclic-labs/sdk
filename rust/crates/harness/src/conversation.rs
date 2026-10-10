@@ -1208,8 +1208,10 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
 /// Immutable file plus optional user-visible label.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Attachment {
     /// Version-pinned file.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
     pub file: FileRef,
     /// Optional caption; never interpreted as a path.
     pub label: Option<String>,
@@ -1538,14 +1540,18 @@ impl TryFrom<ConversationStateWire> for ConversationState {
 /// Exact history revision and ordered subset selected for one model request.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct ModelContextSelection {
     /// Number of canonical messages observed when selecting.
     pub conversation_revision: u64,
     /// Ordered, unique message identities; omitted history is deliberate.
+    #[cfg_attr(feature = "wasm", tsify(type = "string[]"))]
     pub message_ids: Vec<Uuid>,
     /// Immutable canonical checkpoint covering history before this selection's delta.
     /// Its typed payload and publication must be resolved by the owning journal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
     pub checkpoint: Option<FileRef>,
 }
 

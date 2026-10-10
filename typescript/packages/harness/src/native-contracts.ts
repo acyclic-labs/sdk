@@ -1,5 +1,5 @@
-import type { ExecutionEvent } from "../generated/wasm/acyclic_harness_wasm.js";
-export type { ExecutionEvent } from "../generated/wasm/acyclic_harness_wasm.js";
+import type { ExecutionEvent, ExecutionRecord, TurnInput, TurnOutput } from "../generated/wasm/acyclic_harness_wasm.js";
+export type { ExecutionEvent, ExecutionRecord, TurnInput, TurnOutput } from "../generated/wasm/acyclic_harness_wasm.js";
 /** Explicitly initialized Rust contract validator with strongly typed v2 inputs. */
 import * as wasm from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
@@ -524,6 +524,21 @@ export class NativeContracts {
   /** Admits the Rust-generated ref-only executor observation and freezes its exact wire fields. */
   decodeExecutionEventJson(bytes: Uint8Array): ExecutionEvent {
     return freezeNative(normalizeNativeValue(this.native.decodeExecutionEventJson(bytes))) as ExecutionEvent;
+  }
+
+  /** Projects the canonical Rust turn input; decoding conveys no scope or grant. */
+  decodeTurnInputJson(bytes: Uint8Array): TurnInput {
+    return freezeNative(normalizeNativeValue(this.native.decodeTurnInputJson(bytes))) as TurnInput;
+  }
+
+  /** Preserves native output metadata as data, never as a compiler/billing receipt. */
+  decodeTurnOutputJson(bytes: Uint8Array): TurnOutput {
+    return freezeNative(normalizeNativeValue(this.native.decodeTurnOutputJson(bytes))) as TurnOutput;
+  }
+
+  /** Preserves the original native journal's exact full-width sequence. */
+  decodeExecutionRecordJson(bytes: Uint8Array): ExecutionRecord {
+    return freezeNative(normalizeNativeValue(this.native.decodeExecutionRecordJson(bytes))) as ExecutionRecord;
   }
 
   conversationPage(core: WasmReducer, afterSequence: bigint, limit: number): ConversationPage {

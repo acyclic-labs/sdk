@@ -54,6 +54,16 @@ Use `HarnessBuilder` to register versioned tasks and tools and bind a model, con
 
 `NativeContracts.create()` provides the package's automatically initialized Rust/WASM validator with exact TypeScript overloads for v2 files, messages, fork values, interactions, and task outcomes. It returns detached, deeply immutable Rust-admitted values, not the untrusted input object. `parseIdentity(kind, value)` brands agent, conversation, session, turn, task, operation, and effect IDs through Rust; `conversationMessageId(value)` does the same for message IDs. Conversation sequence numbers and other full-width `u64` positions remain `bigint`; bounded file lengths and limits become checked JavaScript numbers. Rust also owns `descriptorFor(bytes, mediaType)`, canonical action JSON encoding, and lossless event/history decoding; untrusted model JSON is parsed by Rust and rejected if an integer cannot be represented exactly as a JavaScript number. It also owns byte verification, typed attachment-manifest encoding/decoding, and report-to-seed fork conversion; `resourceRef(value)`, `extensionRecord(value)`, `forkSeed(report)`, `validateForkRequest(request)`, and `validateForkSeed(seed)` are async conveniences over native admission. Their public types retain volume class/owner and resource-kind relationships; generated WASM `any` values stay behind this typed boundary. `Harness.apply` returns an event with an honest unknown payload; `decodeEventPayload(event, parser)` establishes a type only after the commit result is known, so parser failures never obscure whether a command committed. Ref, attachment, and limits admission requires an initialized `NativeContracts` or `Harness` instance; no separate TypeScript validator remains.
 
+Native turn consumers use the Rust-generated `TurnInput`, `TurnOutput`,
+`ExecutionRecord` and `ExecutionEvent` exports with
+`NativeContracts.decodeTurnInputJson`, `decodeTurnOutputJson`,
+`decodeExecutionRecordJson` and `decodeExecutionEventJson`. Encode with the same
+Rust-owned `encodeCanonicalJson`; never parse full-width journal integers through
+JavaScript `JSON.parse`. Their existing Rust serde rules apply, and decoding
+does not grant execution or resource authority. Native scopes, tool registries
+and task contexts remain private; output metadata is not a compiler or billing
+receipt.
+
 Extension state is equally Rust-admitted: `extensionRecord`, `extensionConfiguration`, and `extensionAdmission` validate canonical records, while `extensionStateMigration` validates a migration request without executing it. Native execution remains provider-owned and exact-digest pinned; a durable host must run the registered migration and publish only its resulting `FileRef`. Fork policy is explicit (`inherit`, `reset`, or `reject`), and an admitted task retains the selected extension versions for its entire run so disabling new admissions cannot invalidate reconciliation.
 
 `Harness.apply(command)` also returns `eventWire`, the generated v2 protobuf encoding of the Rust response event. Use it for exact native/WASM comparisons or transport; the projected `event.payload` remains `unknown` until explicitly decoded.

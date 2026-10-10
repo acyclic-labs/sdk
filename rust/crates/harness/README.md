@@ -39,6 +39,13 @@ recovery; it never reloads sources or transforms. New projections require new
 admissions. A custom loop must finish each tool exchange before requesting the
 next model step or publishing a child prefix.
 
+The public `executor::encode_json` and `decode_json` functions use the existing
+canonical sorted-key JSON codec for `TurnInput`, `TurnOutput`, `ExecutionRecord`
+and `ExecutionEvent`. Rust owns their serialization and the generated WASM/TS
+contracts. Full-width journal sequences and provider integers remain exact;
+decoding does not grant execution, journal or file authority. Output metadata is
+provider data, not a compiler attestation or billing receipt.
+
 Stock output-token budgets are caller-controlled: Rust exposes
 `StockExecutor::with_max_output_tokens`, and TypeScript exposes
 `HarnessBuilder.modelOutputTokens`. Neither adds an output-token ceiling when

@@ -476,7 +476,8 @@ case "$lane" in
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
     CHROMEDRIVER="$(command -v chromedriver)" \
       cargo test -p acyclic-harness --features wasm,filesystem --target wasm32-unknown-unknown \
-        --test native_media_boundary --test live_task_lifecycle --test browser_runtime_time --locked
+        --test native_media_boundary --test live_task_lifecycle --test browser_runtime_time \
+        --test executor_contracts --locked
     GECKODRIVER="$(command -v geckodriver)" \
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
     # The shipped browser package end to end in headless Chrome: one tab, then

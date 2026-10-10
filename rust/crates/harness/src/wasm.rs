@@ -25,7 +25,10 @@ use crate::{
     fork::{ForkReport, ForkRequest, ForkSeed, ReferenceGrant, ResourceRevision},
     interaction::{ApprovalBinding, InteractionResolution, InteractionTicket, ResolutionReceipt},
     merge::ProjectMergeReceipt,
-    model::{ModelContent, ModelEvent, ModelMessage},
+    model::{
+        FileProjectionPolicy, ModelContent, ModelContentPart, ModelDataPart, ModelEvent,
+        ModelMessage, ToolResultContent,
+    },
     projection::{
         AttachmentListResolver, SelectedModelContext, select_model_context_at_revision,
         validate_model_context_selection_at_revision,
@@ -1221,6 +1224,127 @@ pub fn decode_execution_event_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
     let event: crate::executor::ExecutionEvent =
         crate::executor::decode_json(bytes).map_err(js_error)?;
     to_js_admitted(&event)
+}
+
+/// Projects the canonical Rust turn DTO without granting execution authority.
+#[wasm_bindgen(js_name = decodeTurnInputJson, unchecked_return_type = "TurnInput")]
+pub fn decode_turn_input_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
+    let input: crate::executor::TurnInput =
+        crate::executor::decode_json(bytes).map_err(js_error)?;
+    let js = to_js(&input)?;
+    normalize_turn_content(&get_js_field(&js, "input")?, &input.input)?;
+    if let Some(selected) = &input.selected_context {
+        let selected_js = get_js_field(&js, "selected_context")?;
+        if let Some(checkpoint) = &selected.selection.checkpoint {
+            normalize_turn_file_ref(
+                &get_js_field(&get_js_field(&selected_js, "selection")?, "checkpoint")?,
+                checkpoint,
+            )?;
+        }
+        let messages_js = get_js_field(&selected_js, "messages")?;
+        for (index, message) in selected.messages.iter().enumerate() {
+            let index = u32::try_from(index)
+                .map_err(|_| JsValue::from_str("JS message index exceeds u32"))?;
+            let message_js = messages_js.unchecked_ref::<js_sys::Array>().get(index);
+            normalize_turn_content(&get_js_field(&message_js, "content")?, &message.content)?;
+        }
+    }
+    Ok(js)
+}
+
+/// Projects the exact native result; metadata is not a compiler or billing receipt.
+#[wasm_bindgen(js_name = decodeTurnOutputJson, unchecked_return_type = "TurnOutput")]
+pub fn decode_turn_output_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
+    let output: crate::executor::TurnOutput =
+        crate::executor::decode_json(bytes).map_err(js_error)?;
+    let js = to_js(&output)?;
+    let attachments_js = get_js_field(&js, "attachments")?;
+    for (index, attachment) in output.attachments.iter().enumerate() {
+        let index = u32::try_from(index)
+            .map_err(|_| JsValue::from_str("JS attachment index exceeds u32"))?;
+        let attachment_js = attachments_js.unchecked_ref::<js_sys::Array>().get(index);
+        normalize_turn_file_ref(&get_js_field(&attachment_js, "file")?, &attachment.file)?;
+    }
+    Ok(js)
+}
+
+/// Projects the original journal record with its full-width sequence intact.
+#[wasm_bindgen(js_name = decodeExecutionRecordJson, unchecked_return_type = "ExecutionRecord")]
+pub fn decode_execution_record_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
+    let record: crate::executor::ExecutionRecord =
+        crate::executor::decode_json(bytes).map_err(js_error)?;
+    to_js_admitted(&record)
+}
+
+// Only Rust-typed references receive the admitted descriptor Number projection.
+// Tool JSON and provider metadata remain opaque exact-integer values, even when
+// their keys happen to resemble a FileDescriptor.
+fn normalize_turn_file_ref(js: &JsValue, file: &FileRef) -> Result<(), JsValue> {
+    set_js_field(
+        &get_js_field(js, "descriptor")?,
+        "byte_length",
+        &exact_js_number(file.descriptor().byte_length())?,
+    )
+}
+
+fn normalize_turn_model_file(
+    js: &JsValue,
+    file: &FileRef,
+    policy: &FileProjectionPolicy,
+) -> Result<(), JsValue> {
+    normalize_turn_file_ref(&get_js_field(js, "file")?, file)?;
+    if let FileProjectionPolicy::Native(policy) = policy
+        && let Some(binding) = &policy.configuration
+    {
+        let policy_js = get_js_field(&get_js_field(js, "policy")?, "native")?;
+        let binding_js = get_js_field(&policy_js, "configuration")?;
+        let configuration_js = get_js_field(&binding_js, "configuration")?;
+        normalize_turn_file_ref(
+            &get_js_field(&configuration_js, "content")?,
+            &binding.configuration.content,
+        )?;
+    }
+    Ok(())
+}
+
+fn normalize_turn_content_part(js: &JsValue, part: &ModelContentPart) -> Result<(), JsValue> {
+    match part {
+        ModelContentPart::File { file, policy } => normalize_turn_model_file(js, file, policy),
+        ModelContentPart::ToolResult {
+            content: ToolResultContent::Parts { parts },
+            ..
+        } => {
+            let parts_js = get_js_field(&get_js_field(js, "content")?, "parts")?;
+            for (index, part) in parts.iter().enumerate() {
+                if let ModelDataPart::File { file, policy } = part {
+                    let index = u32::try_from(index)
+                        .map_err(|_| JsValue::from_str("JS model data index exceeds u32"))?;
+                    normalize_turn_model_file(
+                        &parts_js.unchecked_ref::<js_sys::Array>().get(index),
+                        file,
+                        policy,
+                    )?;
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn normalize_turn_content(js: &JsValue, content: &ModelContent) -> Result<(), JsValue> {
+    match content {
+        ModelContent::Text(_) => Ok(()),
+        ModelContent::Part(part) => normalize_turn_content_part(js, part),
+        ModelContent::Parts(parts) => {
+            for (index, part) in parts.iter().enumerate() {
+                let index = u32::try_from(index)
+                    .map_err(|_| JsValue::from_str("JS model part index exceeds u32"))?;
+                normalize_turn_content_part(&js.unchecked_ref::<js_sys::Array>().get(index), part)?;
+            }
+            Ok(())
+        }
+    }
 }
 
 fn parse_json_bytes(bytes: &[u8]) -> Result<serde_json::Value, JsValue> {
@@ -2490,6 +2614,15 @@ fn exact_js_number(value: u64) -> Result<JsValue, JsValue> {
         .parse::<f64>()
         .map_err(|_| JsValue::from_str("integer cannot be projected to JavaScript"))?;
     Ok(JsValue::from_f64(number))
+}
+
+fn get_js_field(js: &JsValue, key: &str) -> Result<JsValue, JsValue> {
+    let key = JsValue::from_str(key);
+    if js.is_instance_of::<js_sys::Map>() {
+        Ok(js.unchecked_ref::<js_sys::Map>().get(&key))
+    } else {
+        js_sys::Reflect::get(js, &key)
+    }
 }
 
 fn set_js_field(js: &JsValue, key: &str, value: &JsValue) -> Result<(), JsValue> {

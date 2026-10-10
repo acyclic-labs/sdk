@@ -74,10 +74,12 @@ impl<T: ContentResidencyVerifier + ?Sized> AttachmentListResolver for T {
 
 /// Transient model context with explicit canonical provenance.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct SelectedModelContext {
     /// Selection and exact history revision.
     pub selection: ModelContextSelection,
     /// Typed model-visible values; do not append them to conversation history.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelMessageWire[]"))]
     pub messages: Vec<ModelMessage>,
 }
 

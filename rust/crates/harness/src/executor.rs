@@ -39,10 +39,13 @@ pub(crate) fn validate_execution_page(_after: u64, maximum: u32) -> Result<()> {
 
 /// Durable input to any custom executor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct TurnInput {
     /// Stable durable turn execution identity.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub operation_id: OperationId,
     /// Typed provider-neutral input; canonical conversation storage still uses file refs.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelContent"))]
     pub input: ModelContent,
     /// Exact, separately recorded canonical history selection for this turn.
     /// When present its last user message is the current `input`; the stock
@@ -83,8 +86,11 @@ impl TurnInput {
 
 /// Gapless replay record returned by a durable execution journal.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct ExecutionRecord {
     /// Owning turn execution.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub operation_id: OperationId,
     /// Gapless one-based journal sequence.
     pub sequence: u64,
@@ -451,12 +457,14 @@ pub(crate) async fn replay_execution(
 
 /// Terminal result produced by an executor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct TurnOutput {
     /// User-visible assistant text.
     pub text: String,
     /// Ordered, already staged assistant attachments or published artifacts.
     #[serde(default)]
     pub attachments: Vec<Attachment>,
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
     /// Provider-owned final metadata.
     pub metadata: Value,
     /// Number of completed model steps.
@@ -3365,7 +3373,26 @@ pub(crate) async fn load_json<T: serde::de::DeserializeOwned>(
     decode_json(&bytes)
 }
 
-pub(crate) fn decode_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+/// Encodes an executor DTO with the existing sorted-key, full-width JSON codec.
+///
+/// Encoding binds bytes only; it grants no execution, journal or resource access.
+///
+/// # Errors
+///
+/// Rejects values that cannot be represented by the canonical Rust JSON codec.
+pub fn encode_json<T: Serialize>(value: &T) -> Result<Vec<u8>> {
+    crate::contract::canonical_json_bytes(value)
+}
+
+/// Decodes canonical executor JSON without narrowing integral values through JS.
+///
+/// The DTO's existing serde rules apply. Admission, ordering, resource residency
+/// and authorization remain the executor and owning journal's responsibility.
+///
+/// # Errors
+///
+/// Rejects malformed or noncanonical JSON and the requested type's serde errors.
+pub fn decode_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     let parsed: Value = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Storage(format!("execution journal JSON is invalid: {error}")))?;
     if crate::contract::canonical_json_bytes(&parsed)? != bytes {
