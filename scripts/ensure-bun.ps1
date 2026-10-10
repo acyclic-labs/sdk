@@ -1,10 +1,12 @@
 $ErrorActionPreference = "Stop"
 
 $version = "1.4.2"
-if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
-    throw "unsupported Bun host architecture: $env:PROCESSOR_ARCHITECTURE"
+if ($env:PROCESSOR_ARCHITECTURE -notin @("AMD64", "ARM64")) {
+    throw "unsupported Bun installer host architecture: $env:PROCESSOR_ARCHITECTURE"
 }
 $target = "bun-windows-x64"
+# Windows ARM64 uses x64 Bun only for dependency installation/TypeScript tooling.
+# Native addon qualification must run separately under an ARM64 Node process.
 $expected = "ce4c17497b2f29712a99d3d53f028de28cd42e3bacb8589599e7f000e49b6405"
 $expectedBinary = "15277c59ccd6c6c20f8dc9716c2b59c1776320d606b6a8658f70be8799519ca4"
 $expectedBinaryBytes = 86096984

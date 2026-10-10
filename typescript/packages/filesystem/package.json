@@ -12,6 +12,7 @@
   },
   "type": "module",
   "sideEffects": false,
+  "types": "./dist/browser.d.ts",
   "files": ["dist", "generated", "examples", "CHANGELOG.md"],
   "exports": {
     ".": {
@@ -46,6 +47,10 @@
     "build": "bun run build:wasm && bun x tsc -p tsconfig.json",
     "build:clean": "bun run clean && bun run build",
     "build:wasm": "bun ../../../scripts/build-wasm.mjs filesystem",
+    "build:native": "node ../../../scripts/build-filesystem-native.mjs build",
+    "stage:native": "node ../../../scripts/build-filesystem-native.mjs stage",
+    "check:native": "node ../../../scripts/build-filesystem-native.mjs check",
+    "assemble:native": "node ../../../scripts/assemble-filesystem-native-package.mjs",
     "check": "bun run build:wasm && bun x tsc -p tsconfig.json --noEmit",
     "check:types": "bun x tsc -p tsconfig.type-tests.json --pretty false",
     "test": "bun run build && bun run test:composition && bun run test:s3",
@@ -59,6 +64,18 @@
     "@bufbuild/protobuf": "2.15.0",
     "@connectrpc/connect": "2.1.1",
     "@connectrpc/connect-web": "2.1.1"
+  },
+  "optionalDependencies": {
+    "@acyclic-labs/fs-darwin-arm64": "0.2.0",
+    "@acyclic-labs/fs-darwin-x64": "0.2.0",
+    "@acyclic-labs/fs-linux-arm64-gnu": "0.2.0",
+    "@acyclic-labs/fs-linux-x64-gnu": "0.2.0",
+    "@acyclic-labs/fs-win32-arm64-msvc": "0.2.0",
+    "@acyclic-labs/fs-win32-x64-msvc": "0.2.0"
+  },
+  "napi": {
+    "binaryName": "acyclic-fs-0.2.0",
+    "packageName": "@acyclic-labs/fs"
   },
   "devDependencies": {
     "@types/node": "26.6.2",

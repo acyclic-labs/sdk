@@ -68,3 +68,31 @@ helpers require `GITHUB_OUTPUT` before doing source or artifact work.
 The Harness Chrome media-boundary scenario selects `wasm,filesystem`: its test
 is filesystem-gated and memory-backed. It does not qualify an IndexedDB provider
 or establish that the ordinary browser runtime passes.
+
+## Filesystem native companions
+
+The retained NAPI family is `filesystem`, not a Workerd service. Its Rust-owned
+matrix requires GNU Linux x64/ARM64, Darwin x64/ARM64, and MSVC Windows x64/ARM64.
+The 0.2.0 parent declares the six `@acyclic-labs/fs-*` optional packages using
+the canonical NAPI `-gnu`/`-msvc` selectors. The generated loader is the only
+native resolution path.
+
+Each lane builds `build-filesystem-native.mjs`, retains the original compiler
+receipt, builds the public distribution, and runs `check-filesystem-napi.mjs
+--bundle ABSOLUTE_BUNDLE --producer-receipt ABSOLUTE_RECEIPT --adapter`.
+The shared assembler packs the exact private binary copy and parent archives;
+installation exercises their real `createRequire` loader and the shared native
+workspace model. The runtime receipt binds source closure, selected artifact
+digest, compiler receipt, actual Node architecture, and both tested archives.
+The six-target assembler and publisher reject absent/mismatched runtime receipts,
+artifacts, source, package metadata, and checksums; companions publish before
+the neutral parent.
+
+Linux ARM64 now retains source-bound native output. Darwin Intel addons run
+under checksum-pinned Intel Node and Bun via Rosetta, not ARM Node. Windows
+ARM64 uses the narrowly scoped `windows-11-arm` lane and ARM64 Node; x64 Bun
+there is installation tooling only. GitHub documents this runner for private
+repositories in its [hosted-runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+Cross-compilation or a local Linux pass is not six-platform qualification.
+All six same-source CI bundles, original receipts, tested archives and runtime
+receipts must be retained before manual publication can proceed.

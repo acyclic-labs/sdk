@@ -41,7 +41,8 @@ for (const name of readdirSync(directory).filter(name => /\.ya?ml$/.test(name)).
 
 // Qualification lanes are scheduled from data rather than workflow YAML.
 for (const lane of JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"))) {
-  if (typeof lane.runner !== "string" || !/^blacksmith-\d+vcpu-[a-z0-9-]+$/.test(lane.runner)) {
+  const nativeArmException = lane.lane === "windows-arm64" && lane.runner === "windows-11-arm";
+  if (!nativeArmException && (typeof lane.runner !== "string" || !/^blacksmith-\d+vcpu-[a-z0-9-]+$/.test(lane.runner))) {
     throw new Error(`qualification lane ${lane.lane} must run on a Blacksmith runner, not ${lane.runner}`);
   }
 }

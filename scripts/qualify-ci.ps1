@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('windows')]
+    [ValidateSet('windows', 'windows-arm64')]
     [string] $Lane
 )
 
@@ -13,6 +13,26 @@ New-Item -ItemType Directory -Force -Path `
     "$env:SDK_TEMP_DIR/observability" | Out-Null
 . .\scripts\ensure-bun.ps1
 bun install --frozen-lockfile
+
+if ($Lane -eq 'windows-arm64') {
+    if ((node -p 'process.arch') -ne 'arm64' -or (node -p 'process.platform') -ne 'win32') {
+        throw 'Windows ARM64 native qualification requires an actual ARM64 Node runtime'
+    }
+    $nativeRoot = Join-Path $env:SDK_ARTIFACT_DIR 'filesystem-native'
+    $nativeTarget = "$env:CARGO_TARGET_DIR-filesystem-native"
+    cargo fetch --locked
+    $wasmBindgenRoot = Join-Path $env:TOOLS_DIR 'cargo'
+    $wasmBindgenVersion = (Select-String -LiteralPath Cargo.toml -Pattern '^wasm-bindgen = "=([^"]+)"').Matches[0].Groups[1].Value
+    cargo install --locked wasm-bindgen-cli --version $wasmBindgenVersion --root $wasmBindgenRoot
+    $env:PATH = "$(Join-Path $wasmBindgenRoot 'bin');$env:PATH"
+    node scripts/build-filesystem-native.mjs build --target aarch64-pc-windows-msvc `
+        --output "$nativeRoot/bundle" --target-dir $nativeTarget
+    Copy-Item "$nativeTarget/filesystem-native-build-inputs.receipt.json" "$nativeRoot/producer-receipt.json"
+    bun run --filter '@acyclic-labs/fs' build
+    node scripts/check-filesystem-napi.mjs --bundle "$nativeRoot/bundle" `
+        --producer-receipt "$nativeRoot/producer-receipt.json" --adapter
+    exit 0
+}
 
 # Independent builds run beside the main test build in their own target
 # directories so Cargo's build lock never serializes them; the shared compiler
@@ -110,8 +130,12 @@ node scripts/build-product.mjs
 node plugin/scripts/package.mjs --binary '$(Join-Path $ReleaseTargetDir 'dist\acyclic.exe')' --out '$PluginOutput'
 node plugin/scripts/validate-package.mjs '$PluginOutput'
 "@
-$napi = Start-Background napi `
-    "cargo build -p acyclic-fs-napi --locked --target-dir '$CargoTargetDir-napi'"
+$filesystemRoot = Join-Path $StreamNativeRoot 'filesystem-native'
+node scripts/build-filesystem-native.mjs build --target x86_64-pc-windows-msvc `
+    --output "$filesystemRoot/bundle" --target-dir "$CargoTargetDir-filesystem-native"
+Copy-Item "$CargoTargetDir-filesystem-native/filesystem-native-build-inputs.receipt.json" "$filesystemRoot/producer-receipt.json"
+node scripts/check-filesystem-napi.mjs --bundle "$filesystemRoot/bundle" `
+    --producer-receipt "$filesystemRoot/producer-receipt.json" --adapter
 $arm64 = Start-Background aarch64 @"
 cargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target aarch64-pc-windows-msvc --locked --target-dir '$CargoTargetDir-aarch64'
 "@
@@ -164,6 +188,5 @@ bun test --parallel=4 --reporter=junit `
 bun run --filter '@acyclic-labs/fs' test:composition
 
 Complete-Background $clippy
-Complete-Background $napi
 Complete-Background $arm64
 Complete-Background $release

@@ -45,8 +45,8 @@
     "workers": 4,
     "artifact": "packages-linux-arm64",
     "artifact_path": "packages",
-    "inputs": "rust",
-    "source_bound": false,
+    "inputs": "product",
+    "source_bound": true,
     "scope": "full"
   },
   {
@@ -75,6 +75,16 @@
     "workers": 4,
     "artifact": "stream-native-windows",
     "artifact_path": "stream-native-bundle",
+    "inputs": "product",
+    "source_bound": true,
+    "scope": "full"
+  },
+  {
+    "lane": "windows-arm64",
+    "runner": "windows-11-arm",
+    "workers": 2,
+    "artifact": "filesystem-native-windows-arm64",
+    "artifact_path": "filesystem-native",
     "inputs": "product",
     "source_bound": true,
     "scope": "full"

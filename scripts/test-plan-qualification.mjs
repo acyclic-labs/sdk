@@ -54,10 +54,11 @@ const differing = (before, after) =>
 const named = lanes => lanes.map(lane => lane.lane).sort();
 const fullLanes = lanes.filter(lane => lane.scope !== "core");
 
-test("every lane names a known input set and a Blacksmith runner", () => {
+test("lanes use Blacksmith except the narrowly scoped real Windows ARM64 native runtime", () => {
   for (const lane of lanes) {
     assert.ok(ignored[lane.inputs], lane.lane);
-    assert.match(lane.runner, /^blacksmith-/);
+    if (lane.lane === "windows-arm64") assert.equal(lane.runner, "windows-11-arm");
+    else assert.match(lane.runner, /^blacksmith-/);
   }
 });
 
@@ -88,7 +89,7 @@ test("crate documentation reaches rustdoc and every lane", () => {
 test("TypeScript sources execute only TypeScript-observing lanes", () => {
   const before = laneKeys(lanes, tree);
   const after = laneKeys(lanes, changed("typescript/packages/stream/src/index.ts"));
-  assert.deepEqual(differing(before, after), ["linux", "macos", "policy", "typescript", "windows"]);
+  assert.deepEqual(differing(before, after), ["linux", "linux-arm64", "macos", "policy", "typescript", "windows", "windows-arm64"]);
 });
 
 test("Rust that no package compiles skips the TypeScript lane", () => {
@@ -471,7 +472,7 @@ test("full qualification rebuilds source-bound packages after a README-only chan
     marker: everywhere,
     retained: retainedAll,
   });
-  assert.deepEqual(matrix.map(lane => lane.lane), ["linux", "windows", "macos"]);
+  assert.deepEqual(matrix.map(lane => lane.lane), ["linux", "linux-arm64", "windows", "windows-arm64", "macos"]);
   assert.equal(reused.linux, undefined);
   assert.equal(reused.gate.run_id, source.run_id);
 });

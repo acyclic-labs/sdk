@@ -10,7 +10,7 @@ export function selectArtifacts(artifacts, run, attempt) {
     throw new Error('An exact release run and attempt are required');
   }
   const selected = {};
-  for (const lane of ['packages-linux', 'packages-macos', 'stream-native-windows']) {
+  for (const lane of ['packages-linux', 'packages-linux-arm64', 'packages-macos', 'stream-native-windows', 'filesystem-native-windows-arm64']) {
     const matches = artifacts.filter(artifact => {
       const prefix = `${lane}-${run}-`;
       const suffix = artifact.name?.startsWith(prefix) ? artifact.name.slice(prefix.length) : '';

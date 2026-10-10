@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -33,20 +34,27 @@ if (childBinding !== undefined) {
 const adapterOnly = process.argv.includes("--adapter-only");
 const adapter = adapterOnly || process.argv.includes("--adapter");
 const args = process.argv.slice(2).filter((value) => value !== "--adapter" && value !== "--adapter-only");
-if (args.length !== 2 || args[0] !== "--bundle" || !isAbsolute(args[1])) {
-  throw new Error("usage: check-filesystem-napi.mjs --bundle ABSOLUTE_BUNDLE [--adapter | --adapter-only]");
+if (args.length !== 4 || args[0] !== "--bundle" || args[2] !== "--producer-receipt"
+    || !isAbsolute(args[1]) || !isAbsolute(args[3])) {
+  throw new Error("usage: check-filesystem-napi.mjs --bundle ABSOLUTE_BUNDLE --producer-receipt ABSOLUTE_RECEIPT [--adapter | --adapter-only]");
 }
 const bundle = resolve(args[1]);
 const { metadata } = await producer.assertBundle(bundle);
+const receiptPath = resolve(args[3]);
+assembler.assertNativeReceipt(JSON.parse(await readFile(receiptPath, "utf8")), metadata);
 const inventory = adapter ? await assembler.sourceNativeInventory(metadata.source_revision) : undefined;
 const companion = inventory?.companions.find((item) => item.selected_target === metadata.selected_target);
 if (adapter && companion === undefined) throw new Error("native adapter companion target is absent");
+if (adapter && companion.main !== metadata.artifact.path.slice("generated/native/".length)) {
+  throw new Error("native adapter artifact filename differs from maintained target mapping");
+}
 const temporary = await mkdtemp(join(tmpdir(), "acyclic-fs-napi-"));
 const privateBundle = join(temporary, "bundle");
 const bindingPath = join(privateBundle, metadata.artifact.path.slice("generated/native/".length));
 try {
   await cp(bundle, privateBundle, { recursive: true });
   await producer.assertBundle(privateBundle);
+  await copyFile(receiptPath, join(temporary, "producer-receipt.json"));
   await /** @type {Promise<void>} */ (new Promise((resolveChild, rejectChild) => {
     const child = spawn(process.execPath, [fileURLToPath(import.meta.url)], {
       env: {
@@ -57,6 +65,8 @@ try {
         ACYCLIC_FS_NAPI_CHILD_ADAPTER_ONLY: adapterOnly ? "1" : "0",
         ACYCLIC_FS_NAPI_CHILD_BUNDLE: privateBundle,
         ACYCLIC_FS_NAPI_CHILD_COMPANION: companion === undefined ? "" : JSON.stringify(companion.manifest),
+        ACYCLIC_FS_NAPI_CHILD_RECEIPT: join(temporary, "producer-receipt.json"),
+        ACYCLIC_FS_NAPI_CHILD_OUTPUT: resolve(bundle, "..", "qualification"),
       },
       stdio: "inherit",
     });
@@ -104,40 +114,64 @@ async function qualify(bindingPath, engineRoot) {
 
 async function qualifyAdapter(bindingPath, engineRoot) {
   if (engineRoot === undefined) throw new Error("N-API adapter root is absent");
-  // Install the actual distribution and compiled companion in a private package
-  // tree. Exercise createRequire's public loader, not a module-mocked binding.
-  const packageRoot = join(engineRoot, "installed", "node_modules", "@acyclic-labs", "fs");
+  // Pack maintained manifests and exact privately retained bytes, then install
+  // real archives before exercising the public createRequire loader.
+  const installationRoot = join(engineRoot, "installed");
+  const packageRoot = join(installationRoot, "node_modules", "@acyclic-labs", "fs");
+  const parentRoot = join(engineRoot, "parent");
   const bundle = process.env.ACYCLIC_FS_NAPI_CHILD_BUNDLE;
   const manifest = JSON.parse(process.env.ACYCLIC_FS_NAPI_CHILD_COMPANION ?? "");
-  if (bundle === undefined || manifest.version !== version || manifest.private !== false
-      || !manifest.name.startsWith("@acyclic-labs/fs-") || typeof manifest.main !== "string"
-      || manifest.main !== manifest.main.split(/[\\/]/).at(-1) || !manifest.main.endsWith(".node")) {
-    throw new Error("native adapter requires the maintained qualified companion manifest");
+  const output = process.env.ACYCLIC_FS_NAPI_CHILD_OUTPUT;
+  const receipt = process.env.ACYCLIC_FS_NAPI_CHILD_RECEIPT;
+  if (!bundle || !output || !receipt || manifest.version !== version || manifest.private !== false
+      || typeof manifest.main !== "string" || !manifest.main.endsWith(".node")) {
+    throw new Error("native adapter requires the maintained manifest and original compiler receipt");
   }
-  const companionRoot = join(packageRoot, "node_modules", manifest.name);
-  await mkdir(packageRoot, { recursive: true });
-  await cp(new URL("../typescript/packages/filesystem/dist", import.meta.url), join(packageRoot, "dist"), { recursive: true });
+  const companionRoot = join(engineRoot, "companion");
+  await mkdir(parentRoot, { recursive: true });
+  await cp(new URL("../typescript/packages/filesystem/dist", import.meta.url), join(parentRoot, "dist"), { recursive: true });
   const generatedRoot = fileURLToPath(new URL("../typescript/packages/filesystem/generated", import.meta.url));
-  await cp(generatedRoot, join(packageRoot, "generated"), {
+  await cp(generatedRoot, join(parentRoot, "generated"), {
     recursive: true, filter: source => source !== join(generatedRoot, "native"),
   });
-  await mkdir(join(packageRoot, "generated", "native"), { recursive: true });
+  await mkdir(join(parentRoot, "generated", "native"), { recursive: true });
   for (const name of ["binding.cjs", "binding.d.ts", "native-targets.json"]) {
-    await copyFile(join(bundle, name), join(packageRoot, "generated", "native", name));
+    await copyFile(join(bundle, name), join(parentRoot, "generated", "native", name));
   }
-  await copyFile(new URL("../typescript/packages/filesystem/package.json", import.meta.url), join(packageRoot, "package.json"));
-  const bun = process.versions.bun === undefined ? (process.env.ACYCLIC_FS_NAPI_BUN ?? "bun") : process.execPath;
-  const installed = spawnSync(bun, ["install", "--production", "--ignore-scripts", "--no-save", "--no-progress"], {
-    cwd: packageRoot, stdio: "inherit",
-  });
-  if (installed.error) throw installed.error;
-  if (installed.status !== 0) throw new Error("native adapter runtime dependency installation failed");
+  await copyFile(new URL("../typescript/packages/filesystem/package.json", import.meta.url), join(parentRoot, "package.json"));
   await mkdir(companionRoot, { recursive: true });
   await copyFile(bindingPath, join(companionRoot, manifest.main));
   for (const name of ["native-targets.json", "generation-manifest.json"]) {
     await copyFile(join(bundle, name), join(companionRoot, name));
   }
+  await copyFile(receipt, join(companionRoot, "producer-receipt.json"));
   await writeFile(join(companionRoot, "package.json"), JSON.stringify(manifest));
+  const parentArchive = join(output, await assembler.packArchive(parentRoot, output));
+  const companionArchive = join(output, await assembler.packArchive(companionRoot, output));
+  await mkdir(installationRoot, { recursive: true });
+  await writeFile(join(installationRoot, "package.json"), JSON.stringify({
+    private: true,
+    dependencies: { "@acyclic-labs/fs": `file:${parentArchive}`, [manifest.name]: `file:${companionArchive}` },
+  }));
+  const bun = process.versions.bun === undefined ? (process.env.ACYCLIC_FS_NAPI_BUN ?? "bun") : process.execPath;
+  const installed = spawnSync(bun, ["install", "--production", "--ignore-scripts", "--no-save", "--no-progress", `--cpu=${process.arch}`, `--os=${process.platform}`], {
+    cwd: installationRoot, stdio: "inherit",
+  });
+  if (installed.error) throw installed.error;
+  if (installed.status !== 0) throw new Error("native adapter archive installation failed");
+  const installedBinding = createRequire(pathToFileURL(join(packageRoot, "dist", "native.js")))(manifest.name);
+  if (installedBinding.nativeCapabilities().version !== version) throw new Error("installed archive ABI differs");
+  const metadata = JSON.parse(await readFile(join(bundle, "native-targets.json"), "utf8"));
+  const proof = {
+    schema: "acyclic.filesystem.native-runtime-qualification.v1",
+    source_commit: metadata.source_revision, source_sha256: metadata.source_sha256, target: metadata.selected_target,
+    platform: process.platform, arch: process.arch, node: process.version,
+    artifact: metadata.artifact,
+    producer_receipt_sha256: `sha256:${createHash("sha256").update(await readFile(receipt)).digest("hex")}`,
+    archives: await Promise.all([parentArchive, companionArchive].map(async path => ({
+      path: path.split(/[\\/]/u).at(-1), sha256: `sha256:${createHash("sha256").update(await readFile(path)).digest("hex")}`,
+    }))),
+  };
   const { openNativeFs, openNativeWorkspaceGraph, DEFAULT_OBJECT_CACHE_OPTIONS, portableVolumeOptions } = await import(pathToFileURL(join(packageRoot, "dist", "native.js")).href);
   const engine = await openNativeFs({
     root: join(engineRoot, "public-adapter"),
@@ -263,5 +297,6 @@ async function qualifyAdapter(bindingPath, engineRoot) {
   ], { stdio: "inherit" });
   if (nodeConsumer.error) throw nodeConsumer.error;
   if (nodeConsumer.status !== 0) throw new Error("installed native Node.js consumer qualification failed");
+  await writeFile(join(output, "runtime-qualification.json"), `${JSON.stringify(proof, null, 2)}\n`);
   console.log(`acyclic-fs native TypeScript adapter passed on ${process.platform}-${process.arch}`);
 }

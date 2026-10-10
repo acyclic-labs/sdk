@@ -20,6 +20,7 @@ const entryScript = resolve(root, `scripts/assemble-${family.key}-native-package
 const parentAsset = version => `${family.npmPackage.replace(/^@/u, "").replace("/", "-")}-${version}.tgz`;
 const { assertBundle, assertExactInventory, assertSelectedArtifact, assertSourceSnapshot, rustMetadata, sourceSnapshot, assertCurrentNativeFamily, assertBuildInputs, normalizeBuildInputs, napiGeneratorIdentity } = createNativeProducer(family);
 const packageTsconfig = resolve(packagePath, "tsconfig.json");
+const attestationNames = ["native-targets.json", "generation-manifest.json", "producer-receipt.json", ...(family.key === "filesystem" ? ["runtime-qualification.json"] : [])];
 
 /** @param {string} message @returns {never} */
 function fail(message) { throw new Error(message); }
@@ -37,6 +38,12 @@ function run(command, args, options = {}) {
   });
   return result.trim();
 }
+/** Pack the exact maintained parent or companion tree without lifecycle scripts. */
+async function packArchive(directory, output) {
+  await mkdir(output, { recursive: true });
+  return run("npm", ["pack", "--ignore-scripts", "--pack-destination", output, "--silent"], { cwd: directory });
+}
+
 
 /** @param {string} directory */
 async function nativeInputs(directory, /** @type {{bundles: string[], receipts: string[]}} */ found = { bundles: [], receipts: [] }) {
@@ -81,7 +88,7 @@ async function assertCommonBindings(bundles) {
 }
 
 function qualifiedCompanionManifest(manifest) {
-  return { ...manifest, files: [...manifest.files, "native-targets.json", "generation-manifest.json", "producer-receipt.json"], private: false };
+  return { ...manifest, files: [...manifest.files, ...attestationNames], private: false };
 }
 
 /** Preserve the existing Stream helper API; actual assembly uses the qualified projection below. */
@@ -150,6 +157,20 @@ function assertNativeReceipt(receipt, metadata) {
   const reconstructed = normalizeBuildInputs(raw, { sourceRoot: roots[0], platform: raw.runtime.platform, targetDir: raw.target_dir, outputDir: raw.generator.options.output_dir });
   if (JSON.stringify(reconstructed) !== JSON.stringify(metadata.build_inputs) || objectDigest(reconstructed) !== receipt.published_build_inputs_sha256) fail("native receipt reconstructed build inputs differ from published recipe");
 }
+function assertNativeRuntimeQualification(proof, metadata, companion, receiptBytes) {
+  if (proof.schema !== "acyclic.filesystem.native-runtime-qualification.v1"
+      || proof.source_commit !== metadata.source_revision || proof.source_sha256 !== metadata.source_sha256
+      || proof.target !== metadata.selected_target || !companion.os.includes(proof.platform)
+      || !companion.cpu.includes(proof.arch) || !/^v24\./u.test(proof.node ?? "")
+      || metadata.artifact.path !== `generated/native/${companion.main}`
+      || !isDeepStrictEqual(proof.artifact, metadata.artifact)
+      || proof.producer_receipt_sha256 !== `sha256:${createHash("sha256").update(receiptBytes).digest("hex")}`
+      || !Array.isArray(proof.archives) || proof.archives.length !== 2
+      || proof.archives.some(entry => !/^[^/\\]+\.tgz$/u.test(entry.path ?? "") || !/^sha256:[0-9a-f]{64}$/u.test(entry.sha256 ?? ""))) {
+    fail("filesystem native runtime qualification source, artifact, compiler receipt or architecture differs");
+  }
+}
+
 
 function archiveFiles(path) {
   const files = new Map();
@@ -174,7 +195,7 @@ async function verifyNativeAssembly(output, sourceSha, version, expectedInventor
   const { parent: ignored, ...index } = assembly;
   if (JSON.stringify(JSON.parse(parent.get("package/generated/native/native-targets.json").toString("utf8"))) !== JSON.stringify(index)) fail("neutral parent assembly index differs");
   const nativeFiles = new Set(["binding.cjs", "binding.d.ts", "native-targets.json"].map(name => `package/generated/native/${name}`));
-  for (const target of expectedInventory.targets) for (const name of ["native-targets.json", "generation-manifest.json", "producer-receipt.json"]) nativeFiles.add(`package/generated/native/attestations/${target}/${name}`);
+  for (const target of expectedInventory.targets) for (const name of attestationNames) nativeFiles.add(`package/generated/native/attestations/${target}/${name}`);
   const retainedFiles = [...parent.keys()].filter(path => path.startsWith("package/generated/native/"));
   if (retainedFiles.length !== nativeFiles.size || retainedFiles.some(path => !nativeFiles.has(path))) fail("neutral parent native file inventory differs");
   const metadata = [];
@@ -186,7 +207,7 @@ async function verifyNativeAssembly(output, sourceSha, version, expectedInventor
     const expected = expectedInventory.companions.find(item => item.selected_target === entry.selected_target);
     if (!expected || !isDeepStrictEqual(manifest, expected.manifest) || manifest.name !== entry.name || manifest.version !== version || manifest.private !== false || ["os", "cpu", "libc"].some(field => JSON.stringify(manifest[field]) !== JSON.stringify(entry[field]))) fail("native companion differs from maintained source target mapping");
     const originals = {};
-    for (const name of ["native-targets.json", "generation-manifest.json", "producer-receipt.json"]) {
+    for (const name of attestationNames) {
       const bytes = files.get(`package/${name}`);
       const retained = parent.get(`package/generated/native/attestations/${entry.selected_target}/${name}`);
       if (!bytes || !retained || !bytes.equals(retained)) fail("original native attestation differs between parent and companion");
@@ -197,6 +218,7 @@ async function verifyNativeAssembly(output, sourceSha, version, expectedInventor
     if (JSON.stringify(meta.build_inputs) !== JSON.stringify(generation.build_inputs)) fail("original native build recipes differ");
     if (Object.keys(expectedInventory.generator).some(field => meta.build_inputs.generator[field] !== expectedInventory.generator[field])) fail("native generator differs from trusted source inventory");
     assertNativeReceipt(originals["producer-receipt.json"], meta);
+    if (family.key === "filesystem") assertNativeRuntimeQualification(originals["runtime-qualification.json"], meta, expected, files.get("package/producer-receipt.json"));
     const bytesHash = bytes => createHash("sha256").update(bytes).digest("hex");
     if (`sha256:${bytesHash(files.get("package/generation-manifest.json"))}` !== meta.generation_sha256 || meta.generation_sha256 !== entry.generation_sha256 || JSON.stringify(meta.artifacts) !== JSON.stringify(generation.artifacts)) fail("original native generation attestation differs");
     assertSelectedArtifact(meta.artifact, generation.artifacts);
@@ -206,7 +228,7 @@ async function verifyNativeAssembly(output, sourceSha, version, expectedInventor
       const bytes = name.endsWith(".node") ? files.get(`package/${name}`) : parent.get(`package/generated/native/${name}`);
       if (!bytes || bytes.length !== artifact.bytes || `sha256:${bytesHash(bytes)}` !== artifact.sha256) fail("original native artifact digest differs");
     }
-    const allowed = new Set(["package/package.json", "package/README.md", `package/${manifest.main}`, "package/native-targets.json", "package/generation-manifest.json", "package/producer-receipt.json"]);
+    const allowed = new Set(["package/package.json", "package/README.md", `package/${manifest.main}`, ...attestationNames.map(name => `package/${name}`)]);
     if ([...files.keys()].some(path => !allowed.has(path))) fail("native companion contains unstated files");
     dependencies[entry.name] = version;
     metadata.push(meta);
@@ -309,7 +331,7 @@ async function main() {
     // from source rather than depending on a stale or empty dist directory.
     const compiled = join(temporary, "dist");
     run("bun", ["x", "tsc", "-p", packageTsconfig, "--outDir", compiled, "--pretty", "false"]);
-    const compiledEntrypoint = join(compiled, "index.js");
+    const compiledEntrypoint = join(compiled, family.npmEntrypoint ?? "index.js");
     try { await readFile(compiledEntrypoint); }
     catch { fail(`TypeScript compilation did not produce ${compiledEntrypoint}`); }
     const parentRoot = join(temporary, "parent");
@@ -366,20 +388,28 @@ async function main() {
       if (!bundle || companionManifest.version !== manifest.version || digest(join(companionRoot, companionManifest.main)) !== bundle.metadata.artifact.sha256.slice("sha256:".length)) fail("generated companion differs from its qualified artifact");
       const attestation = join(native, "attestations", bundle.metadata.selected_target);
       await mkdir(attestation, { recursive: true });
-      for (const name of ["native-targets.json", "generation-manifest.json", "producer-receipt.json"]) {
-        const original = name === "producer-receipt.json" ? bundle.receipt : join(bundle.path, name);
+      for (const name of attestationNames) {
+        const original = name === "producer-receipt.json" ? bundle.receipt : name === "runtime-qualification.json" ? join(bundle.path, "..", "qualification", name) : join(bundle.path, name);
+        if (name === "runtime-qualification.json") {
+          assertNativeRuntimeQualification(JSON.parse(await readFile(original, "utf8")), bundle.metadata, companionManifest, await readFile(bundle.receipt));
+          const proof = JSON.parse(await readFile(original, "utf8"));
+          for (const archive of proof.archives) {
+            const archivePath = join(bundle.path, "..", "qualification", archive.path);
+            if (`sha256:${digest(archivePath)}` !== archive.sha256) fail("filesystem tested archive digest differs");
+          }
+        }
         await cp(original, join(attestation, name));
         await cp(original, join(companionRoot, name));
       }
       await writeFile(join(companionRoot, "package.json"), `${JSON.stringify(qualifiedCompanionManifest(companionManifest), null, 2)}\n`);
-      const archive = `${companionDirectory}/${run("npm", ["pack", "--ignore-scripts", "--pack-destination", companionOutput, "--silent"], { cwd: companionRoot })}`;
+      const archive = `${companionDirectory}/${await packArchive(companionRoot, companionOutput)}`;
       companions.push({ name: companionManifest.name, version: companionManifest.version, asset: archive, selected_target: bundle.metadata.selected_target, os: companionManifest.os, cpu: companionManifest.cpu, libc: companionManifest.libc, artifact: bundle.metadata.artifact, generation_sha256: bundle.metadata.generation_sha256, sha256: digest(join(output, archive)) });
     }
     const assembly = { schema: `acyclic.${family.key}.native-package-assembly.v2`, source_commit: sourceSha, source_sha256: bundles[0].metadata.source_sha256, targets, companions, wasm_receipt_sha256: `sha256:${digest(wasmReceiptPath)}` };
     await writeFile(join(native, "native-targets.json"), `${JSON.stringify(assembly, null, 2)}\n`);
     const parentManifest = qualifiedParentManifest(manifest, targets, companions);
     await writeFile(join(parentRoot, "package.json"), `${JSON.stringify(parentManifest, null, 2)}\n`);
-    const parentArchive = run("npm", ["pack", "--ignore-scripts", "--pack-destination", output, "--silent"], { cwd: parentRoot });
+    const parentArchive = await packArchive(parentRoot, output);
     await assertSourceSnapshot(source);
     if (run("git", ["rev-parse", "HEAD"]) !== sourceSha) fail("source revision changed during package assembly");
     const receipt = { ...assembly, parent: { name: manifest.name, version: manifest.version, asset: parentArchive, sha256: digest(join(output, parentArchive)) } };
@@ -394,5 +424,5 @@ async function main() {
 }
 
 
-return { assertNativeSet, assertCommonBindings, qualifiedCompanionManifest, qualifiedParentManifest, sourceNativeInventory, verifyNativeAssembly, assertNativeReceipt, writeCompanionManifest, main };
+return { assertNativeSet, assertCommonBindings, qualifiedCompanionManifest, qualifiedParentManifest, sourceNativeInventory, verifyNativeAssembly, assertNativeReceipt, assertNativeRuntimeQualification, writeCompanionManifest, packArchive, main };
 }

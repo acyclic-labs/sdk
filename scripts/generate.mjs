@@ -7,7 +7,7 @@ import { generatedDescriptors, writeChanged } from "./generated-bindings.mjs";
 import { filesystemDescriptorDigestSource } from "./filesystem-descriptor-digest.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-for (const key of ["actors", "workers", "stream"]) {
+for (const key of ["actors", "workers", "stream", "filesystem"]) {
   const facts = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "native-family", root, key], { cwd: root, encoding: "utf8" });
   if (facts.error) throw facts.error;
   if (facts.status !== 0) throw new Error(facts.stderr || `native-family ${key} generation failed`);

@@ -15,6 +15,13 @@ runs:
   steps:
     # Windows restores caches and unpacks crates slowly, so the toolchain
     # install and crate unpacking run detached while the caches below restore.
+    - name: Install architecture-matched Node runtime
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: 24.15.0
+        architecture: ${{ inputs.lane == 'windows-arm64' && 'arm64' || runner.arch == 'ARM64' && 'arm64' || 'x64' }}
+        package-manager-cache: false
+
     - name: Start Windows Rust setup
       if: runner.os == 'Windows'
       shell: pwsh
@@ -161,7 +168,7 @@ runs:
         BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-install-cache
         TOOLS_DIR: ${{ runner.temp }}/tools/${{ inputs.lane }}-${{ runner.arch }}
         LLVM_PATH: ${{ runner.temp }}/llvm
-      run: .\scripts\qualify-ci.ps1 -Lane windows
+      run: .\scripts\qualify-ci.ps1 -Lane "${{ inputs.lane }}"
 
     # Step wall times, the slowest tests and compiler cache statistics, kept
     # briefly even when the lane fails so slow steps and tests stay visible.

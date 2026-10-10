@@ -5,6 +5,7 @@
 - Breaking candidate: memory and native compositions use canonical Objects v2. Existing v1 Objects roots are rejected without upgrade or overwrite; Stream history and atomic publication remain intact.
 - Exposes exact-original-base `beginTransactionAt` across hosted, native and browser/memory bindings. Durable retries reuse their owned generation, original operation key and mutation transcript instead of starting at a fresh head after reload.
 - Qualifies native adapters through an installed compiled companion without module mocks; generated native/WASM declarations expose the original-base transaction API.
+- Adds six-platform, source-bound NAPI companion production and release admission, canonical optional dependencies, retained compiler/runtime receipts, and installed-archive native behavior qualification. Publication requires all six architecture proofs; a local pass is not release qualification.
 
 ## 0.1.5 - 2026-09-25
 

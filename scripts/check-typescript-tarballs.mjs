@@ -173,7 +173,7 @@ const main = async () => {
     }
     const nativeTarballs = new Map();
     if (assembledDirectory) {
-      for (const family of ["stream", "actors"]) {
+      for (const family of ["stream", "actors", "workers", "filesystem"]) {
       const assembly = JSON.parse(await readFile(join(assembledDirectory, `${family.toUpperCase()}_NATIVE_PACKAGE.json`), "utf8"));
       const { sourceNativeInventory, verifyNativeAssembly } = await import(`./assemble-${family}-native-package.mjs`);
       const inventory = await sourceNativeInventory(assembly.source_commit);
@@ -257,6 +257,11 @@ const main = async () => {
       await writeFile(join(tempRoot, "actors-native-fallback.mjs"),
         await readFile(join(packagesRoot, "actors/test/native-fallback-installed.mjs")));
       run("node", ["actors-native-fallback.mjs"], { cwd: tempRoot, env: actorsEnv });
+      await writeFile(join(tempRoot, "native-public-installed.mjs"),
+        await readFile(join(packagesRoot, "filesystem/test/native-public-installed.mjs")));
+      await writeFile(join(tempRoot, "workspace-composition.mjs"),
+        await readFile(join(packagesRoot, "filesystem/test/workspace-composition.mjs")));
+      run("node", ["native-public-installed.mjs", join(tempRoot, "node_modules/@acyclic-labs/fs")], { cwd: tempRoot });
     }
     await writeFile(join(tempRoot, "inference-widths.mjs"), await readFile(join(packagesRoot, "inference/test/widths-installed.mjs")));
     run("node", ["inference-widths.mjs"], { cwd: tempRoot });

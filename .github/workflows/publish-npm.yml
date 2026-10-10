@@ -95,7 +95,7 @@ jobs:
           run_attempt="$QUALIFICATION_RUN_ATTEMPT"
           test -n "$run_id" && test -n "$run_attempt"
           artifact="$(jq -er '.["packages-linux"]' <<<"$QUALIFICATION_ARTIFACTS")"
-          for lane in packages-linux packages-macos stream-native-windows; do
+          for lane in packages-linux packages-linux-arm64 packages-macos stream-native-windows filesystem-native-windows-arm64; do
             name="$(jq -er --arg lane "$lane" '.[$lane]' <<<"$QUALIFICATION_ARTIFACTS")"
             [[ "$name" =~ ^$lane-$run_id-[1-9][0-9]*$ ]]
           done
@@ -108,15 +108,16 @@ jobs:
           cp scripts/publish-npm-packages.mjs "$stage/scripts/"
           cp scripts/plugin-qualification.mjs "$stage/scripts/"
           cp scripts/typescript-qualification.mjs "$stage/scripts/"
-          cp scripts/assemble-{actors,stream,workers}-native-package.mjs scripts/build-{actors,stream,workers}-native.mjs \
+          cp scripts/assemble-{actors,stream,workers,filesystem}-native-package.mjs scripts/build-{actors,stream,workers,filesystem}-native.mjs \
             scripts/assemble-native-family.mjs scripts/build-native-family.mjs \
             scripts/native-family.mjs scripts/archive-utils.mjs "$stage/scripts/"
           mkdir -p "$stage/scripts/generated/native-families"
-          cp scripts/generated/native-families/{actors,stream,workers}.json "$stage/scripts/generated/native-families/"
+          cp scripts/generated/native-families/{actors,stream,workers,filesystem}.json "$stage/scripts/generated/native-families/"
           cp release/npm-packages.json "$stage/release/"
           node scripts/assemble-stream-native-package.mjs inventory "$stage/release/stream-native-packages.json" "$SOURCE_SHA"
           node scripts/assemble-actors-native-package.mjs inventory "$stage/release/actors-native-packages.json" "$SOURCE_SHA"
           node scripts/assemble-workers-native-package.mjs inventory "$stage/release/workers-native-packages.json" "$SOURCE_SHA"
+          node scripts/assemble-filesystem-native-package.mjs inventory "$stage/release/filesystem-native-packages.json" "$SOURCE_SHA"
           node - "$stage" <<'NODE'
           const fs = require('node:fs');
           const path = require('node:path');
@@ -158,6 +159,18 @@ jobs:
           cp -R "$RUNNER_TEMP/qualified-macos/workers-native" "$workers_stage/macos"
           node scripts/assemble-workers-native-package.mjs release \
             "$stage/typescript" "$workers_stage" "$SOURCE_SHA" "$RUNNER_TEMP/qualified/typescript"
+          filesystem_stage="$RUNNER_TEMP/qualified-filesystem-native"
+          mkdir -p "$filesystem_stage"
+          cp -R "$RUNNER_TEMP/qualified/filesystem-native" "$filesystem_stage/linux"
+          cp -R "$RUNNER_TEMP/qualified-windows-native/filesystem-native" "$filesystem_stage/windows"
+          cp -R "$RUNNER_TEMP/qualified-macos/filesystem-native" "$filesystem_stage/macos"
+          arm_linux_artifact="$(jq -er '.["packages-linux-arm64"]' <<<"$QUALIFICATION_ARTIFACTS")"
+          gh run download "$run_id" --name "$arm_linux_artifact" --dir "$RUNNER_TEMP/qualified-linux-arm64"
+          cp -R "$RUNNER_TEMP/qualified-linux-arm64/filesystem-native" "$filesystem_stage/linux-arm64"
+          arm_windows_artifact="$(jq -er '.["filesystem-native-windows-arm64"]' <<<"$QUALIFICATION_ARTIFACTS")"
+          gh run download "$run_id" --name "$arm_windows_artifact" --dir "$filesystem_stage/windows-arm64"
+          node scripts/assemble-filesystem-native-package.mjs release \
+            "$stage/typescript" "$filesystem_stage" "$SOURCE_SHA" "$RUNNER_TEMP/qualified/typescript"
           source scripts/ensure-bun.sh
           bun scripts/check-typescript-tarballs.mjs --archives "$stage/typescript"
 

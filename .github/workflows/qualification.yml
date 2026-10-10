@@ -150,6 +150,12 @@ jobs:
         with:
           path: .qualification/windows.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['windows'] }}
+      - name: Find windows-arm64 marker
+        if: env.FORCE != 'true'
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/windows-arm64.json
+          key: ${{ fromJSON(steps.fingerprints.outputs.keys)['windows-arm64'] }}
       - name: Find macos marker
         if: env.FORCE != 'true'
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
@@ -295,6 +301,15 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+      - name: Forward filesystem-native-windows-arm64
+        if: hashFiles('forward/filesystem-native-windows-arm64/**') != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: filesystem-native-windows-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: forward/filesystem-native-windows-arm64
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 90
       - name: Record qualified lanes
         id: record
         env:
@@ -351,6 +366,12 @@ jobs:
         with:
           path: .qualification/windows.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['windows'] }}
+      - name: Record windows-arm64
+        if: contains(fromJSON(steps.record.outputs.recorded), 'windows-arm64')
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/windows-arm64.json
+          key: ${{ fromJSON(needs.plan.outputs.keys)['windows-arm64'] }}
       - name: Record macos
         if: contains(fromJSON(steps.record.outputs.recorded), 'macos')
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5

@@ -13,7 +13,7 @@ const args = process.argv.slice(2);
 if (args.some(arg => arg !== "--source-only") || args.length > 1) throw new Error("usage: check-generated.mjs [--source-only]");
 const sourceOnly = args.includes("--source-only");
 const compareWasmSurfaces = wasmSurfaceComparison(root);
-for (const key of ["actors", "workers", "stream"]) {
+for (const key of ["actors", "workers", "stream", "filesystem"]) {
   const facts = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "native-family", root, key], { cwd: root, encoding: "utf8" });
   if (facts.error) throw facts.error;
   if (facts.status !== 0) throw new Error(facts.stderr || `native-family ${key} generation failed`);

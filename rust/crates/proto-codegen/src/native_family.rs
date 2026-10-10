@@ -11,6 +11,7 @@ struct Napi {
     npm_package: String,
     package_path: String,
     companion_directory: String,
+    npm_entrypoint: Option<String>,
     wasm_package: String,
     wasm_output_name: String,
     wasm_target_directory: Option<String>,
@@ -150,6 +151,14 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
     {
         return Err("Rust and npm package identity/version differ".into());
     }
+    if napi.npm_entrypoint.as_ref().is_some_and(|entrypoint| {
+        entrypoint.is_empty()
+            || !entrypoint.ends_with(".js")
+            || entrypoint.contains(['/', '\\'])
+            || entrypoint == "..js"
+    }) {
+        return Err("npm entrypoint must be a JavaScript filename".into());
+    }
     // Resolve the selected owner's declared features, not every workspace feature.
     // Cargo owns target-conditioned dependency selection; retain its whole target union.
     let mut roots = BTreeSet::new();
@@ -240,6 +249,15 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
     ] {
         roots.insert(path.to_owned());
     }
+    if key == "filesystem" {
+        for path in [
+            "scripts/check-filesystem-napi.mjs",
+            "typescript/packages/filesystem/test/native-public-installed.mjs",
+            "typescript/packages/filesystem/test/workspace-composition.mjs",
+        ] {
+            roots.insert(path.to_owned());
+        }
+    }
     for path in [
         format!("scripts/build-{key}-native.mjs"),
         format!("scripts/assemble-{key}-native-package.mjs"),
@@ -251,7 +269,9 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
     ] {
         roots.insert(path);
     }
-    Ok(
-        json!({"schema":"acyclic.native-family.v1", "key":key, "rustPackageName":package.name.to_string(), "version":package.version.to_string(), "rustTarget":library.name, "manifestRelative":manifest, "packageRelative":format!("{package_path}/package.json"), "packageDirectory":package_path, "companionDirectory":napi.companion_directory, "wasmPackageName":napi.wasm_package, "wasm":{"artifact":wasm_library.name, "outName":napi.wasm_output_name, "targetDirectory":napi.wasm_target_directory, "features":napi.wasm_features, "noDefaultFeatures":napi.wasm_no_default_features}, "npmPackage":napi.npm_package, "targets":napi.targets, "features":napi.build_features, "buildScript":format!("scripts/build-{key}-native.mjs"), "sourceRoots":roots.into_iter().collect::<Vec<_>>() }),
-    )
+    let mut facts = json!({"schema":"acyclic.native-family.v1", "key":key, "rustPackageName":package.name.to_string(), "version":package.version.to_string(), "rustTarget":library.name, "manifestRelative":manifest, "packageRelative":format!("{package_path}/package.json"), "packageDirectory":package_path, "companionDirectory":napi.companion_directory, "wasmPackageName":napi.wasm_package, "wasm":{"artifact":wasm_library.name, "outName":napi.wasm_output_name, "targetDirectory":napi.wasm_target_directory, "features":napi.wasm_features, "noDefaultFeatures":napi.wasm_no_default_features}, "npmPackage":napi.npm_package, "targets":napi.targets, "features":napi.build_features, "buildScript":format!("scripts/build-{key}-native.mjs"), "sourceRoots":roots.into_iter().collect::<Vec<_>>() });
+    if let Some(entrypoint) = napi.npm_entrypoint {
+        facts["npmEntrypoint"] = Value::String(entrypoint);
+    }
+    Ok(facts)
 }

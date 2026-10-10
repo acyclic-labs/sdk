@@ -110,9 +110,32 @@ release_plugin() {
   node plugin/scripts/validate-package.mjs "$SDK_ARTIFACT_DIR/acyclic-plugin"
 }
 native_binding() {
-  CARGO_TARGET_DIR="$target_dir-napi" cargo build -p acyclic-fs-napi --locked
-  CARGO_TARGET_DIR="$target_dir-napi" \
-    bun scripts/check-filesystem-napi.mjs "$SDK_ARTIFACT_DIR/packages/native"
+  local target directory="$SDK_ARTIFACT_DIR/packages/filesystem-native"
+  target="$(rustc --version --verbose | sed -n 's/^host: //p')"
+  node scripts/build-filesystem-native.mjs build --target "$target" \
+    --output "$directory/bundle" --target-dir "$target_dir-filesystem-native"
+  cp "$target_dir-filesystem-native/filesystem-native-build-inputs.receipt.json" "$directory/producer-receipt.json"
+  bun run --filter '@acyclic-labs/fs' build
+  node scripts/check-filesystem-napi.mjs --bundle "$directory/bundle" \
+    --producer-receipt "$directory/producer-receipt.json" --adapter
+}
+mac_intel_native_binding() {
+  local directory="$SDK_ARTIFACT_DIR/packages/filesystem-native/x64"
+  local intel_node="$TOOLS_DIR/node-darwin-x64/bin/node"
+  # Execute Intel addons with the Intel Node runtime, never the ARM Node host.
+  install_tool node-v24.15.0-darwin-x64.tar.gz \
+    https://nodejs.org/dist/v24.15.0/node-v24.15.0-darwin-x64.tar.gz \
+    ffd5ee293467927f3ee731a553eb88fd1f48cf74eebc2d74a6babe4af228673b \
+    "$TOOLS_DIR/node-darwin-x64" node-v24.15.0-darwin-x64 1
+  [[ "$("$intel_node" -p 'process.arch')" == x64 ]]
+  arch -x86_64 bash -c 'source scripts/ensure-bun.sh'
+  node scripts/build-filesystem-native.mjs build --target x86_64-apple-darwin \
+    --output "$directory/bundle" --target-dir "$target_dir-filesystem-native-x64"
+  cp "$target_dir-filesystem-native-x64/filesystem-native-build-inputs.receipt.json" "$directory/producer-receipt.json"
+  ACYCLIC_FS_NAPI_BUN="$TOOLS_DIR/bun/1.4.2/bun-darwin-x64/bun" \
+    ACYCLIC_FS_NAPI_NODE="$intel_node" \
+    "$intel_node" scripts/check-filesystem-napi.mjs --bundle "$directory/bundle" \
+      --producer-receipt "$directory/producer-receipt.json" --adapter
 }
 stream_binding() {
   local target directory="$SDK_ARTIFACT_DIR/packages/stream-native"
@@ -352,8 +375,9 @@ case "$lane" in
     bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem"
     # The public adapter requires the built distribution. Load the actual
     # companion through its installed package path; ABI ran earlier.
-    CARGO_TARGET_DIR="$target_dir-napi" \
-      bun scripts/check-filesystem-napi.mjs --adapter-only
+    node scripts/check-filesystem-napi.mjs \
+      --bundle "$SDK_ARTIFACT_DIR/packages/filesystem-native/bundle" \
+      --producer-receipt "$SDK_ARTIFACT_DIR/packages/filesystem-native/producer-receipt.json" --adapter-only
     bun scripts/run-harness-conformance.mjs \
       "$SDK_ARTIFACT_DIR/packages/harness" \
       "$SDK_ARTIFACT_DIR/packages/harness/runner-report.json" \
@@ -499,6 +523,7 @@ case "$lane" in
     fi
     source scripts/ensure-bun.sh
     cargo fetch --locked
+    bun install --frozen-lockfile
     background napi native_binding
     nextest --workspace --all-features --locked
     cargo test --workspace --all-features --locked --doc
@@ -513,11 +538,10 @@ case "$lane" in
     cargo fetch --locked
     background release release_plugin
     background napi native_binding
-    background x86_64 cargo check -p acyclic-fs -p acyclic-fs-napi --all-features \
-      --target x86_64-apple-darwin --locked --target-dir "$target_dir-x86_64"
     nextest --workspace --all-features --locked
     cargo test --workspace --all-features --locked --doc
-    finish napi release x86_64
+    finish napi release
+    mac_intel_native_binding
     stream_binding
     client_bindings
     native_mount_tests
