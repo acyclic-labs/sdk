@@ -28,7 +28,10 @@ async function digest(file) {
   return `sha256:${hash.digest('hex')}`;
 }
 
-export async function publish({ env = process.env, directory = 'release', gh = (...args) => execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }) } = {}) {
+export async function publish({ env = process.env, directory = env.RELEASE_ASSET_DIR, gh = (...args) => execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }) } = {}) {
+  if (!directory) throw new Error('An explicit qualified release asset directory is required');
+  const files = assets(directory);
+  if (!files.length) throw new Error('Qualified release asset directory is empty');
   const { SOURCE_SHA: source, VERSION: version, GITHUB_REPOSITORY: repository } = env;
   if (!/^[0-9a-f]{40}$/.test(source || '') || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version || '')) {
     throw new Error('Exact release source and semver are required');
@@ -58,7 +61,6 @@ export async function publish({ env = process.env, directory = 'release', gh = (
     release = JSON.parse(gh('api', `repos/${repository}/releases/tags/${tag}`));
   }
   admitRelease(release, source, version);
-  const files = assets(directory);
   const names = new Set();
   for (const file of files) {
     const name = path.basename(file);

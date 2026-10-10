@@ -109,12 +109,13 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: acyclic-universal-${{ needs.source.outputs.run }}-${{ needs.qualify.outputs.attempt }}
-          path: release
+          path: ${{ runner.temp }}/qualified-plugin-release
       - name: Publish exact plugin assets
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ needs.source.outputs.sha }}
           VERSION: ${{ needs.source.outputs.version }}
+          RELEASE_ASSET_DIR: ${{ runner.temp }}/qualified-plugin-release
         run: node scripts/publish-release-assets.mjs
   report:
     name: Release result

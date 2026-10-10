@@ -26,6 +26,8 @@ test('all publishers use the one qualified source and explicit artifacts',()=>{
  assert.match(release,/test "\$GITHUB_REF" = refs\/heads\/main/);
  assert.match(release,/uses: \.\/\.github\/workflows\/release-acyclic\.yml/);
  assert.match(release,/qualification_run_attempt: \$\{\{ needs\.qualify\.outputs\.attempt \}\}/);
+ assert.match(release,/path: \$\{\{ runner\.temp \}\}\/qualified-plugin-release/);
+ assert.match(release,/RELEASE_ASSET_DIR: \$\{\{ runner\.temp \}\}\/qualified-plugin-release/);
  for(const name of ['publish-npm.yml','publish-crate.yml']){
   const publisher=read(name);
   assert.match(triggers(publisher),/workflow_call:/);
