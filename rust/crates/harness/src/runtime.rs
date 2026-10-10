@@ -2011,7 +2011,9 @@ impl RuntimeScope {
             .map(|binding| &binding.binding)
     }
 
-    #[cfg(feature = "filesystem")]
+    /// Finds only an exact provider-authenticated, owner-consumed reference.
+    /// The bound reader still verifies original authority/fence at use; lookup
+    /// is not a prefix grant and is independent of the Filesystem adapter.
     pub(crate) fn created_reference(
         &self,
         file: &FileRef,
