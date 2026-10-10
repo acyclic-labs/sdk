@@ -30,6 +30,10 @@ required-features = ["native-execution"]
 test = true
 harness = false
 
+[[example]]
+name = "explicit-image-conversion"
+required-features = ["filesystem"]
+
 [[bench]]
 name = "harness"
 harness = false

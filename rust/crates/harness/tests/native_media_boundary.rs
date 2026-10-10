@@ -8,6 +8,9 @@
 #[cfg(target_arch = "wasm32")]
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
+#[path = "../examples/explicit-image-conversion.rs"]
+mod explicit_conversion;
+
 use acyclic_fs::Fs;
 use acyclic_harness::{
     Admission, AgentId, Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
@@ -22,6 +25,7 @@ use acyclic_harness::{
         ExtensionForkPolicy, Reducer, SchemaRegistry, Scope,
     },
     distributed::{WorkPull, Worker},
+    durable_tool::DurableToolRunner,
     executor::TurnInput,
     extension::{ExtensionIdentity, ExtensionRegistry, ExtensionRuntime, NativeExtension},
     filesystem::{
@@ -35,7 +39,10 @@ use acyclic_harness::{
         PreparedModelRequest, ToolResultContent,
     },
     resources::ProviderRef,
-    runtime::{ContentBindings, DurableTaskHost, RuntimeScope, TaskDefinition, TaskRegistry},
+    runtime::{
+        AgentHarness, ContentBindings, DurableTaskHost, RuntimeScope, TaskDefinition, TaskRegistry,
+        ToolContext,
+    },
     scheduler::{LeaseFence, ResourceSnapshot, SessionLimits},
     tool::{
         Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,
@@ -555,6 +562,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
             "operation:cancel".into(),
             "model:generate".into(),
             "task:spawn:fixture.native_replay@1".into(),
+            "tool:call:example.convert_image".into(),
         ]),
     );
     let writer = FilesystemContentPublisher::new(
@@ -1378,6 +1386,30 @@ where
             })
             .collect(),
     );
+    let conversion = explicit_conversion::conversion_tool()?;
+    let mut conversion_tools = ToolRegistry::default();
+    conversion_tools.register(conversion.clone())?;
+    let conversion_journal = Arc::new(FilesystemExecutionJournal::new(
+        stream.clone(),
+        host.clone(),
+        volume.clone(),
+        issuer.verifier(),
+        signed.clone(),
+        65_536,
+    )?);
+    let converter = DurableToolRunner::new(conversion_tools.clone(), conversion_journal);
+    let conversion_operation = OperationId::from_bytes([117; 16]);
+    let source = selected
+        .first()
+        .ok_or_else(|| Error::NotFound("conversion source".into()))?
+        .0
+        .clone();
+    let conversion_input = explicit_conversion::ConvertImage {
+        source: source.clone(),
+        destination: "derived/image.img1".into(),
+        mask: 255,
+    };
+    let mut retained_conversion = None;
     let mut fence = None;
     let mut first_capture = None;
     let mut completed = None;
@@ -1427,6 +1459,118 @@ where
         assert_eq!(original.extensions.as_ref(), scope.extensions());
         let context = runtime.harness().durable_context(task, admission).await?;
         assert_eq!(context.scope().extensions(), scope.extensions());
+        // Public low-level consumer composition binds the real original admission
+        // to its authorized reader/writer. The conversion has a separate effect ID.
+        let writable = AgentHarness::with_policy(
+            tasks.clone(),
+            conversion_tools.clone(),
+            scope.clone(),
+            1,
+            Some(runtime.task_host().clone()),
+            None,
+            Some(ContentBindings {
+                reader: adapter.reader.clone(),
+                writer: Some(Arc::new(FilesystemContentPublisher::new(
+                    host.clone(),
+                    volume.clone(),
+                    &issuer.verifier(),
+                    &signed,
+                    65_536,
+                )?)),
+            }),
+            None,
+            None,
+        )?
+        .durable_context(task, admission)
+        .await?;
+        let arguments = serde_json::to_value(&conversion_input)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let outcome = converter
+            .run_with_context(
+                task,
+                conversion_operation,
+                conversion.definition.clone(),
+                arguments,
+                ToolContext::new(
+                    writable.clone(),
+                    conversion_operation,
+                    conversion_operation.to_string(),
+                )?,
+            )
+            .await?;
+        let Outcome::Succeeded(value) = outcome else {
+            return Err(Error::Invalid(format!(
+                "explicit conversion did not succeed: {outcome:?}"
+            )));
+        };
+        let converted: explicit_conversion::ConvertedImage =
+            serde_json::from_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(converted.source, source);
+        assert_eq!(converted.mask, 255);
+        let original_bytes = writable.read_file(&source).await?;
+        let derived_bytes = writable.read_file(&converted.derived).await?;
+        let mut expected_bytes = original_bytes.clone();
+        for pixel in expected_bytes.iter_mut().skip(8) {
+            *pixel ^= 255;
+        }
+        assert_eq!(derived_bytes, expected_bytes);
+        if let Some(retained) = &retained_conversion {
+            assert_eq!(&converted, retained);
+        }
+        retained_conversion = Some(converted.clone());
+        let mut changed = conversion_input.clone();
+        changed.mask = 1;
+        assert!(
+            converter
+                .run_with_context(
+                    task,
+                    conversion_operation,
+                    conversion.definition.clone(),
+                    serde_json::to_value(changed)
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                    ToolContext::new(
+                        writable.clone(),
+                        conversion_operation,
+                        conversion_operation.to_string()
+                    )?,
+                )
+                .await
+                .is_err()
+        );
+        let invocation = ToolInvocation {
+            operation_id: conversion_operation,
+            call_id: conversion_operation.to_string(),
+            name: conversion.definition.name.clone(),
+            arguments: serde_json::to_value(&conversion_input)
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+        };
+        let projection: ToolResultContent = serde_json::from_value(
+            conversion.projection.project(
+                &invocation,
+                &ToolResult {
+                    value: serde_json::to_value(&converted)
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                },
+            )?,
+        )
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+        let ToolResultContent::Parts { parts } = &projection else {
+            return Err(Error::Invalid("derived parts".into()));
+        };
+        let Some(ModelDataPart::File {
+            file,
+            policy: FileProjectionPolicy::Native(policy),
+        }) = parts.first()
+        else {
+            return Err(Error::Invalid("derived native file".into()));
+        };
+        let mut expected = selected.clone();
+        expected.push((file.clone(), policy.as_ref().clone()));
+        let mut converted_content = content.parts().to_vec();
+        converted_content.push(ModelContentPart::File {
+            file: file.clone(),
+            policy: FileProjectionPolicy::Native(policy.clone()),
+        });
         let execution = runtime
             .stock_execution(
                 task,
@@ -1442,7 +1586,7 @@ where
             .with_max_output_tokens(16)?;
         let input = TurnInput {
             operation_id: execution.operation_id(),
-            input: content.clone(),
+            input: ModelContent::Parts(converted_content),
             selected_context: None,
             max_steps: 1,
         };
@@ -1469,11 +1613,24 @@ where
                     }
                 })
                 .collect::<Vec<_>>();
-            assert_eq!(media.len(), selected.len());
-            for (captured, (file, policy)) in media.iter().zip(&selected) {
+            assert_eq!(media.len(), expected.len());
+            assert_eq!(
+                media
+                    .last()
+                    .ok_or_else(|| Error::NotFound("derived capture".into()))?
+                    .bytes,
+                derived_bytes
+            );
+            for (captured, (file, policy)) in media.iter().zip(&expected) {
                 assert_eq!(&captured.file, file);
                 assert_eq!(&captured.policy, policy);
-                assert_eq!(captured.options, Some(json!({"mode":"strict","scale":2})));
+                assert_eq!(
+                    captured.options,
+                    policy
+                        .configuration
+                        .as_ref()
+                        .map(|_| json!({"mode":"strict","scale":2}))
+                );
             }
             first_capture = Some(capture);
         } else {
