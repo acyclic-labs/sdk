@@ -27,8 +27,9 @@ impl JsonBounds {
 }
 
 /// Called before admitted logical storage grows and after it is freed. Keep a
-/// custody guard through the returned output's lifetime; on error its owner
-/// drops the guard. Allocator/map-node overhead and borrowed input are excluded.
+/// custody guard through the returned output's lifetime. Errors release every
+/// codec Retain after its buffers drop; separate caller-owned guards still
+/// belong to the caller. Allocator/node overhead and borrowed input are excluded.
 #[derive(Clone, Copy, Debug)]
 pub enum JsonCodecCharge {
     /// Logical encoded bytes produced (including sizing passes), and items
@@ -45,6 +46,8 @@ pub enum JsonCodecCharge {
         bytes: u64,
     },
     /// Release storage after its codec-owned buffer/tree has been freed.
+    /// This is unconditional cleanup: callbacks must accept it after cancellation
+    /// or fencing and must not use it as another work/authority checkpoint.
     Release {
         /// Previously admitted logical storage bytes.
         bytes: u64,
@@ -77,7 +80,7 @@ fn owned_logical_bytes(value: &Value) -> u64 {
     }
 }
 
-struct Meter<'a, F> {
+struct Meter<'a, F: FnMut(JsonCodecCharge) -> Result<()>> {
     bounds: JsonBounds,
     items: u64,
     bytes: u64,
@@ -86,15 +89,31 @@ struct Meter<'a, F> {
     retained: u64,
 }
 
+impl<F: FnMut(JsonCodecCharge) -> Result<()>> Drop for Meter<'_, F> {
+    fn drop(&mut self) {
+        // The meter is declared before its owned tree/output, so those buffers
+        // are already freed on every error/unwind path. Release is cleanup,
+        // never a cancellation/fence checkpoint, and must be accepted by the
+        // callback even after an earlier failure. Preserve that first failure.
+        let retained = std::mem::take(&mut self.retained);
+        if retained != 0 {
+            let _ = (self.charge)(JsonCodecCharge::Release { bytes: retained });
+        }
+    }
+}
+
 impl<F: FnMut(JsonCodecCharge) -> Result<()>> Meter<'_, F> {
     fn error(message: impl std::fmt::Display) -> serde_json::Error {
         ser::Error::custom(message)
     }
     fn charge(&mut self, charge: JsonCodecCharge) -> serde_json::Result<()> {
+        if self.failure.is_some() && !matches!(charge, JsonCodecCharge::Release { .. }) {
+            return Err(Self::error("JSON admission interrupted"));
+        }
         match (self.charge)(charge) {
             Ok(()) => Ok(()),
             Err(error) => {
-                self.failure = Some(error);
+                if self.failure.is_none() { self.failure = Some(error); }
                 Err(Self::error("JSON admission interrupted"))
             }
         }
@@ -121,14 +140,18 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> Meter<'_, F> {
     }
 
     fn retain(&mut self, bytes: usize) -> serde_json::Result<()> {
+        let retained = self.retained.checked_add(bytes as u64)
+            .ok_or_else(|| Self::error("JSON retention overflow"))?;
         self.charge(JsonCodecCharge::Retain { bytes: bytes as u64 })?;
-        self.retained = self.retained.checked_add(bytes as u64).ok_or_else(|| Self::error("JSON retention overflow"))?;
+        self.retained = retained;
         Ok(())
     }
 
     fn release(&mut self, bytes: u64) -> serde_json::Result<()> {
+        let retained = self.retained.checked_sub(bytes)
+            .ok_or_else(|| Self::error("JSON retention accounting differs"))?;
         self.charge(JsonCodecCharge::Release { bytes })?;
-        self.retained = self.retained.checked_sub(bytes).ok_or_else(|| Self::error("JSON retention accounting differs"))?;
+        self.retained = retained;
         Ok(())
     }
 
@@ -138,7 +161,7 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> Meter<'_, F> {
             return Err(Self::error("JSON exceeds declared byte bound"));
         }
         self.charge(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
-        struct StringCounter<'a, 'b, F>(&'a mut Meter<'b, F>);
+        struct StringCounter<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>>(&'a mut Meter<'b, F>);
         impl<F: FnMut(JsonCodecCharge) -> Result<()>> std::io::Write for StringCounter<'_, '_, F> {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
                 self.0.data(bytes.len() as u64).map_err(std::io::Error::other)?;
@@ -170,9 +193,9 @@ fn encoded_length<T: Serialize + ?Sized>(value: &T) -> serde_json::Result<u64> {
     Ok(counter.0)
 }
 
-struct Encoder<'a, 'b, F> { meter: &'a mut Meter<'b, F>, depth: u32 }
-struct Sequence<'a, 'b, F> { encoder: Encoder<'a, 'b, F>, values: Vec<Value>, tag: Option<String> }
-struct Object<'a, 'b, F> { encoder: Encoder<'a, 'b, F>, values: serde_json::Map<String, Value>, key: Option<String>, tag: Option<String>, raw: bool, raw_value: Option<Value> }
+struct Encoder<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> { meter: &'a mut Meter<'b, F>, depth: u32 }
+struct Sequence<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> { encoder: Encoder<'a, 'b, F>, values: Vec<Value>, tag: Option<String> }
+struct Object<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> { encoder: Encoder<'a, 'b, F>, values: serde_json::Map<String, Value>, key: Option<String>, tag: Option<String>, raw: bool, raw_value: Option<Value> }
 
 type JsonResult<T> = serde_json::Result<T>;
 
@@ -290,7 +313,7 @@ impl<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> ser::Serializer for Encode
     }
 }
 
-struct BoundedText<'a, 'b, F> { meter: &'a mut Meter<'b, F>, text: String, error: Option<serde_json::Error> }
+struct BoundedText<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> { meter: &'a mut Meter<'b, F>, text: String, error: Option<serde_json::Error> }
 impl<F: FnMut(JsonCodecCharge) -> Result<()>> std::fmt::Write for BoundedText<'_, '_, F> {
     fn write_str(&mut self, value: &str) -> std::fmt::Result {
         let result = (|| {
@@ -409,7 +432,7 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> ser::SerializeStruct for Object<'_
 }
 object!(SerializeStructVariant);
 
-struct Key<'a, 'b, F> { meter: &'a mut Meter<'b, F> }
+struct Key<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> { meter: &'a mut Meter<'b, F> }
 struct Stack { bytes: [u8; 64], len: usize }
 impl std::io::Write for Stack {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -502,6 +525,7 @@ fn encode<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
         Ok(value) => value,
         Err(error) => return Err(meter.failure.take().unwrap_or_else(|| Error::Invalid(error.to_string()))),
     };
+    if let Some(error) = meter.failure.take() { return Err(error); }
     // serde_json::Map may use insertion-order storage. Explicit sorting pins
     // the same raw UTF-8 key ordering for all feature configurations.
     (meter.charge)(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
@@ -515,7 +539,7 @@ fn encode<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     (meter.charge)(JsonCodecCharge::Work { bytes: size as u64, items: 0 })?;
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(size).map_err(|error| Error::Invalid(error.to_string()))?;
-    struct Output<'a, 'b, F> { bytes: &'a mut Vec<u8>, maximum: usize, meter: &'a mut Meter<'b, F> }
+    struct Output<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> { bytes: &'a mut Vec<u8>, maximum: usize, meter: &'a mut Meter<'b, F> }
     impl<F: FnMut(JsonCodecCharge) -> Result<()>> std::io::Write for Output<'_, '_, F> {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
             if bytes.len() > self.maximum - self.bytes.len() { return Err(std::io::Error::other("JSON exceeds admitted output")); }
@@ -534,6 +558,9 @@ fn encode<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     if let Err(error) = meter.release(released) {
         return Err(meter.failure.take().unwrap_or_else(|| Error::Invalid(error.to_string())));
     }
+    // Transfer only the returned output reservation to the caller. Every
+    // temporary reservation has already been released after its data was freed.
+    meter.retained = 0;
     Ok(bytes)
 }
 
@@ -604,53 +631,63 @@ pub fn json_bytes_bounded_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharg
     value: &T, bounds: JsonBounds, charge: &mut F,
 ) -> Result<Vec<u8>> {
     let bounds = JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds };
-    struct Writer<'a, F> {
+    let mut meter = Meter { bounds, items: 0, bytes: 0, charge, failure: None, retained: 0 };
+    struct Writer<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> {
         scan: Scan,
         bounds: JsonBounds,
-        charge: &'a mut F,
+        meter: &'a mut Meter<'b, F>,
         output: Option<&'a mut Vec<u8>>,
         maximum: usize,
-        failure: Option<Error>,
     }
-    impl<F: FnMut(JsonCodecCharge) -> Result<()>> std::io::Write for Writer<'_, F> {
+    impl<F: FnMut(JsonCodecCharge) -> Result<()>> std::io::Write for Writer<'_, '_, F> {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            let charge = &mut self.charge;
+            let meter = &mut self.meter;
             if let Err(error) = self.scan.push(bytes, self.bounds, &mut |event| {
-                (**charge)(match event {
+                meter.charge(match event {
                     JsonCodecCharge::Read { bytes } => JsonCodecCharge::Work { bytes, items: 0 },
                     other => other,
-                })
+                }).map_err(|error| Error::Invalid(error.to_string()))
             }) {
-                self.failure = Some(error);
+                if meter.failure.is_none() { meter.failure = Some(error); }
                 return Err(std::io::Error::other("JSON admission interrupted"));
             }
             if let Some(output) = self.output.as_mut() {
-                if bytes.len() > self.maximum - output.len() { return Err(std::io::Error::other("JSON exceeds admitted output")); }
-                if let Err(error) = (self.charge)(JsonCodecCharge::Copy { bytes: bytes.len() as u64 }) {
-                    self.failure = Some(error);
-                    return Err(std::io::Error::other("JSON admission interrupted"));
+                if bytes.len() > self.maximum - output.len() {
+                    return Err(std::io::Error::other("JSON exceeds admitted output"));
                 }
+                meter.charge(JsonCodecCharge::Copy { bytes: bytes.len() as u64 }).map_err(std::io::Error::other)?;
                 output.extend_from_slice(bytes);
             }
             Ok(bytes.len())
         }
         fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
     }
-    let mut first = Writer { scan: Scan::default(), bounds, charge, output: None, maximum: 0, failure: None };
-    if let Err(error) = serde_json::to_writer(&mut first, value) {
-        return Err(first.failure.take().unwrap_or_else(|| Error::Invalid(error.to_string())));
+    let size = {
+        let mut first = Writer { scan: Scan::default(), bounds, meter: &mut meter, output: None, maximum: 0 };
+        if let Err(error) = serde_json::to_writer(&mut first, value) {
+            return Err(first.meter.failure.take().unwrap_or_else(|| Error::Invalid(error.to_string())));
+        }
+        if let Some(error) = first.meter.failure.take() { return Err(error); }
+        first.scan.end()?;
+        usize::try_from(first.scan.bytes).map_err(|_| Error::Invalid("JSON output exceeds address space".into()))?
+    };
+    if let Err(error) = meter.retain(size) {
+        return Err(meter.failure.take().unwrap_or_else(|| Error::Invalid(error.to_string())));
     }
-    first.scan.end()?;
-    let size = usize::try_from(first.scan.bytes).map_err(|_| Error::Invalid("JSON output exceeds address space".into()))?;
-    (first.charge)(JsonCodecCharge::Retain { bytes: size as u64 })?;
     let mut output = Vec::new();
     output.try_reserve_exact(size).map_err(|error| Error::Invalid(error.to_string()))?;
-    let mut second = Writer { scan: Scan::default(), bounds, charge: first.charge, output: Some(&mut output), maximum: size, failure: None };
-    if let Err(error) = serde_json::to_writer(&mut second, value) {
-        return Err(second.failure.take().unwrap_or_else(|| Error::Invalid(error.to_string())));
+    {
+        let mut second = Writer { scan: Scan::default(), bounds, meter: &mut meter, output: Some(&mut output), maximum: size };
+        if let Err(error) = serde_json::to_writer(&mut second, value) {
+            return Err(second.meter.failure.take().unwrap_or_else(|| Error::Invalid(error.to_string())));
+        }
+        if let Some(error) = second.meter.failure.take() { return Err(error); }
+        second.scan.end()?;
+        if second.scan.bytes != size as u64 {
+            return Err(Error::Invalid("JSON serialization changed between admission and encoding".into()));
+        }
     }
-    second.scan.end()?;
-    if second.scan.bytes != size as u64 { return Err(Error::Invalid("JSON serialization changed between admission and encoding".into())); }
+    meter.retained = 0;
     Ok(output)
 }
 
@@ -682,7 +719,7 @@ pub fn json_from_slice_bounded_trusted<T: serde::de::DeserializeOwned, F: FnMut(
     Ok(value)
 }
 
-struct Raw<'a, 'b, F> { encoder: Encoder<'a, 'b, F> }
+struct Raw<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> { encoder: Encoder<'a, 'b, F> }
 macro_rules! bad_raw {
     ($method:ident $(, $ty:ty)?) => {
         fn $method(self $(, _: $ty)?) -> JsonResult<Value> { Err(Meter::<F>::error("expected value")) }
@@ -799,18 +836,137 @@ mod tests {
     fn every_codec_cancellation_schedule_preserves_original_error() -> Result<()> {
         let value = serde_json::json!({"b": ["escape\n", 0.1], "a": {"later": 2, "earlier": 1}});
         let mut calls = 0usize;
-        canonical_json_bytes_bounded(&value, BOUNDS, &mut |_| { calls += 1; Ok(()) })?;
+        canonical_json_bytes_bounded(&value, BOUNDS, &mut |event| {
+            if !matches!(event, JsonCodecCharge::Release { .. }) { calls += 1; }
+            Ok(())
+        })?;
         for stop in 0..calls {
             let mut seen = 0;
+            let mut live = 0u64;
             let error = Error::Conflict(format!("cancel-{stop}"));
-            let result = canonical_json_bytes_bounded(&value, BOUNDS, &mut |_| {
+            let result = canonical_json_bytes_bounded(&value, BOUNDS, &mut |event| {
+                if let JsonCodecCharge::Release { bytes } = event {
+                    live = live.checked_sub(bytes).expect("release only admitted quota");
+                    return Ok(());
+                }
                 if seen == stop { return Err(error.clone()); }
                 seen += 1;
+                if let JsonCodecCharge::Retain { bytes } = event { live += bytes; }
                 Ok(())
             });
             assert_eq!(result, Err(error));
+            assert_eq!(live, 0, "cancel schedule {stop} leaks live codec quota");
         }
         Ok(())
+    }
+
+    #[test]
+    fn ordinary_codec_cancellation_releases_admitted_output() -> Result<()> {
+        let value = serde_json::json!({"a": "owned output", "b": [1, 2, 3]});
+        let mut calls = 0usize;
+        json_bytes_bounded_trusted(&value, BOUNDS, &mut |event| {
+            if !matches!(event, JsonCodecCharge::Release { .. }) { calls += 1; }
+            Ok(())
+        })?;
+        for stop in 0..calls {
+            let mut seen = 0;
+            let mut live = 0u64;
+            let error = Error::Conflict(format!("ordinary-cancel-{stop}"));
+            let result = json_bytes_bounded_trusted(&value, BOUNDS, &mut |event| {
+                if let JsonCodecCharge::Release { bytes } = event {
+                    live = live.checked_sub(bytes).expect("release only admitted quota");
+                    return Ok(());
+                }
+                if seen == stop { return Err(error.clone()); }
+                seen += 1;
+                if let JsonCodecCharge::Retain { bytes } = event { live += bytes; }
+                Ok(())
+            });
+            assert_eq!(result, Err(error));
+            assert_eq!(live, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn serializer_failure_and_ignored_errors_cannot_leak_or_replace_first_failure() {
+        use serde::ser::SerializeSeq as _;
+        struct PartialFailure;
+        impl Serialize for PartialFailure {
+            fn serialize<S: ser::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+                let mut sequence = serializer.serialize_seq(Some(2))?;
+                sequence.serialize_element("owned partial tree")?;
+                Err(ser::Error::custom("original serializer failure"))
+            }
+        }
+        struct IgnoredErrors;
+        impl Serialize for IgnoredErrors {
+            fn serialize<S: ser::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+                let mut sequence = serializer.serialize_seq(Some(2))?;
+                let _ = sequence.serialize_element("ignored first");
+                let _ = sequence.serialize_element("ignored later");
+                sequence.end()
+            }
+        }
+        let mut live = 0u64;
+        let failure = canonical_json_bytes_bounded(&PartialFailure, BOUNDS, &mut |event| {
+            match event {
+                JsonCodecCharge::Retain { bytes } => live += bytes,
+                JsonCodecCharge::Release { bytes } => live = live.checked_sub(bytes).expect("balanced release"),
+                _ => {}
+            }
+            Ok(())
+        });
+        assert_eq!(failure, Err(Error::Invalid("original serializer failure".into())));
+        assert_eq!(live, 0);
+        let first = Error::Conflict("first callback failure".into());
+        let mut copy_failures = 0;
+        let failure = canonical_json_bytes_bounded(&IgnoredErrors, BOUNDS, &mut |event| {
+            match event {
+                JsonCodecCharge::Retain { bytes } => live += bytes,
+                JsonCodecCharge::Release { bytes } => live = live.checked_sub(bytes).expect("balanced release"),
+                JsonCodecCharge::Copy { .. } => {
+                    copy_failures += 1;
+                    return Err(if copy_failures == 1 { first.clone() } else { Error::Conflict("later failure".into()) });
+                }
+                _ => {}
+            }
+            Ok(())
+        });
+        assert_eq!(failure, Err(first));
+        assert_eq!(copy_failures, 1);
+        assert_eq!(live, 0);
+    }
+
+    #[test]
+    fn ordinary_second_pass_error_and_size_change_release_output_quota() {
+        use std::cell::Cell;
+        struct Changing<'a> { calls: &'a Cell<usize>, fail: bool }
+        impl Serialize for Changing<'_> {
+            fn serialize<S: ser::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+                let call = self.calls.get();
+                self.calls.set(call + 1);
+                if call == 0 { serializer.serialize_str("first output") }
+                else if self.fail { Err(ser::Error::custom("second pass failure")) }
+                else { serializer.serialize_str("short") }
+            }
+        }
+        for fail in [true, false] {
+            let calls = Cell::new(0);
+            let mut live = 0u64;
+            let mut peak = 0;
+            let result = json_bytes_bounded_trusted(&Changing { calls: &calls, fail }, BOUNDS, &mut |event| {
+                match event {
+                    JsonCodecCharge::Retain { bytes } => { live += bytes; peak = peak.max(live); }
+                    JsonCodecCharge::Release { bytes } => live = live.checked_sub(bytes).expect("balanced release"),
+                    _ => {}
+                }
+                Ok(())
+            });
+            assert!(result.is_err());
+            assert!(peak > 0);
+            assert_eq!(live, 0);
+        }
     }
 
     #[test]
