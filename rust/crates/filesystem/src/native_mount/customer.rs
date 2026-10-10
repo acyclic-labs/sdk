@@ -149,9 +149,10 @@ where
         let source_root = self.source_root.clone();
         let selected_root = self.selected_root.clone();
         let identity = self.source_identity;
-        tokio::task::spawn_blocking(move || {
-            validate_native_working_set_root(&source_root, &selected_root, identity)
-        })
+        tokio::task::spawn_blocking(crate::obs::in_context(
+            crate::obs::caller_context(),
+            move || validate_native_working_set_root(&source_root, &selected_root, identity),
+        ))
         .await
         .map_err(|error| MountSourceError::Engine(error.to_string()))?
         .map_err(MountLifecycleError::Source)?;
@@ -560,9 +561,13 @@ where
         let lazy = self.clone();
         let selected = subdirectory.to_owned();
         let token = cancellation.clone();
+        let context = crate::obs::caller_context();
         let mut task = AbortTaskOnDrop(tokio::spawn(async move {
-            lazy.exactify_subtree_with_permit(&selected, budget, &token, permit)
-                .await
+            crate::obs::in_span(&context, async move {
+                lazy.exactify_subtree_with_permit(&selected, budget, &token, permit)
+                    .await
+            })
+            .await
         }));
         let exact = (&mut task.0)
             .await
@@ -925,16 +930,19 @@ where
         let selected_root = crate::namespace_to_host_path(&root)
             .map_err(|error| MountSourceError::Engine(error.to_string()))?;
         let identity_root = source_root.clone();
-        let source_identity =
-            tokio::task::spawn_blocking(move || capture_root_identity(&identity_root))
-                .await
-                .map_err(|error| MountSourceError::Engine(error.to_string()))?
-                .map_err(|error| MountSourceError::Engine(error.to_string()))?;
+        let source_identity = tokio::task::spawn_blocking(crate::obs::in_context(
+            crate::obs::caller_context(),
+            move || capture_root_identity(&identity_root),
+        ))
+        .await
+        .map_err(|error| MountSourceError::Engine(error.to_string()))?
+        .map_err(|error| MountSourceError::Engine(error.to_string()))?;
         let validated_root = source_root.clone();
         let relative = selected_root.clone();
-        tokio::task::spawn_blocking(move || {
-            validate_native_working_set_root(&validated_root, &relative, source_identity)
-        })
+        tokio::task::spawn_blocking(crate::obs::in_context(
+            crate::obs::caller_context(),
+            move || validate_native_working_set_root(&validated_root, &relative, source_identity),
+        ))
         .await
         .map_err(|error| MountSourceError::Engine(error.to_string()))?
         .map_err(MountLifecycleError::Source)?;

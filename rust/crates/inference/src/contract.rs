@@ -607,6 +607,38 @@ pub(crate) fn validate_warm_view(
     Ok(())
 }
 
+pub(crate) fn validate_retain_response(
+    view: &wire::WarmView,
+    request: &wire::RetainWarmRequest,
+) -> Result<(), Error> {
+    validate_retain_request(request)?;
+    match (&request.idle_kv, &view.idle_kv) {
+        (Some(policy), Some(idle)) if idle.policy.as_ref() == Some(policy) => {}
+        (None, None)
+            if request.latency_profile == view.latency_profile
+                && request.expires_at_ms == view.expires_at_ms => {}
+        _ => return Err(Error::Invalid("retention policy differs")),
+    }
+    validate_warm_view(view, Some(fixed::<32>(&request.context)?), None)
+}
+
+pub(crate) fn validate_renew_response(
+    view: &wire::WarmView,
+    request: &wire::RenewWarmRequest,
+) -> Result<(), Error> {
+    validate_renew_request(request)?;
+    match (request.idle_timeout_ms, &view.idle_kv) {
+        (Some(timeout), Some(idle))
+            if idle
+                .policy
+                .as_ref()
+                .is_some_and(|policy| policy.idle_timeout_ms == timeout) => {}
+        (None, None) if request.expires_at_ms == view.expires_at_ms => {}
+        _ => return Err(Error::Invalid("renewal policy differs")),
+    }
+    validate_warm_view(view, None, Some(fixed::<32>(&request.commitment)?))
+}
+
 fn validate_provenance(value: &wire::ContextProvenance) -> Result<(), Error> {
     use wire::context_provenance::Origin;
     match value
@@ -643,7 +675,8 @@ pub(crate) fn validate_receipt(receipt: &wire::MutationReceipt) -> Result<(), Er
 
 /// Validate a generated protobuf message at a language binding boundary.
 /// `expected` is the requested identity; `related` is the requested context
-/// revision for a run, or the admitted spec bytes for an evaluation.
+/// revision for a run, the typed request bytes for warm admission/renewal,
+/// or the admitted spec bytes for an evaluation. Inspect/release use no related bytes.
 ///
 /// # Errors
 /// Rejects unknown message kinds, malformed protobuf, and contract violations.
@@ -665,53 +698,32 @@ fn validate_customer_wire_inner(
     match kind {
         "retain_warm_request" => validate_retain_request(&decode!(wire::RetainWarmRequest)),
         "renew_warm_request" => validate_renew_request(&decode!(wire::RenewWarmRequest)),
-        "legacy_warm_context" | "legacy_warm_commitment" => {
-            let view = decode!(wire::WarmView);
-            if view.idle_kv.is_some() {
-                return Err(Error::Invalid("retention mode differs"));
-            }
-            if kind == "legacy_warm_context" {
-                validate_warm_view(&view, Some(fixed::<32>(expected)?), None)
-            } else {
-                validate_warm_view(&view, None, Some(fixed::<32>(expected)?))
-            }
-        }
-        "idle_warm_context" | "idle_warm_commitment" => {
-            let view = decode!(wire::WarmView);
-            let policy = view
-                .idle_kv
-                .as_ref()
-                .and_then(|idle| idle.policy.as_ref())
-                .ok_or(Error::Invalid("idle retention response is absent"))?;
-            if kind == "idle_warm_context" {
-                let request = wire::RetainWarmRequest::decode(related)
-                    .map_err(|_| Error::Invalid("malformed retention request"))?;
-                validate_retain_request(&request)?;
-                if request.idle_kv.as_ref() != Some(policy) {
-                    return Err(Error::Invalid("idle retention policy differs"));
-                }
-                validate_warm_view(&view, Some(fixed::<32>(expected)?), None)
-            } else {
-                let request = wire::RenewWarmRequest::decode(related)
-                    .map_err(|_| Error::Invalid("malformed renewal request"))?;
-                validate_renew_request(&request)?;
-                if request.idle_timeout_ms != Some(policy.idle_timeout_ms) {
-                    return Err(Error::Invalid("idle renewal timeout differs"));
-                }
-                validate_warm_view(&view, None, Some(fixed::<32>(expected)?))
-            }
-        }
         "mutation_receipt" => validate_receipt(&decode!(wire::MutationReceipt)),
         "context_view" => {
             validate_context_view(&decode!(wire::ContextView), fixed::<32>(expected)?)
         }
-        "warm_context" => {
-            validate_warm_view(&decode!(wire::WarmView), Some(fixed::<32>(expected)?), None)
+        "warm_context" | "warm_commitment" => {
+            let view = decode!(wire::WarmView);
+            let expected = fixed::<32>(expected)?;
+            if kind == "warm_context" {
+                let request = wire::RetainWarmRequest::decode(related)
+                    .map_err(|_| Error::Invalid("malformed retention request"))?;
+                if request.context != expected {
+                    return Err(Error::Invalid("retention context differs"));
+                }
+                validate_retain_response(&view, &request)
+            } else if related.is_empty() {
+                validate_warm_view(&view, None, Some(expected))
+            } else {
+                let request = wire::RenewWarmRequest::decode(related)
+                    .map_err(|_| Error::Invalid("malformed renewal request"))?;
+                if request.commitment != expected {
+                    return Err(Error::Invalid("renewal commitment differs"));
+                }
+                validate_renew_response(&view, &request)
+            }
         }
         "warm_view" => validate_warm_view(&decode!(wire::WarmView), None, None),
-        "warm_commitment" => {
-            validate_warm_view(&decode!(wire::WarmView), None, Some(fixed::<32>(expected)?))
-        }
         "run_view" | "generated_run_view" => {
             let view = decode!(wire::RunView);
             if kind == "generated_run_view" {
@@ -783,25 +795,176 @@ mod tests {
     }
 
     #[test]
-    fn legacy_admission_and_renewal_reject_idle_responses() {
-        let view = idle_view();
+    fn unsupported_warm_kinds_reject_both_retention_modes() {
+        let mut view = idle_view();
+        for idle in [true, false] {
+            if !idle {
+                view.idle_kv = None;
+                view.latency_profile = vec![6; 32];
+            }
+            assert!(validate_warm_view(&view, None, None).is_ok());
+            for kind in [
+                "legacy_warm_context",
+                "legacy_warm_commitment",
+                "idle_warm_context",
+                "idle_warm_commitment",
+                "",
+                "Warm_commitment",
+            ] {
+                let expected = if kind.ends_with("context") {
+                    [2; 32]
+                } else {
+                    [1; 32]
+                };
+                assert_eq!(
+                    validate_customer_wire(kind, &view.encode_to_vec(), &expected, &[]),
+                    Err("unknown inference message kind")
+                );
+            }
+            // Inspect and release remain mode-neutral for recovered handles.
+            assert!(
+                validate_customer_wire("warm_commitment", &view.encode_to_vec(), &[1; 32], &[])
+                    .is_ok()
+            );
+            assert!(
+                validate_customer_wire("warm_commitment", &view.encode_to_vec(), &[9; 32], &[])
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn latency_admission_binds_authority_and_policy() {
+        let mut view = idle_view();
+        view.idle_kv = None;
+        view.latency_profile = vec![6; 32];
+        let request = wire::RetainWarmRequest {
+            identity: Some(wire::RequestIdentity {
+                client_instance: vec![1; 16],
+                request_id: vec![2; 16],
+            }),
+            context: view.context.clone(),
+            latency_profile: view.latency_profile.clone(),
+            expires_at_ms: view.expires_at_ms,
+            ..Default::default()
+        };
+        let bytes = view.encode_to_vec();
+        assert!(validate_retain_response(&view, &request).is_ok());
         assert!(
-            validate_customer_wire("legacy_warm_context", &view.encode_to_vec(), &[2; 32], &[])
+            validate_customer_wire("warm_context", &bytes, &[2; 32], &request.encode_to_vec())
+                .is_ok()
+        );
+        for invalid in [
+            wire::RetainWarmRequest {
+                identity: None,
+                ..request.clone()
+            },
+            wire::RetainWarmRequest {
+                context: vec![9; 32],
+                ..request.clone()
+            },
+            wire::RetainWarmRequest {
+                latency_profile: vec![9; 32],
+                ..request.clone()
+            },
+            wire::RetainWarmRequest {
+                expires_at_ms: 111,
+                ..request.clone()
+            },
+            wire::RetainWarmRequest {
+                expires_at_ms: 0,
+                ..request.clone()
+            },
+        ] {
+            assert!(validate_retain_response(&view, &invalid).is_err());
+            assert!(
+                validate_customer_wire("warm_context", &bytes, &[2; 32], &invalid.encode_to_vec())
+                    .is_err()
+            );
+        }
+        assert!(
+            validate_customer_wire("warm_context", &bytes, &[9; 32], &request.encode_to_vec())
                 .is_err()
         );
+        for related in [vec![], vec![255]] {
+            assert!(validate_customer_wire("warm_context", &bytes, &[2; 32], &related).is_err());
+        }
         assert!(
             validate_customer_wire(
-                "legacy_warm_commitment",
-                &view.encode_to_vec(),
-                &[1; 32],
-                &[]
+                "warm_context",
+                &idle_view().encode_to_vec(),
+                &[2; 32],
+                &request.encode_to_vec()
             )
             .is_err()
         );
-        // Inspect remains mode-neutral for recovered handles.
+    }
+
+    #[test]
+    fn latency_renewal_binds_authority_and_policy() {
+        let mut view = idle_view();
+        view.idle_kv = None;
+        view.latency_profile = vec![6; 32];
+        let bytes = view.encode_to_vec();
+        let renewal = wire::RenewWarmRequest {
+            identity: Some(wire::RequestIdentity {
+                client_instance: vec![1; 16],
+                request_id: vec![2; 16],
+            }),
+            commitment: view.commitment.clone(),
+            expires_at_ms: view.expires_at_ms,
+            ..Default::default()
+        };
+        assert!(validate_renew_response(&view, &renewal).is_ok());
         assert!(
-            validate_customer_wire("warm_commitment", &view.encode_to_vec(), &[1; 32], &[]).is_ok()
+            validate_customer_wire(
+                "warm_commitment",
+                &bytes,
+                &[1; 32],
+                &renewal.encode_to_vec()
+            )
+            .is_ok()
         );
+        for invalid in [
+            wire::RenewWarmRequest {
+                identity: None,
+                ..renewal.clone()
+            },
+            wire::RenewWarmRequest {
+                commitment: vec![9; 32],
+                ..renewal.clone()
+            },
+            wire::RenewWarmRequest {
+                expires_at_ms: 111,
+                ..renewal.clone()
+            },
+            wire::RenewWarmRequest {
+                idle_timeout_ms: Some(10),
+                expires_at_ms: 0,
+                ..renewal.clone()
+            },
+        ] {
+            assert!(validate_renew_response(&view, &invalid).is_err());
+            assert!(
+                validate_customer_wire(
+                    "warm_commitment",
+                    &bytes,
+                    &[1; 32],
+                    &invalid.encode_to_vec()
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            validate_customer_wire(
+                "warm_commitment",
+                &bytes,
+                &[9; 32],
+                &renewal.encode_to_vec()
+            )
+            .is_err()
+        );
+        assert!(validate_customer_wire("warm_commitment", &bytes, &[1; 32], &[255]).is_err());
     }
 
     #[test]
@@ -852,7 +1015,7 @@ mod tests {
         };
         assert!(
             validate_customer_wire(
-                "idle_warm_context",
+                "warm_context",
                 &view.encode_to_vec(),
                 &[2; 32],
                 &request.encode_to_vec()
@@ -868,7 +1031,7 @@ mod tests {
             .profile = vec![8; 32];
         assert!(
             validate_customer_wire(
-                "idle_warm_context",
+                "warm_context",
                 &view.encode_to_vec(),
                 &[2; 32],
                 &request.encode_to_vec()
@@ -891,7 +1054,7 @@ mod tests {
         view.expires_at_ms = 120;
         assert!(
             validate_customer_wire(
-                "idle_warm_commitment",
+                "warm_commitment",
                 &view.encode_to_vec(),
                 &[1; 32],
                 &renewal.encode_to_vec()
@@ -901,7 +1064,7 @@ mod tests {
         view.expires_at_ms = 130;
         assert!(
             validate_customer_wire(
-                "idle_warm_commitment",
+                "warm_commitment",
                 &view.encode_to_vec(),
                 &[1; 32],
                 &renewal.encode_to_vec()

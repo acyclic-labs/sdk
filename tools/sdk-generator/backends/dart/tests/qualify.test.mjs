@@ -27,7 +27,7 @@ function fixture(t, failure = "") {
   const root = mkdtempSync(join(tmpdir(), "dart-qualification-test-")); t.after(() => rmSync(root, { recursive: true }));
   const put = (path, bytes) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, bytes); };
   const authority = join(root, "authority"), packageRoot = join(root, "package"), runtime = join(root, "runtime"), cache = join(root, "prepared-cache"), archiver = join(root, "tar");
-  const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v2/stream.proto"];
+  const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"];
   const manifest = { schema: "acyclic.sdk.rust-authority.v1", authority: "rust", source_revision: "a".repeat(40), families: targets.map(source => {
     put(join(authority, source), source); return { source, source_sha256: sha256(source), descriptor: "shared.bin", descriptor_sha256: sha256("descriptors") };
   }) };

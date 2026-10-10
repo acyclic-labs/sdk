@@ -5,14 +5,14 @@ plugins:
     out: generated/rust
     strategy: all
     opt:
-      - btree_map=.acyclic.objects.v2.ObjectMetadata.user
+      - btree_map=.acyclic.objects.v1.ObjectMetadata.user
   - local: [cargo, run, --quiet, --locked, --package, sdk-proto-codegen, --, tonic]
     out: generated/rust
     strategy: all
     types:
-      - acyclic.objects.v2.BucketsService
-      - acyclic.objects.v2.ObjectsService
-      - acyclic.objects.v2.MultipartService
+      - acyclic.objects.v1.BucketsService
+      - acyclic.objects.v1.ObjectsService
+      - acyclic.objects.v1.MultipartService
       - acyclic.machines.v1.MachinesService
       - acyclic.actors.v1.ActorsService
       - acyclic.workers.v1.WorkersService

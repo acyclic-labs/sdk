@@ -1,7 +1,7 @@
 import assert from "./browser-assert.mjs";
 import { create } from "@bufbuild/protobuf";
-import { lifecycle } from "../../objects/test/v2-lifecycle.mjs";
-import { HttpObjectsV2 } from "@acyclic-labs/objects/http";
+import { lifecycle } from "../../objects/test/v1-lifecycle.mjs";
+import { HttpObjectsV1 } from "@acyclic-labs/objects/http";
 import * as objectsWire from "@acyclic-labs/objects";
 import { ActorId, ActorsClient, ActorsService, CodeSha256, CurrentHeadMarker, PositiveU64 } from "@acyclic-labs/actors";
 import { WorkersService, WorkersTransportError, HttpWorkersClient } from "@acyclic-labs/workers";
@@ -28,10 +28,10 @@ try {
   await assert.rejects(ActorId(1), error => errorCode(error) === "invalid_argument");
   await assert.rejects(CodeSha256(new Array(32).fill(1)), error => errorCode(error) === "invalid_argument");
   await assert.rejects(CurrentHeadMarker(1), error => errorCode(error) === "invalid_argument");
-  const objects = new HttpObjectsV2(options);
+  const objects = new HttpObjectsV1(options);
   await lifecycle(objects);
-  await assert.rejects(new HttpObjectsV2({ ...options, token: "wrong" }).headBucket(create(objectsWire.HeadBucketRequestSchema, { bucket: { name: "customer.inputs" } })), error => error.code === objectsWire.ErrorCode.ACCESS_DENIED);
-  await assert.rejects(new HttpObjectsV2({ ...options, maximumResponseBytes: 8 }).createBucket(create(objectsWire.CreateBucketRequestSchema, { name: "bounded-response" })), error => error.code === objectsWire.ErrorCode.QUOTA_EXCEEDED);
+  await assert.rejects(new HttpObjectsV1({ ...options, token: "wrong" }).headBucket(create(objectsWire.HeadBucketRequestSchema, { bucket: { name: "customer.inputs" } })), error => error.code === objectsWire.ErrorCode.ACCESS_DENIED);
+  await assert.rejects(new HttpObjectsV1({ ...options, maximumResponseBytes: 8 }).createBucket(create(objectsWire.CreateBucketRequestSchema, { name: "bounded-response" })), error => error.code === objectsWire.ErrorCode.QUOTA_EXCEEDED);
   const actors = new ActorsClient(options);
   assert.equal(await actors.transport, "grpc-web");
   let methods = 0;
@@ -51,6 +51,7 @@ try {
       });
       if (method.name === "AddSubscription") Object.assign(init, { actorId: "browser-actor", subscription: { subscriptionId: "input", streamPath: "events/input", start: { start: { case: "cursor", value: 9007199254740993n } } }, idempotencyKey: "subscribe-browser" });
       if (method.name === "CheckpointActor") Object.assign(init, { actorId: "browser-actor", idempotencyKey: "checkpoint-browser" });
+      if (method.name === "DeleteActor") Object.assign(init, { actorId: "browser-actor", idempotencyKey: "delete-browser" });
       if (method.name === "InvokeActor") Object.assign(init, { actorId: "browser-actor", method: "POST", url: "/invoke", body: new Uint8Array([1]) });
       if (method.name === "PublishVersion") {
         const javascriptModule = new TextEncoder().encode("export default { run() {} }");
@@ -75,7 +76,7 @@ try {
       methods++;
     }
   }
-  assert.equal(methods, 15);
+  assert.equal(methods, 16);
   const inspectActor = ActorsService.methods.find(method => method.name === "InspectActor");
   await assert.rejects(new ActorsClient({ ...options, token: "wrong" }).inspectActor(create(inspectActor.input, { actorId: "browser-actor" })), error => error.code === "unauthenticated");
   const cancellation = new AbortController();

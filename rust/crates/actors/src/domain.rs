@@ -1,16 +1,16 @@
 // Rust-owned semantic projections for the Actors contract.
 //
-// This module provides typed semantic boundaries for all eight Actors
+// This module provides typed semantic boundaries for all nine Actors
 // operations (create, update, inspect, add/remove/resume subscription,
-// checkpoint, and invoke), preserving the canonical wire validators and
+// checkpoint, invoke, and delete), preserving the canonical wire validators and
 // lossless enum/presence rules. Transport behavior remains in
 // [`crate::grpc`] and [`crate::http`].
 
 use std::{num::NonZeroU64, path::Path};
 
 use crate::wire;
-use crate::contract::ACTORS_FILE;
-use protify::*;
+use crate::contract::ActorsFile;
+
 use ts_rs::{Config, ExportError, TS, TypeVisitor};
 
 #[cfg(kani)]
@@ -90,30 +90,6 @@ impl DomainError {
             Self::InvalidBinding => "invalid_binding",
         }
     }
-}
-
-fn parse_subscription_state(value: i32) -> Result<SubscriptionState, DomainError> {
-    SubscriptionState::try_from(value)
-}
-
-fn encode_subscription_state(value: SubscriptionState) -> i32 {
-    value as i32
-}
-
-fn parse_actor_state(value: i32) -> Result<ActorState, DomainError> {
-    ActorState::try_from(value)
-}
-
-fn encode_actor_state(value: ActorState) -> i32 {
-    value as i32
-}
-
-fn parse_error_code(value: i32) -> Result<ErrorCode, DomainError> {
-    ErrorCode::try_from(value)
-}
-
-fn encode_error_code(value: ErrorCode) -> i32 {
-    value as i32
 }
 
 impl From<std::convert::Infallible> for DomainError {
@@ -218,30 +194,24 @@ impl From<&CodeSha256> for Vec<u8> {
     }
 }
 
-impl TryFrom<protify::Bytes> for CodeSha256 {
-    type Error = DomainError;
 
-    fn try_from(value: protify::Bytes) -> Result<Self, Self::Error> {
-        Self::new(value.to_vec())
-    }
-}
 
-impl From<CodeSha256> for protify::Bytes {
+impl From<CodeSha256> for Vec<u8> {
     fn from(value: CodeSha256) -> Self {
-        value.0.to_vec().into()
+        value.0.to_vec()
     }
 }
 
 /// A lossless invocation header.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/Header.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct Header {
-    #[proto(tag = 1)]
+    #[wire(tag = 1)]
     name: String,
-    #[proto(tag = 2)]
+    #[wire(tag = 2)]
     value: String,
 }
 
@@ -262,18 +232,18 @@ impl Header {
 }
 
 /// Resource binding admitted by the canonical create/update validators.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE, post_from_proto = Binding::validate_from_proto)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = Binding::validate_from_proto)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/Binding.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct Binding {
-    #[proto(tag = 1)]
+    #[wire(tag = 1)]
 
     name: String,
-    #[proto(tag = 2)]
+    #[wire(tag = 2)]
     capability: String,
-    #[proto(tag = 3)]
+    #[wire(tag = 3)]
     resource: String,
 }
 
@@ -328,18 +298,18 @@ impl Binding {
 
 
 /// Positive limits admitted by the canonical create/update validators.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ActorLimits.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct ActorLimits {
-    #[proto(tag = 1, uint64)]
+    #[wire(tag = 1, uint64)]
 
     handler_timeout_millis: PositiveU64,
-    #[proto(tag = 2, uint64)]
+    #[wire(tag = 2, uint64)]
     memory_bytes: PositiveU64,
-    #[proto(tag = 3, uint64)]
+    #[wire(tag = 3, uint64)]
     checkpoint_bytes: PositiveU64,
 }
 
@@ -379,18 +349,14 @@ impl ActorLimits {
 
 }
 /// The published subscription-start message owns its oneof declaration.
-/// Protify generates the wire shadow and fallible ingress from this semantic
+/// Contract derivation generates the wire shadow and fallible ingress from this semantic
 /// declaration, preserving cursor zero and the current-head boolean payload.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionStart.ts")]
 pub struct SubscriptionStart {
-    #[proto(
-        tag = 1,
-        oneof(proxied, tags(1, 2), required),
-        from_proto = parse_subscription_start
-    )]
+    #[wire(oneof = "1,2", from = parse_subscription_start)]
     #[ts(inline)]
     start: subscription_start::Start,
 }
@@ -452,15 +418,15 @@ pub mod subscription_start {
 
 
     /// The semantic oneof for [`super::SubscriptionStart`].
-    #[acyclic_protify_proc_macro::proto_oneof(proxied, fallible = DomainError)]
+    #[acyclic_contract_derive::oneof(error = DomainError, file = ActorsFile)]
     #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
     #[ts(tag = "case", content = "value", rename_all = "camelCase")]
     pub enum Start {
         /// Start at the exact stream cursor, including cursor zero.
-        #[proto(tag = 1)]
+        #[wire(tag = 1)]
         Cursor(u64),
         /// Start at the service's current head, preserving the wire boolean.
-        #[proto(tag = 2, bool)]
+        #[wire(tag = 2, bool)]
         CurrentHead(CurrentHeadMarker),
     }
 }
@@ -508,20 +474,20 @@ impl SubscriptionStart {
 
 
 /// A subscription admitted by `validate_create` or `validate_add_subscription`.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE, post_from_proto = SubscriptionSpec::validate_from_proto)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = SubscriptionSpec::validate_from_proto)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionSpec.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct SubscriptionSpec {
-    #[proto(tag = 1)]
+    #[wire(tag = 1)]
 
     subscription_id: String,
-    #[proto(tag = 2)]
+    #[wire(tag = 2)]
     stream_path: String,
-    #[proto(tag = 3, message(proxied, required))]
+    #[wire(tag = 3, message)]
     start: SubscriptionStart,
-    #[proto(tag = 4)]
+    #[wire(tag = 4)]
     placement_anchor: bool,
 }
 
@@ -593,8 +559,8 @@ impl SubscriptionSpec {
 
 /// Known subscription states. Unknown protobuf integers are rejected rather
 /// than normalized to `Unspecified`.
-#[acyclic_protify_proc_macro::proto_enum(error = DomainError, unknown = DomainError::UnknownSubscriptionState)]
-#[proto(file = ACTORS_FILE)]
+#[acyclic_contract_derive::enumeration(error = DomainError, unknown = DomainError::UnknownSubscriptionState)]
+
 #[derive(TS)]
 #[ts(export_to = "actors/SubscriptionState.ts")]
 #[ts(repr(enum))]
@@ -609,8 +575,8 @@ pub enum SubscriptionState {
 
 
 /// Known Actor states. Unknown protobuf integers remain observable errors.
-#[acyclic_protify_proc_macro::proto_enum(error = DomainError, unknown = DomainError::UnknownActorState)]
-#[proto(file = ACTORS_FILE)]
+#[acyclic_contract_derive::enumeration(error = DomainError, unknown = DomainError::UnknownActorState)]
+
 #[derive(TS)]
 #[ts(export_to = "actors/ActorState.ts")]
 #[ts(repr(enum))]
@@ -627,8 +593,8 @@ pub enum ActorState {
 
 /// Published service error codes. Unknown numeric values stay visible through
 /// `DomainError::UnknownErrorCode` instead of being coerced to `Unspecified`.
-#[acyclic_protify_proc_macro::proto_enum(error = DomainError, unknown = DomainError::UnknownErrorCode)]
-#[proto(file = ACTORS_FILE)]
+#[acyclic_contract_derive::enumeration(error = DomainError, unknown = DomainError::UnknownErrorCode)]
+
 #[derive(TS)]
 #[ts(export_to = "actors/ErrorCode.ts")]
 #[ts(repr(enum))]
@@ -659,17 +625,16 @@ pub enum ErrorCode {
 
 
 /// A service error with a typed known code and lossless message.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, name = "Error")]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ServiceError.ts")]
 #[ts(rename_all = "camelCase")]
-#[proto(name = "Error")]
 pub struct ServiceError {
-    #[proto(tag = 1, enum_(ErrorCode), from_proto = parse_error_code, into_proto = encode_error_code)]
+    #[wire(tag = 1, enumeration)]
 
     code: ErrorCode,
-    #[proto(tag = 2)]
+    #[wire(tag = 2)]
     message: String,
 }
 
@@ -700,36 +665,36 @@ impl ServiceError {
 
 
 /// Lossless semantic view of a subscription observation.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionObservation.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct SubscriptionObservation {
-    #[proto(tag = 1)]
+    #[wire(tag = 1)]
 
     subscription_id: String,
-    #[proto(tag = 2)]
+    #[wire(tag = 2)]
     stream_path: String,
-    #[proto(tag = 3, enum_(SubscriptionState), from_proto = parse_subscription_state, into_proto = encode_subscription_state)]
+    #[wire(tag = 3, enumeration)]
     state: SubscriptionState,
     #[ts(type = "bigint")]
-    #[proto(tag = 4)]
+    #[wire(tag = 4)]
     delivered_cursor: u64,
     #[ts(type = "bigint")]
-    #[proto(tag = 5)]
+    #[wire(tag = 5)]
     completed_cursor: u64,
     #[ts(type = "bigint")]
-    #[proto(tag = 6)]
+    #[wire(tag = 6)]
     recoverable_cursor: u64,
-    #[proto(tag = 7)]
+    #[wire(tag = 7)]
     placement_anchor: bool,
-    #[proto(tag = 8)]
+    #[wire(tag = 8)]
     retry_count: u32,
-    #[proto(tag = 9)]
+    #[wire(tag = 9)]
     failure_code: String,
     #[ts(optional)]
-    #[proto(tag = 10)]
+    #[wire(tag = 10)]
     failed_cursor: Option<u64>,
 }
 
@@ -771,31 +736,31 @@ impl SubscriptionObservation {
 
 
 /// Lossless semantic view of a server Actor observation.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ActorObservation.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct ActorObservation {
-    #[proto(tag = 1, string)]
+    #[wire(tag = 1, string)]
 
     actor_id: ActorId,
-    #[proto(tag = 2, bytes)]
+    #[wire(tag = 2, bytes)]
     code_sha256: CodeSha256,
-    #[proto(tag = 3)]
+    #[wire(tag = 3)]
     home_region: String,
-    #[proto(tag = 4, enum_(ActorState), from_proto = parse_actor_state, into_proto = encode_actor_state)]
+    #[wire(tag = 4, enumeration)]
     state: ActorState,
-    #[proto(tag = 5, repeated(message(proxied)))]
+    #[wire(tag = 5, message)]
     subscriptions: Vec<SubscriptionObservation>,
     #[ts(optional)]
-    #[proto(tag = 6)]
+    #[wire(tag = 6)]
     checkpoint_unix_millis: Option<u64>,
     #[ts(type = "bigint")]
-    #[proto(tag = 7)]
+    #[wire(tag = 7)]
     checkpoint_epoch: u64,
     #[ts(type = "bigint")]
-    #[proto(tag = 8)]
+    #[wire(tag = 8)]
     configuration_revision: u64,
 }
 
@@ -832,14 +797,14 @@ impl ActorObservation {
 
 macro_rules! actor_response_type {
     ($name:ident, $wire:ident) => {
-	        #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-	        #[proto(file = ACTORS_FILE)]
+	        #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
+
         #[derive(Clone, Debug, Eq, PartialEq, TS)]
         #[ts(export_to = concat!("actors/", stringify!($name), ".ts"))]
         #[ts(rename_all = "camelCase")]
         #[doc = "Typed response preserving the optional server Actor observation."]
         pub struct $name {
-            #[proto(tag = 1, message(proxied))]
+            #[wire(tag = 1, message)]
             #[ts(optional)]
             actor: Option<ActorObservation>,
         }
@@ -864,27 +829,24 @@ actor_response_type!(ResumeSubscriptionResponse, ResumeSubscriptionResponse);
 actor_response_type!(CheckpointActorResponse, CheckpointActorResponse);
 
 /// Create request after the canonical admission validator has run.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(
-    file = ACTORS_FILE,
-    post_from_proto = CreateActorRequest::validate_from_proto
-)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = CreateActorRequest::validate_from_proto)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/CreateActorRequest.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct CreateActorRequest {
-    #[proto(tag = 1, bytes)]
+    #[wire(tag = 1, bytes)]
 
     code_sha256: CodeSha256,
-    #[proto(tag = 2)]
+    #[wire(tag = 2)]
     home_region: String,
-    #[proto(tag = 3, repeated(message(proxied)))]
+    #[wire(tag = 3, message)]
     bindings: Vec<Binding>,
-    #[proto(tag = 4, message(proxied, required))]
+    #[wire(tag = 4, message)]
     limits: ActorLimits,
-    #[proto(tag = 5, repeated(message(proxied)))]
+    #[wire(tag = 5, message)]
     subscriptions: Vec<SubscriptionSpec>,
-    #[proto(tag = 6)]
+    #[wire(tag = 6)]
     idempotency_key: String,
 }
 
@@ -899,7 +861,7 @@ impl CreateActorRequest {
         idempotency_key: String,
     ) -> Result<Self, DomainError> {
         let wire = wire::CreateActorRequest {
-            code_sha256: code_sha256.as_bytes().to_vec().into(),
+            code_sha256: code_sha256.as_bytes().to_vec(),
             home_region,
             bindings: bindings.into_iter().map(Into::into).collect(),
             limits: Some(limits.into()),
@@ -944,28 +906,25 @@ impl CreateActorRequest {
 
 
 /// Update request after the canonical admission validator has run.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(
-    file = ACTORS_FILE,
-    post_from_proto = UpdateActorRequest::validate_from_proto
-)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = UpdateActorRequest::validate_from_proto)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/UpdateActorRequest.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct UpdateActorRequest {
-    #[proto(tag = 1, string)]
+    #[wire(tag = 1, string)]
 
     actor_id: ActorId,
-    #[proto(tag = 2, bytes)]
+    #[wire(tag = 2, bytes)]
     code_sha256: CodeSha256,
-    #[proto(tag = 3, repeated(message(proxied)))]
+    #[wire(tag = 3, message)]
     bindings: Vec<Binding>,
-    #[proto(tag = 4, message(proxied, required))]
+    #[wire(tag = 4, message)]
     limits: ActorLimits,
     #[ts(type = "bigint")]
-    #[proto(tag = 5)]
+    #[wire(tag = 5)]
     expected_configuration_revision: u64,
-    #[proto(tag = 6)]
+    #[wire(tag = 6)]
     idempotency_key: String,
 }
 
@@ -981,7 +940,7 @@ impl UpdateActorRequest {
     ) -> Result<Self, DomainError> {
         let wire = wire::UpdateActorRequest {
             actor_id: actor_id.as_str().to_owned(),
-            code_sha256: code_sha256.as_bytes().to_vec().into(),
+            code_sha256: code_sha256.as_bytes().to_vec(),
             bindings: bindings.into_iter().map(Into::into).collect(),
             limits: Some(limits.into()),
             expected_configuration_revision,
@@ -1025,13 +984,13 @@ impl UpdateActorRequest {
 
 /// Inspect currently has no additional wire validator; only the semantic
 /// Actor identity rule is applied by this conversion.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/InspectActorRequest.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct InspectActorRequest {
-    #[proto(tag = 1, string)]
+    #[wire(tag = 1, string)]
 
     actor_id: ActorId,
 }
@@ -1050,21 +1009,18 @@ impl InspectActorRequest {
 
 
 /// Add subscription request after the canonical admission validator has run.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(
-    file = ACTORS_FILE,
-    post_from_proto = AddSubscriptionRequest::validate_from_proto
-)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = AddSubscriptionRequest::validate_from_proto)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/AddSubscriptionRequest.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct AddSubscriptionRequest {
-    #[proto(tag = 1, string)]
+    #[wire(tag = 1, string)]
 
     actor_id: ActorId,
-    #[proto(tag = 2, message(proxied, required))]
+    #[wire(tag = 2, message)]
     subscription: SubscriptionSpec,
-    #[proto(tag = 3)]
+    #[wire(tag = 3)]
     idempotency_key: String,
 }
 
@@ -1107,18 +1063,18 @@ impl AddSubscriptionRequest {
 
 /// Removal has no canonical validator yet, so subscription and idempotency
 /// strings remain unbranded and are carried exactly as received.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/RemoveSubscriptionRequest.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct RemoveSubscriptionRequest {
-    #[proto(tag = 1, string)]
+    #[wire(tag = 1, string)]
 
     actor_id: ActorId,
-    #[proto(tag = 2)]
+    #[wire(tag = 2)]
     subscription_id: String,
-    #[proto(tag = 3)]
+    #[wire(tag = 3)]
     idempotency_key: String,
 }
 
@@ -1148,18 +1104,18 @@ impl RemoveSubscriptionRequest {
 
 
 /// Resume has no canonical validator yet; the wire strings stay unbranded.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ResumeSubscriptionRequest.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct ResumeSubscriptionRequest {
-    #[proto(tag = 1, string)]
+    #[wire(tag = 1, string)]
 
     actor_id: ActorId,
-    #[proto(tag = 2)]
+    #[wire(tag = 2)]
     subscription_id: String,
-    #[proto(tag = 3)]
+    #[wire(tag = 3)]
     idempotency_key: String,
 }
 
@@ -1190,16 +1146,16 @@ impl ResumeSubscriptionRequest {
 
 /// Checkpoint has no canonical validator yet; only the Actor identity rule is
 /// applied and the idempotency key remains an ordinary string.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/CheckpointActorRequest.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct CheckpointActorRequest {
-    #[proto(tag = 1, string)]
+    #[wire(tag = 1, string)]
 
     actor_id: ActorId,
-    #[proto(tag = 2)]
+    #[wire(tag = 2)]
     idempotency_key: String,
 }
 
@@ -1224,24 +1180,81 @@ impl CheckpointActorRequest {
 
 
 
+/// Deletion request. The canonical validator requires an Actor identity and a
+/// bounded idempotency key; deletion is terminal for that Actor identity.
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = DeleteActorRequest::validate_from_proto)]
+
+#[derive(Clone, Debug, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/DeleteActorRequest.ts")]
+#[ts(rename_all = "camelCase")]
+pub struct DeleteActorRequest {
+    #[wire(tag = 1, string)]
+
+    actor_id: ActorId,
+    #[wire(tag = 2)]
+    idempotency_key: String,
+}
+
+impl DeleteActorRequest {
+    /// Builds and validates a deletion request through the canonical admission path.
+    pub fn new(actor_id: ActorId, idempotency_key: String) -> Result<Self, DomainError> {
+        Self::try_from(wire::DeleteActorRequest {
+            actor_id: actor_id.as_str().to_owned(),
+            idempotency_key,
+        })
+    }
+
+    /// Re-runs the canonical request validator without recursively invoking
+    /// the semantic `TryFrom` implementation.
+    fn validate_from_proto(&self) -> Result<(), DomainError> {
+        let wire: wire::DeleteActorRequest = self.clone().into();
+        crate::validate_delete(&wire).map_err(DomainError::Contract)
+    }
+
+    /// Returns the Actor identity.
+    #[must_use]
+    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    /// Returns the idempotency key.
+    #[must_use]
+    pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
+}
+
+
+
+
+
+/// Empty deletion acknowledgement. After it, every operation on the deleted
+/// Actor identity reports `ACTOR_NOT_FOUND`; an exact retry with the same
+/// idempotency key succeeds again.
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/DeleteActorResponse.ts")]
+#[ts(type = "Record<never, never>")]
+pub struct DeleteActorResponse {}
+
+
+
+
+
 /// Typed invocation request. Method, URL, headers, and body preserve the
 /// existing wire contract without adding new validation rules.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
+
 #[derive(Clone, Debug, PartialEq, TS)]
 #[ts(export_to = "actors/InvokeActorRequest.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct InvokeActorRequest {
-    #[proto(tag = 1, string)]
+    #[wire(tag = 1, string)]
     actor_id: ActorId,
-    #[proto(tag = 2)]
+    #[wire(tag = 2)]
     method: String,
-    #[proto(tag = 3)]
+    #[wire(tag = 3)]
     url: String,
-    #[proto(tag = 4, bytes)]
+    #[wire(tag = 4, bytes)]
     #[ts(type = "import(\"../../readonly.js\").ReadonlyBytes")]
     body: Vec<u8>,
-    #[proto(tag = 5, repeated(message(proxied)))]
+    #[wire(tag = 5, message)]
     headers: Vec<Header>,
 }
 
@@ -1285,18 +1298,18 @@ impl InvokeActorRequest {
 
 
 /// Typed invocation response with byte-preserving body and headers.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
+
 #[derive(Clone, Debug, PartialEq, TS)]
 #[ts(export_to = "actors/InvokeActorResponse.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct InvokeActorResponse {
-    #[proto(tag = 1)]
+    #[wire(tag = 1)]
     status: u32,
-    #[proto(tag = 2, bytes)]
+    #[wire(tag = 2, bytes)]
     #[ts(type = "import(\"../../readonly.js\").ReadonlyBytes")]
     body: Vec<u8>,
-    #[proto(tag = 3, repeated(message(proxied)))]
+    #[wire(tag = 3, message)]
     headers: Vec<Header>,
 }
 
@@ -1328,6 +1341,7 @@ macro_rules! typescript_message_roots {
             ResumeSubscriptionRequest,
             CheckpointActorRequest,
             InvokeActorRequest,
+            DeleteActorRequest,
             CreateActorResponse,
             UpdateActorResponse,
             InspectActorResponse,
@@ -1336,6 +1350,7 @@ macro_rules! typescript_message_roots {
             ResumeSubscriptionResponse,
             CheckpointActorResponse,
             InvokeActorResponse,
+            DeleteActorResponse,
         )
     };
 }
@@ -1390,8 +1405,8 @@ pub fn typescript_export_names(config: &Config) -> Vec<String> {
 /// Actual exported names and compiler-linked wire/semantic identities.
 pub fn typescript_export_metadata(config: &Config) -> (Vec<String>, Vec<(String, String)>) {
     fn paired<D, W>(config: &Config) -> (String, String)
-    where D: TS + TryFrom<W>, W: protify::ProtoMessage + From<D> {
-        (W::full_name().to_owned(), D::ident(config))
+    where D: TS + TryFrom<W>, W: prost::Name + prost::Message + From<D> {
+        (W::full_name(), D::ident(config))
     }
     let mut messages = Vec::new();
     macro_rules! roots {
@@ -1552,7 +1567,7 @@ mod tests {
             actor_id: "actor-1".into(),
             method: String::new(),
             url: String::new(),
-            body: vec![0, 1, 2].into(),
+            body: vec![0, 1, 2],
             headers: vec![wire::Header {
                 name: "x-test".into(),
                 value: "ok".into(),
@@ -1573,7 +1588,7 @@ mod tests {
             actor_id: String::new(),
             method: String::new(),
             url: String::new(),
-            body: Vec::new().into(),
+            body: Vec::new(),
             headers: Vec::new(),
         };
         assert_eq!(
@@ -1586,7 +1601,7 @@ mod tests {
     fn response_enum_unknown_values_are_not_normalized() {
         let observation = wire::ActorObservation {
             actor_id: "actor-1".into(),
-            code_sha256: vec![1; 32].into(),
+            code_sha256: vec![1; 32],
             home_region: "eu".into(),
             state: 99,
             subscriptions: Vec::new(),
@@ -1612,7 +1627,7 @@ mod tests {
     fn response_digest_keeps_the_nonzero_admission_rule() {
         let observation = wire::ActorObservation {
             actor_id: "actor-1".into(),
-            code_sha256: vec![0; 32].into(),
+            code_sha256: vec![0; 32],
             home_region: "eu".into(),
             state: 1,
             subscriptions: Vec::new(),
@@ -1692,7 +1707,7 @@ mod tests {
             resource: "bucket/a".into(),
         };
         let create = wire::CreateActorRequest {
-            code_sha256: vec![1; 32].into(),
+            code_sha256: vec![1; 32],
             home_region: "eu".into(),
             bindings: vec![binding.clone()],
             limits: Some(wire::ActorLimits {
@@ -1744,7 +1759,7 @@ mod tests {
 
         let update = wire::UpdateActorRequest {
             actor_id: "actor-1".into(),
-            code_sha256: vec![1; 32].into(),
+            code_sha256: vec![1; 32],
             bindings: vec![binding.clone()],
             limits: Some(wire::ActorLimits {
                 handler_timeout_millis: 1,

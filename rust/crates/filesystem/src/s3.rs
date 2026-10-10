@@ -89,7 +89,7 @@ impl S3ListCursor {
     #[must_use]
     pub fn encode(&self) -> String {
         format!(
-            "v2.{}.{}.{}.{}",
+            "v1.{}.{}.{}.{}",
             hex::encode(self.generation.digest().into_bytes()),
             hex::encode(self.query.into_bytes()),
             if self.after_prefix { "p" } else { "o" },
@@ -106,7 +106,7 @@ impl S3ListCursor {
     pub fn decode(token: &str, maximum_key_bytes: u32) -> Result<Self, S3Error> {
         let mut fields = token.split('.');
         let version = fields.next().ok_or(S3Error::InvalidContinuation)?;
-        if version != "v2" {
+        if version != "v1" {
             return Err(S3Error::InvalidContinuation);
         }
         let generation = decode_fixed::<32>(fields.next())?;
@@ -1090,6 +1090,11 @@ mod tests {
             query,
         }
         .encode();
+        assert!(token.starts_with("v1."));
+        assert!(matches!(
+            S3ListCursor::decode(&token.replacen("v1.", "v2.", 1), 1_024),
+            Err(S3Error::InvalidContinuation)
+        ));
         let cursor = S3ListCursor::decode(&token, 1_024)?;
         let options = S3ListOptions {
             continuation: Some(cursor),

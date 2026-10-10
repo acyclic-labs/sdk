@@ -1,4 +1,5 @@
 //! Native file and owned-process primitives shared by SDK host consumers.
+#![doc = include_str!("../README.md")]
 
 use bytes::Bytes;
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
@@ -478,16 +479,18 @@ pub enum Durability {
 }
 
 /// Flushes file contents and metadata according to `durability`.
-#[tracing::instrument(
-    name = "acyclic.runtime.sync_file",
-    level = "debug",
-    skip_all,
-    fields(outcome = obs::Empty, error.kind = obs::Empty)
-)]
 pub fn sync_file(file: &File, durability: Durability) -> io::Result<()> {
-    obs::finish(with_file_admission(file, || {
-        sync_file_unsequenced(file, durability)
-    }))
+    let operation = obs::span!(
+        DEBUG,
+        "acyclic.runtime.sync_file",
+        outcome = obs::Empty,
+        error.kind = obs::Empty
+    );
+    operation.scope(|| {
+        operation.finish(with_file_admission(file, || {
+            sync_file_unsequenced(file, durability)
+        }))
+    })
 }
 
 fn sync_file_unsequenced(file: &File, durability: Durability) -> io::Result<()> {
@@ -498,16 +501,18 @@ fn sync_file_unsequenced(file: &File, durability: Durability) -> io::Result<()> 
 }
 
 /// Flushes file data according to `durability`.
-#[tracing::instrument(
-    name = "acyclic.runtime.sync_data",
-    level = "debug",
-    skip_all,
-    fields(outcome = obs::Empty, error.kind = obs::Empty)
-)]
 pub fn sync_data(file: &File, durability: Durability) -> io::Result<()> {
-    obs::finish(with_file_admission(file, || {
-        sync_data_unsequenced(file, durability)
-    }))
+    let operation = obs::span!(
+        DEBUG,
+        "acyclic.runtime.sync_data",
+        outcome = obs::Empty,
+        error.kind = obs::Empty
+    );
+    operation.scope(|| {
+        operation.finish(with_file_admission(file, || {
+            sync_data_unsequenced(file, durability)
+        }))
+    })
 }
 
 fn sync_data_unsequenced(file: &File, durability: Durability) -> io::Result<()> {
@@ -518,14 +523,14 @@ fn sync_data_unsequenced(file: &File, durability: Durability) -> io::Result<()> 
 }
 
 /// Flushes the directory entry namespace on platforms exposing directory flushes.
-#[tracing::instrument(
-    name = "acyclic.runtime.sync_parent",
-    level = "debug",
-    skip_all,
-    fields(outcome = obs::Empty, error.kind = obs::Empty)
-)]
 pub fn sync_parent(path: &Path, durability: Durability) -> io::Result<()> {
-    obs::finish(sync_parent_impl(path, durability))
+    let operation = obs::span!(
+        DEBUG,
+        "acyclic.runtime.sync_parent",
+        outcome = obs::Empty,
+        error.kind = obs::Empty
+    );
+    operation.scope(|| operation.finish(sync_parent_impl(path, durability)))
 }
 
 /// What recovery found after the last valid frame of an append-only log.
@@ -563,12 +568,6 @@ impl LogTail {
 /// # Errors
 ///
 /// Returns an I/O error when the log cannot be read, truncated, or synchronized.
-#[tracing::instrument(
-    name = "acyclic.runtime.recover_log_tail",
-    level = "debug",
-    skip_all,
-    fields(bytes = obs::Empty, tail = obs::Empty, outcome = obs::Empty, error.kind = obs::Empty)
-)]
 pub fn recover_log_tail(
     file: &mut File,
     invalid_start: u64,
@@ -576,51 +575,62 @@ pub fn recover_log_tail(
     durability: Durability,
     mut valid_frame: impl FnMut(&[u8]) -> bool,
 ) -> io::Result<LogTail> {
-    use std::io::{Read as _, Seek as _, SeekFrom};
+    let operation = obs::span!(
+        DEBUG,
+        "acyclic.runtime.recover_log_tail",
+        bytes = obs::Empty,
+        tail = obs::Empty,
+        outcome = obs::Empty,
+        error.kind = obs::Empty
+    );
+    operation.scope(|| {
+        use std::io::{Read as _, Seek as _, SeekFrom};
 
-    let tail = (|| {
-        let end = file.metadata()?.len();
-        tracing::Span::current().record("bytes", end.saturating_sub(invalid_start));
-        let frame_bytes = maximum_frame_bytes.max(1);
-        // Candidates are scanned through a window holding up to two frames' bytes, refilled
-        // once fewer than a whole frame remain ahead of the candidate, so each byte is read
-        // once.
-        let first = invalid_start.saturating_add(1);
-        let mut window = Vec::new();
-        let mut window_start = first;
-        let mut read_to = first;
-        file.seek(SeekFrom::Start(first))?;
-        for offset in first..end {
-            let ahead = usize::try_from(read_to - offset).unwrap_or(usize::MAX);
-            if ahead < frame_bytes && read_to < end {
-                window.drain(..usize::try_from(offset - window_start).map_err(io::Error::other)?);
-                window_start = offset;
-                let wanted = u64::try_from(frame_bytes.saturating_mul(2)).unwrap_or(u64::MAX);
-                let fill_end = end.min(offset.saturating_add(wanted));
-                let mut buffer =
-                    vec![0; usize::try_from(fill_end - read_to).map_err(io::Error::other)?];
-                file.read_exact(&mut buffer)?;
-                window.extend_from_slice(&buffer);
-                read_to = fill_end;
+        let tail = (|| {
+            let end = file.metadata()?.len();
+            operation.record("bytes", end.saturating_sub(invalid_start));
+            let frame_bytes = maximum_frame_bytes.max(1);
+            // Candidates are scanned through a window holding up to two frames' bytes, refilled
+            // once fewer than a whole frame remain ahead of the candidate, so each byte is read
+            // once.
+            let first = invalid_start.saturating_add(1);
+            let mut window = Vec::new();
+            let mut window_start = first;
+            let mut read_to = first;
+            file.seek(SeekFrom::Start(first))?;
+            for offset in first..end {
+                let ahead = usize::try_from(read_to - offset).unwrap_or(usize::MAX);
+                if ahead < frame_bytes && read_to < end {
+                    window
+                        .drain(..usize::try_from(offset - window_start).map_err(io::Error::other)?);
+                    window_start = offset;
+                    let wanted = u64::try_from(frame_bytes.saturating_mul(2)).unwrap_or(u64::MAX);
+                    let fill_end = end.min(offset.saturating_add(wanted));
+                    let mut buffer =
+                        vec![0; usize::try_from(fill_end - read_to).map_err(io::Error::other)?];
+                    file.read_exact(&mut buffer)?;
+                    window.extend_from_slice(&buffer);
+                    read_to = fill_end;
+                }
+                let skip = usize::try_from(offset - window_start).map_err(io::Error::other)?;
+                let candidate = window.get(skip..).unwrap_or_default();
+                let candidate = candidate
+                    .get(..candidate.len().min(frame_bytes))
+                    .unwrap_or_default();
+                if valid_frame(candidate) {
+                    return Ok(LogTail::Corrupt);
+                }
             }
-            let skip = usize::try_from(offset - window_start).map_err(io::Error::other)?;
-            let candidate = window.get(skip..).unwrap_or_default();
-            let candidate = candidate
-                .get(..candidate.len().min(frame_bytes))
-                .unwrap_or_default();
-            if valid_frame(candidate) {
-                return Ok(LogTail::Corrupt);
-            }
+            file.set_len(invalid_start)?;
+            sync_file(file, durability)?;
+            file.seek(SeekFrom::Start(invalid_start))?;
+            Ok(LogTail::Torn)
+        })();
+        if let Ok(tail) = &tail {
+            operation.record("tail", tail.name());
         }
-        file.set_len(invalid_start)?;
-        sync_file(file, durability)?;
-        file.seek(SeekFrom::Start(invalid_start))?;
-        Ok(LogTail::Torn)
-    })();
-    if let Ok(tail) = &tail {
-        tracing::Span::current().record("tail", tail.name());
-    }
-    obs::finish(tail)
+        operation.finish(tail)
+    })
 }
 
 /// Whether an exclusive file-lock failure proves that another owner holds the lock.
@@ -640,14 +650,14 @@ pub enum RenameMode {
 }
 
 /// Renames one filesystem entry and durably publishes the affected namespace.
-#[tracing::instrument(
-    name = "acyclic.runtime.durable_rename",
-    level = "debug",
-    skip_all,
-    fields(outcome = obs::Empty, error.kind = obs::Empty)
-)]
 pub fn durable_rename(from: &Path, to: &Path, mode: RenameMode) -> io::Result<()> {
-    obs::finish(durable_rename_impl(from, to, mode))
+    let operation = obs::span!(
+        DEBUG,
+        "acyclic.runtime.durable_rename",
+        outcome = obs::Empty,
+        error.kind = obs::Empty
+    );
+    operation.scope(|| operation.finish(durable_rename_impl(from, to, mode)))
 }
 
 /// Reads at an absolute offset without changing the file cursor.
@@ -780,26 +790,30 @@ impl ServiceReadiness {
     /// # Errors
     ///
     /// Returns a failure to read the channel.
-    #[tracing::instrument(
-        name = "acyclic.runtime.service_ready",
-        skip_all,
-        fields(ready = obs::Empty, outcome = obs::Empty, error.kind = obs::Empty)
-    )]
     pub fn wait(mut self) -> io::Result<bool> {
-        let mut signal = [0_u8; 1];
-        let ready = loop {
-            match self.0.read(&mut signal) {
-                Ok(read) => break Ok(read != 0),
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                // A closed Windows pipe reports that its writer is gone.
-                Err(error) if error.kind() == io::ErrorKind::BrokenPipe => break Ok(false),
-                Err(error) => break Err(error),
+        let operation = obs::span!(
+            INFO,
+            "acyclic.runtime.service_ready",
+            ready = obs::Empty,
+            outcome = obs::Empty,
+            error.kind = obs::Empty
+        );
+        operation.scope(|| {
+            let mut signal = [0_u8; 1];
+            let ready = loop {
+                match self.0.read(&mut signal) {
+                    Ok(read) => break Ok(read != 0),
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    // A closed Windows pipe reports that its writer is gone.
+                    Err(error) if error.kind() == io::ErrorKind::BrokenPipe => break Ok(false),
+                    Err(error) => break Err(error),
+                }
+            };
+            if let Ok(ready) = ready {
+                operation.record("ready", ready);
             }
-        };
-        if let Ok(ready) = ready {
-            tracing::Span::current().record("ready", ready);
-        }
-        obs::finish(ready)
+            operation.finish(ready)
+        })
     }
 }
 
@@ -881,13 +895,14 @@ fn take_standard_output() -> io::Result<File> {
 /// # Errors
 ///
 /// Returns a failure to create the channel or the process.
-#[tracing::instrument(
-    name = "acyclic.runtime.spawn_service",
-    skip_all,
-    fields(outcome = obs::Empty, error.kind = obs::Empty)
-)]
 pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> {
-    obs::finish(spawn_service_process_unobserved(executable))
+    let operation = obs::span!(
+        INFO,
+        "acyclic.runtime.spawn_service",
+        outcome = obs::Empty,
+        error.kind = obs::Empty
+    );
+    operation.scope(|| operation.finish(spawn_service_process_unobserved(executable)))
 }
 
 fn spawn_service_process_unobserved(executable: &Path) -> io::Result<ServiceReadiness> {
@@ -1032,18 +1047,20 @@ pub fn run_blocking_io<T: Send + 'static>(
         waker: None,
     }));
     let completion = Arc::clone(&state);
-    let obs::OperationSpan { span, context } = obs::OperationSpan::new(tracing::debug_span!(
+    let span = obs::span!(
+        DEBUG,
         "acyclic.runtime.blocking_io",
         outcome = obs::Empty,
         error.kind = obs::Empty,
-    ));
+    );
     BlockingIoTask {
         pending: Some(NativeJob::Task(Box::new(move || {
-            let _entered = context.enter();
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation))
-                .map_err(|_| io::Error::other("native blocking I/O task panicked"));
-            obs::record(&span, &result);
-            finish_job(&completion, result, None)
+            span.scope(|| {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation))
+                    .map_err(|_| io::Error::other("native blocking I/O task panicked"));
+                span.record_result(&result);
+                finish_job(&completion, result, None)
+            })
         }))),
         state,
         waiter: None,
@@ -1159,7 +1176,7 @@ struct FileCompletion<T> {
     uncertain: Option<Arc<AtomicBool>>,
     _tail: Option<FileSequencer>,
     file: Option<Arc<File>>,
-    span: tracing::Span,
+    span: obs::OperationSpan,
     finished: bool,
 }
 
@@ -1169,6 +1186,7 @@ impl<T> FileCompletion<T> {
         fence: Option<Arc<OperationFence>>,
         uncertain: Option<Arc<AtomicBool>>,
         tail: Option<FileSequencer>,
+        span: obs::OperationSpan,
     ) -> Self {
         Self {
             state,
@@ -1176,7 +1194,7 @@ impl<T> FileCompletion<T> {
             uncertain,
             _tail: tail,
             file: None,
-            span: tracing::Span::none(),
+            span,
             finished: false,
         }
     }
@@ -1186,27 +1204,28 @@ impl<T> FileCompletion<T> {
         self
     }
 
-    fn in_span(mut self, span: tracing::Span) -> Self {
-        self.span = span;
-        self
-    }
-
     fn finish(mut self, result: io::Result<T>) -> Option<Waker> {
-        obs::record(&self.span, &result);
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        if result.as_ref().err().is_some_and(is_uncertain_io_error)
-            && let (Some(file), Some(uncertain)) = (&self.file, &self.uncertain)
-        {
-            poison_file_health(file, uncertain);
-        }
-        let waker = finish_file_job(
-            &self.state,
-            result,
-            self.fence.take(),
-            self.uncertain.as_deref(),
-        );
-        self.finished = true;
-        waker
+        let Self {
+            state,
+            fence,
+            uncertain,
+            file,
+            span,
+            finished,
+            ..
+        } = &mut self;
+        span.scope(|| {
+            span.record_result(&result);
+            #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+            if result.as_ref().err().is_some_and(is_uncertain_io_error)
+                && let (Some(file), Some(uncertain)) = (file.as_ref(), uncertain.as_ref())
+            {
+                poison_file_health(file, uncertain);
+            }
+            let waker = finish_file_job(state, result, fence.take(), uncertain.as_deref());
+            *finished = true;
+            waker
+        })
     }
 }
 
@@ -1322,37 +1341,33 @@ impl NativeJob {
             Self::Read {
                 file,
                 reads,
-                span: obs::OperationSpan { span, context },
+                span,
                 overlapped: true,
                 tail,
                 uncertain,
                 state,
                 completion,
-            } => {
-                let _entered = context.enter();
-                FileCompletion::new(state, completion, uncertain, tail)
+            } => span.scope(|| {
+                FileCompletion::new(state, completion, uncertain, tail, span.clone())
                     .for_file(Arc::clone(&file))
-                    .in_span(span)
                     .finish(windows::read_batch_in_place(&file, &reads))
-            }
+            }),
             Self::Unit {
                 file,
                 operation: NativeUnitOperation::Write(writes),
-                span: obs::OperationSpan { span, context },
+                span,
                 overlapped: true,
                 tail,
                 uncertain,
                 state,
                 completion,
-            } => {
-                let _entered = context.enter();
-                let finish = FileCompletion::new(state, completion, uncertain, tail)
-                    .for_file(Arc::clone(&file))
-                    .in_span(span);
+            } => span.scope(|| {
+                let finish = FileCompletion::new(state, completion, uncertain, tail, span.clone())
+                    .for_file(Arc::clone(&file));
                 let result = validate_write_batch(&writes)
                     .and_then(|()| windows::write_batch_in_place(&file, &writes));
                 finish.finish(result)
-            }
+            }),
             job => job.run(),
         }
     }
@@ -1362,18 +1377,16 @@ impl NativeJob {
             Self::Read {
                 file,
                 reads,
-                span: obs::OperationSpan { span, context },
+                span,
                 #[cfg(windows)]
                 overlapped,
                 tail,
                 uncertain,
                 state,
                 completion,
-            } => {
-                let _entered = context.enter();
-                let finish = FileCompletion::new(state, completion, uncertain, tail)
-                    .for_file(Arc::clone(&file))
-                    .in_span(span);
+            } => span.scope(|| {
+                let finish = FileCompletion::new(state, completion, uncertain, tail, span.clone())
+                    .for_file(Arc::clone(&file));
                 #[cfg(target_os = "linux")]
                 return submit_file_io(finish, |callback| {
                     linux::submit_read(file, reads, callback)
@@ -1394,22 +1407,21 @@ impl NativeJob {
                     .unwrap_or_else(|_| std::process::abort());
                     finish.finish(result)
                 }
-            }
+            }),
             Self::Unit {
                 file,
                 operation,
-                span: obs::OperationSpan { span, context },
+                span,
                 #[cfg(windows)]
                 overlapped,
                 tail,
                 uncertain,
                 state,
                 completion,
-            } => {
-                let _entered = context.enter();
-                let finish = FileCompletion::new(state, completion, uncertain, tail.clone())
-                    .for_file(Arc::clone(&file))
-                    .in_span(span);
+            } => span.scope(|| {
+                let finish =
+                    FileCompletion::new(state, completion, uncertain, tail.clone(), span.clone())
+                        .for_file(Arc::clone(&file));
                 #[cfg(any(windows, target_os = "linux"))]
                 let operation = match operation {
                     NativeUnitOperation::Write(writes) => {
@@ -1446,7 +1458,7 @@ impl NativeJob {
                     // soundness; durable service recovery can restart later.
                     .unwrap_or_else(|_| std::process::abort());
                 finish.finish(result)
-            }
+            }),
             Self::Task(operation) => operation(),
         }
     }
@@ -1516,11 +1528,10 @@ impl NativeCompletion<Vec<Bytes>> {
         reads: Vec<OwnedRead>,
         sequencer: Option<FileSequencer>,
         uncertain: Option<Arc<AtomicBool>>,
-        span: tracing::Span,
+        span: obs::OperationSpan,
         #[cfg(windows)] overlapped: bool,
     ) -> Self {
-        let span = obs::OperationSpan::new(span)
-            .sized(reads.len(), || reads.iter().map(|read| read.length).sum());
+        let span = span.sized(reads.len(), || reads.iter().map(|read| read.length).sum());
         let state = Arc::new(Mutex::new(CompletionState {
             result: None,
             waker: None,
@@ -1573,10 +1584,10 @@ impl NativeCompletion<()> {
         operation: NativeUnitOperation,
         sequencer: Option<FileSequencer>,
         uncertain: Option<Arc<AtomicBool>>,
-        span: tracing::Span,
+        span: obs::OperationSpan,
         #[cfg(windows)] overlapped: bool,
     ) -> Self {
-        let mut span = obs::OperationSpan::new(span);
+        let mut span = span;
         if let NativeUnitOperation::Write(writes) = &operation {
             span = span.sized(writes.len(), || {
                 writes.iter().map(|write| write.bytes.len()).sum()
@@ -1644,7 +1655,13 @@ impl<T> Future for NativeCompletion<T> {
         );
         if let Some(predecessor) = &this.predecessor {
             if !predecessor.ready_or_register(context.waker()) {
-                tracing::trace!(name: "acyclic.runtime.fence_wait", "waiting for an earlier operation");
+                if let Some(NativeJob::Read { span, .. } | NativeJob::Unit { span, .. }) =
+                    this.pending.as_ref()
+                {
+                    span.scope(|| {
+                        tracing::trace!(name: "acyclic.runtime.fence_wait", "waiting for an earlier operation");
+                    });
+                }
                 return Poll::Pending;
             }
             this.predecessor = None;
@@ -1654,14 +1671,20 @@ impl<T> Future for NativeCompletion<T> {
             .as_ref()
             .is_some_and(|uncertain| uncertain.load(Ordering::Acquire))
         {
+            let result: io::Result<T> = Err(io::Error::other(
+                "prior native I/O completion on this file is uncertain",
+            ));
+            if let Some(NativeJob::Read { span, .. } | NativeJob::Unit { span, .. }) =
+                this.pending.as_ref()
+            {
+                span.record_result(&result);
+            }
             this.pending = None;
             if let Some(completion) = &this.completion {
                 completion.complete();
             }
             this.terminated = true;
-            return Poll::Ready(Err(io::Error::other(
-                "prior native I/O completion on this file is uncertain",
-            )));
+            return Poll::Ready(result);
         }
         // A thread that admits inline blocking serves an overlapped handle's
         // positional I/O itself; the job records its result and fence.
@@ -2364,6 +2387,7 @@ mod tests {
                 Some(Arc::clone(&fence)),
                 Some(Arc::clone(&uncertain)),
                 None,
+                obs::OperationSpan::new(tracing::Span::none()),
             ),
             |finish| {
                 callback = Some(finish);
@@ -2397,6 +2421,7 @@ mod tests {
                     Some(Arc::clone(&rejected_fence)),
                     None,
                     None,
+                    obs::OperationSpan::new(tracing::Span::none())
                 ),
                 |_finish| Err(io::Error::other("not submitted")),
             )
@@ -2423,10 +2448,19 @@ mod tests {
                 waker: None,
             }));
             eprintln!("dropping accepted native callback");
-            let _ = submit_file_io(FileCompletion::new(state, None, None, None), |callback| {
-                drop(callback);
-                Ok(())
-            });
+            let _ = submit_file_io(
+                FileCompletion::new(
+                    state,
+                    None,
+                    None,
+                    None,
+                    obs::OperationSpan::new(tracing::Span::none()),
+                ),
+                |callback| {
+                    drop(callback);
+                    Ok(())
+                },
+            );
             return Err(io::Error::other("missing terminal callback was accepted"));
         }
         let output = crate::process_output(
@@ -3086,6 +3120,7 @@ mod tests {
             None,
             Some(Arc::clone(&native.uncertain)),
             Some(Arc::clone(&native.tail)),
+            obs::OperationSpan::new(tracing::Span::none()),
         )
         .for_file(Arc::clone(&native.file));
         completion.finish(Err(linux::uncertain_completion(
@@ -3771,7 +3806,7 @@ mod tests {
     fn dropped_admission_waiters_do_not_block_later_reads() -> io::Result<()> {
         enum FirstPoll {
             Ready(io::Result<Vec<Bytes>>),
-            Pending(ReadBatch),
+            Pending(Box<ReadBatch>),
         }
 
         let temporary = tempfile::tempdir()?;
@@ -3794,7 +3829,7 @@ mod tests {
             reads.push(
                 match Pin::new(&mut read).poll(&mut Context::from_waker(Waker::noop())) {
                     Poll::Ready(result) => FirstPoll::Ready(result),
-                    Poll::Pending => FirstPoll::Pending(read),
+                    Poll::Pending => FirstPoll::Pending(Box::new(read)),
                 },
             );
         }
@@ -3815,7 +3850,7 @@ mod tests {
         for read in reads {
             let completed = match read {
                 FirstPoll::Ready(result) => result?,
-                FirstPoll::Pending(read) => complete_read(read)?,
+                FirstPoll::Pending(read) => complete_read(*read)?,
             };
             assert_eq!(completed, [Bytes::from_static(b"x")]);
         }

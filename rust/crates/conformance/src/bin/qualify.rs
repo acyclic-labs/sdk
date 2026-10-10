@@ -22,7 +22,7 @@ use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
 use acyclic_fs::native_mount::{MountOptions, NativeMountKind, probe_native_mount};
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::{CancellationToken, Fs, LocalOptions};
-use acyclic_objects::v2::{
+use acyclic_objects::v1::{
     ObjectsProvider,
     local::{LocalObjects, LocalOptions as LocalObjectsLimits},
     wire,
@@ -88,7 +88,7 @@ async fn qualify_objects_local(root: PathBuf) -> Result<(), String> {
     let provider = LocalObjects::open(root, LocalObjectsLimits::default())
         .await
         .map_err(|error| error.to_string())?;
-    acyclic_objects::v2::conformance::verify(&provider, "conformance")
+    acyclic_objects::v1::conformance::verify(&provider, "conformance")
         .await
         .map_err(|error| error.to_string())
 }
@@ -642,10 +642,10 @@ async fn filesystem_history(root: std::path::PathBuf, seed: u64) -> Result<(), S
             }
         }
     }
-    Box::pin(workspace.write("/unicode-雪.txt", Bytes::from_static(b"utf8 path")))
+    Box::pin(workspace.write("/unicode-é›ª.txt", Bytes::from_static(b"utf8 path")))
         .await
         .map_err(|error| error.to_string())?;
-    expected.insert("/unicode-雪.txt".into(), Bytes::from_static(b"utf8 path"));
+    expected.insert("/unicode-é›ª.txt".into(), Bytes::from_static(b"utf8 path"));
     drop(workspace);
     drop(fs);
     let reopened = Box::pin(Fs::local(LocalOptions::new(&root)))

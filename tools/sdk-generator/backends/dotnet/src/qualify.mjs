@@ -12,7 +12,7 @@ const coordinate = "acyclic.sdk.transport";
 const version = "0.2.0-alpha.1";
 const packageName = `Acyclic.Sdk.Transport.${version}.nupkg`;
 const projectName = "Acyclic.Sdk.Transport.csproj";
-const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v2/stream.proto"];
+const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"];
 const negatives = { InvalidActorBytes: "Google.Protobuf.ByteString", InvalidWorkerBytes: "Google.Protobuf.ByteString", InvalidOptionalInteger: "ulong" };
 const xml = value => value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 

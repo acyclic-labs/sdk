@@ -3982,16 +3982,26 @@ fn tracing_is_opt_in_and_traces_requests_without_touching_standard_output() {
     // every callsite consult this test's subscriber too.
     let _second = tracing::Dispatch::new(tracing_subscriber::Registry::default());
     let trace = temporary.path().join("trace-{pid}.json");
+    let log = temporary.path().join("service.log");
     let (layers, guard) = obs::layers(
-        |name| (name == "ACYCLIC_TRACE_FILE").then(|| trace.display().to_string()),
-        false,
+        |name| match name {
+            "ACYCLIC_TRACE_FILE" => Some(trace.display().to_string()),
+            "ACYCLIC_LOG" => Some("acyclic_plugin=trace".to_owned()),
+            "ACYCLIC_LOG_FILE" => Some(log.display().to_string()),
+            _ => None,
+        },
+        true,
     );
     let traced = tracing::subscriber::with_default(
         tracing_subscriber::Registry::default().with(layers),
-        || serve("traced"),
+        || {
+            tracing::info!(target: "acyclic_plugin", "stdout isolation sentinel");
+            serve("traced")
+        },
     );
     drop(guard);
     assert_eq!(plain, traced, "tracing changed standard output");
+    assert!(!fs::read(log).expect("service log").is_empty());
 
     let trace = temporary
         .path()

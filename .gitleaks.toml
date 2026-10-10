@@ -3,3 +3,19 @@ useDefault = true
 
 [[rules]]
 id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Admitted SHA256 digests of Erlang generator files whose paths contain api"
+condition = "AND"
+paths = ['''^tools/sdk-generator/backends/erlang/toolchains/generator-files\.json$''']
+regexTarget = "secret"
+regexes = [
+  '''^54adbc91131e326b8e14ffb801a3f98a05413afdd2208a69bbc33763b81a99b0$''',
+  '''^2655cb402ca80820d506b3330090abec299acb1270fd655538d7ed740f1883e3$''',
+  '''^03499c81bc8c879155ff76165fab7a371e6c496b89da85c23f579e1b68367ed5$''',
+  '''^a63b2b326809a1a6e19e179f26ea3ec3bcea3677b25b62288f3b61263574dff8$''',
+  '''^30bc19e9586e52b74c14cd108bc6e1340428338b7987dc55bf6ad8c58eebfc5d$''',
+  '''^424def6fcffac0531885fab87bf4d450826a1a7db4443daaf929627d86f0a1ee$''',
+  '''^8bdb3aba7d7ad7cf20552c7db20cf796759ae8e02218e96d327e0e96aaa067ba$''',
+  '''^d7c9872e9c74c9a342a154401e0218d22a40a08fc9d0179c1bcf02d5b9703b83$''',
+]

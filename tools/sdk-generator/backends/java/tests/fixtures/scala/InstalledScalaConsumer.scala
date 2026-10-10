@@ -1,6 +1,6 @@
 import acyclic.actors.v1.Actors
 import acyclic.workers.v1.Workers
-import acyclic.stream.v2.Stream
+import acyclic.stream.v1.Stream
 import com.google.protobuf.ByteString
 
 object InstalledScalaConsumer {

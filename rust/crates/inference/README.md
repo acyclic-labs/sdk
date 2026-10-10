@@ -2,7 +2,7 @@
 
 Customer-side Inference SDK for immutable Context revisions, recoverable Runs, streamed events, and explicit warm retention. Context content operations do not imply a deployed inference service.
 
-The unreleased additive idle KV contract uses
+The v1 idle KV retention mode uses
 `context.retain(Retention::idle_kv(profile, idle_timeout_ms))` and
 `warm.renew_idle(idle_timeout_ms)`. Discover opaque policy profiles from
 `ModelCapability.idle_kv_profiles`. This paid KV pin has no capacity, throughput
@@ -32,3 +32,8 @@ admission, caller-bound validation and stream lifecycle checks. This codec does
 not establish that any deployed service mounts the canonical HTTP routes.
 
 See the [Rust API](https://docs.rs/acyclic-inference/latest/acyclic_inference/), [repository example](https://github.com/acyclic-labs/sdk/blob/main/README.md), and [customer protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/inference). Provider availability, model access, and billing are deployment-specific.
+
+Warm admission and renewal use the same v1 typed request/response contract for
+latency and idle KV retention. Responses bind the requested Context or commitment
+and exact retention policy; inspect and release accept either mode. Unsupported
+wire-kind discriminators fail validation without publishing a response.

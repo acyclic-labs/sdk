@@ -1,8 +1,13 @@
 version: 2
+multi-ecosystem-groups:
+  sdk-dependencies:
+    schedule: { interval: weekly }
 updates:
   - package-ecosystem: cargo
     directory: /
-    schedule: { interval: weekly }
+    patterns: ["*"]
+    multi-ecosystem-group: sdk-dependencies
+    rebase-strategy: disabled
     ignore:
       # fuser 0.17 changes the Filesystem trait and handle/error types. Upgrade
       # it with the Linux adapter port and native mount qualification.
@@ -10,7 +15,16 @@ updates:
         versions: [">= 0.17, < 0.18"]
   - package-ecosystem: bun
     directory: /
-    schedule: { interval: weekly }
+    patterns: ["*"]
+    multi-ecosystem-group: sdk-dependencies
+    rebase-strategy: disabled
+    # Unpublished native companions are versioned by the SDK release.
+    ignore:
+      - dependency-name: "@acyclic-labs/actors-darwin-arm64"
+      - dependency-name: "@acyclic-labs/actors-linux-x64-gnu"
+      - dependency-name: "@acyclic-labs/actors-win32-x64-msvc"
   - package-ecosystem: github-actions
     directory: /
-    schedule: { interval: weekly }
+    patterns: ["*"]
+    multi-ecosystem-group: sdk-dependencies
+    rebase-strategy: disabled

@@ -8,17 +8,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = std::path::PathBuf::from(
         std::env::var_os("OUT_DIR").ok_or("Cargo did not provide OUT_DIR")?,
     );
-    prost.file_descriptor_set_path(output.join("acyclic-stream-v2.bin"));
-    prost.bytes([".acyclic.stream.v2"]);
+    prost.file_descriptor_set_path(output.join("acyclic-stream-v1.bin"));
+    prost.bytes([".acyclic.stream.v1"]);
     let grpc = std::env::var_os("CARGO_FEATURE_GRPC").is_some();
     tonic_prost_build::configure()
         .build_server(grpc)
         .build_client(grpc)
         .compile_with_config(
             prost,
-            &[std::path::Path::new("proto/stream/v2/stream.proto")],
+            &[std::path::Path::new("proto/stream/v1/stream.proto")],
             &[std::path::Path::new("proto"), include.as_path()],
         )?;
-    println!("cargo:rerun-if-changed=proto/stream/v2/stream.proto");
+    println!("cargo:rerun-if-changed=proto/stream/v1/stream.proto");
     Ok(())
 }

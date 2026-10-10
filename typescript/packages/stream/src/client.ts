@@ -1,6 +1,6 @@
 import { DefaultStreamProvider } from "./default.js";
 import { MemoryStreamProvider } from "./memory.js";
-import { StreamLimit } from "../generated/proto/stream/v2/stream_pb.js";
+import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import type {
   AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommitId, CommittedEnvelope, CommitOptions,
   CommitRequest, CommitResult, CreateTokenRequest, FollowOptions, ForkOptions,

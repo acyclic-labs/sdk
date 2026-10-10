@@ -7,8 +7,8 @@ import {
   ReadRequestSchema, FollowRequestSchema,
   ChildrenRequestSchema, ChildrenPageRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema,
   CreateTokenRequestSchema, RecordBatchSchema,
-} from "../generated/proto/stream/v2/stream_pb.js";
-import type { ReadResponse, Record as WireRecord } from "../generated/proto/stream/v2/stream_pb.js";
+} from "../generated/proto/stream/v1/stream_pb.js";
+import type { ReadResponse, Record as WireRecord } from "../generated/proto/stream/v1/stream_pb.js";
 import type { AppendOptions, CommitOptions, CreateTokenRequest, ForkOptions, IdempotencyKey, ProviderCommitRequest } from "./types.js";
 import { StreamError, commitId, idempotencyKey } from "./types.js";
 import type { HttpRoute } from "./http-contract.js";

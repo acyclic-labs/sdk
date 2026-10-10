@@ -12,9 +12,9 @@ import { fileURLToPath } from "node:url";
 import { create, fromBinary, fromJsonString, toBinary, toJsonString } from "@bufbuild/protobuf";
 import { ActorsService } from "../generated/proto/actors/v1/actors_pb.js";
 import { WorkersService } from "../../workers/generated/proto/workers/v1/workers_pb.js";
-import * as objectsWire from "../../objects/generated/proto/objects/v2/objects_pb.js";
-import { MemoryObjectsV2 } from "../../objects/dist/v2.js";
-import { ObjectsV2Memory, objects_v2_http_type, decode_objects_v2_json, encode_objects_v2_json } from "../../objects/generated/wasm/acyclic_objects_wasm.js";
+import * as objectsWire from "../../objects/generated/proto/objects/v1/objects_pb.js";
+import { MemoryObjectsV1 } from "../../objects/dist/v1.js";
+import { ObjectsV1Memory, objects_v1_http_type, decode_objects_v1_json, encode_objects_v1_json } from "../../objects/generated/wasm/acyclic_objects_wasm.js";
 import { MemoryStreamProvider } from "../../stream/dist/memory.js";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -32,8 +32,8 @@ assert.equal(generated.status, 0, generated.stderr);
 const identity = JSON.parse(generated.stdout);
 const spki = new X509Certificate(identity.certificate).publicKey.export({ type: "spki", format: "der" });
 const trust = createHash("sha256").update(spki).digest("base64");
-await MemoryObjectsV2.create();
-const objects = new ObjectsV2Memory(64n * 1024n * 1024n, 10000);
+await MemoryObjectsV1.create();
+const objects = new ObjectsV1Memory(64n * 1024n * 1024n, 10000);
 const stream = new MemoryStreamProvider();
 const seen = new Set();
 let cancellationDispatched = false;
@@ -72,6 +72,7 @@ function actorWorkerResponse(method, input) {
     assert.equal(input.subscription.start.start.value, 9007199254740993n);
   }
   if (method.name === "CheckpointActor") { assert.equal(input.actorId, "browser-actor"); assert.equal(input.idempotencyKey, "checkpoint-browser"); return { actor: { actorId: input.actorId, codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu", state: 1, checkpointEpoch: 9n, configurationRevision: 1n } }; }
+  if (method.name === "DeleteActor") { assert.equal(input.actorId, "browser-actor"); assert.equal(input.idempotencyKey, "delete-browser"); return {}; }
   if (method.name === "InvokeActor") return { status: 201, body: new Uint8Array([5]) };
   if (method.name === "InvokeVersion") { assert.deepEqual(Uint8Array.from(input.versionSha256), new Uint8Array(32).fill(1)); return { resolvedSha256: input.versionSha256 }; }
   if (method.name === "InvokeDeployment") { assert.equal(input.alias, "current"); return { resolvedSha256: new Uint8Array(32).fill(2), resolvedRevision: 8n }; }
@@ -102,7 +103,7 @@ const server = createServer({ key: identity.key, cert: identity.certificate }, a
       response.writeHead(200, { "content-type": ({ ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".wasm": "application/wasm" })[extname(path)] ?? "application/octet-stream" });
       response.end(readFileSync(path)); return;
     }
-    const isObjects = pathname.startsWith("/v2/objects/");
+    const isObjects = pathname.startsWith("/v1/objects/");
     const isStream = pathname.startsWith("/v1/stream/");
     const grpcWebService = request.headers["content-type"]?.startsWith("application/grpc-web")
       ? [ActorsService, WorkersService].find(service => pathname.startsWith(`/${service.typeName}/`) || service.methods.some(method => pathname === `/${method.name}`))
@@ -145,22 +146,22 @@ const server = createServer({ key: identity.key, cert: identity.certificate }, a
       response.end(grpcWebResponse(body)); return;
     }
     if (isObjects) {
-      const route = pathname.slice("/v2/objects/".length);
-      const input = objects_v2_http_type(route, false); const output = objects_v2_http_type(route, true);
+      const route = pathname.slice("/v1/objects/".length);
+      const input = objects_v1_http_type(route, false); const output = objects_v1_http_type(route, true);
       let query; let body = new Uint8Array(0);
       if (route === "objects/put" || route === "multipart/upload-part") {
         assert.equal(request.headers["content-type"], "application/x-ndjson"); assert.equal(data.at(-1), 10);
         const put = route === "objects/put";
         const schema = put ? objectsWire.PutObjectRequestSchema : objectsWire.UploadPartRequestSchema;
         const headerSchema = put ? objectsWire.PutObjectHeaderSchema : objectsWire.UploadPartHeaderSchema;
-        const frames = data.toString("utf8").trimEnd().split("\n").map(line => fromBinary(schema, decode_objects_v2_json(input, Buffer.from(line), 128 * 1024)));
+        const frames = data.toString("utf8").trimEnd().split("\n").map(line => fromBinary(schema, decode_objects_v1_json(input, Buffer.from(line), 128 * 1024)));
         const first = frames.shift(); assert.equal(first.frame.case, "header"); query = toBinary(headerSchema, first.frame.value);
         assert.deepEqual(frames.pop().frame, { case: "complete", value: true });
         body = Buffer.concat(frames.map(({ frame }) => { assert.equal(frame.case, "body"); assert.ok(frame.value.length <= 65536); return frame.value; }));
-      } else query = decode_objects_v2_json(input, data, 16 * 1024 * 1024);
+      } else query = decode_objects_v1_json(input, data, 16 * 1024 * 1024);
       seen.add(`objects/${route}`);
       const result = await objects.invoke(route, query, body, 64n * 1024n * 1024n);
-      const encoded = result.map(frame => Buffer.from(encode_objects_v2_json(output, frame, 16 * 1024 * 1024)));
+      const encoded = result.map(frame => Buffer.from(encode_objects_v1_json(output, frame, 16 * 1024 * 1024)));
       response.writeHead(200, { "content-type": route === "objects/get" ? "application/x-ndjson" : "application/json" });
       const payload = route === "objects/get" ? Buffer.concat(encoded.flatMap(frame => [frame, Buffer.from("\n")])) : encoded[0];
       for (let offset = 0; offset < payload.length; offset += 97) response.write(payload.subarray(offset, offset + 97));
@@ -185,7 +186,7 @@ const server = createServer({ key: identity.key, cert: identity.certificate }, a
   } catch (error) {
     if (pathname.startsWith("/acyclic.")) console.error(`browser fixture handler failed for ${pathname}`, error);
     response.writeHead(400, { "content-type": "application/json" });
-    if (pathname.startsWith("/v2/objects/")) response.end(encode_objects_v2_json("ErrorDetail", toBinary(objectsWire.ErrorDetailSchema, create(objectsWire.ErrorDetailSchema, { code: typeof error.code === "number" ? error.code : objectsWire.ErrorCode.UNAVAILABLE })), 1024));
+    if (pathname.startsWith("/v1/objects/")) response.end(encode_objects_v1_json("ErrorDetail", toBinary(objectsWire.ErrorDetailSchema, create(objectsWire.ErrorDetailSchema, { code: typeof error.code === "number" ? error.code : objectsWire.ErrorCode.UNAVAILABLE })), 1024));
     else response.end(JSON.stringify({ code: error.code ?? "unavailable" }));
   }
 });
@@ -232,10 +233,10 @@ try {
   await until("server-observed Actors cancellation", () => cancellationClosed ? true : undefined);
   assert.equal(cancellationDispatched, true);
   console.log("Chrome Actors gRPC-Web: authenticated request decoded before abort; pending response closed without completion");
-  assert.equal(seen.size, 38, `expected 13 Objects, 15 Actor/Worker and 10 Stream HTTP routes: ${[...seen]}`);
+  assert.equal(seen.size, 39, `expected 13 Objects, 16 Actor/Worker and 10 Stream HTTP routes: ${[...seen]}`);
   console.log(`Chrome HTTPS: ${result.detail}; ${seen.size} fixture routes observed`);
   await send("Page.navigate", { url: `https://localhost:${server.address().port}/typescript/packages/objects/test/browser-wasm.html` }, sessionId);
-  const memory = await until("browser Objects v2 memory", async () => {
+  const memory = await until("browser Objects v1 memory", async () => {
     if (errors.length) throw new Error(errors.join("\n"));
     const value = await send("Runtime.evaluate", {
       expression: "({ status: document.body?.dataset.result, detail: document.body?.textContent })", returnByValue: true,
@@ -244,7 +245,7 @@ try {
     return result?.status === "passed" || result?.status === "failed" ? result : undefined;
   });
   assert.equal(memory.status, "passed", memory.detail);
-  console.log("Chrome Objects v2 default export: memory PUT, range GET and current-key replacement passed");
+  console.log("Chrome Objects v1 default export: memory PUT, range GET and current-key replacement passed");
   await send("Browser.close"); await exit;
 } finally {
   socket?.close();

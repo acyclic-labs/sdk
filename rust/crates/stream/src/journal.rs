@@ -33,7 +33,7 @@ pub(crate) fn journal_command(command: &Command) -> JournalCommand {
 
 pub(crate) fn decode_command(encoded: &[u8]) -> Result<Command, StreamError> {
     let journal = JournalCommand::decode(encoded).map_err(|_| StreamError::InvalidArgument)?;
-    match journal.operation.ok_or(StreamError::InvalidArgument)? {
+    let command = match journal.operation.ok_or(StreamError::InvalidArgument)? {
         journal_command::Operation::Append(request) => {
             wire_codec::append_from_wire(request).map(Command::Append)
         }
@@ -43,7 +43,12 @@ pub(crate) fn decode_command(encoded: &[u8]) -> Result<Command, StreamError> {
         journal_command::Operation::Commit(request) => {
             wire_codec::commit_from_wire(request).map(Command::Commit)
         }
+    }?;
+    // Persist only canonical bytes emitted by the current first-party writer.
+    if journal_command(&command).encode_to_vec() != encoded {
+        return Err(StreamError::InvalidArgument);
     }
+    Ok(command)
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -89,8 +94,56 @@ fn wire_fork(request: &ForkRequest) -> crate::wire::ForkRequest {
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
+#[allow(
+    clippy::indexing_slicing,
+    reason = "Malformed codec fixtures deliberately slice canonical bytes at every boundary"
+)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_writer_roundtrips_and_rejects_noncanonical_payloads() -> Result<(), StreamError> {
+        let append = Command::Append(AppendRequest {
+            path: crate::StreamPath::new("codec/events")?,
+            records: vec![Bytes::from_static(b"one"), Bytes::new()],
+            if_tail: Some(0),
+            idempotency_key: Some(crate::IdempotencyKey::new(Bytes::from_static(b"key"))?),
+        });
+        let fork = Command::Fork(ForkRequest {
+            source: crate::StreamPath::new("codec/events")?,
+            destination: crate::StreamPath::new("codec/fork")?,
+            at_tail: Some(0),
+            idempotency_key: None,
+        });
+        let commit = Command::Commit(CommitRequest {
+            conditions: vec![crate::CommitCondition::Tail {
+                path: crate::StreamPath::new("codec/events")?,
+                expected: 2,
+            }],
+            mutations: vec![crate::CommitMutation::Append {
+                path: crate::StreamPath::new("codec/events")?,
+                records: vec![Bytes::from_static(b"two")],
+            }],
+            idempotency_key: crate::IdempotencyKey::new(Bytes::from_static(b"commit"))?,
+        });
+        for command in [append, fork, commit] {
+            let encoded = journal_command(&command).encode_to_vec();
+            assert_eq!(
+                journal_command(&decode_command(&encoded)?).encode_to_vec(),
+                encoded
+            );
+            for end in 0..encoded.len() {
+                assert!(decode_command(&encoded[..end]).is_err());
+            }
+            let mut unknown = encoded.clone();
+            unknown.extend_from_slice(&[0x78, 0]);
+            assert!(decode_command(&unknown).is_err());
+            let mut duplicate = encoded.clone();
+            duplicate.extend_from_slice(&encoded);
+            assert!(decode_command(&duplicate).is_err());
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn native_journal_matches_the_browser_correspondence_fixture() -> Result<(), StreamError>

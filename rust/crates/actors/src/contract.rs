@@ -1,18 +1,14 @@
 //! Rust-owned Actors v1 contract.
 //!
-//! Protify derives the prost wire implementation and the complete protobuf
+//! Contract derivation derives the prost wire implementation and the complete protobuf
 //! schema from these declarations. The tonic service facade below remains a
 //! generated transport adapter and consumes these same message types.
-
-use protify::*;
 
 mod generated {
     #![allow(
         missing_docs,
-        reason = "Protify emits the public schema declarations and documentation belongs to the semantic Rust source"
+        reason = "Contract derivation emits the public schema declarations and documentation belongs to the semantic Rust source"
     )]
-
-    use super::*;
 
     // Semantic declarations own the message fields and Proto shadows. The
     // registration file below contains only package/file/service wiring.
@@ -26,15 +22,15 @@ mod generated {
     )]
     #[allow(
         clippy::needless_pass_by_value,
-        reason = "Protify conversion signatures preserve owned semantic values"
+        reason = "Contract derivation conversion signatures preserve owned semantic values"
     )]
     #[allow(
         clippy::redundant_closure,
-        reason = "Protify conversion attributes require closure-shaped validators"
+        reason = "Contract derivation conversion attributes require closure-shaped validators"
     )]
     #[allow(
         clippy::unnecessary_fallible_conversions,
-        reason = "Protify conversion attributes preserve fallible ingress boundaries"
+        reason = "Contract derivation conversion attributes preserve fallible ingress boundaries"
     )]
     pub mod domain {
         include!("domain.rs");
@@ -44,9 +40,7 @@ mod generated {
     include!("contract_definitions.rs");
 }
 
-pub(crate) use generated::ACTORS_FILE;
-#[doc = "Actors protobuf package schema handle."]
-pub use generated::ACTORS_PACKAGE;
+pub(crate) use generated::ActorsFile;
 #[allow(
     unused_imports,
     reason = "The semantic domain module is a public bridge namespace for SDK consumers"
@@ -57,9 +51,7 @@ pub use generated::domain;
 /// build. The rendered file is an intermediate artifact; these Rust
 /// declarations remain the contract authority.
 pub fn render_proto_files(root: impl AsRef<std::path::Path>) -> std::io::Result<()> {
-    let root = root.as_ref();
-    std::fs::create_dir_all(root.join("actors/v1"))?;
-    ACTORS_PACKAGE::get_package().render_files(root)
+    ActorsFile::render(root.as_ref())
 }
 
 #[allow(
@@ -69,8 +61,9 @@ pub fn render_proto_files(root: impl AsRef<std::path::Path>) -> std::io::Result<
 pub use generated::{
     ActorLimitsProto, ActorObservationProto, ActorState, AddSubscriptionRequestProto,
     AddSubscriptionResponseProto, BindingProto, CheckpointActorRequestProto,
-    CheckpointActorResponseProto, CreateActorRequestProto, CreateActorResponseProto, ErrorCode,
-    HeaderProto, InspectActorRequestProto, InspectActorResponseProto, InvokeActorRequestProto,
+    CheckpointActorResponseProto, CreateActorRequestProto, CreateActorResponseProto,
+    DeleteActorRequestProto, DeleteActorResponseProto, ErrorCode, HeaderProto,
+    InspectActorRequestProto, InspectActorResponseProto, InvokeActorRequestProto,
     InvokeActorResponseProto, RemoveSubscriptionRequestProto, RemoveSubscriptionResponseProto,
     ResumeSubscriptionRequestProto, ResumeSubscriptionResponseProto, ServiceErrorProto,
     SubscriptionObservationProto, SubscriptionSpecProto, SubscriptionStartProto, SubscriptionState,
@@ -135,21 +128,13 @@ mod tests {
 
 #[cfg(test)]
 mod fallible_producer_tests {
-    use super::*;
     use prost::Message;
-    use protify::{define_proto_file, proto_package};
 
-    proto_package!(
-        FALLIBLE_PACKAGE,
-        name = "acyclic.actors.test",
-        files = [FALLIBLE_FILE]
-    );
-    define_proto_file!(
-        FALLIBLE_FILE,
-        name = "actors/test.proto",
-        package = FALLIBLE_PACKAGE,
-        messages = [IngressProto, ChildProto, EnvelopeProto]
-    );
+    #[acyclic_contract_derive::file(
+        family = "actors_ingress",
+        messages(IngressProto, ChildProto, EnvelopeProto)
+    )]
+    pub struct FallibleFile;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct IngressError;
@@ -173,36 +158,36 @@ mod fallible_producer_tests {
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
-    #[acyclic_protify_proc_macro::proto_message(proxied, fallible = IngressError)]
+    #[acyclic_contract_derive::message(error = IngressError, file = FallibleFile)]
     pub struct Ingress {
-        #[proto(string, tag = 1, from_proto = parse_actor_id)]
+        #[wire(string, tag = 1, from = parse_actor_id)]
         actor_id: String,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
-    #[acyclic_protify_proc_macro::proto_message(proxied, fallible = IngressError)]
+    #[acyclic_contract_derive::message(error = IngressError, file = FallibleFile)]
     pub struct Child {
-        #[proto(string, tag = 1)]
+        #[wire(string, tag = 1)]
         value: String,
     }
 
-    #[acyclic_protify_proc_macro::proto_oneof(proxied, fallible = IngressError)]
+    #[acyclic_contract_derive::oneof(error = IngressError, file = FallibleFile)]
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum Selector {
-        #[proto(tag = 1)]
+        #[wire(tag = 1)]
         Cursor(u64),
-        #[proto(tag = 2)]
+        #[wire(tag = 2)]
         CurrentHead(bool),
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
-    #[acyclic_protify_proc_macro::proto_message(proxied, fallible = IngressError)]
+    #[acyclic_contract_derive::message(error = IngressError, file = FallibleFile)]
     pub struct Envelope {
-        #[proto(message(proxied), tag = 3)]
+        #[wire(message, tag = 3)]
         child: Option<Child>,
-        #[proto(repeated(message(proxied)), tag = 4)]
+        #[wire(message, tag = 4)]
         children: Vec<Child>,
-        #[proto(oneof(proxied, tags(1, 2)))]
+        #[wire(oneof = "1,2")]
         selector: Option<Selector>,
     }
 

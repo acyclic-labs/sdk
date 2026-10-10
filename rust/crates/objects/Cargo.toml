@@ -40,8 +40,6 @@ prost-types = "0.14.4"
 ruzstd.workspace = true
 thiserror.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
-tonic = { version = "0.14.6", features = ["tls-ring", "tls-webpki-roots"], optional = true }
-tonic-prost = { workspace = true, optional = true }
 imbl = { version = "=7.0.2", default-features = false }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
@@ -51,22 +49,27 @@ libc = { version = "0.2.175", optional = true }
 js-sys.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pin-project-lite = "0.2.16"
+tonic = { version = "0.14.6", features = ["tls-ring", "tls-webpki-roots"], optional = true }
+tonic-prost = { workspace = true, optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { workspace = true, optional = true }
 tracing.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tracing-subscriber.workspace = true
-
-[lints]
-workspace = true
-
-[dev-dependencies]
+tracing-chrome.workspace = true
 divan.workspace = true
-proptest.workspace = true
 axum.workspace = true
 rcgen = "0.14.10"
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["macros", "rt"] }
 tokio-stream.workspace = true
 tokio-rustls = { version = "=0.26.5", default-features = false, features = ["ring"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt"] }

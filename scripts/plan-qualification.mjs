@@ -100,6 +100,7 @@ export const ignored = {
   rust: path =>
     documentation(path) ||
     unrelatedGithub(path) ||
+    path === ".gitleaks.toml" ||
     standaloneProjects(path) ||
     languageGenerator(path) ||
     (path.startsWith("typescript/") && path !== "typescript/packages/filesystem/package.json") ||
@@ -111,11 +112,12 @@ export const ignored = {
   // no package reads, and no Rust integration tests.
   typescript: path =>
     !generatedSourceInputs.has(path) && (ignored.product(path) ||
-    /^rust\/crates\/(conformance|harness-codex|machines-daytona|sdk-docs)\//.test(path) ||
+    /^rust\/crates\/(conformance|harness-codex|machines-daytona|sdk-docs|sdk-generation)\//.test(path) ||
     /^rust\/crates\/[^/]+\/(tests|benches)\//.test(path) ||
     ["plugin/", "languages/", "ffi/"].some(prefix => path.startsWith(prefix))),
   // Rust plus the TypeScript workspace.
-  product: path => documentation(path) || unrelatedGithub(path) || standaloneProjects(path) || languageGenerator(path),
+  // Scanner configuration is read by preflight/policy, never an SDK build.
+  product: path => documentation(path) || unrelatedGithub(path) || path === ".gitleaks.toml" || standaloneProjects(path) || languageGenerator(path),
   // Repository-wide metadata, boundary, and license checks.
   repository: path => documentation(path),
   policy: path => documentation(path),
@@ -172,16 +174,16 @@ export function chooseLanes(lanes, {
     let source = marker(lane.lane);
     let artifact = "";
     if (source && lane.artifact) {
-      artifact = retained(source.run_id, lane.artifact);
+      artifact = retained(source.run_id, lane.artifact, source.run_attempt, source.source_commit);
       if (!artifact) source = null;
     }
-    if (source) reused[lane.lane] = { run_id: source.run_id, run_attempt: source.run_attempt, artifact };
+    if (source) reused[lane.lane] = { run_id: source.run_id, run_attempt: source.run_attempt, source_commit: source.source_commit, artifact };
     else matrix.push(lane);
   }
   return { matrix, reused };
 }
 
-const git = (...args) => execFileSync("git", args, { encoding: "utf8", maxBuffer: 1 << 28 });
+const git = (...args) => execFileSync("git", args, { encoding: "utf8", maxBuffer: 1 << 28, env: { ...process.env, GIT_NO_LAZY_FETCH: "1" } });
 const gh = path => JSON.parse(execFileSync("gh", ["api", "--method", "GET", path], { encoding: "utf8" }));
 const output = (name, value) => {
   const text = typeof value === "string" ? value : JSON.stringify(value);
@@ -189,6 +191,8 @@ const output = (name, value) => {
   console.log(`${name}=${text}`);
 };
 const readLanes = () => JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"));
+const reusableCore = lane => ["gate", "typescript", "policy"].includes(lane.lane) &&
+  ["core", "both"].includes(lane.scope) && !lane.source_bound;
 
 function fingerprints() {
   const lanes = readLanes();
@@ -206,21 +210,108 @@ function fingerprints() {
 }
 
 // Artifacts are named <artifact>-<run id>-<attempt that uploaded them>.
-function retainedArtifact(runId, prefix) {
+export function retainedArtifact(runId, prefix, attempt, sourceCommit, query = gh) {
   let artifacts;
   try {
-    artifacts = gh(
+    artifacts = query(
       `repos/${process.env.GITHUB_REPOSITORY}/actions/runs/${runId}/artifacts?per_page=100`,
     ).artifacts;
   } catch (error) {
-    console.error(`artifact lookup for run ${runId} failed: ${error.message}`);
+    console.error(`artifact lookup for run ${runId} failed: ${error instanceof Error ? error.message : String(error)}`);
     return "";
   }
-  const pattern = new RegExp(`^${prefix}-${runId}-(\\d+)$`);
-  const candidates = artifacts
-    .filter(artifact => !artifact.expired && pattern.test(artifact.name))
-    .sort((a, b) => Number(b.name.match(pattern)[1]) - Number(a.name.match(pattern)[1]));
-  return candidates[0]?.name ?? "";
+  if (!Array.isArray(artifacts)) return "";
+  const name = `${prefix}-${runId}-${attempt}`;
+  const candidates = artifacts.filter(artifact => artifact?.expired === false && artifact.name === name &&
+    artifact.workflow_run?.id === runId && artifact.workflow_run.head_sha === sourceCommit &&
+    /^sha256:[0-9a-f]{64}$/.test(artifact.digest));
+  return candidates.length === 1 ? name : "";
+}
+
+// Main cannot restore PR-scoped cache markers. Reuse only direct, successful
+// PR jobs with identical existing input keys; current commit preflight is
+// independent. Deleted squash branches need a bounded Git tree API lookup;
+// missing or truncated API evidence conservatively runs lanes.
+// The merged PR identifies the donor source, not its run's PR number: GitHub
+// can clear run.pull_requests after merging. Core commands are event-invariant.
+export function mergedPullRequestMarkers(lanes, repository, head, {
+  query = gh,
+  treeAt = sha => git("ls-tree", "-r", "-z", "--full-tree", sha).split("\0").filter(Boolean),
+  retained = (id, prefix, attempt, commit) => retainedArtifact(id, prefix, attempt, commit, query),
+} = {}) {
+  const decline = reason => { console.error(`merged PR reuse declined: ${reason}`); return {}; };
+  const candidates = query(`repos/${repository}/commits/${head}/pulls`).filter(pr =>
+    pr.merged_at && pr.merge_commit_sha === head && pr.base.ref === "main" &&
+    pr.base.repo.full_name === repository && pr.head.repo?.full_name === repository);
+  if (candidates.length !== 1) return decline("associated merged PR absent or ambiguous");
+  const donor = candidates[0].head.sha;
+  if (!/^[0-9a-f]{40}$/.test(donor)) return decline("invalid donor head");
+  const currentKeys = laneKeys(lanes, treeAt(head), "core");
+  let donorTree;
+  try { donorTree = treeAt(donor); }
+  catch {
+    const commit = query(`repos/${repository}/git/commits/${donor}`);
+    if (commit.sha !== donor || !/^[0-9a-f]{40}$/.test(commit.tree?.sha)) return decline("donor commit/tree mismatch");
+    donorTree = remoteTreeEntries(query(`repos/${repository}/git/trees/${commit.tree.sha}?recursive=1`), commit.tree.sha);
+  }
+  const donorKeys = laneKeys(lanes, donorTree, "core");
+  const eligible = lanes.filter(lane => reusableCore(lane) && currentKeys[lane.lane] === donorKeys[lane.lane]);
+  if (!eligible.length) return decline("no matching core input keys");
+  const workflow = query(`repos/${repository}/actions/workflows/qualification.yml`);
+  if (!Number.isSafeInteger(workflow.id) || workflow.id <= 0 || workflow.path !== ".github/workflows/qualification.yml") return decline("workflow identity mismatch");
+  const runs = query(`repos/${repository}/actions/workflows/${workflow.id}/runs?event=pull_request&head_sha=${donor}&status=success&per_page=5`).workflow_runs;
+  const validRuns = runs.slice(0, 5).filter(run => run.workflow_id === workflow.id && (run.path === workflow.path || run.path?.startsWith(`${workflow.path}@`)) &&
+    run.event === "pull_request" && run.head_sha === donor && run.head_repository?.full_name === repository &&
+    run.status === "completed" && run.conclusion === "success" && Number.isSafeInteger(run.id) && run.id > 0 &&
+    Number.isSafeInteger(run.run_attempt) && run.run_attempt > 0);
+  const markers = {};
+  for (const run of validRuns) {
+    const response = query(`repos/${repository}/actions/runs/${run.id}/attempts/${run.run_attempt}/jobs?per_page=100`);
+    if (response.total_count !== response.jobs.length) continue;
+    const executed = name => {
+      const jobs = response.jobs.filter(job => job.name === name);
+      const steps = jobs[0]?.steps?.filter(step => step.name === (name === "plan" ? "Verify commit signatures and secrets" : "Run qualification lane")) ?? [];
+      return jobs.length === 1 && jobs[0].run_id === run.id && jobs[0].run_attempt === run.run_attempt &&
+        jobs[0].head_sha === donor && jobs[0].status === "completed" && jobs[0].conclusion === "success" && jobs[0].runner_id > 0 &&
+        steps.length === 1 && steps[0].status === "completed" && steps[0].conclusion === "success";
+    };
+    if (!executed("plan")) continue;
+    for (const lane of eligible.filter(lane => !markers[lane.lane] && executed(lane.lane))) {
+      if (lane.artifact && !retained(run.id, lane.artifact, run.run_attempt, donor)) continue;
+      markers[lane.lane] = { run_id: run.id, run_attempt: run.run_attempt, source_commit: donor };
+    }
+    if (eligible.every(lane => markers[lane.lane])) break;
+  }
+  return Object.keys(markers).length ? markers : decline("no directly executed successful attempt with retained artifacts");
+}
+
+// Match `git ls-tree -r -z --full-tree`: tree directories are not records,
+// paths are unquoted, and recursive entries have bytewise Git path order.
+export function remoteTreeEntries(response, sourceTree) {
+  if (response.sha !== sourceTree || response.truncated !== false || !Array.isArray(response.tree)) {
+    throw new Error("donor Git tree is incomplete or belongs to another source");
+  }
+  const entries = response.tree;
+  const paths = new Set();
+  for (const entry of entries) {
+    if (!/^[0-9a-f]{40}$/.test(entry.sha) ||
+      !((entry.type === "blob" && ["100644", "100755", "120000"].includes(entry.mode)) || (entry.type === "commit" && entry.mode === "160000") || (entry.type === "tree" && entry.mode === "040000")) ||
+      typeof entry.path !== "string" || /[\0\uFFFD\uD800-\uDFFF]/u.test(entry.path) ||
+      entry.path.split("/").some(part => !part || part === "." || part === "..") || paths.has(entry.path)) {
+      throw new Error("donor Git tree has an invalid entry");
+    }
+    paths.add(entry.path);
+  }
+  const leaves = entries.filter(entry => entry.type !== "tree");
+  const leafPaths = new Set(leaves.map(entry => entry.path));
+  for (const entry of entries) {
+    const parts = entry.path.split("/");
+    for (let index = 1; index < parts.length; index++) {
+      if (leafPaths.has(parts.slice(0, index).join("/"))) throw new Error("donor Git tree has an invalid entry prefix");
+    }
+  }
+  return leaves.sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)))
+    .map(entry => `${entry.mode} ${entry.type} ${entry.sha}\t${entry.path}`);
 }
 
 function recordedMarker(lane) {
@@ -228,7 +319,8 @@ function recordedMarker(lane) {
   if (!existsSync(path)) return null;
   try {
     const recorded = JSON.parse(readFileSync(path, "utf8"));
-    return Number.isSafeInteger(recorded.run_id) && Number.isSafeInteger(recorded.run_attempt)
+    return Number.isSafeInteger(recorded.run_id) && recorded.run_id > 0 &&
+      Number.isSafeInteger(recorded.run_attempt) && recorded.run_attempt > 0 && /^[0-9a-f]{40}$/.test(recorded.source_commit)
       ? recorded
       : null;
   } catch {
@@ -246,14 +338,33 @@ function select() {
   const pullRequest = event === qualificationEventKinds.pullRequest;
   const mainPush = event === qualificationEventKinds.mainPush;
   const fullQualification = requiresFullQualification(event);
-  const { matrix, reused } = chooseLanes(readLanes(), {
+  const lanes = readLanes();
+  let donorMarkers;
+  const artifacts = new Map();
+  const retained = (id, prefix, attempt, commit) => {
+    const key = JSON.stringify([id, prefix, attempt, commit]);
+    if (!artifacts.has(key)) artifacts.set(key, retainedArtifact(id, prefix, attempt, commit));
+    return artifacts.get(key);
+  };
+  const marker = lane => {
+    let cached = recordedMarker(lane);
+    const artifact = lanes.find(definition => definition.lane === lane)?.artifact;
+    if (mainPush && cached && artifact && !retained(cached.run_id, artifact, cached.run_attempt, cached.source_commit)) cached = null;
+    if (cached || !mainPush) return cached;
+    if (!donorMarkers) {
+      try { donorMarkers = mergedPullRequestMarkers(lanes, process.env.GITHUB_REPOSITORY, git("rev-parse", "HEAD").trim(), { retained }); }
+      catch (error) { console.error(`merged PR reuse unavailable: ${error instanceof Error ? error.message : String(error)}`); donorMarkers = {}; }
+    }
+    return donorMarkers[lane] ?? null;
+  };
+  const { matrix, reused } = chooseLanes(lanes, {
     force,
     mainPush,
     fullQualification,
     pullRequest,
     coreOnly: !fullQualification,
-    marker: recordedMarker,
-    retained: retainedArtifact,
+    marker,
+    retained,
   });
   for (const [lane, source] of Object.entries(reused)) {
     console.error(`${lane}: reused from run ${source.run_id} attempt ${source.run_attempt}`);
@@ -269,13 +380,25 @@ function record() {
   const runId = Number(process.env.GITHUB_RUN_ID);
   const runAttempt = Number(process.env.GITHUB_RUN_ATTEMPT);
   const reused = JSON.parse(process.env.REUSED || "{}");
-  const names = new Set(readLanes().map(lane => lane.lane));
+  const lanes = readLanes();
+  const names = new Set(lanes.map(lane => lane.lane));
   const jobs = gh(`repos/${repository}/actions/runs/${runId}/attempts/${runAttempt}/jobs?per_page=100`).jobs;
   const recorded = [];
+  let sourceCommit;
   mkdirSync(".qualification", { recursive: true });
+  // Promote validated core reuse into main's cache namespace. A later PR can
+  // then restore the same proof without following another PR's cache scope.
+  if (classifyQualificationEvent({ eventName: process.env.GITHUB_EVENT_NAME, ref: process.env.GITHUB_REF, force: process.env.FORCE === "true" }) === qualificationEventKinds.mainPush) {
+    for (const lane of lanes.filter(lane => reusableCore(lane) && reused[lane.lane])) {
+      const { run_id, run_attempt, source_commit } = reused[lane.lane];
+      writeFileSync(`.qualification/${lane.lane}.json`, JSON.stringify({ run_id, run_attempt, source_commit }));
+      recorded.push(lane.lane);
+    }
+  }
   for (const job of jobs) {
     if (!names.has(job.name) || job.conclusion !== "success" || reused[job.name]) continue;
-    writeFileSync(`.qualification/${job.name}.json`, JSON.stringify({ run_id: runId, run_attempt: runAttempt }));
+    sourceCommit ??= git("rev-parse", "HEAD").trim();
+    writeFileSync(`.qualification/${job.name}.json`, JSON.stringify({ run_id: runId, run_attempt: runAttempt, source_commit: sourceCommit }));
     recorded.push(job.name);
   }
   output("recorded", recorded);

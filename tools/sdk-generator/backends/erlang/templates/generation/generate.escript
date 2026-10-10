@@ -1,0 +1,23 @@
+#!/usr/bin/env escript
+main([Tools, Project]) ->
+    Rebar=filename:join(Tools,"rebar-3.25.1"),
+    Libs=filename:join(Tools,"libs"),
+    Gpb=filename:join(Tools,"gpb-4.21.7"),
+    Plugin=filename:join(Libs,"grpcbox_plugin-0.10.0"),
+    lists:foreach(fun(P)->true=code:add_patha(P) end,filelib:wildcard(filename:join([Rebar,"*","ebin"]))),
+    lists:foreach(fun(P)->true=code:add_patha(P) end,filelib:wildcard(filename:join([Libs,"*","ebin"]))),
+    true=code:add_patha(filename:join(Gpb,"ebin")),
+    application:set_env(rebar,color_intensity,none),
+    rebar_log:init(command_line,2),
+    Grpc=[{protos,["proto"]},{out_dir,"src"},{type,all},
+          {gpb_opts,[{module_name_suffix,"_pb"},{rename,{msg_fqname,{prefix,"acyclic_"}}},{verify,always},descriptor]}],
+    Options=rebar_state:opts(rebar_state:new([{grpc,Grpc}])),
+    {ok,App0}=rebar_app_info:new(acyclic_sdk_transport,"0.1.0",Project),
+    App=rebar_app_info:opts(App0,Options),
+    {ok,PluginApp}=rebar_app_info:new(grpcbox_plugin,"0.10.0",Plugin),
+    S0=rebar_state:dir(rebar_state:new(),Project),
+    S1=rebar_state:project_apps(S0,[App]),
+    S2=rebar_state:all_plugin_deps(S1,[PluginApp]),
+    S3=rebar_state:command_parsed_args(S2,{[],[]}),
+    {ok,_}=grpcbox_plugin_prv:do(S3),
+    io:format("PASS pinned GPB/grpcbox generator~n").

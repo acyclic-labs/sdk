@@ -191,32 +191,36 @@ pub enum MaterializeError {
 /// Fails before traversal for an invalid destination or zero bounds. During
 /// traversal it fails closed on unrepresentable names, unsupported special
 /// kinds, canonical engine errors, host I/O, cancellation, or work exhaustion.
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    tracing::instrument(
-        name = "acyclic.fs.materialize",
-        level = "debug",
-        skip_all,
-        fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty, work.items = crate::obs::Empty, work.bytes = crate::obs::Empty, work.durability = crate::obs::Empty)
-    )
-)]
 pub async fn materialize_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     options: &MaterializeOptions,
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>> {
-    crate::obs::measured(
-        in_heap(move || async move {
-            materialize_checkout_with_mode(
-                checkout,
-                options,
-                budget,
-                cancellation,
-                MaterializeMode::DurableOutput,
-            )
-            .await
-        })
+    let span = crate::obs::span!(
+        DEBUG,
+        "acyclic.fs.materialize",
+        outcome = crate::obs::Empty,
+        error.kind = crate::obs::Empty,
+        work.items = crate::obs::Empty,
+        work.bytes = crate::obs::Empty,
+        work.durability = crate::obs::Empty,
+    );
+    crate::obs::measured_on(
+        &span,
+        crate::obs::in_span(
+            &span,
+            in_heap(move || async move {
+                materialize_checkout_with_mode(
+                    checkout,
+                    options,
+                    budget,
+                    cancellation,
+                    MaterializeMode::DurableOutput,
+                )
+                .await
+            }),
+        )
         .await,
         |receipt| &receipt.work,
     )
@@ -276,15 +280,6 @@ pub async fn materialize_checkout_path<A: AsyncAuthorityStore, O: AsyncObjectSto
 ///
 /// All selected paths share one destination capability, cumulative work
 /// receipt, and file-identity table, preserving hard links across siblings.
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    tracing::instrument(
-        name = "acyclic.fs.materialize_paths",
-        level = "debug",
-        skip_all,
-        fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty, work.items = crate::obs::Empty, work.bytes = crate::obs::Empty, work.durability = crate::obs::Empty)
-    )
-)]
 pub async fn materialize_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     paths: &[NamespacePath],
@@ -292,14 +287,27 @@ pub async fn materialize_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectSt
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>> {
-    crate::obs::measured(
-        materialize_checkout_paths_with_mode(
-            checkout,
-            paths,
-            options,
-            budget,
-            cancellation,
-            MaterializeMode::DurableOutput,
+    let span = crate::obs::span!(
+        DEBUG,
+        "acyclic.fs.materialize_paths",
+        outcome = crate::obs::Empty,
+        error.kind = crate::obs::Empty,
+        work.items = crate::obs::Empty,
+        work.bytes = crate::obs::Empty,
+        work.durability = crate::obs::Empty,
+    );
+    crate::obs::measured_on(
+        &span,
+        crate::obs::in_span(
+            &span,
+            materialize_checkout_paths_with_mode(
+                checkout,
+                paths,
+                options,
+                budget,
+                cancellation,
+                MaterializeMode::DurableOutput,
+            ),
         )
         .await,
         |receipt| &receipt.work,
@@ -509,15 +517,6 @@ pub(crate) async fn materialize_checkout_paths_with_mode<
 /// Materializes a host-relative path using the checkout's configured name
 /// profile. Native consumers do not need to construct logical names or know
 /// whether this platform stores them as bytes or UTF-16 units.
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    tracing::instrument(
-        name = "acyclic.fs.materialize_host_path",
-        level = "debug",
-        skip_all,
-        fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty, work.items = crate::obs::Empty, work.bytes = crate::obs::Empty, work.durability = crate::obs::Empty)
-    )
-)]
 pub async fn materialize_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     relative: &Path,
@@ -525,8 +524,18 @@ pub async fn materialize_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObje
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>> {
-    crate::obs::measured(
-        async move {
+    let span = crate::obs::span!(
+        DEBUG,
+        "acyclic.fs.materialize_host_path",
+        outcome = crate::obs::Empty,
+        error.kind = crate::obs::Empty,
+        work.items = crate::obs::Empty,
+        work.bytes = crate::obs::Empty,
+        work.durability = crate::obs::Empty,
+    );
+    crate::obs::measured_on(
+        &span,
+        crate::obs::in_span(&span, async move {
             let limits = checkout.volume_config().limits;
             let profile = checkout.volume_config().profile;
             let mut names = Vec::new();
@@ -550,7 +559,7 @@ pub async fn materialize_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObje
             let path = NamespacePath::new(names, limits)
                 .map_err(|_| OperationFailure::before_work(MaterializeError::InvalidPath))?;
             materialize_checkout_path(checkout, &path, options, budget, cancellation).await
-        }
+        })
         .await,
         |receipt| &receipt.work,
     )
@@ -569,85 +578,118 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<HostPathRestore>, OperationFailure<MaterializeError>> {
-    validate_host_relative(relative).map_err(OperationFailure::before_work)?;
-    validate_bounds(options).map_err(OperationFailure::before_work)?;
-    if cancellation.is_cancelled() {
-        return Err(OperationFailure::before_work(MaterializeError::Engine(
-            "materialization cancelled".into(),
-        )));
-    }
-    let destination_root = options.destination.clone();
-    let relative = relative.to_path_buf();
-    let (destination, stage_root, _restore_lock) = tokio::task::spawn_blocking({
-        let destination_root = destination_root.clone();
-        let relative = relative.clone();
-        move || prepare_restore(&destination_root, &relative, replacement)
-    })
-    .await
-    .map_err(|error| OperationFailure::before_work(MaterializeError::Engine(error.to_string())))?
-    .map_err(OperationFailure::before_work)?;
-    let staged = stage_root.join(&relative);
-    let materialize_options = MaterializeOptions {
-        destination: stage_root.clone(),
-        maximum_directory_entries: options.maximum_directory_entries,
-        maximum_extent_spans: options.maximum_extent_spans,
-        transfer_bytes: options.transfer_bytes,
-    };
-    let materialized = materialize_checkout_host_path(
-        checkout,
-        &relative,
-        &materialize_options,
-        budget,
-        cancellation,
-    )
-    .await;
-    let receipt = match materialized {
-        Ok(receipt) => receipt,
-        Err(failure) if matches!(failure.error, MaterializeError::MissingPath) => {
-            let work = *failure.work;
-            tokio::task::spawn_blocking(move || {
-                let parent =
-                    held_parent(&destination_root, &relative).map_err(materialize_io_error)?;
-                let name = relative
-                    .file_name()
-                    .ok_or_else(|| std::io::Error::other("restore path has no leaf"))?;
-                remove_any(&stage_root)?;
-                remove_restored_path(&parent, Path::new(name), &destination_root, &relative)
+    let span = crate::obs::span!(
+        DEBUG,
+        "acyclic.fs.restore_host_path",
+        path.depth = relative.components().count(),
+        outcome = crate::obs::Empty,
+        error.kind = crate::obs::Empty,
+        work.items = crate::obs::Empty,
+        work.bytes = crate::obs::Empty,
+        work.durability = crate::obs::Empty,
+    );
+    let worker_context = span.clone();
+    crate::obs::measured_on(
+        &span,
+        crate::obs::in_span(&span, async move {
+            validate_host_relative(relative).map_err(OperationFailure::before_work)?;
+            validate_bounds(options).map_err(OperationFailure::before_work)?;
+            if cancellation.is_cancelled() {
+                return Err(OperationFailure::before_work(MaterializeError::Engine(
+                    "materialization cancelled".into(),
+                )));
+            }
+            let destination_root = options.destination.clone();
+            let relative = relative.to_path_buf();
+            let (destination, stage_root, restore_lock) =
+                tokio::task::spawn_blocking(crate::obs::in_context(worker_context.clone(), {
+                    let destination_root = destination_root.clone();
+                    let relative = relative.clone();
+                    move || prepare_restore(&destination_root, &relative, replacement)
+                }))
+                .await
+                .map_err(|error| {
+                    OperationFailure::before_work(MaterializeError::Engine(error.to_string()))
+                })?
+                .map_err(OperationFailure::before_work)?;
+            let staged = stage_root.join(&relative);
+            let materialize_options = MaterializeOptions {
+                destination: stage_root.clone(),
+                maximum_directory_entries: options.maximum_directory_entries,
+                maximum_extent_spans: options.maximum_extent_spans,
+                transfer_bytes: options.transfer_bytes,
+            };
+            let materialized = materialize_checkout_host_path(
+                checkout,
+                &relative,
+                &materialize_options,
+                budget,
+                cancellation,
+            )
+            .await;
+            let receipt = match materialized {
+                Ok(receipt) => receipt,
+                Err(failure) if matches!(failure.error, MaterializeError::MissingPath) => {
+                    let work = *failure.work;
+                    restore_io(worker_context, restore_lock, work, move || {
+                        let parent = held_parent(&destination_root, &relative)
+                            .map_err(materialize_io_error)?;
+                        let name = relative
+                            .file_name()
+                            .ok_or_else(|| std::io::Error::other("restore path has no leaf"))?;
+                        remove_any(&stage_root)?;
+                        remove_restored_path(&parent, Path::new(name), &destination_root, &relative)
+                    })
+                    .await?;
+                    return Ok(OperationReceipt {
+                        value: HostPathRestore::Removed,
+                        work,
+                    });
+                }
+                Err(failure) => {
+                    let _ = restore_io(worker_context, restore_lock, *failure.work, move || {
+                        remove_any(&stage_root)
+                    })
+                    .await;
+                    return Err(failure);
+                }
+            };
+            restore_io(worker_context, restore_lock, receipt.work, move || {
+                publish_restore(
+                    &destination_root,
+                    &relative,
+                    &destination,
+                    &staged,
+                    &stage_root,
+                    replacement,
+                )
             })
-            .await
-            .map_err(|error| {
-                OperationFailure::new(MaterializeError::Engine(error.to_string()), work)
-            })?
-            .map_err(|error| OperationFailure::new(MaterializeError::Io(error), work))?;
-            return Ok(OperationReceipt {
-                value: HostPathRestore::Removed,
-                work,
-            });
-        }
-        Err(failure) => {
-            let _ = tokio::task::spawn_blocking(move || remove_any(&stage_root)).await;
-            return Err(failure);
-        }
+            .await?;
+            Ok(OperationReceipt {
+                value: HostPathRestore::Restored,
+                work: receipt.work,
+            })
+        })
+        .await,
+        |receipt| &receipt.work,
+    )
+}
+
+async fn restore_io<T: Send + 'static, E: Into<MaterializeError> + Send + 'static>(
+    context: crate::obs::OperationSpan,
+    lock: File,
+    work: WorkCounters,
+    operation: impl FnOnce() -> Result<T, E> + Send + 'static,
+) -> Result<T, OperationFailure<MaterializeError>> {
+    let operation = move || {
+        // A cancelled waiter must not release the fence while host I/O continues.
+        let _restore_lock = lock;
+        operation()
     };
-    tokio::task::spawn_blocking(move || {
-        publish_restore(
-            &destination_root,
-            &relative,
-            &destination,
-            &staged,
-            &stage_root,
-            replacement,
-        )
-    })
-    .await
-    .map_err(|error| {
-        OperationFailure::new(MaterializeError::Engine(error.to_string()), receipt.work)
-    })?
-    .map_err(|error| OperationFailure::new(error, receipt.work))?;
-    Ok(OperationReceipt {
-        value: HostPathRestore::Restored,
-        work: receipt.work,
-    })
+    tokio::task::spawn_blocking(crate::obs::in_context(context, operation))
+        .await
+        .map_err(|error| OperationFailure::new(MaterializeError::Engine(error.to_string()), work))?
+        .map_err(|error| OperationFailure::new(error.into(), work))
 }
 
 fn materialize_io_error(error: MaterializeError) -> std::io::Error {
@@ -2095,6 +2137,171 @@ fn create_symlink(
 mod restore_recovery_tests {
     use super::*;
 
+    #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "captures both visible and filtered restore boundaries with one real checkout"
+    )]
+    async fn restore_removal_records_success_after_nested_missing_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::model::{
+            AccessMode, CaseSensitivity, CheckoutMode, ConcurrencyMode, ConsistencyMode,
+            FilesystemProfile, GenerationSelector, Lifecycle, MutationMode, UnicodePolicy,
+            VolumeConfig, VolumeLimits,
+        };
+        use std::sync::Mutex;
+        use tracing_subscriber::fmt::format::FmtSpan;
+
+        #[derive(Clone)]
+        struct Output(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Output {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0
+                    .lock()
+                    .map_err(|_| std::io::Error::other("capture poisoned"))?
+                    .extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let cancellation = CancellationToken::new();
+        let volume = crate::Fs::memory()
+            .create_volume(
+                VolumeConfig {
+                    profile: FilesystemProfile::Portable,
+                    concurrency: ConcurrencyMode::Optimistic,
+                    lifecycle: Lifecycle::Ephemeral,
+                    case_sensitivity: CaseSensitivity::Sensitive,
+                    unicode: UnicodePolicy::Preserve,
+                    symbolic_links: true,
+                    hard_links: true,
+                    sparse_files: true,
+                    limits: VolumeLimits::default(),
+                },
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
+        let mut checkout = volume
+            .checkout(
+                GenerationSelector::Head,
+                CheckoutMode {
+                    access: AccessMode::ReadWrite,
+                    consistency: ConsistencyMode::Pinned,
+                    mutations: MutationMode::PrivateOverlay,
+                },
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
+        let temporary = tempfile::tempdir()?;
+        let relative = Path::new("private-restore-path-sentinel");
+        std::fs::write(temporary.path().join(relative), b"private-content-sentinel")?;
+        let output = Output(Arc::default());
+        let captured = Arc::clone(&output.0);
+        // A second dispatcher prevents concurrently visited callsites from
+        // caching interest only from another test's absent subscriber.
+        let _second = tracing::Dispatch::new(tracing_subscriber::Registry::default());
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .without_time()
+            .with_span_events(FmtSpan::CLOSE)
+            .with_writer(move || output.clone())
+            .finish();
+        let _default = tracing::subscriber::set_default(subscriber);
+        let receipt = restore_checkout_host_path(
+            &mut checkout,
+            relative,
+            HostPathReplacement::Atomic,
+            &MaterializeOptions::native(temporary.path()),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+        assert_eq!(receipt.value, HostPathRestore::Removed);
+        assert!(!temporary.path().join(relative).exists());
+        let bytes = captured.lock().map_err(|_| "capture poisoned")?.clone();
+        let text = String::from_utf8(bytes)?;
+        let parent = text
+            .lines()
+            .rfind(|line| line.contains("acyclic.fs.restore_host_path{") && line.contains("close"))
+            .ok_or("restore close missing")?;
+        assert!(parent.contains("outcome=\"ok\""), "{parent}");
+        assert!(parent.contains("path.depth=1"), "{parent}");
+        assert!(
+            parent.contains(&format!("work.items={}", receipt.work.items_examined)),
+            "{parent}"
+        );
+        assert!(!parent.contains("error.kind="), "{parent}");
+        assert!(text.contains("error.kind=\"MissingPath\""), "{text}");
+        assert!(!text.contains("private-restore-path-sentinel"));
+        assert!(!text.contains("private-content-sentinel"));
+        assert!(!text.contains(&temporary.path().display().to_string()));
+
+        drop(_default);
+        captured.lock().map_err(|_| "capture poisoned")?.clear();
+        use tracing::Instrument as _;
+        use tracing_subscriber::Layer as _;
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let output = Output(Arc::clone(&captured));
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .without_time()
+                .with_span_events(FmtSpan::CLOSE)
+                .with_writer(move || output.clone())
+                .with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
+                    !metadata.name().starts_with("acyclic.fs.materialize")
+                        && metadata.name() != "acyclic.fs.restore_host_path"
+                })),
+        );
+        let _default = tracing::subscriber::set_default(subscriber);
+        let caller = tracing::info_span!(
+            "restore_caller",
+            outcome = "caller",
+            error.kind = "caller_error",
+            work.items = 73
+        );
+        async {
+            let invalid = restore_checkout_host_path(
+                &mut checkout, Path::new(""), HostPathReplacement::Atomic,
+                &MaterializeOptions::native(temporary.path()),
+                WorkBudget::UNBOUNDED, &cancellation,
+            ).await;
+            assert!(matches!(invalid, Err(failure) if matches!(failure.error, MaterializeError::InvalidPath)));
+            std::fs::write(temporary.path().join(relative), b"old")?;
+            let removed = restore_checkout_host_path(
+                &mut checkout, relative, HostPathReplacement::Atomic,
+                &MaterializeOptions::native(temporary.path()),
+                WorkBudget::UNBOUNDED, &cancellation,
+            ).await?;
+            assert_eq!(removed.value, HostPathRestore::Removed);
+            Ok::<_, Box<dyn std::error::Error>>(())
+        }.instrument(caller.clone()).await?;
+        drop(caller);
+        let bytes = captured.lock().map_err(|_| "capture poisoned")?.clone();
+        let text = String::from_utf8(bytes)?;
+        assert!(!text.contains("acyclic.fs.restore_host_path"), "{text}");
+        assert!(!text.contains("acyclic.fs.materialize"), "{text}");
+        let caller = text
+            .lines()
+            .rfind(|line| line.contains("restore_caller{") && line.contains("close"))
+            .ok_or("caller close missing")?;
+        assert!(caller.contains("outcome=\"caller\""), "{caller}");
+        assert!(caller.contains("error.kind=\"caller_error\""), "{caller}");
+        assert!(caller.contains("work.items=73"), "{caller}");
+        assert_eq!(caller.matches("outcome=").count(), 1, "{caller}");
+        assert_eq!(caller.matches("error.kind=").count(), 1, "{caller}");
+        assert_eq!(caller.matches("work.items=").count(), 1, "{caller}");
+        Ok(())
+    }
+
     /// A file created through a Linux mount records "no flags" (and its own
     /// birth and change times); materializing it must not refuse any of
     /// those, or no fork's new file could ever reach the root.
@@ -2183,6 +2390,56 @@ mod restore_recovery_tests {
         // Blocking: a child another test forks shares the lock's open file
         // until it execs, so a release can take a moment to be observed.
         let _next = acquire_restore_lock(relative, &destination, true)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancelled_restore_waiter_keeps_lock_until_host_io_finishes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let relative = Path::new("entry");
+        let destination = temporary.path().join(relative);
+        let lock = acquire_restore_lock(relative, &destination, true)?;
+        let (started, entered) = tokio::sync::oneshot::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let (finished, completion) = tokio::sync::oneshot::channel();
+        let waiter = tokio::spawn(restore_io(
+            crate::obs::caller_context(),
+            lock,
+            WorkCounters::default(),
+            move || {
+                let _ = started.send(());
+                // Dropping release on an early test exit also unblocks the worker.
+                blocked.recv().map_err(std::io::Error::other)?;
+                let _ = finished.send(());
+                Ok::<_, std::io::Error>(())
+            },
+        ));
+        entered.await?;
+        waiter.abort();
+        let cancelled = waiter.await;
+        let competing = acquire_restore_lock(relative, &destination, false);
+        let competing_error = match &competing {
+            Err(MaterializeError::Io(error)) => Some((error.raw_os_error(), error.kind())),
+            _ => None,
+        };
+        eprintln!("competing restore lock error: {competing_error:?}");
+        let fenced = matches!(
+            &competing,
+            Err(MaterializeError::Io(error))
+                if error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+        );
+        drop(competing);
+        // Release before assertions: even the broken-lock mutation must finish.
+        release.send(())?;
+        completion.await?;
+        // Acquiring is the completion barrier for the worker's final lock drop.
+        let _next = acquire_restore_lock(relative, &destination, true)?;
+        assert!(cancelled.is_err_and(|error| error.is_cancelled()));
+        assert!(
+            fenced,
+            "cancelled waiter released a still-running restore's lock: {competing_error:?}"
+        );
         Ok(())
     }
 

@@ -77,7 +77,8 @@ form a bounded graph of at most four concurrent matrix lanes. Pull requests and
 
 - `gate`: `cargo nextest run --workspace --all-features --locked` (unit and
   integration tests, without the ignored live-mount and fork/join suites) and
-  the standalone `sdk-docs` crate.
+  the standalone `sdk-docs` and `sdk-generation` crates, plus generated snippet
+  admission tests.
 - `policy`: `cargo clippy --workspace --all-targets --all-features --locked -- -D
   warnings`, rustfmt, and the planner and preflight script tests.
 - `typescript`: `bun run check:generated` and `bun run test` (WASM and

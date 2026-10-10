@@ -12,6 +12,8 @@ export * from "./CodeSha256.js";
 export * from "./CreateActorRequest.js";
 export * from "./CreateActorResponse.js";
 export * from "./CurrentHeadMarker.js";
+export * from "./DeleteActorRequest.js";
+export * from "./DeleteActorResponse.js";
 export * from "./ErrorCode.js";
 export * from "./Header.js";
 export * from "./InspectActorRequest.js";

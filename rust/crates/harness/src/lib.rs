@@ -19,6 +19,7 @@
 
 pub mod agent_loop;
 pub mod bundle;
+pub mod client;
 pub mod context;
 mod contract;
 pub mod conversation;

@@ -318,7 +318,7 @@ impl BrowserStream {
 }
 
 fn memory(limits: MemoryLimits, clock: Arc<ReplayClock>) -> MemoryStream {
-    MemoryStream::new_with_commit_clock(limits, Arc::new(BrowserClock), clock.clone(), clock)
+    MemoryStream::new_with_commit_clock(limits, Arc::new(BrowserClock), clock)
 }
 enum Outcome {
     Append(AppendOutcome),

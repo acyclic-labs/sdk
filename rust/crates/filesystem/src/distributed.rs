@@ -1117,6 +1117,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                 let path = crate::operation_window::stream_lease_path(
                     crate::WorkspaceId::from_bytes(workspace_id),
                     crate::OperationLeaseId::from_bytes(lease_id),
+                    expires_at_millis,
                 )
                 .map_err(|error| OperationFailure::before_work(map_stream_error(error)))?;
                 conditions.push(acyclic_stream::CommitCondition::Tail {

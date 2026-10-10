@@ -1,0 +1,22 @@
+{
+  "protobuf_version": "0.17.1",
+  "protobuf_archive_sha256": "76770ecda0ef057e540932f15b5a143ba8877875e88727f53429a7dc4dbf8b6c",
+  "elixir_plugin": {
+    "linux-x64": {
+      "sha256": "2d6bdd4583407b450ce5e0b1b2fa1fbcdf661d7c9f4deb63a01de51f5480685e"
+    }
+  },
+  "runtime": {
+    "linux-x64": {
+      "inventory_sha256": "dd6b15334eabe4531c9c1a77342eb5a0b38d42508ca4cb5aef49bebffcfdd4e5",
+      "otp_version": "29.1.1",
+      "otp_release": "29",
+      "elixir_version": "1.20.4",
+      "roots": ["OTP-29.1.1", "elixir-1.20.4"],
+      "files": 4358,
+      "links": 1,
+      "otp_archive_sha256": "92d4f05939c51fc2d9e1b2b7d35b233e800d51a0e540767335f1d8680ea9a924",
+      "elixir_archive_sha256": "7863c546cda13fecc949e562e326042451dacf8fd8698a36783cb71eeb223b46"
+    }
+  }
+}

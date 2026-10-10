@@ -154,6 +154,8 @@ case "$lane" in
     # These crates deliberately have independent workspaces; --workspace and
     # llvm-cov cannot cover them, even during full qualification.
     cargo test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked
+    cargo test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked
+    node --test rust/crates/sdk-generation/scripts/test-qualify-typescript-snippets.mjs
     if [[ "$full_qualification" != true ]]; then
       # The same suite the full native lanes run, without coverage; the
       # ignored live-mount and fork/join suites stay there.
@@ -254,6 +256,8 @@ case "$lane" in
         allow_webflow=true
       fi
     fi
+    commits="$(git rev-list --reverse "$range")"
+    [[ -n "$commits" ]] || { echo 'qualification range contains no commits' >&2; exit 1; }
     webflow_home=""
     while read -r commit; do
       verification=$(git \
@@ -285,7 +289,7 @@ case "$lane" in
       fi
       echo "Commit $commit lacks an authorized cryptographic signature." >&2
       exit 1
-    done < <(git rev-list --reverse "$range")
+    done <<<"$commits"
     if [[ -n "$webflow_home" ]]; then
       rm -rf -- "$webflow_home"
       trap - EXIT
@@ -295,8 +299,18 @@ case "$lane" in
       https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
       551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb \
       "$TOOLS_DIR/gitleaks-8.30.1" gitleaks
-    "$TOOLS_DIR/gitleaks-8.30.1/gitleaks" detect --source . --no-banner --redact \
-      --log-opts "$range"
+    # Pinned 8.30.1 can exit zero after Git errors; require nonempty scan evidence.
+    # First-parent merge diffs include authored/resolution changes; counts remain evidence, not a proof.
+    scan_log="$observability/gitleaks.log"
+    "$TOOLS_DIR/gitleaks-8.30.1/gitleaks" detect --source . --no-banner --no-color --redact \
+      --log-opts "--diff-merges=first-parent $range" 2>&1 | tee "$scan_log"
+    if grep -Eqi '(^|[[:space:]])ERR[[:space:]]|fatal:|error:' "$scan_log" ||
+      ! grep -Eq ' INF [1-9][0-9]* commits? scanned\.$' "$scan_log" ||
+      ! grep -Eq ' INF scanned ~[1-9][0-9]* bytes ' "$scan_log" ||
+      ! grep -Eq ' INF no leaks found$' "$scan_log"; then
+      echo 'gitleaks did not establish a successful nonempty source scan' >&2
+      exit 1
+    fi
     ;;
   linux)
     bash scripts/test-ensure-rust-target.sh
@@ -323,7 +337,8 @@ case "$lane" in
     # locations keep the host's path separators and private wasm-bindgen
     # closure names carry host-derived crate hashes. Verify the fresh WASM
     # against the committed package API and runtime, then stage the committed
-    # release bytes.
+    # release bytes. The checker reads HEAD for tracked WASM surfaces and
+    # validates fresh runtimes; this restore controls release staging.
     git restore --worktree -- \
       typescript/packages/filesystem/generated/wasm \
       typescript/packages/stream/generated/wasm
@@ -371,10 +386,13 @@ case "$lane" in
     test "$("$binary" --version)" = "$expected"
     ;;
   policy)
+    node scripts/check-compatibility-digests.mjs
     bash scripts/test-qualify-ci-preflight.sh
+    node --test scripts/wasm-size-report.test.mjs scripts/tracked-wasm-surfaces.test.mjs
     if [[ "$full_qualification" != true ]]; then
       cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       node --test scripts/test-plan-qualification.mjs
+      node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
       cargo fmt --all -- --check
       exit 0
     fi
@@ -392,6 +410,7 @@ case "$lane" in
     node --test scripts/test-publish-npm-packages.mjs
     node --test scripts/test-typescript-qualification.mjs
     node --test scripts/test-plan-qualification.mjs
+    node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
     node scripts/test-verify-release-binary.mjs
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
@@ -445,6 +464,8 @@ case "$lane" in
       bun run --filter '@acyclic-labs/fs' test:browser
     CHROME="$(command -v google-chrome || command -v chromium)" \
       bun run --filter '@acyclic-labs/harness' test:browser:mcp
+    CHROME="$(command -v google-chrome || command -v chromium)" \
+      bun run --filter '@acyclic-labs/harness' test:client:browser
     ;;
   typescript)
     # Family admission resolves the locked Cargo graph offline before WASM
@@ -452,15 +473,14 @@ case "$lane" in
     cargo fetch --locked
     # Pull requests and main pushes only; full runs cover this in the linux
     # lane. As there, check:generated runs after `bun run test` has built the
-    # uncommitted packages, against the restored committed filesystem and
-    # stream WASM whose host-specific bytes that build rewrites.
+    # uncommitted packages. It compares tracked surfaces with immutable HEAD
+    # blobs and validates freshly generated runtimes for all six packages.
     source scripts/ensure-bun.sh
     wasm_bindgen_bin="$(bash scripts/ensure-wasm-bindgen.sh)"
     export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
     bun install --frozen-lockfile
     client_bindings
     bun run test
-    git restore --worktree --       typescript/packages/filesystem/generated/wasm       typescript/packages/stream/generated/wasm       typescript/packages/harness/generated/wasm/acyclic_harness_wasm.d.ts       typescript/packages/harness/generated/wasm/acyclic_harness_wasm_bg.wasm.d.ts
     bun run check:generated
     ;;
   linux-arm64)

@@ -60,7 +60,7 @@ function fixture(t) {
   const authority = join(root, "authority");
   mkdirSync(authority);
   writeFileSync(join(authority, "shared.bin"), "shared descriptor fixture");
-  const sources = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v2/stream.proto"];
+  const sources = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"];
   const families = sources.map((source, index) => {
     const name = `source-${index}.proto`;
     // Source paths mirror the canonical names; descriptors deliberately do not.

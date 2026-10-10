@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	actors "github.com/acyclic-labs/sdk/go/gen/actors/v1"
-	stream "github.com/acyclic-labs/sdk/go/gen/stream/v2"
+	stream "github.com/acyclic-labs/sdk/go/gen/stream/v1"
 	workers "github.com/acyclic-labs/sdk/go/gen/workers/v1"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
@@ -27,7 +27,7 @@ func TestRustDescriptors(t *testing.T) {
 	}{
 		{"actors/v1/actors.proto", actors.File_actors_v1_actors_proto},
 		{"workers/v1/workers.proto", workers.File_workers_v1_workers_proto},
-		{"stream/v2/stream.proto", stream.File_stream_v2_stream_proto},
+		{"stream/v1/stream.proto", stream.File_stream_v1_stream_proto},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -1,3 +1,3 @@
 <?php
 require $argv[1];
-(new Acyclic\Stream\V2\AppendRequest())->setIfTail([]);
+(new Acyclic\Stream\V1\AppendRequest())->setIfTail([]);

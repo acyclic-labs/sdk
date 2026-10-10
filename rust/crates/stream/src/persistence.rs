@@ -1,4 +1,4 @@
-//! Bounded canonical protobuf codecs for retained Stream v2 facts.
+//! Bounded canonical protobuf codecs for retained Stream v1 facts.
 //!
 //! These bytes are the existing public messages, without a private container.
 //! The storage owner supplies checksums, account binding and durable publication;

@@ -343,4 +343,21 @@ impl Client {
         )
         .await
     }
+
+    /// Execute the canonical `DeleteActor` operation.
+    ///
+    /// # Errors
+    /// Returns configuration, transport, decoding, bound, or canonical service errors.
+    pub async fn delete_actor(
+        &self,
+        request: &wire::DeleteActorRequest,
+    ) -> Result<wire::DeleteActorResponse, Error> {
+        self.call(
+            HTTP_ROUTES.get(8).ok_or(Error::InvalidArgument)?.1,
+            "acyclic.actors.v1.DeleteActorRequest",
+            "acyclic.actors.v1.DeleteActorResponse",
+            request,
+        )
+        .await
+    }
 }

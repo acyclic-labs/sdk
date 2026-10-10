@@ -163,23 +163,21 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
     }
 
     /// Forks a real SDK workspace and durably records its direct parent.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.lineage.fork",
-            level = "info",
-            skip_all,
-            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub async fn fork<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         &self,
         parent: &Workspace<A, O>,
         destination: impl AsRef<str>,
         idempotency_key: IdempotencyKey,
     ) -> Result<Workspace<A, O>, WorkspaceLineageError<S::Error>> {
-        crate::obs::outcome(
-            async move {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.lineage.fork",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty
+        );
+        crate::obs::outcome_on(
+            &span,
+            crate::obs::in_span(&span, async move {
                 let destination = crate::WorkspaceName::new(destination.as_ref())
                     .map_err(WorkspaceError::from)?;
                 let generation = parent.head().await?;
@@ -216,7 +214,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                 ready.initial_generation = initial_generation.id();
                 self.promote_ready(ready).await?;
                 Ok(child)
-            }
+            })
             .await,
         )
     }

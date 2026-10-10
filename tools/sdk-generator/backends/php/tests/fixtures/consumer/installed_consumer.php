@@ -3,8 +3,8 @@ $loader=require $argv[1];
 use Google\Protobuf\Internal\FileDescriptorSet;
 use Acyclic\Actors\V1\CreateActorRequest;
 use Acyclic\Workers\V1\PublishVersionRequest;
-use Acyclic\Stream\V2\AppendRequest;
-use Acyclic\Stream\V2\ReadRequest;
+use Acyclic\Stream\V1\AppendRequest;
+use Acyclic\Stream\V1\ReadRequest;
 function check($value,$message) { if(!$value) throw new RuntimeException($message); }
 function normalizeDescriptor($message,$allowBuf=false) {
  $unknown=(new ReflectionProperty(Google\Protobuf\Internal\Message::class,'unknown'))->getValue($message);
@@ -69,7 +69,7 @@ trait Probe {
 }
 class ProbeActors extends Acyclic\Actors\V1\ActorsServiceClient { use Probe; }
 class ProbeWorkers extends Acyclic\Workers\V1\WorkersServiceClient { use Probe; }
-class ProbeStream extends Acyclic\Stream\V2\StreamServiceClient { use Probe; }
+class ProbeStream extends Acyclic\Stream\V1\StreamServiceClient { use Probe; }
 $probes=[new ProbeActors(),new ProbeWorkers(),new ProbeStream()];$index=0;
 check(count($argv)===6,'pass installed autoload, SDK root and three Rust descriptors');
 $installed=realpath($argv[2]);
@@ -93,7 +93,7 @@ foreach($loader->getClassMap() as $class=>$file) {
 }
 foreach([FileDescriptorSet::class,Google\Protobuf\Internal\Message::class,Google\Protobuf\Internal\DescriptorPool::class,Google\Protobuf\Internal\GPBUtil::class] as $class)check(str_starts_with(realpath((new ReflectionClass($class))->getFileName()),$roots[1].DIRECTORY_SEPARATOR),'protobuf runtime provenance differs');
 foreach([Grpc\AbstractCall::class,Grpc\BaseStub::class] as $class)check(str_starts_with(realpath((new ReflectionClass($class))->getFileName()),$roots[2].DIRECTORY_SEPARATOR),'gRPC runtime provenance differs');
-foreach(['actors/v1/actors','workers/v1/workers','stream/v2/stream'] as $family) {
+foreach(['actors/v1/actors','workers/v1/workers','stream/v1/stream'] as $family) {
  $metadata=$installed.'/src/GPBMetadata/'.str_replace(' ','/',ucwords(str_replace('/',' ',$family))).'.php';
  $tokens=token_get_all(file_get_contents($metadata));$find=false;$literal=null;
  foreach($tokens as $token) {
@@ -138,10 +138,10 @@ foreach([$actor,$worker,$append,$read] as $message) {
 $append->clearIfTail();check(!$append->hasIfTail(),'optional absence failed');$append->setIfTail(0);check($append->hasIfTail(),'optional zero lost');
 $zero=new AppendRequest();$zero->setIfTail(0);check($zero->serializeToString()==="\x18\x00",'optional zero wire differs');
 $restoredZero=new AppendRequest();$restoredZero->mergeFromString($zero->serializeToString());check($restoredZero->hasIfTail()&&$restoredZero->getIfTail()===0,'optional zero presence lost after round trip');
-$observation=new Acyclic\Stream\V2\IdempotencyObservation();
-$observation->setAppend(populated(new Acyclic\Stream\V2\AppendResponse()));check($observation->getOutcome()==='append','append oneof branch missing');
-$restoredAppend=new Acyclic\Stream\V2\IdempotencyObservation();$restoredAppend->mergeFromString($observation->serializeToString());check($restoredAppend->getOutcome()==='append'&&$restoredAppend->serializeToString()===$observation->serializeToString(),'append oneof round trip differs');
-$observation->setFork(populated(new Acyclic\Stream\V2\ForkReceipt()));check($observation->getOutcome()==='fork'&&$observation->getAppend()===null,'oneof switching failed');
-$restoredFork=new Acyclic\Stream\V2\IdempotencyObservation();$restoredFork->mergeFromString($observation->serializeToString());check($restoredFork->getOutcome()==='fork'&&$restoredFork->serializeToString()===$observation->serializeToString(),'fork oneof round trip differs');
+$observation=new Acyclic\Stream\V1\IdempotencyObservation();
+$observation->setAppend(populated(new Acyclic\Stream\V1\AppendResponse()));check($observation->getOutcome()==='append','append oneof branch missing');
+$restoredAppend=new Acyclic\Stream\V1\IdempotencyObservation();$restoredAppend->mergeFromString($observation->serializeToString());check($restoredAppend->getOutcome()==='append'&&$restoredAppend->serializeToString()===$observation->serializeToString(),'append oneof round trip differs');
+$observation->setFork(populated(new Acyclic\Stream\V1\ForkReceipt()));check($observation->getOutcome()==='fork'&&$observation->getAppend()===null,'oneof switching failed');
+$restoredFork=new Acyclic\Stream\V1\IdempotencyObservation();$restoredFork->mergeFromString($observation->serializeToString());check($restoredFork->getOutcome()==='fork'&&$restoredFork->serializeToString()===$observation->serializeToString(),'fork oneof round trip differs');
 $observation->setFork(null);check($observation->getOutcome()==='','oneof clearing failed');
 echo "PASS: installed PHP descriptors, bytes, unsigned bits, optional zero, oneof and client RPC shapes\n";

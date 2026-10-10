@@ -13,7 +13,7 @@ const inventory = JSON.parse(read("../toolchains/runtime-files.json"));
 if (!Array.isArray(inventory) || !inventory.length || inventory.some(entry => !entry || !canonical(entry.path) || !/^[a-f0-9]{64}$/.test(entry.sha256))
   || new Set(inventory.map(entry => entry.path.toLowerCase())).size !== inventory.length) throw new Error("invalid runtime inventory pins");
 const pinned = { ...JSON.parse(read("../toolchains/qualification.json")), runtime_files: Object.fromEntries(inventory.map(entry => [entry.path, entry.sha256])) };
-const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v2/stream.proto"];
+const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"];
 const negatives = { InvalidActorBytes: "InvalidArgumentException: Expect string.", InvalidWorkerBytes: "InvalidArgumentException: Expect string.", InvalidOptionalInteger: "Exception: Expect integer." };
 const marker = "PASS: installed PHP descriptors, bytes, unsigned bits, optional zero, oneof and client RPC shapes";
 const nativeMarker = "PASS: native PHP gRPC client creation and shutdown";
@@ -88,7 +88,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   if (metadata.some(name => !payload.has(name)) || sha256(payload.get("composer.json")) !== sha256(template)
     || sha256(payload.get("authority/rust-authority.json")) !== sha256(approved.bytes)) throw new Error("package lacks pinned metadata");
   const sdk = JSON.parse(template);
-  for (const [family, version, service] of [["Actors", "V1", "Actors"], ["Workers", "V1", "Workers"], ["Stream", "V2", "Stream"]]) {
+  for (const [family, version, service] of [["Actors", "V1", "Actors"], ["Workers", "V1", "Workers"], ["Stream", "V1", "Stream"]]) {
     if (!payload.has(`src/GPBMetadata/${family}/${version}/${family}.php`) || !payload.has(`src/Acyclic/${family}/${version}/${service}ServiceClient.php`)) throw new Error("package lacks tested family bindings");
   }
   const verifyRuntime = () => {

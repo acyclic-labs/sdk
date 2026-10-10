@@ -215,9 +215,9 @@ test("generated lifecycle client covers contexts, warm commitments, runs, watch,
   await client.createContext(create(CreateContextRequestSchema));
   await client.inspectContext(revision(1));
   await client.mutateContext(create(MutateContextRequestSchema, { action: { case: "fork", value: {} } }));
-  await client.retainWarm(create(RetainWarmRequestSchema, { context: revision(1) }));
+  await client.retainWarm(create(RetainWarmRequestSchema, { identity: { clientInstance: runIdentity(1), requestId: runIdentity(2) }, context: revision(1), latencyProfile: revision(24), expiresAtMs: 10n }));
   await client.inspectWarm(revision(3));
-  await client.renewWarm(create(RenewWarmRequestSchema, { commitment: revision(3), expiresAtMs: 20n }));
+  await client.renewWarm(create(RenewWarmRequestSchema, { identity: { clientInstance: runIdentity(1), requestId: runIdentity(2) }, commitment: revision(3), expiresAtMs: 20n }));
   await client.releaseWarm(create(ReleaseWarmRequestSchema, { commitment: revision(3) }));
   await client.generate(create(GenerateRunRequestSchema, { identity: { clientInstance: runIdentity(3), requestId: runIdentity(4) }, context: revision(1) }));
   await client.inspectRun(runIdentity(4));
@@ -240,7 +240,7 @@ test("high-level handles preserve typed context, run, and warm identities", asyn
     async createContext(request) { expect(request.items[0]?.kind).toBe(ItemKind.USER); return receipt(++revisionCounter); },
     async inspectContext(request) { const view = contextView(request.revision); view.items.push(create(ItemSchema, { kind: ItemKind.USER })); return view; },
     async mutateContext(request) { expect(request.action.case).not.toBeUndefined(); return receipt(++revisionCounter); },
-    async retainWarm(request) { return warmView(revision(7), request.context); },
+    async retainWarm(request) { const view = warmView(revision(7), request.context, request.expiresAtMs); view.latencyProfile = request.latencyProfile; return view; },
     async inspectWarm(request) { return warmView(request.commitment, revision(3)); },
     async renewWarm(request) { return warmView(request.commitment, revision(3), request.expiresAtMs); },
     async releaseWarm(request) { return warmView(request.commitment, revision(3)); },

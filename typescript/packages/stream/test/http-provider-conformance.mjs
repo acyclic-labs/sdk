@@ -1,3 +1,4 @@
+import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
@@ -45,11 +46,12 @@ const server = createServer(async (request, response) => {
     if (process.env.SDK_HTTP_TRACE) console.error(request.url, JSON.stringify(result, replacer)); response.end(JSON.stringify(result, replacer));
   } catch (error) { if (process.env.SDK_HTTP_TRACE) console.error(request.url, error); response.writeHead(400); response.end(JSON.stringify({ code: error.code ?? "unavailable" })); }
 });
-await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+const closeServer = ownFixtureServer(server);
 try {
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const status = await new Promise((resolve, reject) => {
     const child = spawn("cargo", ["run", "--quiet", "--locked", "-p", "acyclic-stream", "--features", "http", "--example", "http-conformance", "--", `http://127.0.0.1:${server.address().port}/`], { cwd: root, stdio: "inherit" });
     child.once("error", reject); child.once("exit", resolve);
   });
   assert.equal(status, 0, "native Stream HTTP conformance failed");
-} finally { await new Promise(resolve => server.close(resolve)); }
+} finally { await closeServer(); }

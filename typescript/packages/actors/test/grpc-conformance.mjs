@@ -1,3 +1,4 @@
+import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createSecureServer } from "node:http2";
@@ -9,12 +10,12 @@ import { Code, ConnectError } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { ActorsService } from "../generated/proto/actors/v1/actors_pb.js";
 import { WorkersService } from "../../workers/generated/proto/workers/v1/workers_pb.js";
-import { StreamService } from "../../stream/generated/proto/stream/v2/stream_pb.js";
-import { BucketsService, ObjectsService, MultipartService } from "../../objects/generated/proto/objects/v2/objects_pb.js";
+import { StreamService } from "../../stream/generated/proto/stream/v1/stream_pb.js";
+import { BucketsService, ObjectsService, MultipartService } from "../../objects/generated/proto/objects/v1/objects_pb.js";
 import { ActorsClient } from "../dist/index.js";
 import { createWorkersGrpcClient } from "../../workers/dist/grpc.js";
 import { createStreamGrpcClient } from "../../stream/dist/grpc.js";
-import { createObjectsV2GrpcClients } from "../../objects/dist/v2-grpc.js";
+import { createObjectsV1GrpcClients } from "../../objects/dist/v1-grpc.js";
 import { HttpWorkersClient } from "../../workers/dist/http.js";
 
 const services = [ActorsService, WorkersService, StreamService, BucketsService, ObjectsService, MultipartService];
@@ -63,6 +64,10 @@ function inspectActorRequest(method, request) {
     assert.equal(request.actorId, "actor-a");
     assert.equal(request.idempotencyKey, "checkpoint-a");
   }
+  if (method.name === "DeleteActor") {
+    assert.equal(request.actorId, "actor-a");
+    assert.equal(request.idempotencyKey, "delete-a");
+  }
 }
 
 function inspectResponse(method, response) {
@@ -84,7 +89,7 @@ if (process.argv.includes("--client")) {
   let configText = "";
   for await (const chunk of process.stdin) configText += chunk;
   const options = JSON.parse(configText);
-  const objects = createObjectsV2GrpcClients(options);
+  const objects = createObjectsV1GrpcClients(options);
   const actors = await actorsClient(options);
   const workerOptions = { endpoint: options.endpoint, token: options.token, caCertificate: options.caCertificate };
   const clients = [actors, createWorkersGrpcClient(workerOptions), createStreamGrpcClient(options), objects.buckets, objects.objects, objects.multipart];
@@ -119,6 +124,7 @@ if (process.argv.includes("--client")) {
         idempotencyKey: "subscribe-a",
       });
       if (method.name === "CheckpointActor") Object.assign(initializer, { actorId: "actor-a", idempotencyKey: "checkpoint-a" });
+      if (method.name === "DeleteActor") Object.assign(initializer, { actorId: "actor-a", idempotencyKey: "delete-a" });
       if (method.name === "InvokeActor") Object.assign(initializer, { actorId: "actor-a", method: "POST", url: "/invoke", body: new Uint8Array([1]) });
       if (method.name === "SubmitJob") Object.assign(initializer, {
         target: { target: { case: "deploymentAlias", value: "current" } },
@@ -235,17 +241,18 @@ const wasmServer = createServer((request, response) => {
   wasmRequests.push(request.url);
   adapter(request, response);
 });
-await new Promise(resolve => server.listen(0, "localhost", resolve));
-await new Promise(resolve => wasmServer.listen(0, "localhost", resolve));
-await new Promise(resolve => httpServer.listen(0, "localhost", resolve));
-const options = {
-  endpoint: `https://localhost:${server.address().port}`,
-  actorsWasmEndpoint: `http://localhost:${wasmServer.address().port}`,
-  httpEndpoint: `http://localhost:${httpServer.address().port}`,
-  token: "conformance",
-  caCertificate: identity.certificate,
-};
+const closeServers = [httpServer, server, wasmServer].map(ownFixtureServer);
 try {
+  await new Promise(resolve => server.listen(0, "localhost", resolve));
+  await new Promise(resolve => wasmServer.listen(0, "localhost", resolve));
+  await new Promise(resolve => httpServer.listen(0, "localhost", resolve));
+  const options = {
+    endpoint: `https://localhost:${server.address().port}`,
+    actorsWasmEndpoint: `http://localhost:${wasmServer.address().port}`,
+    httpEndpoint: `http://localhost:${httpServer.address().port}`,
+    token: "conformance",
+    caCertificate: identity.certificate,
+  };
   for (const runtime of [process.execPath, "bun"]) {
     await new Promise((resolve, reject) => {
       const child = spawn(runtime, [file, "--client"], { cwd: root, stdio: ["pipe", "inherit", "inherit"] });
@@ -262,14 +269,12 @@ try {
   });
   assert.equal(seen.size, expected);
   for (const [method, calls] of seen) assert.equal(calls, method.includes(".workers.") ? 5 : method.includes(".actors.") ? 3 : 2, method);
-  assert.equal(httpSeen.size, 15);
+  assert.equal(httpSeen.size, 16);
   if (await (await actorsClient(options)).transport === "grpc-web") {
     assert.ok(wasmRequests.length > 0, "WASM conformance must exercise the browser transport");
     assert.ok(wasmRequests.every(path => path?.startsWith("/acyclic.actors.v1.ActorsService/")), wasmRequests.join(", "));
   }
   for (const [method, calls] of httpSeen) assert.equal(calls, 1, method);
 } finally {
-  await new Promise(resolve => httpServer.close(resolve));
-  await new Promise(resolve => server.close(resolve));
-  await new Promise(resolve => wasmServer.close(resolve));
+  await Promise.all(closeServers.map(close => close()));
 }

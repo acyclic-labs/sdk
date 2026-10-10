@@ -23,7 +23,7 @@ use std::future::Future;
 use std::sync::Mutex;
 use thiserror::Error;
 
-pub(crate) const MULTI_ROOT_VERSION: u32 = 2;
+pub(crate) const MULTI_ROOT_VERSION: u32 = 1;
 
 /// One root pinned by an immutable cross-root merge plan.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2867,6 +2867,14 @@ mod tests {
         else {
             panic!("expected applied publication");
         };
+        for version in [0, 2, u32::MAX] {
+            let mut obsolete = retained.clone();
+            obsolete.version = version;
+            assert!(matches!(
+                coordinator.acknowledge_applied(&obsolete).await,
+                Err(MultiRootPublicationError::InvalidCandidate)
+            ));
+        }
         let mut second = first;
         second.plan.operation_id = OperationId::from_bytes([0x55; 16]);
         assert!(matches!(

@@ -493,6 +493,18 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
         input: TurnInput,
         journal: &'a dyn ExecutionJournal,
     ) -> BoxFuture<'a, Result<TurnOutput>>;
+
+    /// Runs with the original ordinary task admission. Custom executors
+    /// may consume this context while retaining their complete loop.
+    fn execute_with_context<'a>(
+        &'a self,
+        context: &'a crate::runtime::TaskContext,
+        input: TurnInput,
+        journal: &'a dyn ExecutionJournal,
+    ) -> BoxFuture<'a, Result<TurnOutput>> {
+        let _ = context;
+        self.execute(input, journal)
+    }
 }
 
 /// Complete default streaming model/tool loop assembled from replaceable values.
@@ -929,7 +941,7 @@ impl StockExecutor {
                 "tool prefix has another execution identity".into(),
             ));
         };
-        if !self.matches_request_digest(input, request_digest).await? {
+        if !self.matches_request_digest(input, request_digest)? {
             return Err(Error::Conflict(
                 "tool prefix has another execution identity".into(),
             ));
@@ -1095,31 +1107,11 @@ impl StockExecutor {
         crate::contract::canonical_json_digest(&request)
     }
 
-    async fn matches_request_digest(&self, input: &TurnInput, existing: &[u8; 32]) -> Result<bool> {
-        if existing == &self.request_digest(input)? {
-            return Ok(true);
-        }
-        let (Some((context, _)), Some((host, task, fence))) = (&self.task_context, &self.task)
-        else {
-            return Ok(false);
-        };
-        if context.id().into_bytes() != task.into_bytes() {
-            return Ok(false);
-        }
-        // Older stock turns bound task identity, input and tool scope, but did
-        // not carry TaskContext in Started. Only the original durable host may
-        // authenticate the omitted scope fields; process-local replay cannot.
-        let mut previous = self.clone();
-        previous.task_context = None;
-        if existing != &previous.request_digest(input)? {
-            return Ok(false);
-        }
-        host.verify_execution_owner(*task, fence.clone()).await?;
-        let admitted = host.resume_scope(*task, context.id()).await?;
-        Ok(admitted.grants() == context.scope().grants()
-            && admitted.limits() == context.scope().limits()
-            && admitted.run_limits() == context.scope().run_limits()
-            && admitted.extensions() == context.scope().extensions())
+    fn matches_request_digest(&self, input: &TurnInput, existing: &[u8; 32]) -> Result<bool> {
+        // Fully bound requests retain their exact protocol identity. Histories
+        // that omitted the admitted context cannot infer its identity or scope
+        // during replay, even if their other request fields still match.
+        Ok(existing == &self.request_digest(input)?)
     }
 
     /// Replays the durable journal for one turn, verifying it is gapless and bound to the
@@ -1143,7 +1135,7 @@ impl StockExecutor {
         match records.first().map(|record| &record.event) {
             Some(ExecutionEvent::Started {
                 request_digest: existing,
-            }) if self.matches_request_digest(input, existing).await? => {}
+            }) if self.matches_request_digest(input, existing)? => {}
             Some(_) => {
                 return Err(Error::Conflict(
                     "execution identity is bound to another request or configuration".into(),
@@ -2672,6 +2664,20 @@ impl StockExecutor {
 }
 
 impl Executor for StockExecutor {
+    fn execute_with_context<'a>(
+        &'a self,
+        context: &'a crate::runtime::TaskContext,
+        input: TurnInput,
+        journal: &'a dyn ExecutionJournal,
+    ) -> BoxFuture<'a, Result<TurnOutput>> {
+        Box::pin(async move {
+            let bound = self
+                .clone()
+                .with_task_context(context, input.operation_id)?;
+            bound.execute(input, journal).await
+        })
+    }
+
     fn execute<'a>(
         &'a self,
         input: TurnInput,

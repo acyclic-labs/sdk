@@ -1,0 +1,24 @@
+{
+  "schema": "acyclic.sdk.erlang-toolchain.v1",
+  "gpb_version": "4.21.7",
+  "gpb_archive_sha256": "9b3c3adfea1a631fd1da6b2b08ec8f59b412982393950e0fd1b306def79a676a",
+  "grpcbox_plugin_version": "0.10.0",
+  "grpcbox_plugin_archive_sha256": "2b41f7f4fdb8aa6e4afddaa4399d4cef526b9a29f6cdaa3eeaa2fb1db5c33762",
+  "rebar_version": "3.25.1",
+  "rebar_archive_sha256": "8dead71212b8008ec830c085607c23ec2997ab1c36a3c91901ac42c9814ee08c",
+  "generator_inventory_sha256": "20c74360a866bac7ce727d69a323dd22ea6fec0087e4975e7f5a2495422e9ba7",
+  "generator_files": 400,
+  "runtime": {
+    "linux-x64": {
+      "inventory_sha256": "380eb6aae57e74701439b28509eac62e6690eea3a55b8dbf90ba6afdf080102f",
+      "otp_version": "29.1.1",
+      "otp_release": "29",
+      "otp_archive_sha256": "92d4f05939c51fc2d9e1b2b7d35b233e800d51a0e540767335f1d8680ea9a924",
+      "roots": [
+        "OTP-29.1.1"
+      ],
+      "files": 3635,
+      "links": 1
+    }
+  }
+}

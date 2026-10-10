@@ -3,7 +3,7 @@ import { is_stream_error_code, projectMemoryResponse, WasmStream } from "../gene
 import type { StreamErrorCode as WasmStreamErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
   ChildrenResponseSchema, ReadResponseSchema, TailResponseSchema,
-} from "../generated/proto/stream/v2/stream_pb.js";
+} from "../generated/proto/stream/v1/stream_pb.js";
 import { validateAppend } from "./client.js";
 import { ensureStreamWasm, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import type {

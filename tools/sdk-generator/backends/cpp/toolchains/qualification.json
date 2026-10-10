@@ -1,0 +1,15 @@
+{
+  "host": "win32-x64",
+  "host_inventory_sha256": "2bdf930668f638e6b2dd186d6875ba0b8d21785d9a0d5456b41da0b11257408c",
+  "host_inventory_roots": 17,
+  "host_inventory_files": 7377,
+  "runtime_inventory_sha256": "76ba2332a52ed29a89a0e936f500cb9d084775e79d9cb18bfdc59483c1a2b581",
+  "runtime_files": 1618,
+  "versions": {
+    "cmake": "cmake version 3.26.4",
+    "ninja": "1.11.1",
+    "cl": "19.44.35228"
+  },
+  "windows_sdk_version": "10.0.26100.0",
+  "system_root": "C:/Windows"
+}

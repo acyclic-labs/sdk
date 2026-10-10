@@ -24,14 +24,14 @@ function fixture(t, failure = "") {
   const root = mkdtempSync(join(tmpdir(), "php-qualification-test-")); t.after(() => rmSync(root, { recursive: true }));
   const put = (file, bytes) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, bytes); };
   const authority = join(root, "authority"), packageRoot = join(root, "package"), runtime = join(root, "runtime"), cache = join(root, "prepared-cache");
-  const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v2/stream.proto"];
+  const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"];
   const manifest = { schema: "acyclic.sdk.rust-authority.v1", authority: "rust", source_revision: "a".repeat(40), families: targets.map(source => {
     put(join(authority, source), source); return { source, source_sha256: sha256(source), descriptor: "shared.bin", descriptor_sha256: sha256("descriptors") };
   }) };
   put(join(authority, "shared.bin"), "descriptors");
   const manifestBytes = Buffer.from(JSON.stringify(manifest)); put(join(authority, "rust-authority.json"), manifestBytes);
   const payload = { "composer.json": readFileSync("tools/sdk-generator/backends/php/templates/package/composer.json"), LICENSE: "license", NOTICE: "notice", "authority/rust-authority.json": manifestBytes };
-  for (const [family, version] of [["Actors", "V1"], ["Workers", "V1"], ["Stream", "V2"]]) {
+  for (const [family, version] of [["Actors", "V1"], ["Workers", "V1"], ["Stream", "V1"]]) {
     payload[`src/GPBMetadata/${family}/${version}/${family}.php`] = "metadata fixture";
     payload[`src/Acyclic/${family}/${version}/${family}ServiceClient.php`] = "client fixture";
   }

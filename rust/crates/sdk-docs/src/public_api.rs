@@ -7,7 +7,7 @@
 
 use crate::Error;
 use public_api::tokens::Token;
-use rustdoc_types::{Crate, FORMAT_VERSION, Id, ItemEnum};
+use rustdoc_types::{Crate, Id, ItemEnum, FORMAT_VERSION};
 use serde_json::Value;
 use std::path::Path;
 
@@ -97,8 +97,17 @@ fn adapt(mut value: Value, krate: &Crate) -> Result<Value, Error> {
 
 fn exported_path<'a>(tokens: impl Iterator<Item = &'a Token>) -> Result<Vec<String>, String> {
     let tokens = tokens.collect::<Vec<_>>();
+    let proc_macro = tokens.windows(3).any(|tokens| {
+        matches!(
+            tokens,
+            [Token::Kind(proc_kind), Token::Whitespace, Token::Kind(macro_kind)]
+                if proc_kind == "proc" && macro_kind == "macro"
+        )
+    });
     let Some(start) = tokens.iter().enumerate().find_map(|(index, token)| {
-        if matches!(token, Token::Kind(_)) {
+        if proc_macro && matches!(token, Token::Kind(kind) if kind == "proc") {
+            None
+        } else if matches!(token, Token::Kind(_)) {
             Some(index + 1)
         } else if matches!(token, Token::Keyword(kind) if kind == "impl") {
             tokens
@@ -143,6 +152,29 @@ fn exported_path<'a>(tokens: impl Iterator<Item = &'a Token>) -> Result<Vec<Stri
         }
         match token {
             Token::Whitespace if need_component => {
+                index += 1;
+            }
+            // public-api wraps attribute and derive macro names after the
+            // crate path; these delimiters are not exported path components.
+            Token::Symbol(open)
+                if proc_macro && need_component && (open == "#[" || open == "#[derive(") =>
+            {
+                index += 1;
+            }
+            // public-api renders receiver-qualified methods whose receiver is
+            // borrowed as `fn &crate::Type::method(...)`. The reference is a
+            // signature qualifier, not part of the exported path. Preserve
+            // the path so binding-only getters and cancellation helpers are
+            // projected with their exact rendered signature.
+            Token::Symbol(qualifier)
+                if need_component && (qualifier == "&" || qualifier == "*") =>
+            {
+                index += 1;
+            }
+            Token::Keyword(qualifier) if need_component && qualifier == "mut" => {
+                index += 1;
+            }
+            Token::Lifetime(_) if need_component => {
                 index += 1;
             }
             Token::Identifier(name)
@@ -203,7 +235,27 @@ fn exported_path_for_item<'a>(
     tokens: impl Iterator<Item = &'a Token>,
     is_impl: bool,
 ) -> Result<Vec<String>, String> {
-    match exported_path(tokens) {
+    let tokens = tokens.collect::<Vec<_>>();
+    // Compound receiver impls (for example `impl &'a crate::Type`) are
+    // public-api occurrences without a stable exported item path. They were
+    // intentionally retained as signature occurrences but must not be
+    // mistaken for the ordinary `crate::Type` path when the reference
+    // qualifier support below is enabled for binding methods.
+    if is_impl {
+        let mut index = 1;
+        if matches!(tokens.first(), Some(Token::Keyword(kind)) if kind == "impl") {
+            while matches!(tokens.get(index), Some(Token::Whitespace)) {
+                index += 1;
+            }
+            let target = tokens.get(index).copied();
+            if matches!(target, Some(Token::Symbol(symbol)) if symbol == "&" || symbol == "(")
+                || matches!(target, Some(Token::Keyword(kind)) if kind == "dyn")
+            {
+                return Ok(Vec::new());
+            }
+        }
+    }
+    match exported_path(tokens.into_iter()) {
         Ok(path) => Ok(path),
         Err(_) if is_impl => Ok(Vec::new()),
         Err(reason) => Err(reason),
@@ -266,7 +318,7 @@ fn remove_known_fields(
 mod tests {
     use super::{adapt, exported_path, exported_path_for_item, remove_known_fields};
     use public_api::tokens::Token;
-    use rustdoc_types::{Crate, FORMAT_VERSION, ItemEnum};
+    use rustdoc_types::{Crate, ItemEnum, FORMAT_VERSION};
     use serde_json::json;
     use std::env;
     use std::fs;
@@ -293,11 +345,9 @@ mod tests {
     fn adapter_removes_only_typed_nullable_metadata() {
         let mut value = base();
         remove_known_fields(&mut value, [(7, "function")]).expect("nullable metadata is supported");
-        assert!(
-            value["index"]["7"]["inner"]["function"]
-                .get("default_unstable")
-                .is_none()
-        );
+        assert!(value["index"]["7"]["inner"]["function"]
+            .get("default_unstable")
+            .is_none());
         assert_eq!(value["default_unstable"]["user_defined"], true);
         assert_eq!(
             value["index"]["7"]["inner"]["function"]["user_defined"]["default_unstable"],
@@ -307,6 +357,39 @@ mod tests {
             value["index"]["8"]["inner"]["module"]["default_unstable"],
             "keep"
         );
+    }
+
+    #[test]
+    fn token_path_handles_all_procedural_macro_kinds() {
+        for (open, close) in [("", "!()"), ("#[", "]"), ("#[derive(", ")]")] {
+            let mut tokens = vec![
+                Token::Qualifier("pub".into()),
+                Token::Whitespace,
+                Token::Kind("proc".into()),
+                Token::Whitespace,
+                Token::Kind("macro".into()),
+                Token::Whitespace,
+                Token::Identifier("crate_name".into()),
+                Token::Symbol("::".into()),
+            ];
+            if !open.is_empty() {
+                tokens.push(Token::Symbol(open.into()));
+            }
+            tokens.push(Token::Identifier("Exported".into()));
+            tokens.push(Token::Symbol(close.into()));
+            assert_eq!(
+                exported_path(tokens.iter()).expect("procedural macro path"),
+                ["crate_name", "Exported"]
+            );
+        }
+        let unsupported = [
+            Token::Kind("proc".into()),
+            Token::Whitespace,
+            Token::Kind("fn".into()),
+            Token::Whitespace,
+            Token::Identifier("invented".into()),
+        ];
+        assert!(exported_path(unsupported.iter()).is_err());
     }
 
     #[test]
@@ -405,6 +488,21 @@ mod tests {
             exported_path(array_receiver.iter()).expect("array receiver path"),
             ["[u8; 32]", "from"]
         );
+
+        let borrowed_receiver = [
+            Token::Kind("fn".into()),
+            Token::Whitespace,
+            Token::Symbol("&".into()),
+            Token::Identifier("crate_name".into()),
+            Token::Symbol("::".into()),
+            Token::Type("Cancellation".into()),
+            Token::Symbol("::".into()),
+            Token::Function("type_name".into()),
+        ];
+        assert_eq!(
+            exported_path(borrowed_receiver.iter()).expect("borrowed receiver path"),
+            ["crate_name", "Cancellation", "type_name"]
+        );
     }
     #[test]
     fn token_path_rejects_unknown_sequences() {
@@ -500,11 +598,9 @@ mod tests {
         ] {
             let mut tokens = vec![Token::Keyword("impl".into()), Token::Whitespace];
             tokens.extend(target);
-            assert!(
-                exported_path_for_item(tokens.iter(), true)
-                    .expect("compound impl should be retained without an exported path")
-                    .is_empty()
-            );
+            assert!(exported_path_for_item(tokens.iter(), true)
+                .expect("compound impl should be retained without an exported path")
+                .is_empty());
         }
     }
 

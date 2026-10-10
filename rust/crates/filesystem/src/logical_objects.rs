@@ -1,4 +1,4 @@
-//! Filesystem immutable content over canonical logical Objects v2.
+//! Filesystem immutable content over canonical logical Objects v1.
 //!
 //! Native batches are explicit capabilities, never loops of remote RPCs billed
 //! as one operation. The adapter keeps no object bytes, versions or durable state.
@@ -10,7 +10,7 @@ use crate::storage::{
     ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectReceipt, ObjectResult,
     ObjectStoreError, ObjectWrite, object_digest,
 };
-use acyclic_objects::v2::{Error, NativeBatchObjects, Object, wire};
+use acyclic_objects::v1::{Error, NativeBatchObjects, Object, wire};
 use bytes::Bytes;
 use std::{collections::BTreeMap, sync::Arc};
 type PutRequest = (wire::PutObjectHeader, Bytes);
@@ -542,7 +542,7 @@ mod tests {
     #[tokio::test]
     async fn provider_object_batch_reads_once_and_preserves_order()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (provider, bucket) = acyclic_objects::v2::MemoryObjects::with_default_bucket();
+        let (provider, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
         let store = LogicalObjectStore::new(Arc::new(provider), bucket);
         let first_bytes = Bytes::from_static(b"first");
         let second_bytes = Bytes::from_static(b"second");
@@ -603,7 +603,7 @@ mod tests {
     #[tokio::test]
     async fn provider_object_batch_counts_one_backend_write()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (provider, bucket) = acyclic_objects::v2::MemoryObjects::with_default_bucket();
+        let (provider, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
         let store = LogicalObjectStore::new(Arc::new(provider), bucket);
         let first_bytes = Bytes::from_static(b"first");
         let second_bytes = Bytes::from_static(b"second");

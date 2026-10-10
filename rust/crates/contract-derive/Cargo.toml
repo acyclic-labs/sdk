@@ -1,0 +1,28 @@
+[package]
+name = "acyclic-contract-derive"
+description = "First-party semantic contract and protobuf derivation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+proc-macro = true
+test = false
+
+[dependencies]
+heck = "0.5"
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+
+[dev-dependencies]
+prost.workspace = true
+prost-types.workspace = true
+protoc-bin-vendored.workspace = true
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

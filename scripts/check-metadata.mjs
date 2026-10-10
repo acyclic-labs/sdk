@@ -5,7 +5,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { compatibilityArtifacts, historicalCompatibilityArtifacts, packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
+import "./check-compatibility-digests.mjs";
+import { packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
 
 const root = new URL("..", import.meta.url);
 const rootPath = resolve(fileURLToPath(root));
@@ -231,21 +232,7 @@ const nativePackageVersion = nativeSource.match(/const PACKAGE_VERSION = "([^"]+
 if (nativePackageVersion !== filesystemVersion) {
   throw new Error("filesystem native companion version does not match package metadata");
 }
-for (const [family, artifacts] of Object.entries(compatibilityArtifacts)) {
-  for (const [field, path] of Object.entries(artifacts)) {
-    if (compatibility.families[family][field] !== await digest(path)) {
-      throw new Error(`${family} ${field} mismatch`);
-    }
-  }
-}
-for (const [manifestPath, artifacts] of Object.entries(historicalCompatibilityArtifacts)) {
-  const historical = await load(manifestPath);
-  for (const [field, path] of Object.entries(artifacts)) {
-    if (historical[field] !== await digest(path)) {
-      throw new Error(`historical compatibility drift: ${manifestPath} ${field}`);
-    }
-  }
-}
+
 // Generated code runs only on the protobuf runtime of its generator's release.
 const protobufRuntime = (await load("package.json")).devDependencies?.["@bufbuild/protoc-gen-es"];
 for (const [stem, packages] of packagedTypeScriptBindings) {
@@ -271,45 +258,3 @@ for (const [canonical, packaged] of packagedSourceCopies) {
 
 const validateProvenance = new Ajv2020().compile(await load("compatibility/schemas/provenance.schema.json"));
 if (validateProvenance({ imports: [{ sourceCommit: "short" }] })) throw new Error("malformed provenance fixture was accepted");
-
-// Inference 1.0.0-rc.3 is a released compatibility dependency. Keep its
-// historical sparse-index entry available even after newer SDK releases move
-// to crates.io.
-const legacyRegistry = await load("registry/config.json");
-if (
-  legacyRegistry.dl !== "https://github.com/acyclic-labs/sdk/releases/download/inference-v{version}/{crate}-{version}.crate" ||
-  legacyRegistry.api !== "https://github.com/acyclic-labs/sdk"
-) {
-  throw new Error("legacy sparse registry endpoints changed");
-}
-const legacyIndex = (await readFile(new URL("registry/in/fe/inference-sdk", root), "utf8"))
-  .trim()
-  .split("\n")
-  .map(line => JSON.parse(line));
-if (new Set(legacyIndex.map(entry => entry.vers)).size !== legacyIndex.length) {
-  throw new Error("legacy sparse registry contains duplicate versions");
-}
-const legacyInference = legacyIndex.find(entry => entry.name === "inference-sdk" && entry.vers === "1.0.0-rc.3");
-if (
-  !legacyInference || legacyInference.yanked !== false ||
-  legacyInference.cksum !== "b6ca7d6658bfe0b14728e25bad4caeb7ad6f4d74589c089ebbdf3c00d2fb846f"
-) {
-  throw new Error("released inference-sdk 1.0.0-rc.3 registry entry changed");
-}
-
-const inferenceIndex = (await readFile(new URL("registry/ac/yc/acyclic-inference", root), "utf8"))
-  .trim()
-  .split("\n")
-  .map(line => JSON.parse(line));
-if (new Set(inferenceIndex.map(entry => entry.vers)).size !== inferenceIndex.length) {
-  throw new Error("acyclic-inference sparse registry contains duplicate versions");
-}
-const releasedInference = inferenceIndex.find(
-  entry => entry.name === "acyclic-inference" && entry.vers === "1.0.0-rc.6",
-);
-if (
-  !releasedInference || releasedInference.yanked !== false ||
-  releasedInference.cksum !== "4fecfc3bf4d60d076d766f5128a36f0a6afd8c2dccdd3fec50eeebc592b2618c"
-) {
-  throw new Error("released acyclic-inference sparse registry entry changed");
-}
