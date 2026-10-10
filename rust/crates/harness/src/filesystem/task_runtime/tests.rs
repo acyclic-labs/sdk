@@ -199,6 +199,68 @@ impl Fixture {
     }
 }
 
+struct NativeAdmissionFailure {
+    clock: Arc<Clock>,
+    work: acyclic_fs::NativeMaterializationWork,
+    calls: AtomicUsize,
+}
+
+impl TaskCommandHost for NativeAdmissionFailure {
+    fn execute<'a>(
+        &'a self,
+        _context: TaskContext,
+        _fence: LeaseFence,
+        command: WorkflowCommand,
+        _payload: Value,
+    ) -> BoxFuture<'a,Result<TaskCommandProgress>> {
+        Box::pin(async move {
+            assert_eq!(command.operation_id,OperationId::from_bytes([105;16]));
+            self.calls.fetch_add(1,Ordering::SeqCst);
+            // A synchronously failed real ledger admission also crosses the
+            // deadline. Neither failure is evidence of a stopped effect.
+            self.clock.0.store(20,Ordering::SeqCst);
+            match self.work.charge(acyclic_fs::WorkCounters {items_examined:1,..Default::default()}) {
+                Err(cause) => Err(Error::NativeWork {cause,custody:None}),
+                Ok(()) => Err(Error::Invalid("native negative control unexpectedly admitted".into())),
+            }
+        })
+    }
+}
+
+#[tokio::test]
+async fn native_admission_failure_precedes_post_dispatch_verification_and_deadline_cancellation() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let runtime = fixture.runtime().await?;
+    let lease = fixture.admit(&runtime).await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget {
+            allocation_operations:1,
+            peak_allocation_bytes:acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
+            ..Default::default()
+        },&cancellation,
+    ).map_err(|failure| Error::NativeWork {cause:failure.error,custody:None})?;
+    let commands = NativeAdmissionFailure {clock:fixture.clock.clone(),work,calls:AtomicUsize::new(0)};
+    let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+    match runtime.resume_task(lease.clone(),&commands,2).await {
+        TaskWorkerAttempt::Unresolved {lease:original,error:Error::NativeWork {cause,custody}} => {
+            assert_eq!(original.operation.operation_id,lease.operation.operation_id);
+            assert_eq!(original.reservation,lease.reservation);
+            assert!(matches!(cause,acyclic_fs::NativeTreeMaterializationError::Work(_)));
+            assert!(custody.is_none());
+        },
+        _ => return Err(Error::Invalid("native first cause or original lease was lost".into())),
+    }
+    assert_eq!(commands.calls.load(Ordering::SeqCst),1);
+    assert_eq!(commands.work.receipt().items_examined,0);
+    assert_eq!(fixture.tool.executed.load(Ordering::SeqCst),0);
+    let state = runtime.task_host().observe_task(task).await?;
+    assert!(!state.cancellation_requested);
+    assert_eq!(state.reservation,Some(lease.reservation));
+    assert!(state.outcome.is_none());
+    Ok(())
+}
+
 #[tokio::test]
 async fn expired_reopened_task_rejects_before_machine_or_tool_dispatch() -> Result<()> {
     let fixture = Fixture::new().await?;

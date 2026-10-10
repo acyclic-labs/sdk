@@ -42,6 +42,10 @@ where
     // Drop the invocation before cancellation: it may hold a coordinator guard.
     // A synchronously-ready callback can cross the boundary within one poll.
     if let Some(result) = result {
+        // A failed native admission is not evidence of a timed-out effect.
+        // Preserve its cause/custody before clocks or cancellation perform IO.
+        #[cfg(all(feature = "filesystem",not(target_arch = "wasm32")))]
+        if matches!(&result,Err(Error::NativeWork {..})) { return result; }
         if host.now_unix_millis() < deadline {
             return result;
         }

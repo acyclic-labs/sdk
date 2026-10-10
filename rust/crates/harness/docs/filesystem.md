@@ -372,3 +372,9 @@ which did not acquire its custody. Declaration preflight shares the original
 validator and bounded canonical schema-hash path. These counters describe
 observed SDK work and known DTO storage, not physical provider IO, allocator
 nodes, schema-compiler internals or RSS.
+
+The ordinary task worker returns a native command failure, with its original
+cause and custody, before post-dispatch ownership reads. Its deadline wrapper
+also preserves that failure when the same poll crosses a deadline: it does not
+turn failed admission into cancellation or an indeterminate settlement. The
+existing unresolved worker attempt keeps the exact original operation and lease.

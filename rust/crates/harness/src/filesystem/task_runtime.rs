@@ -1336,6 +1336,11 @@ where
             let progress = commands
                 .execute(context.clone(), fence.clone(), command.clone(), payload)
                 .await;
+            #[cfg(all(feature = "filesystem",not(target_arch = "wasm32")))]
+            let progress = match progress {
+                Err(error @ Error::NativeWork {..}) => return Err(error),
+                progress => progress,
+            };
             self.host.verify_dispatch_owner(task, fence.clone()).await?;
             match progress {
                 Ok(TaskCommandProgress::Ready(value)) => {
