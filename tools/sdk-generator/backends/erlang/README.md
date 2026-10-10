@@ -60,9 +60,14 @@ node tools/sdk-generator/backends/erlang/src/qualify.mjs \
   --output /path/to/new-qualification
 ```
 
-The installed controls target Actors v1, Workers v1 and Stream v1. Retained
-qualification evidence at commit `2dd033b7b` covers the frozen Stream v2 foundation;
-the current Stream v1 source requires its own generation and installed run.
+The installed controls qualify Actors v1, Workers v1 and Stream v1 from the
+canonical source and descriptor bytes at revision `1407b6d9d`. A fresh maintained
+generation, archive installation and native run passed 25 populated TCP RPC
+pairs (22 unary and three server-streaming), three runtime type rejections,
+modeled descriptor comparisons and loaded-module provenance checks. Source,
+runtime, tool, dependency, compiled SDK and consumer bytes are checked again
+after execution. Earlier Stream v2 foundation evidence remains retained
+separately at commit `2dd033b7b`.
 The complete modeled file descriptor comparison applies declared protobuf
 defaults and default JSON names, sorts unordered message/enum declarations,
 and normalizes source basenames and compiler-made synthetic optional-oneof
@@ -71,7 +76,7 @@ indices remain checked; mutation controls verify those comparisons. Unknown
 descriptor extensions are outside the GPB decoder's modeled comparison. The
 original Rust descriptor bytes remain preserved and hash-checked.
 
-These controls prove installed Erlang transport behavior for that foundation.
-Current Stream v1 qualification, Rust-backed execution, embedded runtimes and complete domain
+These controls prove installed Erlang transport behavior for that cohort.
+Rust-backed execution, embedded runtimes and complete domain
 SDK behavior remain separate work. Routine CI runs affected offline Node
 controls without downloading OTP or native dependencies.
