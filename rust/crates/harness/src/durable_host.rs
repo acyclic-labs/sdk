@@ -4616,6 +4616,7 @@ mod tests {
                 })
                 .await?
                 .ok_or_else(|| Error::NotFound("parent lease".into()))?;
+            host.start_task(&lease).await?;
             let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
             let mut child = root_admission(OperationId::from_bytes([89; 16]), serde_json::json!(0));
             child.parent = Some(TaskId::from_bytes(operation_id.into_bytes()));
