@@ -1,6 +1,5 @@
 import type { WorkersClientOptions, WorkersCallOptions, WorkersFailure, WorkersTransportPreference } from "./generated/semantic/workers/readonly.js";
 import { WorkersTransportError } from "./client.js";
-import { isExpectedNativeAbsence } from "./generated/native-absence.js";
 import { WORKERS_BINDING_VERSION } from "./generated/workers-binding.js";
 
 export interface RustClient {
@@ -11,6 +10,10 @@ interface Cancellation { cancel(): void; free?(): void }
 interface RustBinding { connect(config: WorkersClientOptions, signal?: AbortSignal): Promise<RustClient> }
 let native: Promise<RustBinding | undefined> | undefined;
 let wasm: Promise<RustBinding> | undefined;
+/** Initialize the canonical binding from a module compiled by the deployment bundler. */
+export async function initializeWorkersWasm(compiledModule: WebAssembly.Module): Promise<void> {
+  await loadWasm(compiledModule);
+}
 export async function loadBinding(preference?: WorkersTransportPreference): Promise<RustBinding> {
   const isNode = (globalThis as { process?: { versions?: { node?: string } } }).process?.versions?.node !== undefined;
   if (preference !== "wasm" && isNode) {
@@ -48,8 +51,9 @@ async function nativeResult<T>(pending: Promise<{ value?: T | null; client?: T |
 }
 function loadNative(): Promise<RustBinding | undefined> {
   native ??= (async () => {
-    // @ts-ignore maintained NAPI output is produced by qualification, not checked in as authored source.
-    const imported = await import("../generated/native/binding.cjs");
+    // The native-only binary loader must remain external to browser and Workerd bundles.
+    const nativeUrl = new URL("../generated/native/binding.cjs", import.meta.url);
+    const imported = await import(nativeUrl.href);
     const { Buffer } = await import("node:buffer");
     const module = typeof imported.WorkersClient === "function" ? imported : imported.default;
     checkedVersion(module?.WorkersClient);
@@ -69,19 +73,25 @@ function loadNative(): Promise<RustBinding | undefined> {
     } };
   })().catch(async error => {
     native = undefined;
+    // Native error provenance uses filesystem URLs and must stay lazy in WASM runtimes.
+    const { isExpectedNativeAbsence } = await import("./generated/native-absence.js");
     if (await isExpectedNativeAbsence(error)) return undefined;
     throw error;
   });
   return native;
 }
-function loadWasm(): Promise<RustBinding> {
+function loadWasm(compiledModule?: WebAssembly.Module): Promise<RustBinding> {
   wasm ??= (async () => {
+    // Keep the generated WASM-only binding lazy for native-only installations.
     // @ts-ignore maintained wasm-bindgen output is produced by qualification.
     const module = await import("../generated/wasm/acyclic_workers_wasm.js");
     const isNode = (globalThis as { process?: { versions?: { node?: string } } }).process?.versions?.node !== undefined;
-    if (isNode) {
+    if (compiledModule !== undefined) {
+      await module.default({ module_or_path: compiledModule });
+    } else if (isNode) {
+      // Node-only filesystem loading is unavailable in browser and Workerd bundles.
       const { readFile } = await import("node:fs/promises");
-      await module.default(await readFile(new URL("../generated/wasm/acyclic_workers_wasm_bg.wasm", import.meta.url)));
+      await module.default({ module_or_path: await readFile(new URL("../generated/wasm/acyclic_workers_wasm_bg.wasm", import.meta.url)) });
     } else await module.default();
     checkedVersion(module.WorkersClient);
     return { async connect(config: WorkersClientOptions, signal?: AbortSignal): Promise<RustClient> {

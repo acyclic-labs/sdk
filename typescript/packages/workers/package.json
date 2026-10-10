@@ -20,13 +20,18 @@
       "default": "./generated/proto/workers/v1/workers_pb.js"
     },
     "./grpc": {
-      "default": "./dist/grpc.js",
-      "types": "./dist/grpc.d.ts"
+      "types": "./dist/grpc.d.ts",
+      "default": "./dist/grpc.js"
+    },
+    "./wasm/module.wasm": {
+      "types": "./wasm-module.d.ts",
+      "default": "./generated/wasm/acyclic_workers_wasm_bg.wasm"
     }
   },
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
+    "wasm-module.d.ts",
     "generated/proto",
     "CHANGELOG.md",
     "generated/native",
