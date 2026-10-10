@@ -20,8 +20,8 @@ accepted output budget (at most 1 MiB), without public Object version references
 The Rust crate `acyclic-workers` and `proto/workers/v1/workers.proto` own the
 contract. `WorkersClient` uses the canonical Rust binding; import generated
 request schemas from the package or `@acyclic-labs/workers/proto`. Configure
-`endpoint` and `token`; optional `ca` adds a private PEM CA and
-`maxMessageBytes` bounds requests and responses.
+`endpoint` and `token`; optional `caCertificate` adds a private PEM CA and
+`maximumMessageBytes` bounds requests and responses.
 
 Workerd and Cloudflare Pages must import the compiled WASM asset and initialize
 the binding before creating clients:
