@@ -55,10 +55,13 @@ try {
   await cp(bundle, privateBundle, { recursive: true });
   await producer.assertBundle(privateBundle);
   await copyFile(receiptPath, join(temporary, "producer-receipt.json"));
+  const runtimeEnv = { ...process.env };
+  delete runtimeEnv.GIT_DIR;
+  delete runtimeEnv.GIT_WORK_TREE;
   await /** @type {Promise<void>} */ (new Promise((resolveChild, rejectChild) => {
     const child = spawn(process.execPath, [fileURLToPath(import.meta.url)], {
       env: {
-        ...process.env,
+        ...runtimeEnv,
         ACYCLIC_FS_NAPI_CHILD_BINDING: bindingPath,
         ACYCLIC_FS_NAPI_CHILD_ROOT: join(temporary, "engine"),
         ACYCLIC_FS_NAPI_CHILD_ADAPTER: adapter ? "1" : "0",
