@@ -23,6 +23,50 @@ const domain: ClientDomain<Value, null, Evidence> = {
 
 await ClientViews.initialize();
 
+test("restored hypotheses retain dependencies and require trusted outcome receipts", () => {
+  const receipt = evidence("a", 1, value(1), ["op", "Completed"]);
+  const recovering: ClientDomain<Value, null, Evidence> = {
+    ...domain,
+    restore(fact, branch) {
+      if (branch.adapter !== "1") throw new Error("adapter drift");
+      if (branch.prediction === "Pending" && branch.outcome === "Unknown" && branch.basis === fact.basis) {
+        return { bytes: 512, work: 1 };
+      }
+      if (branch.prediction === "Confirmed" && branch.outcome === "Completed" &&
+          branch.operation === receipt.operation?.[0] && fact.basis === receipt.fact?.basis &&
+          branch.predicted.count === receipt.fact.value.count) return { bytes: 512, work: 1 };
+      throw new Error("no trusted recovery receipt");
+    },
+  };
+  const source = new ClientViews(recovering, "71", 0n, limits);
+  source.observe("a", evidence("a", 0, value(0)));
+  const parent = source.begin({ key: "a", basis: "0", operation: "op", predicted: value(1), assumption: null, dependencies: [], expires: 5n });
+  source.observe("a", receipt);
+  const child = source.begin({ key: "a", basis: "1", operation: "child", predicted: value(2), assumption: null,
+    dependencies: [{ branch: parent, requirement: "Confirmed" }], expires: 5n });
+  const savedParent = source.checkpoint(parent);
+  const savedChild = source.checkpoint(child);
+  const restored = new ClientViews(recovering, "71", source.sequence(), limits);
+  restored.observe("a", receipt);
+  const before = restored.residency();
+  expect(() => restored.restore(savedChild)).toThrow("Missing");
+  expect(restored.residency()).toEqual(before);
+  expect(() => restored.restore({ ...savedChild, prediction: "Confirmed", outcome: "Completed" })).toThrow();
+  expect(restored.residency()).toEqual(before);
+  restored.restore(savedParent);
+  restored.restore(savedChild);
+  expect(restored.view("a", [child]).value).toBe(savedChild.predicted);
+  expect(restored.checkpoint(child).dependencies).toEqual(savedChild.dependencies);
+  expect(restored.checkpoint(parent).outcome).toBe("Completed");
+  const next = restored.begin({ key: "a", basis: "1", operation: null, predicted: value(3), assumption: null,
+    dependencies: [], expires: 5n });
+  expect(next).toBe("71:3");
+  const unsupported = new ClientViews(domain, "71", source.sequence(), limits);
+  unsupported.observe("a", receipt);
+  expect(() => unsupported.restore(savedParent)).toThrow("Unsupported");
+  source.dispose(); restored.dispose(); unsupported.dispose();
+});
+
 test("Rust binding keeps stable immutable references, narrow notifications, honest outcome and provenance", () => {
   const client = new ClientViews(domain, "7", 0n, limits);
   const canonical = value(0);

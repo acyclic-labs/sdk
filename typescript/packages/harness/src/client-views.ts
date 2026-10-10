@@ -37,6 +37,10 @@ export interface ClientDomain<Value, Assumption, Evidence> {
   validate(fact: ClientFact<Value>, predicted: Value, assumption: Assumption, work: number): { bytes: number; work: number };
   observe(evidence: Evidence, current: ClientFact<Value> | null, work: number): ClientObservation<Value>;
   corresponds(predicted: Value, canonical: Value, work: number): { matches: boolean; work: number };
+  /** Verify persisted provenance against the restored authoritative cut. Storage
+   * does not authenticate prediction or operation outcomes. Pure and bounded;
+   * omitted validators make restoration Unsupported. */
+  restore?(fact: ClientFact<Value>, hypothesis: ClientHypothesis<Value, Assumption>, work: number): { bytes: number; work: number };
 }
 export interface ClientPrediction<Value, Assumption> {
   readonly key: string;
@@ -46,6 +50,12 @@ export interface ClientPrediction<Value, Assumption> {
   readonly assumption: Assumption;
   readonly dependencies: readonly { readonly branch: BranchId; readonly requirement: "Prediction" | "Confirmed" }[];
   readonly expires: bigint;
+}
+export interface ClientHypothesis<Value, Assumption> extends ClientPrediction<Value, Assumption> {
+  readonly branch: BranchId;
+  readonly adapter: string;
+  readonly prediction: PredictionOutcome;
+  readonly outcome: OperationOutcome;
 }
 export interface ClientView<Value> {
   readonly value: Value;
@@ -86,6 +96,7 @@ export class ClientViews<Value, Assumption, Evidence> {
     this.limits = Object.freeze({ ...limits });
     this.#kernel = new WasmClientViews(domain.identity, namespace, sequence, this.limits,
       domain.validate.bind(domain), domain.observe.bind(domain), domain.corresponds.bind(domain));
+    if (domain.restore !== undefined) this.#kernel.enableRestore(domain.restore.bind(domain));
   }
 
   #live(): void { if (this.#disposed) throw new Error("client views are disposed"); }
@@ -94,6 +105,25 @@ export class ClientViews<Value, Assumption, Evidence> {
     this.#live();
     return this.#kernel.begin({ key: request.key, basis: request.basis, operation: request.operation,
       dependencies: request.dependencies, expires: request.expires }, request.predicted, request.assumption) as BranchId;
+  }
+
+  /** Save the allocation watermark alongside host checkpoint correspondence. */
+  sequence(): bigint { this.#live(); return this.#kernel.sequence(); }
+
+  /** Explicit bounded export; values remain immutable references, not facts. */
+  checkpoint(branch: BranchId): ClientHypothesis<Value, Assumption> {
+    this.#live();
+    const data = this.#kernel.checkpoint(branch) as ClientHypothesis<Value, Assumption>;
+    return Object.freeze({ ...data, dependencies: Object.freeze(data.dependencies.map(edge => Object.freeze(edge))) });
+  }
+
+  /** Restore authoritative records and logical time first. Import parents before
+   * descendants into a client constructed with the recovered sequence watermark.
+   * Atomic per hypothesis; no IO, operation admission or effect execution. */
+  restore(hypothesis: ClientHypothesis<Value, Assumption>): void {
+    this.#live();
+    if (this.#selections.size !== 0) throw new Error("restore hypotheses before selecting client views");
+    this.#kernel.restore(hypothesis);
   }
 
   view(key: string, overlays: readonly BranchId[] = []): ClientView<Value> {
