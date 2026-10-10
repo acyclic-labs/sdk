@@ -66,6 +66,8 @@ retrying that exact command leaves one canonical message.
 `select` caches one immutable snapshot for React, Svelte and other consumers.
 Reads allocate no new snapshot objects and start no effects. Narrow Rust changes
 refresh only relevant selections; unchanged evidence emits no notifications.
+All affected caches refresh before listeners run, so related selections agree
+inside callbacks. Reentrant updates suppress superseded notifications.
 Selection caches have a finite records-plus-branches cap. Dispose each selection
 before releasing its key. Explicit `advance(now)` maintains monotonic logical
 retention; there are no hidden clocks or timers. Retaining an old snapshot keeps
@@ -106,7 +108,9 @@ An optional `./worker` bridge carries selected snapshots over explicitly owned
 MessagePorts. It creates no worker and transports no commands or evidence. Supply
 a codec producing an owned byte buffer and decoding immutable data. The publisher
 retains at most one in-flight snapshot plus the latest source reference, enforces
-a byte cap, and coalesces intermediate UI views under backpressure. This is safe
+a byte cap for the entire transferred ArrayBuffer, including bytes outside a
+codec's view, and coalesces intermediate UI views under backpressure. Oversized
+backing buffers and shared buffers are rejected before transfer/decode. This is safe
 for snapshots, not a license to drop journal events. The receiver rejects sequence
 gaps/reordering and oversized frames before decoding. Dispose both endpoints;
 there is no liveness timer or automatic durable-effect recovery.

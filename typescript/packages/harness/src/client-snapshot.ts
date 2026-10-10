@@ -18,17 +18,23 @@ export class SnapshotStore<Value> implements ClientSnapshot<Value> {
 
   getSnapshot = (): Value => this.#value;
 
-  publish = (value: Value): void => {
+  publish = (value: Value): void => { this.stage(value)?.(); };
+
+  /** Refresh a cache before notifying; callers can stage related stores together. */
+  stage(value: Value): (() => void) | undefined {
     if (this.#disposed || Object.is(value, this.#value)) return;
     this.#value = value;
-    // A removed callback is never called later in the same publication.
-    for (const listener of [...this.#listeners]) {
-      if (this.#listeners.has(listener)) {
-        try { listener(); }
-        catch (error) { queueMicrotask(() => this.onError(error)); }
+    return () => {
+      if (this.#disposed || !Object.is(value, this.#value)) return;
+      // A removed callback is never called later in the same publication.
+      for (const listener of [...this.#listeners]) {
+        if (this.#listeners.has(listener)) {
+          try { listener(); }
+          catch (error) { queueMicrotask(() => this.onError(error)); }
+        }
       }
-    }
-  };
+    };
+  }
 
   subscribe = (listener: () => void): (() => void) => {
     if (this.#disposed) throw new Error("snapshot store is disposed");

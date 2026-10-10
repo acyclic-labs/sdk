@@ -7,7 +7,7 @@ import Component from "./client-frameworks.svelte";
 import { ClientViews, type ClientDomain, type ClientObservation } from "@acyclic-labs/harness/client";
 import { useClientSnapshot } from "@acyclic-labs/harness/react";
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const result = document.querySelector<HTMLElement>("#result")!;
 const assert = (condition: unknown, message: string): void => { if (!condition) throw new Error(message); };
 type Value = Readonly<{ count: number }>;

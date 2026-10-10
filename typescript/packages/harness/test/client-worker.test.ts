@@ -34,19 +34,21 @@ test("optional selected snapshot channel coalesces under backpressure and dispos
 });
 
 test("oversized publisher stops once and detaches its source", () => {
-  const { port1, port2 } = new MessageChannel();
-  const source = new SnapshotStore(100);
-  const errors: unknown[] = [];
-  const stop = publishClientSnapshots(source, port1, codec, 1, error => errors.push(error));
-  source.publish(200);
-  expect(errors).toHaveLength(1);
-  stop(); port2.close();
+  for (const encoding of [codec, { ...codec, encode: () => new Uint8Array(1024).subarray(0, 1) }]) {
+    const { port1, port2 } = new MessageChannel();
+    const source = new SnapshotStore(100);
+    const errors: unknown[] = [];
+    const stop = publishClientSnapshots(source, port1, encoding, 1, error => errors.push(error));
+    try { source.publish(200); expect(errors).toHaveLength(1); }
+    finally { stop(); port2.close(); }
+  }
 });
 
 test("receiver rejects reordered/oversized snapshots before decoding", async () => {
   for (const frame of [
     { kind: "snapshot", sequence: 2, bytes: new Uint8Array([1]) },
     { kind: "snapshot", sequence: 1, bytes: new Uint8Array(17) },
+    { kind: "snapshot", sequence: 1, bytes: new Uint8Array(1024).subarray(0, 1) },
   ]) {
     const { port1, port2 } = new MessageChannel();
     let decodes = 0;

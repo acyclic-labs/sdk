@@ -30,7 +30,9 @@ export function publishClientSnapshots<Value>(store: ClientSnapshot<Value>, port
     if (stopped || inFlight) return;
     try {
       const bytes = codec.encode(latest);
-      if (bytes.byteLength > maximumBytes) throw new RangeError("selected snapshot exceeds byte bound");
+      if (!(bytes.buffer instanceof ArrayBuffer) || bytes.buffer.byteLength > maximumBytes) {
+        throw new RangeError("selected snapshot exceeds byte bound");
+      }
       if (sequence === Number.MAX_SAFE_INTEGER) throw new RangeError("snapshot sequence exhausted");
       sent = latest;
       inFlight = true;
@@ -73,7 +75,8 @@ export function receiveClientSnapshots<Value>(initial: Value, port: MessagePort,
     try {
       const frame = event.data as Frame;
       if (frame?.kind !== "snapshot" || !Number.isSafeInteger(frame.sequence) || frame.sequence !== sequence + 1 ||
-        !(frame.bytes instanceof Uint8Array) || frame.bytes.byteLength > maximumBytes) {
+        !(frame.bytes instanceof Uint8Array) || !(frame.bytes.buffer instanceof ArrayBuffer) ||
+        frame.bytes.buffer.byteLength > maximumBytes) {
         throw new Error("invalid snapshot frame");
       }
       const value = codec.decode(frame.bytes);

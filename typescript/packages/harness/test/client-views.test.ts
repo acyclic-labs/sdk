@@ -30,11 +30,15 @@ test("Rust binding keeps stable immutable references, narrow notifications, hone
   client.observe("b", evidence("b", 0, value(2)));
   const branch = client.begin({ key: "a", basis: "0", operation: "op", predicted: value(1), assumption: null, dependencies: [], expires: 5n });
   const selected = client.select("a", [branch]);
+  const sibling = client.select("a", [branch]);
   const unrelated = client.select("b");
   const old = selected.getSnapshot();
   let notifications = 0;
   let unrelatedCalls = 0;
-  const off = selected.subscribe(() => notifications++);
+  const off = selected.subscribe(() => {
+    notifications++;
+    expect(sibling.getSnapshot()).toEqual(selected.getSnapshot());
+  });
   const otherOff = unrelated.subscribe(() => unrelatedCalls++);
   try {
     expect(selected.getSnapshot()).toBe(old);
@@ -65,9 +69,10 @@ test("Rust binding keeps stable immutable references, narrow notifications, hone
     expect(notifications).toBe(3);
     expect(() => client.release("a")).toThrow("dispose");
     selected.dispose();
+    sibling.dispose();
     client.release("a");
     expect(client.residency().slice(0, 3)).toEqual([1, 0, 0]);
-  } finally { off(); otherOff(); selected.dispose(); unrelated.dispose(); client.dispose(); }
+  } finally { off(); otherOff(); selected.dispose(); sibling.dispose(); unrelated.dispose(); client.dispose(); }
   client.dispose();
   expect(() => client.view("a")).toThrow("disposed");
 });

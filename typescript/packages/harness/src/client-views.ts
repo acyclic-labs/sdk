@@ -125,6 +125,7 @@ export class ClientViews<Value, Assumption, Evidence> {
   }
 
   #publish(key: string | null, branches: readonly BranchId[]): void {
+    const notifications: (() => void)[] = [];
     for (const selection of this.#selections) {
       if (selection.key !== key && !selection.overlays.some(branch => branches.includes(branch))) continue;
       const previous = selection.store.getSnapshot();
@@ -136,9 +137,11 @@ export class ClientViews<Value, Assumption, Evidence> {
           const other = next.hypotheses[index];
           return status.branch !== other?.branch || status.prediction !== other?.prediction || status.outcome !== other?.outcome;
         })) {
-        selection.store.publish(next);
+        const notify = selection.store.stage(next);
+        if (notify) notifications.push(notify);
       }
     }
+    for (const notify of notifications) notify();
   }
 
   observe(key: string, evidence: Evidence): Readonly<{ authoritative: boolean; hypotheses: readonly BranchId[]; work: number }> {
