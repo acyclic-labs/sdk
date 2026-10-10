@@ -60,19 +60,23 @@ pub(crate) fn next_revision(revision: u64) -> Result<u64> {
         .ok_or_else(|| Error::Invalid("revision exhausted".into()))
 }
 
+mod json;
+pub use json::{
+    JsonBounds, JsonCodecCharge, canonical_json_bytes_bounded, json_bytes_bounded_trusted,
+    json_from_slice_bounded_trusted,
+};
+
 /// One sorted-key JSON encoding for durable identities and Rust/WASM output.
-/// Conversion through Value preserves full-width serde integer values while
-/// avoiding struct declaration order as an accidental wire contract.
+/// The canonical bounded serializer preserves Value integer/float and duplicate
+/// key semantics, without an unchecked initial `serde_json::to_value`.
 pub(crate) fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
-    let mut value =
-        serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
-    value.sort_all_objects();
-    serde_json::to_vec(&value).map_err(|error| Error::Invalid(error.to_string()))
+    json::canonical_json_bytes_trusted(value)
 }
 
 /// Checks compact JSON size without retaining an encoded buffer or cloning a
 /// Value tree. Key ordering does not change the size of ordinary typed records.
 /// Canonical encoding and identity checks still use `canonical_json_bytes`.
+/// This is only an encoded-size check, never owned-tree or serde heap admission.
 pub(crate) fn validate_json_byte_bound<T: Serialize>(value: &T, maximum: u64) -> Result<()> {
     json_byte_length(value, maximum).map(|_| ())
 }
@@ -100,10 +104,13 @@ pub(crate) fn json_byte_length<T: Serialize>(value: &T, maximum: u64) -> Result<
     Ok(maximum - budget.0)
 }
 
-/// Decodes a complete JSON value without an unrelated nesting policy ceiling.
+/// Complete typed decoding for trusted existing record implementations. This
+/// checks finite input structure, not arbitrary custom Deserialize heap usage.
 pub(crate) fn json_from_slice<T: serde::de::DeserializeOwned>(
     bytes: &[u8],
 ) -> serde_json::Result<T> {
+    json::admit_json(bytes, JsonBounds::IDENTITY, &mut |_| Ok(()))
+        .map_err(serde::de::Error::custom)?;
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
     decoder.disable_recursion_limit();
     let value = T::deserialize(&mut decoder)?;
