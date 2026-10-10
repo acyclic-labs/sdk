@@ -11,6 +11,11 @@ use crate::model::{ModelAttempt, ModelDispatch, ModelEvent, PreparedModelRequest
 use crate::resources::StreamRef;
 use crate::store::{HistoryReadLimits, HistoryReader};
 use std::sync::Mutex;
+use crate::distributed::{DistributedCoordinator, SchedulerPayloadStore as _};
+use crate::durable_host::CoordinatorTaskHost;
+use crate::runtime::{DurableTaskHost as _, TaskAdmissionRecord, TaskDefinition, TaskRegistry};
+use crate::workflow::{MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine};
+
 
 #[derive(Default)]
 struct SummaryModel(Mutex<Vec<PreparedModelRequest>>);
@@ -74,6 +79,147 @@ impl ModelProvider for SummaryModel {
     }
 }
 
+fn finite_summary_budget() -> acyclic_fs::WorkBudget {
+    let units = 1_000_000;
+    let bytes = 134_217_728;
+    acyclic_fs::WorkBudget {
+        authority_records_read: units, authority_records_appended: units,
+        authority_bytes_read: bytes, authority_bytes_written: bytes,
+        object_probes: units, backend_read_operations: units, backend_write_operations: units,
+        durability_operations: units, page_reads: units, page_writes: units,
+        object_bytes_read: bytes, object_bytes_written: bytes,
+        bytes_hashed: bytes, bytes_copied: bytes, bytes_encoded: bytes,
+        source_bytes_read: bytes, source_path_components: units, source_entries_visited: units,
+        output_bytes: bytes, items_examined: units, items_returned: units,
+        allocation_operations: units, peak_allocation_bytes: bytes, materializations: units,
+    }
+}
+
+struct SummaryLeaseMachine {
+    identity: MachineIdentity,
+    schema: Value,
+}
+
+impl ResumableMachine for SummaryLeaseMachine {
+    fn identity(&self) -> &MachineIdentity { &self.identity }
+    fn state_schema(&self) -> &Value { &self.schema }
+    fn initialize(&self, input: &Value) -> Result<Value> { Ok(input.clone()) }
+    fn transition(&self, state: &Value, input: &Value) -> Result<MachineTransition> {
+        Ok(MachineTransition {
+            state: state.clone(), commands: Vec::new(),
+            status: MachineStatus::Completed { value: input.clone() },
+        })
+    }
+}
+
+/// Authenticates a real ordinary task lease through the public owner API.
+/// Test setup is not part of the creator's finite capture attempt.
+async fn sealed_summary_preparation(
+    storage: &MemoryHarnessStorage,
+    preparer: &FilesystemForkPreparer<MemoryAuthorityBackend, MemoryObjectBackend>,
+    fork: &ForkRequest,
+    maximum_work: u64,
+    maximum_bytes: u64,
+) -> Result<(crate::resource_preparation::TaskResourcePreparation, crate::filesystem::InvocationCancellation)> {
+    let owner_id = OperationId::new();
+    let authority = Authority { kind: AggregateKind::Task, id: format!("summary-preparation-{owner_id}") };
+    let issuer = AuthorityIssuer::new("summary-preparation", [173; 32], authority.clone());
+    let agent = storage.scope.agent().ok_or_else(|| Error::Invalid("Summary parent agent missing".into()))?;
+    let payload_volume = VolumeRef::new(storage.volume.provider().clone(),
+        format!("summary-preparation-payloads-{owner_id}"), VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(agent))?;
+    storage.host.create_volume(&payload_volume).await?;
+    let mut grants = storage.scope.capabilities().iter().map(str::to_owned).collect::<Vec<_>>();
+    grants.extend([
+        "operation:declare".into(), "operation:observe".into(), "operation:cancel".into(),
+        "task:spawn:test.summary-preparation@1".into(), "fork:publish".into(),
+        payload_volume.capability(VolumeOperation::Read)?,
+        payload_volume.capability(VolumeOperation::Write)?,
+    ]);
+    for selection in &fork.selections {
+        if let ResourceRevision::Project { volume, .. } | ResourceRevision::PrivateVolume { volume, .. } = &selection.revision {
+            grants.push(volume.capability(VolumeOperation::Read)?);
+        }
+    }
+    let grants = Capabilities::new(grants);
+    let signed = issuer.root_for_agent(agent, "summary-preparation", grants.clone());
+    let runtime_scope = RuntimeScope::new(grants, Limits::default())?
+        .with_run_limits(crate::TaskRunLimits {
+            concurrency: Some(4), max_steps: Some(4), deadline_unix_millis: None,
+        })?;
+    let payloads = Arc::new(crate::filesystem::FilesystemSchedulerPayloadStore::new(
+        storage.host.clone(), payload_volume, &issuer.verifier(), &signed, 2_097_152)?);
+    let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(),
+        issuer.verifier(), signed.clone(), 2_097_152)?);
+    let schema = serde_json::json!({"type":"object"});
+    let implementation = Arc::new(SummaryLeaseMachine {
+        identity: MachineIdentity { name: "test.summary-preparation".into(), version: "1".into(),
+            digest: *blake3::hash(include_str!("memory_summary_tests.rs").as_bytes()).as_bytes() },
+        schema: schema.clone(),
+    });
+    let definition = TaskDefinition::<Value, Value>::resumable(implementation.clone(), schema.clone(), schema.clone())?;
+    let identity = definition.identity().clone();
+    let machine = implementation.identity.clone();
+    let mut tasks = TaskRegistry::default();
+    tasks.register(definition)?;
+    let mut machines = MachineRegistry::default();
+    machines.register(implementation)?;
+    let host = Arc::new(CoordinatorTaskHost::new(
+        DistributedCoordinator::open(&storage.stream, payloads.clone()).await?,
+        storage.stream.clone(), payloads.clone(), reader, authority, signed,
+        issuer.verifier(), runtime_scope.clone(), tasks, machines,
+        Arc::new(acyclic_stream::SystemUnixMillisClock),
+    )?.with_session_limits(crate::scheduler::SessionLimits {
+        active_tasks: 4, total_tasks: 4, depth: 2, model_steps: 4,
+    })?.with_resource_creation_provider(Arc::new(
+        crate::filesystem::FilesystemResourceCreationProvider::new(storage.host.clone(), issuer)?))?);
+    let admission = |operation_id, parent, input| TaskAdmissionRecord {
+        resource_proofs: Vec::new(), operation_id, task: identity.clone(), machine: machine.clone(),
+        input, input_schema: schema.clone(), output_schema: schema.clone(), parent,
+        grants: runtime_scope.grants().clone(), limits: runtime_scope.limits(),
+        run_limits: runtime_scope.run_limits(), policy: None, extensions: None, execution: None,
+    };
+    let root_op = OperationId::new();
+    let root = crate::TaskId::from_bytes(root_op.into_bytes());
+    assert!(matches!(host.admit(admission(root_op, None, serde_json::json!({}))).await?,
+        crate::Admission::Accepted(id) if id == root));
+    let worker = crate::distributed::Worker {
+        id: "summary-preparation-worker".into(), available: Default::default(), labels: BTreeMap::new(),
+    };
+    let crate::distributed::WorkPull::Claimed(root_lease) = host.pull_work(&worker).await? else {
+        return Err(Error::NotFound("Summary root lease missing".into()));
+    };
+    host.start_task(&root_lease).await?;
+    let prep_op = OperationId::new();
+    let prep_task = crate::TaskId::from_bytes(prep_op.into_bytes());
+    let child = admission(OperationId::new(), Some(root), serde_json::json!({}))
+        .with_resource_proofs(preparer.creation_proofs(fork, prep_task)?)?;
+    let command_payload = payloads.stage(fork.operation_id, "summary-fork-request",
+        &crate::contract::canonical_json_bytes(fork)?).await?;
+    let request = crate::resource_preparation::ResourcePreparationRequest {
+        provider: storage.volume.provider().clone(), child,
+        resources: preparer.creation_resources(fork)?, creation_grant: "fork:publish".into(),
+        maximum_resources: 2, maximum_work, maximum_bytes,
+        payload: serde_json::to_value(fork).map_err(|error| Error::Invalid(error.to_string()))?,
+        command: Some(crate::workflow::WorkflowCommand {
+            operation_id: fork.operation_id, kind: crate::filesystem::FORK_PREPARE_TASK_COMMAND_KIND.into(),
+            payload: command_payload,
+        }),
+        source_checkpoint: None, input_files: Vec::new(), read_authorization: fork.authorized_source.clone(),
+    };
+    assert!(matches!(host.admit_owned(admission(prep_op, Some(root),
+        serde_json::to_value(&request).map_err(|error| Error::Invalid(error.to_string()))?),
+        (&root_lease.reservation).into()).await?, crate::Admission::Accepted(id) if id == prep_task));
+    let crate::distributed::WorkPull::Claimed(lease) = host.pull_work(&worker).await? else {
+        return Err(Error::NotFound("Summary preparation lease missing".into()));
+    };
+    host.start_task(&lease).await?;
+    let invocation = crate::filesystem::InvocationCancellation(acyclic_fs::CancellationToken::new());
+    let owner = Arc::new(host.journal_owner(prep_task, (&lease.reservation).into()).await?
+        .with_invocation_cancellation(&invocation.0));
+    Ok((owner.resource_preparation(request).await?, invocation))
+}
+
 #[tokio::test]
 #[allow(
     clippy::too_many_lines,
@@ -135,6 +281,17 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         crate::executor::canonical_checkpoint_for_operation(storage.journal.as_ref(), last, limits)
             .await?
             .ok_or_else(|| Error::Invalid("missing admitted checkpoint".into()))?;
+    // Keep B as the explicit source selection while a later turn admits C.
+    // The finite creator must prove B's original operation and then the
+    // authenticated delta through the frozen parent, not substitute C.
+    let later = OperationId::new();
+    let later_input = storage.stage(later, "turns/later/input.txt",
+        "r".repeat(60_000).as_bytes(), "text/plain", "later-input.txt").await?;
+    storage.run_conversation(&bundle, later, later_input, Vec::new(), 1).await?;
+    let later_checkpoint = crate::executor::canonical_checkpoint_for_operation(
+        storage.journal.as_ref(), later, limits).await?
+        .ok_or_else(|| Error::Invalid("missing later admitted checkpoint".into()))?;
+    assert_ne!(later_checkpoint, reference);
     let mut aggregate = StreamAggregate::open(
         &storage.stream,
         storage.conversation.clone(),
@@ -179,6 +336,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
 
     let history = HistoryReader::new(&storage.stream, &storage.conversation, storage.verifier())?;
     let cursor = history.pin(0).await?;
+    let original_scope = RuntimeScope::new(storage.scope.capabilities().clone(), limits)?;
     let prepared = prepare_summary_fork_context(
         aggregate.reducer(),
         SummaryForkSelection {
@@ -190,7 +348,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
             },
         },
         storage.journal.as_ref(),
-        &RuntimeScope::new(storage.scope.capabilities().clone(), limits)?,
+        &original_scope,
         &history,
         &cursor,
         storage.content_verifier.as_ref(),
@@ -206,6 +364,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     assert!(proof.summary.is_some());
     let source = prepared.context().clone();
     let selection = prepared.selection().clone();
+    drop(prepared);
     let provider = storage.volume.provider().clone();
     let project = VolumeRef::new(
         provider.clone(),
@@ -243,7 +402,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         storage.content_verifier.clone(),
     )?
     .with_history_context(archived)?
-    .with_summary_context(prepared, storage.journal())?;
+    .with_summary_history(selection.clone(), storage.journal(), original_scope, history, cursor)?;
     let child_agent = AgentId::new();
     let child_private = VolumeRef::new(
         provider.clone(),
@@ -315,7 +474,45 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         aggregate.reducer(),
         ForkHistoryPolicy::Summary(Box::new(selection)),
     )?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let proof_io = PreparationIo::from_budget(finite_summary_budget(), &cancellation)?;
+    let proof_hold;
+    let finite = preparer.prepare_bound_summary(&request, Some(&proof_io)).await?
+        .ok_or_else(|| Error::Invalid("finite Summary source proof missing".into()))?;
+    proof_hold = proof_io.guard_owned(proof_io.owned_bytes()?)?;
+    assert_eq!(finite.context(), &source);
+    assert_eq!(finite.selection(), request.preparation.summary.as_ref().unwrap());
+    assert!(proof_io.receipt().bytes_encoded > 0);
+    assert!(proof_io.receipt().bytes_hashed > 0);
+    assert!(proof_io.receipt().items_examined > 0);
+    drop(finite);
+    drop(proof_hold);
+    assert_eq!(proof_io.owned_bytes()?, 0);
+    let small_io = PreparationIo::from_budget(acyclic_fs::WorkBudget::default(), &cancellation)?;
+    assert!(preparer.prepare_bound_summary(&request, Some(&small_io)).await.is_err());
+    assert_eq!(small_io.owned_bytes()?, 0);
+    let cancelled_io = PreparationIo::from_budget(finite_summary_budget(), &cancellation)?;
+    cancellation.cancel();
+    assert!(preparer.prepare_bound_summary(&request, Some(&cancelled_io)).await.is_err());
+    assert_eq!(cancelled_io.receipt(), acyclic_fs::WorkCounters::default());
+    let (quota_preparation, _quota_invocation) =
+        sealed_summary_preparation(&storage, &preparer, &request, 1, 134_217_728).await?;
+    assert!(preparer.prepare_for_task(request.clone(), &quota_preparation).await.is_err());
+    let child_private_workspace = workspace_ref(provider.clone(), &child_private.storage_name()?)?;
+    assert!(matches!(storage.host.resolve(&child_private_workspace).await, Err(Error::NotFound(_))));
+    let (cancelled_preparation, cancelled_invocation) =
+        sealed_summary_preparation(&storage, &preparer, &request, 1_000_000, 134_217_728).await?;
+    cancelled_invocation.0.cancel();
+    assert!(preparer.prepare_for_task(request.clone(), &cancelled_preparation).await.is_err());
+    assert!(matches!(storage.host.resolve(&child_private_workspace).await, Err(Error::NotFound(_))));
+    let (task_preparation, _successful_invocation) =
+        sealed_summary_preparation(&storage, &preparer, &request, 1_000_000, 134_217_728).await?;
+    // The producer has committed its capture, but the conversation has not
+    // observed the acknowledgement. Retry through the same sealed task owner.
+    let lost_acknowledgement = preparer.prepare_for_task(request.clone(), &task_preparation).await?;
+    let preparer = preparer.with_task_preparation(Arc::new(task_preparation))?;
     let report = aggregate.prepare_fork(&preparer, request.clone()).await?;
+    assert_eq!(report, lost_acknowledgement);
     assert_eq!(
         aggregate.prepare_fork(&preparer, request.clone()).await?,
         report
@@ -329,7 +526,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         .as_ref()
         .ok_or_else(|| Error::Invalid("missing Summary capture".into()))?;
     assert!(!capture.payloads.is_empty());
-    assert_eq!(report.inherited_through_sequence, 4);
+    assert_eq!(report.inherited_through_sequence, 6);
     let bytes = storage.host.read_pinned(&capture.context, 262_144).await?;
     let captured: Context = crate::contract::json_from_slice(&bytes)
         .map_err(|error| Error::Invalid(error.to_string()))?;

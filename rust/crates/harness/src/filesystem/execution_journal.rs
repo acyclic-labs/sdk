@@ -25,6 +25,7 @@ use crate::{
     tool::ToolApprovalVerifier,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
+use super::fork_preparer_io::{PreparationIo, PreparationRecord, preparation_slot_bytes};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{
     AppendOutcome, IdempotencyKey as StreamKey, StreamClient, StreamError, StreamProvider,
@@ -139,7 +140,24 @@ impl ExecutionSummary {
         model: Option<&ModelEvent>,
         limits: Limits,
     ) -> Result<()> {
+        self.accept_with_io(record, model, limits, None)
+    }
+
+    fn accept_with_io(
+        &mut self, record: &ExecutionRecord, model: Option<&ModelEvent>,
+        limits: Limits, io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        let call_bytes = match &record.event {
+            ExecutionEvent::ToolStarted { call_id, .. }
+            | ExecutionEvent::ToolCompleted { call_id, .. }
+            | ExecutionEvent::ToolFailed { call_id, .. } => call_id.len() as u64,
+            _ => 0,
+        };
+        let key_work = acyclic_fs::WorkCounters { bytes_hashed: record.idempotency_key.len() as u64, ..Default::default() };
+        let call_work = acyclic_fs::WorkCounters { bytes_hashed: call_bytes, ..Default::default() };
+        if let Some(io) = io { io.preflight(key_work)?; }
         let key = *blake3::hash(record.idempotency_key.as_bytes()).as_bytes();
+        if let Some(io) = io { io.charge(key_work)?; }
         if record.sequence != self.tail + 1
             || record.idempotency_key.is_empty()
             || self.retries.contains_key(&key)
@@ -148,8 +166,47 @@ impl ExecutionSummary {
                 "execution journal sequence or retry identity is invalid".into(),
             ));
         }
-        self.validate_next(&record.event, model, limits)?;
-        let digest = crate::contract::canonical_json_digest(&record.event)?;
+        let first_call_work = match &record.event {
+            ExecutionEvent::ToolStarted { call_id, .. } if self.tail == 0 || call_id.is_empty() => Default::default(),
+            _ => call_work,
+        };
+        if let Some(io) = io { io.preflight(first_call_work)?; }
+        let valid = self.validate_next(&record.event, model, limits);
+        if let Some(io) = io { io.charge(first_call_work)?; }
+        valid?;
+        let tool_key = match &record.event {
+            ExecutionEvent::ToolStarted { call_id, .. }
+            | ExecutionEvent::ToolCompleted { call_id, .. }
+            | ExecutionEvent::ToolFailed { call_id, .. } => {
+                if let Some(io) = io { io.preflight(call_work)?; }
+                let key = *blake3::hash(call_id.as_bytes()).as_bytes();
+                if let Some(io) = io { io.charge(call_work)?; }
+                Some(key)
+            }
+            _ => None,
+        };
+        let digest = match io {
+            Some(io) => {
+                let encoded_hold;
+                let encoded = io.encode_json(&record.event, io.remaining()?.bytes_encoded, true)?;
+                encoded_hold = io.guard_owned(encoded.len() as u64)?;
+                let work = acyclic_fs::WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() };
+                io.preflight(work)?;
+                let digest = *blake3::hash(&encoded).as_bytes();
+                io.charge(work)?;
+                drop(encoded);
+                drop(encoded_hold);
+                let extra = match &record.event {
+                    ExecutionEvent::ContextPrepared { .. } | ExecutionEvent::ContextCompacted { .. } => std::mem::size_of::<u32>(),
+                    ExecutionEvent::ModelStarted { .. } => std::mem::size_of::<((u32, crate::executor::ModelPurpose), Option<ModelEventAdmission>)>(),
+                    ExecutionEvent::ToolStarted { .. } => std::mem::size_of::<((u32, [u8; 32]), bool)>(),
+                    _ => 0,
+                };
+                io.claim((std::mem::size_of::<([u8; 32], (u64, [u8; 32]))>() + extra) as u64)?;
+                digest
+            }
+            None => crate::contract::canonical_json_digest(&record.event)?,
+        };
         match &record.event {
             ExecutionEvent::ContextPrepared { step, .. } => {
                 self.prepared_contexts.insert(*step);
@@ -169,22 +226,22 @@ impl ExecutionSummary {
                 let admission = state
                     .as_mut()
                     .ok_or_else(|| Error::Conflict("model dispatch is already settled".into()))?;
-                admission.observe(
+                admission.observe_with_io(
                     model.ok_or_else(|| Error::Storage("model observation is missing".into()))?,
-                    limits,
+                    limits, io,
                 )?;
                 if admission.completed() {
                     *state = None;
                 }
             }
-            ExecutionEvent::ToolStarted { step, call_id, .. } => {
+            ExecutionEvent::ToolStarted { step, .. } => {
                 self.tools
-                    .insert((*step, *blake3::hash(call_id.as_bytes()).as_bytes()), false);
+                    .insert((*step, tool_key.expect("tool start has an authenticated identity")), false);
             }
-            ExecutionEvent::ToolCompleted { step, call_id, .. }
-            | ExecutionEvent::ToolFailed { step, call_id, .. } => {
+            ExecutionEvent::ToolCompleted { step, .. }
+            | ExecutionEvent::ToolFailed { step, .. } => {
                 self.tools
-                    .insert((*step, *blake3::hash(call_id.as_bytes()).as_bytes()), true);
+                    .insert((*step, tool_key.expect("tool settlement has an authenticated identity")), true);
             }
             ExecutionEvent::Started { .. } => {}
         }
@@ -193,8 +250,16 @@ impl ExecutionSummary {
         Ok(())
     }
 
-    fn quiescent(&self) -> bool {
-        self.models.values().all(Option::is_none) && self.tools.values().all(|settled| *settled)
+    fn quiescent(&self, io: Option<&PreparationIo>) -> Result<bool> {
+        for model in self.models.values() {
+            super::fork_preparer_io::item(io, 0)?;
+            if model.is_some() { return Ok(false); }
+        }
+        for settled in self.tools.values() {
+            super::fork_preparer_io::item(io, 0)?;
+            if !settled { return Ok(false); }
+        }
+        Ok(true)
     }
 }
 
@@ -208,6 +273,10 @@ struct Observation {
     turn_operation: OperationId,
     retry_digest: String,
     event: ExecutionEvent,
+}
+
+impl PreparationRecord for Observation {
+    fn maximum_slot_bytes() -> u64 { preparation_slot_bytes::<Self>() }
 }
 
 impl Observation {
@@ -339,6 +408,15 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         A: AsyncAuthorityStore + 'static,
         O: AsyncObjectStore + 'static,
     {
+        self.refresh_summary_with_io(operation, summary, None).await
+    }
+
+    async fn refresh_summary_with_io(
+        &self, operation: OperationId, summary: &mut ExecutionSummary,
+        io: Option<&PreparationIo>,
+    ) -> Result<()>
+    where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
+    {
         if summary.operation != Some(operation) {
             *summary = ExecutionSummary {
                 operation: Some(operation),
@@ -350,18 +428,22 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             .as_ref()
             .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
         loop {
-            let page = Box::pin(self.replay_verified(
-                operation,
-                summary.tail,
-                EXECUTION_REPLAY_PAGE_RECORDS,
-            ))
-            .await?;
+            let before = io.map(PreparationIo::owned_bytes).transpose()?;
+            let page_hold;
+            let page = Box::pin(self.replay_verified_with_io(
+                operation, summary.tail, EXECUTION_REPLAY_PAGE_RECORDS, io)).await?;
+            page_hold = match (io, before) {
+                (Some(io), Some(before)) => Some(io.guard_owned(io.owned_bytes()?.checked_sub(before)
+                    .ok_or_else(|| Error::Invalid("execution page custody underflow".into()))?)?),
+                _ => None,
+            };
             if page.is_empty() {
                 return Ok(());
             }
             for (record, model) in page {
-                summary.accept(&record, model.as_ref(), limits)?;
+                summary.accept_with_io(&record, model.as_ref(), limits, io)?;
             }
+            drop(page_hold);
         }
     }
 
@@ -380,10 +462,46 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         let quiescent = {
             let mut summary = self.verified.lock().await;
             Box::pin(self.refresh_summary(*operation, &mut summary)).await?;
-            summary.quiescent()
+            summary.quiescent(None)?
         };
         owner.verify(true).await?;
         Ok(quiescent)
+    }
+
+    /// Releases only after both configured original journals prove passive
+    /// workflow state and settled dispatches. Their tails and the current owner
+    /// fence are compared atomically by the canonical coordinator release.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn release_if_quiescent_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+        workflow: &super::FilesystemWorkflowJournal<P, A, O>,
+    ) -> std::result::Result<bool, crate::NativeRootVerificationError>
+    where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
+    {
+        let io = PreparationIo::from_native_work(work)?;
+        let (owner, operation) = self.owner.as_ref().ok_or_else(|| Error::Unsupported(
+            "quiescence requires a task-owned execution journal".into()))?;
+        workflow.require_execution_owner(owner, &self.volume, self.verifier.audience())?;
+        let result = async {
+            let mut borrowed = io.history_io();
+            owner.verify_with_work(true, &mut Some(&mut borrowed)).await?;
+            let tail = {
+                let before = io.owned_bytes()?;
+                let summary_hold;
+                let mut summary = ExecutionSummary::default();
+                self.refresh_summary_with_io(*operation, &mut summary, Some(&io)).await?;
+                summary_hold = io.guard_owned(io.owned_bytes()?.checked_sub(before)
+                    .ok_or_else(|| Error::Invalid("execution summary custody underflow".into()))?)?;
+                if !summary.quiescent(Some(&io))? { return Ok(None); }
+                let tail = summary.tail;
+                drop(summary);
+                drop(summary_hold);
+                tail
+            };
+            Ok(workflow.prove_release_with_io(&io).await?.map(|pending| (tail, pending)))
+        }.await;
+        let Some((tail, pending)) = io.native_result(result)? else { return Ok(false); };
+        owner.release_quiescent_execution_with_native_work(*operation, tail, &pending, work).await
     }
 
     /// Releases a passive workflow command only after this task-bound journal
@@ -414,7 +532,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         })?;
         let mut summary = self.verified.lock().await;
         Box::pin(self.refresh_summary(*operation, &mut summary)).await?;
-        if !summary.quiescent() {
+        if !summary.quiescent(None)? {
             return Err(Error::Indeterminate(*operation));
         }
         owner
@@ -1191,10 +1309,33 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         A: AsyncAuthorityStore + 'static,
         O: AsyncObjectStore + 'static,
     {
+        self.replay_verified_with_io(operation_id, after, maximum, None).await
+    }
+
+    async fn replay_verified_with_io(
+        &self, operation_id: OperationId, after: u64, maximum: u32, io: Option<&PreparationIo>,
+    ) -> Result<Vec<(ExecutionRecord, Option<ModelEvent>)>>
+    where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
+    {
         self.require_operation(operation_id)?;
         validate_execution_page(after, maximum)?;
-        let mut result = Vec::new();
+        let capacity = maximum.min(EXECUTION_REPLAY_PAGE_RECORDS) as usize;
+        if let Some(io) = io {
+            let bytes = capacity.checked_mul(std::mem::size_of::<(ExecutionRecord, Option<ModelEvent>)>())
+                .ok_or_else(|| Error::Invalid("execution replay vector ownership overflow".into()))? as u64;
+            io.claim(bytes)?;
+            io.allocation_attempt(bytes)?;
+        }
+        let mut result = Vec::with_capacity(capacity);
         let mut keys = HashSet::new();
+        if let Some(io) = io {
+            // Two explicit owned path handles, not provider-internal memory.
+            let path_bytes = ("harness/v2/execution/".len() + 36) as u64;
+            io.claim(path_bytes.checked_mul(2).ok_or_else(|| Error::Invalid("execution path ownership overflow".into()))?)?;
+            let call = acyclic_fs::WorkCounters { backend_read_operations: 1, ..Default::default() };
+            io.preflight(call)?;
+            io.charge(call)?;
+        }
         let mut entries = match self
             .path(operation_id)?
             .read(after, maximum.min(EXECUTION_REPLAY_PAGE_RECORDS))
@@ -1204,20 +1345,37 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             Err(StreamError::NotFound) => return Ok(result),
             Err(error) => return Err(Error::Storage(error.to_string())),
         };
-        while let Some(record) = entries.try_next().await? {
+        loop {
+            let record_hold;
+            let Some(record) = entries.try_next().await? else { break; };
+            if let Some(io) = io {
+                let read = acyclic_fs::WorkCounters {
+                    authority_records_read: 1, authority_bytes_read: record.value.len() as u64,
+                    source_bytes_read: record.value.len() as u64, items_examined: 1, ..Default::default()
+                };
+                io.preflight(read)?;
+                io.charge(read)?;
+                io.claim(record.value.len() as u64)?;
+            }
+            record_hold = io.map(|io| io.guard_owned(record.value.len() as u64)).transpose()?;
             if result.len() >= maximum as usize || record.sequence != after + result.len() as u64 {
                 return Err(Error::Storage(
                     "execution journal sequence or bound is invalid".into(),
                 ));
             }
-            let observation: Observation = crate::contract::json_from_slice(&record.value)
-                .map_err(|error| {
-                    Error::Storage(format!("execution journal record is invalid: {error}"))
-                })?;
+            let observation: Observation = match io {
+                Some(io) => io.decode_preparation::<Observation>(&record.value)?.into_retained(),
+                None => crate::contract::json_from_slice(&record.value)
+                    .map_err(|error| Error::Storage(format!("execution journal record is invalid: {error}")))?,
+            };
             if observation.version != OBSERVATION_VERSION {
                 return Err(Error::Storage(
                     "execution journal observation version is unsupported".into(),
                 ));
+            }
+            if let Some(io) = io {
+                io.claim(observation.retry_digest.len() as u64)?;
+                io.claim(std::mem::size_of::<String>() as u64)?;
             }
             if observation.operation_id != operation_id
                 || !keys.insert(observation.retry_digest.clone())
@@ -1231,7 +1389,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                     "execution journal belongs to another original turn".into(),
                 ));
             }
-            let model = self.verify_event_refs(&observation.event).await?;
+            let model = self.verify_event_refs_with_io(&observation.event, io).await?;
             result.push((
                 ExecutionRecord {
                     operation_id,
@@ -1241,72 +1399,75 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 },
                 model,
             ));
+            drop(record);
+            drop(record_hold);
         }
         if let Some((owner, _)) = &self.owner {
-            let records = result
-                .iter()
-                .map(|(record, _)| record.clone())
-                .collect::<Vec<_>>();
-            owner.verify_model_history(operation_id, &records).await?;
+            if let Some(io) = io {
+                let mut work = io.history_io();
+                owner.verify_model_history_with_work(
+                    operation_id, result.iter().map(|(record, _)| record), &mut Some(&mut work),
+                ).await?;
+            } else {
+                owner.verify_model_history_with_work(
+                    operation_id, result.iter().map(|(record, _)| record), &mut None).await?;
+            }
         }
         Ok(result)
     }
 
     async fn verify_event_refs(&self, event: &ExecutionEvent) -> Result<Option<ModelEvent>>
+    where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
+    {
+        self.verify_event_refs_with_io(event, None).await
+    }
+
+    async fn verify_event_refs_with_io(&self, event: &ExecutionEvent, io: Option<&PreparationIo>) -> Result<Option<ModelEvent>>
     where
         P: StreamProvider,
         A: AsyncAuthorityStore + 'static,
         O: AsyncObjectStore + 'static,
     {
-        let refs: Vec<&FileRef> = match event {
-            ExecutionEvent::ContextPrepared {
-                projection,
-                accounting,
-                ..
-            } => {
-                let mut references = vec![projection];
-                references.extend(accounting.iter());
-                references
-            }
-            ExecutionEvent::ContextCompacted {
-                projection,
-                compaction,
-                accounting,
-                ..
-            } => {
-                vec![projection, compaction, accounting]
-            }
-            ExecutionEvent::ModelStarted { request, .. } => vec![request],
-            ExecutionEvent::Model { event, .. } => vec![event],
-            ExecutionEvent::ToolStarted { invocation, .. } => vec![invocation],
-            ExecutionEvent::ToolCompleted {
-                result, projection, ..
-            } => vec![result, projection],
-            ExecutionEvent::Started { .. } | ExecutionEvent::ToolFailed { .. } => Vec::new(),
+        let refs = match event {
+            ExecutionEvent::ContextPrepared { projection, accounting, .. } =>
+                [Some(projection), accounting.as_ref(), None],
+            ExecutionEvent::ContextCompacted { projection, compaction, accounting, .. } =>
+                [Some(projection), Some(compaction), Some(accounting)],
+            ExecutionEvent::ModelStarted { request, .. } => [Some(request), None, None],
+            ExecutionEvent::Model { event, .. } => [Some(event), None, None],
+            ExecutionEvent::ToolStarted { invocation, .. } => [Some(invocation), None, None],
+            ExecutionEvent::ToolCompleted { result, projection, .. } => [Some(result), Some(projection), None],
+            ExecutionEvent::Started { .. } | ExecutionEvent::ToolFailed { .. } => [None, None, None],
         };
         let mut model = None;
-        for reference in refs {
+        for reference in refs.into_iter().flatten() {
             if reference.volume() != &self.volume {
                 return Err(Error::Unauthorized(
                     "journal event refers to another private volume".into(),
                 ));
             }
-            let grant = ContentGrant::verify(
-                &self.verifier,
-                &self.scope,
-                &self.volume,
-                VolumeOperation::Read,
-            )?;
-            let bytes = self
-                .host
-                .read_content(reference, &grant, self.maximum_payload_bytes)
-                .await?;
+            let _bytes_hold;
+            let bytes = if let Some(io) = io {
+                super::fork_preparer_io::item(Some(io), 0)?;
+                ContentGrant::verify_original_volume_with_io(
+                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io)?;
+                let bytes = self.host.read_pinned_owned_io(reference, self.maximum_payload_bytes, io).await?;
+                _bytes_hold = Some(io.guard_owned(bytes.capacity() as u64)?);
+                bytes
+            } else {
+                _bytes_hold = None;
+                let grant = ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read)?;
+                self.host.read_content(reference, &grant, self.maximum_payload_bytes).await?
+            };
             if let ExecutionEvent::ModelStarted { request_digest, .. } = event {
                 let limits = self
                     .owner
                     .as_ref()
                     .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
-                let prepared = crate::model::PreparedModelRequest::decode(&bytes, limits)?;
+                let prepared = match io {
+                    Some(io) => crate::model::PreparedModelRequest::decode_with_io(&bytes, limits, io)?,
+                    None => crate::model::PreparedModelRequest::decode(&bytes, limits)?,
+                };
                 if &prepared.manifest().request_digest != request_digest {
                     return Err(Error::Invalid(
                         "model start digest differs from its retained request".into(),
@@ -1317,10 +1478,145 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 if reference.descriptor().media_type() != "application/json" {
                     return Err(Error::Storage("model observation is not JSON".into()));
                 }
-                model = Some(decode_json(&bytes)?);
+                model = Some(match io {
+                    Some(io) => {
+                        let parsed = io.decode_preparation::<ModelEvent>(&bytes)?;
+                        if io.encode_json(&parsed.value, self.maximum_payload_bytes, true)? != bytes {
+                            return Err(Error::Storage("execution journal JSON is not canonical".into()));
+                        }
+                        parsed.into_retained()
+                    }
+                    None => decode_json(&bytes)?,
+                });
             }
         }
         Ok(model)
+    }
+
+    async fn verify_input_file_with_io(&self, reference: &FileRef, io: Option<&PreparationIo>) -> Result<()>
+    where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
+    {
+        if reference.descriptor().byte_length() > self.maximum_payload_bytes {
+            return Err(Error::Invalid("turn input file exceeds journal limit".into()));
+        }
+        if let Some((owner, _)) = &self.owner
+            && owner.verify_created_input_with_io(reference, io).await?
+        {
+            return Ok(());
+        }
+        if reference.volume().provider() != &self.host.provider {
+            let verifier = self.input_verifier.as_ref().ok_or_else(|| Error::Unsupported(
+                "turn input file belongs to another content provider".into()))?;
+            return match io {
+                Some(io) => {
+                    let mut work = io.history_io();
+                    crate::store::history::HistoryIo::verify_content(&mut work, verifier.as_ref(), reference).await
+                }
+                None => verifier.verify(reference).await,
+            };
+        }
+        if let Some(io) = io {
+            super::fork_preparer_io::item(Some(io), reference.logical_owned_bytes()?)?;
+            reference.validate()?;
+            if reference.volume().class() == VolumeClass::AgentPrivate
+                && reference.volume().owner() != self.volume.owner()
+            {
+                if crate::conversation::is_internal_path(reference.path())
+                    && !crate::conversation::is_inherited_context_path(reference.path())
+                {
+                    return Err(Error::Unauthorized("internal storage file is not public content".into()));
+                }
+                let mut work = io.history_io();
+                self.verifier.verify_with_work(&self.scope, &mut Some(&mut work))?;
+                if !io.contains_capability(self.scope.capabilities(), reference, "file:read:")? {
+                    return Err(Error::Unauthorized("exact file read is not granted".into()));
+                }
+            } else {
+                ContentGrant::verify_original_volume_with_io(
+                    &self.verifier, &self.scope, reference.volume(), VolumeOperation::Read, io)?;
+            }
+            self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(io)).await?;
+        } else {
+            let grant = if reference.volume().class() == VolumeClass::AgentPrivate
+                && reference.volume().owner() != self.volume.owner()
+            {
+                ContentGrant::verify_file_read(&self.verifier, &self.scope, reference)?
+            } else {
+                ContentGrant::verify(&self.verifier, &self.scope, reference.volume(), VolumeOperation::Read)?
+            };
+            self.host.read_content(reference, &grant, self.maximum_payload_bytes).await?;
+        }
+        Ok(())
+    }
+
+    async fn verify_model_content_with_io(&self, content: &ModelContent, io: Option<&PreparationIo>) -> Result<()>
+    where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
+    {
+        let mut count = 0_usize;
+        content.visit_file_bindings(|_, _| {
+            super::fork_preparer_io::item(io, 0)?;
+            count = count.checked_add(1).ok_or_else(|| Error::Invalid("model reference count overflow".into()))?;
+            Ok(())
+        })?;
+        let references_hold;
+        let bytes = (count as u64).checked_mul(std::mem::size_of::<(&FileRef, Option<&crate::model::NativeConfigurationBinding>)>() as u64)
+            .ok_or_else(|| Error::Invalid("model reference ownership overflow".into()))?;
+        if let Some(io) = io {
+            io.claim(bytes)?;
+            references_hold = Some(io.guard_owned(bytes)?);
+            if count != 0 { io.allocation_attempt(bytes)?; }
+        } else {
+            references_hold = None;
+        }
+        let mut references = Vec::with_capacity(count);
+        content.visit_file_bindings(|file, binding| {
+            if let Some((owner, _)) = &self.owner {
+                match io {
+                    Some(io) => owner.validate_input_file_with_io(file, io)?,
+                    None => owner.validate_input_file(file)?,
+                }
+            }
+            if file.descriptor().byte_length() > self.maximum_payload_bytes {
+                return Err(Error::Invalid("model content exceeds journal limit".into()));
+            }
+            references.push((file, binding));
+            Ok(())
+        })?;
+        // Authenticate every retained claim before reading any media or options.
+        for (_, binding) in &references {
+            if let Some(binding) = binding {
+                let (owner, _) = self.owner.as_ref().ok_or_else(|| Error::Unsupported(
+                    "native options require an original task owner".into()))?;
+                match io {
+                    Some(io) => { owner.validate_native_configuration_with_io(binding, io)?; }
+                    None => { owner.validate_native_configuration(binding)?; }
+                }
+            }
+        }
+        for (_, binding) in &references {
+            if let Some(binding) = binding {
+                let (owner, _) = self.owner.as_ref().ok_or_else(|| Error::Unsupported(
+                    "native options require an original task owner".into()))?;
+                match io {
+                    Some(io) => owner.verify_native_configuration_with_io(binding, io).await?,
+                    None => owner.verify_native_configuration(binding).await?,
+                }
+            }
+        }
+        for (file, _) in &references {
+            let mut configuration = false;
+            for (_, binding) in &references {
+                super::fork_preparer_io::item(io, 0)?;
+                if binding.is_some_and(|binding| &binding.configuration.content == *file) {
+                    configuration = true;
+                    break;
+                }
+            }
+            if !configuration { self.verify_input_file_with_io(file, io).await?; }
+        }
+        drop(references);
+        drop(references_hold);
+        Ok(())
     }
 }
 
@@ -1391,6 +1687,30 @@ where
             Ok(page.into_iter().map(|(record, _)| record).collect())
         })
     }
+    fn replay_measured<'a>(
+        &'a self,
+        operation_id: OperationId,
+        after: u64,
+        maximum: u32,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<ExecutionRecord>>, Error>> {
+        Box::pin(async move {
+            let io = PreparationIo::from_budget(budget, cancellation)
+                .map_err(|cause| acyclic_fs::OperationFailure::new(cause, Default::default()))?;
+            let result = async {
+                let page = self.replay_verified_with_io(operation_id, after, maximum, Some(&io)).await?;
+                // The consuming map transfers the admitted record custody;
+                // std's collection internals are not allocator statistics.
+                let records = page.into_iter().map(|(record, _)| record).collect();
+                io.remaining()?;
+                Ok(records)
+            }.await;
+            result.map(|value| acyclic_fs::OperationReceipt { value, work: io.receipt() })
+                .map_err(|cause| acyclic_fs::OperationFailure::new(cause, io.receipt()))
+        })
+    }
+
 
     fn append<'a>(
         &'a self,
@@ -1524,77 +1844,36 @@ where
     }
 
     fn verify_input_file<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
+        Box::pin(self.verify_input_file_with_io(reference, None))
+    }
+
+    fn verify_input_file_measured<'a>(
+        &'a self, reference: &'a FileRef, budget: acyclic_fs::WorkBudget,
+        cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>> {
         Box::pin(async move {
-            if reference.descriptor().byte_length() > self.maximum_payload_bytes {
-                return Err(Error::Invalid(
-                    "turn input file exceeds journal limit".into(),
-                ));
-            }
-            if let Some((owner, _)) = &self.owner
-                && owner.read_created_input(reference).await?.is_some()
-            {
-                return Ok(());
-            }
-            if reference.volume().provider() != &self.host.provider {
-                if let Some(verifier) = &self.input_verifier {
-                    return verifier.verify(reference).await;
-                }
-                return Err(Error::Unsupported(
-                    "turn input file belongs to another content provider".into(),
-                ));
-            }
-            let grant = if reference.volume().class() == VolumeClass::AgentPrivate
-                && reference.volume().owner() != self.volume.owner()
-            {
-                ContentGrant::verify_file_read(&self.verifier, &self.scope, reference)?
-            } else {
-                ContentGrant::verify(
-                    &self.verifier,
-                    &self.scope,
-                    reference.volume(),
-                    VolumeOperation::Read,
-                )?
-            };
-            self.host
-                .read_content(reference, &grant, self.maximum_payload_bytes)
-                .await?;
-            Ok(())
+            let io = PreparationIo::from_budget(budget, cancellation)
+                .map_err(acyclic_fs::OperationFailure::before_work)?;
+            let result = self.verify_input_file_with_io(reference, Some(&io)).await;
+            result.map(|value| acyclic_fs::OperationReceipt { value, work: io.receipt() })
+                .map_err(|cause| acyclic_fs::OperationFailure::new(cause, io.receipt()))
         })
     }
 
     fn verify_model_content<'a>(&'a self, content: &'a ModelContent) -> BoxFuture<'a, Result<()>> {
+        Box::pin(self.verify_model_content_with_io(content, None))
+    }
+
+    fn verify_model_content_measured<'a>(
+        &'a self, content: &'a ModelContent, budget: acyclic_fs::WorkBudget,
+        cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>> {
         Box::pin(async move {
-            let bindings = content.native_configurations();
-            // Authenticate every retained claim before reading any media or options.
-            for file in content.file_refs() {
-                if let Some((owner, _)) = &self.owner {
-                    owner.validate_input_file(file)?;
-                }
-                if file.descriptor().byte_length() > self.maximum_payload_bytes {
-                    return Err(Error::Invalid("model content exceeds journal limit".into()));
-                }
-            }
-            for binding in &bindings {
-                let (owner, _) = self.owner.as_ref().ok_or_else(|| {
-                    Error::Unsupported("native options require an original task owner".into())
-                })?;
-                owner.validate_native_configuration(binding)?;
-            }
-            for binding in &bindings {
-                let (owner, _) = self.owner.as_ref().ok_or_else(|| {
-                    Error::Unsupported("native options require an original task owner".into())
-                })?;
-                owner.verify_native_configuration(binding).await?;
-            }
-            for file in content.file_refs() {
-                if !bindings
-                    .iter()
-                    .any(|binding| &binding.configuration.content == file)
-                {
-                    self.verify_input_file(file).await?;
-                }
-            }
-            Ok(())
+            let io = PreparationIo::from_budget(budget, cancellation)
+                .map_err(acyclic_fs::OperationFailure::before_work)?;
+            let result = self.verify_model_content_with_io(content, Some(&io)).await;
+            result.map(|value| acyclic_fs::OperationReceipt { value, work: io.receipt() })
+                .map_err(|cause| acyclic_fs::OperationFailure::new(cause, io.receipt()))
         })
     }
 
@@ -2181,7 +2460,7 @@ mod tests {
                         limits,
                     )?;
                     assert!(state.require_next(&start).is_err());
-                    assert!(!state.quiescent());
+                    assert!(!state.quiescent(None)?);
                 }
                 for purpose in [first_completion, other(first_completion)] {
                     state.accept(
@@ -2200,7 +2479,7 @@ mod tests {
                         }),
                         limits,
                     )?;
-                    assert_eq!(state.quiescent(), purpose != first_completion);
+                    assert_eq!(state.quiescent(None)?, purpose != first_completion);
                     assert!(
                         state
                             .require_next(&ExecutionEvent::Model {

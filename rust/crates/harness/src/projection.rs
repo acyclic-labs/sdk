@@ -11,7 +11,7 @@ use crate::{
     tool::ToolInvocation,
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
@@ -32,11 +32,27 @@ pub const MAX_PROJECTION_PROJECTED_ATTACHMENTS: usize = crate::conversation::MAX
 /// Largest JSON byte allowance representable by the JavaScript contract.
 pub const MAX_PROJECTION_JSON_BYTES: u64 = crate::conversation::MAX_EXACT_JS_INTEGER;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct ProjectedToolInvocation {
     call_id: String,
     name: String,
     arguments: serde_json::Value,
+}
+
+#[cfg(feature = "filesystem")]
+impl crate::filesystem::PreparationRecord for ProjectedToolInvocation {
+    fn maximum_slot_bytes() -> u64 {
+        <crate::context::Context as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
+            .max(std::mem::size_of::<Self>() as u64)
+    }
+}
+
+#[cfg(feature = "filesystem")]
+impl crate::filesystem::PreparationRecord for crate::model::ToolResultContent {
+    fn maximum_slot_bytes() -> u64 {
+        <crate::context::Context as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
+            .max(std::mem::size_of::<Self>() as u64)
+    }
 }
 
 /// Provider-owned, grant-checked resolver for a complete attachment manifest.
@@ -337,6 +353,23 @@ pub async fn select_model_context_with_projection_limit<R: AttachmentListResolve
     maximum_render_bytes: u64,
     maximum_projected_attachments: usize,
 ) -> Result<SelectedModelContext> {
+    select_model_context_with_projection_limit_and_io(conversation, selection, resolver,
+        maximum_messages, maximum_attachments, maximum_render_bytes, maximum_projected_attachments,
+        None).await
+}
+
+async fn select_model_context_with_projection_limit_and_io<R: AttachmentListResolver + ?Sized>(
+    conversation: &ConversationState,
+    selection: ModelContextSelection,
+    resolver: &R,
+    maximum_messages: usize,
+    maximum_attachments: usize,
+    maximum_render_bytes: u64,
+    maximum_projected_attachments: usize,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<SelectedModelContext> {
+    #[cfg(feature = "filesystem")]
+    let _validation_workspace = io.map(|io| crate::executor::reserve_preparation_workspace(&selection, io)).transpose()?;
     selection.validate(conversation)?;
     if maximum_messages == 0
         || maximum_render_bytes == 0
@@ -348,26 +381,47 @@ pub async fn select_model_context_with_projection_limit<R: AttachmentListResolve
             "selected message count exceeds projection limit".into(),
         ));
     }
+    #[cfg(feature = "filesystem")]
+    let mut tool_map_held = (selection.message_ids.len() * std::mem::size_of::<(Uuid, (String, String))>() * 2) as u64;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        io.claim((selection.message_ids.len() * std::mem::size_of::<ModelMessage>()) as u64)?;
+        io.allocation_attempt((selection.message_ids.len() * std::mem::size_of::<ModelMessage>()) as u64)?;
+        // Hash table keys and string bodies are logical slots, not node/RSS stats.
+        io.claim((selection.message_ids.len() * std::mem::size_of::<(Uuid, (String, String))>() * 2) as u64)?;
+    }
     let mut messages = Vec::with_capacity(selection.message_ids.len());
     let mut tool_calls: HashMap<Uuid, (String, String)> = HashMap::new();
     for id in &selection.message_ids {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+        }
         let message = conversation
             .message(*id)
             .ok_or_else(|| Error::Invalid("selected conversation message is missing".into()))?;
         message.validate()?;
         if message.kind == MessageKind::ToolCall {
             let invocation: ProjectedToolInvocation =
-                read_json_artifact(resolver, &message.content, maximum_render_bytes).await?;
+                read_json_artifact(resolver, &message.content, maximum_render_bytes, io).await?;
             ToolInvocation::validate_identity(&invocation.call_id, &invocation.name)?;
             if message.tool_call_id.as_deref() != Some(invocation.call_id.as_str()) {
                 return Err(Error::Invalid(
                     "tool call artifact identity does not match its record".into(),
                 ));
             }
+            #[cfg(feature = "filesystem")]
+            let map_before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
             tool_calls.insert(
                 message.id,
-                (invocation.call_id.clone(), invocation.name.clone()),
+                (crate::executor::clone_preparation(&invocation.call_id, io)?,
+                    crate::executor::clone_preparation(&invocation.name, io)?),
             );
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io {
+                tool_map_held = tool_map_held.checked_add(io.owned_bytes()? - map_before)
+                    .ok_or_else(|| Error::Invalid("tool map ownership overflow".into()))?;
+            }
             messages.push(ModelMessage {
                 role: ModelRole::Assistant,
                 content: ModelContent::Part(ModelContentPart::ToolCall {
@@ -397,20 +451,24 @@ pub async fn select_model_context_with_projection_limit<R: AttachmentListResolve
             if linked_call_id != call_id {
                 return Err(Error::Invalid("selected tool result lacks its call".into()));
             }
-            let attachments = resolve_attachments(message, resolver, maximum_attachments).await?;
+            let attachments = resolve_attachments(message, resolver, maximum_attachments, io).await?;
             let projection = attachments
                 .iter()
                 .find(|attachment| attachment.label.as_deref() == Some("model_projection"))
                 .ok_or_else(|| Error::Invalid("tool result lacks its model projection".into()))?;
             let value =
-                read_json_artifact(resolver, &projection.file, maximum_render_bytes).await?;
+                read_json_artifact::<crate::model::ToolResultContent, _>(resolver, &projection.file, maximum_render_bytes, io).await?;
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io {
+                io.claim(call_id.len() as u64)?;
+                io.allocation_attempt(call_id.len() as u64)?;
+            }
             messages.push(ModelMessage {
                 role: ModelRole::Tool,
                 content: ModelContent::Part(ModelContentPart::ToolResult {
                     call_id: call_id.to_owned(),
-                    name: name.clone(),
-                    content: serde_json::from_value(value)
-                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                    name: crate::executor::clone_preparation(name, io)?,
+                    content: value,
                 }),
             });
             continue;
@@ -428,18 +486,24 @@ pub async fn select_model_context_with_projection_limit<R: AttachmentListResolve
         };
         // This projection explicitly selects native image intent without conversion.
         // The selected adapter must enforce its finite work budget.
-        let native_image = || {
-            FileProjectionPolicy::Native(Box::new(crate::model::NativeMediaPolicy {
+        let native_image = || -> Result<FileProjectionPolicy> {
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io {
+                let bytes = std::mem::size_of::<crate::model::NativeMediaPolicy>() as u64;
+                io.claim(bytes)?;
+                io.allocation_attempt(bytes)?;
+            }
+            Ok(FileProjectionPolicy::Native(Box::new(crate::model::NativeMediaPolicy {
                 intent: crate::model::NativeMediaIntent::Image {
                     detail: crate::model::ImageDetail::Auto,
                 },
                 maximum_bytes: DEFAULT_PROJECTION_MAX_RESOLVED_BYTES,
                 maximum_work: maximum_render_bytes,
                 configuration: None,
-            }))
+            })))
         };
         let primary_policy = match message.content.descriptor().media_type() {
-            "image/png" | "image/jpeg" | "image/gif" | "image/webp" => native_image(),
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp" => native_image()?,
             kind if kind.starts_with("text/")
                 && message.content.descriptor().byte_length() <= maximum_render_bytes =>
             {
@@ -447,10 +511,6 @@ pub async fn select_model_context_with_projection_limit<R: AttachmentListResolve
             }
             _ => FileProjectionPolicy::Reference,
         };
-        let mut parts = vec![ModelContentPart::File {
-            file: message.content.clone(),
-            policy: primary_policy,
-        }];
         if let ReferencedAttachments::Manifest { item_count, .. } = &message.attachments
             && (*item_count as usize) > maximum_attachments
         {
@@ -458,13 +518,29 @@ pub async fn select_model_context_with_projection_limit<R: AttachmentListResolve
                 "selected message exceeds attachment projection limit".into(),
             ));
         }
-        let attachments = resolve_attachments(message, resolver, maximum_attachments).await?;
+        let attachments = resolve_attachments(message, resolver, maximum_attachments, io).await?;
         let projected_count = attachments.len().min(maximum_projected_attachments);
         let omitted_count = attachments.len() - projected_count;
+        let capacity = 1 + projected_count + usize::from(omitted_count != 0);
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            let bytes = (capacity * std::mem::size_of::<ModelContentPart>()) as u64;
+            io.claim(bytes)?;
+            io.allocation_attempt(bytes)?;
+        }
+        let mut parts = Vec::with_capacity(capacity);
+        parts.push(ModelContentPart::File {
+            file: crate::executor::clone_preparation(&message.content, io)?,
+            policy: primary_policy,
+        });
         for attachment in attachments.into_iter().take(projected_count) {
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io {
+                io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+            }
             attachment.validate()?;
             let policy = match attachment.file.descriptor().media_type() {
-                "image/png" | "image/jpeg" | "image/gif" | "image/webp" => native_image(),
+                "image/png" | "image/jpeg" | "image/gif" | "image/webp" => native_image()?,
                 _ => FileProjectionPolicy::Reference,
             };
             parts.push(ModelContentPart::File {
@@ -473,6 +549,11 @@ pub async fn select_model_context_with_projection_limit<R: AttachmentListResolve
             });
         }
         if omitted_count > 0 {
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io {
+                io.claim(128)?;
+                io.allocation_attempt(128)?;
+            }
             parts.push(ModelContentPart::Text {
                 text: format!("[{omitted_count} additional attachments omitted from this bounded model context]"),
             });
@@ -482,6 +563,9 @@ pub async fn select_model_context_with_projection_limit<R: AttachmentListResolve
             content: ModelContent::Parts(parts),
         });
     }
+    drop(tool_calls);
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io { io.release(tool_map_held)?; }
     Ok(SelectedModelContext {
         selection,
         messages,
@@ -501,18 +585,31 @@ pub async fn select_model_context_at_revision<R: AttachmentListResolver + ?Sized
     maximum_render_bytes: u64,
     maximum_projected_attachments: usize,
 ) -> Result<SelectedModelContext> {
-    validate_model_context_selection_at_revision(
+    select_model_context_at_revision_with_io(conversation, selection, resolver, maximum_messages,
+        maximum_attachments, maximum_render_bytes, maximum_projected_attachments, None).await
+}
+
+pub(crate) async fn select_model_context_at_revision_with_io<R: AttachmentListResolver + ?Sized>(
+    conversation: &ConversationState,
+    selection: ModelContextSelection,
+    resolver: &R,
+    maximum_messages: usize,
+    maximum_attachments: usize,
+    maximum_render_bytes: u64,
+    maximum_projected_attachments: usize,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<SelectedModelContext> {
+    validate_model_context_selection_at_revision_with_io(
         conversation,
         &selection,
         selection.conversation_revision,
+        io,
     )?;
     let loaded_revision = conversation.logical_revision();
-    let loaded_selection = ModelContextSelection {
-        checkpoint: selection.checkpoint.clone(),
-        conversation_revision: loaded_revision,
-        message_ids: selection.message_ids.clone(),
-    };
-    let mut selected = select_model_context_with_projection_limit(
+    let original_revision = selection.conversation_revision;
+    let mut loaded_selection = selection;
+    loaded_selection.conversation_revision = loaded_revision;
+    let mut selected = select_model_context_with_projection_limit_and_io(
         conversation,
         loaded_selection,
         resolver,
@@ -520,9 +617,10 @@ pub async fn select_model_context_at_revision<R: AttachmentListResolver + ?Sized
         maximum_attachments,
         maximum_render_bytes,
         maximum_projected_attachments,
+        io,
     )
     .await?;
-    selected.selection.conversation_revision = selection.conversation_revision;
+    selected.selection.conversation_revision = original_revision;
     Ok(selected)
 }
 
@@ -533,6 +631,17 @@ pub fn validate_model_context_selection_at_revision(
     selection: &ModelContextSelection,
     conversation_revision: u64,
 ) -> Result<()> {
+    validate_model_context_selection_at_revision_with_io(conversation, selection, conversation_revision, None)
+}
+
+fn validate_model_context_selection_at_revision_with_io(
+    conversation: &ConversationState, selection: &ModelContextSelection, conversation_revision: u64,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    #[cfg(not(feature = "filesystem"))]
+    let _ = io;
+    #[cfg(feature = "filesystem")]
+    let _validation_workspace = io.map(|io| crate::executor::reserve_preparation_workspace(selection, io)).transpose()?;
     if selection.conversation_revision != conversation_revision {
         return Err(Error::Conflict(
             "model context selection has a stale conversation revision".into(),
@@ -541,6 +650,10 @@ pub fn validate_model_context_selection_at_revision(
     let mut previous_sequence = 0;
     let mut tool_calls: HashMap<Uuid, &ConversationMessage> = HashMap::new();
     for id in &selection.message_ids {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+        }
         let message = conversation
             .message(*id)
             .ok_or_else(|| Error::Invalid("selected conversation message is missing".into()))?;
@@ -593,11 +706,14 @@ pub fn validate_model_context_selection_at_revision(
     Ok(())
 }
 
-async fn read_json_artifact<T: DeserializeOwned, R: AttachmentListResolver + ?Sized>(
+async fn read_json_artifact<T: crate::executor::PreparationRecord, R: AttachmentListResolver + ?Sized>(
     resolver: &R,
     file: &FileRef,
     maximum_bytes: u64,
+    io: Option<&crate::executor::PreparationIo>,
 ) -> Result<T> {
+    #[cfg(not(feature = "filesystem"))]
+    let _ = io;
     if file.descriptor().media_type() != "application/json"
         || file.descriptor().byte_length() > maximum_bytes
     {
@@ -605,11 +721,30 @@ async fn read_json_artifact<T: DeserializeOwned, R: AttachmentListResolver + ?Si
             "tool artifact type or rendering limit is invalid".into(),
         ));
     }
+    #[cfg(feature = "filesystem")]
+    let before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
+    #[cfg(feature = "filesystem")]
+    let _bytes_hold;
     let bytes = resolver.read(file).await?;
+    #[cfg(feature = "filesystem")]
+    { _bytes_hold = io.map(|io| io.guard_owned(io.owned_bytes()? - before)).transpose()?; }
     if bytes.len() as u64 > maximum_bytes {
         return Err(Error::Invalid(
             "resolved tool artifact exceeds rendering limit".into(),
         ));
+    }
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
+        io.preflight(hash)?;
+        file.descriptor().verify(&bytes)?;
+        io.charge(hash)?;
+        let parsed = io.decode_preparation::<serde_json::Value>(&bytes)?;
+        validate_model_json_numbers_with_io(&parsed, Some(io))?;
+        let _encoded_hold;
+        let encoded = io.encode_json(&parsed.value, io.remaining()?.bytes_encoded, false)?;
+        _encoded_hold = io.guard_owned(encoded.len() as u64)?;
+        return Ok(io.decode_preparation::<T>(&encoded)?.into_retained());
     }
     file.descriptor().verify(&bytes)?;
     let value: serde_json::Value = crate::contract::json_from_slice(&bytes)
@@ -620,10 +755,20 @@ async fn read_json_artifact<T: DeserializeOwned, R: AttachmentListResolver + ?Si
 }
 
 fn validate_model_json_numbers(value: &serde_json::Value) -> Result<()> {
+    validate_model_json_numbers_with_io(value, None)
+}
+
+fn validate_model_json_numbers_with_io(
+    value: &serde_json::Value, io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+    }
     match value {
-        serde_json::Value::Array(values) => values.iter().try_for_each(validate_model_json_numbers),
+        serde_json::Value::Array(values) => values.iter().try_for_each(|value| validate_model_json_numbers_with_io(value, io)),
         serde_json::Value::Object(values) => {
-            values.values().try_for_each(validate_model_json_numbers)
+            values.values().try_for_each(|value| validate_model_json_numbers_with_io(value, io))
         }
         serde_json::Value::Number(number) => {
             if !crate::conversation::is_exact_js_integer(number)
@@ -645,9 +790,10 @@ async fn resolve_attachments<R: AttachmentListResolver + ?Sized>(
     message: &ConversationMessage,
     resolver: &R,
     maximum_attachments: usize,
+    io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Vec<Attachment>> {
     let attachments = match &message.attachments {
-        ReferencedAttachments::Inline { items } => items.clone(),
+        ReferencedAttachments::Inline { items } => crate::executor::clone_preparation(items, io)?,
         ReferencedAttachments::Manifest {
             manifest,
             item_count,
@@ -995,7 +1141,7 @@ mod tests {
         let resolver = ArtifactResolver {
             bytes: vec![0; oversized_len],
         };
-        let result = read_json_artifact::<serde_json::Value, _>(&resolver, &reference, 1_024).await;
+        let result = read_json_artifact::<serde_json::Value, _>(&resolver, &reference, 1_024, None).await;
         let Err(error) = result else {
             return Err(Error::Invalid(
                 "oversized resolved bytes were accepted".into(),

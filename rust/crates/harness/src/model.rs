@@ -1,4 +1,9 @@
 //! Provider-neutral immutable model values and streaming host contract.
+//!
+//! Measured request admission preserves these canonical bytes and validators.
+//! Its receipt bounds cumulative SDK JSON traversal, encoding, hashing, explicit
+//! copies/allocations, and conservative live logical DTO reservations. JSON
+//! Schema library CPU/graph allocations and allocator nodes/RSS are excluded.
 
 use crate::{Error, OperationId, Result, conversation::FileRef};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
@@ -6,6 +11,62 @@ use acyclic_stream::BoxProviderStream as BoxStream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+
+fn model_step(io: Option<&crate::executor::PreparationIo>, items: u64) -> Result<()> {
+    #[cfg(not(feature = "filesystem"))]
+    let _ = (io, items);
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let work = acyclic_fs::WorkCounters { items_examined: items, ..Default::default() };
+        io.preflight(work)?;
+        io.charge(work)?;
+    }
+    Ok(())
+}
+
+fn model_json_bound<T: Serialize>(
+    value: &T, maximum: u64, io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    #[cfg(not(feature = "filesystem"))]
+    let _ = io;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let _bytes;
+        let bytes = io.encode_json(value, maximum, false)?;
+        _bytes = io.guard_owned(bytes.len() as u64)?;
+        return Ok(());
+    }
+    crate::contract::validate_json_byte_bound(value, maximum)
+        .map_err(|_| Error::Invalid("model tool projection exceeds render limit".into()))
+}
+
+fn model_hash(bytes: &[u8], io: Option<&crate::executor::PreparationIo>) -> Result<[u8; 32]> {
+    #[cfg(not(feature = "filesystem"))]
+    let _ = io;
+    #[cfg(feature = "filesystem")]
+    let work = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io { io.preflight(work)?; }
+    let digest = *blake3::hash(bytes).as_bytes();
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io { io.charge(work)?; }
+    Ok(digest)
+}
+
+fn model_digest<T: Serialize>(
+    value: &T, io: Option<&crate::executor::PreparationIo>,
+) -> Result<[u8; 32]> {
+    #[cfg(not(feature = "filesystem"))]
+    let _ = io;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let _bytes;
+        let bytes = io.encode_json(value, io.remaining()?.bytes_encoded, true)?;
+        _bytes = io.guard_owned(bytes.len() as u64)?;
+        return model_hash(&bytes, Some(io));
+    }
+    crate::contract::canonical_json_digest(value)
+}
 /// Immutable provider-owned model selection; there is no global catalog.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Model {
@@ -117,6 +178,14 @@ impl ModelContent {
     /// Applies the same byte and part ceilings to direct inputs and selected
     /// history before either can reach a provider or durable request journal.
     pub fn validate_limits(&self, limits: crate::conversation::Limits) -> Result<()> {
+        self.validate_limits_with_io(limits, None)
+    }
+
+    pub(crate) fn validate_limits_with_io(
+        &self, limits: crate::conversation::Limits,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        model_step(io, 1)?;
         limits.validate()?;
         let parts = match self {
             Self::Text(text) => {
@@ -135,30 +204,37 @@ impl ModelContent {
             ));
         }
         for part in parts {
+            model_step(io, 1)?;
             match part {
                 ModelContentPart::Text { text } if text.len() as u64 > limits.render_bytes => {
                     return Err(Error::Invalid("model text exceeds render limit".into()));
                 }
                 ModelContentPart::File { file, policy } => {
-                    policy.validate_file(file, limits)?;
+                    policy.validate_file_with_io(file, limits, io)?;
                 }
                 ModelContentPart::ToolCall {
                     name, arguments, ..
                 } => {
+                    model_step(io, name.len() as u64)?;
                     crate::registry::validate_component_label(name, "tool name")?;
-                    crate::contract::validate_json_byte_bound(arguments, limits.render_bytes)
-                        .map_err(|_| {
-                            Error::Invalid("model tool projection exceeds render limit".into())
-                        })?;
+                    model_json_bound(arguments, limits.render_bytes, io)?;
                 }
                 ModelContentPart::ToolResult { name, content, .. } => {
+                    model_step(io, name.len() as u64)?;
                     crate::registry::validate_component_label(name, "tool name")?;
-                    content.validate_limits(limits)?;
+                    content.validate_limits_with_io(limits, io)?;
                 }
                 ModelContentPart::Text { .. } => {}
             }
         }
-        if self.file_refs().len() > limits.attachments.saturating_add(1) {
+        let mut references = 0usize;
+        self.visit_file_bindings(|_, _| {
+            model_step(io, 1)?;
+            references = references.checked_add(1)
+                .ok_or_else(|| Error::Invalid("model content reference count overflow".into()))?;
+            Ok(())
+        })?;
+        if references > limits.attachments.saturating_add(1) {
             return Err(Error::Invalid(
                 "model content reference count exceeds attachment limit".into(),
             ));
@@ -189,6 +265,31 @@ impl ModelContent {
                         "user input contains an unsupported part".into(),
                     ));
                 }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn visit_file_bindings<'a>(
+        &'a self, mut visit: impl FnMut(&'a FileRef, Option<&'a NativeConfigurationBinding>) -> Result<()>,
+    ) -> Result<()> {
+        let mut file = |reference: &'a FileRef, policy: &'a FileProjectionPolicy| -> Result<()> {
+            visit(reference, None)?;
+            if let FileProjectionPolicy::Native(policy) = policy
+                && let Some(binding) = &policy.configuration {
+                visit(&binding.configuration.content, Some(binding))?;
+            }
+            Ok(())
+        };
+        for part in self.parts() {
+            match part {
+                ModelContentPart::File { file: reference, policy } => file(reference, policy)?,
+                ModelContentPart::ToolResult { content: ToolResultContent::Parts { parts }, .. } => {
+                    for part in parts {
+                        if let ModelDataPart::File { file: reference, policy } = part { file(reference, policy)?; }
+                    }
+                }
+                _ => {}
             }
         }
         Ok(())
@@ -387,10 +488,49 @@ impl NativeConfigurationBinding {
         schemas: Option<&'a crate::core::SchemaRegistry>,
         runtime: Option<&crate::extension::ExtensionRuntime>,
     ) -> Result<(&'a crate::core::SchemaRegistry, [u8; 32])> {
+        self.verify_original_engine(admission, schemas, runtime, None)
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn verify_original_with_io<'a>(
+        &self,
+        admission: Option<&crate::core::ExtensionAdmission>,
+        schemas: Option<&'a crate::core::SchemaRegistry>,
+        runtime: Option<&crate::extension::ExtensionRuntime>,
+        io: &crate::filesystem::PreparationIo,
+    ) -> Result<(&'a crate::core::SchemaRegistry, [u8; 32])> {
+        self.verify_original_engine(admission, schemas, runtime, Some(io))
+    }
+
+    fn verify_original_engine<'a>(
+        &self,
+        admission: Option<&crate::core::ExtensionAdmission>,
+        schemas: Option<&'a crate::core::SchemaRegistry>,
+        runtime: Option<&crate::extension::ExtensionRuntime>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(&'a crate::core::SchemaRegistry, [u8; 32])> {
+        #[cfg(feature = "filesystem")]
+        let _binding_hold;
+        #[cfg(feature = "filesystem")]
+        let _binding_bytes;
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            _binding_bytes = io.encode_json(self, io.remaining()?.bytes_encoded, false)?;
+            _binding_hold = io.guard_owned(_binding_bytes.len() as u64)?;
+        }
         self.configuration.validate()?;
         let admission = admission.ok_or_else(|| {
             Error::Unsupported("original task extension admission is unavailable".into())
         })?;
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            let _bytes;
+            let bytes = io.encode_json(
+                &(admission.source(), admission.selected(), admission.configurations()),
+                io.remaining()?.bytes_encoded, false,
+            )?;
+            _bytes = io.guard_owned(bytes.len() as u64)?;
+        }
         if admission.source() != &self.source
             || !admission.selected().contains(&self.configuration.extension)
             || !admission.configurations().contains(&self.configuration)
@@ -406,16 +546,22 @@ impl NativeConfigurationBinding {
             Error::Unsupported("original task linked implementation is unavailable".into())
         })?;
         let extension = &self.configuration.extension;
-        let linked = runtime
-            .selected()
-            .iter()
-            .find(|identity| {
-                identity.name == extension.name && identity.version == extension.version
-            })
-            .ok_or_else(|| {
-                Error::Unsupported("original linked extension version is unavailable".into())
-            })?;
-        let expected = schemas.implementation_digest(&extension.name, extension.version)?;
+        let mut linked = None;
+        for identity in runtime.selected() {
+            model_step(io, (identity.name.len() as u64).saturating_add(1))?;
+            if identity.name == extension.name && identity.version == extension.version {
+                linked = Some(identity);
+                break;
+            }
+        }
+        let linked = linked.ok_or_else(|| {
+            Error::Unsupported("original linked extension version is unavailable".into())
+        })?;
+        let expected = match io {
+            #[cfg(feature = "filesystem")]
+            Some(io) => schemas.implementation_digest_with_io(&extension.name, extension.version, io)?,
+            _ => schemas.implementation_digest(&extension.name, extension.version)?,
+        };
         if linked.digest != expected || self.implementation_digest != expected {
             return Err(Error::Conflict(
                 "native options implementation binding differs".into(),
@@ -547,6 +693,26 @@ impl FileProjectionPolicy {
         }
     }
 
+    fn validate_file_with_io(
+        &self, file: &FileRef, limits: crate::conversation::Limits,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        // Visit all metadata/native option fields before the same declarative
+        // checks; those checks borrow and do not clone the input.
+        #[cfg(not(feature = "filesystem"))]
+        let _ = io;
+        #[cfg(feature = "filesystem")]
+        let _hold;
+        #[cfg(feature = "filesystem")]
+        let _metadata;
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            _metadata = io.encode_json(&(file, self), io.remaining()?.bytes_encoded, false)?;
+            _hold = io.guard_owned(_metadata.len() as u64)?;
+        }
+        self.validate_file(file, limits)
+    }
+
     fn append_refs<'a>(&'a self, file: &'a FileRef, files: &mut Vec<&'a FileRef>) {
         files.push(file);
         if let Self::Native(policy) = self
@@ -559,6 +725,14 @@ impl FileProjectionPolicy {
 
 impl ToolResultContent {
     pub(crate) fn validate_limits(&self, limits: crate::conversation::Limits) -> Result<()> {
+        self.validate_limits_with_io(limits, None)
+    }
+
+    pub(crate) fn validate_limits_with_io(
+        &self, limits: crate::conversation::Limits,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        model_step(io, 1)?;
         limits.validate()?;
         if let Self::Parts { parts } = self {
             if parts.len() > limits.attachments.saturating_add(1) {
@@ -568,6 +742,7 @@ impl ToolResultContent {
             }
             let mut references = 0usize;
             for part in parts {
+                model_step(io, 1)?;
                 match part {
                     ModelDataPart::Text { text } if text.len() as u64 > limits.render_bytes => {
                         return Err(Error::Invalid(
@@ -575,7 +750,7 @@ impl ToolResultContent {
                         ));
                     }
                     ModelDataPart::File { file, policy } => {
-                        policy.validate_file(file, limits)?;
+                        policy.validate_file_with_io(file, limits, io)?;
                         references = references.checked_add(1).ok_or_else(|| {
                             Error::Invalid("tool result reference count overflow".into())
                         })?;
@@ -597,8 +772,7 @@ impl ToolResultContent {
                 ));
             }
         }
-        crate::contract::validate_json_byte_bound(self, limits.render_bytes)
-            .map_err(|_| Error::Invalid("model tool projection exceeds render limit".into()))
+        model_json_bound(self, limits.render_bytes, io)
     }
 }
 
@@ -644,10 +818,21 @@ pub struct ModelRequestManifest {
 
 impl ModelRequest {
     fn validate(&self, limits: crate::conversation::Limits) -> Result<()> {
-        use crate::tool::{ToolInvocation, validate_value};
+        self.validate_with_io(limits, None)
+    }
+
+    fn validate_with_io(
+        &self, limits: crate::conversation::Limits,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        use crate::tool::ToolInvocation;
         use std::collections::BTreeMap;
 
         limits.validate()?;
+        model_step(io, 1)?;
+        model_step(io, (self.model.provider.len() as u64)
+            .saturating_add(self.model.name.len() as u64)
+            .saturating_add(self.model.revision.len() as u64))?;
         self.model.validate()?;
         if self.messages.is_empty() || self.messages.len() > limits.context_messages {
             return Err(Error::Invalid("model context count is invalid".into()));
@@ -657,24 +842,45 @@ impl ModelRequest {
                 "model output token bound must be positive".into(),
             ));
         }
+        // Borrowed entries are the actual SDK-owned map payload. Opaque tree
+        // nodes/allocator calls are not asserted by this logical reservation.
+        #[cfg(feature = "filesystem")]
+        let _maps = if let Some(io) = io {
+            let mut calls = 0u64;
+            for message in &self.messages {
+                model_step(Some(io), 1)?;
+                calls = calls.checked_add(message.content.parts().len() as u64)
+                    .ok_or_else(|| Error::Invalid("model validation slot count overflow".into()))?;
+            }
+            let bytes = (self.tools.len() as u64)
+                .checked_mul(std::mem::size_of::<(&String, &crate::tool::ToolDefinition)>() as u64)
+                .and_then(|tools| calls.checked_mul(std::mem::size_of::<(&String, &String)>() as u64)
+                    .and_then(|pending| tools.checked_add(pending)))
+                .ok_or_else(|| Error::Invalid("model validation ownership overflow".into()))?;
+            Some(io.reserve_decode(bytes)?)
+        } else { None };
         let mut tools = BTreeMap::new();
         for tool in &self.tools {
-            tool.validate()?;
+            model_step(io, 1)?;
+            tool.validate_with_io(io)?;
             if tools.insert(&tool.name, tool).is_some() {
                 return Err(Error::Invalid("model tool definition is repeated".into()));
             }
         }
         let mut pending = BTreeMap::new();
         for message in &self.messages {
-            message.content.validate_limits(limits)?;
+            model_step(io, 1)?;
+            message.content.validate_limits_with_io(limits, io)?;
             let parts = message.content.parts();
             for part in parts {
+                model_step(io, 1)?;
                 match part {
                     ModelContentPart::ToolCall {
                         call_id,
                         name,
                         arguments,
                     } => {
+                        model_step(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
                         ToolInvocation::validate_identity(call_id, name)?;
                         if message.role != ModelRole::Assistant || pending.contains_key(call_id) {
                             return Err(Error::Invalid(
@@ -684,7 +890,9 @@ impl ModelRequest {
                         let tool = tools
                             .get(name)
                             .ok_or_else(|| Error::Invalid("model tool call is unbound".into()))?;
-                        validate_value(&tool.input_schema, arguments, "model tool arguments")?;
+                        crate::contract::validate_json_schema_value_with_io(
+                            &tool.input_schema, arguments, "model tool arguments", io,
+                        )?;
                         pending.insert(call_id, name);
                     }
                     ModelContentPart::ToolResult {
@@ -692,6 +900,7 @@ impl ModelRequest {
                         name,
                         content,
                     } => {
+                        model_step(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
                         ToolInvocation::validate_identity(call_id, name)?;
                         if message.role != ModelRole::Tool || pending.remove(call_id) != Some(name)
                         {
@@ -702,9 +911,25 @@ impl ModelRequest {
                         let tool = tools
                             .get(name)
                             .ok_or_else(|| Error::Invalid("model tool result is unbound".into()))?;
-                        let envelope = serde_json::to_value(content)
-                            .map_err(|error| Error::Invalid(error.to_string()))?;
-                        validate_value(&tool.projection_schema, &envelope, "model tool result")?;
+                        match io {
+                            #[cfg(feature = "filesystem")]
+                            Some(io) => {
+                            let _bytes;
+                            let bytes = io.encode_json(content, io.remaining()?.bytes_encoded, false)?;
+                            _bytes = io.guard_owned(bytes.len() as u64)?;
+                            let envelope = io.decode_preparation::<Value>(&bytes)?;
+                            crate::contract::validate_json_schema_value_with_io(
+                                &tool.projection_schema, &envelope, "model tool result", Some(io),
+                            )?;
+                            }
+                            _ => {
+                            let envelope = serde_json::to_value(content)
+                                .map_err(|error| Error::Invalid(error.to_string()))?;
+                            crate::contract::validate_json_schema_value(
+                                &tool.projection_schema, &envelope, "model tool result",
+                            )?;
+                        }
+                        }
                     }
                     ModelContentPart::Text { .. } | ModelContentPart::File { .. } => {
                         if message.role == ModelRole::Tool {
@@ -733,9 +958,30 @@ impl PreparedModelRequest {
     /// Reconstructs exact retained canonical bytes; unknown/defaulted fields or
     /// alternative encodings cannot silently change an admitted request.
     pub fn decode(bytes: &[u8], limits: crate::conversation::Limits) -> Result<Self> {
-        let request = crate::contract::json_from_slice(bytes)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        let prepared = Self::prepare(request, limits)?;
+        Self::decode_engine(bytes, limits, None)
+    }
+
+    #[cfg(feature = "filesystem")]
+    /// Same canonical request engine, with one cumulative finite ledger.
+    pub(crate) fn decode_with_io(
+        bytes: &[u8], limits: crate::conversation::Limits,
+        io: &crate::filesystem::PreparationIo,
+    ) -> Result<Self> {
+        Self::decode_engine(bytes, limits, Some(io))
+    }
+
+    fn decode_engine(
+        bytes: &[u8], limits: crate::conversation::Limits,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Self> {
+        let request = match io {
+            #[cfg(feature = "filesystem")]
+            Some(io) => io.decode_preparation::<ModelRequest>(bytes)?.into_retained(),
+            _ => crate::contract::json_from_slice(bytes)
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+        };
+        let prepared = Self::prepare_engine(request, limits, io)?;
+        model_step(io, bytes.len() as u64)?;
         if prepared.bytes() != bytes {
             return Err(Error::Invalid(
                 "retained model request is not exact canonical input".into(),
@@ -747,22 +993,73 @@ impl PreparedModelRequest {
     /// Admits explicit input without retrieval, compaction or truncation.
     /// Providers are trusted to honor the token ceiling and native encoding.
     pub fn prepare(request: ModelRequest, limits: crate::conversation::Limits) -> Result<Self> {
-        request.validate(limits)?;
-        let bytes = crate::contract::canonical_json_bytes(&request)?;
-        let manifest = ModelRequestManifest {
-            version: 1,
-            request_digest: *blake3::hash(&bytes).as_bytes(),
-            wire_bytes: bytes.len() as u64,
-            binding_digest: crate::contract::canonical_json_digest(&(
-                &request.model,
-                &request.tools,
-            ))?,
-            message_digests: request
-                .messages
-                .iter()
-                .map(crate::contract::canonical_json_digest)
-                .collect::<Result<_>>()?,
+        Self::prepare_engine(request, limits, None)
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn prepare_with_io(
+        request: ModelRequest, limits: crate::conversation::Limits,
+        io: &crate::filesystem::PreparationIo,
+    ) -> Result<Self> {
+        // Admit the owned caller DTO without cloning it. The witness is a
+        // conservative logical allowance, not allocator nodes or RSS.
+        let before = io.receipt().items_examined;
+        let _witness;
+        let witness = io.encode_json(&request, io.remaining()?.bytes_encoded, false)?;
+        _witness = io.guard_owned(witness.len() as u64)?;
+        let items = io.receipt().items_examined.checked_sub(before)
+            .ok_or_else(|| Error::Invalid("model request witness underflow".into()))?;
+        let owned = items.checked_mul(<ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes())
+            .and_then(|slots| slots.checked_mul(8))
+            .and_then(|slots| (witness.len() as u64).checked_mul(4)
+                .and_then(|strings| slots.checked_add(strings)))
+            .and_then(|owned| owned.checked_add(std::mem::size_of::<ModelRequest>() as u64))
+            .ok_or_else(|| Error::Invalid("model request ownership overflow".into()))?;
+        let request_hold = io.reserve_decode(owned)?;
+        let prepared = Self::prepare_engine(request, limits, Some(io))?;
+        request_hold.into_retained();
+        Ok(prepared)
+    }
+
+    fn prepare_engine(
+        request: ModelRequest, limits: crate::conversation::Limits,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Self> {
+        request.validate_with_io(limits, io)?;
+        #[cfg(feature = "filesystem")]
+        let bytes_hold;
+        let bytes = match io {
+            #[cfg(feature = "filesystem")]
+            Some(io) => io.encode_json(&request, io.remaining()?.bytes_encoded, true)?,
+            _ => crate::contract::canonical_json_bytes(&request)?,
         };
+        #[cfg(feature = "filesystem")]
+        bytes_hold = io.map(|io| io.guard_owned(bytes.len() as u64)).transpose()?;
+        let request_digest = model_hash(&bytes, io)?;
+        let binding_digest = model_digest(&(&request.model, &request.tools), io)?;
+        #[cfg(feature = "filesystem")]
+        let capacity = request.messages.len().checked_mul(std::mem::size_of::<[u8; 32]>())
+            .ok_or_else(|| Error::Invalid("model message digest capacity overflow".into()))?;
+        #[cfg(feature = "filesystem")]
+        let mut digest_hold = if let Some(io) = io {
+            io.claim(capacity as u64)?;
+            let hold = io.guard_owned(capacity as u64)?;
+            io.allocation_attempt(capacity as u64)?;
+            Some(hold)
+        } else { None };
+        let mut message_digests = Vec::with_capacity(request.messages.len());
+        for message in &request.messages {
+            model_step(io, 1)?;
+            message_digests.push(model_digest(message, io)?);
+        }
+        let manifest = ModelRequestManifest {
+            version: 1, request_digest, wire_bytes: bytes.len() as u64,
+            binding_digest, message_digests,
+        };
+        #[cfg(feature = "filesystem")]
+        if let Some(hold) = bytes_hold { hold.into_retained(); }
+        #[cfg(feature = "filesystem")]
+        if let Some(hold) = digest_hold.take() { hold.into_retained(); }
         Ok(Self {
             request,
             bytes,
@@ -1288,6 +1585,108 @@ mod tests {
             prepared.manifest().request_digest,
             changed.manifest().request_digest
         );
+        Ok(())
+    }
+
+    #[cfg(feature = "filesystem")]
+    fn model_budget() -> acyclic_fs::WorkBudget {
+        acyclic_fs::WorkBudget {
+            bytes_hashed: 10_000_000, bytes_copied: 10_000_000,
+            bytes_encoded: 10_000_000, source_bytes_read: 10_000_000,
+            items_examined: 10_000_000, allocation_operations: 10_000,
+            peak_allocation_bytes: 10_000_000, ..Default::default()
+        }
+    }
+
+    #[cfg(feature = "filesystem")]
+    #[test]
+    fn measured_request_exact_quota_and_cancellation_preserve_prefix() -> Result<()> {
+        use crate::filesystem::PreparationIo;
+        use acyclic_fs::{CancellationToken, WorkCounters};
+        let mut input = request()?;
+        input.tools.clear();
+        let ordinary = PreparedModelRequest::prepare(input, Limits::default())?;
+        let cancellation = CancellationToken::new();
+        let baseline = PreparationIo::from_budget(model_budget(), &cancellation)?;
+        let measured = PreparedModelRequest::decode_with_io(ordinary.bytes(), Limits::default(), &baseline)?;
+        assert_eq!(measured.bytes(), ordinary.bytes());
+        assert_eq!(measured.manifest(), ordinary.manifest());
+        let exact = baseline.receipt();
+        assert!(exact.bytes_hashed > 0 && exact.bytes_encoded > 0);
+        assert!(exact.source_bytes_read > 0 && exact.items_examined > 0);
+        assert!(exact.peak_allocation_bytes > 0 && exact.allocation_operations > 0);
+        let admitted = PreparationIo::from_budget(exact, &cancellation)?;
+        assert_eq!(
+            PreparedModelRequest::decode_with_io(ordinary.bytes(), Limits::default(), &admitted)?.manifest(),
+            ordinary.manifest(),
+        );
+        assert_eq!(admitted.receipt(), exact);
+        for budget in [
+            acyclic_fs::WorkBudget { bytes_hashed: exact.bytes_hashed - 1, ..exact },
+            acyclic_fs::WorkBudget { peak_allocation_bytes: exact.peak_allocation_bytes - 1, ..exact },
+            acyclic_fs::WorkBudget { allocation_operations: 0, ..exact },
+        ] {
+            let denied = PreparationIo::from_budget(budget, &cancellation)?;
+            assert!(PreparedModelRequest::decode_with_io(ordinary.bytes(), Limits::default(), &denied).is_err());
+            denied.receipt().verify(budget).map_err(|error| Error::Invalid(error.to_string()))?;
+            assert!(denied.receipt().source_bytes_read > 0);
+        }
+        let cancelled = PreparationIo::from_budget(model_budget(), &cancellation)?;
+        cancellation.cancel();
+        assert!(matches!(
+            PreparedModelRequest::decode_with_io(ordinary.bytes(), Limits::default(), &cancelled),
+            Err(Error::Storage(_)),
+        ));
+        assert_eq!(cancelled.receipt(), WorkCounters::default());
+        Ok(())
+    }
+
+    #[cfg(feature = "filesystem")]
+    #[test]
+    fn measured_request_schema_projection_and_canonical_controls() -> Result<()> {
+        use crate::filesystem::PreparationIo;
+        use acyclic_fs::CancellationToken;
+        let cancellation = CancellationToken::new();
+        let mut input = request()?;
+        exchange(&mut input);
+        let ordinary = PreparedModelRequest::prepare(input.clone(), Limits::default())?;
+        let io = PreparationIo::from_budget(model_budget(), &cancellation)?;
+        let measured = PreparedModelRequest::decode_with_io(ordinary.bytes(), Limits::default(), &io)?;
+        assert_eq!(measured.bytes(), include_bytes!("../fixtures/model-request.json"));
+        assert_eq!(measured.manifest(), ordinary.manifest());
+        let mut alternate = ordinary.bytes().to_vec();
+        alternate.push(b' ');
+        let mut unknown = serde_json::to_value(&input).map_err(|error| Error::Invalid(error.to_string()))?;
+        unknown["discarded"] = Value::Bool(true);
+        for bytes in [
+            alternate, crate::contract::canonical_json_bytes(&unknown)?, b"{".to_vec(),
+        ] {
+            let denied = PreparationIo::from_budget(model_budget(), &cancellation)?;
+            assert!(PreparedModelRequest::decode_with_io(&bytes, Limits::default(), &denied).is_err());
+            assert!(denied.receipt().source_bytes_read > 0);
+        }
+        let mut invalid = input.clone();
+        invalid.tools[0].input_schema = json!({"type":"integer"});
+        assert!(PreparedModelRequest::prepare(invalid.clone(), Limits::default()).is_err());
+        let denied = PreparationIo::from_budget(model_budget(), &cancellation)?;
+        assert!(PreparedModelRequest::prepare_with_io(invalid, Limits::default(), &denied).is_err());
+        assert!(denied.receipt().bytes_copied > 0);
+        let mut invalid_projection = input.clone();
+        if let ModelContent::Part(ModelContentPart::ToolResult {
+            content: ToolResultContent::Json { value }, ..
+        }) = &mut invalid_projection.messages[2].content {
+            *value = json!(42);
+        }
+        let denied = PreparationIo::from_budget(model_budget(), &cancellation)?;
+        assert!(PreparedModelRequest::prepare_with_io(invalid_projection, Limits::default(), &denied).is_err());
+        input.tools[0].revision = "schema-3".into();
+        input.model.options = json!({"temperature":0});
+        let changed_ordinary = PreparedModelRequest::prepare(input.clone(), Limits::default())?;
+        let changed_io = PreparationIo::from_budget(model_budget(), &cancellation)?;
+        let changed = PreparedModelRequest::prepare_with_io(input, Limits::default(), &changed_io)?;
+        assert_eq!(changed.manifest(), changed_ordinary.manifest());
+        assert_ne!(changed.manifest().request_digest, measured.manifest().request_digest);
+        assert_ne!(changed.manifest().binding_digest, measured.manifest().binding_digest);
         Ok(())
     }
 

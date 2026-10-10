@@ -337,23 +337,81 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(())
     }
 
-    /// Reads only a kernel-authenticated created-volume input. The ordinary
+    /// Verifies only a kernel-authenticated created-volume input. The ordinary
     /// journal input resolver remains authoritative for every other volume.
-    pub(crate) async fn read_created_input(&self, file: &FileRef) -> Result<Option<Vec<u8>>> {
-        self.validate_input_file(file)?;
-        let Some(reader) = self.input_created.as_ref().and_then(|access| {
-            access.references.iter().find(|binding| &binding.file == file)
-                .map(|binding| &binding.reader)
-                .or_else(|| access.content.iter().find(|binding| &binding.volume == file.volume())
-                    .map(|binding| &binding.binding.reader))
-        }) else {
-            return Ok(None);
+    pub(crate) async fn verify_created_input_with_io(
+        &self, file: &FileRef, io: Option<&crate::filesystem::PreparationIo>,
+    ) -> Result<bool> {
+        match io {
+            Some(io) => self.validate_input_file_with_io(file, io)?,
+            None => self.validate_input_file(file)?,
+        }
+        let mut reader = None;
+        if let Some(access) = &self.input_created {
+            for binding in &access.references {
+                if let Some(io) = io {
+                    let step = acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() };
+                    io.preflight(step)?;
+                    io.charge(step)?;
+                }
+                if &binding.file == file {
+                    reader = Some(&binding.reader);
+                    break;
+                }
+            }
+            if reader.is_none() {
+                for binding in &access.content {
+                    if let Some(io) = io {
+                        let step = acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() };
+                        io.preflight(step)?;
+                        io.charge(step)?;
+                    }
+                    if &binding.volume == file.volume() {
+                        reader = Some(&binding.binding.reader);
+                        break;
+                    }
+                }
+            }
+        }
+        let Some(reader) = reader else { return Ok(false); };
+        let bytes_hold;
+        let bytes = match io {
+            Some(io) => {
+                let mut borrowed = io.history_io();
+                self.verify_with_work(true, &mut Some(&mut borrowed)).await?;
+                let bytes = crate::store::history::HistoryIo::read_content(
+                    &mut borrowed, reader.as_ref(), file).await?;
+                bytes_hold = Some(io.guard_owned(bytes.capacity() as u64)?);
+                crate::store::history::HistoryIo::hashed_bytes(&mut borrowed, bytes.len() as u64)?;
+                bytes
+            }
+            None => {
+                bytes_hold = None;
+                self.verify(true).await?;
+                reader.read(file).await?
+            }
         };
-        self.verify(true).await?;
-        let bytes = reader.read(file).await?;
         file.descriptor().verify(&bytes)?;
-        self.verify(true).await?;
-        Ok(Some(bytes))
+        match io {
+            Some(io) => {
+                let mut borrowed = io.history_io();
+                self.verify_with_work(true, &mut Some(&mut borrowed)).await?;
+            }
+            None => self.verify(true).await?,
+        }
+        drop(bytes);
+        drop(bytes_hold);
+        Ok(true)
+    }
+
+    pub(crate) fn validate_input_file_with_io(
+        &self, file: &FileRef, io: &crate::filesystem::PreparationIo,
+    ) -> Result<()> {
+        self.input_limits.validate_file(file)?;
+        if !crate::runtime::read_granted_measured(&self.input_grants, file, io)? {
+            return Err(Error::Unauthorized("task cannot read the execution input file".into()));
+        }
+        Ok(())
     }
 
     pub(crate) fn validate_native_configuration(
@@ -397,6 +455,40 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
 
     pub(crate) const fn input_grants(&self) -> &crate::Capabilities {
         &self.input_grants
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn validate_native_configuration_with_io(
+        &self, binding: &crate::model::NativeConfigurationBinding,
+        io: &crate::filesystem::PreparationIo,
+    ) -> Result<(&crate::core::SchemaRegistry, [u8; 32])> {
+        let (schemas, expected) = binding.verify_original_with_io(
+            self.extensions.as_ref(), self.extension_schemas.as_ref(),
+            self.extension_runtime.as_deref(), io)?;
+        let file = &binding.configuration.content;
+        self.validate_input_file_with_io(file, io)?;
+        if file.descriptor().byte_length() > self.input_limits.render_bytes {
+            return Err(Error::Invalid("native options exceed render byte limit".into()));
+        }
+        Ok((schemas, expected))
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) async fn verify_native_configuration_with_io(
+        &self, binding: &crate::model::NativeConfigurationBinding,
+        io: &crate::filesystem::PreparationIo,
+    ) -> Result<()> {
+        let (schemas, expected) = self.validate_native_configuration_with_io(binding, io)?;
+        let bytes_hold;
+        let mut borrowed = io.history_io();
+        let bytes = crate::store::history::HistoryIo::read_content(
+            &mut borrowed, self.host.reader.as_ref(), &binding.configuration.content).await?;
+        bytes_hold = io.guard_owned(bytes.capacity() as u64)?;
+        let result = schemas.verify_configuration_binding_with_io(
+            &binding.configuration, expected, &bytes, self.input_limits, io);
+        drop(bytes);
+        drop(bytes_hold);
+        result
     }
 
     #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
@@ -5483,10 +5575,33 @@ pub(crate) mod tests {
                 content_scope.clone(),
                 65_536,
             )?);
+            let release_budget = acyclic_fs::WorkBudget {
+                authority_records_read: 100_000, authority_records_appended: 100_000,
+                authority_bytes_read: 100_000_000, authority_bytes_written: 100_000_000,
+                object_probes: 100_000, backend_read_operations: 100_000,
+                backend_write_operations: 100_000, durability_operations: 100_000,
+                page_reads: 100_000, page_writes: 100_000,
+                object_bytes_read: 100_000_000, object_bytes_written: 100_000_000,
+                bytes_hashed: 100_000_000, bytes_copied: 100_000_000, bytes_encoded: 100_000_000,
+                source_bytes_read: 100_000_000, source_path_components: 100_000,
+                source_entries_visited: 100_000, output_bytes: 100_000_000,
+                items_examined: 100_000, items_returned: 100_000,
+                allocation_operations: 100_000, peak_allocation_bytes: 100_000_000,
+                materializations: 100_000,
+            };
+            let release_cancellation = acyclic_fs::CancellationToken::new();
+            let before_admission = crate::filesystem::PreparationIo::from_budget(
+                release_budget, &release_cancellation,
+            )?;
+            assert!(journal.prove_release_with_io(&before_admission).await?.is_none());
             let mut wrong = admission.clone();
             wrong.initial.state = serde_json::json!(1);
             assert!(journal.admit(wrong).await.is_err());
             assert_eq!(journal.admit(admission.clone()).await?, admission);
+            let admission_only = crate::filesystem::PreparationIo::from_budget(
+                release_budget, &release_cancellation,
+            )?;
+            assert!(journal.prove_release_with_io(&admission_only).await?.is_none());
             let mut workflow = DurableWorkflowHost::open(
                 host.machines.clone(),
                 admission.initial,
@@ -5500,6 +5615,27 @@ pub(crate) mod tests {
                     serde_json::json!(0),
                 )
                 .await?;
+            let release_io = crate::filesystem::PreparationIo::from_budget(
+                release_budget, &release_cancellation,
+            )?;
+            let witness = journal.prove_release_with_io(&release_io).await?
+                .ok_or_else(|| Error::Invalid("committed Suspended workflow needs its original witness".into()))?;
+            assert_eq!(witness.task_binding(), (task_id, &fence));
+            assert_eq!(witness.path(), format!("harness/v2/workflows/{}", OperationId::from_bytes(task_id.into_bytes())));
+            assert_eq!(witness.tail(), 1);
+            assert!(release_io.receipt().authority_records_read > 0);
+            assert!(release_io.receipt().object_bytes_read > 0);
+            assert!(release_io.receipt().bytes_hashed > 0);
+            let denied_budget = acyclic_fs::WorkBudget { peak_allocation_bytes: 0, ..release_budget };
+            let denied = crate::filesystem::PreparationIo::from_budget(denied_budget, &release_cancellation)?;
+            assert!(journal.prove_release_with_io(&denied).await.is_err());
+            denied.receipt().verify(denied_budget).map_err(|error| Error::Invalid(error.to_string()))?;
+            let cancelled = crate::filesystem::PreparationIo::from_budget(
+                release_budget, &release_cancellation,
+            )?;
+            release_cancellation.cancel();
+            assert!(journal.prove_release_with_io(&cancelled).await.is_err());
+            assert_eq!(cancelled.receipt(), acyclic_fs::WorkCounters::default());
             let records = journal.replay(0, 1).await?;
             let [record] = records.as_slice() else {
                 return Err(Error::Invalid("one owned transition required".into()));

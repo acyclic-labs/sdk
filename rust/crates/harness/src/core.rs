@@ -479,35 +479,8 @@ impl AuthorityVerifier {
     ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
         let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
             .map_err(acyclic_fs::OperationFailure::before_work)?;
-        let result = (|| {
-            let header = acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() };
-            io.preflight(header)?;
-            io.charge(header)?;
-            // Binary wire: kind, three length prefixes, agent/parent tags,
-            // borrowed audience/issuer/id bytes, and optional fixed identities.
-            let mut bytes = 27_u64.checked_add(self.audience.id.len() as u64)
-                .and_then(|bytes| bytes.checked_add(scope.issuer.len() as u64))
-                .and_then(|bytes| bytes.checked_add(scope.id.len() as u64))
-                .and_then(|bytes| bytes.checked_add(if scope.agent.is_some() { 16 } else { 0 }))
-                .and_then(|bytes| bytes.checked_add(if scope.parent_proof.is_some() { 32 } else { 0 }))
-                .ok_or_else(|| Error::Invalid("scope proof work overflow".into()))?;
-            let mut count = 0_u64;
-            for capability in scope.capabilities.iter() {
-                let item = acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() };
-                io.preflight(item)?;
-                bytes = bytes.checked_add(8).and_then(|bytes| bytes.checked_add(capability.len() as u64))
-                    .ok_or_else(|| Error::Invalid("scope proof work overflow".into()))?;
-                count = count.checked_add(1).ok_or_else(|| Error::Invalid("scope proof count overflow".into()))?;
-                io.charge(item)?;
-            }
-            let proof = acyclic_fs::WorkCounters { bytes_hashed: bytes, items_examined: count + 1, ..Default::default() };
-            io.preflight(proof)?;
-            let verified = self.verify(scope);
-            io.charge(proof)?;
-            verified?;
-            io.remaining()?;
-            Ok(())
-        })();
+        let mut borrowed = io.history_io();
+        let result = self.verify_with_work(scope, &mut Some(&mut borrowed));
         match result {
             Ok(()) => Ok(acyclic_fs::OperationReceipt { value: (), work: io.receipt() }),
             Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
@@ -1619,12 +1592,37 @@ impl SchemaRegistry {
         version: u32,
         expected: Option<([u8; 32], [u8; 32], ExtensionForkPolicy)>,
     ) -> Result<&ExtensionBinding> {
+        self.pinned_binding_with_io(name, version, expected, None)
+    }
+
+    fn pinned_binding_with_io(
+        &self, name: &str, version: u32,
+        expected: Option<([u8; 32], [u8; 32], ExtensionForkPolicy)>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<&ExtensionBinding> {
+        #[cfg(feature = "filesystem")]
+        let _key_hold = if let Some(io) = io {
+            let work = acyclic_fs::WorkCounters {
+                bytes_copied: name.len() as u64, items_examined: name.len() as u64 + 1,
+                ..Default::default()
+            };
+            io.preflight(work)?;
+            io.claim(name.len() as u64)?;
+            let hold = io.guard_owned(name.len() as u64)?;
+            io.allocation_attempt(name.len() as u64)?;
+            io.charge(work)?;
+            Some(hold)
+        } else { None };
+        let key = (name.to_owned(), version);
         let binding = self
             .schemas
-            .as_deref().and_then(|schemas| schemas.get(&(name.to_owned(), version)))
-            .ok_or_else(|| {
-                Error::Unsupported(format!("extension implementation {name}@{version}"))
-            })?;
+            .as_deref().and_then(|schemas| schemas.get(&key));
+        let binding = match binding {
+            Some(binding) => binding,
+            None => return Err(Error::Unsupported(crate::contract::preparation_format(
+                format_args!("extension implementation {name}@{version}"), io,
+            )?)),
+        };
         if expected.is_some_and(|(schema, implementation, policy)| {
             schema != binding.schema_digest
                 || implementation != binding.implementation_digest
@@ -1679,6 +1677,39 @@ impl SchemaRegistry {
             .implementation_digest)
     }
 
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn implementation_digest_with_io(
+        &self, name: &str, version: u32, io: &crate::filesystem::PreparationIo,
+    ) -> Result<[u8; 32]> {
+        Ok(self.pinned_binding_with_io(name, version, None, Some(io))?.implementation_digest)
+    }
+
+    #[cfg(feature = "filesystem")]
+    fn configuration_record_with_io<'a>(
+        &self, extension: &ExtensionDependency, content: &FileRef,
+        io: &'a crate::filesystem::PreparationIo,
+    ) -> Result<crate::filesystem::ReservedDecoded<'a, ExtensionConfiguration>> {
+        let _metadata;
+        let metadata = io.encode_json(&(extension, content), io.remaining()?.bytes_encoded, false)?;
+        _metadata = io.guard_owned(metadata.len() as u64)?;
+        extension.validate()?;
+        let binding = self.pinned_binding_with_io(&extension.name, extension.version, None, Some(io))?;
+        let schema_digest = binding.configuration_schema_digest
+            .ok_or_else(|| Error::Invalid("extension does not declare configuration".into()))?;
+        #[derive(Serialize)]
+        struct Record<'a> {
+            extension: &'a ExtensionDependency,
+            schema_digest: [u8; 32],
+            content: &'a FileRef,
+        }
+        let _bytes;
+        let bytes = io.encode_json(&Record { extension, schema_digest, content }, io.remaining()?.bytes_encoded, false)?;
+        _bytes = io.guard_owned(bytes.len() as u64)?;
+        let record = io.decode_preparation::<ExtensionConfiguration>(&bytes)?;
+        record.validate()?;
+        Ok(record)
+    }
+
     /// Checks an exact configuration against the supplied immutable registry and linked implementation.
     /// The host separately authenticates the retained admission, membership, read grant and fence.
     pub(crate) fn verify_configuration_binding(
@@ -1688,6 +1719,32 @@ impl SchemaRegistry {
         bytes: &[u8],
         limits: crate::conversation::Limits,
     ) -> Result<()> {
+        self.verify_configuration_binding_engine(record, expected_implementation_digest, bytes, limits, None)
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn verify_configuration_binding_with_io(
+        &self, record: &ExtensionConfiguration, expected_implementation_digest: [u8; 32],
+        bytes: &[u8], limits: crate::conversation::Limits,
+        io: &crate::filesystem::PreparationIo,
+    ) -> Result<()> {
+        self.verify_configuration_binding_engine(record, expected_implementation_digest, bytes, limits, Some(io))
+    }
+
+    fn verify_configuration_binding_engine(
+        &self, record: &ExtensionConfiguration, expected_implementation_digest: [u8; 32],
+        bytes: &[u8], limits: crate::conversation::Limits,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        #[cfg(feature = "filesystem")]
+        let _metadata_hold;
+        #[cfg(feature = "filesystem")]
+        let _metadata;
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            _metadata = io.encode_json(record, io.remaining()?.bytes_encoded, false)?;
+            _metadata_hold = io.guard_owned(_metadata.len() as u64)?;
+        }
         limits.validate_file(&record.content)?;
         let byte_length = u64::try_from(bytes.len())
             .map_err(|_| Error::Invalid("configuration byte length is not portable".into()))?;
@@ -1699,19 +1756,33 @@ impl SchemaRegistry {
                 "configuration exceeds native option byte limits".into(),
             ));
         }
-        if self.configuration_record(&record.extension, &record.content)? != *record {
+        let expected;
+        #[cfg(feature = "filesystem")]
+        let reserved;
+        let expected_record = match io {
+            #[cfg(feature = "filesystem")]
+            Some(io) => {
+                reserved = self.configuration_record_with_io(&record.extension, &record.content, io)?;
+                &reserved.value
+            }
+            _ => {
+                expected = self.configuration_record(&record.extension, &record.content)?;
+                &expected
+            }
+        };
+        if expected_record != record {
             return Err(Error::Conflict(
                 "configuration registry record mismatch".into(),
             ));
         }
         let binding =
-            self.pinned_binding(&record.extension.name, record.extension.version, None)?;
+            self.pinned_binding_with_io(&record.extension.name, record.extension.version, None, io)?;
         if binding.implementation_digest != expected_implementation_digest {
             return Err(Error::Conflict(
                 "configuration implementation binding mismatch".into(),
             ));
         }
-        self.validate_configuration_bytes(&record.extension, &record.content, bytes)
+        self.validate_configuration_bytes_engine(&record.extension, &record.content, bytes, io)
     }
 
     fn validate_configuration_bytes(
@@ -1720,17 +1791,54 @@ impl SchemaRegistry {
         content: &FileRef,
         bytes: &[u8],
     ) -> Result<()> {
-        let record = self.configuration_record(extension, content)?;
+        self.validate_configuration_bytes_engine(extension, content, bytes, None)
+    }
+
+    fn validate_configuration_bytes_engine(
+        &self, extension: &ExtensionDependency, content: &FileRef, bytes: &[u8],
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        let record;
+        #[cfg(feature = "filesystem")]
+        let reserved;
+        let record = match io {
+            #[cfg(feature = "filesystem")]
+            Some(io) => {
+                reserved = self.configuration_record_with_io(extension, content, io)?;
+                &reserved.value
+            }
+            _ => {
+                record = self.configuration_record(extension, content)?;
+                &record
+            }
+        };
+        #[cfg(feature = "filesystem")]
+        let hash_work = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io { io.preflight(hash_work)?; io.charge(hash_work)?; }
         record.content.descriptor().verify(bytes)?;
-        let value: Value = crate::contract::json_from_slice(bytes).map_err(|error| {
-            Error::Invalid(format!("extension configuration is not JSON: {error}"))
-        })?;
-        let binding = self.pinned_binding(&extension.name, extension.version, None)?;
+        let value;
+        #[cfg(feature = "filesystem")]
+        let decoded;
+        let value = match io {
+            #[cfg(feature = "filesystem")]
+            Some(io) => {
+                decoded = io.decode_preparation::<Value>(bytes)?;
+                &decoded.value
+            }
+            _ => {
+                value = crate::contract::json_from_slice(bytes).map_err(|error| {
+                    Error::Invalid(format!("extension configuration is not JSON: {error}"))
+                })?;
+                &value
+            }
+        };
+        let binding = self.pinned_binding_with_io(&extension.name, extension.version, None, io)?;
         let schema = binding
             .configuration_schema
             .as_ref()
             .ok_or_else(|| Error::Invalid("extension does not declare configuration".into()))?;
-        crate::contract::validate_json_schema_value(schema, &value, "configuration")
+        crate::contract::validate_json_schema_value_with_io(schema, value, "configuration", io)
     }
 }
 

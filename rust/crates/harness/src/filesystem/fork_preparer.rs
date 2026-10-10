@@ -19,14 +19,16 @@ use crate::{
     fork::{
         Capture, CapturedResource, ForkCaptureProvider, ForkPreparer, ForkReport, ForkRequest,
         ForkSeed, ForkSelection, InheritedConversationPrefix, PreparedForkHistory,
-        PreparedSummaryFork, ReferenceGrant, ResourceRevision, SharedGrant,
+        PreparedSummaryFork, ReferenceGrant, ResourceRevision, SharedGrant, SummaryForkSelection,
     },
     resource_preparation::{ResourceCreationOrigin, TaskResourcePreparation},
     resources::{ProviderRef, ResourceRef, WorkspaceRef},
     source_authorization::ProjectSourceReadHandle,
+    runtime::RuntimeScope,
+    store::{HistoryCursor, HistoryReader},
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
-use acyclic_stream::BoxProviderFuture as BoxFuture;
+use acyclic_stream::{BoxProviderFuture as BoxFuture, StreamProvider};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{collections::BTreeSet, sync::Arc};
 use uuid::Uuid;
@@ -147,8 +149,38 @@ pub struct FilesystemForkPreparer<A, O> {
 }
 
 struct BoundSummary {
-    prepared: PreparedSummaryFork,
+    selection: SummaryForkSelection,
     journal: Arc<dyn crate::executor::ExecutionJournal>,
+    source: Box<dyn SummaryHistorySource>,
+}
+
+trait SummaryHistorySource: acyclic_stream::ProviderPlatform {
+    fn prepare<'a>(
+        &'a self, parent: &'a Reducer, selection: SummaryForkSelection,
+        journal: &'a dyn crate::executor::ExecutionJournal,
+        resolver: &'a dyn ContentResidencyVerifier,
+        io: Option<&'a super::PreparationIo>,
+    ) -> BoxFuture<'a, Result<PreparedSummaryFork>>;
+}
+
+struct OriginalSummaryHistory<P> {
+    scope: RuntimeScope,
+    history: HistoryReader<P>,
+    cursor: HistoryCursor,
+}
+
+impl<P: StreamProvider> SummaryHistorySource for OriginalSummaryHistory<P> {
+    fn prepare<'a>(
+        &'a self, parent: &'a Reducer, selection: SummaryForkSelection,
+        journal: &'a dyn crate::executor::ExecutionJournal,
+        resolver: &'a dyn ContentResidencyVerifier,
+        io: Option<&'a super::PreparationIo>,
+    ) -> BoxFuture<'a, Result<PreparedSummaryFork>> {
+        Box::pin(async move {
+            crate::fork::prepare_summary_fork_context_with_io(parent, selection, journal,
+                &self.scope, &self.history, &self.cursor, resolver, io).await
+        })
+    }
 }
 
 struct PreparationAttempt<'a, A, O> {
@@ -224,22 +256,28 @@ impl<A, O> FilesystemForkPreparer<A, O> {
         Ok(self)
     }
 
-    /// Binds an already verified original-parent Summary projection. This
-    /// installs no grants and performs no model, allocation or publication IO.
-    pub fn with_summary_context(
+    /// Binds the original owner journal, receiving scope and immutable history
+    /// cut. Preparation revalidates the complete Summary proof under its own
+    /// ledger; no previously prepared projection substitutes for that work.
+    pub fn with_summary_history<P: StreamProvider + 'static>(
         mut self,
-        prepared: PreparedSummaryFork,
+        selection: SummaryForkSelection,
         journal: Arc<dyn crate::executor::ExecutionJournal>,
+        scope: RuntimeScope,
+        history: HistoryReader<P>,
+        cursor: HistoryCursor,
     ) -> Result<Self> {
-        if prepared.parent() != self.parent.authority()
-            || prepared.parent_revision() != self.parent.revision()
-            || journal.canonical_authority() != Some(self.parent.authority())
-        {
+        selection.validate()?;
+        if cursor.authority != *self.parent.authority()
+            || cursor.through_revision != self.parent.revision()
+            || journal.canonical_authority() != Some(self.parent.authority()) {
             return Err(Error::Conflict(
-                "summary capture differs from this original parent".into(),
+                "summary history differs from this original parent".into(),
             ));
         }
-        self.summary = Some(BoundSummary { prepared, journal });
+        self.summary = Some(BoundSummary {
+            selection, journal, source: Box::new(OriginalSummaryHistory { scope, history, cursor }),
+        });
         Ok(self)
     }
 
@@ -299,9 +337,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
             self.resolver.as_ref(), self.history.as_ref(),
         ).await?;
         if request.preparation.summary.is_some() {
-            let summary = self.summary.as_ref()
+            let summary = self.prepare_bound_summary(request, None).await?
                 .ok_or_else(|| Error::Invalid("summary source was not authenticated".into()))?;
-            let (_, references) = super::summary_fork::split_references(&summary.prepared)?;
+            let (_, references) = super::summary_fork::split_references(&summary, None)?;
             let mut selected = grants.iter().map(|grant| Ok((grant.capability()?, grant.reader)))
                 .collect::<Result<BTreeSet<_>>>()?;
             for reader in std::iter::once(request.child_agent).chain(request.attached_agents.iter().copied()) {
@@ -644,8 +682,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
                     "summary fork owner-bound checkpoint provider is not installed".into(),
                 )
             })?;
-            if summary.prepared.selection() != selection
-                || summary.prepared.through_sequence()
+            if &summary.selection != selection
+                || self.parent.conversation().map_or(0, |conversation| conversation.logical_revision())
                     != request.preparation.inherited_through_sequence
             {
                 return Err(Error::Conflict(
@@ -697,6 +735,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
             return Err(Error::Indeterminate(request.operation_id));
         }
         Ok(journal)
+    }
+
+    pub(super) async fn prepare_bound_summary(
+        &self, request: &ForkRequest, io: Option<&super::PreparationIo>,
+    ) -> Result<Option<PreparedSummaryFork>> {
+        let Some(selection) = &request.preparation.summary else { return Ok(None) };
+        let bound = self.summary.as_ref().ok_or_else(|| Error::Unsupported(
+            "summary fork owner-bound checkpoint provider is not installed".into()))?;
+        if selection != &bound.selection {
+            return Err(Error::Conflict("summary fork request differs from its original capture".into()));
+        }
+        bound.source.prepare(&self.parent, crate::executor::clone_preparation(selection, io)?,
+            bound.journal.as_ref(), self.resolver.as_ref(), io).await.map(Some)
     }
 
     async fn read_report(
@@ -884,6 +935,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
             return Err(Error::Unauthorized("authorized workspace capture requires its original preparation lease".into()));
         }
         self.verify_task_lease(false).await?;
+        let summary_before = self.io.as_ref().map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
+        let _summary_hold;
+        let summary_proof = self.preparer.prepare_bound_summary(&request, self.io.as_ref()).await?;
+        _summary_hold = self.io.as_ref().map(|io| io.guard_owned(io.owned_bytes()? - summary_before)).transpose()?;
         let journal = self.claim(&request).await?;
         if let Some(report) = self.read_report(&journal, &request).await? {
             self.verify_task_allocations(&request).await?;
@@ -1023,6 +1078,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
             let bound = self.summary.as_ref().ok_or_else(|| {
                 Error::Unsupported("summary fork provider is not installed".into())
             })?;
+            let prepared = summary_proof.as_ref().ok_or_else(|| Error::Storage(
+                "summary source proof is missing".into()))?;
             let key = IdempotencyKey::new(format!(
                 "fork:{}:{request_digest}:context",
                 request.operation_id
@@ -1032,7 +1089,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
                 .ok_or_else(|| Error::Invalid("summary fork omitted its logical prefix".into()))?;
             // Count the exact additional reader grants before either Summary
             // publication phase. Reuse original prefix grants when identical.
-            let (_, summary_references) = super::summary_fork::split_references(&bound.prepared, self.io.as_ref())?;
+            let (_, summary_references) = super::summary_fork::split_references(prepared, self.io.as_ref())?;
             let mut planned_grants = reference_grants
                 .iter()
                 .map(|grant| Ok((grant.capability()?, grant.reader)))
@@ -1054,7 +1111,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
             let (capture, generation) = controller
                 .materialize_summary_context(
                     &self.parent,
-                    &bound.prepared,
+                    prepared,
                     bound.journal.as_ref(),
                     &private,
                     &child_private_generation,
@@ -1660,6 +1717,10 @@ where
                 return Err(Error::Unauthorized("authorized workspace reconciliation requires its original preparation lease".into()));
             }
             this.verify_task_lease(true).await?;
+            let summary_before = this.io.as_ref().map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
+            let _summary_hold;
+            let _summary_proof = this.preparer.prepare_bound_summary(&request, this.io.as_ref()).await?;
+            _summary_hold = this.io.as_ref().map(|io| io.guard_owned(io.owned_bytes()? - summary_before)).transpose()?;
             let journal = this.journal_ref(&request)?;
             match bounded_io::resolve(&this.host, &journal, this.io.as_ref()).await {
                 Ok(_) => {}

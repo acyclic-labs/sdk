@@ -226,17 +226,13 @@ fn cloned_files(references: &References, io: Option<&PreparationIo>) -> Result<V
 }
 
 fn validate_capture(capture: &SummaryForkCapture, child: &VolumeRef, io: Option<&PreparationIo>) -> Result<()> {
-    if let Some(io) = io {
-        let bytes = capture.payloads.len().checked_mul(std::mem::size_of::<&str>())
-            .and_then(|bytes| capture.references.len().checked_mul(32).and_then(|references| bytes.checked_add(references)))
-            .ok_or_else(|| Error::Invalid("summary validation set ownership overflow".into()))?;
-        io.claim(bytes as u64)?;
-        let count = capture.payloads.len().checked_add(capture.references.len())
-            .ok_or_else(|| Error::Invalid("summary validation item count overflow".into()))?;
-        let work = acyclic_fs::WorkCounters { items_examined: count as u64, ..Default::default() };
-        io.preflight(work)?;
+    match io {
+        Some(io) => {
+            let mut borrowed = io.history_io();
+            capture.validate_with_work(child, &mut Some(&mut borrowed))
+        }
+        None => capture.validate(child),
     }
-    capture.validate_with_reference_digest(child, |file| reference_digest(file, io), || fork_preparer_io::item(io, 0))
 }
 
 async fn publish<A: AsyncAuthorityStore, O: AsyncObjectStore>(

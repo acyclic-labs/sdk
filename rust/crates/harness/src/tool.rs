@@ -44,6 +44,22 @@ pub struct ToolDefinition {
 impl ToolDefinition {
     /// Validates the name and all three independently pinned schemas.
     pub fn validate(&self) -> Result<()> {
+        self.validate_with_io(None)
+    }
+
+    pub(crate) fn validate_with_io(
+        &self,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            let work = acyclic_fs::WorkCounters {
+                items_examined: (self.name.len() as u64).saturating_add(self.revision.len() as u64).saturating_add(1),
+                ..Default::default()
+            };
+            io.preflight(work)?;
+            io.charge(work)?;
+        }
         validate_tool_name(&self.name)?;
         validate_component_label(&self.revision, "tool revision")?;
         if self.name.contains('@') || self.revision.contains('@') {
@@ -56,7 +72,7 @@ impl ToolDefinition {
             &self.output_schema,
             &self.projection_schema,
         ] {
-            crate::contract::compile_json_schema(schema, "tool")?;
+            crate::contract::compile_json_schema_with_io(schema, "tool", io)?;
         }
         Ok(())
     }

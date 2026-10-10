@@ -137,9 +137,134 @@ pub(crate) fn validate_json_schema_value(
     value: &serde_json::Value,
     label: &str,
 ) -> Result<()> {
-    compile_json_schema(schema, label)?
-        .validate(value)
-        .map_err(|error| Error::Invalid(format!("{label} failed validation: {error}")))
+    validate_json_schema_value_with_io(schema, value, label, None)
+}
+
+/// The ordinary and measured paths use the same validator and shared cache.
+/// Measured scope covers SDK-observed JSON data and library calls, not the
+/// validator's opaque CPU, graph allocations, allocator nodes, or RSS.
+pub(crate) fn validate_json_schema_value_with_io(
+    schema: &serde_json::Value,
+    value: &serde_json::Value,
+    label: &str,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    let compiled = compile_json_schema_engine(schema, label, io)?;
+    #[cfg(feature = "filesystem")]
+    let _value_scope = json_schema_scope(value, io)?;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        preparation_step(io)?;
+    }
+    compiled.validator.validate(value).map_err(|error| {
+        json_schema_error(format_args!("{label} failed validation: {error}"), io)
+    })
+}
+
+#[cfg(feature = "filesystem")]
+fn preparation_step(io: &crate::filesystem::PreparationIo) -> Result<()> {
+    let work = acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() };
+    io.preflight(work)?;
+    io.charge(work)
+}
+
+// A conservative, scoped logical data allowance around opaque schema calls.
+// Serialization visits actual JSON nodes before the allowance is admitted.
+#[cfg(feature = "filesystem")]
+fn json_schema_scope<'a>(
+    value: &serde_json::Value,
+    io: Option<&'a crate::filesystem::PreparationIo>,
+) -> Result<Option<crate::filesystem::DecodeReservation<'a>>> {
+    let Some(io) = io else { return Ok(None); };
+    let before = io.receipt().items_examined;
+    let _bytes;
+    let bytes = io.encode_json(value, io.remaining()?.bytes_encoded, false)?;
+    _bytes = io.guard_owned(bytes.len() as u64)?;
+    let items = io.receipt().items_examined.checked_sub(before)
+        .ok_or_else(|| Error::Invalid("schema data witness counter underflow".into()))?;
+    Ok(Some(json_schema_data_scope(io, bytes.len() as u64, items)?))
+}
+
+#[cfg(feature = "filesystem")]
+fn json_schema_data_scope(
+    io: &crate::filesystem::PreparationIo, wire_bytes: u64, items: u64,
+) -> Result<crate::filesystem::DecodeReservation<'_>> {
+    let slots = std::mem::size_of::<serde_json::Value>()
+        .max(std::mem::size_of::<(String, serde_json::Value)>()) as u64;
+    let owned = items.checked_mul(slots).and_then(|size| size.checked_mul(8))
+        .and_then(|size| wire_bytes.checked_mul(4)
+            .and_then(|strings| size.checked_add(strings)))
+        .ok_or_else(|| Error::Invalid("schema data scope overflow".into()))?;
+    io.reserve_decode(owned)
+}
+
+fn json_schema_error(
+    message: std::fmt::Arguments<'_>,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Error {
+    match preparation_format(message, io) {
+        Ok(message) => Error::Invalid(message),
+        Err(error) => error,
+    }
+}
+
+#[cfg(not(feature = "filesystem"))]
+pub(crate) fn preparation_format(
+    message: std::fmt::Arguments<'_>,
+    _io: Option<&crate::executor::PreparationIo>,
+) -> Result<String> {
+    Ok(message.to_string())
+}
+
+#[cfg(feature = "filesystem")]
+pub(crate) fn preparation_format(
+    message: std::fmt::Arguments<'_>,
+    io: Option<&crate::filesystem::PreparationIo>,
+) -> Result<String> {
+    let Some(io) = io else { return Ok(message.to_string()); };
+    struct Diagnostic<'a> {
+        io: &'a crate::filesystem::PreparationIo,
+        text: String,
+        held: u64,
+        error: Option<Error>,
+    }
+    impl std::fmt::Write for Diagnostic<'_> {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            let result = (|| -> Result<()> {
+                let length = self.text.len().checked_add(text.len())
+                    .ok_or_else(|| Error::Invalid("schema diagnostic size overflow".into()))?;
+                let work = acyclic_fs::WorkCounters {
+                    bytes_copied: text.len() as u64, items_examined: 1,
+                    ..Default::default()
+                };
+                self.io.preflight(work)?;
+                if length > self.text.capacity() {
+                    let growth = length.checked_sub(self.text.capacity())
+                        .ok_or_else(|| Error::Invalid("schema diagnostic capacity underflow".into()))?;
+                    self.io.claim(growth as u64)?;
+                    self.held += growth as u64;
+                    self.io.allocation_attempt(growth as u64)?;
+                    self.text.try_reserve_exact(length - self.text.len())
+                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                    let extra = self.text.capacity().saturating_sub(length) as u64;
+                    self.io.claim(extra)?;
+                    self.held += extra;
+                }
+                self.text.push_str(text);
+                self.io.charge(work)
+            })();
+            if let Err(error) = result { self.error = Some(error); return Err(std::fmt::Error); }
+            Ok(())
+        }
+    }
+    let mut diagnostic = Diagnostic { io, text: String::new(), held: 0, error: None };
+    if std::fmt::write(&mut diagnostic, message).is_err() {
+        let Diagnostic { text, held, error, .. } = diagnostic;
+        drop(text);
+        let _ = io.release(held);
+        return Err(error.unwrap_or_else(|| Error::Invalid("schema diagnostic formatting failed".into())));
+    }
+    Ok(diagnostic.text)
 }
 
 /// Compiles one JSON Schema; `label` names it in the error. Schemas are
@@ -150,31 +275,81 @@ pub(crate) fn compile_json_schema(
     schema: &serde_json::Value,
     label: &str,
 ) -> Result<std::sync::Arc<jsonschema::Validator>> {
+    compile_json_schema_with_io(schema, label, None)
+}
+
+// Retain the schema/diagnostic logical allowance until validation ends, even
+// for a cache hit. The Arc/cache and opaque validator graph remain unchanged.
+struct CompiledJsonSchema<'a> {
+    validator: std::sync::Arc<jsonschema::Validator>,
+    #[cfg(feature = "filesystem")]
+    _scope: Option<crate::filesystem::DecodeReservation<'a>>,
+    #[cfg(not(feature = "filesystem"))]
+    _scope: std::marker::PhantomData<&'a ()>,
+}
+
+pub(crate) fn compile_json_schema_with_io(
+    schema: &serde_json::Value,
+    label: &str,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<std::sync::Arc<jsonschema::Validator>> {
+    Ok(compile_json_schema_engine(schema, label, io)?.validator)
+}
+
+fn compile_json_schema_engine<'a>(
+    schema: &serde_json::Value,
+    label: &str,
+    io: Option<&'a crate::executor::PreparationIo>,
+) -> Result<CompiledJsonSchema<'a>> {
     use std::sync::{Arc, Mutex, PoisonError};
     type Cache = std::collections::BTreeMap<[u8; 32], Arc<jsonschema::Validator>>;
     static CACHE: Mutex<Cache> = Mutex::new(Cache::new());
-    let key = *blake3::hash(
-        &serde_json::to_vec(schema).map_err(|error| Error::Invalid(error.to_string()))?,
-    )
-    .as_bytes();
+    #[cfg(feature = "filesystem")]
+    let before = io.map(|io| io.receipt().items_examined).unwrap_or(0);
+    #[cfg(feature = "filesystem")]
+    let _encoded;
+    let encoded = match io {
+        #[cfg(feature = "filesystem")]
+        Some(io) => io.encode_json(schema, io.remaining()?.bytes_encoded, false)?,
+        _ => serde_json::to_vec(schema).map_err(|error| Error::Invalid(error.to_string()))?,
+    };
+    #[cfg(feature = "filesystem")]
+    _encoded = io.map(|io| io.guard_owned(encoded.len() as u64)).transpose()?;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let work = acyclic_fs::WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() };
+        io.preflight(work)?;
+        io.charge(work)?;
+    }
+    #[cfg(feature = "filesystem")]
+    let scope = io.map(|io| {
+        let items = io.receipt().items_examined.checked_sub(before)
+            .ok_or_else(|| Error::Invalid("schema data witness counter underflow".into()))?;
+        json_schema_data_scope(io, encoded.len() as u64, items)
+    }).transpose()?;
+    #[cfg(not(feature = "filesystem"))]
+    let scope = std::marker::PhantomData;
+    let key = *blake3::hash(&encoded).as_bytes();
     let cached = CACHE
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .get(&key)
         .cloned();
     if let Some(validator) = cached {
-        return Ok(validator);
+        return Ok(CompiledJsonSchema { validator, _scope: scope });
     }
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io { preparation_step(io)?; }
     let validator = Arc::new(
         jsonschema::validator_for(schema)
-            .map_err(|error| Error::Invalid(format!("invalid {label} schema: {error}")))?,
+            .map_err(|error| json_schema_error(format_args!("invalid {label} schema: {error}"), io))?,
     );
     let mut cache = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
     if cache.len() >= 256 {
         cache.clear();
     }
     cache.insert(key, Arc::clone(&validator));
-    Ok(validator)
+    Ok(CompiledJsonSchema { validator, _scope: scope })
 }
 
 /// Returns whether a component label satisfies the shared Rust spelling rule.

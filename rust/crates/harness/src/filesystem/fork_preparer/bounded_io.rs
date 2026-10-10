@@ -9,9 +9,15 @@ use std::sync::Mutex;
 /// allowance for each SDK-observed byte counter. Opaque provider work is not
 /// invented as physical I/O; receipts aggregate across the complete attempt.
 pub(crate) struct PreparationIo {
-    budget: WorkBudget,
-    work: Mutex<(WorkCounters, u64)>,
+    ledger: PreparationLedger,
     pub(crate) cancellation: CancellationToken,
+}
+
+enum PreparationLedger {
+    Owned { budget: WorkBudget, work: Mutex<(WorkCounters, u64)> },
+    #[cfg(not(target_arch = "wasm32"))]
+    Native { work: acyclic_fs::NativeMaterializationWork, custody: Mutex<acyclic_fs::NativeAllocation>,
+        failure: Mutex<Option<acyclic_fs::NativeTreeMaterializationError>> },
 }
 
 /// A real logical quota reservation spanning an audited opaque serde decode.
@@ -23,13 +29,11 @@ pub(crate) struct DecodeReservation<'a> {
 
 impl DecodeReservation<'_> {
     pub(crate) fn substitute(&mut self, retained: u64) -> Result<()> {
-        self.io.cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
+        self.io.check_cancellation()?;
         if retained > self.bytes {
             return Err(Error::Invalid("audited decoded ownership exceeds reservation".into()));
         }
-        let mut state = self.io.work.lock().map_err(|_| Error::Storage("creation IO accounting is poisoned".into()))?;
-        state.1 = state.1.checked_sub(self.bytes).and_then(|live| live.checked_add(retained))
-            .ok_or_else(|| Error::Invalid("decode reservation replacement overflow".into()))?;
+        self.io.release(self.bytes - retained)?;
         self.bytes = 0;
         Ok(())
     }
@@ -41,8 +45,7 @@ impl DecodeReservation<'_> {
 
 impl Drop for DecodeReservation<'_> {
     fn drop(&mut self) {
-        let mut state = self.io.work.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.1 = state.1.checked_sub(self.bytes).expect("decode reservation belongs to its live ledger");
+        self.io.release(self.bytes).expect("decode reservation belongs to its live ledger");
     }
 }
 
@@ -64,6 +67,10 @@ pub(crate) fn preparation_slot_bytes<T>() -> u64 {
         std::mem::size_of::<serde_json::Value>(),
         std::mem::size_of::<(String, serde_json::Value)>(),
         std::mem::size_of::<(String, FileRef)>(),
+        std::mem::size_of::<crate::workflow::WorkflowCommand>(),
+        std::mem::size_of::<crate::workflow::WorkflowRecord>(),
+        std::mem::size_of::<crate::workflow::MachineCheckpoint>(),
+        std::mem::size_of::<crate::workflow::MachineTransition>(),
     ].into_iter().max().unwrap_or(0) as u64
 }
 
@@ -87,6 +94,9 @@ audited_preparation_records!(
     crate::fork::InheritedConversationPrefix,
     serde_json::Value,
     crate::core::ExtensionConfiguration,
+    FileRef,
+    crate::workflow::WorkflowRecord,
+    crate::workflow::WorkflowAdmission,
 );
 
 pub(crate) struct ReservedDecoded<'a, T> {
@@ -148,16 +158,109 @@ impl PreparationIo {
             return Err(Error::Invalid("measured content requires finite work allowances".into()));
         }
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-        Ok(Self { budget, work: Mutex::new((WorkCounters::default(), 0)), cancellation: cancellation.clone() })
+        Ok(Self { ledger: PreparationLedger::Owned { budget, work: Mutex::new((WorkCounters::default(), 0)) }, cancellation: cancellation.clone() })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn from_native_work(work: &acyclic_fs::NativeMaterializationWork) -> std::result::Result<Self, crate::NativeRootVerificationError> {
+        work.remaining()?;
+        let custody = work.retain_owned(0)?;
+        Ok(Self {
+            ledger: PreparationLedger::Native { work: work.clone(), custody: Mutex::new(custody), failure: Mutex::new(None) },
+            cancellation: work.cancellation().clone(),
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn into_native_custody(self, retained: u64) -> std::result::Result<acyclic_fs::NativeAllocation, crate::NativeRootVerificationError> {
+        match self.ledger {
+            PreparationLedger::Native { custody, .. } => {
+                let mut guard = custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+                guard.substitute(retained)?;
+                Ok(guard)
+            }
+            PreparationLedger::Owned { .. } => Err(Error::Invalid("native custody requires the original native ledger".into()).into()),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_failure(&self, cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
+        if let PreparationLedger::Native { failure, .. } = &self.ledger {
+            let mut first = failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if first.is_none() { *first = Some(cause); }
+        }
+        Error::Storage(String::new())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn take_native_failure(&self) -> Option<acyclic_fs::NativeTreeMaterializationError> {
+        match &self.ledger {
+            PreparationLedger::Native { failure, .. } => failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take(),
+            PreparationLedger::Owned { .. } => None,
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn native_result<T>(&self, result: Result<T>) -> std::result::Result<T, crate::NativeRootVerificationError> {
+        crate::NativeRootVerificationError::finish(result.map_err(crate::NativeRootVerificationError::Owner), self.take_native_failure())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn original_native_work(&self) -> Option<&acyclic_fs::NativeMaterializationWork> {
+        match &self.ledger {
+            PreparationLedger::Native { work, .. } => Some(work),
+            PreparationLedger::Owned { .. } => None,
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn native_call<T>(&self, result: std::result::Result<T, crate::NativeRootVerificationError>) -> Result<T> {
+        match result {
+            Ok(value) => Ok(value),
+            Err(crate::NativeRootVerificationError::Owner(cause)) => Err(cause),
+            Err(crate::NativeRootVerificationError::Native(cause)) => Err(self.native_failure(cause)),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn absorb_native_custody(&self, incoming: acyclic_fs::NativeAllocation) -> Result<()> {
+        match &self.ledger {
+            PreparationLedger::Native { custody, .. } => custody.lock()
+                .map_err(|_| Error::Storage("native preparation custody is poisoned".into()))?
+                .absorb(incoming).map_err(|cause| self.native_failure(cause)),
+            PreparationLedger::Owned { .. } => Err(Error::Invalid("native custody belongs to another ledger".into())),
+        }
+    }
+
+    pub(crate) fn check_cancellation(&self) -> Result<()> {
+        match self.cancellation.check() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if matches!(&self.ledger, PreparationLedger::Native { .. }) {
+                    return Err(self.native_failure(acyclic_fs::NativeTreeMaterializationError::Cancelled));
+                }
+                Err(Error::Storage(error.to_string()))
+            }
+        }
     }
 
     pub(crate) fn receipt(&self) -> WorkCounters {
-        self.work.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0
+        match &self.ledger {
+            PreparationLedger::Owned { work, .. } => work.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0,
+            #[cfg(not(target_arch = "wasm32"))]
+            PreparationLedger::Native { work, .. } => work.receipt(),
+        }
     }
-    /// Current admitted live logical custody, excluding already released buffers.
+    /// This adapter's current live custody, not the whole native operation's.
     pub(crate) fn owned_bytes(&self) -> Result<u64> {
-        self.work.lock().map(|state| state.1)
-            .map_err(|_| Error::Storage("creation IO accounting is poisoned".into()))
+        match &self.ledger {
+            PreparationLedger::Owned { work, .. } => work.lock().map(|state| state.1)
+                .map_err(|_| Error::Storage("creation IO accounting is poisoned".into())),
+            #[cfg(not(target_arch = "wasm32"))]
+            PreparationLedger::Native { custody, .. } => custody.lock().map(|guard| guard.bytes())
+                .map_err(|_| Error::Storage("native preparation custody is poisoned".into())),
+        }
     }
 
 
@@ -166,29 +269,40 @@ impl PreparationIo {
     pub(crate) fn for_unmeasured(cancellation: &CancellationToken) -> Result<Self> {
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
         Ok(Self {
-            budget: WorkBudget::UNBOUNDED,
-            work: Mutex::new((WorkCounters::default(), 0)),
+            ledger: PreparationLedger::Owned { budget: WorkBudget::UNBOUNDED, work: Mutex::new((WorkCounters::default(), 0)) },
             cancellation: cancellation.clone(),
         })
     }
 
     pub(crate) fn preflight(&self, next: WorkCounters) -> Result<()> {
-        self.cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-        self.receipt().checked_add(next).and_then(|work| work.verify(self.budget))
-            .map_err(|error| Error::Invalid(error.to_string()))
+        self.check_cancellation()?;
+        match &self.ledger {
+            PreparationLedger::Owned { budget, .. } => self.receipt().checked_add(next).and_then(|work| work.verify(*budget))
+                .map_err(|error| Error::Invalid(error.to_string())),
+            #[cfg(not(target_arch = "wasm32"))]
+            PreparationLedger::Native { work, .. } => work.admit(next).map_err(|error| self.native_failure(error)),
+        }
     }
 
     pub(crate) fn claim(&self, bytes: u64) -> Result<()> {
-        self.cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-        let mut state = self.work.lock().map_err(|_| Error::Storage("creation IO accounting is poisoned".into()))?;
-        let live = state.1.checked_add(bytes).ok_or_else(|| Error::Invalid("content ownership overflow".into()))?;
-        let next = state.0.checked_add(WorkCounters {
-            peak_allocation_bytes: live,
-            ..WorkCounters::default()
-        }).map_err(|error| Error::Invalid(error.to_string()))?;
-        next.verify(self.budget).map_err(|error| Error::Invalid(error.to_string()))?;
-        *state = (next, live);
-        Ok(())
+        self.check_cancellation()?;
+        match &self.ledger {
+            PreparationLedger::Owned { budget, work } => {
+                let mut state = work.lock().map_err(|_| Error::Storage("creation IO accounting is poisoned".into()))?;
+                let live = state.1.checked_add(bytes).ok_or_else(|| Error::Invalid("content ownership overflow".into()))?;
+                let next = state.0.checked_add(WorkCounters { peak_allocation_bytes: live, ..Default::default() })
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                next.verify(*budget).map_err(|error| Error::Invalid(error.to_string()))?;
+                *state = (next, live);
+                Ok(())
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            PreparationLedger::Native { custody, .. } => {
+                let mut guard = custody.lock().map_err(|_| Error::Storage("native preparation custody is poisoned".into()))?;
+                let live = guard.bytes().checked_add(bytes).ok_or_else(|| Error::Invalid("native preparation ownership overflow".into()))?;
+                guard.resize_retained(live).map_err(|error| self.native_failure(error))
+            }
+        }
     }
 
     pub(crate) fn allocation_attempt(&self, bytes: u64) -> Result<()> {
@@ -198,20 +312,20 @@ impl PreparationIo {
     }
 
     pub(crate) fn retain_owned(&self, bytes: u64) -> Result<()> {
-        self.cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-        let mut state = self.work.lock().map_err(|_| Error::Storage("creation IO accounting is poisoned".into()))?;
-        let live = state.1.checked_add(bytes).ok_or_else(|| Error::Invalid("content ownership overflow".into()))?;
-        let next = state.0.checked_add(WorkCounters { peak_allocation_bytes: live, ..Default::default() })
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        next.verify(self.budget).map_err(|error| Error::Invalid(error.to_string()))?;
-        *state = (next, live);
-        Ok(())
+        self.claim(bytes)
     }
 
     pub(crate) fn release(&self, bytes: u64) -> Result<()> {
-        let mut state = self.work.lock().map_err(|_| Error::Storage("creation IO accounting is poisoned".into()))?;
-        state.1 = state.1.checked_sub(bytes).ok_or_else(|| Error::Invalid("content ownership underflow".into()))?;
-        Ok(())
+        match &self.ledger {
+            PreparationLedger::Owned { work, .. } => {
+                let mut state = work.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.1 = state.1.checked_sub(bytes).ok_or_else(|| Error::Invalid("content ownership underflow".into()))?;
+                Ok(())
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            PreparationLedger::Native { custody, .. } => custody.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                .release(bytes).map_err(|error| self.native_failure(error)),
+        }
     }
 
     pub(crate) fn reserve_decode(&self, bytes: u64) -> Result<DecodeReservation<'_>> {
@@ -220,37 +334,63 @@ impl PreparationIo {
     }
 
     pub(crate) fn guard_owned(&self, bytes: u64) -> Result<DecodeReservation<'_>> {
-        let state = self.work.lock().map_err(|_| Error::Storage("creation IO accounting is poisoned".into()))?;
-        if bytes > state.1 { return Err(Error::Invalid("owned buffer exceeds retained quota".into())); }
+        if bytes > self.owned_bytes()? { return Err(Error::Invalid("owned buffer exceeds retained quota".into())); }
         Ok(DecodeReservation { io: self, bytes })
     }
 
     pub(crate) fn remaining(&self) -> Result<WorkBudget> {
-        self.cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-        let state = self.work.lock().map_err(|_| Error::Storage("creation IO accounting is poisoned".into()))?;
-        let mut remaining = state.0.remaining(self.budget).map_err(|error| Error::Invalid(error.to_string()))?;
-        remaining.peak_allocation_bytes = remaining.peak_allocation_bytes.checked_sub(state.1)
-            .ok_or_else(|| Error::Invalid("content ownership exceeds allowance".into()))?;
-        Ok(remaining)
+        self.check_cancellation()?;
+        match &self.ledger {
+            PreparationLedger::Owned { budget, work } => {
+                let state = work.lock().map_err(|_| Error::Storage("creation IO accounting is poisoned".into()))?;
+                let mut remaining = state.0.remaining(*budget).map_err(|error| Error::Invalid(error.to_string()))?;
+                remaining.peak_allocation_bytes = remaining.peak_allocation_bytes.checked_sub(state.1)
+                    .ok_or_else(|| Error::Invalid("content ownership exceeds allowance".into()))?;
+                Ok(remaining)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            PreparationLedger::Native { work, .. } => work.remaining().map_err(|error| self.native_failure(error)),
+        }
     }
 
     pub(crate) fn charge(&self, next: WorkCounters) -> Result<()> {
         self.spent(next)?;
-        self.receipt().verify(self.budget).map_err(|error| Error::Invalid(error.to_string()))
+        match &self.ledger {
+            PreparationLedger::Owned { budget, .. } => self.receipt().verify(*budget).map_err(|error| Error::Invalid(error.to_string())),
+            #[cfg(not(target_arch = "wasm32"))]
+            PreparationLedger::Native { work, .. } => work.remaining().map(|_| ()).map_err(|error| self.native_failure(error)),
+        }
     }
 
     pub(crate) fn spent(&self, mut next: WorkCounters) -> Result<()> {
-        let mut state = self.work.lock().map_err(|_| Error::Storage("creation IO accounting is poisoned".into()))?;
-        next.peak_allocation_bytes = next.peak_allocation_bytes.checked_add(state.1)
-            .ok_or_else(|| Error::Invalid("content ownership overflow".into()))?;
-        state.0 = state.0.checked_add(next).map_err(|error| Error::Invalid(error.to_string()))?;
-        Ok(())
+        match &self.ledger {
+            PreparationLedger::Owned { work, .. } => {
+                let mut state = work.lock().map_err(|_| Error::Storage("creation IO accounting is poisoned".into()))?;
+                next.peak_allocation_bytes = next.peak_allocation_bytes.checked_add(state.1)
+                    .ok_or_else(|| Error::Invalid("content ownership overflow".into()))?;
+                state.0 = state.0.checked_add(next).map_err(|error| Error::Invalid(error.to_string()))?;
+                Ok(())
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            PreparationLedger::Native { work, .. } => work.spent(next).map_err(|error| self.native_failure(error)),
+        }
     }
 
     pub(crate) fn receive<T>(&self, result: std::result::Result<OperationReceipt<T>, OperationFailure<WorkspaceError>>) -> Result<T> {
         match result {
             Ok(receipt) => { self.charge(receipt.work)?; Ok(receipt.value) }
-            Err(failure) => { self.spent(*failure.work)?; Err(map_error(failure.error)) }
+            Err(failure) => {
+                self.spent(*failure.work)?;
+                #[cfg(not(target_arch = "wasm32"))]
+                if matches!(&self.ledger, PreparationLedger::Native { .. }) {
+                    return Err(match failure.error {
+                        WorkspaceError::Work(cause) => self.native_failure(acyclic_fs::NativeTreeMaterializationError::Work(cause)),
+                        WorkspaceError::Cancelled(_) => self.native_failure(acyclic_fs::NativeTreeMaterializationError::Cancelled),
+                        cause => map_error(cause),
+                    });
+                }
+                Err(map_error(failure.error))
+            }
         }
     }
 
@@ -321,6 +461,18 @@ impl PreparationIo {
         key.push_str(prefix);
         key.push_str(&digest.to_hex());
         Ok(key)
+    }
+
+    pub(crate) fn contains_capability<T: Serialize>(
+        &self, grants: &crate::Capabilities, value: &T, prefix: &str,
+    ) -> Result<bool> {
+        let key_hold;
+        let key = self.capability(value, prefix)?;
+        key_hold = self.guard_owned(key.capacity() as u64)?;
+        let granted = grants.contains(&key);
+        drop(key);
+        drop(key_hold);
+        Ok(granted)
     }
 
     // Audited closed serde derives only: upload records and approval-only wires.
@@ -426,16 +578,7 @@ pub(crate) trait UploadRecord: serde::de::DeserializeOwned {
 
 impl UploadRecord for FileRef {
     fn logical_owned_bytes(&self) -> Result<u64> {
-        let volume = self.volume();
-        let provider = volume.provider();
-        let owner = match volume.owner() {
-            VolumeOwner::Project(owner) | VolumeOwner::Session(owner) => owner.len(),
-            VolumeOwner::Agent(_) => 0,
-        };
-        [provider.namespace().len(), provider.family().len(), provider.version().len(), volume.id().len(),
-            owner, self.path().len(), self.version().len(), self.display_name().len(), self.descriptor().media_type().len()]
-            .into_iter().try_fold(0_u64, |total, bytes| total.checked_add(bytes as u64)
-                .ok_or_else(|| Error::Invalid("upload identity ownership overflow".into())))
+        FileRef::logical_owned_bytes(self)
     }
 }
 
@@ -443,13 +586,8 @@ impl UploadRecord for (FileRef, Option<crate::resources::GenerationRef>) {
     fn logical_owned_bytes(&self) -> Result<u64> {
         let mut bytes = self.0.logical_owned_bytes()?;
         if let Some(generation) = &self.1 {
-            let resource = generation.as_resource();
-            for size in [resource.provider().namespace().len(), resource.provider().family().len(),
-                resource.provider().version().len(), resource.key().len(),
-                resource.version().map_or(0, str::len)] {
-                bytes = bytes.checked_add(size as u64)
-                    .ok_or_else(|| Error::Invalid("upload generation ownership overflow".into()))?;
-            }
+            bytes = bytes.checked_add(generation.logical_owned_bytes()?)
+                .ok_or_else(|| Error::Invalid("upload generation ownership overflow".into()))?;
         }
         Ok(bytes)
     }
@@ -809,7 +947,7 @@ impl PreparationHistoryIo<'_> {
         let bytes = target.checked_sub(old).and_then(|count| count.checked_mul(std::mem::size_of::<T>()))
             .ok_or_else(|| Error::Invalid("history vector ownership overflow".into()))? as u64;
         self.io.claim(bytes)?;
-        self.io.allocation_attempt()?;
+        self.io.allocation_attempt(bytes)?;
         values.try_reserve_exact(target - values.len()).map_err(|error| Error::Storage(error.to_string()))?;
         let actual = (values.capacity() - old).checked_mul(std::mem::size_of::<T>())
             .ok_or_else(|| Error::Invalid("history vector ownership overflow".into()))? as u64;
@@ -821,7 +959,7 @@ impl PreparationHistoryIo<'_> {
 
 impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
     fn check_cancellation(&self) -> Result<()> {
-        self.io.cancellation.check().map_err(|error| Error::Storage(error.to_string()))
+        self.io.check_cancellation()
     }
     fn begin_call(&mut self) -> Result<()> {
         self.charged(WorkCounters { backend_read_operations: 1, ..Default::default() })
@@ -851,7 +989,7 @@ impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
     fn clone_text(&mut self, text: &str) -> Result<String> {
         self.io.claim(text.len() as u64)?;
         self.io.preflight(WorkCounters { bytes_copied: text.len() as u64, ..Default::default() })?;
-        if !text.is_empty() { self.io.allocation_attempt()?; }
+        if !text.is_empty() { self.io.allocation_attempt(text.len() as u64)?; }
         let mut copy = String::with_capacity(text.len());
         copy.push_str(text);
         self.io.charge(WorkCounters { bytes_copied: text.len() as u64, ..Default::default() })?;
@@ -865,7 +1003,7 @@ impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
         if capacity <= values.capacity() { return Ok(()); }
         let old = values.capacity();
         self.io.claim((capacity - old) as u64)?;
-        self.io.allocation_attempt()?;
+        self.io.allocation_attempt((capacity - old) as u64)?;
         values.try_reserve_exact(capacity - values.len()).map_err(|error| Error::Storage(error.to_string()))?;
         if values.capacity() > capacity { self.io.claim((values.capacity() - capacity) as u64)?; }
         Ok(())
@@ -874,14 +1012,14 @@ impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
         if capacity <= text.capacity() { return Ok(()); }
         let old = text.capacity();
         self.io.claim((capacity - old) as u64)?;
-        self.io.allocation_attempt()?;
+        self.io.allocation_attempt((capacity - old) as u64)?;
         text.try_reserve_exact(capacity - text.len()).map_err(|error| Error::Storage(error.to_string()))?;
         if text.capacity() > capacity { self.io.claim((text.capacity() - capacity) as u64)?; }
         Ok(())
     }
     fn admit_allocation(&mut self, bytes: u64) -> Result<()> {
         self.admit_owned(bytes)?;
-        if bytes != 0 { self.io.allocation_attempt()?; }
+        if bytes != 0 { self.io.allocation_attempt(bytes)?; }
         Ok(())
     }
     fn copy_bytes(&mut self, bytes: u64) -> Result<()> {
@@ -925,6 +1063,11 @@ impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
     fn verify_content<'a>(&'a mut self, verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
         reference: &'a FileRef) -> crate::conversation::ContentFuture<'a, Result<()>> {
         Box::pin(async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = self.io.original_native_work() {
+                return self.io.native_call(verifier.verify_with_native_work(reference,
+                    reference.descriptor().byte_length(), work).await);
+            }
             self.io.receive_content(verifier.verify_measured(reference, reference.descriptor().byte_length(),
                 self.io.remaining()?, &self.io.cancellation).await)
         })
@@ -932,10 +1075,22 @@ impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
     fn read_content<'a>(&'a mut self, verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
         reference: &'a FileRef) -> crate::conversation::ContentFuture<'a, Result<Vec<u8>>> {
         Box::pin(async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = self.io.original_native_work() {
+                let (bytes, custody) = self.io.native_call(verifier.read_with_native_work(reference,
+                    reference.descriptor().byte_length(), work).await)?;
+                self.io.absorb_native_custody(custody)?;
+                return Ok(bytes);
+            }
             let bytes = self.io.receive_content(verifier.read_measured(reference, reference.descriptor().byte_length(),
                 self.io.remaining()?, &self.io.cancellation).await)?;
             self.io.retain_owned(bytes.capacity() as u64)?;
             Ok(bytes)
         })
     }
+}
+
+/// Absolute canonical private metadata path, admitted before its one buffer.
+pub(crate) fn content_metadata_path(path: &str, io: &PreparationIo) -> Result<String> {
+    super::super::content_metadata_path_io(path, true, Some(io))
 }

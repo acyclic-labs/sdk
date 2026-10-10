@@ -22,7 +22,7 @@ use futures::StreamExt as _;
 mod accounting;
 pub use accounting::*;
 mod selection;
-pub(crate) use selection::place_messages;
+pub(crate) use selection::{place_messages, place_messages_with_io};
 pub use selection::*;
 mod discovery;
 pub use discovery::*;
@@ -128,6 +128,14 @@ pub struct CanonicalContextCheckpoint {
 impl CanonicalContextCheckpoint {
     /// Checks a bounded envelope. The owning journal must verify publication and read refs.
     pub fn validate(&self, limits: Limits) -> Result<()> {
+        self.validate_with_io(limits, None)
+    }
+
+    pub(crate) fn validate_with_io(
+        &self, limits: Limits, io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        #[cfg(feature = "filesystem")]
+        let _workspace = io.map(|io| crate::executor::reserve_preparation_workspace(self, io)).transpose()?;
         limits.validate()?;
         if self.selection.conversation_revision == 0
             || self.selection.message_ids.is_empty()
@@ -137,17 +145,18 @@ impl CanonicalContextCheckpoint {
                 "canonical checkpoint coverage is invalid".into(),
             ));
         }
-        let unique = self
-            .selection
-            .message_ids
-            .iter()
-            .collect::<std::collections::BTreeSet<_>>();
+        let mut unique = std::collections::BTreeSet::new();
+        for id in &self.selection.message_ids {
+            preparation_step(io)?;
+            unique.insert(id);
+        }
         if unique.len() != self.selection.message_ids.len() {
             return Err(crate::Error::Invalid(
                 "canonical checkpoint repeats source identities".into(),
             ));
         }
         for reference in [&self.source, &self.retained, &self.compaction] {
+            preparation_step(io)?;
             limits.validate_file(reference)?;
             if reference.volume() != self.source.volume()
                 || reference.descriptor().media_type() != "application/json"
@@ -189,10 +198,17 @@ impl CanonicalContextCheckpoint {
         compaction: &CompactionReference,
         limits: Limits,
     ) -> Result<()> {
-        self.validate(limits)?;
-        validate_projected_context(source, limits)?;
-        validate_projected_context(retained, limits)?;
-        validate_compaction(compaction, source, retained)?;
+        self.validate_projection_with_io(source, retained, compaction, limits, None)
+    }
+
+    pub(crate) fn validate_projection_with_io(
+        &self, source: &Context, retained: &Context, compaction: &CompactionReference,
+        limits: Limits, io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        self.validate_with_io(limits, io)?;
+        validate_projected_context_with_io(source, limits, io)?;
+        validate_projected_context_with_io(retained, limits, io)?;
+        validate_compaction_with_io(compaction, source, retained, io)?;
         if compaction
             .summary
             .as_ref()
@@ -687,6 +703,15 @@ impl DurableContextProvider {
         summary: Option<ContextSummary>,
         retention: CompactionRetention,
     ) -> Result<(Context, CompactionReference)> {
+        Self::compact_with_io(context, max_messages, summary, retention, None)
+    }
+
+    pub(crate) fn compact_with_io(
+        context: &Context, max_messages: usize, summary: Option<ContextSummary>,
+        retention: CompactionRetention, io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(Context, CompactionReference)> {
+        #[cfg(feature = "filesystem")]
+        let workspace = io.map(|io| crate::executor::reserve_preparation_workspace(context, io)).transpose()?;
         retention.validate()?;
         context.validate_current_input()?;
         if max_messages == 0 {
@@ -694,8 +719,7 @@ impl DurableContextProvider {
                 "compaction max_messages must be positive".into(),
             ));
         }
-        let source = crate::contract::canonical_json_bytes(context)?;
-        let source_digest = *blake3::hash(&source).as_bytes();
+        let source_digest = crate::executor::preparation_digest(context, io)?;
         if let Some(summary) = &summary {
             let covered = context
                 .messages
@@ -711,7 +735,7 @@ impl DurableContextProvider {
                     .filter(|index| *index < summary.source_messages),
             };
             if summary.source_messages == 0
-                || summary.source_digest != crate::contract::canonical_json_digest(&summarized)?
+                || summary.source_digest != crate::executor::preparation_digest(&summarized, io)?
                 || summary.output.descriptor().media_type() != "text/plain"
             {
                 return Err(crate::Error::Invalid(
@@ -728,7 +752,7 @@ impl DurableContextProvider {
                         .into(),
                 )
             })?;
-            compact_projection(context, max_messages, summary, &retention)?
+            compact_projection(context, max_messages, summary, &retention, io)?
         } else {
             context.clone()
         };
@@ -740,6 +764,8 @@ impl DurableContextProvider {
             summary,
             retention,
         };
+        #[cfg(feature = "filesystem")]
+        if let Some(workspace) = workspace { workspace.into_retained(); }
         Ok((compacted, reference))
     }
 }
@@ -749,13 +775,14 @@ fn compact_projection(
     max_messages: usize,
     summary: &ContextSummary,
     retention: &CompactionRetention,
+    io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Context> {
     if max_messages < 2 {
         return Err(crate::Error::Invalid(
             "compaction must retain the current input and summary".into(),
         ));
     }
-    let mandatory = mandatory_positions(context, summary.source_messages as usize, retention);
+    let mandatory = mandatory_positions_with_io(context, summary.source_messages as usize, retention, io)?;
     if mandatory.len() >= max_messages {
         return Err(crate::Error::Invalid(
             "mandatory context exceeds compaction message budget".into(),
@@ -763,12 +790,13 @@ fn compact_projection(
     }
     let mut selected = mandatory;
     for position in (0..context.messages.len()).rev() {
+        preparation_step(io)?;
         if selected.len() + 1 == max_messages {
             break;
         }
         selected.insert(position);
     }
-    retain_compacted_messages(context, selected, summary)
+    retain_compacted_messages(context, selected, summary, io)
 }
 
 pub(super) fn mandatory_positions(
@@ -776,26 +804,34 @@ pub(super) fn mandatory_positions(
     covered: usize,
     retention: &CompactionRetention,
 ) -> std::collections::BTreeSet<usize> {
+    mandatory_positions_with_io(context, covered, retention, None)
+        .expect("ordinary mandatory projection has no finite ledger failures")
+}
+
+fn mandatory_positions_with_io(
+    context: &Context, covered: usize, retention: &CompactionRetention,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<std::collections::BTreeSet<usize>> {
     use std::collections::{BTreeMap, BTreeSet};
-    let mut selected = context
-        .messages
-        .iter()
-        .enumerate()
-        .filter_map(|(position, message)| {
-            (context.current_input_index.map(|index| index as usize) == Some(position)
-                || position + 1 == context.messages.len()
-                || position >= covered
-                || retention.roles.contains(&message.role)
-                || (retention.native_media && message.content.contains_native_media()))
-            .then_some(position)
-        })
-        .collect::<BTreeSet<_>>();
+    let mut selected = BTreeSet::new();
+    for (position, message) in context.messages.iter().enumerate() {
+        preparation_step(io)?;
+        if context.current_input_index.map(|index| index as usize) == Some(position)
+            || position + 1 == context.messages.len()
+            || position >= covered
+            || retention.roles.contains(&message.role)
+            || (retention.native_media && message.content.contains_native_media()) {
+            selected.insert(position);
+        }
+    }
     // A message can contain several calls/results. Close over the exchange graph
     // so every mandatory message carries its complete paired messages as well.
     let mut pending = BTreeMap::new();
     let mut paired: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for (position, message) in context.messages.iter().enumerate() {
+        preparation_step(io)?;
         for part in message.content.parts() {
+            preparation_step(io)?;
             match part {
                 ModelContentPart::ToolCall { call_id, .. } => {
                     pending.insert(call_id, position);
@@ -812,21 +848,24 @@ pub(super) fn mandatory_positions(
     }
     let mut visit = selected.iter().copied().collect::<Vec<_>>();
     while let Some(position) = visit.pop() {
+        preparation_step(io)?;
         if let Some(neighbors) = paired.get(&position) {
             for neighbor in neighbors {
+                preparation_step(io)?;
                 if selected.insert(*neighbor) {
                     visit.push(*neighbor);
                 }
             }
         }
     }
-    selected
+    Ok(selected)
 }
 
 fn retain_compacted_messages(
     context: &Context,
     selected: std::collections::BTreeSet<usize>,
     summary: &ContextSummary,
+    io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Context> {
     let mut calls = std::collections::BTreeSet::new();
     let mut retained = vec![ModelMessage {
@@ -838,12 +877,14 @@ fn retain_compacted_messages(
     }];
     let mut current_input_index = None;
     for position in selected {
+        preparation_step(io)?;
         let message = context
             .messages
             .get(position)
             .ok_or_else(|| crate::Error::Invalid("compaction position is missing".into()))?;
         let parts = message.content.parts();
         for part in parts {
+            preparation_step(io)?;
             match part {
                 ModelContentPart::ToolCall { call_id, .. } => {
                     calls.insert(call_id);
@@ -880,21 +921,66 @@ pub(crate) fn validate_compaction(
     source: &Context,
     compacted: &Context,
 ) -> Result<()> {
-    let encoded = crate::contract::canonical_json_bytes(source)?;
-    if reference.source_digest != *blake3::hash(&encoded).as_bytes()
-        || DurableContextProvider::compact(
-            source,
-            reference.maximum_messages as usize,
-            reference.summary.clone(),
-            reference.retention.clone(),
-        )?
-        .0 != *compacted
+    validate_compaction_with_io(reference, source, compacted, None)
+}
+
+pub(crate) fn validate_compaction_with_io(
+    reference: &CompactionReference, source: &Context, compacted: &Context,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    #[cfg(feature = "filesystem")]
+    let _proof_workspace = io.map(|io| crate::executor::reserve_preparation_workspace(reference, io)).transpose()?;
+    #[cfg(feature = "filesystem")]
+    let before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
+    #[cfg(feature = "filesystem")]
+    let _reconstructed_hold;
+    let (reconstructed, proof) = DurableContextProvider::compact_with_io(
+        source, reference.maximum_messages as usize, reference.summary.clone(), reference.retention.clone(), io)?;
+    #[cfg(feature = "filesystem")]
+    { _reconstructed_hold = io.map(|io| io.guard_owned(io.owned_bytes()? - before)).transpose()?; }
+    if reference.source_digest != proof.source_digest || reconstructed != *compacted
     {
         return Err(crate::Error::Invalid(
             "compaction reference does not bind the source and retained context".into(),
         ));
     }
     Ok(())
+}
+
+fn preparation_step(io: Option<&crate::executor::PreparationIo>) -> Result<()> {
+    #[cfg(not(feature = "filesystem"))]
+    let _ = io;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_projected_context_with_io(
+    context: &Context, limits: Limits, io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let _workspace = crate::executor::reserve_preparation_workspace(context, io)?;
+        let _encoded_hold;
+        let encoded = io.encode_json(context, limits.render_bytes, false)?;
+        _encoded_hold = io.guard_owned(encoded.len() as u64)?;
+        for message in &context.messages {
+            message.content.validate_limits_with_io(limits, Some(io))?;
+        }
+        for file in context.metadata.values() {
+            preparation_step(Some(io))?;
+            limits.validate_file(file)?;
+        }
+        limits.validate()?;
+        context.validate_current_input()?;
+        if context.messages.len() > limits.context_messages || context.metadata.len() > limits.attachments {
+            return Err(crate::Error::Invalid("context projection exceeded declared bounds".into()));
+        }
+        return Ok(());
+    }
+    validate_projected_context(context, limits)
 }
 
 async fn validate_context_refs(

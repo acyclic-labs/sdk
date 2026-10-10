@@ -229,6 +229,16 @@ impl<'de> Deserialize<'de> for VolumeRef {
 }
 
 impl VolumeRef {
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        let owner = match &self.owner {
+            VolumeOwner::Project(owner) | VolumeOwner::Session(owner) => owner.capacity() as u64,
+            VolumeOwner::Agent(_) => 0,
+        };
+        self.provider.logical_owned_bytes()?.checked_add(self.id.capacity() as u64)
+            .and_then(|bytes| bytes.checked_add(owner))
+            .ok_or_else(|| Error::Invalid("volume identity ownership overflow".into()))
+    }
+
     /// Validates independent consumer role and owner identities.
     pub fn new(
         provider: ProviderRef,
@@ -488,19 +498,26 @@ impl ContentGrant {
     ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
         let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
             .map_err(acyclic_fs::OperationFailure::before_work)?;
-        let result = (|| {
-            io.receive_content(verifier.verify_measured(scope, io.remaining()?, cancellation))?;
-            if operation == VolumeOperation::Write { volume.require_writer(scope.agent())?; }
-            let capability = io.receive_content(volume.capability_measured(operation, io.remaining()?, cancellation))?;
-            if !scope.capabilities().contains(&capability) {
-                return Err(Error::Unauthorized("volume operation is not granted".into()));
-            }
-            Ok(())
-        })();
+        let result = Self::verify_original_volume_with_io(verifier, scope, volume, operation, &io);
         match result {
             Ok(()) => Ok(acyclic_fs::OperationReceipt { value: (), work: io.receipt() }),
             Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
         }
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn verify_original_volume_with_io(
+        verifier: &AuthorityVerifier, scope: &Scope, volume: &VolumeRef,
+        operation: VolumeOperation, io: &crate::filesystem::PreparationIo,
+    ) -> Result<()> {
+        let mut borrowed = io.history_io();
+        verifier.verify_with_work(scope, &mut Some(&mut borrowed))?;
+        if operation == VolumeOperation::Write { volume.require_writer(scope.agent())?; }
+        let prefix = match operation { VolumeOperation::Read => "volume:read:", VolumeOperation::Write => "volume:write:" };
+        if !io.contains_capability(scope.capabilities(), volume, prefix)? {
+            return Err(Error::Unauthorized("volume operation is not granted".into()));
+        }
+        Ok(())
     }
 
     /// Verifies a signed private-directory or whole-volume read grant. A
@@ -649,6 +666,10 @@ impl<'de> Deserialize<'de> for FileDescriptor {
 }
 
 impl FileDescriptor {
+    pub(crate) fn logical_owned_bytes(&self) -> u64 {
+        self.media_type.capacity() as u64
+    }
+
     /// Constructs a descriptor after validating its media type.
     pub fn new(sha256: [u8; 32], byte_length: u64, media_type: impl Into<String>) -> Result<Self> {
         let value = Self {
@@ -753,6 +774,14 @@ impl<'de> Deserialize<'de> for FileRef {
 }
 
 impl FileRef {
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        [self.path.capacity(), self.version.capacity(), self.display_name.capacity()]
+            .into_iter().try_fold(self.volume.logical_owned_bytes()?, |bytes, capacity|
+                bytes.checked_add(capacity as u64).ok_or_else(|| Error::Invalid("file identity ownership overflow".into())))?
+            .checked_add(self.descriptor.logical_owned_bytes())
+            .ok_or_else(|| Error::Invalid("file descriptor ownership overflow".into()))
+    }
+
     /// Creates a reference after checking paths, version and descriptor.
     pub fn new(
         volume: VolumeRef,
@@ -992,6 +1021,30 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         })
     }
 
+    /// Reads on the caller's original native ledger and transfers live custody.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn read_with_native_work<'a>(
+        &'a self, _reference: &'a FileRef, _maximum_bytes: u64,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> ContentFuture<'a, std::result::Result<(Vec<u8>, acyclic_fs::NativeAllocation), crate::NativeRootVerificationError>> {
+        Box::pin(async { Err(Error::Unsupported("original native-ledger content resolution is unavailable".into()).into()) })
+    }
+
+    /// Availability only; it conveys no read authority.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_read(&self, _volume: &VolumeRef, _work: &acyclic_fs::NativeMaterializationWork) -> std::result::Result<bool, crate::NativeRootVerificationError> {
+        Err(Error::Unsupported("original native-ledger content reader is unavailable".into()).into())
+    }
+
+    /// Verifies through the actual native engine without creating a new meter.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn verify_with_native_work<'a>(
+        &'a self, _reference: &'a FileRef, _maximum_bytes: u64,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> ContentFuture<'a, std::result::Result<(), crate::NativeRootVerificationError>> {
+        Box::pin(async { Err(Error::Unsupported("original native-ledger content verification is unavailable".into()).into()) })
+    }
+
     /// Verifies bytes through the provider's actual finite read capability.
     #[cfg(feature = "filesystem")]
     fn verify_measured<'a>(
@@ -1205,6 +1258,17 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
             Error::Unsupported("finite once-publication is unavailable".into()))) })
     }
 
+    /// Publishes once on the original native ledger; the caller retains custody.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[allow(clippy::too_many_arguments, reason = "exact once-publication identity and original native ledger")]
+    fn stage_once_with_native_work<'a>(
+        &'a self, _operation_id: OperationId, _path: &'a str, _bytes: &'a [u8],
+        _media_type: &'a str, _display_name: &'a str,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> ContentFuture<'a, std::result::Result<(FileRef, acyclic_fs::NativeAllocation), crate::NativeRootVerificationError>> {
+        Box::pin(async { Err(Error::Unsupported("original native-ledger once-publication is unavailable".into()).into()) })
+    }
+
     /// Resolves the original operation, metadata and generation without head.
     #[cfg(feature = "filesystem")]
     fn observe_staged_once_measured<'a>(
@@ -1263,6 +1327,20 @@ pub struct CompositeContentVerifier {
 }
 
 impl CompositeContentVerifier {
+    #[cfg(feature = "filesystem")]
+    fn finite_bound_reader(&self, volume: &VolumeRef, io: &crate::filesystem::PreparationIo) -> Result<&dyn ContentResidencyVerifier> {
+        let key_hold;
+        let key = io.encode_json(volume, io.remaining()?.bytes_encoded, false)?;
+        key_hold = io.guard_owned(key.len() as u64)?;
+        volume.validate()?;
+        let text = std::str::from_utf8(&key).map_err(|error| Error::Invalid(error.to_string()))?;
+        let reader = self.volumes.get(text).ok_or_else(|| Error::Unsupported(
+            "finite content routing requires an explicitly bound owner; lazy mount lacks finite IO".into()))?;
+        drop(key);
+        drop(key_hold);
+        Ok(reader.as_ref())
+    }
+
     /// Rejects duplicate exact-volume bindings instead of silently replacing one.
     pub fn new(bindings: Vec<(VolumeRef, Arc<dyn ContentResidencyVerifier>)>) -> Result<Self> {
         let mut volumes = BTreeMap::new();
@@ -1368,6 +1446,37 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
                 Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
                 Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
             }
+        })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn read_with_native_work<'a>(
+        &'a self, reference: &'a FileRef, maximum_bytes: u64,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> ContentFuture<'a, std::result::Result<(Vec<u8>, acyclic_fs::NativeAllocation), crate::NativeRootVerificationError>> {
+        Box::pin(async move {
+            let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+            let reader = io.native_result(self.finite_bound_reader(reference.volume(), &io))?;
+            reader.read_with_native_work(reference, maximum_bytes, work).await
+        })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_read(&self, volume: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork) -> std::result::Result<bool, crate::NativeRootVerificationError> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let reader = io.native_result(self.finite_bound_reader(volume, &io))?;
+        reader.supports_native_read(volume, work)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn verify_with_native_work<'a>(
+        &'a self, reference: &'a FileRef, maximum_bytes: u64,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> ContentFuture<'a, std::result::Result<(), crate::NativeRootVerificationError>> {
+        Box::pin(async move {
+            let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+            let reader = io.native_result(self.finite_bound_reader(reference.volume(), &io))?;
+            reader.verify_with_native_work(reference, maximum_bytes, work).await
         })
     }
 
@@ -2442,6 +2551,28 @@ mod tests {
         assert_eq!(restored.messages().len(), 3);
         assert_eq!(restored.unresolved_user(), Some(Uuid::from_u128(1_001)));
         assert_eq!(restored.checkpointed_suffix(&selection)?, restored);
+        Ok(())
+    }
+
+    #[test]
+    fn logical_file_ownership_counts_retained_metadata_capacity() -> Result<()> {
+        let padded = |text: &str, capacity| {
+            let mut value = String::with_capacity(capacity);
+            value.push_str(text);
+            value
+        };
+        let provider = ProviderRef::new("harness", "filesystem", "v1")?;
+        let volume = VolumeRef::new(provider, padded("volume", 128),
+            VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::new()))?;
+        let file = FileRef::new(volume, padded("file.txt", 256), padded("generation", 512),
+            FileDescriptor::new([0; 32], 0, padded("text/plain", 1024))?,
+            padded("file.txt", 2048))?;
+        let expected = file.volume.logical_owned_bytes()? + file.path.capacity() as u64
+            + file.version.capacity() as u64 + file.display_name.capacity() as u64
+            + file.descriptor.media_type.capacity() as u64;
+        assert_eq!(file.logical_owned_bytes()?, expected);
+        assert!(file.logical_owned_bytes()? > file.path.len() as u64 + file.version.len() as u64
+            + file.display_name.len() as u64 + file.descriptor.media_type.len() as u64);
         Ok(())
     }
 

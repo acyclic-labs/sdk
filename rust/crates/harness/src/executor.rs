@@ -274,6 +274,17 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         maximum: u32,
     ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>>;
 
+    /// Optional finite replay of the same authenticated journal engine.
+    /// Missing capability fails before an ordinary replay or provider I/O.
+    #[cfg(feature = "filesystem")]
+    fn replay_measured<'a>(
+        &'a self, _operation: OperationId, _after: u64, _maximum: u32,
+        _budget: acyclic_fs::WorkBudget, _cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<ExecutionRecord>>, Error>> {
+        Box::pin(async { Err(acyclic_fs::OperationFailure::before_work(
+            Error::Unsupported("finite execution replay is unavailable".into()))) })
+    }
+
     /// Appends one reconstructable executor observation.
     fn append<'a>(
         &'a self,
@@ -336,6 +347,15 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         })
     }
 
+    #[cfg(feature = "filesystem")]
+    fn verify_input_file_measured<'a>(
+        &'a self, _reference: &'a FileRef, _budget: acyclic_fs::WorkBudget,
+        _cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>> {
+        Box::pin(async { Err(acyclic_fs::OperationFailure::before_work(
+            Error::Unsupported("finite turn input verification is unavailable".into()))) })
+    }
+
     /// Verifies data and native option bindings without granting fresh execution.
     fn verify_model_content<'a>(&'a self, content: &'a ModelContent) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
@@ -349,6 +369,15 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
             }
             Ok(())
         })
+    }
+
+    #[cfg(feature = "filesystem")]
+    fn verify_model_content_measured<'a>(
+        &'a self, _content: &'a ModelContent, _budget: acyclic_fs::WorkBudget,
+        _cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>> {
+        Box::pin(async { Err(acyclic_fs::OperationFailure::before_work(
+            Error::Unsupported("finite model content verification is unavailable".into()))) })
     }
 
     /// Confirms the selected model context is the exact projection of the
@@ -378,6 +407,11 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         id: InteractionId,
     ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>>;
 }
+
+#[cfg(feature = "filesystem")]
+pub(crate) use crate::filesystem::PreparationIo;
+#[cfg(not(feature = "filesystem"))]
+pub(crate) type PreparationIo = ();
 
 /// Incremental replay validation retaining only a cursor and retry digests.
 /// Pages are returned to the caller and are never retained by this cursor.
@@ -410,10 +444,27 @@ impl ExecutionReplay {
         &mut self,
         journal: &dyn ExecutionJournal,
     ) -> Result<Option<Vec<ExecutionRecord>>> {
+        self.next_page_with_io(journal, None).await
+    }
+
+    pub(crate) async fn next_page_with_io(
+        &mut self,
+        journal: &dyn ExecutionJournal,
+        io: Option<&PreparationIo>,
+    ) -> Result<Option<Vec<ExecutionRecord>>> {
         validate_execution_page(self.after, EXECUTION_REPLAY_PAGE_RECORDS)?;
-        let page = journal
-            .replay(self.operation_id, self.after, EXECUTION_REPLAY_PAGE_RECORDS)
-            .await?;
+        let page = match io {
+            #[cfg(feature = "filesystem")]
+            Some(io) => {
+                let receipt = journal.replay_measured(self.operation_id, self.after,
+                    EXECUTION_REPLAY_PAGE_RECORDS, io.remaining()?, &io.cancellation).await;
+                let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
+                let page = io.receive_content(receipt)?;
+                io.retain_owned(held)?;
+                page
+            }
+            _ => journal.replay(self.operation_id, self.after, EXECUTION_REPLAY_PAGE_RECORDS).await?,
+        };
         if page.len() > EXECUTION_REPLAY_PAGE_RECORDS as usize {
             return Err(Error::Storage("execution replay page exceeds bound".into()));
         }
@@ -422,6 +473,14 @@ impl ExecutionReplay {
         }
         let mut keys = BTreeSet::new();
         for (index, record) in page.iter().enumerate() {
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io {
+                io.preflight(acyclic_fs::WorkCounters { bytes_hashed: record.idempotency_key.len() as u64,
+                    items_examined: 1, ..Default::default() })?;
+                io.claim(32)?;
+                io.charge(acyclic_fs::WorkCounters { bytes_hashed: record.idempotency_key.len() as u64,
+                    items_examined: 1, ..Default::default() })?;
+            }
             let key = *blake3::hash(record.idempotency_key.as_bytes()).as_bytes();
             if record.operation_id != self.operation_id
                 || record.sequence != self.after + index as u64 + 1
@@ -446,9 +505,28 @@ pub(crate) async fn replay_execution(
     maximum_selected: usize,
     select: impl Fn(&ExecutionEvent) -> bool,
 ) -> Result<(u64, Vec<ExecutionRecord>)> {
+    replay_execution_with_io(journal, operation_id, maximum_selected, select, None).await
+}
+
+pub(crate) async fn replay_execution_with_io(
+    journal: &dyn ExecutionJournal,
+    operation_id: OperationId,
+    maximum_selected: usize,
+    select: impl Fn(&ExecutionEvent) -> bool,
+    io: Option<&PreparationIo>,
+) -> Result<(u64, Vec<ExecutionRecord>)> {
     let mut replay = ExecutionReplay::new(operation_id);
     let mut selected = Vec::new();
-    while let Some(page) = replay.next_page(journal).await? {
+    loop {
+        #[cfg(feature = "filesystem")]
+        let before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
+        let Some(page) = replay.next_page_with_io(journal, io).await? else { break };
+        #[cfg(feature = "filesystem")]
+        let held = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0) - before;
+        #[cfg(feature = "filesystem")]
+        let page_len = page.len();
+        #[cfg(feature = "filesystem")]
+        let selected_before = selected.len();
         for record in page {
             if select(&record.event) {
                 if selected.len() >= maximum_selected {
@@ -456,11 +534,33 @@ pub(crate) async fn replay_execution(
                         "selected execution records exceed bound".into(),
                     ));
                 }
+                #[cfg(feature = "filesystem")]
+                if let Some(io) = io {
+                    if selected.len() == selected.capacity() {
+                        io.claim(std::mem::size_of::<ExecutionRecord>() as u64)?;
+                        io.allocation_attempt(std::mem::size_of::<ExecutionRecord>() as u64)?;
+                        selected.reserve_exact(1);
+                    }
+                }
                 selected.push(record);
             }
         }
+        #[cfg(feature = "filesystem")]
+        if selected.len() == selected_before {
+            if let Some(io) = io {
+                // Digests remain in the replay cursor; the page no longer does.
+                io.release(held.saturating_sub(32 * page_len as u64))?;
+            }
+        }
     }
-    Ok((replay.tail(), selected))
+    let tail = replay.tail();
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let key_bytes = replay.keys.len() as u64 * 32;
+        drop(replay);
+        io.release(key_bytes)?;
+    }
+    Ok((tail, selected))
 }
 
 /// Terminal result produced by an executor.
@@ -2881,9 +2981,20 @@ pub(crate) async fn retained_model_step(
     purpose: ModelPurpose,
     limits: Limits,
 ) -> Result<RetainedModelStep> {
+    retained_model_step_with_io(journal, records, step, purpose, limits, None).await
+}
+
+pub(crate) async fn retained_model_step_with_io(
+    journal: &dyn ExecutionJournal, records: &[ExecutionRecord], step: u32,
+    purpose: ModelPurpose, limits: Limits, io: Option<&PreparationIo>,
+) -> Result<RetainedModelStep> {
     let mut events = Vec::new();
     let mut admission = ModelEventAdmission::default();
     for record in records {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+        }
         if let ExecutionEvent::Model {
             step: event_step,
             purpose: event_purpose,
@@ -2892,27 +3003,41 @@ pub(crate) async fn retained_model_step(
             && *event_step == step
             && *event_purpose == purpose
         {
-            let event = load_json::<ModelEvent>(journal, event).await?;
-            admission.observe(&event, limits)?;
-            events.push(event);
+            let event = load_preparation_json::<ModelEvent>(journal, event, io).await?;
+            admission.observe_with_io(&event, limits, io)?;
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io {
+                if events.len() == events.capacity() {
+                    let bytes = std::mem::size_of::<ModelEvent>() as u64;
+                    io.claim(bytes)?;
+                    io.allocation_attempt(bytes)?;
+                    events.reserve_exact(1);
+                }
+            }
+            events.push(event.into_retained());
         }
     }
-    let started = records.iter().find_map(|record| match &record.event {
-        ExecutionEvent::ModelStarted {
-            step: event_step,
-            purpose: event_purpose,
-            request_digest,
-            request,
-        } if *event_step == step && *event_purpose == purpose => Some((*request_digest, request)),
-        _ => None,
-    });
+    let mut started = None;
+    for record in records {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+        }
+        if let ExecutionEvent::ModelStarted {
+            step: event_step, purpose: event_purpose, request_digest, request,
+        } = &record.event
+            && *event_step == step && *event_purpose == purpose {
+            started = Some((*request_digest, request));
+            break;
+        }
+    }
     if started.is_none() && !events.is_empty() {
         return Err(Error::Storage(
             "model observations exist without an admitted attempt".into(),
         ));
     }
     let request = if let Some((digest, reference)) = started {
-        let recorded = load_model_request(journal, reference, limits).await?;
+        let recorded = load_model_request_with_io(journal, reference, limits, io).await?;
         if recorded.manifest().request_digest != digest {
             return Err(Error::Conflict(
                 "recorded model request digest differs from admission".into(),
@@ -2944,11 +3069,26 @@ async fn verify_model_contents_scoped<'a>(
     limits: Limits,
     scope: Option<&RuntimeScope>,
 ) -> Result<()> {
+    verify_model_contents_scoped_with_io(journal, contents, limits, scope, None).await
+}
+
+async fn verify_model_contents_scoped_with_io<'a>(
+    journal: &dyn ExecutionJournal,
+    contents: impl Iterator<Item = &'a ModelContent> + Clone,
+    limits: Limits,
+    scope: Option<&RuntimeScope>,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
     for content in contents.clone() {
-        validate_model_content_scope(content, limits, scope)?;
+        validate_model_content_scope_with_io(content, limits, scope, io)?;
     }
     for content in contents {
-        journal.verify_model_content(content).await?;
+        match io {
+            #[cfg(feature = "filesystem")]
+            Some(io) => io.receive_content(journal.verify_model_content_measured(
+                content, io.remaining()?, &io.cancellation).await)?,
+            _ => journal.verify_model_content(content).await?,
+        }
     }
     Ok(())
 }
@@ -2958,6 +3098,36 @@ fn validate_model_content_scope(
     limits: Limits,
     scope: Option<&RuntimeScope>,
 ) -> Result<()> {
+    validate_model_content_scope_with_io(content, limits, scope, None)
+}
+
+fn validate_model_content_scope_with_io(
+    content: &ModelContent, limits: Limits, scope: Option<&RuntimeScope>,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
+    #[cfg(not(feature = "filesystem"))]
+    let _ = io;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        content.validate_limits_with_io(limits, Some(io))?;
+        if let Some(scope) = scope {
+            content.validate_limits_with_io(scope.limits(), Some(io))?;
+        }
+        let schemas = scope.and_then(RuntimeScope::extension_schema_registry_ref);
+        let runtime = scope.and_then(RuntimeScope::extension_runtime);
+        content.visit_file_bindings(|file, binding| {
+            if let Some(scope) = scope
+                && !preparation_read_granted(scope.grants(), file, Some(io))? {
+                return Err(Error::Unauthorized("attenuated task cannot read model content".into()));
+            }
+            if let Some(binding) = binding {
+                let scope = scope.ok_or_else(|| Error::Unsupported("original native task scope is unavailable".into()))?;
+                binding.verify_original_with_io(scope.extensions(), schemas, runtime.as_deref(), io)?;
+            }
+            Ok(())
+        })?;
+        return Ok(());
+    }
     content.validate_limits(limits)?;
     if let Some(scope) = scope {
         content.validate_limits(scope.limits())?;
@@ -2990,10 +3160,25 @@ pub async fn canonical_checkpoint_for_operation(
     operation_id: OperationId,
     limits: Limits,
 ) -> Result<Option<FileRef>> {
-    let (_, records) = replay_execution(journal, operation_id, 1, |event| {
+    canonical_checkpoint_for_operation_with_io(journal, operation_id, limits, None).await
+}
+
+pub(crate) async fn canonical_checkpoint_for_operation_with_io(
+    journal: &dyn ExecutionJournal,
+    operation_id: OperationId,
+    limits: Limits,
+    io: Option<&PreparationIo>,
+) -> Result<Option<FileRef>> {
+    #[cfg(feature = "filesystem")]
+    let before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
+    #[cfg(feature = "filesystem")]
+    let _records_hold;
+    let (_, records) = replay_execution_with_io(journal, operation_id, 1, |event| {
         matches!(event, ExecutionEvent::ContextCompacted { step: 0, .. })
-    })
+    }, io)
     .await?;
+    #[cfg(feature = "filesystem")]
+    { _records_hold = io.map(|io| io.guard_owned(io.owned_bytes()? - before)).transpose()?; }
     let Some(record) = records.first() else {
         return Ok(None);
     };
@@ -3008,9 +3193,9 @@ pub async fn canonical_checkpoint_for_operation(
         ));
     };
     validate_checkpoint_json_reference(projection, limits)?;
-    let projection = load_json::<ResponseProjection>(journal, projection).await?;
-    crate::context::validate_projected_context(&projection.context, limits)?;
-    let Some(reference) = projection.checkpoint else {
+    let projection = load_preparation_json::<ResponseProjection>(journal, projection, io).await?;
+    crate::context::validate_projected_context_with_io(&projection.context, limits, io)?;
+    let Some(reference) = projection.checkpoint.as_ref() else {
         if projection.canonical.is_some() {
             return Err(Error::Storage(
                 "canonical publication has no checkpoint".into(),
@@ -3020,8 +3205,8 @@ pub async fn canonical_checkpoint_for_operation(
     };
     validate_checkpoint_json_reference(&reference, limits)?;
     let envelope =
-        load_json::<crate::context::CanonicalContextCheckpoint>(journal, &reference).await?;
-    envelope.validate(limits)?;
+        load_preparation_json::<crate::context::CanonicalContextCheckpoint>(journal, reference, io).await?;
+    envelope.validate_with_io(limits, io)?;
     if envelope.operation_id != operation_id
         || projection.canonical.as_ref() != Some(&envelope.source)
         || &envelope.compaction != compaction
@@ -3030,7 +3215,7 @@ pub async fn canonical_checkpoint_for_operation(
             "checkpoint differs from its committed publication".into(),
         ));
     }
-    Ok(Some(reference))
+    Ok(Some(clone_preparation(reference, io)?))
 }
 
 /// Materializes only this published checkpoint, never its lifetime chain.
@@ -3042,7 +3227,7 @@ pub async fn load_canonical_checkpoint(
     crate::context::CanonicalContextCheckpoint,
     crate::context::Context,
 )> {
-    load_canonical_checkpoint_scoped(journal, reference, limits, None).await
+    load_canonical_checkpoint_scoped(journal, reference, limits, None, None).await
 }
 
 /// Loads a published checkpoint under the receiving admission's read grants and bounds.
@@ -3060,7 +3245,7 @@ pub async fn load_canonical_checkpoint_for_scope(
     crate::context::CanonicalContextCheckpoint,
     crate::context::Context,
 )> {
-    load_canonical_checkpoint_scoped(journal, reference, limits, Some(scope)).await
+    load_canonical_checkpoint_scoped(journal, reference, limits, Some(scope), None).await
 }
 
 /// Imports a published checkpoint whose canonical selection is attested within
@@ -3094,6 +3279,7 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
         history,
         cursor,
         maximum_history_bytes,
+        None,
     )
     .await?;
     Ok((envelope, retained))
@@ -3107,6 +3293,7 @@ async fn load_canonical_checkpoint_at_counted<P: acyclic_stream::StreamProvider>
     history: &crate::store::HistoryReader<P>,
     cursor: &crate::store::HistoryCursor,
     maximum_history_bytes: u64,
+    io: Option<&PreparationIo>,
 ) -> Result<(
     crate::context::CanonicalContextCheckpoint,
     crate::context::Context,
@@ -3127,7 +3314,24 @@ async fn load_canonical_checkpoint_at_counted<P: acyclic_stream::StreamProvider>
             "checkpoint journal belongs to another owner".into(),
         ));
     }
-    let committed = history.pin(0).await?;
+    #[cfg(feature = "filesystem")]
+    let _committed_hold;
+    let committed = match io {
+        #[cfg(feature = "filesystem")]
+        Some(io) => {
+            let receipt = history.pin_measured(0, io.remaining()?, &io.cancellation).await;
+            let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
+            let value = io.receive_content(receipt)?;
+            io.retain_owned(held)?;
+            _committed_hold = Some(io.guard_owned(held)?);
+            value
+        }
+        _ => {
+            #[cfg(feature = "filesystem")]
+            { _committed_hold = None; }
+            history.pin(0).await?
+        }
+    };
     if cursor.authority != committed.authority {
         return Err(Error::Unauthorized(
             "checkpoint history belongs to another owner".into(),
@@ -3139,10 +3343,26 @@ async fn load_canonical_checkpoint_at_counted<P: acyclic_stream::StreamProvider>
         ));
     }
     let (envelope, retained) =
-        load_canonical_checkpoint_for_scope(journal, reference, limits, scope).await?;
-    let (selection, consumed) = history
-        .operation_event_bounded(envelope.operation_id, maximum_history_bytes)
-        .await?;
+        load_canonical_checkpoint_scoped(journal, reference, limits, Some(scope), io).await?;
+    #[cfg(feature = "filesystem")]
+    let _selection_hold;
+    let (selection, consumed) = match io {
+        #[cfg(feature = "filesystem")]
+        Some(io) => {
+            let receipt = history.operation_event_bounded_measured(envelope.operation_id,
+                maximum_history_bytes, io.remaining()?, &io.cancellation).await;
+            let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
+            let value = io.receive_content(receipt)?;
+            io.retain_owned(held)?;
+            _selection_hold = Some(io.guard_owned(held)?);
+            value
+        }
+        _ => {
+            #[cfg(feature = "filesystem")]
+            { _selection_hold = None; }
+            history.operation_event_bounded(envelope.operation_id, maximum_history_bytes).await?
+        }
+    };
     let selection = selection
         .ok_or_else(|| Error::Conflict("checkpoint has no owning canonical selection".into()))?;
     if selection.revision <= cursor.after_revision
@@ -3189,6 +3409,22 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
     crate::context::CanonicalContextCheckpoint,
     crate::context::Context,
 )> {
+    load_canonical_checkpoint_through_with_io(journal, reference, limits, scope, history,
+        cursor, through_sequence, history_limits, resolver, None).await
+}
+
+pub(crate) async fn load_canonical_checkpoint_through_with_io<P: acyclic_stream::StreamProvider>(
+    journal: &dyn ExecutionJournal,
+    reference: &FileRef,
+    limits: Limits,
+    scope: &RuntimeScope,
+    history: &crate::store::HistoryReader<P>,
+    cursor: &crate::store::HistoryCursor,
+    through_sequence: u64,
+    history_limits: crate::store::HistoryReadLimits,
+    resolver: &dyn crate::conversation::ContentResidencyVerifier,
+    io: Option<&PreparationIo>,
+) -> Result<(crate::context::CanonicalContextCheckpoint, crate::context::Context)> {
     let limits = crate::context::restrict_context_limits(limits, scope.limits())?;
     if history_limits.maximum_events == 0 || history_limits.maximum_bytes == 0 {
         return Err(Error::Invalid("checkpoint delta bounds are invalid".into()));
@@ -3201,6 +3437,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
         history,
         cursor,
         history_limits.maximum_bytes,
+        io,
     )
     .await?;
     let after_sequence = envelope.selection.conversation_revision;
@@ -3217,37 +3454,60 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
         .checked_sub(consumed)
         .filter(|bytes| *bytes > 0)
         .ok_or_else(|| Error::Invalid("checkpoint delta exceeds history byte bound".into()))?;
-    let records = history
-        .conversation_range(
-            cursor,
-            after_sequence,
-            through_sequence,
-            crate::store::HistoryReadLimits {
-                maximum_events: history_limits.maximum_events - 1,
-                maximum_bytes: remaining_bytes,
-            },
-        )
-        .await?;
+    let range_limits = crate::store::HistoryReadLimits {
+        maximum_events: history_limits.maximum_events - 1,
+        maximum_bytes: remaining_bytes,
+    };
+    #[cfg(feature = "filesystem")]
+    let _records_hold;
+    let records = match io {
+        #[cfg(feature = "filesystem")]
+        Some(io) => {
+            let receipt = history.conversation_range_measured(cursor, after_sequence,
+                through_sequence, range_limits, io.remaining()?, &io.cancellation).await;
+            let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
+            let value = io.receive_content(receipt)?;
+            io.retain_owned(held)?;
+            _records_hold = Some(io.guard_owned(held)?);
+            value
+        }
+        _ => {
+            #[cfg(feature = "filesystem")]
+            { _records_hold = None; }
+            history.conversation_range(cursor, after_sequence, through_sequence, range_limits).await?
+        }
+    };
+    #[cfg(feature = "filesystem")]
+    let _view_workspace = io.map(|io| reserve_preparation_workspace(&records, io)).transpose()?;
     let view = crate::conversation::ConversationState::selected_view(records)?;
-    let message_ids = view
-        .messages()
-        .iter()
-        .filter(|message| {
-            matches!(
-                message.kind,
-                crate::conversation::MessageKind::System
-                    | crate::conversation::MessageKind::User
-                    | crate::conversation::MessageKind::Assistant
-                    | crate::conversation::MessageKind::ToolCall
-                    | crate::conversation::MessageKind::ToolResult
-            )
-        })
-        .map(|message| message.id)
-        .collect();
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let bytes = (view.messages().len() * std::mem::size_of::<uuid::Uuid>()) as u64;
+        io.claim(bytes)?;
+        io.allocation_attempt(bytes)?;
+    }
+    let mut message_ids = Vec::with_capacity(view.messages().len());
+    for message in view.messages() {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+        }
+        if matches!(
+            message.kind,
+            crate::conversation::MessageKind::System
+                | crate::conversation::MessageKind::User
+                | crate::conversation::MessageKind::Assistant
+                | crate::conversation::MessageKind::ToolCall
+                | crate::conversation::MessageKind::ToolResult
+        ) {
+            message_ids.push(message.id);
+        }
+    }
     let resolver = CheckpointDeltaResolver {
         inner: resolver,
         scope,
         limits,
+        io,
     };
     // Authorize all canonical record references, including non-model records,
     // before any content resolution. Structured projections use the same gate.
@@ -3264,7 +3524,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
             }
         }
     }
-    let selected = crate::projection::select_model_context_at_revision(
+    let selected = crate::projection::select_model_context_at_revision_with_io(
         &view,
         crate::conversation::ModelContextSelection {
             conversation_revision: through_sequence,
@@ -3276,20 +3536,28 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
         limits.attachments,
         limits.render_bytes,
         limits.attachments,
+        io,
     )
     .await?;
-    verify_model_contents_scoped(
+    verify_model_contents_scoped_with_io(
         journal,
         selected.messages.iter().map(|message| &message.content),
         limits,
         Some(scope),
+        io,
     )
     .await?;
-    let retained = crate::context::place_messages(
+    drop(selected.selection);
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        io.release((view.messages().len() * std::mem::size_of::<uuid::Uuid>()) as u64)?;
+    }
+    let retained = crate::context::place_messages_with_io(
         retained,
         selected.messages,
         crate::context::ContextPlacement::Append,
         limits,
+        io,
     )?;
     Ok((envelope, retained))
 }
@@ -3298,12 +3566,13 @@ struct CheckpointDeltaResolver<'a> {
     inner: &'a dyn crate::conversation::ContentResidencyVerifier,
     scope: &'a RuntimeScope,
     limits: Limits,
+    io: Option<&'a PreparationIo>,
 }
 
 impl CheckpointDeltaResolver<'_> {
     fn authorize(&self, file: &FileRef) -> Result<()> {
         self.limits.validate_file(file)?;
-        if !crate::runtime::read_granted(self.scope.grants(), file)? {
+        if !preparation_read_granted(self.scope.grants(), file, self.io)? {
             return Err(Error::Unauthorized(
                 "attenuated task cannot read checkpoint delta".into(),
             ));
@@ -3327,7 +3596,12 @@ impl crate::projection::AttachmentListResolver for CheckpointDeltaResolver<'_> {
                     "checkpoint delta manifest exceeds item bound".into(),
                 ));
             }
-            let attachments = self.inner.load_manifest(manifest, item_count).await?;
+            let attachments = match self.io {
+                #[cfg(feature = "filesystem")]
+                Some(io) => receive_preparation(io, self.inner.load_manifest_measured(manifest,
+                    item_count, io.remaining()?, &io.cancellation).await)?,
+                _ => self.inner.load_manifest(manifest, item_count).await?,
+            };
             if attachments.len() as u64 != u64::from(item_count) {
                 return Err(Error::Storage(
                     "checkpoint delta manifest count differs".into(),
@@ -3343,7 +3617,12 @@ impl crate::projection::AttachmentListResolver for CheckpointDeltaResolver<'_> {
     fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
         Box::pin(async move {
             self.authorize(file)?;
-            self.inner.read(file).await
+            match self.io {
+                #[cfg(feature = "filesystem")]
+                Some(io) => receive_preparation(io, self.inner.read_measured(file,
+                    self.limits.render_bytes, io.remaining()?, &io.cancellation).await),
+                _ => self.inner.read(file).await,
+            }
         })
     }
 }
@@ -3353,6 +3632,7 @@ async fn load_canonical_checkpoint_scoped(
     reference: &FileRef,
     limits: Limits,
     scope: Option<&RuntimeScope>,
+    io: Option<&PreparationIo>,
 ) -> Result<(
     crate::context::CanonicalContextCheckpoint,
     crate::context::Context,
@@ -3363,12 +3643,16 @@ async fn load_canonical_checkpoint_scoped(
     };
     validate_checkpoint_json_reference(reference, limits)?;
     let envelope =
-        load_json::<crate::context::CanonicalContextCheckpoint>(journal, reference).await?;
-    envelope.validate(limits)?;
-    if canonical_checkpoint_for_operation(journal, envelope.operation_id, limits)
-        .await?
-        .as_ref()
-        != Some(reference)
+        load_preparation_json::<crate::context::CanonicalContextCheckpoint>(journal, reference, io).await?;
+    envelope.validate_with_io(limits, io)?;
+    #[cfg(feature = "filesystem")]
+    let publication_before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
+    #[cfg(feature = "filesystem")]
+    let _publication_hold;
+    let publication = canonical_checkpoint_for_operation_with_io(journal, envelope.operation_id, limits, io).await?;
+    #[cfg(feature = "filesystem")]
+    { _publication_hold = io.map(|io| io.guard_owned(io.owned_bytes()? - publication_before)).transpose()?; }
+    if publication.as_ref() != Some(reference)
     {
         return Err(Error::Conflict(
             "checkpoint is not published by its owning execution".into(),
@@ -3377,32 +3661,38 @@ async fn load_canonical_checkpoint_scoped(
     for file in [&envelope.source, &envelope.retained, &envelope.compaction] {
         validate_checkpoint_json_reference(file, limits)?;
     }
-    let source = load_json::<crate::context::Context>(journal, &envelope.source).await?;
-    let retained = load_json::<crate::context::Context>(journal, &envelope.retained).await?;
+    let source = load_preparation_json::<crate::context::Context>(journal, &envelope.source, io).await?;
+    let retained = load_preparation_json::<crate::context::Context>(journal, &envelope.retained, io).await?;
     let proof =
-        load_json::<crate::context::CompactionReference>(journal, &envelope.compaction).await?;
-    envelope.validate_projection(&source, &retained, &proof, limits)?;
+        load_preparation_json::<crate::context::CompactionReference>(journal, &envelope.compaction, io).await?;
+    envelope.validate_projection_with_io(&source, &retained, &proof, limits, io)?;
     // Publication authenticates the checkpoint; a new admission must still
     // hold current owner-mediated read grants for every retained payload.
     for file in retained.metadata.values() {
         limits.validate_file(file)?;
         if let Some(scope) = scope
-            && !crate::runtime::read_granted(scope.grants(), file)?
+            && !preparation_read_granted(scope.grants(), file, io)?
         {
             return Err(Error::Unauthorized(
                 "attenuated task cannot read checkpoint metadata".into(),
             ));
         }
     }
-    verify_model_contents_scoped(
+    verify_model_contents_scoped_with_io(
         journal,
         retained.messages.iter().map(|message| &message.content),
         limits,
         scope,
+        io,
     )
     .await?;
     for file in retained.metadata.values() {
-        journal.verify_input_file(file).await?;
+        match io {
+            #[cfg(feature = "filesystem")]
+            Some(io) => io.receive_content(journal.verify_input_file_measured(file,
+                io.remaining()?, &io.cancellation).await)?,
+            _ => journal.verify_input_file(file).await?,
+        }
     }
     if proof
         .summary
@@ -3413,7 +3703,7 @@ async fn load_canonical_checkpoint_scoped(
             "canonical checkpoint summary belongs to another step".into(),
         ));
     }
-    Ok((envelope, retained))
+    Ok((envelope.into_retained(), retained.into_retained()))
 }
 
 fn validate_checkpoint_json_reference(reference: &FileRef, limits: Limits) -> Result<()> {
@@ -3431,6 +3721,32 @@ async fn load_model_request(
     reference: &FileRef,
     limits: Limits,
 ) -> Result<crate::model::PreparedModelRequest> {
+    load_model_request_with_io(journal, reference, limits, None).await
+}
+
+pub(crate) async fn load_model_request_with_io(
+    journal: &dyn ExecutionJournal, reference: &FileRef, limits: Limits,
+    io: Option<&PreparationIo>,
+) -> Result<crate::model::PreparedModelRequest> {
+    #[cfg(not(feature = "filesystem"))]
+    let _ = io;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        if reference.volume().class() != VolumeClass::AgentPrivate
+            || reference.descriptor().media_type() != "application/json" {
+            return Err(Error::Storage("execution journal references non-private JSON content".into()));
+        }
+        let before = io.owned_bytes()?;
+        let _bytes_hold;
+        let bytes = receive_preparation(io, journal.load_measured(
+            reference, io.remaining()?, &io.cancellation).await)?;
+        _bytes_hold = io.guard_owned(io.owned_bytes()? - before)?;
+        let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
+        io.preflight(hash)?;
+        reference.descriptor().verify(&bytes)?;
+        io.charge(hash)?;
+        return crate::model::PreparedModelRequest::decode_with_io(&bytes, limits, io);
+    }
     crate::model::PreparedModelRequest::decode(&load_json_bytes(journal, reference).await?, limits)
 }
 
@@ -3453,6 +3769,161 @@ pub(crate) async fn load_json<T: serde::de::DeserializeOwned>(
 ) -> Result<T> {
     let bytes = load_json_bytes(journal, reference).await?;
     decode_json(&bytes)
+}
+
+fn preparation_read_granted(
+    grants: &crate::Capabilities, file: &FileRef, io: Option<&PreparationIo>,
+) -> Result<bool> {
+    #[cfg(not(feature = "filesystem"))]
+    let _ = io;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        return crate::runtime::read_granted_measured(grants, file, io);
+    }
+    crate::runtime::read_granted(grants, file)
+}
+
+#[cfg(feature = "filesystem")]
+pub(crate) use crate::filesystem::PreparationRecord;
+#[cfg(not(feature = "filesystem"))]
+pub(crate) trait PreparationRecord: serde::de::DeserializeOwned + Serialize {}
+#[cfg(not(feature = "filesystem"))]
+impl<T: serde::de::DeserializeOwned + Serialize> PreparationRecord for T {}
+
+/// Typed payload custody. The guard is declared after the value so its logical
+/// allowance is released only after the last owned container has dropped.
+pub(crate) struct LoadedPreparation<'a, T> {
+    pub(crate) value: T,
+    #[cfg(feature = "filesystem")]
+    hold: Option<crate::filesystem::DecodeReservation<'a>>,
+    marker: std::marker::PhantomData<&'a PreparationIo>,
+}
+
+impl<T> std::ops::Deref for LoadedPreparation<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T { &self.value }
+}
+
+impl<T> LoadedPreparation<'_, T> {
+    pub(crate) fn into_retained(self) -> T {
+        #[cfg(feature = "filesystem")]
+        if let Some(hold) = self.hold { hold.into_retained(); }
+        self.value
+    }
+}
+
+#[cfg(feature = "filesystem")]
+pub(crate) fn receive_preparation<T>(
+    io: &PreparationIo,
+    result: acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<T>, Error>,
+) -> Result<T> {
+    let held = result.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
+    let value = io.receive_content(result)?;
+    io.retain_owned(held)?;
+    Ok(value)
+}
+
+pub(crate) fn clone_preparation<T: Clone + Serialize>(
+    value: &T, io: Option<&PreparationIo>,
+) -> Result<T> {
+    #[cfg(not(feature = "filesystem"))]
+    let _ = io;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let hold = reserve_preparation_workspace(value, io)?;
+        let cloned = value.clone();
+        hold.into_retained();
+        return Ok(cloned);
+    }
+    Ok(value.clone())
+}
+
+#[cfg(feature = "filesystem")]
+pub(crate) fn reserve_preparation_workspace<'a, T: Serialize>(
+    value: &T, io: &'a PreparationIo,
+) -> Result<crate::filesystem::DecodeReservation<'a>> {
+    let before_items = io.receipt().items_examined;
+    let _encoded_hold;
+    let encoded = io.encode_json(value, io.remaining()?.bytes_encoded, false)?;
+    _encoded_hold = io.guard_owned(encoded.len() as u64)?;
+    // Measured serializer visits bound concrete slots; eight slots per visit
+    // cover vector slack, paired tool graphs and transient compaction clones.
+    let items = io.receipt().items_examined.checked_sub(before_items)
+        .ok_or_else(|| Error::Invalid("preparation item accounting underflow".into()))?;
+    let slot = [
+        std::mem::size_of::<T>() as u64,
+        <crate::context::Context as PreparationRecord>::maximum_slot_bytes(),
+        std::mem::size_of::<crate::conversation::ConversationMessage>() as u64,
+        std::mem::size_of::<crate::context::CompactionReference>() as u64,
+    ].into_iter().max().unwrap_or(0);
+    let bytes = items.checked_mul(slot).and_then(|slots| slots.checked_mul(8))
+        .and_then(|slots| (encoded.len() as u64).checked_mul(4).and_then(|strings| slots.checked_add(strings)))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<T>() as u64))
+        .ok_or_else(|| Error::Invalid("preparation allowance overflow".into()))?;
+    io.reserve_decode(bytes)
+}
+
+pub(crate) fn preparation_digest<T: Serialize>(
+    value: &T, io: Option<&PreparationIo>,
+) -> Result<[u8; 32]> {
+    #[cfg(not(feature = "filesystem"))]
+    let _ = io;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let _bytes_hold;
+        let bytes = io.encode_json(value, io.remaining()?.bytes_encoded, true)?;
+        _bytes_hold = io.guard_owned(bytes.len() as u64)?;
+        let work = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
+        io.preflight(work)?;
+        let digest = *blake3::hash(&bytes).as_bytes();
+        io.charge(work)?;
+        return Ok(digest);
+    }
+    crate::contract::canonical_json_digest(value)
+}
+
+pub(crate) async fn load_preparation_json<'a, T: PreparationRecord>(
+    journal: &dyn ExecutionJournal,
+    reference: &FileRef,
+    io: Option<&'a PreparationIo>,
+) -> Result<LoadedPreparation<'a, T>> {
+    #[cfg(not(feature = "filesystem"))]
+    let _ = io;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        if reference.volume().class() != VolumeClass::AgentPrivate
+            || reference.descriptor().media_type() != "application/json" {
+            return Err(Error::Storage("execution journal references non-private JSON content".into()));
+        }
+        let before_bytes = io.owned_bytes()?;
+        let _bytes_hold;
+        let bytes = receive_preparation(io, journal.load_measured(
+            reference, io.remaining()?, &io.cancellation).await)?;
+        _bytes_hold = io.guard_owned(io.owned_bytes()? - before_bytes)?;
+        let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
+        io.preflight(hash)?;
+        reference.descriptor().verify(&bytes)?;
+        io.charge(hash)?;
+        {
+            let parsed = io.decode_preparation::<Value>(&bytes)?;
+            let _canonical_hold;
+            let canonical = io.encode_json(&parsed.value, bytes.len() as u64, true)?;
+            _canonical_hold = io.guard_owned(canonical.len() as u64)?;
+            if canonical != bytes {
+                return Err(Error::Storage("execution journal JSON is not canonical".into()));
+            }
+        }
+        let before = io.owned_bytes()?;
+        let value = io.decode_preparation::<T>(&bytes)?.into_retained();
+        let hold = Some(io.guard_owned(io.owned_bytes()? - before)?);
+        return Ok(LoadedPreparation { value, hold, marker: std::marker::PhantomData });
+    }
+    Ok(LoadedPreparation {
+        value: load_json(journal, reference).await?,
+        #[cfg(feature = "filesystem")]
+        hold: None,
+        marker: std::marker::PhantomData,
+    })
 }
 
 pub(crate) fn decode_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
@@ -3554,10 +4025,16 @@ impl ModelEventAdmission {
     }
 
     pub(crate) fn observe(&mut self, event: &ModelEvent, limits: Limits) -> Result<()> {
+        self.observe_with_io(event, limits, None)
+    }
+
+    pub(crate) fn observe_with_io(
+        &mut self, event: &ModelEvent, limits: Limits, io: Option<&PreparationIo>,
+    ) -> Result<()> {
         self.validate_next(event, limits)?;
         match event {
             ModelEvent::ToolCall { call_id, .. } => {
-                self.calls.insert(call_id.clone());
+                self.calls.insert(clone_preparation(call_id, io)?);
             }
             ModelEvent::Completed { .. } => self.completed = true,
             ModelEvent::Content { .. } | ModelEvent::Reasoning { .. } => {}
@@ -6783,6 +7260,72 @@ mod tests {
             replay_execution(&journal, operation, 0, |_| false).await,
             Err(Error::Conflict(_))
         ));
+        Ok(())
+    }
+
+    #[cfg(feature = "filesystem")]
+    #[test]
+    fn finite_canonical_compaction_preserves_projection_and_releases_custody() -> Result<()> {
+        let source = crate::context::Context {
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("original canonical source".into()),
+            }],
+            current_input_index: Some(0),
+            ..Default::default()
+        };
+        let retention = crate::context::CompactionRetention::default();
+        let ordinary = crate::context::DurableContextProvider::compact(
+            &source, 2, None, retention.clone())?;
+        let budget = acyclic_fs::WorkBudget {
+            bytes_encoded: 1_000_000, bytes_hashed: 1_000_000,
+            bytes_copied: 1_000_000, output_bytes: 1_000_000,
+            items_examined: 100_000, items_returned: 100_000,
+            allocation_operations: 100_000, peak_allocation_bytes: 16_000_000,
+            ..Default::default()
+        };
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let io = PreparationIo::from_budget(budget, &cancellation)?;
+        let held;
+        let finite = crate::context::DurableContextProvider::compact_with_io(
+            &source, 2, None, retention.clone(), Some(&io))?;
+        held = io.guard_owned(io.owned_bytes()?)?;
+        assert_eq!(finite, ordinary);
+        assert!(io.receipt().bytes_encoded > 0);
+        assert!(io.receipt().bytes_hashed > 0);
+        assert!(io.receipt().peak_allocation_bytes > 0);
+        drop(finite);
+        drop(held);
+        assert_eq!(io.owned_bytes()?, 0);
+
+        let small = PreparationIo::from_budget(acyclic_fs::WorkBudget {
+            peak_allocation_bytes: 0, ..budget
+        }, &cancellation)?;
+        assert!(crate::context::DurableContextProvider::compact_with_io(
+            &source, 2, None, retention.clone(), Some(&small)).is_err());
+        assert_eq!(small.owned_bytes()?, 0);
+        let cancelled = PreparationIo::from_budget(budget, &cancellation)?;
+        cancellation.cancel();
+        assert!(crate::context::DurableContextProvider::compact_with_io(
+            &source, 2, None, retention, Some(&cancelled)).is_err());
+        assert_eq!(cancelled.receipt(), acyclic_fs::WorkCounters::default());
+        Ok(())
+    }
+
+    #[cfg(feature = "filesystem")]
+    #[tokio::test]
+    async fn finite_canonical_replay_rejects_unmeasured_custom_journal_before_work() -> Result<()> {
+        let journal = ModelReadSpy::default();
+        let operation = OperationId::from_bytes([193; 16]);
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let io = PreparationIo::from_budget(acyclic_fs::WorkBudget::default(), &cancellation)?;
+        assert!(matches!(
+            canonical_checkpoint_for_operation_with_io(&journal, operation, Limits::default(), Some(&io)).await,
+            Err(Error::Unsupported(_))
+        ));
+        assert_eq!(io.receipt(), acyclic_fs::WorkCounters::default());
+        assert_eq!(journal.replays.load(Ordering::SeqCst), 0);
+        assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
         Ok(())
     }
 

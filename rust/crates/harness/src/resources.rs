@@ -16,6 +16,13 @@ pub struct ProviderRef {
 }
 
 impl ProviderRef {
+    /// Owned byte-buffer capacities only; opaque allocator metadata is excluded.
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        [self.namespace.capacity(), self.family.capacity(), self.version.capacity()]
+            .into_iter().try_fold(0_u64, |bytes, capacity| bytes.checked_add(capacity as u64)
+                .ok_or_else(|| Error::Invalid("provider identity ownership overflow".into())))
+    }
+
     /// Creates a validated provider identity.
     pub fn new(
         namespace: impl Into<String>,
@@ -156,6 +163,12 @@ impl ResourceRef {
         }
         Ok(())
     }
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        self.provider.logical_owned_bytes()?.checked_add(self.key.capacity() as u64)
+            .and_then(|bytes| bytes.checked_add(self.version.as_ref().map_or(0, String::capacity) as u64))
+            .ok_or_else(|| Error::Invalid("resource identity ownership overflow".into()))
+    }
+
 
     /// Returns the semantic reference kind.
     #[must_use]
@@ -203,6 +216,10 @@ macro_rules! typed_reference {
             #[must_use]
             pub const fn as_resource(&self) -> &ResourceRef {
                 &self.0
+            }
+
+            pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+                self.0.logical_owned_bytes()
             }
 
             /// Validates an untrusted serialized reference and its semantic kind.
@@ -265,6 +282,29 @@ typed_reference!(RunRef, Run, "Reference to a recoverable model run.");
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn logical_resource_ownership_counts_spare_buffer_capacity() -> Result<()> {
+        let mut namespace = String::with_capacity(128);
+        namespace.push_str("harness");
+        let mut family = String::with_capacity(256);
+        family.push_str("filesystem");
+        let mut version = String::with_capacity(512);
+        version.push_str("v1");
+        let provider = ProviderRef::new(namespace, family, version)?;
+        let provider_bytes = provider.namespace.capacity() + provider.family.capacity()
+            + provider.version.capacity();
+        assert_eq!(provider.logical_owned_bytes()?, provider_bytes as u64);
+        let mut key = Vec::with_capacity(1024);
+        key.extend_from_slice(b"generation");
+        let mut generation_version = String::with_capacity(2048);
+        generation_version.push_str("one");
+        let reference = GenerationRef::new(provider, key, Some(generation_version))?;
+        assert_eq!(reference.logical_owned_bytes()?, (provider_bytes
+            + reference.0.key.capacity()
+            + reference.0.version.as_ref().map_or(0, String::capacity)) as u64);
+        Ok(())
+    }
 
     #[test]
     fn references_are_typed_bounded_and_provider_owned() -> Result<()> {

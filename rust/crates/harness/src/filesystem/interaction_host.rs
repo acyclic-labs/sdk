@@ -588,10 +588,8 @@ where
         &self, reference: &FileRef, io: Option<&PreparationIo>,
     ) -> Result<bytes::Bytes> {
         if let Some(io) = io {
-            io.receive_content(ContentGrant::verify_original_volume_measured(
-                &self.verifier, &self.owner_scope, reference.volume(), VolumeOperation::Read,
-                io.remaining()?, &io.cancellation,
-            ))?;
+            ContentGrant::verify_original_volume_with_io(
+                &self.verifier, &self.owner_scope, reference.volume(), VolumeOperation::Read, io)?;
             self.host.read_pinned_io(reference, self.maximum_bytes, Some(io)).await
         } else {
             let grant = ContentGrant::verify(&self.verifier, &self.owner_scope,

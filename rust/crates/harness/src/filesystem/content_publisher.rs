@@ -83,18 +83,26 @@ where
         Box::pin(async move {
             let io = PreparationIo::from_budget(budget, cancellation)
                 .map_err(acyclic_fs::OperationFailure::before_work)?;
-            let result = async {
-                let retry = once_key(operation_id, Some(&io))?;
-                let file = io.receive_content(self.host.put_content_measured(&self.volume, &self.grant,
-                    path, bytes, media_type, display_name, self.maximum_bytes, &retry,
-                    io.remaining()?, cancellation).await)?;
-                io.retain_owned(file.logical_owned_bytes()?)?;
-                Ok(file)
-            }.await;
+            let result = self.stage_once_with_io(operation_id, path, bytes, media_type, display_name, &io).await;
             match result {
                 Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
                 Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
             }
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stage_once_with_native_work<'a>(
+        &'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
+        media_type: &'a str, display_name: &'a str, work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> BoxProviderFuture<'a, std::result::Result<(FileRef, acyclic_fs::NativeAllocation), crate::NativeRootVerificationError>> {
+        Box::pin(async move {
+            let io = PreparationIo::from_native_work(work)?;
+            let result = self.stage_once_with_io(operation_id, path, bytes, media_type, display_name, &io).await;
+            let file = io.native_result(result)?;
+            let retained = file.logical_owned_bytes()?;
+            let custody = io.into_native_custody(retained)?;
+            Ok((file, custody))
         })
     }
 
@@ -175,6 +183,21 @@ where
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     FilesystemContentPublisher<A, O>
 {
+    #[allow(clippy::too_many_arguments, reason = "one canonical complete publication identity")]
+    pub(super) async fn stage_once_with_io(
+        &self, operation_id: OperationId, path: &str, bytes: &[u8],
+        media_type: &str, display_name: &str, io: &PreparationIo,
+    ) -> Result<FileRef> {
+        let retry_hold;
+        let retry = once_key(operation_id, Some(io))?;
+        retry_hold = io.guard_owned(retry.as_str().len() as u64)?;
+        let file = self.host.put_content_impl(&self.volume, &self.grant, path, bytes,
+            media_type, display_name, self.maximum_bytes, &retry, None, None, Some(io)).await?;
+        drop(retry);
+        drop(retry_hold);
+        Ok(file)
+    }
+
     pub(crate) async fn stage_with_retry(
         &self,
         path: &str,

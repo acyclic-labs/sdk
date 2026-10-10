@@ -87,6 +87,24 @@ actual conversation owner (including a child conversation), not the task's
 separate aggregate verifier; exact reply grants and original task-owner fences
 remain required.
 
+Native content consumers pass their original `NativeMaterializationWork` to
+`stage_once_with_native_work`, `read_with_native_work` and
+`verify_with_native_work`; nested History and model proofs borrow that same
+ledger and cancellation token. Staging returns `(FileRef, NativeAllocation)`
+and reading returns `(Vec<u8>, NativeAllocation)`. Keep the allocation guard
+through the last use, then drop the value before its guard. Metadata custody
+counts retained string/key capacities, including spare capacity; it does not
+count opaque allocator headers or global provider-cache residency.
+
+`release_if_quiescent_with_native_work(work, workflow)` borrows the already
+configured original workflow journal. It authenticates the same task, lease,
+admission, private volume and audience before reading either journal, proves
+every started execution dispatch settled and the latest workflow record
+suspended, then compares coordinator, execution and pending-workflow tails in
+the existing release transaction. Scheduler phase alone is not quiescence;
+unsettled dispatches, absent passive witnesses and reconciliation retain the
+lease. Quota, cancellation and provider errors retain their original cause.
+
 The raw Filesystem host and the `AuthorityIssuer`/verifier pair are trusted provider wiring, not reader inputs. Resolve an attached agent's signed scope against the owner's retained verifier; accepting a reader-supplied verifier would let that reader invent its own grants. The ref and its volume identity remain non-bearer even when the owner makes a directory lazily discoverable.
 
 `FsRootProjectSourceProvider::new(host, actual_service_owner, graph_root)` is an
@@ -105,6 +123,10 @@ project read authority; the provider's success alone grants no capability.
 `FilesystemExecutionJournal` keeps model observations and tool inputs/results in pinned agent-private files. `FilesystemInteractionHost` stages interaction prompts, answers, and optional approval explanations there, then commits ref-only records to the owning conversation Stream aggregate. The executor journal delegates interactions to that same aggregate; it has no second interaction history. Resolution requires an authenticated grant for the exact interaction plus `interaction:resolve`, validates staged bytes against the original request, and reconciles identical retries.
 
 Execution replay uses `replay(operation_id, after, maximum)`: `after` is the exclusive one-based record sequence, zero starts at the first record, and `maximum` is a caller-selected positive `u32` allowance. Providers can return shorter internal batches. Empty pages end replay. `ExecutionReplay` supplies shared sequence and identity validation across pages without retaining pages. The stock executor uses it and keeps only the current step or tool call; custom executors can use the same cursor when resuming. Staged execution payload identities include their exact content digest, so an unpublished file cannot block reconciliation with different bytes at the same logical event position; the journal append remains authoritative.
+
+Finite Summary preparation uses the same execution cursor, canonical checkpoint/compaction validator and history projection as ordinary preparation. The original publication, indexed selection, complete pinned delta, native-option proofs and source content reads share the caller's preparation ledger; a previously prepared unbounded Summary is not a finite proof. Custom journals without measured replay or content verification reject before those provider reads. Returned source receipts reserve conservative live logical custody during subsequent reads, and decoded intermediates release that custody after their values drop. This allowance covers audited strings, vectors and concrete DTO slots, not RSS or allocator-node measurements; opaque serde decoding does not manufacture allocation-operation counts.
+
+Bind Summary intent with `FilesystemForkPreparer::with_summary_history(selection, journal, scope, history, cursor)`: it retains the original scoped source, not an already prepared context. `prepare_for_task(request, preparation)` uses the sealed task owner's original cancellation and ledger to prove that source before any capture claim on every attempt; an archived checkpoint selection remains that exact selection even after a later checkpoint is published.
 
 `FilesystemWorkflowJournal` applies the same rule to resumable state-machine transitions: checkpoint state and input live in descriptor-verified private files, while its Stream contains only exact `FileRef` records. Emitted `WorkflowCommand`s contain stable operation IDs, kinds, and immutable argument refs—not inline command bodies. The journal verifies each command payload's owner-private residency before commit and on public replay. Normal commits reuse a verified in-process checkpoint/identity summary; cold recovery and uncertain appends rescan authoritative record envelopes before proceeding. Workflow lifetime and identity counts have no fixed ceilings. Caller-selected task/session budgets and payload limits remain authoritative; lazy bounded identity projections remain an open recovery gate. A lost append acknowledgement is reconciled by operation identity instead of blindly dispatching the transition again.
 

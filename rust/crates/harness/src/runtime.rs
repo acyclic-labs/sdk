@@ -1853,6 +1853,10 @@ impl RuntimeScope {
         self.extension_schemas.clone()
     }
 
+    pub(crate) fn extension_schema_registry_ref(&self) -> Option<&SchemaRegistry> {
+        self.extension_schemas.as_ref()
+    }
+
     /// Returns the executable extension selection attached to this scope.
     #[must_use]
     pub fn extension_runtime(&self) -> Option<Arc<ExtensionRuntime>> {
@@ -5668,14 +5672,14 @@ pub(crate) fn read_granted(grants: &Capabilities, file: &FileRef) -> Result<bool
 }
 
 #[cfg(feature = "filesystem")]
-fn read_granted_measured(grants: &Capabilities, file: &FileRef, io: &crate::filesystem::PreparationIo) -> Result<bool> {
-    if grants.contains(&io.capability(file, "file:read:")?)
-        || grants.contains(&io.capability(file.volume(), "volume:read:")?) { return Ok(true); }
-    if grants.contains(&io.capability(&(file.volume(), ""), "directory:read:")?) { return Ok(true); }
+pub(crate) fn read_granted_measured(grants: &Capabilities, file: &FileRef, io: &crate::filesystem::PreparationIo) -> Result<bool> {
+    if io.contains_capability(grants, file, "file:read:")?
+        || io.contains_capability(grants, file.volume(), "volume:read:")? { return Ok(true); }
+    if io.contains_capability(grants, &(file.volume(), ""), "directory:read:")? { return Ok(true); }
     for (slash, _) in file.path().match_indices('/') {
         let prefix = &file.path()[..slash];
         if !crate::conversation::is_internal_path(prefix)
-            && grants.contains(&io.capability(&(file.volume(), prefix), "directory:read:")?) { return Ok(true); }
+            && io.contains_capability(grants, &(file.volume(), prefix), "directory:read:")? { return Ok(true); }
     }
     Ok(false)
 }

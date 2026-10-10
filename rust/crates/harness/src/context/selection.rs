@@ -272,15 +272,32 @@ pub(crate) fn place_messages(
     placement: ContextPlacement,
     limits: Limits,
 ) -> Result<Context> {
-    place_context(
-        context,
-        Context {
-            messages,
-            ..Context::default()
-        },
-        placement,
-        limits,
-    )
+    place_messages_with_io(context, messages, placement, limits, None)
+}
+
+#[cfg_attr(not(feature = "filesystem"), allow(unused_mut))]
+pub(crate) fn place_messages_with_io(
+    mut context: Context, messages: Vec<ModelMessage>, placement: ContextPlacement,
+    limits: Limits, io: Option<&crate::executor::PreparationIo>,
+) -> Result<Context> {
+    let mut contribution = Context { messages, ..Context::default() };
+    let marker = preflight_context_composition_with_io(&context, &contribution, placement, limits, io)?;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let (destination, additional) = match placement {
+            ContextPlacement::Append => (&mut context.messages, contribution.messages.len()),
+            ContextPlacement::Prepend => (&mut contribution.messages, context.messages.len()),
+        };
+        let needed = destination.len().checked_add(additional)
+            .ok_or_else(|| Error::Invalid("context composition count overflow".into()))?;
+        if needed > destination.capacity() {
+            let bytes = ((needed - destination.capacity()) * std::mem::size_of::<ModelMessage>()) as u64;
+            io.claim(bytes)?;
+            io.allocation_attempt(bytes)?;
+            destination.reserve_exact(additional);
+        }
+    }
+    Ok(compose_context(context, contribution, placement, marker))
 }
 
 pub(super) fn place_context(
@@ -334,8 +351,15 @@ fn preflight_context_composition(
     placement: ContextPlacement,
     limits: Limits,
 ) -> Result<Option<u32>> {
-    validate_projected_context(context, limits)?;
-    validate_projected_context(contribution, limits)?;
+    preflight_context_composition_with_io(context, contribution, placement, limits, None)
+}
+
+fn preflight_context_composition_with_io(
+    context: &Context, contribution: &Context, placement: ContextPlacement, limits: Limits,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<Option<u32>> {
+    super::validate_projected_context_with_io(context, limits, io)?;
+    super::validate_projected_context_with_io(contribution, limits, io)?;
     if context
         .messages
         .len()
@@ -404,8 +428,7 @@ fn preflight_context_composition(
         metadata: JoinedMetadata<'a>,
         current_input_index: Option<u32>,
     }
-    crate::contract::validate_json_byte_bound(
-        &JoinedContext {
+    let joined = JoinedContext {
             messages: super::ContextMessages {
                 first,
                 user: None,
@@ -413,9 +436,15 @@ fn preflight_context_composition(
             },
             metadata: JoinedMetadata(&context.metadata, &contribution.metadata),
             current_input_index,
-        },
-        limits.render_bytes,
-    )?;
+        };
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let _encoded_hold;
+        let encoded = io.encode_json(&joined, limits.render_bytes, false)?;
+        _encoded_hold = io.guard_owned(encoded.len() as u64)?;
+        return Ok(current_input_index);
+    }
+    crate::contract::validate_json_byte_bound(&joined, limits.render_bytes)?;
     Ok(current_input_index)
 }
 

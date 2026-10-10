@@ -60,6 +60,7 @@ mod project_workspaces;
 pub use project_workspaces::FilesystemProjectWorkspaces;
 mod workflow_journal;
 pub use workflow_journal::FilesystemWorkflowJournal;
+pub(crate) use workflow_journal::WorkflowReleaseWitness;
 mod memory;
 pub use memory::{LocalHarness, MemoryHarnessStorage};
 mod text_tools;
@@ -380,22 +381,54 @@ where
         Box::pin(async move {
             let io = PreparationIo::from_budget(budget, cancellation)
                 .map_err(acyclic_fs::OperationFailure::before_work)?;
-            let result = async {
-                self.require_read_measured(reference, &io)?;
-                let bytes = self.host.read_pinned_io(reference, maximum_bytes.min(self.maximum_bytes), Some(&io)).await?;
-                io.claim(bytes.len() as u64)?;
-                let copied = acyclic_fs::WorkCounters { bytes_copied: bytes.len() as u64, ..Default::default() };
-                io.preflight(copied)?;
-                io.allocation_attempt(bytes.len() as u64)?;
-                let output = bytes.to_vec();
-                io.charge(copied)?;
-                Ok(output)
-            }.await;
+            let result = self.read_verified_with_io(reference, maximum_bytes, &io).await;
             match result {
                 Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
                 Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
             }
         })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_with_native_work<'a>(
+        &'a self, reference: &'a FileRef, maximum_bytes: u64,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> BoxFuture<'a, std::result::Result<(Vec<u8>, acyclic_fs::NativeAllocation), crate::NativeRootVerificationError>> {
+        Box::pin(async move {
+            let io = PreparationIo::from_native_work(work)?;
+            let result = self.read_verified_with_io(reference, maximum_bytes, &io).await;
+            let bytes = io.native_result(result)?;
+            let custody = io.into_native_custody(bytes.capacity() as u64)?;
+            Ok((bytes, custody))
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn verify_with_native_work<'a>(
+        &'a self, reference: &'a FileRef, maximum_bytes: u64,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> BoxFuture<'a, std::result::Result<(), crate::NativeRootVerificationError>> {
+        Box::pin(async move {
+            let io = PreparationIo::from_native_work(work)?;
+            let result = async {
+                self.require_read_measured(reference, &io)?;
+                self.host.read_pinned_io(reference, maximum_bytes.min(self.maximum_bytes), Some(&io)).await?;
+                io.remaining()?;
+                Ok(())
+            }.await;
+            io.native_result(result)
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn supports_native_read(&self, volume: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork) -> std::result::Result<bool, crate::NativeRootVerificationError> {
+        let io = PreparationIo::from_native_work(work)?;
+        let result = (|| {
+            fork_preparer_io::item(Some(&io), 0)?;
+            volume.validate()?;
+            Ok(volume.provider() == &self.host.provider)
+        })();
+        io.native_result(result)
     }
 
     fn verify_manifest<'a>(
@@ -427,6 +460,11 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    async fn read_verified_with_io(&self, reference: &FileRef, maximum_bytes: u64, io: &PreparationIo) -> Result<Vec<u8>> {
+        self.require_read_measured(reference, io)?;
+        self.host.read_pinned_owned_io(reference, maximum_bytes.min(self.maximum_bytes), io).await
+    }
+
     /// Lazily lists another agent's private directory under this reader's
     /// signed, owner-delegated subtree grant. Pagination pins one generation.
     pub async fn list_private_directory(
@@ -495,20 +533,16 @@ where
         if internal && !inherited && !internal_owner {
             return Err(Error::Unauthorized("internal storage file is not public content".into()));
         }
-        let volume = io.capability(reference.volume(), "volume:read:")?;
-        if self.scope.capabilities().contains(&volume) { return Ok(()); }
+        if io.contains_capability(self.scope.capabilities(), reference.volume(), "volume:read:")? { return Ok(()); }
         if internal_owner {
             return Err(Error::Unauthorized("volume operation is not granted".into()));
         }
-        let exact = io.capability(reference, "file:read:")?;
-        if self.scope.capabilities().contains(&exact) { return Ok(()); }
+        if io.contains_capability(self.scope.capabilities(), reference, "file:read:")? { return Ok(()); }
         if !internal && reference.volume().class() == VolumeClass::AgentPrivate && self.scope.agent().is_some() {
-            let root = io.capability(&(reference.volume(), ""), "directory:read:")?;
-            if self.scope.capabilities().contains(&root) { return Ok(()); }
+            if io.contains_capability(self.scope.capabilities(), &(reference.volume(), ""), "directory:read:")? { return Ok(()); }
             for (end, _) in reference.path().match_indices('/') {
                 let prefix = &reference.path()[..end];
-                let directory = io.capability(&(reference.volume(), prefix), "directory:read:")?;
-                if self.scope.capabilities().contains(&directory) { return Ok(()); }
+                if io.contains_capability(self.scope.capabilities(), &(reference.volume(), prefix), "directory:read:")? { return Ok(()); }
             }
         }
         Err(Error::Unauthorized("file read is not granted by its owner".into()))
@@ -1846,6 +1880,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             idempotency_key,
             &[],
             None,
+            None,
         )
         .await
     }
@@ -1870,7 +1905,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         let history = self.selected_inherited_history(parent, through_sequence, maximum_messages,
             archive.map(crate::fork::PreparedForkHistory::conversation))?;
         let (grants, _) = Self::collect_inherited_reference_grants(history, child_agent,
-            attached_agents, through_sequence, maximum_bytes, maximum_references, resolver).await?;
+            attached_agents, through_sequence, maximum_bytes, maximum_references, resolver, None).await?;
         Ok(grants)
     }
 
@@ -1903,150 +1938,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         history: &crate::conversation::ConversationState, child_agent: AgentId,
         attached_agents: &[AgentId], through_sequence: u64, maximum_bytes: u64,
         maximum_references: usize, resolver: &dyn ContentResidencyVerifier,
+        io: Option<&PreparationIo>,
     ) -> Result<(Vec<ReferenceGrant>, Vec<FileRef>)> {
         let count = usize::try_from(through_sequence)
             .map_err(|_| Error::Invalid("inherited prefix is too large".into()))?;
-        let mut direct = BTreeMap::<String, FileRef>::new();
-        let mut member = BTreeMap::<(String, String), (FileRef, FileRef)>::new();
-        let mut manifests = BTreeMap::<String, FileRef>::new();
-        let mut manifest_bytes_total = 0_u64;
-        for message in history.messages.iter().take(count) {
-            direct.insert(message.content.read_capability()?, message.content.clone());
-            for reference in message.extensions.values() {
-                direct.insert(reference.read_capability()?, reference.clone());
-            }
-            match &message.attachments {
-                ReferencedAttachments::Inline { items } => {
-                    for item in items {
-                        direct.insert(item.file.read_capability()?, item.file.clone());
-                    }
-                }
-                ReferencedAttachments::Manifest { manifest, item_count } => {
-                    manifest_bytes_total = manifest_bytes_total
-                        .checked_add(manifest.descriptor().byte_length())
-                        .ok_or_else(|| Error::Invalid("inherited manifests exceed byte limit".into()))?;
-                    if manifest_bytes_total > maximum_bytes {
-                        return Err(Error::Invalid("inherited attachment manifest exceeds limit".into()));
-                    }
-                    let manifest_bytes = resolver.read(manifest).await?;
-                    let items = decode_complete_attachment_manifest(manifest, &manifest_bytes)?;
-                    if items.len() != *item_count as usize {
-                        return Err(Error::Invalid("inherited attachment manifest count mismatch".into()));
-                    }
-                    let key = manifest.read_capability()?;
-                    direct.insert(key.clone(), manifest.clone());
-                    manifests.insert(key.clone(), manifest.clone());
-                    for item in items {
-                        member.insert((key.clone(), item.file.read_capability()?), (manifest.clone(), item.file));
-                    }
-                }
-            }
-            if direct.len().saturating_add(member.len()) > maximum_references {
-                return Err(Error::Invalid("inherited reference count exceeds limit".into()));
-            }
-        }
-        let mut readers = BTreeSet::from([child_agent]);
-        readers.extend(attached_agents.iter().copied());
-        if readers.len() != attached_agents.len().saturating_add(1) {
-            return Err(Error::Invalid("inherited readers are duplicated".into()));
-        }
-        let total_grants = direct.len().saturating_add(member.len()).saturating_mul(readers.len());
-        if total_grants > maximum_references {
-            return Err(Error::Invalid("inherited read grants exceed limit".into()));
-        }
-        let mut reference_grants = Vec::with_capacity(total_grants);
-        for reader in readers {
-            for file in direct.values() {
-                if file.volume().class() == VolumeClass::AgentPrivate
-                    && file.volume().owner() == &VolumeOwner::Agent(reader) {
-                    continue;
-                }
-                reference_grants.push(ReferenceGrant { file: file.clone(), reader, attachment_manifest: None });
-            }
-            for (manifest, file) in member.values() {
-                if file.volume().class() == VolumeClass::AgentPrivate
-                    && file.volume().owner() == &VolumeOwner::Agent(reader) {
-                    continue;
-                }
-                reference_grants.push(ReferenceGrant { file: file.clone(), reader, attachment_manifest: Some(manifest.clone()) });
-            }
-        }
-        Ok((reference_grants, manifests.into_values().collect()))
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::too_many_lines,
-        reason = "same inherited capture with exact original summary continuation keys"
-    )]
-    pub(super) async fn materialize_inherited_conversation_continued(
-        &self,
-        parent: &Reducer,
-        child_private: &VolumeRef,
-        initial_generation: &GenerationRef,
-        child_agent: AgentId,
-        attached_agents: &[AgentId],
-        through_sequence: u64,
-        maximum_messages: usize,
-        maximum_bytes: u64,
-        maximum_references: usize,
-        resolver: &dyn ContentResidencyVerifier,
-        idempotency_key: &IdempotencyKey,
-        continuation_keys: &[IdempotencyKey],
-        archived_history: Option<&crate::conversation::ConversationState>,
-        io: Option<&PreparationIo>,
-    ) -> Result<InheritedContextCapture> {
-        if let Some(io) = io {
-            let project = io.capability(&self.project, "volume:read:")?;
-            if !self.scope.capabilities().contains(&project)
-                || !self.scope.capabilities().contains(capability::FORK_PUBLISH) {
-                return Err(Error::Unauthorized("parent fork preparation is not granted".into()));
-            }
-        } else {
-            self.require(capability::FORK_PUBLISH, VolumeOperation::Read)?;
-        }
-        if parent.authority() != &self.parent
-            || parent.conversation().and_then(|state| state.agent) != self.scope.agent()
-            || child_private.provider() != &self.host.provider
-            || child_private.class() != VolumeClass::AgentPrivate
-            || child_private.owner() != &VolumeOwner::Agent(child_agent)
-        {
-            return Err(Error::Unauthorized(
-                "inherited context is not parent-controlled and child-owned".into(),
-            ));
-        }
-        child_private.validate()?;
-        let history = self.selected_inherited_history(
-            parent, through_sequence, maximum_messages, archived_history,
-        )?;
-        let count = usize::try_from(through_sequence)
-            .map_err(|_| Error::Invalid("inherited prefix is too large".into()))?;
-        if count > maximum_messages || count > history.messages.len() {
-            return Err(Error::Invalid(
-                "inherited prefix exceeds the selected history or limit".into(),
-            ));
-        }
-        let prefix = if let Some(io) = io {
-            if attached_agents.len() as u64 > crate::fork::MAX_FORK_AGENTS as u64 {
-                return Err(Error::Invalid("too many attached agents for inherited context".into()));
-            }
-            let mut readers = BTreeSet::new();
-            for reader in attached_agents {
-                fork_preparer_io::item(Some(io), std::mem::size_of::<AgentId>() as u64)?;
-                if !readers.insert(*reader) { return Err(Error::Invalid("inherited attached agents are invalid".into())); }
-            }
-            let message_digest = history.history_prefix_digest_measured(through_sequence, io)?;
-            fork_preparer_io::strings(io, &[&self.parent.id])?;
-            io.claim(std::mem::size_of_val(attached_agents) as u64)?;
-            io.allocation_attempt(std::mem::size_of_val(attached_agents) as u64)?;
-            InheritedConversationPrefix {
-                format_version: 3, parent: self.parent.clone(), parent_revision: parent.revision(),
-                parent_agent: history.agent.ok_or_else(|| Error::Invalid("inherited prefix parent is unbound".into()))?,
-                through_sequence, attached_agents: attached_agents.to_vec(), message_digest,
-            }
-        } else {
-            InheritedConversationPrefix::select(self.parent.clone(), parent.revision(), through_sequence, attached_agents, history)?
-        };
         let mut direct = BTreeMap::<String, FileRef>::new();
         let mut member = BTreeMap::<(String, String), (FileRef, FileRef)>::new();
         let mut manifests = BTreeMap::<String, FileRef>::new();
@@ -2167,6 +2062,84 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                 });
             }
         }
+        if let Some(io) = io {
+            let bytes = manifests.len().checked_mul(std::mem::size_of::<FileRef>())
+                .ok_or_else(|| Error::Invalid("inherited manifest vector ownership overflow".into()))? as u64;
+            io.claim(bytes)?;
+            io.allocation_attempt(bytes)?;
+        }
+        Ok((reference_grants, manifests.into_values().collect()))
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "same inherited capture with exact original summary continuation keys"
+    )]
+    pub(super) async fn materialize_inherited_conversation_continued(
+        &self,
+        parent: &Reducer,
+        child_private: &VolumeRef,
+        initial_generation: &GenerationRef,
+        child_agent: AgentId,
+        attached_agents: &[AgentId],
+        through_sequence: u64,
+        maximum_messages: usize,
+        maximum_bytes: u64,
+        maximum_references: usize,
+        resolver: &dyn ContentResidencyVerifier,
+        idempotency_key: &IdempotencyKey,
+        continuation_keys: &[IdempotencyKey],
+        archived_history: Option<&crate::conversation::ConversationState>,
+        io: Option<&PreparationIo>,
+    ) -> Result<InheritedContextCapture> {
+        if let Some(io) = io {
+            let project = io.capability(&self.project, "volume:read:")?;
+            if !self.scope.capabilities().contains(&project)
+                || !self.scope.capabilities().contains(capability::FORK_PUBLISH) {
+                return Err(Error::Unauthorized("parent fork preparation is not granted".into()));
+            }
+        } else {
+            self.require(capability::FORK_PUBLISH, VolumeOperation::Read)?;
+        }
+        if parent.authority() != &self.parent
+            || parent.conversation().and_then(|state| state.agent) != self.scope.agent()
+            || child_private.provider() != &self.host.provider
+            || child_private.class() != VolumeClass::AgentPrivate
+            || child_private.owner() != &VolumeOwner::Agent(child_agent)
+        {
+            return Err(Error::Unauthorized(
+                "inherited context is not parent-controlled and child-owned".into(),
+            ));
+        }
+        child_private.validate()?;
+        let history = self.selected_inherited_history(
+            parent, through_sequence, maximum_messages, archived_history,
+        )?;
+        let prefix = if let Some(io) = io {
+            if attached_agents.len() as u64 > crate::fork::MAX_FORK_AGENTS as u64 {
+                return Err(Error::Invalid("too many attached agents for inherited context".into()));
+            }
+            let mut readers = BTreeSet::new();
+            for reader in attached_agents {
+                fork_preparer_io::item(Some(io), std::mem::size_of::<AgentId>() as u64)?;
+                if !readers.insert(*reader) { return Err(Error::Invalid("inherited attached agents are invalid".into())); }
+            }
+            let message_digest = history.history_prefix_digest_measured(through_sequence, io)?;
+            fork_preparer_io::strings(io, &[&self.parent.id])?;
+            io.claim(std::mem::size_of_val(attached_agents) as u64)?;
+            io.allocation_attempt(std::mem::size_of_val(attached_agents) as u64)?;
+            InheritedConversationPrefix {
+                format_version: 3, parent: self.parent.clone(), parent_revision: parent.revision(),
+                parent_agent: history.agent.ok_or_else(|| Error::Invalid("inherited prefix parent is unbound".into()))?,
+                through_sequence, attached_agents: attached_agents.to_vec(), message_digest,
+            }
+        } else {
+            InheritedConversationPrefix::select(self.parent.clone(), parent.revision(), through_sequence, attached_agents, history)?
+        };
+        let (reference_grants, attachment_manifests) = Self::collect_inherited_reference_grants(
+            history, child_agent, attached_agents, through_sequence, maximum_bytes,
+            maximum_references, resolver, io).await?;
         let bytes = match io {
             Some(io) => io.encode_json(&prefix, maximum_bytes, true)?,
             None => prefix.canonical_bytes()?,
@@ -2238,12 +2211,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             return Err(Error::Conflict(
                 "inherited-context retry identity belongs to different prefix".into(),
             ));
-        }
-        if let Some(io) = io {
-            let bytes = manifests.len().checked_mul(std::mem::size_of::<FileRef>())
-                .ok_or_else(|| Error::Invalid("inherited manifest vector ownership overflow".into()))? as u64;
-            io.claim(bytes)?;
-            io.allocation_attempt(bytes)?;
         }
         Ok(InheritedContextCapture {
             file: reference,
@@ -2751,14 +2718,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if canonical != receipt.as_ref() {
             return Err(Error::Conflict("original upload receipt is not canonical".into()));
         }
-        if let Some(io) = io {
-            io.claim((1 + ".system/harness-file-metadata/".len() + 64 + ".json".len()) as u64)?;
-            io.claim((".system/harness-file-metadata/".len() + 64 + ".json".len()) as u64)?;
-            let hash = acyclic_fs::WorkCounters { bytes_hashed: recorded.path().len() as u64, ..Default::default() };
-            io.preflight(hash)?;
-            io.charge(hash)?;
-        }
-        let metadata_path = format!("/{}", content_metadata_path(recorded.path()));
+        let metadata_path = content_metadata_path_io(recorded.path(), true, io)?;
         let metadata = match io {
             Some(io) => {
                 let bytes = io.receive(original.read_measured(&metadata_path, RECORD_BYTES, io.remaining()?, &io.cancellation).await)?;
@@ -2918,9 +2878,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let receipt_identity = if internal_class.is_some() { provisional.path() } else { idempotency_key.as_str() };
         if let Some(io) = io {
             io.claim((".system/harness-uploads/".len() + 64 + ".json".len()) as u64)?;
-            io.claim((".system/harness-file-metadata/".len() + 64 + ".json".len()) as u64)?;
             let hash = acyclic_fs::WorkCounters {
-                bytes_hashed: (receipt_identity.len() + provisional.path().len()) as u64,
+                bytes_hashed: receipt_identity.len() as u64,
                 ..Default::default()
             };
             io.preflight(hash)?;
@@ -2930,7 +2889,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             ".system/harness-uploads/{}.json",
             blake3::hash(receipt_identity.as_bytes()).to_hex()
         );
-        let metadata_path = content_metadata_path(provisional.path());
+        let metadata_path = content_metadata_path_io(provisional.path(), false, io)?;
         let metadata_bytes = match io {
             Some(io) => io.encode_json(&provisional, io.remaining()?.bytes_encoded, false)?,
             None => serde_json::to_vec(&provisional).map_err(|error| Error::Invalid(error.to_string()))?,
@@ -3113,6 +3072,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok(bytes)
     }
 
+    pub(super) async fn read_pinned_owned_io(
+        &self, reference: &FileRef, maximum_bytes: u64, io: &PreparationIo,
+    ) -> Result<Vec<u8>> {
+        let before = io.owned_bytes()?;
+        let source_hold;
+        let bytes = self.read_pinned_io(reference, maximum_bytes, Some(io)).await?;
+        source_hold = io.guard_owned(io.owned_bytes()?.checked_sub(before)
+            .ok_or_else(|| Error::Invalid("content read custody underflow".into()))?)?;
+        io.claim(bytes.len() as u64)?;
+        let copied = acyclic_fs::WorkCounters { bytes_copied: bytes.len() as u64, ..Default::default() };
+        io.preflight(copied)?;
+        io.allocation_attempt(bytes.len() as u64)?;
+        let output = bytes.to_vec();
+        io.charge(copied)?;
+        drop(bytes);
+        drop(source_hold);
+        Ok(output)
+    }
+
     /// Reads and retains the exact immutable file under cumulative work limits.
     pub async fn read_content_measured(
         &self, reference: &FileRef, grant: &ContentGrant, maximum_bytes: u64,
@@ -3123,17 +3101,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let result = async {
             reference.validate()?;
             grant.require_file_read(reference)?;
-            let bytes = self.read_pinned_io(reference, maximum_bytes, Some(&io)).await?;
-            io.claim(bytes.len() as u64)?;
-            let copied = acyclic_fs::WorkCounters { bytes_copied: bytes.len() as u64, ..Default::default() };
-            io.preflight(copied)?;
-            io.allocation_attempt(bytes.len() as u64)?;
-            let length = bytes.len() as u64;
-            let value = bytes.to_vec();
-            io.charge(copied)?;
-            drop(bytes);
-            io.release(length)?;
-            Ok(value)
+            self.read_pinned_owned_io(reference, maximum_bytes, &io).await
         }.await;
         match result {
             Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
@@ -3651,10 +3619,27 @@ fn project_join_key(operation_id: crate::OperationId) -> Result<FilesystemKey> {
 }
 
 fn content_metadata_path(path: &str) -> String {
-    format!(
-        ".system/harness-file-metadata/{}.json",
-        blake3::hash(path.as_bytes()).to_hex()
-    )
+    content_metadata_path_io(path, false, None).expect("fixed metadata path encoding is infallible")
+}
+
+fn content_metadata_path_io(path: &str, absolute: bool, io: Option<&PreparationIo>) -> Result<String> {
+    const PREFIX: &str = ".system/harness-file-metadata/";
+    const SUFFIX: &str = ".json";
+    let capacity = usize::from(absolute) + PREFIX.len() + 64 + SUFFIX.len();
+    let hash_work = acyclic_fs::WorkCounters { bytes_hashed: path.len() as u64, ..Default::default() };
+    if let Some(io) = io { io.preflight(hash_work)?; }
+    let hash = blake3::hash(path.as_bytes());
+    if let Some(io) = io {
+        io.charge(hash_work)?;
+        io.claim(capacity as u64)?;
+        io.allocation_attempt(capacity as u64)?;
+    }
+    let mut encoded = String::with_capacity(capacity);
+    if absolute { encoded.push('/'); }
+    encoded.push_str(PREFIX);
+    encoded.push_str(&hash.to_hex());
+    encoded.push_str(SUFFIX);
+    Ok(encoded)
 }
 
 fn map_error(error: WorkspaceError) -> Error {

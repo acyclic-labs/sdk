@@ -8,7 +8,7 @@ use crate::{
     context::{CanonicalContextCheckpoint, Context},
     conversation::{ContentResidencyVerifier, FileRef, Limits, VolumeRef},
     core::{Authority, Reducer},
-    executor::{ExecutionJournal, load_canonical_checkpoint_through},
+    executor::ExecutionJournal,
     runtime::RuntimeScope,
     store::{HistoryCursor, HistoryReadLimits, HistoryReader},
 };
@@ -208,6 +208,19 @@ pub async fn prepare_summary_fork_context<P: StreamProvider>(
     cursor: &HistoryCursor,
     resolver: &dyn ContentResidencyVerifier,
 ) -> Result<PreparedSummaryFork> {
+    prepare_summary_fork_context_with_io(parent, selection, journal, scope, history, cursor, resolver, None).await
+}
+
+pub(crate) async fn prepare_summary_fork_context_with_io<P: StreamProvider>(
+    parent: &Reducer,
+    selection: SummaryForkSelection,
+    journal: &dyn ExecutionJournal,
+    scope: &RuntimeScope,
+    history: &HistoryReader<P>,
+    cursor: &HistoryCursor,
+    resolver: &dyn ContentResidencyVerifier,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<PreparedSummaryFork> {
     selection.validate()?;
     if parent.authority() != &cursor.authority || parent.revision() != cursor.through_revision {
         return Err(Error::Conflict(
@@ -219,7 +232,7 @@ pub async fn prepare_summary_fork_context<P: StreamProvider>(
         .filter(|conversation| conversation.agent.is_some())
         .ok_or_else(|| Error::Invalid("summary fork parent conversation is unbound".into()))?;
     let through_sequence = conversation.logical_revision();
-    let (checkpoint, context) = load_canonical_checkpoint_through(
+    let (checkpoint, context) = crate::executor::load_canonical_checkpoint_through_with_io(
         journal,
         &selection.checkpoint,
         selection.limits,
@@ -229,10 +242,11 @@ pub async fn prepare_summary_fork_context<P: StreamProvider>(
         through_sequence,
         selection.history_limits,
         resolver,
+        io,
     )
     .await?;
     Ok(PreparedSummaryFork {
-        parent: parent.authority().clone(),
+        parent: crate::executor::clone_preparation(parent.authority(), io)?,
         parent_revision: parent.revision(),
         through_sequence,
         selection,
