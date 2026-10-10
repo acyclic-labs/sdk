@@ -196,7 +196,8 @@ impl RecursiveDefaultToolSource<MemoryStream, MemoryAuthorityBackend, MemoryObje
         _: &'a CancellationToken) -> BoxProviderFuture<'a, Result<RecursiveMergeToolBinding<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>>> {
         self.0.fetch_add(1, Ordering::SeqCst); Box::pin(async { Err(Error::Unauthorized("unexpected source access".into())) })
     }
-    fn preparation<'a>(&'a self, _: &'a TaskContext, _: &'a ResourcePreparationRequest) -> BoxProviderFuture<'a, Result<RetainedSourceBinding<MemoryAuthorityBackend, MemoryObjectBackend>>> {
+    fn preparation<'a>(&'a self, _: &'a TaskContext, _: &'a crate::resource_preparation::TaskResourcePreparation,
+        _: &'a CancellationToken) -> BoxProviderFuture<'a, Result<RetainedSourceBinding<MemoryAuthorityBackend, MemoryObjectBackend>>> {
         self.0.fetch_add(1, Ordering::SeqCst); Box::pin(async { Err(Error::Unauthorized("unexpected source access".into())) })
     }
 }

@@ -88,7 +88,8 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
     /// Restores the exact retained source for an ordinary preparation worker.
     /// The actual caller is request.child.parent, not this helper task's identity.
     fn preparation<'a>(&'a self, context: &'a TaskContext,
-        request: &'a crate::resource_preparation::ResourcePreparationRequest)
+        preparation: &'a crate::resource_preparation::TaskResourcePreparation,
+        cancellation: &'a CancellationToken)
         -> BoxProviderFuture<'a, Result<RetainedSourceBinding<A, O>>>;
 }
 
@@ -567,7 +568,7 @@ struct RecursiveExecutor<P, A, O> {
     kind: Kind, maximum_request_bytes: u64,
 }
 
-struct InvocationCancellation(CancellationToken);
+pub(crate) struct InvocationCancellation(pub(crate) CancellationToken);
 impl Drop for InvocationCancellation {
     fn drop(&mut self) { self.0.cancel(); }
 }
