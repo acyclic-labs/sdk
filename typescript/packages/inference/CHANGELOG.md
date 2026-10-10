@@ -7,8 +7,10 @@
 ## Unreleased
 
 - Add `GatewayInferenceClient` for provider-compatible model discovery, OpenAI
-  Chat/Responses, and Anthropic Messages. JSON requests and raw HTTP/SSE responses,
-  cancellation, and provider errors pass through without changing native APIs.
+  Chat/Responses/Completions/Embeddings, and Anthropic Messages. JSON requests and
+  raw HTTP/SSE responses, cancellation, and provider errors pass through without
+  changing native APIs. Transport methods do not assert a deployed gateway's
+  model, endpoint or pricing availability.
 - Export the existing Rust descriptor initializer at `/wasm` and its shipped
   binary at `/module.wasm` for compiled-module deployments. Native context/run
   codec and transport contracts are unchanged.

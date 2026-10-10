@@ -43,7 +43,7 @@ test("real TLS SSE remains incremental across a fragmented UTF-8 scalar", async 
     finish = () => response.end(bytes.subarray(split));
   });
   try {
-    const response = await server.client.chatCompletions('{"stream":true}');
+    const response = await server.client.completions('{"model":"model","prompt":"hello","stream":true}');
     expect(response.bodyUsed).toBe(false);
     const reader = response.body!.getReader();
     const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -75,7 +75,7 @@ test("real upstream HTTP error and malformed JSON remain visible to the consumer
     response.end('{"error":');
   });
   try {
-    const response = await server.client.responses("{}");
+    const response = await server.client.embeddings('{"model":"model","input":"hello"}');
     expect(response.ok).toBe(false);
     expect(response.status).toBe(429);
     expect(response.headers.get("retry-after")).toBe("7");

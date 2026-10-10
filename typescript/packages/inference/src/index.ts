@@ -490,6 +490,14 @@ export class GatewayInferenceClient {
     return this.#request("/v1/chat/completions", body, options);
   }
 
+  completions(body: string, options: GatewayRequestOptions = {}): Promise<Response> {
+    return this.#request("/v1/completions", body, options);
+  }
+
+  embeddings(body: string, options: GatewayRequestOptions = {}): Promise<Response> {
+    return this.#request("/v1/embeddings", body, options);
+  }
+
   responses(body: string, options: GatewayRequestOptions = {}): Promise<Response> {
     return this.#request("/v1/responses", body, options);
   }

@@ -64,8 +64,9 @@ if (!response.ok) throw new Error(await response.text());
 // controller.abort();
 ```
 
-`chatCompletions`, `responses`, and `messages` POST the supplied JSON string
-unchanged to `/v1/chat/completions`, `/v1/responses`, and `/v1/messages`.
+`chatCompletions`, `completions`, `embeddings`, `responses`, and `messages` POST
+the supplied JSON string unchanged to `/v1/chat/completions`, `/v1/completions`,
+`/v1/embeddings`, `/v1/responses`, and `/v1/messages`, respectively.
 Provider `tools`, `tool_calls`, tool results, and streaming fields are passed
 through, not translated into native inference items. Per-request `headers`
 can supply provider headers such as `anthropic-version`; authentication callback
@@ -76,6 +77,8 @@ client; cancel their reader or abort the supplied signal when stopping early.
 This does not cancel a native durable `Run`, whose explicit cancellation API is
 unchanged. Rust's existing gRPC client and HTTP protobuf codec likewise retain
 their native semantics; use an HTTP provider client for gateway compatibility.
+The transport facade does not promise that a deployed gateway enables a route,
+offers a model or supplies a price; those are the actual gateway's contracts.
 
 
 
