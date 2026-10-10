@@ -77,8 +77,11 @@ pub fn encode(route: &str, input: &[u8], maximum_bytes: usize) -> Result<Vec<u8>
 }
 pub(crate) fn value(route: &str, input: &[u8]) -> Result<Option<Value>> {
     let value = match route {
-        "tail" => json_u64(wire::TailResponse::decode(input)
-            .map_err(|_| "invalid_response")?.tail),
+        "tail" => json_u64(
+            wire::TailResponse::decode(input)
+                .map_err(|_| "invalid_response")?
+                .tail,
+        ),
         "append" => {
             append_value(wire::AppendResponse::decode(input).map_err(|_| "invalid_response")?)?
         }

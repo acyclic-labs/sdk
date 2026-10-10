@@ -277,7 +277,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
         reference: Option<wire::WorkspaceRef>,
     ) -> Result<wire::WorkspaceRef, Status> {
         let reference = required(reference, "workspace")?;
-        let id = self.filesystem.workspace_id(&reference.name)
+        let id = self
+            .filesystem
+            .workspace_id(&reference.name)
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
         if id.into_bytes().as_slice() != reference.workspace_id {
             return Err(Status::failed_precondition(
@@ -292,7 +294,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
         reference: Option<wire::WorkspaceRef>,
     ) -> Result<Workspace<A, O>, Status> {
         let reference = self.workspace_reference(reference)?;
-        self.filesystem.open_workspace(&reference.name).await
+        self.filesystem
+            .open_workspace(&reference.name)
+            .await
             .map_err(|error| status(&error))
     }
 
@@ -540,7 +544,8 @@ where
         self.admit(&request)?;
         let request = request.into_inner();
         let reference = self.workspace_reference(request.workspace)?;
-        let outcome = self.filesystem
+        let outcome = self
+            .filesystem
             .delete_workspace(&reference.name, operation(request.operation)?)
             .await
             .map_err(|error| status(&error))?;
@@ -2734,23 +2739,41 @@ mod tests {
             operation: operation(2),
         };
         assert_eq!(
-            service.delete_workspace(Request::new(delete.clone())).await?.into_inner().status,
+            service
+                .delete_workspace(Request::new(delete.clone()))
+                .await?
+                .into_inner()
+                .status,
             wire::MutationStatus::Committed as i32,
         );
-        let retired = service.open_workspace(Request::new(wire::OpenWorkspaceRequest {
-            selector: Some(wire::open_workspace_request::Selector::Name(workspace.name.clone())),
-        })).await.err().ok_or("retired workspace reopened")?;
+        let retired = service
+            .open_workspace(Request::new(wire::OpenWorkspaceRequest {
+                selector: Some(wire::open_workspace_request::Selector::Name(
+                    workspace.name.clone(),
+                )),
+            }))
+            .await
+            .err()
+            .ok_or("retired workspace reopened")?;
         assert_eq!(retired.code(), tonic::Code::NotFound);
         assert_eq!(
-            service.delete_workspace(Request::new(delete)).await?.into_inner().status,
+            service
+                .delete_workspace(Request::new(delete))
+                .await?
+                .into_inner()
+                .status,
             wire::MutationStatus::AlreadyCommitted as i32,
         );
         let mut foreign = workspace;
         foreign.workspace_id[0] ^= 1;
-        let rejected = service.delete_workspace(Request::new(wire::DeleteWorkspaceRequest {
-            workspace: Some(foreign),
-            operation: operation(2),
-        })).await.err().ok_or("foreign reference accepted after retirement")?;
+        let rejected = service
+            .delete_workspace(Request::new(wire::DeleteWorkspaceRequest {
+                workspace: Some(foreign),
+                operation: operation(2),
+            }))
+            .await
+            .err()
+            .ok_or("foreign reference accepted after retirement")?;
         assert_eq!(rejected.code(), tonic::Code::FailedPrecondition);
         Ok(())
     }

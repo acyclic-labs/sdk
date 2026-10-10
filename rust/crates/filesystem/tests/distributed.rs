@@ -741,24 +741,50 @@ async fn generation_fork_retry_identity_is_scoped_to_destination_authority()
     let streams = Arc::new(MemoryStream::default());
     let (objects, bucket) = MemoryObjects::with_bucket("fork-retry-scope", Default::default())?;
     let store = StreamAuthorityStore::new(streams);
-    let fs = Fs::new(store.clone(), LogicalObjectStore::new(Arc::new(objects), bucket),
-        EmbeddedCapabilities::MEMORY);
+    let fs = Fs::new(
+        store.clone(),
+        LogicalObjectStore::new(Arc::new(objects), bucket),
+        EmbeddedCapabilities::MEMORY,
+    );
     let source = fs.create_workspace("source").await?;
     source.write_text("/shared", "immutable").await?;
     let generation = source.head().await?;
     let selected = GenerationForkSource {
         authority: AuthorityId::from_bytes(source.id().into_bytes()),
-        generation: generation.id(), lineage: GenerationFork::PublishedPrefix,
+        generation: generation.id(),
+        lineage: GenerationFork::PublishedPrefix,
     };
     let operation = OperationId::from_bytes([0x77; 16]);
     let cancel = CancellationToken::new();
     // Account-wide Streams retry receipts must not collide between authorities.
     for name in ["destination-a", "destination-b"] {
         let destination = AuthorityId::from_bytes(fs.workspace_id(name)?.into_bytes());
-        assert!(matches!(store.fork_generation_authority(selected, destination, operation,
-            WorkBudget::UNBOUNDED, &cancel).await?.value, CreateAuthorityOutcome::Created(_)));
-        assert!(matches!(store.fork_generation_authority(selected, destination, operation,
-            WorkBudget::UNBOUNDED, &cancel).await?.value, CreateAuthorityOutcome::Existing(_)));
+        assert!(matches!(
+            store
+                .fork_generation_authority(
+                    selected,
+                    destination,
+                    operation,
+                    WorkBudget::UNBOUNDED,
+                    &cancel
+                )
+                .await?
+                .value,
+            CreateAuthorityOutcome::Created(_)
+        ));
+        assert!(matches!(
+            store
+                .fork_generation_authority(
+                    selected,
+                    destination,
+                    operation,
+                    WorkBudget::UNBOUNDED,
+                    &cancel
+                )
+                .await?
+                .value,
+            CreateAuthorityOutcome::Existing(_)
+        ));
     }
     Ok(())
 }

@@ -17,7 +17,11 @@ async fn a_never_created_workspace_is_not_found_and_can_then_be_created()
     let workspace = fs.create_workspace("absent").await?;
     workspace.write_text("/value", "created").await?;
     assert_eq!(
-        fs.open_workspace("absent").await?.read("/value", 16).await?.as_ref(),
+        fs.open_workspace("absent")
+            .await?
+            .read("/value", 16)
+            .await?
+            .as_ref(),
         b"created"
     );
     Ok(())
@@ -39,7 +43,9 @@ async fn keyed_workspace_creation_recovers_genesis_after_discarded_ack_and_later
     drop(created);
 
     let later_writer = fs.open_workspace(name).await?;
-    later_writer.write_text("/later.txt", "later writer").await?;
+    later_writer
+        .write_text("/later.txt", "later writer")
+        .await?;
     let later_id = later_writer.head().await?.id();
     assert_ne!(later_id, genesis_id);
     let recovered = fs.create_workspace_with_key(name, key).await?;
@@ -54,7 +60,10 @@ async fn keyed_workspace_creation_recovers_genesis_after_discarded_ack_and_later
         original.read("/later.txt", 32).await,
         Err(crate::workspace::WorkspaceError::NotFound)
     ));
-    assert_eq!(recovered.read("/later.txt", 32).await?.as_ref(), b"later writer");
+    assert_eq!(
+        recovered.read("/later.txt", 32).await?.as_ref(),
+        b"later writer"
+    );
 
     let changed_key = IdempotencyKey::from_bytes([2; 16]);
     assert!(matches!(

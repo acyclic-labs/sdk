@@ -107,9 +107,7 @@ async fn observation_detaches_but_parent_cancellation_reaches_descendants() {
         child.try_spawn(async { 3_u64 }).await,
         Admission::Rejected { .. }
     ));
-    let cancelled_before_poll = TaskGroup::new(1)
-        .spawn(std::future::pending::<u64>())
-        .await;
+    let cancelled_before_poll = TaskGroup::new(1).spawn(std::future::pending::<u64>()).await;
     cancelled_before_poll.cancel();
     assert_eq!(cancelled_before_poll.result().await, Outcome::Cancelled);
 }

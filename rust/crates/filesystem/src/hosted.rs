@@ -736,7 +736,9 @@ impl HostedWorkspace {
     ) -> Result<HostedTransaction, HostedFsError> {
         self.filesystem.require_owner(&generation.workspace)?;
         if generation.reference.workspace.as_ref() != Some(&self.reference) {
-            return Err(HostedFsError::InvalidOptions("generation belongs to another workspace"));
+            return Err(HostedFsError::InvalidOptions(
+                "generation belongs to another workspace",
+            ));
         }
         Ok(HostedTransaction {
             workspace: self.clone(),
@@ -1841,12 +1843,17 @@ mod tests {
             Err(HostedFsError::LimitExceeded("transaction mutations"))
         ));
 
-        let retry_workspace = hosted.create_workspace(
-            "durable-retry", EmbeddedProfile::Portable, IdempotencyKey::from_bytes([30; 16]),
-        ).await?;
+        let retry_workspace = hosted
+            .create_workspace(
+                "durable-retry",
+                EmbeddedProfile::Portable,
+                IdempotencyKey::from_bytes([30; 16]),
+            )
+            .await?;
         let original = retry_workspace.head().await?;
         let original_id: [u8; 32] = original.id().try_into()?;
-        let mut first = retry_workspace.begin_transaction_at(&original, IdempotencyKey::from_bytes([31; 16]))?;
+        let mut first = retry_workspace
+            .begin_transaction_at(&original, IdempotencyKey::from_bytes([31; 16]))?;
         first.put_file("/value", vec![1]);
         let published = first.commit(1).await?;
         assert_eq!(published.status, wire::MutationStatus::Committed as i32);
@@ -1855,24 +1862,47 @@ mod tests {
         let later_workspace = hosted.open_workspace("durable-retry").await?;
         let mut later = later_workspace.begin_transaction(IdempotencyKey::from_bytes([32; 16]));
         later.put_file("/value", vec![3]);
-        assert_eq!(later.commit(1).await?.status, wire::MutationStatus::Committed as i32);
-        let cold = Fs::hosted(HostedFsOptions::new(format!("http://{address}"), "test-account-token")).await?;
+        assert_eq!(
+            later.commit(1).await?.status,
+            wire::MutationStatus::Committed as i32
+        );
+        let cold = Fs::hosted(HostedFsOptions::new(
+            format!("http://{address}"),
+            "test-account-token",
+        ))
+        .await?;
         let resumed = cold.open_workspace("durable-retry").await?;
-        assert!(resumed.begin_transaction_at(&original, IdempotencyKey::from_bytes([31; 16])).is_err());
+        assert!(
+            resumed
+                .begin_transaction_at(&original, IdempotencyKey::from_bytes([31; 16]))
+                .is_err()
+        );
         let original = resumed.generation(original_id).await?;
         let current_id = resumed.head().await?.id().to_vec();
-        let mut replay = resumed.begin_transaction_at(&original, IdempotencyKey::from_bytes([31; 16]))?;
+        let mut replay =
+            resumed.begin_transaction_at(&original, IdempotencyKey::from_bytes([31; 16]))?;
         replay.put_file("/value", vec![1]);
         let replayed = replay.commit(1).await?;
-        assert_eq!(replayed.status, wire::MutationStatus::AlreadyCommitted as i32);
+        assert_eq!(
+            replayed.status,
+            wire::MutationStatus::AlreadyCommitted as i32
+        );
         assert_eq!(replayed.generation, published.generation);
         assert_eq!(resumed.head().await?.id(), current_id);
         assert_eq!(resumed.head().await?.read("/value", 1).await?, vec![3]);
-        let mut changed = resumed.begin_transaction_at(&original, IdempotencyKey::from_bytes([31; 16]))?;
+        let mut changed =
+            resumed.begin_transaction_at(&original, IdempotencyKey::from_bytes([31; 16]))?;
         changed.put_file("/value", vec![2]);
-        assert_eq!(changed.commit(1).await?.status, wire::MutationStatus::IdempotencyConflict as i32);
+        assert_eq!(
+            changed.commit(1).await?.status,
+            wire::MutationStatus::IdempotencyConflict as i32
+        );
         let foreign = cold.open_workspace("hosted").await?;
-        assert!(foreign.begin_transaction_at(&original, IdempotencyKey::from_bytes([33; 16])).is_err());
+        assert!(
+            foreign
+                .begin_transaction_at(&original, IdempotencyKey::from_bytes([33; 16]))
+                .is_err()
+        );
 
         stop_tx
             .send(())

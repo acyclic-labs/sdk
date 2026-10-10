@@ -16,7 +16,12 @@ use std::{collections::BTreeMap, sync::Arc};
 type PutRequest = (wire::PutObjectHeader, Bytes);
 type GetRequest = (wire::GetObjectRequest, u64);
 
-fn read_request(bucket: &wire::BucketRef, prefix: &str, object_id: ObjectId, maximum_bytes: u64) -> GetRequest {
+fn read_request(
+    bucket: &wire::BucketRef,
+    prefix: &str,
+    object_id: ObjectId,
+    maximum_bytes: u64,
+) -> GetRequest {
     (
         wire::GetObjectRequest {
             bucket: Some(bucket.clone()),
@@ -155,10 +160,14 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
         };
         work.admit(&hashing, &budget)
             .map_err(|error| OperationFailure::new(error.into(), work))?;
-        work = work.checked_add(hashing)
+        work = work
+            .checked_add(hashing)
             .map_err(|error| OperationFailure::new(error.into(), work))?;
         if object_digest(object_id.kind, bytes) != object_id.digest {
-            return Err(OperationFailure::new(ObjectStoreError::DigestMismatch, work));
+            return Err(OperationFailure::new(
+                ObjectStoreError::DigestMismatch,
+                work,
+            ));
         }
         Ok(work)
     }
@@ -170,16 +179,22 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
-        cancellation.check()
+        cancellation
+            .check()
             .map_err(|_| OperationFailure::before_work(ObjectStoreError::Cancelled))?;
         let work = self.validate_write(object_id, &bytes, WorkCounters::default(), budget)?;
         self.put_verified(
             object_id,
-            provider_put_request(&self.bucket, &self.key_prefix, &ObjectWrite { object_id, bytes }),
+            provider_put_request(
+                &self.bucket,
+                &self.key_prefix,
+                &ObjectWrite { object_id, bytes },
+            ),
             work,
             budget,
             cancellation,
-        ).await
+        )
+        .await
     }
 
     async fn put_verified(
@@ -190,7 +205,8 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
-        cancellation.check()
+        cancellation
+            .check()
             .map_err(|_| OperationFailure::new(ObjectStoreError::Cancelled, work))?;
         let byte_count = request.1.len() as u64;
         let writing = WorkCounters {
@@ -200,13 +216,17 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
         };
         work.admit(&writing, &budget)
             .map_err(|error| OperationFailure::new(error.into(), work))?;
-        work = work.checked_add(writing)
+        work = work
+            .checked_add(writing)
             .map_err(|error| OperationFailure::new(error.into(), work))?;
         match self.publish(request).await {
             Ok(version) if version.size == byte_count => success((), work, budget),
             Ok(_) => Err(OperationFailure::new(ObjectStoreError::Corrupt, work)),
-            Err(Error { code: wire::ErrorCode::PreconditionFailed }) => {
-                cancellation.check()
+            Err(Error {
+                code: wire::ErrorCode::PreconditionFailed,
+            }) => {
+                cancellation
+                    .check()
                     .map_err(|_| OperationFailure::new(ObjectStoreError::Cancelled, work))?;
                 let reading = WorkCounters {
                     backend_read_operations: 1,
@@ -214,23 +234,33 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
                 };
                 work.admit(&reading, &budget)
                     .map_err(|error| OperationFailure::new(error.into(), work))?;
-                work = work.checked_add(reading)
+                work = work
+                    .checked_add(reading)
                     .map_err(|error| OperationFailure::new(error.into(), work))?;
-                let existing = self.fetch(read_request(&self.bucket, &self.key_prefix, object_id, byte_count))
+                let existing = self
+                    .fetch(read_request(
+                        &self.bucket,
+                        &self.key_prefix,
+                        object_id,
+                        byte_count,
+                    ))
                     .await
                     .map_err(|error| OperationFailure::new(map_objects_error(error), work))?;
                 let existing_bytes = existing.body.len() as u64;
-                work = work.checked_add(WorkCounters {
-                    object_bytes_read: existing_bytes,
-                    ..WorkCounters::default()
-                }).map_err(|error| OperationFailure::new(error.into(), work))?;
+                work = work
+                    .checked_add(WorkCounters {
+                        object_bytes_read: existing_bytes,
+                        ..WorkCounters::default()
+                    })
+                    .map_err(|error| OperationFailure::new(error.into(), work))?;
                 let hashing = WorkCounters {
                     bytes_hashed: existing_bytes,
                     ..WorkCounters::default()
                 };
                 work.admit(&hashing, &budget)
                     .map_err(|error| OperationFailure::new(error.into(), work))?;
-                work = work.checked_add(hashing)
+                work = work
+                    .checked_add(hashing)
                     .map_err(|error| OperationFailure::new(error.into(), work))?;
                 if existing_bytes != byte_count
                     || object_digest(object_id.kind, &existing.body) != object_id.digest
@@ -252,7 +282,8 @@ impl<P: NativeBatchObjects> AsyncObjectStore for LogicalObjectStore<P> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
-        self.put_single(object_id, bytes, budget, cancellation).await
+        self.put_single(object_id, bytes, budget, cancellation)
+            .await
     }
 
     async fn read(
@@ -262,7 +293,8 @@ impl<P: NativeBatchObjects> AsyncObjectStore for LogicalObjectStore<P> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<ObjectRead> {
-        self.read_single(object_id, maximum_bytes, budget, cancellation).await
+        self.read_single(object_id, maximum_bytes, budget, cancellation)
+            .await
     }
 
     async fn contains(
@@ -288,8 +320,13 @@ impl<P: NativeBatchObjects> AsyncObjectStore for LogicalObjectStore<P> {
                 "object write batch is empty".to_owned(),
             )));
         }
-        let (requests, unique_writes, mut work) =
-            prepare_provider_put_batch(&self.bucket, &self.key_prefix, writes, budget, cancellation)?;
+        let (requests, unique_writes, mut work) = prepare_provider_put_batch(
+            &self.bucket,
+            &self.key_prefix,
+            writes,
+            budget,
+            cancellation,
+        )?;
         if requests
             .iter()
             .any(|request| request.1.len() as u64 > self.maximum_object_bytes)
@@ -321,7 +358,12 @@ impl<P: NativeBatchObjects> AsyncObjectStore for LogicalObjectStore<P> {
                         .map_err(|_| OperationFailure::new(ObjectStoreError::Cancelled, work))?;
                     work.backend_read_operations = work.backend_read_operations.saturating_add(1);
                     let existing = self
-                        .fetch(read_request(&self.bucket, &self.key_prefix, write.object_id, byte_count))
+                        .fetch(read_request(
+                            &self.bucket,
+                            &self.key_prefix,
+                            write.object_id,
+                            byte_count,
+                        ))
                         .await
                         .map_err(|error| OperationFailure::new(map_objects_error(error), work))?;
                     let existing_bytes = u64::try_from(existing.body.len()).unwrap_or(u64::MAX);
@@ -465,10 +507,16 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             backend_read_operations: 1,
             ..WorkCounters::default()
         };
-        admitted.verify(budget)
+        admitted
+            .verify(budget)
             .map_err(|error| OperationFailure::before_work(error.into()))?;
         let value = self
-            .fetch(read_request(&self.bucket, &self.key_prefix, object_id, maximum_bytes))
+            .fetch(read_request(
+                &self.bucket,
+                &self.key_prefix,
+                object_id,
+                maximum_bytes,
+            ))
             .await
             .map_err(|error| OperationFailure::new(map_objects_error(error), admitted))?;
         let observed = u64::try_from(value.body.len()).unwrap_or(u64::MAX);
@@ -565,7 +613,9 @@ impl<P> RemoteLogicalObjectStore<P> {
     /// Binds an authenticated provider to the exact dedicated filesystem bucket.
     #[must_use]
     pub fn new(provider: Arc<P>, bucket: wire::BucketRef) -> Self {
-        Self { inner: LogicalObjectStore::new(provider, bucket) }
+        Self {
+            inner: LogicalObjectStore::new(provider, bucket),
+        }
     }
 
     /// Restricts every remote object lookup and publication to this exact prefix.
@@ -574,14 +624,21 @@ impl<P> RemoteLogicalObjectStore<P> {
     /// Rejects noncanonical or oversized prefixes. The caller must derive the
     /// prefix from authenticated tenant identity, never from request contents.
     pub fn with_key_prefix(mut self, prefix: String) -> Result<Self, ObjectStoreError> {
-        if prefix.len() > 512 || (!prefix.is_empty() && (
-            !prefix.ends_with('/') || prefix.split('/').rev().skip(1).any(|part| {
-                part.is_empty() || part == "." || part == ".."
-                    || !part.bytes().all(|byte| byte.is_ascii_alphanumeric()
-                        || matches!(byte, b'-' | b'_' | b'.'))
-            })
-        )) {
-            return Err(ObjectStoreError::Rejected("invalid filesystem object prefix".to_owned()));
+        if prefix.len() > 512
+            || (!prefix.is_empty()
+                && (!prefix.ends_with('/')
+                    || prefix.split('/').rev().skip(1).any(|part| {
+                        part.is_empty()
+                            || part == "."
+                            || part == ".."
+                            || !part.bytes().all(|byte| {
+                                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
+                            })
+                    })))
+        {
+            return Err(ObjectStoreError::Rejected(
+                "invalid filesystem object prefix".to_owned(),
+            ));
         }
         self.inner.key_prefix = prefix.into();
         Ok(self)
@@ -617,7 +674,9 @@ impl<P: ObjectsProvider> AsyncObjectStore for RemoteLogicalObjectStore<P> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
-        self.inner.put_single(object_id, bytes, budget, cancellation).await
+        self.inner
+            .put_single(object_id, bytes, budget, cancellation)
+            .await
     }
 
     async fn put_many(
@@ -626,7 +685,8 @@ impl<P: ObjectsProvider> AsyncObjectStore for RemoteLogicalObjectStore<P> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
-        cancellation.check()
+        cancellation
+            .check()
             .map_err(|_| OperationFailure::before_work(ObjectStoreError::Cancelled))?;
         if writes.is_empty() {
             return Err(OperationFailure::before_work(ObjectStoreError::Rejected(
@@ -651,23 +711,29 @@ impl<P: ObjectsProvider> AsyncObjectStore for RemoteLogicalObjectStore<P> {
             ))
         })?;
         for (index, write) in writes.iter().enumerate() {
-            cancellation.check()
+            cancellation
+                .check()
                 .map_err(|_| OperationFailure::new(ObjectStoreError::Cancelled, work))?;
-            work = self.inner.validate_write(write.object_id, &write.bytes, work, budget)?;
+            work = self
+                .inner
+                .validate_write(write.object_id, &write.bytes, work, budget)?;
             indices.push(index);
         }
         indices.sort_unstable_by_key(|index| {
             writes.get(*index).map(|write| (write.object_id, *index))
         });
         for [first_index, second_index] in indices.array_windows::<2>() {
-            let first = writes.get(*first_index).ok_or_else(|| {
-                OperationFailure::new(ObjectStoreError::Corrupt, work)
-            })?;
-            let second = writes.get(*second_index).ok_or_else(|| {
-                OperationFailure::new(ObjectStoreError::Corrupt, work)
-            })?;
+            let first = writes
+                .get(*first_index)
+                .ok_or_else(|| OperationFailure::new(ObjectStoreError::Corrupt, work))?;
+            let second = writes
+                .get(*second_index)
+                .ok_or_else(|| OperationFailure::new(ObjectStoreError::Corrupt, work))?;
             if first.object_id == second.object_id && first.bytes != second.bytes {
-                return Err(OperationFailure::new(ObjectStoreError::DigestMismatch, work));
+                return Err(OperationFailure::new(
+                    ObjectStoreError::DigestMismatch,
+                    work,
+                ));
             }
         }
         indices.dedup_by_key(|index| writes.get(*index).map(|write| write.object_id));
@@ -675,16 +741,20 @@ impl<P: ObjectsProvider> AsyncObjectStore for RemoteLogicalObjectStore<P> {
         // Sorting by ID and input position makes the eventual RPC order stable.
         indices.sort_unstable();
         for index in indices {
-            let write = writes.get(index).ok_or_else(|| {
-                OperationFailure::new(ObjectStoreError::Corrupt, work)
-            })?;
-            work = self.inner.put_verified(
-                write.object_id,
-                provider_put_request(self.bucket(), &self.inner.key_prefix, write),
-                work,
-                budget,
-                cancellation,
-            ).await?.work;
+            let write = writes
+                .get(index)
+                .ok_or_else(|| OperationFailure::new(ObjectStoreError::Corrupt, work))?;
+            work = self
+                .inner
+                .put_verified(
+                    write.object_id,
+                    provider_put_request(self.bucket(), &self.inner.key_prefix, write),
+                    work,
+                    budget,
+                    cancellation,
+                )
+                .await?
+                .work;
         }
         success((), work, budget)
     }
@@ -696,7 +766,9 @@ impl<P: ObjectsProvider> AsyncObjectStore for RemoteLogicalObjectStore<P> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<ObjectRead> {
-        self.inner.read_single(object_id, maximum_bytes, budget, cancellation).await
+        self.inner
+            .read_single(object_id, maximum_bytes, budget, cancellation)
+            .await
     }
 
     async fn read_many(
@@ -714,7 +786,9 @@ impl<P: ObjectsProvider> AsyncObjectStore for RemoteLogicalObjectStore<P> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<bool> {
-        self.inner.contains_single(object_id, budget, cancellation).await
+        self.inner
+            .contains_single(object_id, budget, cancellation)
+            .await
     }
 }
 
@@ -904,7 +978,6 @@ mod tests {
         Ok(())
     }
 
-
     #[tokio::test]
     async fn provider_put_batch_rejects_unadmitted_request_allocation() {
         let (provider, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
@@ -922,12 +995,12 @@ mod tests {
         let failure = store
             .put_many(&writes, budget, &CancellationToken::new())
             .await
-                .err()
-                .unwrap_or_else(|| {
-                    OperationFailure::before_work(ObjectStoreError::Rejected(
-                        "unadmitted allocation unexpectedly succeeded".to_owned(),
-                    ))
-                });
+            .err()
+            .unwrap_or_else(|| {
+                OperationFailure::before_work(ObjectStoreError::Rejected(
+                    "unadmitted allocation unexpectedly succeeded".to_owned(),
+                ))
+            });
         assert!(matches!(failure.error, ObjectStoreError::Work(_)));
         assert_eq!(*failure.work, WorkCounters::default());
     }

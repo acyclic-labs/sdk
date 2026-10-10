@@ -48,7 +48,8 @@ pub fn decode_storage_observation(
     let value = wire_codec::observation_with_path(
         decode::<wire::IdempotencyObservation>(input, maximum_bytes)?,
         &StreamPath::from_storage,
-    ).map_err(|_| StreamError::InvalidArgument)?;
+    )
+    .map_err(|_| StreamError::InvalidArgument)?;
     validate_observation(&value)?;
     Ok(value)
 }
@@ -93,7 +94,8 @@ pub fn decode_storage_envelope(
     let value = wire_codec::envelope_with_path(
         decode::<wire::CommittedEnvelope>(input, maximum_bytes)?,
         StreamPath::from_storage,
-    ).map_err(|_| StreamError::InvalidArgument)?;
+    )
+    .map_err(|_| StreamError::InvalidArgument)?;
     validate_envelope(&value)?;
     Ok(value)
 }

@@ -3,14 +3,17 @@
 //! Observations can lag and change; they are not a final invoice or proof that an
 //! absent period costs zero. Consumers retain the original bytes and reconcile
 //! monetary settlement separately from physical execution completion.
-use std::{collections::BTreeMap, time::Duration};
+use crate::DaytonaConfig;
 use acyclic_machines::ProviderError;
-use reqwest::{Client, Url, header::{HeaderValue, AUTHORIZATION}};
+use reqwest::{
+    Client, Url,
+    header::{AUTHORIZATION, HeaderValue},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 use sha2::{Digest as _, Sha256};
+use std::{collections::BTreeMap, time::Duration};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
-use crate::DaytonaConfig;
 
 /// Official read-only analytics origin; API credentials never follow redirects.
 pub const DEFAULT_ANALYTICS_URL: &str = "https://analytics.app.daytona.io/";
@@ -79,12 +82,19 @@ pub struct AnalyticsApi {
     organization_id: String,
     authorization: HeaderValue,
 }
-fn invalid(message: &str) -> ProviderError { ProviderError::Invalid(message.to_owned()) }
+fn invalid(message: &str) -> ProviderError {
+    ProviderError::Invalid(message.to_owned())
+}
 fn rfc3339(value: &str) -> Result<OffsetDateTime, ProviderError> {
-    OffsetDateTime::parse(value, &Rfc3339).map_err(|_| invalid("analytics interval must be RFC3339"))
+    OffsetDateTime::parse(value, &Rfc3339)
+        .map_err(|_| invalid("analytics interval must be RFC3339"))
 }
 fn selector(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 256 && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    !value.is_empty()
+        && value.len() <= 256
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 impl AnalyticsApi {
     /// Install a bounded, redirect-refusing client. Organization selection is
@@ -93,18 +103,41 @@ impl AnalyticsApi {
     /// # Errors
     /// Refuses absent organization, malformed credentials, or zero timeout.
     pub fn new(config: &DaytonaConfig) -> Result<Self, ProviderError> {
-        let organization = config.organization_id.as_deref().ok_or_else(|| invalid("analytics organization required"))?;
-        Self::install(DEFAULT_ANALYTICS_URL, &config.api_key, organization, config.request_timeout)
+        let organization = config
+            .organization_id
+            .as_deref()
+            .ok_or_else(|| invalid("analytics organization required"))?;
+        Self::install(
+            DEFAULT_ANALYTICS_URL,
+            &config.api_key,
+            organization,
+            config.request_timeout,
+        )
     }
-    fn install(base: &str, key: &str, organization: &str, timeout: Duration) -> Result<Self, ProviderError> {
-        if !selector(organization) || key.is_empty() || timeout.is_zero() { return Err(invalid("invalid analytics client configuration")); }
+    fn install(
+        base: &str,
+        key: &str,
+        organization: &str,
+        timeout: Duration,
+    ) -> Result<Self, ProviderError> {
+        if !selector(organization) || key.is_empty() || timeout.is_zero() {
+            return Err(invalid("invalid analytics client configuration"));
+        }
         let mut authorization = HeaderValue::from_str(&format!("Bearer {key}"))
             .map_err(|_| invalid("invalid analytics credential"))?;
         authorization.set_sensitive(true);
-        let http = Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(timeout)
-            .build().map_err(|_| ProviderError::Unavailable)?;
+        let http = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(timeout)
+            .build()
+            .map_err(|_| ProviderError::Unavailable)?;
         let base = Url::parse(base).map_err(|_| invalid("invalid analytics origin"))?;
-        Ok(Self { http, base, organization_id: organization.to_owned(), authorization })
+        Ok(Self {
+            http,
+            base,
+            organization_id: organization.to_owned(),
+            authorization,
+        })
     }
 
     /// `GET /organization/{organizationId}/sandbox/{sandboxId}/usage?from=...&to=...`.
@@ -114,47 +147,106 @@ impl AnalyticsApi {
     /// # Errors
     /// Rejects invalid selectors/intervals, non-200 status, incomplete usage
     /// records, negative prices, overlapping/reversed periods or oversized data.
-    pub async fn sandbox_usage(&self, sandbox_id: &str, from: &str, to: &str) -> Result<UsageObservation, ProviderError> {
-        if !selector(sandbox_id) { return Err(invalid("invalid analytics sandbox selector")); }
+    pub async fn sandbox_usage(
+        &self,
+        sandbox_id: &str,
+        from: &str,
+        to: &str,
+    ) -> Result<UsageObservation, ProviderError> {
+        if !selector(sandbox_id) {
+            return Err(invalid("invalid analytics sandbox selector"));
+        }
         let start = rfc3339(from)?;
         let end = rfc3339(to)?;
-        if start >= end { return Err(invalid("analytics interval must increase")); }
-        let mut url = self.base.join(&format!("organization/{}/sandbox/{sandbox_id}/usage", self.organization_id))
+        if start >= end {
+            return Err(invalid("analytics interval must increase"));
+        }
+        let mut url = self
+            .base
+            .join(&format!(
+                "organization/{}/sandbox/{sandbox_id}/usage",
+                self.organization_id
+            ))
             .map_err(|_| invalid("invalid analytics selector"))?;
-        url.query_pairs_mut().append_pair("from", from).append_pair("to", to);
+        url.query_pairs_mut()
+            .append_pair("from", from)
+            .append_pair("to", to);
         let request_url = url.to_string();
-        let mut response = self.http.get(url).header(AUTHORIZATION, self.authorization.clone())
-            .send().await.map_err(|_| ProviderError::Unavailable)?;
+        let mut response = self
+            .http
+            .get(url)
+            .header(AUTHORIZATION, self.authorization.clone())
+            .send()
+            .await
+            .map_err(|_| ProviderError::Unavailable)?;
         if response.status().as_u16() != 200 {
             return Err(match response.status().as_u16() {
                 404 => ProviderError::NotFound("Daytona analytics sandbox usage not found".into()),
                 429 | 500..=599 => ProviderError::Unavailable,
-                _ => ProviderError::Rejected(format!("Daytona analytics HTTP {}", response.status().as_u16())),
+                _ => ProviderError::Rejected(format!(
+                    "Daytona analytics HTTP {}",
+                    response.status().as_u16()
+                )),
             });
         }
-        if response.content_length().is_some_and(|bytes| bytes > MAX_RESPONSE_BYTES as u64) {
-            return Err(ProviderError::Rejected("Daytona analytics response too large".into()));
+        if response
+            .content_length()
+            .is_some_and(|bytes| bytes > MAX_RESPONSE_BYTES as u64)
+        {
+            return Err(ProviderError::Rejected(
+                "Daytona analytics response too large".into(),
+            ));
         }
         let mut headers = BTreeMap::new();
         for name in ["content-type", "date", "etag", "x-request-id"] {
             if let Some(value) = response.headers().get(name) {
-                headers.insert(name.to_owned(), value.to_str().map_err(|_| ProviderError::Rejected("invalid analytics response header".into()))?.to_owned());
+                headers.insert(
+                    name.to_owned(),
+                    value
+                        .to_str()
+                        .map_err(|_| {
+                            ProviderError::Rejected("invalid analytics response header".into())
+                        })?
+                        .to_owned(),
+                );
             }
         }
         let mut body = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(|_| ProviderError::Unavailable)? {
-            if chunk.len() > MAX_RESPONSE_BYTES - body.len() { return Err(ProviderError::Rejected("Daytona analytics response too large".into())); }
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| ProviderError::Unavailable)?
+        {
+            if chunk.len() > MAX_RESPONSE_BYTES - body.len() {
+                return Err(ProviderError::Rejected(
+                    "Daytona analytics response too large".into(),
+                ));
+            }
             body.extend_from_slice(&chunk);
         }
-        let periods: Vec<UsagePeriod> = serde_json::from_slice(&body)
-            .map_err(|_| ProviderError::Rejected("invalid Daytona analytics usage records".into()))?;
+        let periods: Vec<UsagePeriod> = serde_json::from_slice(&body).map_err(|_| {
+            ProviderError::Rejected("invalid Daytona analytics usage records".into())
+        })?;
         validate_periods(&periods, start, end)?;
-        Ok(UsageObservation { organization_id: self.organization_id.clone(), sandbox_id: sandbox_id.to_owned(),
-            from: from.to_owned(), to: to.to_owned(), request_url, status: 200, headers,
-            body_sha256: Sha256::digest(&body).into(), body, periods })
+        Ok(UsageObservation {
+            organization_id: self.organization_id.clone(),
+            sandbox_id: sandbox_id.to_owned(),
+            from: from.to_owned(),
+            to: to.to_owned(),
+            request_url,
+            status: 200,
+            headers,
+            body_sha256: Sha256::digest(&body).into(),
+            body,
+            periods,
+        })
     }
 }
-fn validate_periods(periods: &[UsagePeriod], from: OffsetDateTime, to: OffsetDateTime) -> Result<(), ProviderError> {
+fn validate_periods(
+    periods: &[UsagePeriod],
+    from: OffsetDateTime,
+    to: OffsetDateTime,
+) -> Result<(), ProviderError> {
     let mut intervals = Vec::with_capacity(periods.len());
     for period in periods {
         let start = rfc3339(&period.start_at)?;
@@ -162,19 +254,27 @@ fn validate_periods(periods: &[UsagePeriod], from: OffsetDateTime, to: OffsetDat
         // Retain the provider's whole interval; never prorate a period straddling
         // a requested boundary. Non-intersecting records are selector failures.
         if start >= end || end <= from || start >= to || period.price.to_string().starts_with('-') {
-            return Err(ProviderError::Rejected("invalid Daytona analytics usage period".into()));
+            return Err(ProviderError::Rejected(
+                "invalid Daytona analytics usage period".into(),
+            ));
         }
         intervals.push((start, end));
     }
     intervals.sort_unstable();
     if intervals.windows(2).any(|pair| pair[0].1 > pair[1].0) {
-        return Err(ProviderError::Rejected("overlapping Daytona analytics usage periods".into()));
+        return Err(ProviderError::Rejected(
+            "overlapping Daytona analytics usage periods".into(),
+        ));
     }
     Ok(())
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic, reason = "deterministic analytics boundary tests")]
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "deterministic analytics boundary tests"
+)]
 mod tests {
     use super::*;
     use crate::mock::Mock;
@@ -188,30 +288,67 @@ mod tests {
             assert_eq!(request.path, "/organization/org-1/sandbox/sandbox-1/usage");
             assert_eq!(request.authorization.as_deref(), Some("Bearer secret"));
             (200, PERIOD.to_owned())
-        }).await;
-        let api = AnalyticsApi::install(&format!("{}/", server.url), "secret", "org-1", Duration::from_secs(5)).unwrap();
+        })
+        .await;
+        let api = AnalyticsApi::install(
+            &format!("{}/", server.url),
+            "secret",
+            "org-1",
+            Duration::from_secs(5),
+        )
+        .unwrap();
         let observation = api.sandbox_usage("sandbox-1", FROM, TO).await.unwrap();
         assert_eq!(observation.organization_id, "org-1");
         assert_eq!(observation.sandbox_id, "sandbox-1");
         assert_eq!(observation.from, FROM);
         assert_eq!(observation.to, TO);
-        assert_eq!(observation.body_sha256, <[u8; 32]>::from(Sha256::digest(&observation.body)));
+        assert_eq!(
+            observation.body_sha256,
+            <[u8; 32]>::from(Sha256::digest(&observation.body))
+        );
         assert_eq!(observation.body, PERIOD.as_bytes());
         assert_eq!(observation.periods[0].cpu, 2);
         let url = Url::parse(&observation.request_url).unwrap();
-        assert_eq!(url.query_pairs().collect::<BTreeMap<_, _>>().get("from").unwrap(), FROM);
-        assert_eq!(url.query_pairs().collect::<BTreeMap<_, _>>().get("to").unwrap(), TO);
+        assert_eq!(
+            url.query_pairs()
+                .collect::<BTreeMap<_, _>>()
+                .get("from")
+                .unwrap(),
+            FROM
+        );
+        assert_eq!(
+            url.query_pairs()
+                .collect::<BTreeMap<_, _>>()
+                .get("to")
+                .unwrap(),
+            TO
+        );
     }
     #[tokio::test]
     async fn missing_usage_does_not_synthesize_zero_charge() {
         let server = Mock::start(|_| async { (200, "[]".to_owned()) }).await;
-        let api = AnalyticsApi::install(&format!("{}/", server.url), "secret", "org-1", Duration::from_secs(5)).unwrap();
+        let api = AnalyticsApi::install(
+            &format!("{}/", server.url),
+            "secret",
+            "org-1",
+            Duration::from_secs(5),
+        )
+        .unwrap();
         let observation = api.sandbox_usage("sandbox-1", FROM, TO).await.unwrap();
         assert_eq!(observation.body, b"[]");
         assert!(observation.periods.is_empty());
         let error = Mock::start(|_| async { (404, "{}".to_owned()) }).await;
-        let api = AnalyticsApi::install(&format!("{}/", error.url), "secret", "org-1", Duration::from_secs(5)).unwrap();
-        assert!(matches!(api.sandbox_usage("sandbox-1", FROM, TO).await, Err(ProviderError::NotFound(_))));
+        let api = AnalyticsApi::install(
+            &format!("{}/", error.url),
+            "secret",
+            "org-1",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(matches!(
+            api.sandbox_usage("sandbox-1", FROM, TO).await,
+            Err(ProviderError::NotFound(_))
+        ));
     }
     #[test]
     fn incomplete_and_overlapping_records_are_not_billable() {

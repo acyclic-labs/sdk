@@ -36,7 +36,11 @@ fn original_record() -> Result<ExecutionRecord> {
         operation_id: OperationId::from_bytes([9; 16]),
         sequence: (1_u64 << 53) + 19,
         idempotency_key: "original-context:7".into(),
-        event: ExecutionEvent::ContextPrepared { step: 7, projection: file, accounting: None },
+        event: ExecutionEvent::ContextPrepared {
+            step: 7,
+            projection: file,
+            accounting: None,
+        },
     })
 }
 
@@ -71,7 +75,8 @@ fn canonical_native_records_preserve_integer_and_resource_constraints() -> Resul
 fn actual_native_turn_bytes_decode_through_wasm_without_narrowing()
 -> std::result::Result<(), wasm_bindgen::JsValue> {
     use acyclic_harness::wasm::{
-        decode_execution_record_json, decode_turn_input_json, decode_turn_output_json, encode_canonical_json,
+        decode_execution_record_json, decode_turn_input_json, decode_turn_output_json,
+        encode_canonical_json,
     };
     use js_sys::{Array, BigInt, Reflect};
     use wasm_bindgen::{JsCast as _, JsValue};
@@ -80,9 +85,17 @@ fn actual_native_turn_bytes_decode_through_wasm_without_narrowing()
     let bytes = encode_json(&record).map_err(error)?;
     let decoded = decode_execution_record_json(&bytes)?;
     let sequence = Reflect::get(&decoded, &"sequence".into())?.dyn_into::<BigInt>()?;
-    assert_eq!(sequence.to_string(10)?.as_string(), Some(record.sequence.to_string()));
+    assert_eq!(
+        sequence.to_string(10)?.as_string(),
+        Some(record.sequence.to_string())
+    );
     assert_eq!(encode_canonical_json(decoded)?, bytes);
-    let ExecutionEvent::ContextPrepared { projection: file, .. } = record.event else { unreachable!() };
+    let ExecutionEvent::ContextPrepared {
+        projection: file, ..
+    } = record.event
+    else {
+        unreachable!()
+    };
     let input = TurnInput {
         operation_id: record.operation_id,
         input: ModelContent::Text("original turn input".into()),
@@ -92,22 +105,37 @@ fn actual_native_turn_bytes_decode_through_wasm_without_narrowing()
                 message_ids: vec![],
                 checkpoint: Some(file.clone()),
             },
-            messages: vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text("original turn input".into()) }],
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("original turn input".into()),
+            }],
         }),
         max_steps: 3,
     };
     let input_bytes = encode_json(&input).map_err(error)?;
     let decoded_input = decode_turn_input_json(&input_bytes)?;
-    assert_eq!(Reflect::get(&decoded_input, &"input".into())?.as_string().as_deref(), Some("original turn input"));
+    assert_eq!(
+        Reflect::get(&decoded_input, &"input".into())?
+            .as_string()
+            .as_deref(),
+        Some("original turn input")
+    );
     let selected = Reflect::get(&decoded_input, &"selected_context".into())?;
     let selection = Reflect::get(&selected, &"selection".into())?;
-    let revision = Reflect::get(&selection, &"conversation_revision".into())?.dyn_into::<BigInt>()?;
-    assert_eq!(revision.to_string(10)?.as_string(), Some(record.sequence.to_string()));
+    let revision =
+        Reflect::get(&selection, &"conversation_revision".into())?.dyn_into::<BigInt>()?;
+    assert_eq!(
+        revision.to_string(10)?.as_string(),
+        Some(record.sequence.to_string())
+    );
     assert_eq!(encode_canonical_json(decoded_input)?, input_bytes);
 
     let output = TurnOutput {
         text: "original native output".into(),
-        attachments: vec![Attachment { file, label: Some("original retained artifact".into()) }],
+        attachments: vec![Attachment {
+            file,
+            label: Some("original retained artifact".into()),
+        }],
         metadata: json!({
             "provider_integer": u64::MAX,
             "opaque_descriptor": {"sha256": [], "byte_length": u64::MAX, "media_type": "provider-data"},
@@ -117,16 +145,34 @@ fn actual_native_turn_bytes_decode_through_wasm_without_narrowing()
     let output_bytes = encode_json(&output).map_err(error)?;
     let decoded_output = decode_turn_output_json(&output_bytes)?;
     let metadata = Reflect::get(&decoded_output, &"metadata".into())?.dyn_into::<js_sys::Map>()?;
-    let provider_integer = metadata.get(&"provider_integer".into()).dyn_into::<BigInt>()?;
-    assert_eq!(provider_integer.to_string(10)?.as_string(), Some(u64::MAX.to_string()));
-    let opaque = metadata.get(&"opaque_descriptor".into()).dyn_into::<js_sys::Map>()?;
+    let provider_integer = metadata
+        .get(&"provider_integer".into())
+        .dyn_into::<BigInt>()?;
+    assert_eq!(
+        provider_integer.to_string(10)?.as_string(),
+        Some(u64::MAX.to_string())
+    );
+    let opaque = metadata
+        .get(&"opaque_descriptor".into())
+        .dyn_into::<js_sys::Map>()?;
     let opaque_bytes = opaque.get(&"byte_length".into()).dyn_into::<BigInt>()?;
-    assert_eq!(opaque_bytes.to_string(10)?.as_string(), Some(u64::MAX.to_string()));
-    let attachment = Reflect::get(&decoded_output, &"attachments".into())?.dyn_into::<Array>()?.get(0);
+    assert_eq!(
+        opaque_bytes.to_string(10)?.as_string(),
+        Some(u64::MAX.to_string())
+    );
+    let attachment = Reflect::get(&decoded_output, &"attachments".into())?
+        .dyn_into::<Array>()?
+        .get(0);
     let file = Reflect::get(&attachment, &"file".into())?;
-    assert_eq!(Reflect::get(&file, &"path".into())?.as_string().as_deref(), Some("original/context.json"));
+    assert_eq!(
+        Reflect::get(&file, &"path".into())?.as_string().as_deref(),
+        Some("original/context.json")
+    );
     let descriptor = Reflect::get(&file, &"descriptor".into())?;
-    assert_eq!(Reflect::get(&descriptor, &"byte_length".into())?.as_f64(), Some(3.0));
+    assert_eq!(
+        Reflect::get(&descriptor, &"byte_length".into())?.as_f64(),
+        Some(3.0)
+    );
     assert_eq!(encode_canonical_json(decoded_output)?, output_bytes);
     let mut changed = serde_json::to_value(&output).unwrap();
     changed["attachments"][0]["file"]["path"] = json!("../foreign/artifact");

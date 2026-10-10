@@ -195,9 +195,9 @@ fn commit_outcome_with_path(
     decode_path: &impl Fn(String) -> Result<StreamPath, StreamError>,
 ) -> Result<CommitOutcome, StreamError> {
     match value.outcome.ok_or(StreamError::Unavailable)? {
-        wire::commit_response::Outcome::Committed(envelope) => {
-            Ok(CommitOutcome::Committed(envelope_with_path(envelope, decode_path)?))
-        }
+        wire::commit_response::Outcome::Committed(envelope) => Ok(CommitOutcome::Committed(
+            envelope_with_path(envelope, decode_path)?,
+        )),
         wire::commit_response::Outcome::Conflict(conflicts) => Ok(CommitOutcome::Conflict(
             conflicts
                 .conflicts

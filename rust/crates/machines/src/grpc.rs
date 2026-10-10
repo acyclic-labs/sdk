@@ -949,10 +949,15 @@ impl GrpcProvider {
                         Ok(response) => {
                             let mut stream = response.into_inner();
                             loop {
-                                match tokio::time::timeout(WATCH_RECONCILE_INTERVAL, stream.message()).await
+                                match tokio::time::timeout(
+                                    WATCH_RECONCILE_INTERVAL,
+                                    stream.message(),
+                                )
+                                .await
                                 {
                                     Ok(Ok(Some(value))) => {
-                                        let phase = decode_operation_observation(&value, operation)?.phase;
+                                        let phase =
+                                            decode_operation_observation(&value, operation)?.phase;
                                         unknown_observations = 0;
                                         if let Some(outcome) = observed_outcome(key, phase) {
                                             return outcome;
@@ -979,13 +984,16 @@ impl GrpcProvider {
                     {
                         Ok(response) => {
                             let phase =
-                                decode_operation_observation(&response.into_inner(), operation)?.phase;
+                                decode_operation_observation(&response.into_inner(), operation)?
+                                    .phase;
                             unknown_observations = 0;
                             if let Some(outcome) = observed_outcome(key, phase) {
                                 return outcome;
                             }
                         }
-                        Err(error) if !retryable_observation_error(&error, &mut unknown_observations) => {
+                        Err(error)
+                            if !retryable_observation_error(&error, &mut unknown_observations) =>
+                        {
                             return Err(watch_error(key, &error));
                         }
                         Err(_) => {}
