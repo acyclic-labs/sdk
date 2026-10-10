@@ -1102,6 +1102,45 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_json_zero_allowance_rejects_before_serde_without_fake_spend() -> Result<()> {
+        struct CountingToken<'a>(&'a AtomicUsize);
+        impl serde::Serialize for CountingToken<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S)
+                -> std::result::Result<S::Ok, S::Error>
+            {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                serializer.serialize_u64(1)
+            }
+        }
+        let calls = AtomicUsize::new(0);
+        for deny_bytes in [true, false] {
+            let mut budget = finite_content_budget();
+            if deny_bytes { budget.bytes_encoded = 0; } else { budget.items_examined = 0; }
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+            let io = super::super::PreparationIo::from_native_work(&work)?;
+            let before = work.receipt();
+            assert!(matches!(io.encode_json(&CountingToken(&calls), 1024, true),
+                Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(_), .. })));
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert_eq!(work.receipt(), before);
+            assert!(matches!(io.encode_for_clone(&CountingToken(&calls), 1024),
+                Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(_), .. })));
+            assert_eq!(work.receipt(), before);
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert!(matches!(io.encode_json(&CountingToken(&calls), 0, true), Err(Error::Invalid(_))));
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            cancellation.cancel();
+            assert!(matches!(io.encode_json(&CountingToken(&calls), 1024, true),
+                Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
+            assert_eq!(work.receipt(), before);
+        }
+        Ok(())
+    }
+
     struct TextModel(Arc<Mutex<Vec<ModelRequest>>>);
 
     fn synthetic_token_count(

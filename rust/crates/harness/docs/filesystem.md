@@ -114,6 +114,10 @@ Native quota and cancellation failures use the canonical
 causes need no guard; owned diagnostics transfer already admitted custody.
 There is no secondary native error wrapper, marker trap, formatting allocation,
 or new retention attempt after a denied operation.
+Encoding first admits the necessary one-byte/one-token minimum without
+charging it. A zero remaining native allowance therefore retains its actual
+work-limit cause before serialization, rather than becoming an invalid derived
+JSON bound; an explicitly invalid caller bound remains a caller error.
 
 The raw Filesystem host and the `AuthorityIssuer`/verifier pair are trusted provider wiring, not reader inputs. Resolve an attached agent's signed scope against the owner's retained verifier; accepting a reader-supplied verifier would let that reader invent its own grants. The ref and its volume identity remain non-bearer even when the owner makes a directory lazily discoverable.
 

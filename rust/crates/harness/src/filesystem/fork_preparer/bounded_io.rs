@@ -373,13 +373,23 @@ impl PreparationIo {
         self.encode_json(value, maximum_bytes, false)
     }
 
-    pub(crate) fn encode_json<T: Serialize>(&self, value: &T, maximum_bytes: u64, canonical: bool) -> Result<Vec<u8>> {
+    fn encoding_bounds(&self, maximum_bytes: u64) -> Result<crate::contract::JsonBounds> {
         let remaining = self.remaining()?;
-        let bounds = crate::contract::JsonBounds {
+        // A valid JSON value necessarily consumes a byte and a token. This is
+        // admission only: actual codec work remains charged by its callbacks.
+        // Keep an explicit invalid caller bound for the codec to diagnose.
+        if maximum_bytes != 0 {
+            self.preflight(WorkCounters { bytes_encoded: 1, items_examined: 1, ..Default::default() })?;
+        }
+        Ok(crate::contract::JsonBounds {
             maximum_bytes: maximum_bytes.min(remaining.bytes_encoded),
             maximum_items: remaining.items_examined,
             maximum_depth: 256,
-        };
+        })
+    }
+
+    pub(crate) fn encode_json<T: Serialize>(&self, value: &T, maximum_bytes: u64, canonical: bool) -> Result<Vec<u8>> {
+        let bounds = self.encoding_bounds(maximum_bytes)?;
         let mut charge = |next| self.codec_charge(next, true);
         if canonical {
             crate::contract::canonical_json_bytes_bounded(value, bounds, &mut charge)
@@ -389,11 +399,7 @@ impl PreparationIo {
     }
 
     pub(crate) fn encode_for_clone<T: Serialize>(&self, value: &T, maximum_bytes: u64) -> Result<Vec<u8>> {
-        let remaining = self.remaining()?;
-        let bounds = crate::contract::JsonBounds {
-            maximum_bytes: maximum_bytes.min(remaining.bytes_encoded),
-            maximum_items: remaining.items_examined, maximum_depth: 256,
-        };
+        let bounds = self.encoding_bounds(maximum_bytes)?;
         let mut transferred = DecodeReservation { io: self, bytes: 0 };
         let encoded = crate::contract::canonical_json_bytes_bounded(value, bounds, &mut |next| {
             match next {
