@@ -80,6 +80,44 @@ fn owned_logical_bytes(value: &Value) -> u64 {
     }
 }
 
+// Callback interruption is inline. The first owned Root error lives in Meter;
+// creating a serde_json custom-message String/Box here would allocate AFTER
+// cancellation or quota denial. Ordinary serde errors retain their old carrier.
+#[derive(Debug)]
+enum CodecError {
+    Interrupted,
+    Json(serde_json::Error),
+}
+impl std::fmt::Display for CodecError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Interrupted => formatter.write_str("JSON admission interrupted"),
+            Self::Json(error) => std::fmt::Display::fmt(error, formatter),
+        }
+    }
+}
+impl std::error::Error for CodecError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self { Self::Interrupted => None, Self::Json(error) => Some(error) }
+    }
+}
+impl ser::Error for CodecError {
+    fn custom<T: std::fmt::Display>(message: T) -> Self {
+        Self::Json(ser::Error::custom(message))
+    }
+}
+impl From<serde_json::Error> for CodecError {
+    fn from(error: serde_json::Error) -> Self { Self::Json(error) }
+}
+impl CodecError {
+    fn into_io(self) -> std::io::Error {
+        match self {
+            Self::Interrupted => std::io::ErrorKind::Interrupted.into(),
+            Self::Json(error) => std::io::Error::other(error),
+        }
+    }
+}
+
 struct Meter<'a, F: FnMut(JsonCodecCharge) -> Result<()>> {
     bounds: JsonBounds,
     items: u64,
@@ -103,24 +141,24 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> Drop for Meter<'_, F> {
 }
 
 impl<F: FnMut(JsonCodecCharge) -> Result<()>> Meter<'_, F> {
-    fn error(message: impl std::fmt::Display) -> serde_json::Error {
+    fn error(message: impl std::fmt::Display) -> CodecError {
         ser::Error::custom(message)
     }
-    fn charge(&mut self, charge: JsonCodecCharge) -> serde_json::Result<()> {
+    fn charge(&mut self, charge: JsonCodecCharge) -> JsonResult<()> {
         if self.failure.is_some() && !matches!(charge, JsonCodecCharge::Release { .. }) {
-            return Err(Self::error("JSON admission interrupted"));
+            return Err(CodecError::Interrupted);
         }
         match (self.charge)(charge) {
             Ok(()) => Ok(()),
             Err(error) => {
                 if self.failure.is_none() { self.failure = Some(error); }
-                Err(Self::error("JSON admission interrupted"))
+                Err(CodecError::Interrupted)
             }
         }
     }
 
 
-    fn item(&mut self, depth: u32) -> serde_json::Result<()> {
+    fn item(&mut self, depth: u32) -> JsonResult<()> {
         if depth > self.bounds.maximum_depth || self.items >= self.bounds.maximum_items {
             return Err(Self::error("JSON exceeds declared structural bound"));
         }
@@ -129,7 +167,7 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> Meter<'_, F> {
         Ok(())
     }
 
-    fn data(&mut self, bytes: u64) -> serde_json::Result<()> {
+    fn data(&mut self, bytes: u64) -> JsonResult<()> {
         let next = self.bytes.checked_add(bytes).ok_or_else(|| Self::error("JSON byte count overflow"))?;
         if next > self.bounds.maximum_bytes {
             return Err(Self::error("JSON exceeds declared byte bound"));
@@ -139,7 +177,7 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> Meter<'_, F> {
         Ok(())
     }
 
-    fn retain(&mut self, bytes: usize) -> serde_json::Result<()> {
+    fn retain(&mut self, bytes: usize) -> JsonResult<()> {
         let retained = self.retained.checked_add(bytes as u64)
             .ok_or_else(|| Self::error("JSON retention overflow"))?;
         self.charge(JsonCodecCharge::Retain { bytes: bytes as u64 })?;
@@ -147,7 +185,7 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> Meter<'_, F> {
         Ok(())
     }
 
-    fn release(&mut self, bytes: u64) -> serde_json::Result<()> {
+    fn release(&mut self, bytes: u64) -> JsonResult<()> {
         let retained = self.retained.checked_sub(bytes)
             .ok_or_else(|| Self::error("JSON retention accounting differs"))?;
         self.charge(JsonCodecCharge::Release { bytes })?;
@@ -155,7 +193,7 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> Meter<'_, F> {
         Ok(())
     }
 
-    fn string(&mut self, value: &str) -> serde_json::Result<String> {
+    fn string(&mut self, value: &str) -> JsonResult<String> {
         // Charge before scanning/copying a potentially huge borrowed string.
         if value.len() as u64 > self.bounds.maximum_bytes.saturating_sub(self.bytes) {
             return Err(Self::error("JSON exceeds declared byte bound"));
@@ -164,7 +202,7 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> Meter<'_, F> {
         struct StringCounter<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>>(&'a mut Meter<'b, F>);
         impl<F: FnMut(JsonCodecCharge) -> Result<()>> std::io::Write for StringCounter<'_, '_, F> {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0.data(bytes.len() as u64).map_err(std::io::Error::other)?;
+                self.0.data(bytes.len() as u64).map_err(CodecError::into_io)?;
                 Ok(bytes.len())
             }
             fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
@@ -197,7 +235,7 @@ struct Encoder<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> { meter: &'a mut
 struct Sequence<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> { encoder: Encoder<'a, 'b, F>, values: Vec<Value>, tag: Option<String> }
 struct Object<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> { encoder: Encoder<'a, 'b, F>, values: serde_json::Map<String, Value>, key: Option<String>, tag: Option<String>, raw: bool, raw_value: Option<Value> }
 
-type JsonResult<T> = serde_json::Result<T>;
+type JsonResult<T> = std::result::Result<T, CodecError>;
 
 macro_rules! scalar {
     ($name:ident, $ty:ty) => {
@@ -212,7 +250,7 @@ macro_rules! scalar {
 
 impl<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> ser::Serializer for Encoder<'a, 'b, F> {
     type Ok = Value;
-    type Error = serde_json::Error;
+    type Error = CodecError;
     type SerializeSeq = Sequence<'a, 'b, F>;
     type SerializeTuple = Sequence<'a, 'b, F>;
     type SerializeTupleStruct = Sequence<'a, 'b, F>;
@@ -313,7 +351,7 @@ impl<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> ser::Serializer for Encode
     }
 }
 
-struct BoundedText<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> { meter: &'a mut Meter<'b, F>, text: String, error: Option<serde_json::Error> }
+struct BoundedText<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> { meter: &'a mut Meter<'b, F>, text: String, error: Option<CodecError> }
 impl<F: FnMut(JsonCodecCharge) -> Result<()>> std::fmt::Write for BoundedText<'_, '_, F> {
     fn write_str(&mut self, value: &str) -> std::fmt::Result {
         let result = (|| {
@@ -357,7 +395,7 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> Sequence<'_, '_, F> {
 macro_rules! sequence {
     ($trait:ident, $method:ident) => {
         impl<F: FnMut(JsonCodecCharge) -> Result<()>> ser::$trait for Sequence<'_, '_, F> {
-            type Ok = Value; type Error = serde_json::Error;
+            type Ok = Value; type Error = CodecError;
             fn $method<T: Serialize + ?Sized>(&mut self, value: &T) -> JsonResult<()> { self.element(value) }
             fn end(self) -> JsonResult<Value> { Ok(self.finish()) }
         }
@@ -383,7 +421,7 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> Object<'_, '_, F> {
     }
 }
 impl<F: FnMut(JsonCodecCharge) -> Result<()>> ser::SerializeMap for Object<'_, '_, F> {
-    type Ok = Value; type Error = serde_json::Error;
+    type Ok = Value; type Error = CodecError;
     fn serialize_key<T: Serialize + ?Sized>(&mut self, key: &T) -> JsonResult<()> {
         self.encoder.meter.item(self.encoder.depth + 1)?;
         self.key = Some(key.serialize(Key { meter: self.encoder.meter })?);
@@ -413,14 +451,14 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> ser::SerializeMap for Object<'_, '
 macro_rules! object {
     ($trait:ident) => {
         impl<F: FnMut(JsonCodecCharge) -> Result<()>> ser::$trait for Object<'_, '_, F> {
-            type Ok = Value; type Error = serde_json::Error;
+            type Ok = Value; type Error = CodecError;
             fn serialize_field<T: Serialize + ?Sized>(&mut self, key: &'static str, value: &T) -> JsonResult<()> { self.entry(key, value) }
             fn end(self) -> JsonResult<Value> { self.finish() }
         }
     };
 }
 impl<F: FnMut(JsonCodecCharge) -> Result<()>> ser::SerializeStruct for Object<'_, '_, F> {
-    type Ok = Value; type Error = serde_json::Error;
+    type Ok = Value; type Error = CodecError;
     fn serialize_field<T: Serialize + ?Sized>(&mut self, key: &'static str, value: &T) -> JsonResult<()> {
         if self.raw {
             if key != "$serde_json::private::RawValue" { return Err(Meter::<F>::error("expected value")); }
@@ -465,7 +503,7 @@ macro_rules! bad_key {
     };
 }
 impl<F: FnMut(JsonCodecCharge) -> Result<()>> ser::Serializer for Key<'_, '_, F> {
-    type Ok = String; type Error = serde_json::Error;
+    type Ok = String; type Error = CodecError;
     type SerializeSeq = ser::Impossible<String, Self::Error>;
     type SerializeTuple = ser::Impossible<String, Self::Error>;
     type SerializeTupleStruct = ser::Impossible<String, Self::Error>;
@@ -513,6 +551,58 @@ pub fn canonical_json_bytes_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCha
     encode(value, JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds }, charge)
 }
 
+/// Produces the SAME canonical encoder's owned Value directly, without an
+/// encoded buffer, parsing roundtrip or unchecked initial serde_json::to_value.
+/// Encoded bytes (including duplicate entries), items and depth are admitted
+/// before owned payload/slot growth. Retain/Release/Copy report logical storage,
+/// not opaque allocator/map-node operations or process RSS. Custom Serialize
+/// internals are trusted, not sandboxed. RawValue's separate Admission requires
+/// an audited caller-owned parser quota; its subsequent Retain observes the
+/// parsed tree and must adopt that quota without inventing an allocator attempt.
+/// On success keep the actual returned-tree custody until its last use; all
+/// temporary codec claims are released, and errors drop owned nodes before
+/// unconditional cleanup while preserving the first owned callback failure.
+pub fn json_value_bounded_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
+    value: &T, bounds: JsonBounds, charge: &mut F,
+) -> Result<Value> {
+    let bounds = JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds };
+    let mut meter = Meter { bounds, items: 0, bytes: 0, charge, failure: None, retained: 0 };
+    let value = encode_value(value, &mut meter)?;
+    // Observe this actual tree once: permissive custom serializers can discard
+    // temporary keys/nodes before returning success. Their already-freed claims
+    // must not be transferred as if they were part of the returned Value.
+    let owned = owned_logical_bytes(&value);
+    let released = meter.retained.checked_sub(owned)
+        .ok_or_else(|| Error::Invalid("JSON retention accounting differs".into()))?;
+    if released != 0 {
+        if let Err(error) = meter.release(released) {
+            return Err(meter.failure.take().unwrap_or_else(|| Error::Invalid(error.to_string())));
+        }
+    }
+    if let Err(error) = meter.charge(JsonCodecCharge::Work { bytes: 0, items: 0 }) {
+        return Err(meter.failure.take().unwrap_or_else(|| Error::Invalid(error.to_string())));
+    }
+    meter.retained = 0;
+    Ok(value)
+}
+
+fn encode_value<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
+    value: &T, meter: &mut Meter<'_, F>,
+) -> Result<Value> {
+    let mut value = match value.serialize(Encoder { meter, depth: 0 }) {
+        Ok(value) => value,
+        Err(error) => return Err(meter.failure.take().unwrap_or_else(|| Error::Invalid(error.to_string()))),
+    };
+    if let Some(error) = meter.failure.take() { return Err(error); }
+    // serde_json::Map may use insertion-order storage. Explicit sorting pins
+    // the same raw UTF-8 key ordering for all feature configurations.
+    if let Err(error) = meter.charge(JsonCodecCharge::Work { bytes: 0, items: 0 }) {
+        return Err(meter.failure.take().unwrap_or_else(|| Error::Invalid(error.to_string())));
+    }
+    value.sort_all_objects();
+    Ok(value)
+}
+
 pub(super) fn canonical_json_bytes_trusted<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
     encode(value, JsonBounds::IDENTITY, &mut |_| Ok(()))
 }
@@ -521,15 +611,7 @@ fn encode<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &T, bounds: JsonBounds, charge: &mut F,
 ) -> Result<Vec<u8>> {
     let mut meter = Meter { bounds, items: 0, bytes: 0, charge, failure: None, retained: 0 };
-    let mut value = match value.serialize(Encoder { meter: &mut meter, depth: 0 }) {
-        Ok(value) => value,
-        Err(error) => return Err(meter.failure.take().unwrap_or_else(|| Error::Invalid(error.to_string()))),
-    };
-    if let Some(error) = meter.failure.take() { return Err(error); }
-    // serde_json::Map may use insertion-order storage. Explicit sorting pins
-    // the same raw UTF-8 key ordering for all feature configurations.
-    (meter.charge)(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
-    value.sort_all_objects();
+    let value = encode_value(value, &mut meter)?;
     let size = encoded_length(&value).map_err(|error| Error::Invalid(error.to_string()))?;
     if size > bounds.maximum_bytes { return Err(Error::Invalid("JSON exceeds declared byte bound".into())); }
     let size = usize::try_from(size).map_err(|_| Error::Invalid("JSON output exceeds address space".into()))?;
@@ -543,8 +625,8 @@ fn encode<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     impl<F: FnMut(JsonCodecCharge) -> Result<()>> std::io::Write for Output<'_, '_, F> {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
             if bytes.len() > self.maximum - self.bytes.len() { return Err(std::io::Error::other("JSON exceeds admitted output")); }
-            self.meter.charge(JsonCodecCharge::Work { bytes: bytes.len() as u64, items: 0 }).map_err(std::io::Error::other)?;
-            self.meter.charge(JsonCodecCharge::Copy { bytes: bytes.len() as u64 }).map_err(std::io::Error::other)?;
+            self.meter.charge(JsonCodecCharge::Work { bytes: bytes.len() as u64, items: 0 }).map_err(CodecError::into_io)?;
+            self.meter.charge(JsonCodecCharge::Copy { bytes: bytes.len() as u64 }).map_err(CodecError::into_io)?;
             self.bytes.extend_from_slice(bytes);
             Ok(bytes.len())
         }
@@ -564,6 +646,28 @@ fn encode<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     Ok(bytes)
 }
 
+const LEXICAL_BYTE_ERROR: &str = "JSON input exceeds declared byte bound";
+const LEXICAL_NESTING_ERROR: &str = "invalid JSON nesting";
+const LEXICAL_ITEM_ERROR: &str = "JSON exceeds declared structural bound";
+const LEXICAL_INCOMPLETE_ERROR: &str = "incomplete JSON document";
+
+/// Maximum ONE newly owned SDK lexical-error String payload. These paths never
+/// interpolate input, labels, line/column numbers or callback-owned diagnostics.
+/// Wrapper/allocator metadata is excluded; any caller formatting adds its own
+/// audited prefix/buffer allowance. Native callbacks forward their owned cause.
+pub(crate) const fn lexical_json_diagnostic_bytes() -> u64 {
+    let labels = [LEXICAL_BYTE_ERROR, LEXICAL_NESTING_ERROR,
+        LEXICAL_ITEM_ERROR, LEXICAL_INCOMPLETE_ERROR];
+    let mut maximum = 0;
+    let mut index = 0;
+    while index < labels.len() {
+        let bytes = labels[index].len() as u64;
+        if bytes > maximum { maximum = bytes; }
+        index += 1;
+    }
+    maximum
+}
+
 /// Allocation-free lexical admission before serde scratch/collections grow.
 #[derive(Default)]
 struct Scan {
@@ -577,7 +681,7 @@ struct Scan {
 impl Scan {
     fn push<F: FnMut(JsonCodecCharge) -> Result<()>>(&mut self, bytes: &[u8], bounds: JsonBounds, charge: &mut F) -> Result<()> {
         for &byte in bytes {
-            if self.bytes >= bounds.maximum_bytes { return Err(Error::Invalid("JSON input exceeds declared byte bound".into())); }
+            if self.bytes >= bounds.maximum_bytes { return Err(Error::Invalid(LEXICAL_BYTE_ERROR.into())); }
             charge(JsonCodecCharge::Read { bytes: 1 })?;
             self.bytes += 1;
             if self.string {
@@ -590,13 +694,13 @@ impl Scan {
             let item = match byte {
                 b'"' => { self.string = true; self.atom = false; true }
                 b'[' | b'{' => { self.depth += 1; self.atom = false; true }
-                b']' | b'}' => { self.depth = self.depth.checked_sub(1).ok_or_else(|| Error::Invalid("invalid JSON nesting".into()))?; self.atom = false; false }
+                b']' | b'}' => { self.depth = self.depth.checked_sub(1).ok_or_else(|| Error::Invalid(LEXICAL_NESTING_ERROR.into()))?; self.atom = false; false }
                 b':' | b',' | b' ' | b'\r' | b'\n' | b'\t' => { self.atom = false; false }
                 _ => { let first = !self.atom; self.atom = true; first }
             };
             if item {
                 if item_depth > bounds.maximum_depth || self.items >= bounds.maximum_items {
-                    return Err(Error::Invalid("JSON exceeds declared structural bound".into()));
+                    return Err(Error::Invalid(LEXICAL_ITEM_ERROR.into()));
                 }
                 charge(JsonCodecCharge::Work { bytes: 0, items: 1 })?;
                 self.items += 1;
@@ -605,7 +709,7 @@ impl Scan {
         Ok(())
     }
     fn end(&self) -> Result<()> {
-        if self.string || self.depth != 0 { return Err(Error::Invalid("incomplete JSON document".into())); }
+        if self.string || self.depth != 0 { return Err(Error::Invalid(LEXICAL_INCOMPLETE_ERROR.into())); }
         Ok(())
     }
 }
@@ -617,7 +721,7 @@ pub(crate) fn admit_json<F: FnMut(JsonCodecCharge) -> Result<()>>(bytes: &[u8], 
 }
 
 pub(super) fn admit_json_trusted<F: FnMut(JsonCodecCharge) -> Result<()>>(bytes: &[u8], bounds: JsonBounds, charge: &mut F) -> Result<()> {
-    if bytes.len() as u64 > bounds.maximum_bytes { return Err(Error::Invalid("JSON input exceeds declared byte bound".into())); }
+    if bytes.len() as u64 > bounds.maximum_bytes { return Err(Error::Invalid(LEXICAL_BYTE_ERROR.into())); }
     let mut scan = Scan::default();
     scan.push(bytes, bounds, charge)?;
     scan.end()
@@ -646,16 +750,16 @@ pub fn json_bytes_bounded_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharg
                 meter.charge(match event {
                     JsonCodecCharge::Read { bytes } => JsonCodecCharge::Work { bytes, items: 0 },
                     other => other,
-                }).map_err(|error| Error::Invalid(error.to_string()))
+                }).map_err(|_| meter.failure.take().expect("interruption retains its first owned cause"))
             }) {
                 if meter.failure.is_none() { meter.failure = Some(error); }
-                return Err(std::io::Error::other("JSON admission interrupted"));
+                return Err(std::io::ErrorKind::Interrupted.into());
             }
             if let Some(output) = self.output.as_mut() {
                 if bytes.len() > self.maximum - output.len() {
                     return Err(std::io::Error::other("JSON exceeds admitted output"));
                 }
-                meter.charge(JsonCodecCharge::Copy { bytes: bytes.len() as u64 }).map_err(std::io::Error::other)?;
+                meter.charge(JsonCodecCharge::Copy { bytes: bytes.len() as u64 }).map_err(CodecError::into_io)?;
                 output.extend_from_slice(bytes);
             }
             Ok(bytes.len())
@@ -726,7 +830,7 @@ macro_rules! bad_raw {
     };
 }
 impl<F: FnMut(JsonCodecCharge) -> Result<()>> ser::Serializer for Raw<'_, '_, F> {
-    type Ok = Value; type Error = serde_json::Error;
+    type Ok = Value; type Error = CodecError;
     type SerializeSeq = ser::Impossible<Value, Self::Error>;
     type SerializeTuple = ser::Impossible<Value, Self::Error>;
     type SerializeTupleStruct = ser::Impossible<Value, Self::Error>;
@@ -740,12 +844,22 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> ser::Serializer for Raw<'_, '_, F>
             .ok_or_else(|| Meter::<F>::error("JSON exceeds declared structural bound"))?;
         let bounds = JsonBounds { maximum_depth, maximum_items: meter.bounds.maximum_items - meter.items, ..meter.bounds };
         let mut scan = Scan::default();
-        scan.push(value.as_bytes(), bounds, &mut |event| {
+        let mut interrupted = false;
+        if let Err(error) = scan.push(value.as_bytes(), bounds, &mut |event| {
             let items = match event { JsonCodecCharge::Work { items, .. } => items, _ => 0 };
-            meter.charge(event).map_err(|error| Error::Invalid(error.to_string()))?;
+            if meter.charge(event).is_err() {
+                interrupted = true;
+                return Err(meter.failure.take().expect("interruption retains its first owned cause"));
+            }
             meter.items += items;
             Ok(())
-        }).map_err(Meter::<F>::error)?;
+        }) {
+            if interrupted {
+                meter.failure = Some(error);
+                return Err(CodecError::Interrupted);
+            }
+            return Err(Meter::<F>::error(error));
+        }
         scan.end().map_err(Meter::<F>::error)?;
         // RawValue's parser is the audited serde_json Value implementation.
         // String payload totals fit input bytes. Vector storage includes both

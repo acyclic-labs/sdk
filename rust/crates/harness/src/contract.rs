@@ -61,7 +61,7 @@ pub(crate) fn next_revision(revision: u64) -> Result<u64> {
 }
 
 mod json;
-pub(crate) use json::admit_json;
+pub(crate) use json::{admit_json, lexical_json_diagnostic_bytes};
 mod event_json;
 pub(crate) use event_json::{
     EventPayloadJsonAdmission, audited_serde_diagnostic_bytes, event_payload_json_admission,
@@ -70,7 +70,7 @@ mod snapshot_json;
 pub(crate) use snapshot_json::{SnapshotJsonAdmission, snapshot_json_admission};
 pub use json::{
     JsonBounds, JsonCodecCharge, canonical_json_bytes_bounded, json_bytes_bounded_trusted,
-    json_from_slice_bounded_trusted,
+    json_from_slice_bounded_trusted, json_value_bounded_trusted,
 };
 
 /// One sorted-key JSON encoding for durable identities and Rust/WASM output.
