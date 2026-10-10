@@ -850,6 +850,7 @@ async fn assert_cold_summary_reads(
 
 #[tokio::test]
 async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
+    const TURNS: u16 = 10_000;
     let mut storage = MemoryHarnessStorage::new(AgentId::new(), 262_144).await?;
     let model = Arc::new(SummaryModel::default());
     let limits = Limits {
@@ -891,7 +892,7 @@ async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
     };
     let mut bundle = build_bundle(&storage)?;
     let mut original = None;
-    for index in 0..20 {
+    for index in 0..TURNS {
         let operation = OperationId::new();
         let input = storage
             .stage(
@@ -913,13 +914,13 @@ async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
             .reducer()
             .conversation()
             .ok_or_else(|| Error::Invalid("conversation not bound".into()))?;
-        assert_eq!(conversation.logical_revision(), (index + 1) * 2);
+        assert_eq!(conversation.logical_revision(), u64::from(index + 1) * 2);
         assert!(conversation.messages().len() <= limits.context_messages);
         if index >= 3 {
             assert!(conversation.resident_after_sequence() > 0);
         }
         drop(aggregate);
-        if index == 17 {
+        if index == TURNS - 3 {
             // Reconstruct the real journal and bundle with original authority
             // and providers. No original projection or execution cache survives.
             storage.journal = Arc::new(
@@ -941,7 +942,10 @@ async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .len();
-    assert!(requests > 20, "count pressure must admit summary requests");
+    assert!(
+        requests > usize::from(TURNS),
+        "count pressure must admit summary requests"
+    );
     let (operation, input, expected) =
         original.ok_or_else(|| Error::Invalid("missing original turn".into()))?;
     assert_eq!(
