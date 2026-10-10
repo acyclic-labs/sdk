@@ -56,11 +56,11 @@ run() ->
       end,Methods),
       length(Methods)
     end || {_Pb,S,Client,_,Methods}<-Specs],
-    25=lists:sum(Counts),25=ets:info(rpc_route_counts,size),
+    26=lists:sum(Counts),26=ets:info(rpc_route_counts,size),
     ok=grpcbox_channel:stop(route_control),
     ok=application:stop(grpcbox),
     scalar_controls(),
-    io:format("PASS archive-installed Erlang clients: 25 populated native TCP RPC pairs, independent Rust-descriptor wire vectors, unsigned limits, optional zero, oneofs and three encoding rejections on port ~p~n",[Port]),ok.
+    io:format("PASS archive-installed Erlang clients: 26 populated native TCP RPC pairs, independent Rust-descriptor wire vectors, unsigned limits, optional zero, oneofs and three encoding rejections on port ~p~n",[Port]),ok.
 
 admit_vectors(Pb,Service,Path) ->
     {ok,Bytes}=file:read_file(Path),

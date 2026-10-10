@@ -43,7 +43,7 @@ authority. Only the exact regular-file inventory is accepted.
 `src/qualify.mjs` installs that archive with the pinned grpcbox 0.18.0 runtime
 and all five dependencies from its upstream lock. It compiles the actual
 installed application and consumer with warnings treated as errors, checks
-loaded-module paths, and executes 25 populated native TCP RPC pairs (22 unary
+loaded-module paths, and executes 26 populated native TCP RPC pairs (23 unary
 and three server-streaming). Request and response wire vectors are computed
 independently from the Rust descriptors. Bytes, unsigned maxima, optional zero
 and omission, real oneofs, and three invalid-type rejections are checked.
@@ -76,7 +76,13 @@ indices remain checked; mutation controls verify those comparisons. Unknown
 descriptor extensions are outside the GPB decoder's modeled comparison. The
 original Rust descriptor bytes remain preserved and hash-checked.
 
-These controls prove installed Erlang transport behavior for that cohort.
+The current control inventory also requires the terminal Actors `DeleteActor`
+RPC added in main revision `d86b660146738d507029403756117fa6f102a9c4`:
+26 calls, with 23 unary and three server-streaming. Fresh generation and
+installed qualification for that revision are pending; the 25-call receipts
+above remain scoped to their original source revision.
+
+These controls prove installed Erlang transport behavior for the qualified cohort.
 Rust-backed execution, embedded runtimes and complete domain
 SDK behavior remain separate work. Routine CI runs affected offline Node
 controls without downloading OTP or native dependencies.

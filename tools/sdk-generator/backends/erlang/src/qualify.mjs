@@ -109,7 +109,7 @@ export function qualify(args, { command = spawnSync, onProgress = () => {}, tool
   const expression = `{ok,_}=application:ensure_all_started(acyclic_sdk_transport),${provenance},ok=compare_descriptor:run(init:get_plain_arguments()),ok=rpc_route_control:run(),${provenance},halt(0).`;
   const native = run("installed-native-consumer", join(otp, "bin/erl"), ["-pa", join(gpb, "ebin"), "-pa", join(sdk, "ebin"), "-pa", join(consumer, "ebin"), "-noshell", "-noinput", "-eval", expression, "-extra",
     ...targets.map(name => join(sdk, "authority", admitted.approved.descriptors.get(name)))]);
-  for (const marker of ["PASS archive-installed Erlang clients: 25 populated native TCP RPC pairs", "actors_pb differing modeled file descriptor fields: []", "workers_pb differing modeled file descriptor fields: []", "stream_pb differing modeled file descriptor fields: []"]) {
+  for (const marker of ["PASS archive-installed Erlang clients: 26 populated native TCP RPC pairs", "actors_pb differing modeled file descriptor fields: []", "workers_pb differing modeled file descriptor fields: []", "stream_pb differing modeled file descriptor fields: []"]) {
     if (!native.includes(marker)) throw new Error("installed consumer completion marker missing: " + marker);
   }
   if (native.split("PASS installed SDK and loaded-module provenance").length !== 3) throw new Error("loaded-module provenance controls incomplete");
@@ -131,7 +131,7 @@ export function qualify(args, { command = spawnSync, onProgress = () => {}, tool
     compiled_sdk_sha256: compiled, compiled_consumer_sha256: consumerBeams,
     consumer_source_sha256: Object.fromEntries(files(consumer).filter(name => name.endsWith(".erl")).map(name => [name, sha256(readFileSync(join(consumer, name)))])),
     log_sha256: Object.fromEntries(logNames.map(name => [name, sha256(readFileSync(join(output, name)))])),
-    native_rpc_calls_executed: 25, unary_rpc_calls: 22, server_streaming_rpc_calls: 3, populated_rpc_message_pairs: 25, runtime_type_rejections: 3,
+    native_rpc_calls_executed: 26, unary_rpc_calls: 23, server_streaming_rpc_calls: 3, populated_rpc_message_pairs: 26, runtime_type_rejections: 3,
     compiled_sdk_provenance: true, modeled_file_descriptor_semantics: true,
     descriptor_normalization: ["source locations omitted", "source filename basename", "declared protobuf defaults", "default JSON names", "message and enum declaration order", "single-field proto3-optional synthetic oneof names"],
     unknown_descriptor_extensions_qualified: false, rust_backed_rpc_qualified: false, embedded_runtime_qualified: false };
