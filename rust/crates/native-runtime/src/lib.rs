@@ -1378,8 +1378,10 @@ impl NativeReadCompletion {
         match self.0 {
             NativeReadCompletionState::Ready(mut value) =>
                 Ok(value.take().expect("native read polled after completion")),
-            NativeReadCompletionState::Pending(completion) =>
-                completion.wait_measured(deadline, cancellation, on_deadline),
+            NativeReadCompletionState::Pending(completion) => {
+                let meter = measured_completion_meter(&completion.state)?;
+                wait_measured_completion(completion, meter, deadline, cancellation, on_deadline)
+            }
         }
     }
 }
@@ -2462,6 +2464,49 @@ impl std::task::Wake for BlockingWaitWake {
     fn wake_by_ref(self: &Arc<Self>) { self.notify(); }
 }
 
+fn measured_completion_meter<T>(
+    state: &Mutex<CompletionState<T>>,
+) -> io::Result<Arc<dyn NativeReadMeter>> {
+    state.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        ._allocation.as_ref().map(|allocation| Arc::clone(&allocation.meter))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput,
+            "synchronous measured wait requires a measured task"))
+}
+
+fn wait_measured_completion<T>(
+    task: impl Future<Output = io::Result<T>>,
+    meter: Arc<dyn NativeReadMeter>,
+    mut deadline: Option<std::time::Instant>,
+    cancellation: impl Future<Output = ()>,
+    on_deadline: impl FnOnce(),
+) -> io::Result<T> {
+    let allocation = ReadAllocation::new(&meter, arc_allocation_bytes::<BlockingWaitWake>())?;
+    let wake = Arc::new(BlockingWaitWake {
+        notified: Mutex::new(false), changed: Condvar::new(), _allocation: allocation,
+    });
+    let waker = Waker::from(Arc::clone(&wake));
+    let mut context = Context::from_waker(&waker);
+    let mut task = std::pin::pin!(task);
+    let mut cancellation = std::pin::pin!(cancellation);
+    let mut cancelled = false;
+    let mut on_deadline = Some(on_deadline);
+    loop {
+        if !cancelled && cancellation.as_mut().poll(&mut context).is_ready() {
+            cancelled = true;
+            deadline = None;
+        }
+        if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+            deadline = None;
+            if let Some(on_deadline) = on_deadline.take() { on_deadline(); }
+        }
+        match task.as_mut().poll(&mut context) {
+            Poll::Ready(result) => return result,
+            Poll::Pending => wake.wait(deadline),
+        }
+    }
+}
+
 impl<T> BlockingIoTask<T> {
     /// Waits synchronously through this task's existing measured completion and
     /// capacity queue, admitting only its actual SDK-owned wake payload.
@@ -2476,39 +2521,12 @@ impl<T> BlockingIoTask<T> {
     /// Native services must already be initialized unless execution is inline.
     pub fn wait_measured(
         self,
-        mut deadline: Option<std::time::Instant>,
+        deadline: Option<std::time::Instant>,
         cancellation: impl Future<Output = ()>,
         on_deadline: impl FnOnce(),
     ) -> io::Result<T> {
-        let meter = self.state.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            ._allocation.as_ref().map(|allocation| Arc::clone(&allocation.meter))
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput,
-                "synchronous measured wait requires a measured task"))?;
-        let allocation = ReadAllocation::new(&meter, arc_allocation_bytes::<BlockingWaitWake>())?;
-        let wake = Arc::new(BlockingWaitWake {
-            notified: Mutex::new(false), changed: Condvar::new(), _allocation: allocation,
-        });
-        let waker = Waker::from(Arc::clone(&wake));
-        let mut context = Context::from_waker(&waker);
-        let mut task = std::pin::pin!(self);
-        let mut cancellation = std::pin::pin!(cancellation);
-        let mut cancelled = false;
-        let mut on_deadline = Some(on_deadline);
-        loop {
-            if !cancelled && cancellation.as_mut().poll(&mut context).is_ready() {
-                cancelled = true;
-                deadline = None;
-            }
-            if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
-                deadline = None;
-                if let Some(on_deadline) = on_deadline.take() { on_deadline(); }
-            }
-            match task.as_mut().poll(&mut context) {
-                Poll::Ready(result) => return result,
-                Poll::Pending => wake.wait(deadline),
-            }
-        }
+        let meter = measured_completion_meter(&self.state)?;
+        wait_measured_completion(self, meter, deadline, cancellation, on_deadline)
     }
 }
 
@@ -3741,7 +3759,10 @@ mod tests {
         let physical_calls = if cfg!(windows) { 2 } else { 1 };
         let meter = Arc::new(ReadBudgetMeter::new(physical_calls, 8));
         let read = file.read_bounded_async(0, 8, meter.clone())?;
-        assert!(with_inline_blocking(|| complete_measured(read)).is_err());
+        assert!({
+            let _inline = InlineBlocking::enter();
+            complete_measured(read)
+        }.is_err());
         assert_eq!(meter.read.load(Ordering::Acquire), 3);
         assert_eq!(meter.operations.load(Ordering::Acquire), physical_calls);
         assert!(meter.allocations.load(Ordering::Acquire) >= 3);
@@ -3762,7 +3783,10 @@ mod tests {
         limits.cancel_after_read = true;
         let meter = Arc::new(limits);
         let read = file.read_bounded_async(0, 8, meter.clone())?;
-        let error = match with_inline_blocking(|| complete_measured(read)) {
+        let error = match {
+            let _inline = InlineBlocking::enter();
+            complete_measured(read)
+        } {
             Err(error) => error,
             Ok(_) => panic!("cancelled read returned success"),
         };
@@ -3782,7 +3806,10 @@ mod tests {
         let file = bounded_write_file(&path, false)?;
         let meter = Arc::new(ReadBudgetMeter::new(8, 8));
         let read = file.read_bounded_async(0, 8, meter.clone())?;
-        let result = with_inline_blocking(|| complete_measured(read))?;
+        let result = {
+            let _inline = InlineBlocking::enter();
+            complete_measured(read)
+        }?;
         assert_eq!(result.bytes.as_ref(), b"abc");
         assert_eq!(result.buffer_capacity, 8);
         assert_eq!(meter.memory.load(Ordering::Acquire), result.buffer_capacity as u64);
@@ -3866,9 +3893,10 @@ mod tests {
         input.seek(SeekFrom::Start(2))?;
         let file = NativeFile::from_file(input)?;
         let meter = Arc::new(ReadBudgetMeter::new(4, 3));
-        let result = with_inline_blocking(|| {
+        let result = {
+            let _inline = InlineBlocking::enter();
             complete_measured(file.read_bounded_async(0, 3, meter.clone())?)
-        })?;
+        }?;
         assert_eq!(result.bytes.as_ref(), b"abc");
         assert_eq!(meter.operations.load(Ordering::Acquire), 4);
         assert_eq!(meter.read.load(Ordering::Acquire), 3);
@@ -3888,9 +3916,10 @@ mod tests {
         std::fs::write(&path, b"abc")?;
         let file = NativeFile::from_file(File::open(&path)?)?;
         let meter = Arc::new(ReadBudgetMeter::new(2, 3));
-        let result = with_inline_blocking(|| {
+        let result = {
+            let _inline = InlineBlocking::enter();
             complete_measured(file.read_bounded_async(0, 3, meter.clone())?)
-        });
+        };
         assert!(result.is_err());
         assert_eq!(meter.operations.load(Ordering::Acquire), 2);
         assert_eq!(meter.read.load(Ordering::Acquire), 0);
@@ -3941,7 +3970,10 @@ mod tests {
         };
         let meter = Arc::new(ReadBudgetMeter::new(8, 8));
         let read = file.read_bounded_async(0, 3, meter.clone())?;
-        assert!(with_inline_blocking(|| complete_measured(read)).is_err());
+        assert!({
+            let _inline = InlineBlocking::enter();
+            complete_measured(read)
+        }.is_err());
         assert_eq!(meter.operations.load(Ordering::Acquire), 1);
         assert_eq!(meter.read.load(Ordering::Acquire), 0);
         assert_eq!(meter.memory.load(Ordering::Acquire), 0);
@@ -3972,7 +4004,10 @@ mod tests {
             move || body.store(true, Ordering::Release), meter.clone(),
         ).expect("finite envelope budget");
         meter.cancelled.store(true, Ordering::Release);
-        let error = with_inline_blocking(|| complete_measured(task))
+        let error = {
+            let _inline = InlineBlocking::enter();
+            complete_measured(task)
+        }
             .expect_err("cancelled envelope must not execute its body");
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
         assert!(!called.load(Ordering::Acquire));
@@ -3987,7 +4022,10 @@ mod tests {
         let task = run_blocking_io_measured(
             || -> () { panic!("controlled native host task panic") }, meter.clone(),
         ).expect("finite envelope budget");
-        assert!(with_inline_blocking(|| complete_measured(task)).is_err());
+        assert!({
+            let _inline = InlineBlocking::enter();
+            complete_measured(task)
+        }.is_err());
         assert_eq!(meter.allocations.load(Ordering::Acquire), 2);
         assert!(meter.peak.load(Ordering::Acquire) > 0);
         assert_eq!(meter.memory.load(Ordering::Acquire), 0);

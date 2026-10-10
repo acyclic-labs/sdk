@@ -45,6 +45,13 @@ thread explicitly degrades to positional I/O for unaffected files before any
 further SQE is submitted; affected file aliases remain fenced. A stopped
 retirement worker does not discard unresolved buffers during shutdown.
 Callers must await durability completions before publishing dependent state.
+
+Measured native reads and measured host tasks share one synchronous completion
+waiter. It charges its owned wake payload to the operation's original meter and
+uses the same cancellation wake and deadline. Deadline expiry requests cooperative
+stop; an accepted operation is still drained to terminal completion before returning.
+An inline zero-length read creates no waiter. This is not an OS I/O cancellation
+or hard elapsed-time guarantee.
 Write batches reject overlapping ranges before submitting any write, so their
 result does not depend on platform completion order.
 
