@@ -24,6 +24,57 @@ async fn a_never_created_workspace_is_not_found_and_can_then_be_created()
 }
 
 #[tokio::test]
+async fn keyed_workspace_creation_recovers_genesis_after_discarded_ack_and_later_writer()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let name = "original-allocation";
+    let key = IdempotencyKey::from_bytes([1; 16]);
+    let created = fs.create_workspace_with_key(name, key).await?;
+    let genesis = created
+        .operation_generation(key)
+        .await?
+        .ok_or("original creation generation was not retained")?;
+    let genesis_id = genesis.id();
+    assert_eq!(created.head().await?.id(), genesis_id);
+    drop(created);
+
+    let later_writer = fs.open_workspace(name).await?;
+    later_writer.write_text("/later.txt", "later writer").await?;
+    let later_id = later_writer.head().await?.id();
+    assert_ne!(later_id, genesis_id);
+    let recovered = fs.create_workspace_with_key(name, key).await?;
+    assert_eq!(recovered.id(), later_writer.id());
+    assert_eq!(recovered.head().await?.id(), later_id);
+    let original = recovered
+        .operation_generation(key)
+        .await?
+        .ok_or("same-key recovery lost the original creation generation")?;
+    assert_eq!(original.id(), genesis_id);
+    assert!(matches!(
+        original.read("/later.txt", 32).await,
+        Err(crate::workspace::WorkspaceError::NotFound)
+    ));
+    assert_eq!(recovered.read("/later.txt", 32).await?.as_ref(), b"later writer");
+
+    let changed_key = IdempotencyKey::from_bytes([2; 16]);
+    assert!(matches!(
+        fs.create_workspace_with_key(name, changed_key).await,
+        Err(crate::workspace::WorkspaceError::Engine(_))
+    ));
+    assert!(recovered.operation_generation(changed_key).await?.is_none());
+    assert_eq!(recovered.head().await?.id(), later_id);
+    assert_eq!(
+        recovered
+            .operation_generation(key)
+            .await?
+            .ok_or("changed-key refusal lost the original creation receipt")?
+            .id(),
+        genesis_id
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn pinned_directory_discovery_does_not_scan_ten_thousand_retained_workspaces()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();

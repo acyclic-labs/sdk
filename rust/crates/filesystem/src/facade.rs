@@ -2914,6 +2914,45 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .await
     }
 
+    /// Creates or recovers one named workspace with its original creation key.
+    ///
+    /// Persist the key before dispatch. After an ambiguous result, reuse the
+    /// exact name and key and resolve [`crate::Workspace::operation_generation`]
+    /// to recover the initial generation, not the current workspace head.
+    /// Portable lifecycle defaults match [`Self::create_workspace`].
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid names, incompatible durability, storage failures, or a
+    /// pre-existing workspace with different immutable creation semantics or key.
+    pub async fn create_workspace_with_key(
+        &self,
+        name: impl AsRef<str>,
+        idempotency_key: crate::IdempotencyKey,
+    ) -> Result<crate::Workspace<A, O>, crate::workspace::WorkspaceError> {
+        let lifecycle = if self.inner.capabilities.durable {
+            Lifecycle::Durable
+        } else {
+            Lifecycle::Ephemeral
+        };
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.create_workspace",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty
+        );
+        let result = crate::obs::in_span(
+            &span,
+            self.create_workspace_with_config_operation(
+                name,
+                VolumeConfig::portable(lifecycle),
+                Some(idempotency_key.operation_id()),
+            ),
+        )
+        .await;
+        crate::obs::outcome_on(&span, result)
+    }
+
     /// Creates or recovers one named workspace with exact filesystem semantics.
     ///
     /// # Errors

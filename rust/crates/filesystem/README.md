@@ -6,6 +6,8 @@ For a stable paginated directory walk, capture `workspace.sync().await?.into_gen
 
 Durable retry intents must retain their original immutable generation, operation key and exact mutations before dispatch. Embedded `Workspace::begin_transaction_at` and hosted `HostedWorkspace::begin_transaction_at` reopen that exact owned base. After a lost acknowledgement, reload the original generation with `generation(...)`, reuse the key and replay the same edits; beginning at a fresh head is a new transaction, not a retry. Foreign workspace/client generations are rejected, and canonical idempotency, conflicts and fencing remain enforced.
 
+For native allocation, persist the original workspace name and `IdempotencyKey` before calling `Fs::create_workspace_with_key`. Retry that exact pair after an ambiguous acknowledgement, then read `Workspace::operation_generation(key)` for the original creation generation. The recovered workspace head may include later writers; it is not the allocation receipt. A different key cannot take over an existing named lifetime. This uses the existing canonical creation record and deployment-appropriate portable lifecycle, not a new transport or grant.
+
 ```sh
 cargo add acyclic-fs
 ```
