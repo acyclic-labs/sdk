@@ -29,6 +29,23 @@ console.log(fork.name);
 
 The 0.2.0 native release matrix requires Node 24 proof for GNU Linux x64/ARM64, Darwin x64/ARM64, and MSVC Windows x64/ARM64. It also requires Bun 1.4.2 native runtime proof on those targets except Windows ARM64: that Bun release ships only an x64 Windows runtime, usable for installation tooling but not for loading an ARM64 addon. Windows ARM64 native consumers use ARM64 Node. Every companion is admitted against the exact release source and retained compiler/runtime receipts; one local Linux pass does not qualify the complete release.
 
+For repository qualification, first build a clean-source canonical bundle and retain its original compiler receipt. For example, on GNU Linux x64:
+
+```sh
+bun install --frozen-lockfile
+cargo fetch --locked
+bash scripts/ensure-rust-target.sh wasm32-unknown-unknown
+native_output="$(mktemp -d)"
+native_target="$(mktemp -d)"
+node scripts/build-filesystem-native.mjs build \
+  --target x86_64-unknown-linux-gnu --output "$native_output/bundle" \
+  --target-dir "$native_target"
+bun run check:native-adapter --bundle "$native_output/bundle" \
+  --producer-receipt "$native_target/filesystem-native-build-inputs.receipt.json"
+```
+
+Run these commands from the repository root with the pinned Node, Bun, Rust and wasm-bindgen tools installed. The root adapter command builds the public filesystem distribution and runs the Node-attested checker, including its real supported Bun consumer. Both paths must be absolute; the checker accepts no default `.so`/DLL, debug-target or receipt fallback.
+
 `await openBrowserOperationWindowCoordinator(filesystem)` binds durable leases to the authority of an opened browser filesystem. Pass the returned lease to `transaction.commit(lease)` or `checkout.commit(operationId, lease)` to fence publication by closed, superseded or expired owners. The lease check and authority publication share one strict IndexedDB transaction. Construction acquires no lease; begin, close and reconciliation use the existing Rust coordinator. OPFS accelerates immutable objects in tabs and workers while IndexedDB retains authority. Control records have a 64 KiB storage ceiling. Opening older database schemas fails; use a fresh database name for this format. Atomicity covers that database, without a cross-volume or mixed-provider guarantee.
 
 See the [browser example](https://github.com/acyclic-labs/sdk/blob/main/typescript/packages/filesystem/examples/browser.mjs), [API source](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages/filesystem/src), and [Filesystem protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/filesystem).
