@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { createRequire } from "node:module";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const libraryNames = {
@@ -119,10 +119,17 @@ async function qualifyAdapter(bindingPath, engineRoot) {
   const packageRoot = join(engineRoot, "installed", "node_modules", "@acyclic-labs", "fs");
   const companionName = `@acyclic-labs/fs-${process.platform}-${process.arch}`;
   const companionRoot = join(packageRoot, "node_modules", companionName);
-  await mkdir(companionRoot, { recursive: true });
+  await mkdir(packageRoot, { recursive: true });
   await cp(new URL("../typescript/packages/filesystem/dist", import.meta.url), join(packageRoot, "dist"), { recursive: true });
   await cp(new URL("../typescript/packages/filesystem/generated", import.meta.url), join(packageRoot, "generated"), { recursive: true });
   await copyFile(new URL("../typescript/packages/filesystem/package.json", import.meta.url), join(packageRoot, "package.json"));
+  if (process.versions.bun === undefined) throw new Error("native adapter qualification requires Bun");
+  const installed = spawnSync(process.execPath, ["install", "--production", "--ignore-scripts", "--no-save", "--no-progress"], {
+    cwd: packageRoot, stdio: "inherit",
+  });
+  if (installed.error) throw installed.error;
+  if (installed.status !== 0) throw new Error("native adapter runtime dependency installation failed");
+  await mkdir(companionRoot, { recursive: true });
   await copyFile(bindingPath, join(companionRoot, "binding.node"));
   await writeFile(join(companionRoot, "package.json"), JSON.stringify({
     name: companionName, version, main: "./binding.node",
@@ -246,5 +253,11 @@ async function qualifyAdapter(bindingPath, engineRoot) {
   } finally {
     engine.close();
   }
+  const nodeConsumer = spawnSync("node", [
+    fileURLToPath(new URL("../typescript/packages/filesystem/test/native-public-installed.mjs", import.meta.url)),
+    packageRoot,
+  ], { stdio: "inherit" });
+  if (nodeConsumer.error) throw nodeConsumer.error;
+  if (nodeConsumer.status !== 0) throw new Error("installed native Node.js consumer qualification failed");
   console.log(`acyclic-fs native TypeScript adapter passed on ${process.platform}-${process.arch}`);
 }
