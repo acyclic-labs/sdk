@@ -6,7 +6,7 @@ import { parseArgs } from "node:util";
 import { readBoundedGzip, sha256, tarEntries } from "../../../../../scripts/archive-utils.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
-const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v2/stream.proto"];
+const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"];
 const within = (root, path) => {
   const child = relative(root, path);
   return child === "" || (!isAbsolute(child) && child !== ".." && !child.startsWith(`..${sep}`));

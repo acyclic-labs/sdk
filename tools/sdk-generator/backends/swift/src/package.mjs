@@ -9,7 +9,7 @@ export const pins = {
   ...JSON.parse(readFileSync(join(directory, "../toolchains/toolchain.json"))),
   ...JSON.parse(readFileSync(join(directory, "../../../shared/protoc.json"))),
 };
-export const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v2/stream.proto"];
+export const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"];
 const equal = (left, right) => JSON.stringify(Object.entries(left).sort()) === JSON.stringify(Object.entries(right).sort());
 
 // Admission only. Compilation and native transport controls must run separately.

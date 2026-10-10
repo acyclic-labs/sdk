@@ -1,3 +1,4 @@
+import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createSecureServer } from "node:http2";
@@ -9,14 +10,13 @@ import { Code, ConnectError } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { ActorsService } from "../generated/proto/actors/v1/actors_pb.js";
 import { WorkersService } from "../../workers/generated/proto/workers/v1/workers_pb.js";
-import { StreamService } from "../../stream/generated/proto/stream/v2/stream_pb.js";
-import { BucketsService, ObjectsService, MultipartService } from "../../objects/generated/proto/objects/v2/objects_pb.js";
+import { StreamService } from "../../stream/generated/proto/stream/v1/stream_pb.js";
+import { BucketsService, ObjectsService, MultipartService } from "../../objects/generated/proto/objects/v1/objects_pb.js";
 import { ActorsClient } from "../dist/index.js";
 import { createWorkersGrpcClient } from "../../workers/dist/grpc.js";
 import { createStreamGrpcClient } from "../../stream/dist/grpc.js";
-import { createObjectsV2GrpcClients } from "../../objects/dist/v2-grpc.js";
+import { createObjectsV1GrpcClients } from "../../objects/dist/v1-grpc.js";
 import { HttpWorkersClient } from "../../workers/dist/http.js";
-import { fixtureServer } from "./fixture-server.mjs";
 
 const services = [ActorsService, WorkersService, StreamService, BucketsService, ObjectsService, MultipartService];
 const expected = services.reduce((count, service) => count + service.methods.length, 0);
@@ -85,7 +85,7 @@ if (process.argv.includes("--client")) {
   let configText = "";
   for await (const chunk of process.stdin) configText += chunk;
   const options = JSON.parse(configText);
-  const objects = createObjectsV2GrpcClients(options);
+  const objects = createObjectsV1GrpcClients(options);
   const actors = await actorsClient(options);
   const workerOptions = { endpoint: options.endpoint, token: options.token, caCertificate: options.caCertificate };
   const clients = [actors, createWorkersGrpcClient(workerOptions), createStreamGrpcClient(options), objects.buckets, objects.objects, objects.multipart];
@@ -236,20 +236,18 @@ const wasmServer = createServer((request, response) => {
   wasmRequests.push(request.url);
   adapter(request, response);
 });
-const closeHttpServer = fixtureServer(httpServer);
-const closeGrpcServer = fixtureServer(server);
-const closeWasmServer = fixtureServer(wasmServer);
-await new Promise(resolve => server.listen(0, "localhost", resolve));
-await new Promise(resolve => wasmServer.listen(0, "localhost", resolve));
-await new Promise(resolve => httpServer.listen(0, "localhost", resolve));
-const options = {
-  endpoint: `https://localhost:${server.address().port}`,
-  actorsWasmEndpoint: `http://localhost:${wasmServer.address().port}`,
-  httpEndpoint: `http://localhost:${httpServer.address().port}`,
-  token: "conformance",
-  caCertificate: identity.certificate,
-};
+const closeServers = [httpServer, server, wasmServer].map(ownFixtureServer);
 try {
+  await new Promise(resolve => server.listen(0, "localhost", resolve));
+  await new Promise(resolve => wasmServer.listen(0, "localhost", resolve));
+  await new Promise(resolve => httpServer.listen(0, "localhost", resolve));
+  const options = {
+    endpoint: `https://localhost:${server.address().port}`,
+    actorsWasmEndpoint: `http://localhost:${wasmServer.address().port}`,
+    httpEndpoint: `http://localhost:${httpServer.address().port}`,
+    token: "conformance",
+    caCertificate: identity.certificate,
+  };
   for (const runtime of [process.execPath, "bun"]) {
     await new Promise((resolve, reject) => {
       const child = spawn(runtime, [file, "--client"], { cwd: root, stdio: ["pipe", "inherit", "inherit"] });
@@ -273,5 +271,5 @@ try {
   }
   for (const [method, calls] of httpSeen) assert.equal(calls, 1, method);
 } finally {
-  await Promise.all([closeHttpServer(), closeGrpcServer(), closeWasmServer()]);
+  await Promise.all(closeServers.map(close => close()));
 }

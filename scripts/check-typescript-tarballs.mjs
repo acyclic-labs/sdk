@@ -45,7 +45,7 @@ const representativeExports = {
   "@acyclic-labs/harness": "Harness",
   "@acyclic-labs/inference": "InferenceClient",
   "@acyclic-labs/machines": "machineId",
-  "@acyclic-labs/objects": "MemoryObjectsV2",
+  "@acyclic-labs/objects": "MemoryObjectsV1",
   "@acyclic-labs/pi": "piProvider",
   "@acyclic-labs/sdk": "harness",
   "@acyclic-labs/stream": "MemoryStreamProvider",
@@ -128,14 +128,14 @@ const checks = {
     const { create } = await import("@bufbuild/protobuf");
     const proto = await import("@acyclic-labs/objects/proto");
     const http = await import("@acyclic-labs/objects/http");
-    if (proto.GetObjectRequestSchema.typeName !== "acyclic.objects.v2.GetObjectRequest"
-      || http.HttpObjectsV2 !== m.HttpObjectsV2
+    if (proto.GetObjectRequestSchema.typeName !== "acyclic.objects.v1.GetObjectRequest"
+      || http.HttpObjectsV1 !== m.HttpObjectsV1
       || ["Objects", "MemoryObjectsProvider", "SnapshotSchema", "SnapshotsService"].some(name => name in m)) return false;
-    const provider = await m.MemoryObjectsV2.create();
+    const provider = await m.MemoryObjectsV1.create();
     const bucket = await provider.createBucket(create(m.CreateBucketRequestSchema, { name: "tarball-smoke" }));
     await provider.put(create(m.PutObjectHeaderSchema, { bucket: bucket.bucket, objectKey: "smoke" }), new Uint8Array([7]));
     const fetched = await provider.get(create(m.GetObjectRequestSchema, { bucket: bucket.bucket, objectKey: "smoke" }), 1n);
-    return fetched.body.length === 1 && fetched.body[0] === 7 && typeof m.HttpObjectsV2 === "function";
+    return fetched.body.length === 1 && fetched.body[0] === 7 && typeof m.HttpObjectsV1 === "function";
   },
   "@acyclic-labs/pi": (m) => typeof m.piProvider === "function",
   "@acyclic-labs/sdk": (m) => typeof m.harness === "object" && typeof m.machines === "object",
@@ -152,7 +152,7 @@ for (const [name, check] of Object.entries(checks)) {
   if (!(await check(module))) throw new Error(name + " representative API check failed");
 }
 console.log(${JSON.stringify(runtime)} + " import and representative API checks passed for " + Object.keys(expected).length + " packages");
-for (const [name, exported] of Object.entries({ workers: "createWorkersGrpcClient", objects: "createObjectsV2GrpcClients", stream: "GrpcStreamProvider" })) {
+for (const [name, exported] of Object.entries({ workers: "createWorkersGrpcClient", objects: "createObjectsV1GrpcClients", stream: "GrpcStreamProvider" })) {
   const module = await import("@acyclic-labs/" + name + "/grpc");
   if (typeof module[exported] !== "function") throw new Error(name + " gRPC export is absent");
 }
@@ -263,8 +263,8 @@ const main = async () => {
     run("bun", ["inference-widths.mjs"], { cwd: tempRoot });
     const typeImports = Object.entries(expectedExports).map(([name, exportName], index) =>
       `import { ${exportName} as package${index} } from ${JSON.stringify(name)};`);
-    const grpcTypeImports = ['import { GrpcStreamProvider } from "@acyclic-labs/stream/grpc";', 'import { createWorkersGrpcClient } from "@acyclic-labs/workers/grpc";', 'import { createObjectsV2GrpcClients } from "@acyclic-labs/objects/grpc";'];
-    await writeFile(join(tempRoot, "probe-types.ts"), `${typeImports.join("\n")}\n${grpcTypeImports.join("\n")}\nvoid [${typeImports.map((_, index) => `package${index}`).join(", ")}];\nvoid [GrpcStreamProvider, createWorkersGrpcClient, createObjectsV2GrpcClients];\nconst actors = new package0({ endpoint: "https://actors.example.test", token: "tarball-smoke" });\nvoid actors;\n`);
+    const grpcTypeImports = ['import { GrpcStreamProvider } from "@acyclic-labs/stream/grpc";', 'import { createWorkersGrpcClient } from "@acyclic-labs/workers/grpc";', 'import { createObjectsV1GrpcClients } from "@acyclic-labs/objects/grpc";'];
+    await writeFile(join(tempRoot, "probe-types.ts"), `${typeImports.join("\n")}\n${grpcTypeImports.join("\n")}\nvoid [${typeImports.map((_, index) => `package${index}`).join(", ")}];\nvoid [GrpcStreamProvider, createWorkersGrpcClient, createObjectsV1GrpcClients];\nconst actors = new package0({ endpoint: "https://actors.example.test", token: "tarball-smoke" });\nvoid actors;\n`);
     await writeFile(join(tempRoot, "tsconfig.types.json"), JSON.stringify({
       compilerOptions: {
         target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext",

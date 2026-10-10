@@ -1,7 +1,7 @@
 import assert from "./browser-assert.mjs";
 import { create } from "@bufbuild/protobuf";
-import { lifecycle } from "../../objects/test/v2-lifecycle.mjs";
-import { HttpObjectsV2 } from "@acyclic-labs/objects/http";
+import { lifecycle } from "../../objects/test/v1-lifecycle.mjs";
+import { HttpObjectsV1 } from "@acyclic-labs/objects/http";
 import * as objectsWire from "@acyclic-labs/objects";
 import { ActorId, ActorsClient, ActorsService, CodeSha256, CurrentHeadMarker, PositiveU64 } from "@acyclic-labs/actors";
 import { WorkersService, WorkersTransportError, HttpWorkersClient } from "@acyclic-labs/workers";
@@ -28,10 +28,10 @@ try {
   await assert.rejects(ActorId(1), error => errorCode(error) === "invalid_argument");
   await assert.rejects(CodeSha256(new Array(32).fill(1)), error => errorCode(error) === "invalid_argument");
   await assert.rejects(CurrentHeadMarker(1), error => errorCode(error) === "invalid_argument");
-  const objects = new HttpObjectsV2(options);
+  const objects = new HttpObjectsV1(options);
   await lifecycle(objects);
-  await assert.rejects(new HttpObjectsV2({ ...options, token: "wrong" }).headBucket(create(objectsWire.HeadBucketRequestSchema, { bucket: { name: "customer.inputs" } })), error => error.code === objectsWire.ErrorCode.ACCESS_DENIED);
-  await assert.rejects(new HttpObjectsV2({ ...options, maximumResponseBytes: 8 }).createBucket(create(objectsWire.CreateBucketRequestSchema, { name: "bounded-response" })), error => error.code === objectsWire.ErrorCode.QUOTA_EXCEEDED);
+  await assert.rejects(new HttpObjectsV1({ ...options, token: "wrong" }).headBucket(create(objectsWire.HeadBucketRequestSchema, { bucket: { name: "customer.inputs" } })), error => error.code === objectsWire.ErrorCode.ACCESS_DENIED);
+  await assert.rejects(new HttpObjectsV1({ ...options, maximumResponseBytes: 8 }).createBucket(create(objectsWire.CreateBucketRequestSchema, { name: "bounded-response" })), error => error.code === objectsWire.ErrorCode.QUOTA_EXCEEDED);
   const actors = new ActorsClient(options);
   assert.equal(await actors.transport, "grpc-web");
   let methods = 0;

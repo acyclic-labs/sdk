@@ -4,7 +4,7 @@ package consumer
 
 import (
 	actors "github.com/acyclic-labs/sdk/go/gen/actors/v1"
-	stream "github.com/acyclic-labs/sdk/go/gen/stream/v2"
+	stream "github.com/acyclic-labs/sdk/go/gen/stream/v1"
 	workers "github.com/acyclic-labs/sdk/go/gen/workers/v1"
 )
 

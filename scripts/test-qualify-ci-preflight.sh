@@ -34,6 +34,10 @@ cat >"$work/bin/jq" <<'EOF'
 set -euo pipefail
 if [[ "$*" == *'.release.tag_name'* ]]; then
   printf '%s\n' "${FAKE_RELEASE_TAG:-v1.2.3}"
+elif [[ "$*" == *'.after'* ]]; then
+  printf '%s\n' release-head
+elif [[ "$*" == *'.before'* ]]; then
+  printf '%s\n' 1111111111111111111111111111111111111111
 else
   exit 2
 fi
@@ -47,7 +51,12 @@ case "$*" in
   *'rev-parse HEAD'*) printf '%s\n' "${FAKE_HEAD:-release-head}" ;;
   *'rev-parse refs/tags/'*) printf '%s\n' "${FAKE_TAG_HEAD:-release-head}" ;;
   *'merge-base --is-ancestor'*) [[ "${FAKE_GIT_MODE:-valid}" != nonmain ]] ;;
-  *'rev-list --reverse'*) printf '%s\n' release-commit ;;
+  *'rev-list --reverse'*)
+    case "${FAKE_GIT_MODE:-valid}" in
+      revlist-fail) printf '%s\n' release-commit; exit 1 ;;
+      revlist-empty) ;;
+      *) printf '%s\n' release-commit ;;
+    esac ;;
   *'%G? %GF'*) printf '%s\n' 'G 968479A1AFF927E37D1A566BB5690EEEBB952194' ;;
   *'%G?'*)
     [[ "${FAKE_GIT_MODE:-valid}" == ssh-good ]] && printf 'G\n' || printf 'N\n'
@@ -104,6 +113,16 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_GITLEAKS_LOG"
+case "${FAKE_GIT_MODE:-valid}" in
+  scan-fatal) echo '12:00AM INF 1 commits scanned.'; echo '12:00AM ERR fatal: not a git repository' ;;
+  scan-zero) echo '12:00AM INF 0 commits scanned.' ;;
+  scan-empty) echo '12:00AM INF 1 commits scanned.'; echo '12:00AM INF scanned ~0 bytes (0) in 1s'; echo '12:00AM INF no leaks found'; exit 0 ;;
+  scan-silent) exit 0 ;;
+  scan-fail) exit 1 ;;
+  *) echo '12:00AM INF 1 commits scanned.' ;;
+esac
+echo '12:00AM INF scanned ~100 bytes (100) in 1s'
+echo '12:00AM INF no leaks found'
 EOF
   chmod +x "$case_dir/gitleaks-archive/gitleaks"
   tar --create --gzip --file "$case_dir/tools/gitleaks_8.30.1_linux_x64.tar.gz" \
@@ -120,8 +139,8 @@ run_release() {
     SDK_TEMP_DIR="$case_dir/temp" \
       SDK_ARTIFACT_DIR="$case_dir/artifacts" \
       TOOLS_DIR="$case_dir/tools" \
-      GITHUB_EVENT_NAME=release \
-      GITHUB_REF=refs/tags/v1.2.3 \
+      GITHUB_EVENT_NAME="${4:-release}" \
+      GITHUB_REF="${5:-refs/tags/v1.2.3}" \
       GITHUB_EVENT_PATH="$case_dir/event.json" \
       FAKE_GIT_MODE="$mode" \
       FAKE_GIT_LOG="$case_dir/git.log" \
@@ -139,7 +158,7 @@ run_release() {
     echo "$name returned $status; expected $expected" >&2
     exit 1
   fi
-  if [[ "$expected" -ne 0 ]]; then
+  if [[ "$expected" -ne 0 && "$mode" != scan-* ]]; then
     [[ ! -s "$case_dir/gitleaks.log" ]]
     [[ ! -s "$case_dir/curl.log" ]]
   fi
@@ -149,6 +168,7 @@ run_release valid webflow 0
 grep -q 'web-flow.gpg' "$work/valid/curl.log"
 grep -q 'gpg.format=openpgp' "$work/valid/git.log"
 grep -q 'detect --source .' "$work/valid/gitleaks.log"
+grep -q -- '--log-opts --diff-merges=first-parent release-head\^..release-head' "$work/valid/gitleaks.log"
 
 make_case wrong-tag
 cat >"$work/wrong-tag/event.json" <<'EOF'
@@ -191,6 +211,14 @@ set -e
 [[ ! -s "$work/wrong-head/curl.log" ]]
 
 run_release nonmain nonmain 1
+run_release revlist-fail revlist-fail 1
+run_release revlist-empty revlist-empty 1
+for mode in scan-fatal scan-zero scan-empty scan-silent scan-fail; do
+  run_release "$mode" "$mode" 1
+  [[ -s "$work/$mode/gitleaks.log" ]]
+done
+run_release ssh-good ssh-good 0
+run_release main webflow 0 push refs/heads/main
 
 gate="$work/gate"
 mkdir -p "$gate/temp" "$gate/artifacts" "$gate/tools/cargo/bin" "$gate/bin"

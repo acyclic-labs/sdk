@@ -18,7 +18,7 @@ if (!Array.isArray(sdkInventory) || sdkInventory.length === 0 || sdkInventory.so
 const pinned = { ...JSON.parse(read("../toolchains/toolchain.json")),
   runtime_files: Object.fromEntries(sdkInventory.map(entry => [entry.path, entry.sha256])),
   dependencies: JSON.parse(read("../toolchains/dependencies.json")) };
-const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v2/stream.proto"];
+const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"];
 const negatives = { InvalidActorBytes: "List<int>?", InvalidWorkerBytes: "List<int>?", InvalidOptionalInteger: "Int64?" };
 const marker = "PASS: installed Dart descriptors, bytes, unsigned bits, optional presence, oneof and gRPC shapes";
 const packageName = "acyclic_sdk_transport-0.2.0-alpha.1.tar.gz";

@@ -8,11 +8,12 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    task::{Context, Poll},
 };
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::{StreamExt, stream};
+use futures::{Stream, StreamExt, stream};
 use prost::Message;
 use thiserror::Error;
 use tonic::{
@@ -20,7 +21,11 @@ use tonic::{
     metadata::{Ascii, MetadataValue},
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint},
 };
+#[cfg(test)]
+use tracing::Instrument as _;
 use tracing::field::Empty;
+#[cfg(test)]
+use tracing::instrument::WithSubscriber as _;
 
 use crate::obs;
 use crate::wire_codec::{
@@ -325,7 +330,7 @@ impl Client {
         request
     }
 
-    async fn unary<T, U, F>(&self, body: T, mut call: F) -> Result<U, StreamError>
+    async fn unary<T, U, F>(&self, body: T, mut call: F) -> Result<RpcResponse<U>, StreamError>
     where
         T: Clone,
         F: FnMut(
@@ -341,10 +346,14 @@ impl Client {
             &mut call,
         )
         .await
-        .map(|(response, _)| response)
+        .map(|(body, _, completion)| RpcResponse { body, completion })
     }
 
-    async fn follow_unary<T, U, F>(&self, body: T, mut call: F) -> Result<(U, usize), StreamError>
+    async fn follow_unary<T, U, F>(
+        &self,
+        body: T,
+        mut call: F,
+    ) -> Result<(U, usize, Completion), StreamError>
     where
         T: Clone,
         F: FnMut(
@@ -362,17 +371,6 @@ impl Client {
         .await
     }
 
-    #[tracing::instrument(
-        name = "acyclic.stream.grpc.call",
-        skip_all,
-        fields(
-            rpc = std::any::type_name::<T>().rsplit("::").next(),
-            attempts = Empty,
-            rpc.code = Empty,
-            outcome = Empty,
-            error.kind = Empty,
-        )
-    )]
     async fn unary_on<T, U, F>(
         &self,
         channels: &[Channel],
@@ -380,7 +378,7 @@ impl Client {
         body: T,
         attempt_timeout: std::time::Duration,
         call: &mut F,
-    ) -> Result<(U, usize), StreamError>
+    ) -> Result<(U, usize, Completion), StreamError>
     where
         T: Clone,
         F: FnMut(
@@ -391,45 +389,56 @@ impl Client {
         let deadline = tokio::time::Instant::now() + OPERATION_DEADLINE;
         let mut last = None;
         let mut attempt = 0_u64;
-        let result = 'retry: loop {
+        loop {
             let start = preferred.load(Ordering::Relaxed) % channels.len();
             for offset in 0..channels.len() {
                 let index = (start + offset) % channels.len();
                 let attempt_deadline = deadline.min(tokio::time::Instant::now() + attempt_timeout);
                 attempt += 1;
-                let error = match tokio::time::timeout_at(
-                    attempt_deadline,
-                    call(Self::service(channels, index), self.request(body.clone())),
-                )
-                .await
-                {
+                // One span describes one physical RPC attempt; the ordinal is not a logical retry total.
+                let span = tracing::info_span!(
+                    "acyclic.stream.grpc.call",
+                    rpc = std::any::type_name::<T>().rsplit("::").next(),
+                    attempt,
+                    rpc.code = Empty,
+                    outcome = Empty,
+                    error.kind = Empty
+                );
+                let mut completion = Completion::new(span);
+                let result = completion
+                    .span
+                    .scope(tokio::time::timeout_at(
+                        attempt_deadline,
+                        call(Self::service(channels, index), self.request(body.clone())),
+                    ))
+                    .await;
+                let error = match result {
                     Ok(Ok(response)) => {
                         preferred.store(index, Ordering::Relaxed);
-                        obs::record("rpc.code", Code::Ok as u64);
-                        break 'retry Ok((response.into_inner(), index));
+                        return Ok((response.into_inner(), index, completion));
                     }
-                    Ok(Err(error)) if retryable(&error) => error,
-                    Ok(Err(error)) => break 'retry Err(error),
+                    Ok(Err(error)) => error,
                     Err(_) => Status::deadline_exceeded("endpoint attempt expired"),
                 };
-                tracing::warn!(
-                    attempt,
-                    rpc.code = error.code() as u64,
-                    "stream rpc retried"
-                );
+                completion.status(&error);
+                if !retryable(&error) {
+                    return Err(status(&error));
+                }
+                completion.span.in_scope(|| {
+                    tracing::warn!(
+                        attempt,
+                        rpc.code = error.code() as u64,
+                        "stream rpc retried"
+                    );
+                });
                 last = Some(error);
             }
             tokio::time::sleep_until((tokio::time::Instant::now() + RETRY_DELAY).min(deadline))
                 .await;
             if tokio::time::Instant::now() >= deadline {
-                break Err(last.unwrap_or_else(|| Status::unavailable("no endpoint attempted")));
+                return Err(last.as_ref().map_or(StreamError::Unavailable, status));
             }
-        };
-        obs::record("attempts", attempt);
-        obs::finish(result.map_err(|error| {
-            obs::record("rpc.code", error.code() as u64);
-            status(&error)
-        }))
+        }
     }
 
     async fn records(
@@ -438,66 +447,103 @@ impl Client {
         from: u64,
         limit: Option<u32>,
     ) -> Result<RecordStream, StreamError> {
-        let client = self.clone();
-        Ok(stream::unfold(
-            RecordCursor {
-                client,
-                path,
-                next: from,
-                remaining: limit,
-                active: None,
-                buffered: VecDeque::new(),
-            },
-            |mut cursor| async move {
-                loop {
-                    if cursor.remaining == Some(0) {
-                        return None;
-                    }
-                    if let Some(record) = cursor.buffered.pop_front() {
-                        if record.sequence == cursor.next {
-                            cursor.next = cursor.next.saturating_add(1);
-                            if let Some(remaining) = &mut cursor.remaining {
-                                *remaining = remaining.saturating_sub(1);
+        let span = if limit.is_some() {
+            tracing::info_span!(
+                "acyclic.stream.grpc.read",
+                rev = from,
+                items = limit,
+                outcome = Empty,
+                error.kind = Empty
+            )
+        } else {
+            tracing::info_span!(
+                "acyclic.stream.grpc.follow",
+                rev = from,
+                outcome = Empty,
+                error.kind = Empty
+            )
+        };
+        let completion = Completion::new(span);
+        let context = completion.span.clone();
+        Ok(context
+            .scope(stream::unfold(
+                RecordCursor {
+                    client: self.clone(),
+                    path,
+                    next: from,
+                    remaining: limit,
+                    active: None,
+                    buffered: VecDeque::new(),
+                    completion,
+                },
+                |mut cursor| async move {
+                    loop {
+                        if cursor.remaining == Some(0) {
+                            cursor.completion.ok();
+                            return None;
+                        }
+                        if let Some(record) = cursor.buffered.pop_front() {
+                            if record.sequence == cursor.next {
+                                cursor.next = cursor.next.saturating_add(1);
+                                if let Some(remaining) = &mut cursor.remaining {
+                                    *remaining = remaining.saturating_sub(1);
+                                    if *remaining == 0 {
+                                        cursor.completion.ok();
+                                    }
+                                }
+                                return Some((Ok(record), cursor));
                             }
-                            return Some((Ok(record), cursor));
+                            if record.sequence < cursor.next {
+                                continue;
+                            }
+                            if let Some(active) = cursor.active.as_mut() {
+                                active.completion.invalid_response();
+                            }
+                            cursor.completion.invalid_response();
+                            return cursor.failure(StreamError::Unavailable);
                         }
-                        if record.sequence < cursor.next {
-                            continue;
+                        if cursor.active.is_none() {
+                            match cursor.completion.span.scope(cursor.open()).await {
+                                Ok(active) => cursor.active = Some(active),
+                                Err(error) => return cursor.failure(error),
+                            }
                         }
-                        return Some((Err(StreamError::Unavailable), cursor));
+                        let Some(active) = cursor.active.as_mut() else {
+                            return cursor.failure(StreamError::Unavailable);
+                        };
+                        let active_endpoint = active.endpoint;
+                        let response = active.records.next().await;
+                        match &response {
+                            Some(Err(error)) => active.completion.status(error),
+                            None => active.completion.ok(),
+                            _ => {}
+                        }
+                        match response {
+                            Some(Ok(response)) => match read_response(response) {
+                                Ok(records) => cursor.buffered = records,
+                                Err(error) => {
+                                    active.completion.invalid_response();
+                                    cursor.completion.invalid_response();
+                                    return cursor.failure(error);
+                                }
+                            },
+                            Some(Err(error)) if !retryable(&error) => {
+                                return cursor.failure(status(&error));
+                            }
+                            None if cursor.remaining.is_some() => {
+                                cursor.completion.ok();
+                                return None;
+                            }
+                            Some(Err(_)) | None => {
+                                cursor.advance_follow(active_endpoint);
+                                tokio::time::sleep(RETRY_DELAY).await;
+                                cursor.active = None;
+                            }
+                        }
                     }
-                    if cursor.active.is_none() {
-                        match cursor.open().await {
-                            Ok(active) => cursor.active = Some(active),
-                            Err(error) => return cursor.failure(error),
-                        }
-                    }
-                    let Some(active) = cursor.active.as_mut() else {
-                        return Some((Err(StreamError::Unavailable), cursor));
-                    };
-                    let active_endpoint = active.endpoint;
-                    match active.records.next().await {
-                        Some(Ok(response)) => match read_response(response) {
-                            Ok(records) => cursor.buffered = records,
-                            Err(error) => return cursor.failure(error),
-                        },
-                        Some(Err(error)) if retryable(&error) => {
-                            cursor.advance_follow(active_endpoint);
-                            tokio::time::sleep(RETRY_DELAY).await;
-                            cursor.active = None;
-                        }
-                        Some(Err(error)) => return cursor.failure(status(&error)),
-                        None if cursor.remaining.is_none() => {
-                            cursor.advance_follow(active_endpoint);
-                            tokio::time::sleep(RETRY_DELAY).await;
-                            cursor.active = None;
-                        }
-                        None => return None,
-                    }
-                }
-            },
-        )
-        .boxed())
+                },
+            ))
+            .boxed())
     }
 }
 
@@ -517,22 +563,23 @@ struct RecordCursor {
     active: Option<ActiveRecords>,
     /// Decoded records from the latest frame that the caller has not yet taken.
     buffered: VecDeque<Record>,
+    completion: Completion,
 }
 
 struct ActiveRecords {
-    records: tonic::Streaming<wire::ReadResponse>,
+    records: obs::Scoped<tonic::Streaming<wire::ReadResponse>>,
     endpoint: usize,
+    completion: Completion,
 }
 
 impl RecordCursor {
-    /// Reports `error`. A denied credential ends the stream: reopening would only
-    /// fail again, so buffered records are dropped and the next poll ends.
+    /// Delivered errors terminate the logical cursor. Retryable transport failures
+    /// reconnect internally before reaching this boundary.
     fn failure(mut self, error: StreamError) -> Option<(Result<Record, StreamError>, Self)> {
-        if error == StreamError::AccessDenied {
-            self.active = None;
-            self.buffered.clear();
-            self.remaining = Some(0);
-        }
+        self.completion.finish(Some(error.code()), None);
+        self.active = None;
+        self.buffered.clear();
+        self.remaining = Some(0);
         Some((Err(error), self))
     }
 
@@ -561,9 +608,14 @@ impl RecordCursor {
                     |mut service, request| Box::pin(async move { service.read(request).await }),
                 )
                 .await
-                .map(|records| ActiveRecords {
-                    records,
-                    endpoint: 0,
+                .map(|response| {
+                    let RpcResponse { body, completion } = response;
+                    let records = completion.span.scope(body);
+                    ActiveRecords {
+                        records,
+                        completion,
+                        endpoint: 0,
+                    }
                 })
         } else {
             self.client
@@ -575,7 +627,14 @@ impl RecordCursor {
                     |mut service, request| Box::pin(async move { service.follow(request).await }),
                 )
                 .await
-                .map(|(records, endpoint)| ActiveRecords { records, endpoint })
+                .map(|(records, endpoint, completion)| {
+                    let records = completion.span.scope(records);
+                    ActiveRecords {
+                        records,
+                        endpoint,
+                        completion,
+                    }
+                })
         }
     }
 }
@@ -653,7 +712,7 @@ impl StreamProvider for Client {
                 },
             )
             .await?;
-        bind_observation(&idempotency_key, response.observation)
+        response.decode(|response| bind_observation(&idempotency_key, response.observation))
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
@@ -663,8 +722,8 @@ impl StreamProvider for Client {
             },
             |mut service, request| Box::pin(async move { service.tail(request).await }),
         )
-        .await
-        .map(|response| response.tail)
+        .await?
+        .decode(|response| Ok(response.tail))
     }
 
     async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
@@ -676,8 +735,10 @@ impl StreamProvider for Client {
                 |mut service, request| Box::pin(async move { service.tail(request).await }),
             )
             .await?;
-        Ok(StreamBounds {
-            tail: response.tail,
+        response.decode(|response| {
+            Ok(StreamBounds {
+                tail: response.tail,
+            })
         })
     }
 
@@ -697,7 +758,7 @@ impl StreamProvider for Client {
                 |mut service, request| Box::pin(async move { service.append(request).await }),
             )
             .await?;
-        append_outcome_from_wire(response)
+        response.decode(append_outcome_from_wire)
     }
 
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
@@ -716,12 +777,14 @@ impl StreamProvider for Client {
                 |mut service, request| Box::pin(async move { service.fork(request).await }),
             )
             .await?;
-        Ok(ForkReceipt {
-            source: path(receipt.source)?,
-            destination: path(receipt.destination)?,
-            forked_at: receipt.forked_at,
-            tail: receipt.tail,
-            commit_id: commit_id(&receipt.commit_id)?,
+        receipt.decode(|receipt| {
+            Ok(ForkReceipt {
+                source: path(receipt.source)?,
+                destination: path(receipt.destination)?,
+                forked_at: receipt.forked_at,
+                tail: receipt.tail,
+                commit_id: commit_id(&receipt.commit_id)?,
+            })
         })
     }
 
@@ -746,29 +809,38 @@ impl StreamProvider for Client {
                     Box::pin(async move { service.children(request).await })
                 })
                 .await?;
-            let collected = response
-                .map(|item| {
+            let RpcResponse {
+                body: response,
+                mut completion,
+            } = response;
+            let mut response = completion.span.scope(response);
+            let result = async {
+                let mut children = Vec::new();
+                while let Some(item) = response.next().await {
+                    let item = item.map_err(|error| {
+                        completion.status(&error);
+                        status(&error)
+                    })?;
                     let child = item
-                        .map_err(|error| status(&error))?
                         .child
-                        .ok_or(StreamError::Unavailable)?;
-                    Ok(Child {
-                        path: path(child.path)?,
-                    })
-                })
-                .collect::<Vec<_>>()
-                .await;
-            if collected.iter().all(Result::is_ok) {
-                return Ok(stream::iter(collected).boxed());
+                        .ok_or(StreamError::Unavailable)
+                        .and_then(|child| {
+                            Ok(Child {
+                                path: path(child.path)?,
+                            })
+                        })
+                        .inspect_err(|_| completion.invalid_response())?;
+                    children.push(child);
+                }
+                completion.ok();
+                Ok(children)
             }
-            let error = collected
-                .into_iter()
-                .find_map(Result::err)
-                .unwrap_or(StreamError::Unavailable);
-            if error != StreamError::Unavailable {
-                return Err(error);
+            .await;
+            match result {
+                Ok(children) => return Ok(stream::iter(children.into_iter().map(Ok)).boxed()),
+                Err(error) if error != StreamError::Unavailable => return Err(error),
+                Err(error) => last = Some(error),
             }
-            last = Some(error);
         }
         Err(last.unwrap_or(StreamError::Unavailable))
     }
@@ -792,18 +864,20 @@ impl StreamProvider for Client {
                 },
             )
             .await?;
-        Ok(ChildrenPage {
-            hierarchy_version: commit_id(&response.hierarchy_version)?,
-            children: response
-                .children
-                .into_iter()
-                .map(|child| {
-                    Ok(Child {
-                        path: path(child.path)?,
+        response.decode(|response| {
+            Ok(ChildrenPage {
+                hierarchy_version: commit_id(&response.hierarchy_version)?,
+                children: response
+                    .children
+                    .into_iter()
+                    .map(|child| {
+                        Ok(Child {
+                            path: path(child.path)?,
+                        })
                     })
-                })
-                .collect::<Result<_, StreamError>>()?,
-            next_after: response.next_after.map(path).transpose()?,
+                    .collect::<Result<_, StreamError>>()?,
+                next_after: response.next_after.map(path).transpose()?,
+            })
         })
     }
 
@@ -819,7 +893,7 @@ impl StreamProvider for Client {
                 |mut service, request| Box::pin(async move { service.commit(request).await }),
             )
             .await?;
-        commit_outcome_from_wire(response)
+        response.decode(commit_outcome_from_wire)
     }
 
     async fn commit_before(
@@ -838,7 +912,7 @@ impl StreamProvider for Client {
                 |mut service, request| Box::pin(async move { service.commit(request).await }),
             )
             .await?;
-        commit_outcome_from_wire(response)
+        response.decode(commit_outcome_from_wire)
     }
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
@@ -850,7 +924,7 @@ impl StreamProvider for Client {
                 |mut service, request| Box::pin(async move { service.read_commit(request).await }),
             )
             .await?;
-        envelope_from_wire(envelope)
+        envelope.decode(envelope_from_wire)
     }
 }
 
@@ -861,300 +935,377 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
     type ChildrenStream =
         futures::stream::BoxStream<'static, Result<wire::ChildrenResponse, Status>>;
 
-    #[tracing::instrument(
-        name = "acyclic.stream.grpc.serve.inspect_idempotency",
-        skip_all,
-        fields(rpc.code = Empty, outcome = Empty, error.kind = Empty)
-    )]
     async fn inspect_idempotency(
         &self,
         request: Request<wire::InspectIdempotencyRequest>,
     ) -> Result<Response<wire::InspectIdempotencyResponse>, Status> {
-        check_command_size(request.get_ref())?;
-        let key = IdempotencyKey::new(request.into_inner().idempotency_key)
-            .map_err(|error| error_status(&error))?;
-        let observation = self
-            .provider
-            .inspect_idempotency(key)
-            .await
-            .map_err(|error| error_status(&error))?
-            .map(observation_wire);
-        served(Response::new(wire::InspectIdempotencyResponse {
-            observation,
-        }))
+        let mut completion = Completion::new(tracing::info_span!(
+            "acyclic.stream.grpc.serve.inspect_idempotency",
+            rpc.code = Empty,
+            outcome = Empty,
+            error.kind = Empty
+        ));
+        let span = completion.span.clone();
+        let result = span
+            .scope(async {
+                check_command_size(request.get_ref())?;
+                let key = IdempotencyKey::new(request.into_inner().idempotency_key)
+                    .map_err(|error| error_status(&error))?;
+                let observation = self
+                    .provider
+                    .inspect_idempotency(key)
+                    .await
+                    .map_err(|error| error_status(&error))?
+                    .map(observation_wire);
+                Ok(Response::new(wire::InspectIdempotencyResponse {
+                    observation,
+                }))
+            })
+            .await;
+        finish_served(&mut completion, result, false)
     }
 
-    #[tracing::instrument(
-        name = "acyclic.stream.grpc.serve.append",
-        skip_all,
-        fields(rpc.code = Empty, outcome = Empty, error.kind = Empty)
-    )]
     async fn append(
         &self,
         request: Request<wire::AppendRequest>,
     ) -> Result<Response<wire::AppendResponse>, Status> {
-        check_command_size(request.get_ref())?;
-        let request = request.into_inner();
-        let outcome = self
-            .provider
-            .append(AppendRequest {
-                path: path(request.path).map_err(|error| error_status(&error))?,
-                records: request.records,
-                if_tail: request.if_tail,
-                idempotency_key: optional_key(request.idempotency_key)
-                    .map_err(|error| error_status(&error))?,
+        let mut completion = Completion::new(tracing::info_span!(
+            "acyclic.stream.grpc.serve.append",
+            rpc.code = Empty,
+            outcome = Empty,
+            error.kind = Empty
+        ));
+        let span = completion.span.clone();
+        let result = span
+            .scope(async {
+                check_command_size(request.get_ref())?;
+                let request = request.into_inner();
+                let outcome = self
+                    .provider
+                    .append(AppendRequest {
+                        path: path(request.path).map_err(|error| error_status(&error))?,
+                        records: request.records,
+                        if_tail: request.if_tail,
+                        idempotency_key: optional_key(request.idempotency_key)
+                            .map_err(|error| error_status(&error))?,
+                    })
+                    .await
+                    .map_err(|error| error_status(&error))?;
+                Ok(Response::new(append_outcome_wire(outcome)))
             })
-            .await
-            .map_err(|error| error_status(&error))?;
-        served(Response::new(append_outcome_wire(outcome)))
+            .await;
+        finish_served(&mut completion, result, false)
     }
 
-    #[tracing::instrument(
-        name = "acyclic.stream.grpc.serve.tail",
-        skip_all,
-        fields(rpc.code = Empty, outcome = Empty, error.kind = Empty)
-    )]
     async fn tail(
         &self,
         request: Request<wire::TailRequest>,
     ) -> Result<Response<wire::TailResponse>, Status> {
-        check_command_size(request.get_ref())?;
-        let path = path(request.into_inner().path).map_err(|error| error_status(&error))?;
-        let bounds = self
-            .provider
-            .bounds(path)
-            .await
-            .map_err(|error| error_status(&error))?;
-        served(Response::new(wire::TailResponse { tail: bounds.tail }))
+        let mut completion = Completion::new(tracing::info_span!(
+            "acyclic.stream.grpc.serve.tail",
+            rpc.code = Empty,
+            outcome = Empty,
+            error.kind = Empty
+        ));
+        let span = completion.span.clone();
+        let result = span
+            .scope(async {
+                check_command_size(request.get_ref())?;
+                let path = path(request.into_inner().path).map_err(|error| error_status(&error))?;
+                let bounds = self
+                    .provider
+                    .bounds(path)
+                    .await
+                    .map_err(|error| error_status(&error))?;
+                Ok(Response::new(wire::TailResponse { tail: bounds.tail }))
+            })
+            .await;
+        finish_served(&mut completion, result, false)
     }
 
-    #[tracing::instrument(
-        name = "acyclic.stream.grpc.serve.fork",
-        skip_all,
-        fields(rpc.code = Empty, outcome = Empty, error.kind = Empty)
-    )]
     async fn fork(
         &self,
         request: Request<wire::ForkRequest>,
     ) -> Result<Response<wire::ForkReceipt>, Status> {
-        check_command_size(request.get_ref())?;
-        let request = request.into_inner();
-        let receipt = self
-            .provider
-            .fork(ForkRequest {
-                source: path(request.source).map_err(|error| error_status(&error))?,
-                destination: path(request.destination).map_err(|error| error_status(&error))?,
-                at_tail: request.at_tail,
-                idempotency_key: optional_key(request.idempotency_key)
-                    .map_err(|error| error_status(&error))?,
+        let mut completion = Completion::new(tracing::info_span!(
+            "acyclic.stream.grpc.serve.fork",
+            rpc.code = Empty,
+            outcome = Empty,
+            error.kind = Empty
+        ));
+        let span = completion.span.clone();
+        let result = span
+            .scope(async {
+                check_command_size(request.get_ref())?;
+                let request = request.into_inner();
+                let receipt = self
+                    .provider
+                    .fork(ForkRequest {
+                        source: path(request.source).map_err(|error| error_status(&error))?,
+                        destination: path(request.destination)
+                            .map_err(|error| error_status(&error))?,
+                        at_tail: request.at_tail,
+                        idempotency_key: optional_key(request.idempotency_key)
+                            .map_err(|error| error_status(&error))?,
+                    })
+                    .await
+                    .map_err(|error| error_status(&error))?;
+                Ok(Response::new(fork_receipt_wire(&receipt)))
             })
-            .await
-            .map_err(|error| error_status(&error))?;
-        served(Response::new(fork_receipt_wire(&receipt)))
+            .await;
+        finish_served(&mut completion, result, false)
     }
 
-    #[tracing::instrument(
-        name = "acyclic.stream.grpc.serve.read",
-        skip_all,
-        fields(rpc.code = Empty, outcome = Empty, error.kind = Empty)
-    )]
     async fn read(
         &self,
         request: Request<wire::ReadRequest>,
     ) -> Result<Response<Self::ReadStream>, Status> {
-        check_command_size(request.get_ref())?;
-        let request = request.into_inner();
-        let records = self
-            .provider
-            .read(ReadRequest {
-                path: path(request.path).map_err(|error| error_status(&error))?,
-                from: request.from,
-                limit: request.limit,
+        let mut completion = Completion::new(tracing::info_span!(
+            "acyclic.stream.grpc.serve.read",
+            rpc.code = Empty,
+            outcome = Empty,
+            error.kind = Empty
+        ));
+        let span = completion.span.clone();
+        let result = span
+            .scope(async {
+                check_command_size(request.get_ref())?;
+                let request = request.into_inner();
+                let records = self
+                    .provider
+                    .read(ReadRequest {
+                        path: path(request.path).map_err(|error| error_status(&error))?,
+                        from: request.from,
+                        limit: request.limit,
+                    })
+                    .await
+                    .map_err(|error| error_status(&error))?;
+                Ok(Response::new(
+                    observe_body(
+                        &span,
+                        records.map(|record| {
+                            record
+                                .map(record_wire)
+                                .map(|record| read_response_wire(vec![record]))
+                                .map_err(|error| error_status(&error))
+                        }),
+                    )
+                    .boxed(),
+                ))
             })
-            .await
-            .map_err(|error| error_status(&error))?;
-        served(Response::new(
-            records
-                .map(|record| {
-                    record
-                        .map(record_wire)
-                        .map(|record| read_response_wire(vec![record]))
-                        .map_err(|error| error_status(&error))
-                })
-                .boxed(),
-        ))
+            .await;
+        finish_served(&mut completion, result, true)
     }
 
-    #[tracing::instrument(
-        name = "acyclic.stream.grpc.serve.follow",
-        skip_all,
-        fields(rpc.code = Empty, outcome = Empty, error.kind = Empty)
-    )]
     async fn follow(
         &self,
         request: Request<wire::FollowRequest>,
     ) -> Result<Response<Self::FollowStream>, Status> {
-        check_command_size(request.get_ref())?;
-        let request = request.into_inner();
-        let records = self
-            .provider
-            .follow(
-                path(request.path).map_err(|error| error_status(&error))?,
-                request.from,
-            )
-            .await
-            .map_err(|error| error_status(&error))?;
-        served(Response::new(
-            records
-                .map(|record| {
-                    record
-                        .map(record_wire)
-                        .map(|record| read_response_wire(vec![record]))
-                        .map_err(|error| error_status(&error))
-                })
-                .boxed(),
-        ))
+        let mut completion = Completion::new(tracing::info_span!(
+            "acyclic.stream.grpc.serve.follow",
+            rpc.code = Empty,
+            outcome = Empty,
+            error.kind = Empty
+        ));
+        let span = completion.span.clone();
+        let result = span
+            .scope(async {
+                check_command_size(request.get_ref())?;
+                let request = request.into_inner();
+                let records = self
+                    .provider
+                    .follow(
+                        path(request.path).map_err(|error| error_status(&error))?,
+                        request.from,
+                    )
+                    .await
+                    .map_err(|error| error_status(&error))?;
+                Ok(Response::new(
+                    observe_body(
+                        &span,
+                        records.map(|record| {
+                            record
+                                .map(record_wire)
+                                .map(|record| read_response_wire(vec![record]))
+                                .map_err(|error| error_status(&error))
+                        }),
+                    )
+                    .boxed(),
+                ))
+            })
+            .await;
+        finish_served(&mut completion, result, true)
     }
 
-    #[tracing::instrument(
-        name = "acyclic.stream.grpc.serve.children",
-        skip_all,
-        fields(rpc.code = Empty, outcome = Empty, error.kind = Empty)
-    )]
     async fn children(
         &self,
         request: Request<wire::ChildrenRequest>,
     ) -> Result<Response<Self::ChildrenStream>, Status> {
-        check_command_size(request.get_ref())?;
-        let request = request.into_inner();
-        let children = self
-            .provider
-            .children(ChildrenRequest {
-                parent: request
-                    .parent
-                    .map(path)
-                    .transpose()
-                    .map_err(|error| error_status(&error))?,
-                limit: request.limit,
+        let mut completion = Completion::new(tracing::info_span!(
+            "acyclic.stream.grpc.serve.children",
+            rpc.code = Empty,
+            outcome = Empty,
+            error.kind = Empty
+        ));
+        let span = completion.span.clone();
+        let result = span
+            .scope(async {
+                check_command_size(request.get_ref())?;
+                let request = request.into_inner();
+                let children = self
+                    .provider
+                    .children(ChildrenRequest {
+                        parent: request
+                            .parent
+                            .map(path)
+                            .transpose()
+                            .map_err(|error| error_status(&error))?,
+                        limit: request.limit,
+                    })
+                    .await
+                    .map_err(|error| error_status(&error))?;
+                Ok(Response::new(
+                    observe_body(
+                        &span,
+                        children.map(|child| {
+                            child
+                                .map(|child| wire::ChildrenResponse {
+                                    child: Some(wire::Child {
+                                        path: child.path.to_string(),
+                                    }),
+                                })
+                                .map_err(|error| error_status(&error))
+                        }),
+                    )
+                    .boxed(),
+                ))
             })
-            .await
-            .map_err(|error| error_status(&error))?;
-        served(Response::new(
-            children
-                .map(|child| {
-                    child
-                        .map(|child| wire::ChildrenResponse {
-                            child: Some(wire::Child {
-                                path: child.path.to_string(),
-                            }),
-                        })
-                        .map_err(|error| error_status(&error))
-                })
-                .boxed(),
-        ))
+            .await;
+        finish_served(&mut completion, result, true)
     }
 
-    #[tracing::instrument(
-        name = "acyclic.stream.grpc.serve.children_page",
-        skip_all,
-        fields(rpc.code = Empty, outcome = Empty, error.kind = Empty)
-    )]
     async fn children_page(
         &self,
         request: Request<wire::ChildrenPageRequest>,
     ) -> Result<Response<wire::ChildrenPageResponse>, Status> {
-        let request = request.into_inner();
-        let page = self
-            .provider
-            .children_page(ChildrenPageRequest {
-                parent: request
-                    .parent
-                    .map(path)
-                    .transpose()
-                    .map_err(|error| error_status(&error))?,
-                after: request
-                    .after
-                    .map(path)
-                    .transpose()
-                    .map_err(|error| error_status(&error))?,
-                hierarchy_version: request
-                    .hierarchy_version
-                    .as_deref()
-                    .map(commit_id)
-                    .transpose()
-                    .map_err(|error| error_status(&error))?,
-                limit: request.limit,
+        let mut completion = Completion::new(tracing::info_span!(
+            "acyclic.stream.grpc.serve.children_page",
+            rpc.code = Empty,
+            outcome = Empty,
+            error.kind = Empty
+        ));
+        let span = completion.span.clone();
+        let result = span
+            .scope(async {
+                let request = request.into_inner();
+                let page = self
+                    .provider
+                    .children_page(ChildrenPageRequest {
+                        parent: request
+                            .parent
+                            .map(path)
+                            .transpose()
+                            .map_err(|error| error_status(&error))?,
+                        after: request
+                            .after
+                            .map(path)
+                            .transpose()
+                            .map_err(|error| error_status(&error))?,
+                        hierarchy_version: request
+                            .hierarchy_version
+                            .as_deref()
+                            .map(commit_id)
+                            .transpose()
+                            .map_err(|error| error_status(&error))?,
+                        limit: request.limit,
+                    })
+                    .await
+                    .map_err(|error| error_status(&error))?;
+                Ok(Response::new(wire::ChildrenPageResponse {
+                    hierarchy_version: Bytes::copy_from_slice(page.hierarchy_version.as_bytes()),
+                    children: page
+                        .children
+                        .into_iter()
+                        .map(|child| wire::Child {
+                            path: child.path.to_string(),
+                        })
+                        .collect(),
+                    next_after: page.next_after.map(|path| path.to_string()),
+                }))
             })
-            .await
-            .map_err(|error| error_status(&error))?;
-        served(Response::new(wire::ChildrenPageResponse {
-            hierarchy_version: Bytes::copy_from_slice(page.hierarchy_version.as_bytes()),
-            children: page
-                .children
-                .into_iter()
-                .map(|child| wire::Child {
-                    path: child.path.to_string(),
-                })
-                .collect(),
-            next_after: page.next_after.map(|path| path.to_string()),
-        }))
+            .await;
+        finish_served(&mut completion, result, false)
     }
 
-    #[tracing::instrument(
-        name = "acyclic.stream.grpc.serve.commit",
-        skip_all,
-        fields(rpc.code = Empty, outcome = Empty, error.kind = Empty)
-    )]
     async fn commit(
         &self,
         request: Request<wire::CommitRequest>,
     ) -> Result<Response<wire::CommitResponse>, Status> {
-        check_command_size(request.get_ref())?;
-        let request = request.into_inner();
-        let deadline_unix_millis = request.deadline_unix_millis;
-        let request = CommitRequest {
-            conditions: request
-                .conditions
-                .into_iter()
-                .map(condition_from_wire)
-                .collect::<Result<_, _>>()
-                .map_err(|error| error_status(&error))?,
-            mutations: request
-                .mutations
-                .into_iter()
-                .map(mutation_from_wire)
-                .collect::<Result<_, _>>()
-                .map_err(|error| error_status(&error))?,
-            idempotency_key: IdempotencyKey::new(request.idempotency_key)
-                .map_err(|error| error_status(&error))?,
-        };
-        let outcome = if let Some(deadline) = deadline_unix_millis {
-            self.provider.commit_before(request, deadline).await
-        } else {
-            self.provider.commit(request).await
-        }
-        .map_err(|error| error_status(&error))?;
-        served(Response::new(commit_outcome_wire(outcome)))
+        let mut completion = Completion::new(tracing::info_span!(
+            "acyclic.stream.grpc.serve.commit",
+            rpc.code = Empty,
+            outcome = Empty,
+            error.kind = Empty
+        ));
+        let span = completion.span.clone();
+        let result = span
+            .scope(async {
+                check_command_size(request.get_ref())?;
+                let request = request.into_inner();
+                let deadline_unix_millis = request.deadline_unix_millis;
+                let request = CommitRequest {
+                    conditions: request
+                        .conditions
+                        .into_iter()
+                        .map(condition_from_wire)
+                        .collect::<Result<_, _>>()
+                        .map_err(|error| error_status(&error))?,
+                    mutations: request
+                        .mutations
+                        .into_iter()
+                        .map(mutation_from_wire)
+                        .collect::<Result<_, _>>()
+                        .map_err(|error| error_status(&error))?,
+                    idempotency_key: IdempotencyKey::new(request.idempotency_key)
+                        .map_err(|error| error_status(&error))?,
+                };
+                let outcome = if let Some(deadline) = deadline_unix_millis {
+                    self.provider.commit_before(request, deadline).await
+                } else {
+                    self.provider.commit(request).await
+                }
+                .map_err(|error| error_status(&error))?;
+                Ok(Response::new(commit_outcome_wire(outcome)))
+            })
+            .await;
+        finish_served(&mut completion, result, false)
     }
 
-    #[tracing::instrument(
-        name = "acyclic.stream.grpc.serve.read_commit",
-        skip_all,
-        fields(rpc.code = Empty, outcome = Empty, error.kind = Empty)
-    )]
     async fn read_commit(
         &self,
         request: Request<wire::ReadCommitRequest>,
     ) -> Result<Response<wire::CommittedEnvelope>, Status> {
-        check_command_size(request.get_ref())?;
-        let commit_id =
-            commit_id(&request.into_inner().commit_id).map_err(|error| error_status(&error))?;
-        let envelope = self
-            .provider
-            .read_commit(commit_id)
-            .await
-            .map_err(|error| error_status(&error))?;
-        served(Response::new(envelope_wire(envelope)))
+        let mut completion = Completion::new(tracing::info_span!(
+            "acyclic.stream.grpc.serve.read_commit",
+            rpc.code = Empty,
+            outcome = Empty,
+            error.kind = Empty
+        ));
+        let span = completion.span.clone();
+        let result = span
+            .scope(async {
+                check_command_size(request.get_ref())?;
+                let commit_id = commit_id(&request.into_inner().commit_id)
+                    .map_err(|error| error_status(&error))?;
+                let envelope = self
+                    .provider
+                    .read_commit(commit_id)
+                    .await
+                    .map_err(|error| error_status(&error))?;
+                Ok(Response::new(envelope_wire(envelope)))
+            })
+            .await;
+        finish_served(&mut completion, result, false)
     }
 }
 
@@ -1172,21 +1323,125 @@ fn bind_observation(
     Ok(observation)
 }
 
-/// Records a served RPC's success on its span.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "every handler returns its response through this"
-)]
-fn served<T>(response: Response<T>) -> Result<Response<T>, Status> {
-    obs::record("outcome", "ok");
-    obs::record("rpc.code", Code::Ok as u64);
-    Ok(response)
+fn finish_served<T>(
+    completion: &mut Completion,
+    result: Result<T, Status>,
+    streaming: bool,
+) -> Result<T, Status> {
+    match &result {
+        Err(error) => completion.status(error),
+        // The returned body guard now owns this same span. Headers are not terminal success.
+        Ok(_) if streaming => completion.finished = true,
+        Ok(_) => completion.ok(),
+    }
+    result
 }
 
-/// Maps a provider failure to its status, recording it on a served RPC's span.
+/// A single owned operation, retaining its creating dispatch even if its span is filtered.
+/// Only the first terminal observation wins; dropping pending work is cancellation.
+struct Completion {
+    span: obs::OwnedSpan,
+    finished: bool,
+}
+
+impl Completion {
+    fn new(span: tracing::Span) -> Self {
+        Self {
+            span: obs::OwnedSpan::new(span),
+            finished: false,
+        }
+    }
+    fn finish(&mut self, kind: Option<&'static str>, code: Option<Code>) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        match kind {
+            Some(kind) => obs::failed(&self.span, kind),
+            None => obs::record(&self.span, "outcome", "ok"),
+        }
+        if let Some(code) = code {
+            obs::record(&self.span, "rpc.code", code as u64);
+        }
+    }
+    fn ok(&mut self) {
+        self.finish(None, Some(Code::Ok));
+    }
+    fn status(&mut self, error: &Status) {
+        self.finish(
+            Some(if error.code() == Code::Cancelled {
+                "cancelled"
+            } else {
+                status(error).code()
+            }),
+            Some(error.code()),
+        );
+    }
+    fn invalid_response(&mut self) {
+        // This is local semantic rejection, not an observed gRPC trailer status.
+        self.finish(Some("invalid_response"), None);
+    }
+}
+impl Drop for Completion {
+    fn drop(&mut self) {
+        self.finish(Some("cancelled"), None);
+    }
+}
+
+/// Keeps successful response headers pending until the unary response is decoded.
+struct RpcResponse<T> {
+    body: T,
+    completion: Completion,
+}
+impl<T> RpcResponse<T> {
+    fn decode<U>(
+        mut self,
+        decode: impl FnOnce(T) -> Result<U, StreamError>,
+    ) -> Result<U, StreamError> {
+        // Tonic unary completion already observed the successful trailers.
+        obs::record(&self.completion.span, "rpc.code", Code::Ok as u64);
+        let result = decode(self.body);
+        match &result {
+            Ok(_) => self.completion.ok(),
+            Err(_) => self.completion.invalid_response(),
+        }
+        result
+    }
+}
+
+/// Completes a streaming RPC on exhaustion, first error, or unfinished drop.
+/// Response headers alone do not acknowledge delivery of the body.
+struct ObservedBody<S> {
+    body: obs::Scoped<S>,
+    completion: Completion,
+}
+fn observe_body<S>(span: &tracing::Span, body: S) -> ObservedBody<S> {
+    let completion = Completion::new(span.clone());
+    let body = completion.span.scope(body);
+    ObservedBody { body, completion }
+}
+impl<S, T> Stream for ObservedBody<S>
+where
+    S: Stream<Item = Result<T, Status>> + Unpin,
+{
+    type Item = Result<T, Status>;
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if this.completion.finished {
+            return Poll::Ready(None);
+        }
+        let next = Pin::new(&mut this.body).poll_next(cx);
+        match &next {
+            Poll::Ready(Some(Err(error))) => this.completion.status(error),
+            Poll::Ready(None) => this.completion.ok(),
+            _ => {}
+        }
+        next
+    }
+}
+
 fn error_status(error: &StreamError) -> Status {
-    obs::failed(error.code());
-    let status = match error {
+    match error {
         StreamError::InvalidPath => Status::invalid_argument("invalid_path"),
         StreamError::InvalidArgument => Status::invalid_argument("invalid_argument"),
         StreamError::LimitExceeded => Status::invalid_argument("limit_exceeded"),
@@ -1201,9 +1456,7 @@ fn error_status(error: &StreamError) -> Status {
         StreamError::Unavailable => Status::unavailable(error.to_string()),
         StreamError::DeadlineElapsed => Status::failed_precondition("deadline_elapsed"),
         StreamError::Unsupported => Status::unimplemented("unsupported_capability"),
-    };
-    obs::record("rpc.code", status.code() as u64);
-    status
+    }
 }
 
 fn status(error: &tonic::Status) -> StreamError {
@@ -1243,6 +1496,10 @@ fn read_response(value: wire::ReadResponse) -> Result<VecDeque<Record>, StreamEr
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::indexing_slicing,
+    reason = "fixture indexes and captured field lookups intentionally fail the test if expected evidence is absent"
+)]
 mod tests {
     use super::*;
     use crate::MemoryStream;
@@ -1251,6 +1508,388 @@ mod tests {
     use tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::{Identity, Server, ServerTlsConfig};
     use wire::stream_service_server::{StreamService, StreamServiceServer};
+
+    #[tokio::test]
+    async fn served_body_errors_remain_on_owned_span_when_polled_by_another_caller()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        for filtered in [false, true] {
+            let captured = obs::tests::Capture::default();
+            let subscriber = tracing_subscriber::Registry::default()
+                .with(captured.clone())
+                .with(tracing_subscriber::filter::filter_fn(move |metadata| {
+                    !filtered || !metadata.name().starts_with("acyclic.stream")
+                }));
+            let _default = tracing::subscriber::set_default(subscriber);
+            let provider = Arc::new(FiniteFollow {
+                inner: MemoryStream::default(),
+                follows: AtomicUsize::new(0),
+                tail_delay: std::time::Duration::ZERO,
+                denial: Some(1),
+            });
+            provider
+                .inner
+                .append(AppendRequest {
+                    path: StreamPath::new("events")?,
+                    records: vec![Bytes::from_static(b"one")],
+                    if_tail: None,
+                    idempotency_key: None,
+                })
+                .await?;
+            let service = Service::new(provider);
+            let caller = tracing::info_span!(
+                "opening_caller",
+                outcome = "caller",
+                error.kind = "caller",
+                rpc.code = 99
+            );
+            let mut body = async {
+                let invalid = StreamService::tail(
+                    &service,
+                    Request::new(wire::TailRequest {
+                        path: String::new(),
+                    }),
+                )
+                .await;
+                assert_eq!(invalid.unwrap_err().code(), Code::InvalidArgument);
+                Ok::<_, Status>(
+                    StreamService::follow(
+                        &service,
+                        Request::new(wire::FollowRequest {
+                            path: "events".to_owned(),
+                            from: 0,
+                        }),
+                    )
+                    .await?
+                    .into_inner(),
+                )
+            }
+            .instrument(caller)
+            .await?;
+            let polling_caller = tracing::info_span!(
+                "polling_caller",
+                outcome = "caller",
+                error.kind = "caller",
+                rpc.code = 99
+            );
+            async {
+                assert!(body.next().await.unwrap().is_ok());
+                assert_eq!(
+                    body.next().await.unwrap().unwrap_err().code(),
+                    Code::PermissionDenied
+                );
+                drop(body);
+            }
+            .instrument(polling_caller)
+            .await;
+            for name in ["opening_caller", "polling_caller"] {
+                let fields = captured.fields(name);
+                assert_eq!(fields["outcome"], "caller");
+                assert_eq!(fields["error.kind"], "caller");
+                assert_eq!(fields["rpc.code"], "99");
+            }
+            if !filtered {
+                let fields = captured.fields("acyclic.stream.grpc.serve.follow");
+                assert_eq!(fields["outcome"], "err");
+                assert_eq!(fields["error.kind"], "access_denied");
+                assert_eq!(
+                    fields["rpc.code"],
+                    (Code::PermissionDenied as u64).to_string()
+                );
+                assert_eq!(
+                    captured.fields("acyclic.stream.grpc.serve.tail")["error.kind"],
+                    "invalid_path"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn observed_body_completes_only_at_terminal_delivery() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        for (filtered, scenario) in [false, true].into_iter().flat_map(|filtered| {
+            [
+                "unpolled",
+                "partial",
+                "pending",
+                "exhausted",
+                "error",
+                "peer_cancelled",
+            ]
+            .into_iter()
+            .map(move |scenario| (filtered, scenario))
+        }) {
+            let captured = obs::tests::Capture::default();
+            let _default = tracing::subscriber::set_default(
+                tracing_subscriber::Registry::default()
+                    .with(captured.clone())
+                    .with(tracing_subscriber::filter::filter_fn(move |metadata| {
+                        !filtered || metadata.name() != "body"
+                    })),
+            );
+            let span = tracing::info_span!(
+                "body",
+                outcome = Empty,
+                error.kind = Empty,
+                rpc.code = Empty
+            );
+            let source: futures::stream::BoxStream<'static, Result<u8, Status>> = match scenario {
+                "pending" => stream::pending().boxed(),
+                "error" => stream::iter([Err(Status::permission_denied("denied"))]).boxed(),
+                "peer_cancelled" => {
+                    stream::iter([Err(Status::cancelled("peer cancelled"))]).boxed()
+                }
+                _ => stream::iter([Ok(1), Ok(2)]).boxed(),
+            };
+            let mut body = observe_body(&span, source);
+            assert!(!captured.fields("body").contains_key("outcome"));
+            let caller = tracing::info_span!(
+                "polling",
+                outcome = "caller",
+                error.kind = "caller",
+                rpc.code = 99
+            );
+            async {
+                match scenario {
+                    "unpolled" => {}
+                    "partial" => {
+                        assert_eq!(body.next().await.unwrap().unwrap(), 1);
+                    }
+                    "pending" => {
+                        assert!(futures::poll!(body.next()).is_pending());
+                    }
+                    "exhausted" => {
+                        while let Some(item) = body.next().await {
+                            assert!(item.is_ok());
+                        }
+                    }
+                    "error" | "peer_cancelled" => {
+                        assert!(body.next().await.unwrap().is_err());
+                        assert!(body.next().await.is_none());
+                    }
+                    _ => unreachable!(),
+                }
+                drop(body);
+            }
+            .instrument(caller)
+            .await;
+            let fields = captured.fields("body");
+            if !filtered {
+                match scenario {
+                    "exhausted" => {
+                        assert_eq!(fields["outcome"], "ok");
+                        assert_eq!(fields["rpc.code"], "0");
+                    }
+                    "error" => {
+                        assert_eq!(fields["outcome"], "err");
+                        assert_eq!(fields["error.kind"], "access_denied");
+                        assert_eq!(fields["rpc.code"], "7");
+                    }
+                    "peer_cancelled" => {
+                        assert_eq!(fields["outcome"], "err");
+                        assert_eq!(fields["error.kind"], "cancelled");
+                        assert_eq!(fields["rpc.code"], "1");
+                    }
+                    _ => {
+                        assert_eq!(fields["outcome"], "err");
+                        assert_eq!(fields["error.kind"], "cancelled");
+                        assert!(!fields.contains_key("rpc.code"));
+                    }
+                }
+            }
+            assert_eq!(captured.fields("polling")["outcome"], "caller");
+            assert_eq!(captured.fields("polling")["rpc.code"], "99");
+        }
+    }
+
+    #[tokio::test]
+    async fn observed_body_fuses_after_error_or_eof() {
+        for error in [false, true] {
+            let polls = Arc::new(AtomicUsize::new(0));
+            let count = Arc::clone(&polls);
+            let source = stream::poll_fn(move |_| {
+                let polled = count.fetch_add(1, Ordering::SeqCst);
+                if polled == 0 {
+                    if error {
+                        Poll::Ready(Some(Err::<u8, _>(Status::permission_denied("denied"))))
+                    } else {
+                        Poll::Ready(None)
+                    }
+                } else {
+                    Poll::Ready(Some(Ok(99)))
+                }
+            });
+            let mut body = observe_body(&tracing::Span::none(), source);
+            if error {
+                assert!(body.next().await.unwrap().is_err());
+            } else {
+                assert!(body.next().await.is_none());
+            }
+            assert!(body.next().await.is_none());
+            assert!(body.next().await.is_none());
+            assert_eq!(
+                polls.load(Ordering::SeqCst),
+                1,
+                "non-fused source must never be repolled after closure"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn observed_body_reinstalls_owned_dispatch_even_when_span_is_filtered() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        for filtered in [false, true] {
+            let original = obs::tests::Capture::default();
+            let subscriber = tracing_subscriber::Registry::default()
+                .with(original.clone())
+                .with(tracing_subscriber::filter::filter_fn(move |metadata| {
+                    !filtered || metadata.name() != "body"
+                }));
+            let (span, dispatch) = tracing::subscriber::with_default(subscriber, || {
+                let span = tracing::info_span!(
+                    "body",
+                    outcome = Empty,
+                    error.kind = Empty,
+                    rpc.code = Empty
+                );
+                (span, tracing::dispatcher::get_default(Clone::clone))
+            });
+            let other = obs::tests::Capture::default();
+            let _default = tracing::subscriber::set_default(
+                tracing_subscriber::Registry::default().with(other.clone()),
+            );
+            let source = stream::poll_fn(|_| {
+                let _child = tracing::info_span!("body_child");
+                Poll::Ready(Some(Ok::<_, Status>(1_u8)))
+            });
+            // Enabled spans supply their original dispatch even if the guard is
+            // constructed under another subscriber. Disabled spans retain the
+            // dispatch at operation creation because they carry no subscriber.
+            let mut body = if filtered {
+                tracing::dispatcher::with_default(&dispatch, || observe_body(&span, source))
+            } else {
+                observe_body(&span, source)
+            };
+            let caller = tracing::info_span!("caller", outcome = "caller");
+            async {
+                assert_eq!(body.next().await.unwrap().unwrap(), 1);
+                drop(body);
+            }
+            .instrument(caller)
+            .await;
+            assert_eq!(original.all("body_child").len(), 1);
+            assert!(other.all("body_child").is_empty());
+            assert_eq!(other.fields("caller")["outcome"], "caller");
+            if !filtered {
+                assert_eq!(original.fields("body")["error.kind"], "cancelled");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn observed_body_terminal_and_drop_close_real_parent_under_origin() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        for scenario in ["pending", "error", "eof"] {
+            let captured = obs::tests::Capture::default();
+            let mut body = tracing::subscriber::with_default(
+                tracing_subscriber::Registry::default().with(captured.clone()),
+                || {
+                    let parent = tracing::info_span!("origin_parent");
+                    let span = tracing::info_span!(parent: &parent, "body", outcome = Empty, error.kind = Empty, rpc.code = Empty);
+                    let nested = span.in_scope(|| tracing::info_span!("nested_body"));
+                    let source = stream::poll_fn(move |_| {
+                        let _retained = &nested;
+                        match scenario {
+                            "error" => {
+                                Poll::Ready(Some(Err::<u8, _>(Status::permission_denied("denied"))))
+                            }
+                            "eof" => Poll::Ready(None),
+                            _ => Poll::Pending,
+                        }
+                    });
+                    observe_body(&span, source)
+                },
+            );
+            let other = obs::tests::Capture::default();
+            let _default = tracing::subscriber::set_default(
+                tracing_subscriber::Registry::default().with(other.clone()),
+            );
+            let parent = tracing::info_span!("foreign_parent");
+            let _entered = parent.enter();
+            match scenario {
+                "pending" => {
+                    assert!(futures::poll!(body.next()).is_pending());
+                }
+                "error" => {
+                    assert!(body.next().await.unwrap().is_err());
+                }
+                "eof" => {
+                    assert!(body.next().await.is_none());
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(captured.closed("origin_parent"), 0);
+            drop(body);
+            for name in ["nested_body", "body", "origin_parent"] {
+                assert_eq!(captured.closed(name), 1, "{name}");
+            }
+            assert_eq!(other.closed("foreign_parent"), 0);
+            let fields = captured.fields("body");
+            assert_eq!(
+                fields["outcome"],
+                if scenario == "eof" { "ok" } else { "err" }
+            );
+            if scenario == "pending" {
+                assert_eq!(fields["error.kind"], "cancelled");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_server_handler_records_owned_rpc_and_closes_origin_parent() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let service = Service::new(Arc::new(FiniteFollow {
+            inner: MemoryStream::default(),
+            follows: AtomicUsize::new(0),
+            tail_delay: std::time::Duration::from_secs(60),
+            denial: None,
+        }));
+        let captured = obs::tests::Capture::default();
+        let future = tracing::subscriber::with_default(
+            tracing_subscriber::Registry::default().with(captured.clone()),
+            || {
+                let parent = obs::OwnedSpan::new(tracing::info_span!("origin_parent"));
+                parent.scope(StreamService::tail(
+                    &service,
+                    Request::new(wire::TailRequest {
+                        path: "pending".to_owned(),
+                    }),
+                ))
+            },
+        );
+        let mut future = Box::pin(future);
+        assert!(futures::poll!(future.as_mut()).is_pending());
+        assert!(
+            !captured
+                .fields("acyclic.stream.grpc.serve.tail")
+                .contains_key("outcome")
+        );
+        let other = obs::tests::Capture::default();
+        let _default = tracing::subscriber::set_default(
+            tracing_subscriber::Registry::default().with(other.clone()),
+        );
+        let parent = tracing::info_span!("foreign_parent");
+        let _entered = parent.enter();
+        drop(future);
+        let fields = captured.fields("acyclic.stream.grpc.serve.tail");
+        assert_eq!(fields["outcome"], "err");
+        assert_eq!(fields["error.kind"], "cancelled");
+        assert!(!fields.contains_key("rpc.code"));
+        assert_eq!(captured.closed("acyclic.stream.grpc.serve.tail"), 1);
+        assert_eq!(captured.closed("origin_parent"), 1);
+        assert_eq!(other.closed("foreign_parent"), 0);
+    }
 
     struct FiniteFollow {
         inner: MemoryStream,
@@ -1276,6 +1915,7 @@ mod tests {
         }
 
         async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
+            tokio::time::sleep(self.tail_delay).await;
             self.inner.bounds(path).await
         }
 
@@ -1323,7 +1963,7 @@ mod tests {
         provider_channel(Service::new(provider))
     }
 
-    fn provider_channel<P: StreamProvider>(service: Service<P>) -> Channel {
+    fn provider_channel<S: StreamService + Clone>(service: S) -> Channel {
         Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
             tower::service_fn(move |_| {
                 let service = service.clone();
@@ -1345,18 +1985,33 @@ mod tests {
     #[tokio::test]
     async fn grpc_transport_passes_the_public_suite()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let transport = Client::from_channels(
-            Arc::from([in_memory_channel(Arc::new(MemoryStream::default()))]),
-            "fixture",
-        )?;
+        let channel = in_memory_channel(Arc::new(MemoryStream::default()));
+        let transport = Client::from_channels(Arc::from([channel.clone()]), "fixture")?;
         crate::conformance::verify(&transport).await?;
+        let mut obsolete = tonic::client::Grpc::new(channel);
+        obsolete.ready().await?;
+        let result: Result<Response<wire::TailResponse>, Status> = obsolete
+            .unary(
+                Request::new(wire::TailRequest {
+                    path: "events".into(),
+                }),
+                tonic::codegen::http::uri::PathAndQuery::from_static(
+                    "/acyclic.stream.v2.StreamService/Tail",
+                ),
+                tonic_prost::ProstCodec::default(),
+            )
+            .await;
+        assert_eq!(
+            result.err().map(|error| error.code()),
+            Some(tonic::Code::Unimplemented)
+        );
         Ok(())
     }
 
     /// Regroups every Read frame into batches of three records that alternate
     /// between Zstandard and uncompressed frames.
     #[derive(Clone)]
-    struct MixedFrames(Service<MemoryStream>);
+    struct MixedFrames(Service<MemoryStream>, Option<&'static str>);
 
     #[async_trait]
     impl StreamService for MixedFrames {
@@ -1393,6 +2048,26 @@ mod tests {
             &self,
             request: Request<wire::ReadRequest>,
         ) -> Result<Response<Self::ReadStream>, Status> {
+            if let Some(fault) = self.1 {
+                let valid = read_response_wire(vec![wire::Record {
+                    commit_id: Bytes::from(vec![0; 32]),
+                    ..Default::default()
+                }]);
+                let frames: Self::ReadStream = match fault {
+                    "malformed" => {
+                        stream::iter([Ok(read_response_wire(vec![wire::Record::default()]))])
+                            .boxed()
+                    }
+                    "error" => {
+                        stream::iter([Ok(valid), Err(Status::permission_denied("denied"))]).boxed()
+                    }
+                    "pending" => stream::once(async move { Ok(valid) })
+                        .chain(stream::pending())
+                        .boxed(),
+                    _ => stream::iter([Ok(valid)]).boxed(),
+                };
+                return Ok(Response::new(frames));
+            }
             let frames = self
                 .0
                 .read(request)
@@ -1428,6 +2103,11 @@ mod tests {
             &self,
             request: Request<wire::ChildrenRequest>,
         ) -> Result<Response<Self::ChildrenStream>, Status> {
+            if self.1 == Some("malformed_children") {
+                return Ok(Response::new(
+                    stream::iter([Ok(wire::ChildrenResponse { child: None })]).boxed(),
+                ));
+            }
             self.0.children(request).await
         }
         async fn children_page(
@@ -1451,9 +2131,329 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one adversarial matrix compares filtered and visible lifecycle evidence across body boundaries"
+    )]
+    async fn client_body_completion_observes_decode_trailers_and_drop()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        for (filtered, scenario) in [false, true].into_iter().flat_map(|filtered| {
+            ["unpolled", "partial", "eof", "error", "malformed", "limit"]
+                .into_iter()
+                .map(move |scenario| (filtered, scenario))
+        }) {
+            let captured = obs::tests::Capture::default();
+            let dispatch = tracing::Dispatch::new(
+                tracing_subscriber::Registry::default()
+                    .with(captured.clone())
+                    .with(tracing_subscriber::filter::filter_fn(move |metadata| {
+                        !filtered || !metadata.name().starts_with("acyclic.stream")
+                    })),
+            );
+            let source = MixedFrames(
+                Service::new(Arc::new(MemoryStream::default())),
+                Some(match scenario {
+                    "partial" | "limit" => "pending",
+                    _ => scenario,
+                }),
+            );
+            let client = Client::from_channels(Arc::from([provider_channel(source)]), "fixture")?;
+            let body = client
+                .read(ReadRequest {
+                    path: StreamPath::new("events")?,
+                    from: 0,
+                    limit: if scenario == "limit" { 1 } else { 10 },
+                })
+                .with_subscriber(dispatch)
+                .await?;
+            assert!(
+                captured.all("acyclic.stream.grpc.call").is_empty(),
+                "creating a lazy cursor performs no RPC"
+            );
+            let other = obs::tests::Capture::default();
+            let _default = tracing::subscriber::set_default(
+                tracing_subscriber::Registry::default().with(other.clone()),
+            );
+            let caller = tracing::info_span!(
+                "polling_caller",
+                outcome = "caller",
+                error.kind = "caller",
+                rpc.code = 99
+            );
+            async {
+                let mut body = body;
+                match scenario {
+                    "unpolled" => {}
+                    "malformed" => {
+                        assert_eq!(
+                            body.next().await.unwrap().unwrap_err(),
+                            StreamError::Unavailable
+                        );
+                        assert!(body.next().await.is_none());
+                        assert!(body.next().await.is_none());
+                    }
+                    _ => {
+                        assert!(body.next().await.unwrap().is_ok());
+                        if !filtered {
+                            assert!(
+                                !captured
+                                    .fields("acyclic.stream.grpc.call")
+                                    .contains_key("outcome"),
+                                "response headers and one delivered record do not observe trailers"
+                            );
+                        }
+                        if scenario == "error" {
+                            assert_eq!(
+                                body.next().await.unwrap().unwrap_err(),
+                                StreamError::AccessDenied
+                            );
+                            assert!(body.next().await.is_none());
+                        }
+                        if scenario == "eof" {
+                            assert!(body.next().await.is_none());
+                        }
+                    }
+                }
+                drop(body);
+            }
+            .instrument(caller)
+            .await;
+            assert!(
+                other.all("acyclic.stream.grpc.call").is_empty(),
+                "polling dispatch must not steal owned RPC spans"
+            );
+            assert_eq!(other.fields("polling_caller")["outcome"], "caller");
+            assert_eq!(other.fields("polling_caller")["rpc.code"], "99");
+            if filtered {
+                assert!(captured.all("acyclic.stream.grpc.call").is_empty());
+                continue;
+            }
+            let logical = captured.fields("acyclic.stream.grpc.read");
+            let rpc = captured.fields("acyclic.stream.grpc.call");
+            match scenario {
+                "unpolled" => {
+                    assert_eq!(logical["error.kind"], "cancelled");
+                    assert!(rpc.is_empty());
+                }
+                "partial" => {
+                    assert_eq!(logical["error.kind"], "cancelled");
+                    assert_eq!(rpc["error.kind"], "cancelled");
+                    assert!(!rpc.contains_key("rpc.code"));
+                }
+                "limit" => {
+                    assert_eq!(logical["outcome"], "ok");
+                    assert_eq!(rpc["error.kind"], "cancelled");
+                    assert!(!rpc.contains_key("rpc.code"));
+                }
+                "eof" => {
+                    assert_eq!(logical["outcome"], "ok");
+                    assert_eq!(rpc["outcome"], "ok");
+                    assert_eq!(rpc["rpc.code"], "0");
+                }
+                "error" => {
+                    assert_eq!(logical["error.kind"], "access_denied");
+                    assert_eq!(rpc["error.kind"], "access_denied");
+                    assert_eq!(rpc["rpc.code"], "7");
+                }
+                "malformed" => {
+                    assert_eq!(logical["error.kind"], "invalid_response");
+                    assert_eq!(rpc["error.kind"], "invalid_response");
+                    assert!(!rpc.contains_key("rpc.code"));
+                }
+                _ => unreachable!(),
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn eager_children_semantic_decode_failure_keeps_rpc_trailers_unobserved()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let captured = obs::tests::Capture::default();
+        let _default = tracing::subscriber::set_default(
+            tracing_subscriber::Registry::default().with(captured.clone()),
+        );
+        let service = MixedFrames(
+            Service::new(Arc::new(MemoryStream::default())),
+            Some("malformed_children"),
+        );
+        let client = Client::from_channels(Arc::from([provider_channel(service)]), "fixture")?;
+        assert!(matches!(
+            client
+                .children(ChildrenRequest {
+                    parent: None,
+                    limit: 10
+                })
+                .await,
+            Err(StreamError::Unavailable)
+        ));
+        let fields = captured.fields("acyclic.stream.grpc.call");
+        assert_eq!(fields["error.kind"], "invalid_response");
+        assert!(!fields.contains_key("rpc.code"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn client_follow_reconnects_close_rpc_spans_without_closing_cursor()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let captured = obs::tests::Capture::default();
+        let _default = tracing::subscriber::set_default(
+            tracing_subscriber::Registry::default().with(captured.clone()),
+        );
+        let ended = Arc::new(FiniteFollow {
+            inner: MemoryStream::default(),
+            follows: AtomicUsize::new(0),
+            tail_delay: std::time::Duration::ZERO,
+            denial: None,
+        });
+        let live = Arc::new(MemoryStream::default());
+        let path = StreamPath::new("events")?;
+        live.append(AppendRequest {
+            path: path.clone(),
+            records: vec![Bytes::from_static(b"record")],
+            if_tail: None,
+            idempotency_key: None,
+        })
+        .await?;
+        let client = Client::from_channels(
+            Arc::from([
+                provider_channel(Service::new(Arc::clone(&ended))),
+                in_memory_channel(live),
+            ]),
+            "fixture",
+        )?;
+        let mut cursor = client.follow(path, 0).await?;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), cursor.next())
+                .await?
+                .unwrap()
+                .is_ok()
+        );
+        assert_eq!(ended.follows.load(Ordering::Relaxed), 1);
+        let rpcs = captured.all("acyclic.stream.grpc.call");
+        assert_eq!(rpcs.len(), 2);
+        assert_eq!(
+            rpcs.iter()
+                .filter(|fields| fields.get("outcome").is_some_and(|value| value == "ok"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            rpcs.iter()
+                .filter(|fields| !fields.contains_key("outcome"))
+                .count(),
+            1
+        );
+        assert!(
+            !captured
+                .fields("acyclic.stream.grpc.follow")
+                .contains_key("outcome")
+        );
+        drop(cursor);
+        assert_eq!(captured.all("acyclic.stream.grpc.follow").len(), 1);
+        assert_eq!(
+            captured.fields("acyclic.stream.grpc.follow")["error.kind"],
+            "cancelled"
+        );
+        let rpcs = captured.all("acyclic.stream.grpc.call");
+        assert!(
+            rpcs.iter()
+                .any(|fields| fields.get("rpc.code").is_some_and(|value| value == "0"))
+        );
+        assert!(rpcs.iter().any(|fields| {
+            fields
+                .get("error.kind")
+                .is_some_and(|value| value == "cancelled")
+                && !fields.contains_key("rpc.code")
+        }));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unary_retry_attempts_finish_independently()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let captured = obs::tests::Capture::default();
+        let _default = tracing::subscriber::set_default(
+            tracing_subscriber::Registry::default().with(captured.clone()),
+        );
+        let client = Client::connect("https://fixture.invalid", "fixture").await?;
+        let mut first = true;
+        let response = client
+            .unary((), |_, _| {
+                let result = if std::mem::take(&mut first) {
+                    Err(Status::unavailable("retry"))
+                } else {
+                    Ok(Response::new(()))
+                };
+                Box::pin(async move { result })
+            })
+            .await?;
+        let attempts = captured.all("acyclic.stream.grpc.call");
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0]["attempt"], "1");
+        assert_eq!(attempts[1]["attempt"], "2");
+        assert_eq!(attempts[0]["outcome"], "err");
+        assert_eq!(attempts[0]["rpc.code"], "14");
+        assert!(!attempts[1].contains_key("outcome"));
+        response.decode(Ok)?;
+        let attempts = captured.all("acyclic.stream.grpc.call");
+        assert_eq!(attempts[0]["outcome"], "err");
+        assert_eq!(attempts[1]["outcome"], "ok");
+        assert_eq!(attempts[1]["rpc.code"], "0");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unary_headers_wait_for_decode_and_cancel_pending_requests()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let captured = obs::tests::Capture::default();
+        let _default = tracing::subscriber::set_default(
+            tracing_subscriber::Registry::default().with(captured.clone()),
+        );
+        let client = Client::connect("https://fixture.invalid", "fixture").await?;
+        let response = client
+            .unary((), |_, _| {
+                Box::pin(async { Ok(Response::new(wire::AppendResponse::default())) })
+            })
+            .await?;
+        assert!(
+            !captured
+                .fields("acyclic.stream.grpc.call")
+                .contains_key("outcome")
+        );
+        assert!(response.decode(append_outcome_from_wire).is_err());
+        let fields = captured.fields("acyclic.stream.grpc.call");
+        assert_eq!(fields["outcome"], "err");
+        assert_eq!(fields["error.kind"], "invalid_response");
+        assert_eq!(
+            fields["rpc.code"], "0",
+            "unary successful trailers remain distinct from semantic rejection"
+        );
+        let mut pending = Box::pin(client.unary((), |_, _| {
+            Box::pin(std::future::pending::<Result<Response<()>, Status>>())
+        }));
+        assert!(futures::poll!(pending.as_mut()).is_pending());
+        drop(pending);
+        assert!(
+            captured
+                .all("acyclic.stream.grpc.call")
+                .iter()
+                .any(|fields| fields
+                    .get("error.kind")
+                    .is_some_and(|value| value == "cancelled"))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn client_reassembles_mixed_compressed_and_plain_read_frames()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let service = MixedFrames(Service::new(Arc::new(MemoryStream::default())));
+        let service = MixedFrames(Service::new(Arc::new(MemoryStream::default())), None);
         let channel = Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
             tower::service_fn(move |_| {
                 let service = service.clone();
@@ -1775,45 +2775,88 @@ mod tests {
     #[tokio::test]
     async fn a_denied_follow_reports_access_denied_once_and_then_ends()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        for denial in [0, 2] {
-            let provider = Arc::new(FiniteFollow {
-                inner: MemoryStream::default(),
-                follows: AtomicUsize::new(0),
-                tail_delay: std::time::Duration::ZERO,
-                denial: Some(denial),
-            });
-            provider
-                .inner
-                .append(AppendRequest {
-                    path: StreamPath::new("accounts/events")?,
-                    records: vec![Bytes::from_static(b"one"), Bytes::from_static(b"two")],
-                    if_tail: Some(0),
-                    idempotency_key: None,
+        let provider = Arc::new(FiniteFollow {
+            inner: MemoryStream::default(),
+            follows: AtomicUsize::new(0),
+            tail_delay: std::time::Duration::ZERO,
+            denial: Some(2),
+        });
+        provider
+            .inner
+            .append(AppendRequest {
+                path: StreamPath::new("accounts/events")?,
+                records: vec![Bytes::from_static(b"one"), Bytes::from_static(b"two")],
+                if_tail: Some(0),
+                idempotency_key: None,
+            })
+            .await?;
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let admissions = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&admissions);
+        let service = StreamServiceServer::with_interceptor(
+            Service::new(Arc::clone(&provider)),
+            move |request: Request<()>| {
+                observed.fetch_add(1, Ordering::Relaxed);
+                if request
+                    .metadata()
+                    .get("authorization")
+                    .is_some_and(|value| value == "Bearer denied-open")
+                {
+                    return Err(Status::permission_denied("fixture authorization denied"));
+                }
+                Ok(request)
+            },
+        );
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let mut server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(service)
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
                 })
+                .await
+        });
+        let bound = std::time::Duration::from_secs(2);
+        let result = tokio::time::timeout(bound, async {
+            let channel = Endpoint::from_shared(format!("http://{address}"))?
+                .connect()
                 .await?;
-            let transport = Client::from_channels(
-                Arc::from([provider_channel(Service::new(Arc::clone(&provider)))]),
-                "fixture",
-            )?;
-            let items = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                transport
+            let mut sequences = Vec::new();
+            for token in ["fixture", "denied-open"] {
+                let client = Client::from_channels(Arc::from([channel.clone()]), token)?;
+                let items = client
                     .follow(StreamPath::new("accounts/events")?, 0)
                     .await?
-                    .collect::<Vec<_>>(),
-            )
-            .await?;
-            let sequences = items
-                .into_iter()
-                .map(|item| item.map(|record| record.sequence))
-                .collect::<Vec<_>>();
-            let expected = (0..u64::try_from(denial)?)
-                .map(Ok)
-                .chain([Err(StreamError::AccessDenied)])
-                .collect::<Vec<_>>();
-            assert_eq!(sequences, expected);
-            assert_eq!(provider.follows.load(Ordering::Relaxed), 1);
+                    .collect::<Vec<_>>()
+                    .await;
+                sequences.push(
+                    items
+                        .into_iter()
+                        .map(|item| item.map(|record| record.sequence))
+                        .collect::<Vec<_>>(),
+                );
+            }
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(sequences)
+        })
+        .await;
+        let _ = shutdown_tx.send(());
+        let stopped = tokio::time::timeout(bound, &mut server).await;
+        if stopped.is_err() {
+            server.abort();
+            let _ = tokio::time::timeout(bound, &mut server).await;
         }
+        let sequences = result??;
+        stopped???;
+        assert_eq!(
+            sequences,
+            vec![
+                vec![Ok(0), Ok(1), Err(StreamError::AccessDenied)],
+                vec![Err(StreamError::AccessDenied)],
+            ]
+        );
+        assert_eq!(admissions.load(Ordering::Relaxed), 2);
+        assert_eq!(provider.follows.load(Ordering::Relaxed), 1);
         Ok(())
     }
 
@@ -1869,6 +2912,7 @@ mod tests {
             remaining: None,
             active: None,
             buffered: VecDeque::new(),
+            completion: Completion::new(tracing::Span::none()),
         };
         stale.client.preferred.store(1, Ordering::Relaxed);
         stale.advance_follow(0);
@@ -1954,7 +2998,8 @@ mod tests {
                 Box::pin(async move { result })
             }),
         )
-        .await?;
+        .await?
+        .and_then(|response| response.decode(Ok));
         if retry {
             assert_eq!(result, Ok(()));
             assert_eq!(attempts, vec![body.clone(), body]);
@@ -1983,7 +3028,8 @@ mod tests {
                     Err(Status::unknown("outcome unavailable"))
                 })
             })
-            .await;
+            .await
+            .and_then(|response| response.decode(Ok));
         assert_eq!(result, Err(StreamError::Unavailable));
         assert_eq!(tokio::time::Instant::now() - started, OPERATION_DEADLINE);
         assert!((2..=100).contains(&attempts));

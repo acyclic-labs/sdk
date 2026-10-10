@@ -14,10 +14,10 @@
 <body data-result="pending">
 <script type="module">
   import { create } from "@bufbuild/protobuf";
-  import { MemoryObjectsV2, CreateBucketRequestSchema, PutObjectHeaderSchema, GetObjectRequestSchema } from "../dist/index.js";
+  import { MemoryObjectsV1, CreateBucketRequestSchema, PutObjectHeaderSchema, GetObjectRequestSchema } from "../dist/index.js";
 
   try {
-    const objects = await MemoryObjectsV2.create();
+    const objects = await MemoryObjectsV1.create();
     const bucket = await objects.createBucket(create(CreateBucketRequestSchema, { name: "browser-objects" }));
     const body = new Uint8Array([1, 2, 3]);
     const header = create(PutObjectHeaderSchema, { bucket: bucket.bucket, objectKey: "artifact" });

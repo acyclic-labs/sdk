@@ -1559,12 +1559,13 @@ impl ProjectionState {
         inode: u64,
         stream: &mut DirectoryStream,
         mut listing: L,
+        span: &tracing::Span,
     ) {
         if stream.emitted < 2 {
             let parent_inode = stream.parent_inode;
             let attr = match self.node_attr(inode) {
                 Ok(attr) => attr,
-                Err(error) => return listing.error(Errno::from_i32(error)),
+                Err(error) => return listing.error(errno_on(span, error)),
             };
             // The kernel never instantiates dot entries, so they carry the
             // directory's own attributes without a cache lifetime.
@@ -1632,7 +1633,7 @@ impl ProjectionState {
                     if listed {
                         return listing.ok();
                     }
-                    return listing.error(Errno::from_i32(error));
+                    return listing.error(errno_on(span, error));
                 }
             };
             let ttl = if L::COUNTS_LOOKUPS {
@@ -3460,7 +3461,13 @@ impl FuseProjection {
         }
     }
 
-    fn list_directory<L: DirectoryListing>(&self, inode: u64, offset: u64, listing: L) {
+    fn list_directory<L: DirectoryListing>(
+        &self,
+        inode: u64,
+        offset: u64,
+        listing: L,
+        span: &tracing::Span,
+    ) {
         let source = self.source();
         let listed = (|| {
             let names = self.core.names()?;
@@ -3477,11 +3484,11 @@ impl FuseProjection {
         })();
         match listed {
             Ok((_names, _lease, mut stream, mut state)) => {
-                state.list_directory(source, inode, &mut stream, listing);
+                state.list_directory(source, inode, &mut stream, listing, span);
                 state.streams.park(inode, stream);
                 drop(state);
             }
-            Err(error) => listing.error(Errno::from_i32(error)),
+            Err(error) => listing.error(errno_on(span, error)),
         }
     }
 
@@ -3842,15 +3849,18 @@ fn copy_open_range(
     u32::try_from(transferred).map_err(|_| libc::EOVERFLOW)
 }
 
+/// Records one callback error on its exact span before constructing the reply.
+fn errno_on(span: &tracing::Span, error: i32) -> Errno {
+    span.record("errno", error);
+    Errno::from_i32(error)
+}
+
 /// Replies to one callback with its result.
 macro_rules! respond {
-    ($reply:ident, $result:expr, |$value:pat_param| $ok:expr) => {
+    ($reply:ident, $span:expr, $result:expr, |$value:pat_param| $ok:expr) => {
         match $result {
             Ok($value) => $ok,
-            Err(error) => {
-                tracing::Span::current().record("errno", error);
-                $reply.error(Errno::from_i32(error))
-            }
+            Err(error) => $reply.error($crate::native_mount::fuse::errno_on(&$span, error)),
         }
     };
 }
@@ -3884,8 +3894,12 @@ impl Filesystem for FuseProjection {
             self.core.request("lookup"),
             callback_span!(TRACE, lookup, ino = parent.0),
         );
-        respond!(reply, self.lookup_entry(parent.0, name), |entry| entry
-            .reply(reply));
+        respond!(
+            reply,
+            _request.1,
+            self.lookup_entry(parent.0, name),
+            |entry| entry.reply(reply)
+        );
     }
 
     fn getattr(
@@ -3902,6 +3916,7 @@ impl Filesystem for FuseProjection {
         );
         respond!(
             reply,
+            _request.1,
             self.node_attributes(
                 inode.0,
                 fh.map(|handle| handle.0).filter(|handle| *handle != 0)
@@ -3927,7 +3942,8 @@ impl Filesystem for FuseProjection {
             self.core.request("readlink"),
             callback_span!(TRACE, readlink, ino = inode.0),
         );
-        respond!(reply, self.read_link(inode.0), |target| reply.data(&target));
+        respond!(reply, &_request.1, self.read_link(inode.0), |target| reply
+            .data(&target));
     }
 
     #[allow(
@@ -3958,7 +3974,7 @@ impl Filesystem for FuseProjection {
             callback_span!(DEBUG, setattr, ino = inode.0),
         );
         if bkuptime.is_some() {
-            return reply.error(Errno::from_i32(libc::EOPNOTSUPP));
+            return reply.error(errno_on(&_request.1, libc::EOPNOTSUPP));
         }
         let changes = AttributeChanges {
             mode,
@@ -3973,6 +3989,7 @@ impl Filesystem for FuseProjection {
         };
         respond!(
             reply,
+            _request.1,
             self.set_attributes(
                 inode.0,
                 fh.map(|handle| handle.0).filter(|handle| *handle != 0),
@@ -3998,6 +4015,7 @@ impl Filesystem for FuseProjection {
         let metadata = create_metadata(mode & !umask, S_IFDIR, request.uid(), request.gid());
         respond!(
             reply,
+            _request.1,
             self.create_node(parent.0, name, |path| self
                 .source()
                 .create_directory(path, metadata)),
@@ -4027,11 +4045,12 @@ impl Filesystem for FuseProjection {
                 Some(native_device_parts(rdev)),
             ),
             S_IFBLK => (MountNodeKind::BlockDevice, Some(native_device_parts(rdev))),
-            _ => return reply.error(Errno::from_i32(libc::EOPNOTSUPP)),
+            _ => return reply.error(errno_on(&_request.1, libc::EOPNOTSUPP)),
         };
         let metadata = create_metadata(mode & !umask, mode & S_IFMT, request.uid(), request.gid());
         respond!(
             reply,
+            _request.1,
             self.create_node(parent.0, name, |path| self
                 .source()
                 .create_special(path, kind, device, metadata)),
@@ -4055,6 +4074,7 @@ impl Filesystem for FuseProjection {
         let target = Bytes::copy_from_slice(target.as_os_str().as_bytes());
         respond!(
             reply,
+            _request.1,
             self.create_node(parent.0, link_name, |path| self
                 .source()
                 .create_symbolic_link(path, target, metadata)),
@@ -4068,7 +4088,9 @@ impl Filesystem for FuseProjection {
             self.core.request("unlink"),
             callback_span!(TRACE, unlink, ino = parent.0),
         );
-        respond!(reply, self.remove_name(parent.0, name), |()| reply.ok());
+        respond!(reply, &_request.1, self.remove_name(parent.0, name), |()| {
+            reply.ok();
+        });
     }
 
     fn rmdir(&self, request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
@@ -4077,7 +4099,9 @@ impl Filesystem for FuseProjection {
             self.core.request("rmdir"),
             callback_span!(TRACE, rmdir, ino = parent.0),
         );
-        respond!(reply, self.remove_name(parent.0, name), |()| reply.ok());
+        respond!(reply, &_request.1, self.remove_name(parent.0, name), |()| {
+            reply.ok();
+        });
     }
 
     fn rename(
@@ -4097,6 +4121,7 @@ impl Filesystem for FuseProjection {
         );
         respond!(
             reply,
+            _request.1,
             self.rename_name(parent.0, name, new_parent.0, new_name, flags.bits()),
             |()| reply.ok()
         );
@@ -4117,6 +4142,7 @@ impl Filesystem for FuseProjection {
         );
         respond!(
             reply,
+            _request.1,
             self.link_name(inode.0, new_parent.0, new_name),
             |entry| entry.reply(reply)
         );
@@ -4130,14 +4156,16 @@ impl Filesystem for FuseProjection {
         );
         if self.skips_open {
             // `ENOSYS` tells the kernel to open every file without asking.
-            return reply.error(Errno::from_i32(libc::ENOSYS));
+            return reply.error(errno_on(&_request.1, libc::ENOSYS));
         }
-        respond!(reply, self.open_node(inode.0, flags.0), |(
-            handle,
-            flags,
-        )| {
-            reply.opened(FuseFileHandle(handle), flags);
-        });
+        respond!(
+            reply,
+            _request.1,
+            self.open_node(inode.0, flags.0),
+            |(handle, flags)| {
+                reply.opened(FuseFileHandle(handle), flags);
+            }
+        );
     }
 
     fn read(
@@ -4165,6 +4193,7 @@ impl Filesystem for FuseProjection {
         );
         respond!(
             reply,
+            _request.1,
             self.read_through(inode.0, fh.0, offset, size),
             |bytes| {
                 reply.data(&bytes);
@@ -4202,6 +4231,7 @@ impl Filesystem for FuseProjection {
         );
         respond!(
             reply,
+            _request.1,
             self.with_handle(inode.0, fh.0, Access::Write, |handle| {
                 self.write_handle(inode.0, handle, offset, data)
             }),
@@ -4227,7 +4257,7 @@ impl Filesystem for FuseProjection {
         let flushed = self.with_handle(inode.0, fh.0, Access::Read, |handle| {
             self.flush_handle(inode.0, handle, true, false)
         });
-        respond!(reply, flushed, |()| {
+        respond!(reply, &_request.1, flushed, |()| {
             reply.ok();
         });
     }
@@ -4248,10 +4278,11 @@ impl Filesystem for FuseProjection {
         if self.skips_open && fh.0 == 0 {
             // A close flushes nothing for this source (see `skips_open`), and
             // `ENOSYS` tells the kernel to stop sending closes.
-            return reply.error(Errno::from_i32(libc::ENOSYS));
+            return reply.error(errno_on(&_request.1, libc::ENOSYS));
         }
         respond!(
             reply,
+            _request.1,
             self.flush_handle(inode.0, fh.0, false, false),
             |()| {
                 reply.ok();
@@ -4278,9 +4309,14 @@ impl Filesystem for FuseProjection {
             self.core.request("release"),
             callback_span!(DEBUG, release, ino = inode.0, fh = fh.0),
         );
-        respond!(reply, self.flush_handle(inode.0, fh.0, false, true), |()| {
-            reply.ok();
-        });
+        respond!(
+            reply,
+            _request.1,
+            self.flush_handle(inode.0, fh.0, false, true),
+            |()| {
+                reply.ok();
+            }
+        );
     }
 
     fn opendir(&self, request: &Request, inode: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
@@ -4292,7 +4328,7 @@ impl Filesystem for FuseProjection {
         // `ENOSYS` tells the kernel to list every directory without opening
         // it from now on, with its listing cached.
         if self.skips_opendir {
-            return reply.error(Errno::ENOSYS);
+            return reply.error(errno_on(&_request.1, libc::ENOSYS));
         }
         reply.opened(
             FuseFileHandle(0),
@@ -4313,7 +4349,7 @@ impl Filesystem for FuseProjection {
             self.core.request("readdir"),
             callback_span!(TRACE, readdir, ino = inode.0, fh = fh.0, offset = offset),
         );
-        self.list_directory(inode.0, offset, reply);
+        self.list_directory(inode.0, offset, reply, &_request.1);
     }
 
     fn readdirplus(
@@ -4335,7 +4371,7 @@ impl Filesystem for FuseProjection {
                 offset = offset
             ),
         );
-        self.list_directory(inode.0, offset, reply);
+        self.list_directory(inode.0, offset, reply, &_request.1);
     }
 
     fn releasedir(
@@ -4369,7 +4405,12 @@ impl Filesystem for FuseProjection {
         );
         // Directory fsync is an explicit durability boundary too; never hold
         // the state lock across SDK publication.
-        respond!(reply, self.source().flush().map_err(errno), |()| reply.ok());
+        respond!(
+            reply,
+            &_request.1,
+            self.source().flush().map_err(errno),
+            |()| reply.ok()
+        );
     }
 
     #[allow(
@@ -4393,6 +4434,7 @@ impl Filesystem for FuseProjection {
         );
         respond!(
             reply,
+            &_request.1,
             self.write_named_attribute(inode.0, name, value, flags, position),
             |()| reply.ok()
         );
@@ -4411,9 +4453,14 @@ impl Filesystem for FuseProjection {
             self.core.request("getxattr"),
             callback_span!(TRACE, getxattr, ino = inode.0),
         );
-        respond!(reply, self.read_named_attribute(inode.0, name), |value| {
-            reply_xattr(reply, &value, size);
-        });
+        respond!(
+            reply,
+            &_request.1,
+            self.read_named_attribute(inode.0, name),
+            |value| {
+                reply_xattr(reply, &value, size, &_request.1);
+            }
+        );
     }
 
     fn listxattr(&self, request: &Request, inode: INodeNo, size: u32, reply: ReplyXattr) {
@@ -4422,9 +4469,14 @@ impl Filesystem for FuseProjection {
             self.core.request("listxattr"),
             callback_span!(TRACE, listxattr, ino = inode.0),
         );
-        respond!(reply, self.list_named_attributes(inode.0), |encoded| {
-            reply_xattr(reply, &encoded, size);
-        });
+        respond!(
+            reply,
+            &_request.1,
+            self.list_named_attributes(inode.0),
+            |encoded| {
+                reply_xattr(reply, &encoded, size, &_request.1);
+            }
+        );
     }
 
     fn removexattr(&self, request: &Request, inode: INodeNo, name: &OsStr, reply: ReplyEmpty) {
@@ -4433,9 +4485,14 @@ impl Filesystem for FuseProjection {
             self.core.request("removexattr"),
             callback_span!(TRACE, removexattr, ino = inode.0),
         );
-        respond!(reply, self.remove_named_attribute(inode.0, name), |()| {
-            reply.ok();
-        });
+        respond!(
+            reply,
+            &_request.1,
+            self.remove_named_attribute(inode.0, name),
+            |()| {
+                reply.ok();
+            }
+        );
     }
 
     #[allow(
@@ -4466,6 +4523,7 @@ impl Filesystem for FuseProjection {
         );
         respond!(
             reply,
+            &_request.1,
             self.with_handle(inode.0, fh.0, Access::Write, |handle| {
                 self.allocate(inode.0, handle, offset, length, mode)
             }),
@@ -4490,7 +4548,7 @@ impl Filesystem for FuseProjection {
         let found = self.with_handle(inode.0, fh.0, Access::Read, |handle| {
             self.seek(inode.0, handle, offset, whence)
         });
-        respond!(reply, found, |found| {
+        respond!(reply, &_request.1, found, |found| {
             reply.offset(found);
         });
     }
@@ -4531,7 +4589,7 @@ impl Filesystem for FuseProjection {
                 )
             })
         });
-        respond!(reply, copied, |written| reply.written(written));
+        respond!(reply, &_request.1, copied, |written| reply.written(written));
     }
 
     #[allow(
@@ -4554,6 +4612,7 @@ impl Filesystem for FuseProjection {
         );
         respond!(
             reply,
+            &_request.1,
             self.create_file(request, parent.0, name, mode & !umask, flags),
             |(entry, handle, open_flags)| reply.created(
                 &entry.ttl,
@@ -4567,13 +4626,13 @@ impl Filesystem for FuseProjection {
 }
 
 /// Answers a size probe or returns `value` when it fits in `size`.
-fn reply_xattr(reply: ReplyXattr, value: &[u8], size: u32) {
+fn reply_xattr(reply: ReplyXattr, value: &[u8], size: u32, span: &tracing::Span) {
     if size == 0 {
         reply.size(u32::try_from(value.len()).unwrap_or(u32::MAX));
     } else if value.len() <= size as usize {
         reply.data(value);
     } else {
-        reply.error(Errno::from_i32(libc::ERANGE));
+        reply.error(errno_on(span, libc::ERANGE));
     }
 }
 
@@ -4662,6 +4721,24 @@ fn admit_open(writable: bool, flags: i32) -> Result<(), i32> {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
+
+    #[test]
+    fn filtered_callback_error_replies_without_overwriting_parent_errno() {
+        use super::Errno;
+        struct Reply(std::cell::Cell<bool>);
+        impl Reply {
+            fn error(&self, error: Errno) {
+                assert_eq!(error, Errno::from_i32(libc::EIO));
+                self.0.set(true);
+            }
+        }
+        let reply = Reply(std::cell::Cell::new(false));
+        crate::obs::assert_filtered_callback_isolation(|span| {
+            respond!(reply, span, Err::<(), i32>(libc::EIO), |()| {});
+            libc::EIO
+        });
+        assert!(reply.0.get());
+    }
     use super::super::{
         MountAttributePage, MountAttributeWriteMode, MountDirectoryPage, MountRangeAllocation,
         MountSourceError, MountViewLease, ViewObserver,

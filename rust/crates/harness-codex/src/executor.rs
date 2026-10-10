@@ -103,6 +103,24 @@ pub trait CodexObserver: Send + Sync {
     fn event(&self, event: &CodexEvent);
 }
 
+/// Trace only a fixed event classification: even an unknown event's type can
+/// contain caller-controlled text. The synchronous scope ends on unwind too.
+fn notify_observer(observer: &dyn CodexObserver, event: &CodexEvent) {
+    let event_kind = match event {
+        CodexEvent::ThreadStarted { .. } => "thread.started",
+        CodexEvent::TurnStarted => "turn.started",
+        CodexEvent::TurnCompleted { .. } => "turn.completed",
+        CodexEvent::TurnFailed { .. } => "turn.failed",
+        CodexEvent::ItemStarted(_) => "item.started",
+        CodexEvent::ItemUpdated(_) => "item.updated",
+        CodexEvent::ItemCompleted(_) => "item.completed",
+        CodexEvent::Error { .. } => "error",
+        CodexEvent::Other(_) => "other",
+    };
+    tracing::debug_span!("acyclic.harness.codex.hook", event.kind = event_kind)
+        .in_scope(|| observer.event(event));
+}
+
 /// What a crashed run is resumed with.
 const CONTINUE_PROMPT: &str =
     "Your previous run of this task was interrupted. Continue the task from where you stopped.";
@@ -373,7 +391,7 @@ impl CodexExecutor {
                         continue;
                     };
                     if let Some(observer) = &self.observer {
-                        observer.event(&event);
+                        notify_observer(observer.as_ref(), &event);
                     }
                     transcript.observe(&event);
                     turn.record(&event, &line).await?;
@@ -916,3 +934,7 @@ const fn item_status(kind: &ItemKind) -> Option<ItemStatus> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+#[path = "executor_tracing_tests.rs"]
+mod tracing_tests;

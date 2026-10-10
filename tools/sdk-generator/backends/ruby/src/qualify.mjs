@@ -11,7 +11,7 @@ const coordinate = "acyclic-sdk-transport";
 const version = "0.2.0.alpha.1";
 const packageName = `${coordinate}-${version}.gem`;
 const specName = `${coordinate}.gemspec`;
-const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v2/stream.proto"];
+const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"];
 const negatives = { InvalidActorBytes: "code_sha256", InvalidWorkerBytes: "javascript_module", InvalidOptionalInteger: "if_tail" };
 
 function files(root, prefix = "") {

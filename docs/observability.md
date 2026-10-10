@@ -12,7 +12,10 @@ summarise it.
   dependency enables only `std` and `attributes`. Its span tests use
   `tracing-subscriber.workspace = true` under the matching `dev-dependencies`
   table.
-- Instrument with `#[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(...))]`.
+- Own the operation span explicitly when recording completion; filesystem
+  `obs::span!`/`in_span`/`scope` erase tracing on wasm32. Attribute instrumentation
+  remains suitable for spans that do not record completion through current-span
+  helpers.
   Each crate has a private `obs` module whose `obs_event!`/`obs_record!` macros
   expand to nothing on wasm32.
 - wasm32 builds stay free of tracing. Nothing installs a subscriber there, and
@@ -49,10 +52,38 @@ ends.
 - **Ids:** `workspace_id`, `volume_id`, `generation` (short hex), `stream_id`,
   `rev`, `task_id`, `machine_id`, `run_id`, and `ino`/`fh` for mounts.
 - **Counts:** `items`, `bytes`, `fsyncs`, `frames`, `batch_len`.
+- **Retries:** each physical `acyclic.stream.grpc.call` span records its singular
+  `attempt` ordinal. The logical read or follow span stays open through terminal
+  completion or consumer drop.
 - **Result:** `outcome` is `"ok"` or `"err"`. `error.kind` is a stable
   `&'static str` from the error enum's `fn kind(&self) -> &'static str`; add
-  that method to any error enum that lacks one. RPCs also record `rpc.code`
-  (the tonic `Code` or the HTTP status).
+  that method to any error enum that lacks one. RPCs record `rpc.code` only for
+  received transport status (the tonic `Code` or HTTP status). A streaming
+  semantic decode failure records `invalid_response` and leaves the code unset;
+  unary semantic rejection retains a received `OK` code.
+
+Record completion on the operation's own span handle. A filtered child span
+must not record on its visible parent. Preserve span and subscriber context
+when work crosses a worker boundary; enter spans only while polling or running
+the work, never across an unrelated asynchronous wait.
+Retain caller ancestry when an operation span is filtered, while recording
+completion only on the operation handle. Destroy retained span/context handles
+under their originating subscriber, including cancellation and unwinding.
+
+Objects RPC success includes body consumption and decoding. Streamed download
+success requires validated EOF and the selected length, rather than headers or
+merely receiving the expected bytes. Terminal errors record `err` and their
+semantic kind. Once an RPC span is created, dropping an unfinished RPC future
+or returned body records `err`/`cancelled`, including an unpolled returned body.
+A public async RPC future that is never polled creates no span.
+This is the consumer's lifetime: submitted native work may continue after
+consumer cancellation and retain its own span until actual completion. Native
+filesystem receipt spans record a terminal result only when the operation
+returns; an abandoned future leaves its outcome unset.
+
+Stream gRPC bodies also require EOF for success and record `cancelled` on
+unfinished consumer drop. Detached provider work
+records its actual terminal worker result even when its caller was cancelled.
 
 **Forbidden fields.** Users attach trace files to bug reports, so never record:
 
@@ -79,17 +110,35 @@ constants, never the request path. The same rules apply to the TypeScript
 
 Do not add a second set of counters.
 
-- `WorkCounters::emit(&self, op: &'static str, outcome: &'static str)` emits one
+- `WorkCounters::emit` emits one
   `debug!` event with all `WorkCounters` fields, under their `WorkCounters`
   names. It does so only when
   `tracing::enabled!(target: "acyclic.work", Level::DEBUG)` is true.
-- Each fs `info`/`debug` span also declares three `Empty` summary fields, filled
-  from the receipt:
+- Each receipt-returning fs `info`/`debug` span also declares three `Empty`
+  summary fields, filled from the receipt:
   - `work.items`: `items_examined`
   - `work.bytes`: `object_bytes_read + object_bytes_written + authority_bytes_written`
   - `work.durability`: `durability_operations`
-- `Observe::observe(self, op)` on `MeasuredResult` does both at the return
-  point, for success and failure alike.
+  Plain `Result<OperationReceipt<_>, _>` APIs record these totals on success;
+  failures without a receipt leave them unset. Measured failures carry their
+  own work totals and record those too.
+- `Observe::observe_on(self, span, op)` on `MeasuredResult` does both at the return
+  point, for success and failure alike, only at receipt-returning facade
+  operations. Observed facade operations do not call another observed facade
+  operation. Sum `acyclic.work` events to account for that facade work once.
+  Each event has an explicit operation span parent; if that span is filtered,
+  the event has no parent. Its static `op` still identifies the receipt, and
+  filtering spans does not suppress independently enabled work events.
+- Kernel, native capture, materialization, and other nested operations use
+  `obs::measured_on` to record summaries on their own spans without emitting
+  `acyclic.work`. Their `work.*` fields overlap with caller receipts and must
+  not be added together. Direct calls to those APIs are visible through spans,
+  but are outside the facade event ledger.
+- Convenience entry points that delegate to an instrumented implementation
+  share that implementation's span. Blocking workers retain the caller's span
+  and scoped subscriber through the actual work, including after caller drop.
+  An abandoned operation has no terminal outcome unless it returns; a retained
+  worker span is not evidence that its caller succeeded.
 
 ## Enablement
 
@@ -98,7 +147,7 @@ The plugin never writes tracing output to stdout, which carries JSON-RPC.
 
 | Variable | Effect |
 | --- | --- |
-| `ACYCLIC_LOG` | `EnvFilter` directives for a `fmt` layer on stderr. In `__service` mode it writes to `<state dir>/logs/service-{pid}.log` instead. |
+| `ACYCLIC_LOG` | `EnvFilter` directives for a `fmt` layer on stderr. In `__service` mode it writes to `<state dir>/logs/service.log` instead. |
 | `ACYCLIC_LOG_FILE` | Overrides the `ACYCLIC_LOG` destination |
 | `ACYCLIC_TRACE_FILE` | Writes a Perfetto-compatible Chrome trace. `{pid}` is replaced by the process id. |
 | `ACYCLIC_TRACE_FILTER` | Filter for the trace file. The default is `acyclic_fs=debug,acyclic_stream=debug,acyclic_objects=debug,acyclic_native_runtime=debug,acyclic_plugin=debug`. |
@@ -106,6 +155,13 @@ The plugin never writes tracing output to stdout, which carries JSON-RPC.
 
 The plugin service inherits its environment when it is spawned. Drain it to
 apply a change. `doctor` prints the active filter.
+
+File logs are best-effort diagnostics: the active file and one `.1` archive are
+each bounded to 4 MiB, with one bounded `.1.next` staging file during rollover.
+Writers attempt the shared active-file lock once; contention rejects a record
+without waiting, and a writer opened while busy remains usable afterward.
+Oversized records are rejected. I/O failure can leave a partial record; accepted
+writes and `flush()` provide no durability guarantee.
 
 ## Tests
 

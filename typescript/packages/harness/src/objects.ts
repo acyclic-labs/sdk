@@ -6,14 +6,14 @@ import {
 } from "./index.js";
 import {
   GetObjectRequestSchema, HeadBucketRequestSchema, PutObjectHeaderSchema,
-  ErrorCode, ObjectsLimit, ObjectsV2Error, type Bucket, type ObjectsV2Provider,
-} from "@acyclic-labs/objects/v2";
+  ErrorCode, ObjectsLimit, ObjectsV1Error, type Bucket, type ObjectsV1Provider,
+} from "@acyclic-labs/objects/v1";
 
 const encoder = new TextEncoder();
 const maximumObjectKeyBytes = ObjectsLimit.MAX_KEY_BYTES;
 
 export interface ObjectContentOptions {
-  readonly objects: ObjectsV2Provider;
+  readonly objects: ObjectsV1Provider;
   readonly bucket: Bucket;
   readonly volume: ObjectVolumeRef;
   readonly expectedProvider: ProviderRef<"objects">;
@@ -33,10 +33,10 @@ export type ObjectVolumeRef = VolumeRef<VolumeClass, "objects">;
 export class ObjectContentStore {
   readonly #namespace: string;
   readonly #writable: boolean;
-  readonly #objects: Pick<ObjectsV2Provider, "headBucket" | "put" | "get">;
+  readonly #objects: Pick<ObjectsV1Provider, "headBucket" | "put" | "get">;
 
   private constructor(readonly options: ObjectContentOptions, namespace: string, writable: boolean,
-    objects: Pick<ObjectsV2Provider, "headBucket" | "put" | "get">) {
+    objects: Pick<ObjectsV1Provider, "headBucket" | "put" | "get">) {
     this.#namespace = namespace;
     this.#writable = writable;
     this.#objects = objects;
@@ -137,7 +137,7 @@ export class ObjectContentStore {
     } catch (error) {
       // Another operation may already have placed this exact content. Verify
       // the selected current bytes below; a retry receipt alone is not residency.
-      if (!(error instanceof ObjectsV2Error) || error.code !== ErrorCode.PRECONDITION_FAILED) throw error;
+      if (!(error instanceof ObjectsV1Error) || error.code !== ErrorCode.PRECONDITION_FAILED) throw error;
     }
     await this.#readContent(reference);
     return reference;
@@ -198,7 +198,7 @@ export class ObjectContentStore {
         mutation: { idempotencyKey: `harness-upload-intent:${this.#namespace}:${operationId}` },
       }), intent);
     } catch (error) {
-      if (!(error instanceof ObjectsV2Error) || error.code !== ErrorCode.PRECONDITION_FAILED) throw error;
+      if (!(error instanceof ObjectsV1Error) || error.code !== ErrorCode.PRECONDITION_FAILED) throw error;
     }
     const pinned = await this.#objects.get(create(GetObjectRequestSchema, {
       bucket: this.options.bucket.bucket, objectKey,

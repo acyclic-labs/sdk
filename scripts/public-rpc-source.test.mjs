@@ -4,8 +4,8 @@ import assert from "node:assert/strict";
 import { createSourceInspector } from "./public-rpc-source.mjs";
 import { ActorsService } from "../typescript/packages/actors/generated/proto/actors/v1/actors_pb.js";
 import { WorkersService } from "../typescript/packages/workers/generated/proto/workers/v1/workers_pb.js";
-import { StreamService } from "../typescript/packages/stream/generated/proto/stream/v2/stream_pb.js";
-import { ObjectsService } from "../typescript/packages/objects/generated/proto/objects/v2/objects_pb.js";
+import { StreamService } from "../typescript/packages/stream/generated/proto/stream/v1/stream_pb.js";
+import { ObjectsService } from "../typescript/packages/objects/generated/proto/objects/v1/objects_pb.js";
 
 const root = new URL("..", import.meta.url);
 const read = path => { try { return readFileSync(new URL(path, root), "utf8"); } catch (error) { if (error.code === "ENOENT") return ""; throw error; } };
@@ -32,7 +32,7 @@ missing("missing Workers browser Rust transport", WorkersService, "InvokeVersion
 missing("missing package gRPC export", WorkersService, "InvokeVersion", "typescript/packages/workers/package.json", s => { const manifest = JSON.parse(s); delete manifest.exports["./grpc"]; return JSON.stringify(manifest); }, "typescriptPackageExported");
 missing("missing entire HTTP transport", WorkersService, "InvokeVersion", "rust/crates/workers/src/http.rs", () => "", "rustHttp");
 missing("server implementation cannot substitute for Rust client", StreamService, "Read", "rust/crates/stream/src/grpc.rs", s => s.replace("async fn read(", "async fn removed_read("), "rustGrpc");
-missing("missing inherited Objects HTTP operation", ObjectsService, "PutObject", "typescript/packages/objects/src/v2.ts", s => s.replace("put(", "async removed_put("), "typescriptHttp");
+missing("missing inherited Objects HTTP operation", ObjectsService, "PutObject", "typescript/packages/objects/src/v1.ts", s => s.replace("put(", "async removed_put("), "typescriptHttp");
 
 test("missing generated Actors operation removes both TypeScript capability flags", () => {
   const method = ActorsService.methods[0];
@@ -66,4 +66,16 @@ test("missing Actors client export removes the package capability", () => {
   assert.notEqual(changed, original);
   const inspect = createSourceInspector(root, candidate => candidate === path ? changed : read(candidate));
   assert.equal(inspect(ActorsService, method).typescriptPackageExported, false);
+});
+
+for (const service of [ObjectsService, StreamService]) {
+  test(`${service.typeName} rejects the obsolete namespace`, () => {
+    const obsolete = { ...service, typeName: service.typeName.replace(".v1.", ".v2.") };
+    assert.throws(() => createSourceInspector(root)(obsolete, service.methods[0]), /unsupported current contract/);
+  });
+}
+test("additional Objects contract module fails closed", () => {
+  const path = "rust/crates/objects/src/lib.rs";
+  const inspect = createSourceInspector(root, candidate => candidate === path ? read(path) + "\npub mod v2;\n" : read(candidate));
+  assert.throws(() => inspect(ObjectsService, ObjectsService.methods[0]), /one current contract module/);
 });

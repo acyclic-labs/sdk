@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { connect, createServer } from "node:http2";
 import { once } from "node:events";
 import { test } from "node:test";
-import { fixtureServer } from "./fixture-server.mjs";
+import { ownFixtureServer as fixtureServer } from "../../../../scripts/fixture-server.mjs";
 
 test("fixture shutdown closes a persistent HTTP/2 client session", { timeout: 5000 }, async () => {
   const server = createServer();

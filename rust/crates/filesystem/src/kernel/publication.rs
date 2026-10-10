@@ -285,23 +285,6 @@ pub(crate) async fn publish_generation_async_with_permit<
     .await
 }
 
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    tracing::instrument(
-        name = "acyclic.fs.kernel.publish",
-        level = "debug",
-        skip_all,
-        fields(
-            outcome = crate::obs::Empty,
-            error.kind = crate::obs::Empty,
-            work.items = crate::obs::Empty,
-            work.bytes = crate::obs::Empty,
-            work.durability = crate::obs::Empty,
-            volume_id = crate::obs::hex(&request.volume_id.into_bytes()),
-            generation = crate::obs::hex(&request.generation_root.digest.as_bytes()[..8]),
-        )
-    )
-)]
 async fn publish_generation_async_inner<
     O: crate::AsyncObjectStore,
     A: crate::AsyncAuthorityStore,
@@ -314,72 +297,81 @@ async fn publish_generation_async_inner<
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<PublicationReceipt, PublicationFailure> {
-    crate::obs::measured(
-        async move {
-            validate_authority(request)?;
-            let proven_at = objects.collection_sweeps();
-            let proof = prove_generation_closure_async(
-                objects,
-                request.generation_root,
-                closure_limits,
-                budget,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
-            let operation_context = permit_context(intent.operation_context, intent.permit);
-            let prepared = prepare_publication(proof, request, operation_context, budget)?;
-            let mut work = prepared.work;
-            // The authority CAS is the only point at which immutable bodies become
-            // reachable after a crash. Drain the private staged part of exactly the
-            // proven closure first; a failed drain leaves no published generation
-            // and can be retried idempotently.
-            let drained = objects
-                .flush_before_publish(
-                    crate::PublicationScope::Closure {
-                        objects: &prepared.proof.objects,
-                        proven_at,
-                    },
-                    work.remaining(budget)
-                        .map_err(|error| OperationFailure::new(error.into(), work))?,
-                    cancellation,
-                )
-                .await
-                .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-            work = work
-                .checked_add(drained.work)
-                .map_err(|error| OperationFailure::new(error.into(), work))?;
-            let remaining = work
-                .remaining(budget)
-                .map_err(|error| OperationFailure::new(error.into(), work))?;
-            let receipt = crate::AsyncAuthorityStore::compare_and_append_guarded(
-                authority,
-                crate::GuardedAppend {
-                    authority_id: request.authority_id,
-                    epoch: request.epoch,
-                    expected: request.expected,
-                    commit: prepared.commit,
-                    permit: intent.permit,
+    let span = crate::obs::span!(
+        DEBUG,
+        "acyclic.fs.kernel.publish",
+        outcome = crate::obs::Empty,
+        error.kind = crate::obs::Empty,
+        work.items = crate::obs::Empty,
+        work.bytes = crate::obs::Empty,
+        work.durability = crate::obs::Empty,
+        volume_id = crate::obs::hex(&request.volume_id.into_bytes()),
+        generation = crate::obs::hex(&request.generation_root.digest.as_bytes()[..8]),
+    );
+    let result = crate::obs::in_span(&span, async move {
+        validate_authority(request)?;
+        let proven_at = objects.collection_sweeps();
+        let proof = prove_generation_closure_async(
+            objects,
+            request.generation_root,
+            closure_limits,
+            budget,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+        let operation_context = permit_context(intent.operation_context, intent.permit);
+        let prepared = prepare_publication(proof, request, operation_context, budget)?;
+        let mut work = prepared.work;
+        // The authority CAS is the only point at which immutable bodies become
+        // reachable after a crash. Drain the private staged part of exactly the
+        // proven closure first; a failed drain leaves no published generation
+        // and can be retried idempotently.
+        let drained = objects
+            .flush_before_publish(
+                crate::PublicationScope::Closure {
+                    objects: &prepared.proof.objects,
+                    proven_at,
                 },
-                remaining,
+                work.remaining(budget)
+                    .map_err(|error| OperationFailure::new(error.into(), work))?,
                 cancellation,
             )
             .await
             .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-            work = work
-                .checked_add(receipt.work)
-                .map_err(|error| OperationFailure::new(error.into(), work))?;
-            work.verify(budget)
-                .map_err(|error| OperationFailure::new(error.into(), work))?;
-            Ok(PublicationReceipt {
-                proof: prepared.proof,
-                outcome: receipt.value,
-                work,
-            })
-        }
-        .await,
-        |receipt| &receipt.work,
-    )
+        work = work
+            .checked_add(drained.work)
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        let remaining = work
+            .remaining(budget)
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        let receipt = crate::AsyncAuthorityStore::compare_and_append_guarded(
+            authority,
+            crate::GuardedAppend {
+                authority_id: request.authority_id,
+                epoch: request.epoch,
+                expected: request.expected,
+                commit: prepared.commit,
+                permit: intent.permit,
+            },
+            remaining,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
+        work = work
+            .checked_add(receipt.work)
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        work.verify(budget)
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        Ok(PublicationReceipt {
+            proof: prepared.proof,
+            outcome: receipt.value,
+            work,
+        })
+    })
+    .await;
+    crate::obs::measured_on(&span, result, |receipt| &receipt.work)
 }
 
 fn permit_context(context: Option<Digest>, permit: PublicationPermit) -> Option<Digest> {

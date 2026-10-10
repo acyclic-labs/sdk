@@ -5,6 +5,11 @@
 //! are active. Parent advances are coalesced and reconciled exactly once after
 //! the last lease closes. Durable stores make crash recovery and writer fencing
 //! independent of the process that opened the window.
+//!
+//! Stream-backed windows use only the v1 namespace and exact-expiry lease gates.
+//! Previously stored v2 windows are incompatible and are not read or migrated.
+//! Each renewal retains another gate stream; lifetime storage depends on provider
+//! retention and is not bounded by the active lease count.
 
 use crate::record_store::{MAXIMUM_CAS_ATTEMPTS, MemoryRecords, next_revision};
 use crate::{
@@ -355,22 +360,34 @@ impl<P: acyclic_stream::StreamProvider> OperationWindowStore for StreamOperation
             path: state_path,
             records: vec![encoded.into()],
         }];
-        for lease_id in after
-            .keys()
-            .filter(|lease_id| !before.contains_key(lease_id))
-        {
-            let path = stream_lease_path(workspace_id, *lease_id)?;
+        // An expiry is the admission token for this stable lease identity.
+        // Closing the old token and opening its successor share the window CAS,
+        // so publication can linearize only before or after the renewal.
+        for (lease_id, lease) in &after {
+            if let Some(previous) = before.get(lease_id) {
+                if previous == lease {
+                    continue;
+                }
+                if previous.owner != lease.owner
+                    || lease.expires_at_millis <= previous.expires_at_millis
+                {
+                    return Err(StreamOperationWindowStoreError::Corrupt(
+                        "lease replacement must retain owner and increase expiry".to_owned(),
+                    ));
+                }
+            }
+            let path = stream_lease_path(workspace_id, *lease_id, lease.expires_at_millis)?;
             conditions.push(acyclic_stream::CommitCondition::Absent { path: path.clone() });
             mutations.push(acyclic_stream::CommitMutation::Append {
                 path,
                 records: vec![bytes::Bytes::from_static(b"active")],
             });
         }
-        for lease_id in before
-            .keys()
-            .filter(|lease_id| !after.contains_key(lease_id))
-        {
-            let path = stream_lease_path(workspace_id, *lease_id)?;
+        for (lease_id, lease) in &before {
+            if after.get(lease_id) == Some(lease) {
+                continue;
+            }
+            let path = stream_lease_path(workspace_id, *lease_id, lease.expires_at_millis)?;
             conditions.push(acyclic_stream::CommitCondition::Tail {
                 path: path.clone(),
                 expected: 1,
@@ -381,7 +398,7 @@ impl<P: acyclic_stream::StreamProvider> OperationWindowStore for StreamOperation
             });
         }
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"acyclic-operation-window-cas-v2\0");
+        hasher.update(b"acyclic-operation-window-cas-v1\0");
         hasher.update(&workspace_id.into_bytes());
         hasher.update(&expected_revision.to_le_bytes());
         hasher.update(
@@ -417,7 +434,7 @@ fn stream_window_path(
     workspace_id: WorkspaceId,
 ) -> Result<acyclic_stream::StreamPath, acyclic_stream::StreamError> {
     acyclic_stream::StreamPath::new(format!(
-        "fs/operation-windows-v2/{}/state",
+        "fs/operation-windows-v1/{}/state",
         hex::encode(workspace_id.into_bytes())
     ))
 }
@@ -426,9 +443,10 @@ fn stream_window_path(
 pub(crate) fn stream_lease_path(
     workspace_id: WorkspaceId,
     lease_id: OperationLeaseId,
+    expires_at_millis: u64,
 ) -> Result<acyclic_stream::StreamPath, acyclic_stream::StreamError> {
     acyclic_stream::StreamPath::new(format!(
-        "fs/operation-windows-v2/{}/leases/{}",
+        "fs/operation-windows-v1/{}/leases/{}/{expires_at_millis}",
         hex::encode(workspace_id.into_bytes()),
         hex::encode(lease_id.into_bytes())
     ))
@@ -684,14 +702,15 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
 
     /// Extends one still-active exact lease without changing the pinned mount.
     /// The returned lease replaces the caller's old publication permit; using
-    /// the old expiry after renewal is fenced by durable state.
+    /// the old expiry after renewal is fenced by durable state. A renewal must
+    /// strictly increase the expiry, so a superseded token cannot be reissued.
     pub async fn renew(
         &self,
         lease: &OperationWindowLease,
         now_millis: u64,
         expires_at_millis: u64,
     ) -> Result<OperationWindowLease, OperationWindowError<S::Error>> {
-        if expires_at_millis <= now_millis || expires_at_millis < lease.expires_at_millis {
+        if expires_at_millis <= now_millis || expires_at_millis <= lease.expires_at_millis {
             return Err(OperationWindowError::InvalidExpiry);
         }
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
@@ -711,9 +730,6 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                 || existing.expires_at_millis <= now_millis
             {
                 return Err(OperationWindowError::StaleLease);
-            }
-            if existing.expires_at_millis == expires_at_millis {
-                return Ok(lease.clone());
             }
             let pinned_parent = *pinned_parent;
             leases
@@ -1961,19 +1977,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bounded_publication_close_expiry_interleavings_preserve_peer_authority() {
-        // Exhaustive serial linearizations of three events, two leases, one
-        // publication and two clock samples. This is a finite invariant check,
-        // assuming atomic provider transactions and a trusted monotonic clock;
+    async fn bounded_publication_close_renewal_expiry_interleavings_preserve_peer_authority() {
+        // Exhaustive serial linearizations of publication, close or renewal, and
+        // expiry: twelve traces, two leases and two clock samples. This finite check
+        // assumes atomic provider transactions and a trusted monotonic clock;
         // it makes no unbounded liveness or browser scheduling claim.
-        for events in [
+        for (events, renew) in [
             [0, 1, 2],
             [0, 2, 1],
             [1, 0, 2],
             [1, 2, 0],
             [2, 0, 1],
             [2, 1, 0],
-        ] {
+        ]
+        .into_iter()
+        .flat_map(|events| [false, true].map(move |renew| (events, renew)))
+        {
             let clock = Arc::new(TestClock::default());
             clock.0.store(10, Ordering::SeqCst);
             let stream = Arc::new(acyclic_stream::MemoryStream::new_with_clock(
@@ -2002,7 +2021,8 @@ mod tests {
                 .begin(workspace, generation(1), "peer", 10, 30)
                 .await
                 .expect("peer");
-            let mut closed = false;
+            let mut revoked = false;
+            let mut renewed = None;
             for event in events {
                 match event {
                     0 => {
@@ -2015,7 +2035,7 @@ mod tests {
                         .await
                         .expect("head")
                         .value;
-                        let allowed = !closed && clock.0.load(Ordering::SeqCst) < 20;
+                        let allowed = !revoked && clock.0.load(Ordering::SeqCst) < 20;
                         let outcome = AsyncAuthorityStore::compare_and_append_guarded(
                             &authority,
                             crate::GuardedAppend {
@@ -2038,53 +2058,212 @@ mod tests {
                         assert_eq!(
                             matches!(outcome, crate::AppendOutcome::Committed(_)),
                             allowed,
-                            "trace {events:?}"
+                            "trace {events:?}, renew={renew}"
                         );
                     }
                     1 => {
-                        windows
-                            .finish(&first, clock.0.load(Ordering::SeqCst))
-                            .await
-                            .expect("close");
-                        closed = true;
+                        let now = clock.0.load(Ordering::SeqCst);
+                        if renew {
+                            let outcome = windows.renew(&first, now, 30).await;
+                            if now < 20 {
+                                renewed = Some(outcome.expect("renew live lease"));
+                                revoked = true;
+                            } else {
+                                assert!(matches!(outcome, Err(OperationWindowError::StaleLease)));
+                            }
+                        } else {
+                            windows.finish(&first, now).await.expect("close");
+                            revoked = true;
+                        }
                     }
                     _ => {
                         clock.0.store(20, Ordering::SeqCst);
                     }
                 }
             }
-            let head = AsyncAuthorityStore::head(
+            for (index, lease) in std::iter::once(peer).chain(renewed).enumerate() {
+                let head = AsyncAuthorityStore::head(
+                    &authority,
+                    authority_id,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .expect("peer head")
+                .value;
+                let outcome = AsyncAuthorityStore::compare_and_append_guarded(
+                    &authority,
+                    crate::GuardedAppend {
+                        authority_id,
+                        epoch: head.epoch,
+                        expected: head,
+                        commit: ProposedCommit {
+                            operation_id: OperationId::from_bytes(
+                                [94 + u8::try_from(index).expect("two leases"); 16],
+                            ),
+                            fingerprint: Digest::from_bytes(
+                                [95 + u8::try_from(index).expect("two leases"); 32],
+                            ),
+                            payload: Bytes::from_static(b"peer"),
+                        },
+                        permit: lease.publication_permit(),
+                    },
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .expect("peer publish")
+                .value;
+                assert!(
+                    matches!(outcome, crate::AppendOutcome::Committed(_)),
+                    "trace {events:?}, renew={renew}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_renewal_fences_old_permit_before_its_original_deadline() {
+        let clock = Arc::new(TestClock::default());
+        clock.0.store(10, Ordering::SeqCst);
+        let stream = Arc::new(acyclic_stream::MemoryStream::new_with_clock(
+            acyclic_stream::MemoryLimits::default(),
+            clock.clone(),
+        ));
+        let authority = StreamAuthorityStore::new(Arc::clone(&stream));
+        let windows =
+            OperationWindowCoordinator::new(StreamOperationWindowStore::new(Arc::clone(&stream)));
+        let workspace = WorkspaceId::from_bytes([101; 16]);
+        let authority_id = crate::kernel::volume_authority_id(workspace.volume_id());
+        let cancellation = CancellationToken::new();
+        AsyncAuthorityStore::create_authority(
+            &authority,
+            authority_id,
+            Epoch::GENESIS,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .expect("create authority");
+        let original = windows
+            .begin(workspace, generation(1), "original-owner", 10, 20)
+            .await
+            .expect("begin original lease");
+        let peer = windows
+            .begin(workspace, generation(9), "peer-owner", 10, 25)
+            .await
+            .expect("begin independent peer");
+        assert_eq!(peer.pinned_parent, original.pinned_parent);
+        // Begin's permit must work; the stale negative below cannot pass merely
+        // because this provider rejects every managed publication.
+        let mut current = original.clone();
+        for index in 0_u8..6 {
+            if index == 1 {
+                clock.0.store(11, Ordering::SeqCst);
+                let mut losing = windows
+                    .store()
+                    .load(workspace)
+                    .await
+                    .expect("snapshot")
+                    .expect("active");
+                let expected_revision = losing.revision;
+                losing.revision += 1;
+                let OperationWindowPhase::Active { leases, .. } = &mut losing.phase else {
+                    panic!("active window");
+                };
+                leases
+                    .get_mut(&original.lease_id)
+                    .expect("lease")
+                    .expires_at_millis = 40;
+                current = windows.renew(&original, 11, 30).await.expect("renew lease");
+                assert!(
+                    !windows
+                        .store()
+                        .compare_and_swap(workspace, expected_revision, losing)
+                        .await
+                        .expect("losing CAS")
+                );
+                assert_eq!(current.lease_id, original.lease_id);
+                assert_eq!(current.pinned_parent, original.pinned_parent);
+                for expiry in [20, 30] {
+                    assert!(matches!(
+                        windows.renew(&current, 11, expiry).await,
+                        Err(OperationWindowError::InvalidExpiry)
+                    ));
+                }
+            }
+            if index == 5 {
+                assert!(matches!(
+                    windows
+                        .finish(&current, 11)
+                        .await
+                        .expect("close renewed lease"),
+                    OperationWindowFinish::StillActive { remaining: 1 }
+                ));
+            }
+            let permit = match index {
+                2 | 5 => current.publication_permit(),
+                3 => peer.publication_permit(),
+                _ => original.publication_permit(),
+            };
+            let expected_commit = matches!(index, 0 | 2 | 3);
+            let before = AsyncAuthorityStore::head(
                 &authority,
                 authority_id,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
-            .expect("peer head")
+            .expect("head")
             .value;
             let outcome = AsyncAuthorityStore::compare_and_append_guarded(
                 &authority,
                 crate::GuardedAppend {
                     authority_id,
-                    epoch: head.epoch,
-                    expected: head,
+                    epoch: before.epoch,
+                    expected: before,
                     commit: ProposedCommit {
-                        operation_id: OperationId::from_bytes([94; 16]),
-                        fingerprint: Digest::from_bytes([95; 32]),
-                        payload: Bytes::from_static(b"peer"),
+                        operation_id: OperationId::from_bytes(
+                            [if index == 4 { 102 } else { 102 + index }; 16],
+                        ),
+                        fingerprint: Digest::from_bytes(
+                            [if index == 4 { 104 } else { 104 + index }; 32],
+                        ),
+                        payload: Bytes::from_static(b"renewal-control"),
                     },
-                    permit: peer.publication_permit(),
+                    permit,
                 },
                 WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
-            .expect("peer publish")
+            .expect("guarded publication")
             .value;
-            assert!(
-                matches!(outcome, crate::AppendOutcome::Committed(_)),
-                "trace {events:?}"
-            );
+            if expected_commit {
+                assert!(matches!(outcome, crate::AppendOutcome::Committed(_)));
+            } else {
+                if index == 4 {
+                    // The original commit remains recoverable after token rotation
+                    // and later peer publication, without appending another effect.
+                    assert!(matches!(outcome, crate::AppendOutcome::AlreadyCommitted(_)));
+                } else {
+                    assert!(matches!(outcome, crate::AppendOutcome::Fenced { .. }));
+                }
+                assert_eq!(
+                    AsyncAuthorityStore::head(
+                        &authority,
+                        authority_id,
+                        WorkBudget::UNBOUNDED,
+                        &cancellation,
+                    )
+                    .await
+                    .expect("unchanged head")
+                    .value,
+                    before
+                );
+            }
         }
+        let renewed = windows.renew(&original, 11, 30).await;
+        assert!(matches!(renewed, Err(OperationWindowError::StaleLease)));
     }
 }

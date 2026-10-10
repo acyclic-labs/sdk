@@ -2,7 +2,7 @@
 //! Nothing is installed unless `ACYCLIC_LOG` or `ACYCLIC_TRACE_FILE` is set,
 //! and nothing is ever written to standard output, which carries JSON-RPC.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::File;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -52,10 +52,12 @@ pub(crate) fn layers(
                 service.then(|| {
                     crate::default_data_directory()
                         .join("logs")
-                        .join(with_pid("service-{pid}.log"))
+                        .join("service.log")
                 })
             });
-        let layer = match file.map(append) {
+        let layer = match file
+            .map(|path| crate::service_log::ServiceLog::open(&path, crate::service_log::LIMIT))
+        {
             None => Some(fmt::layer().with_writer(io::stderr).boxed()),
             Some(Ok(file)) => Some(
                 fmt::layer()
@@ -63,8 +65,8 @@ pub(crate) fn layers(
                     .with_writer(Mutex::new(file))
                     .boxed(),
             ),
-            Some(Err(error)) => {
-                eprintln!("acyclic: cannot open the ACYCLIC_LOG file: {error}");
+            Some(Err(_)) => {
+                eprintln!("acyclic: cannot open the ACYCLIC_LOG file");
                 None
             }
         };
@@ -153,11 +155,4 @@ fn trace_path(path: &str, service: bool) -> PathBuf {
 
 fn with_pid(path: &str) -> PathBuf {
     PathBuf::from(path.replace("{pid}", &std::process::id().to_string()))
-}
-
-fn append(path: PathBuf) -> io::Result<File> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    OpenOptions::new().create(true).append(true).open(path)
 }

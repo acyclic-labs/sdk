@@ -7,7 +7,7 @@ import { canonical, loadAuthority, sha256 } from "../../../shared/authority.mjs"
 
 const directory = dirname(fileURLToPath(import.meta.url));
 export const pins = JSON.parse(readFileSync(join(directory, "../toolchains/toolchain.json")));
-export const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v2/stream.proto"];
+export const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"];
 export const producerSources = ["generate.mjs", "../../../shared/authority.mjs", "../toolchains/toolchain.json", "../toolchains/build-runtime.cmake"];
 const equal = (left, right) => JSON.stringify(Object.entries(left).sort()) === JSON.stringify(Object.entries(right).sort());
 

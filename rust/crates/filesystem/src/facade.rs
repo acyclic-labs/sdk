@@ -74,7 +74,7 @@ use crate::storage::{
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use acyclic_native_runtime::OwnershipAnchor;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-use acyclic_objects::v2::ObjectsProvider as _;
+use acyclic_objects::v1::ObjectsProvider as _;
 use bytes::Bytes;
 use futures::{StreamExt as _, stream};
 use serde::{Deserialize, Serialize};
@@ -554,6 +554,7 @@ fn prepare_local_root_open(
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 async fn run_local_initialization<T, F, I>(
     ownership: tokio::sync::OwnedMutexGuard<()>,
+    span: crate::obs::OperationSpan,
     initialize: I,
 ) -> Result<T, FsError>
 where
@@ -564,9 +565,11 @@ where
     // Tokio detaches a spawned task when its JoinHandle is dropped. That is intentional here:
     // cancelling the caller must not release root ownership while provider spawn_blocking workers
     // can still recover or mutate a journal.
-    tokio::spawn(async move { initialize(ownership).await })
-        .await
-        .map_err(|_| FsError::LocalInitializationWorker)
+    tokio::spawn(async move {
+        crate::obs::in_span(&span, async move { initialize(ownership).await }).await
+    })
+    .await
+    .map_err(|_| FsError::LocalInitializationWorker)
 }
 
 /// Embedded filesystem composition handle.
@@ -1021,7 +1024,7 @@ pub type LocalAuthorityBackend =
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub type LocalObjectBackend = crate::staged_objects::StagedObjects<
     crate::cache::CachedObjectStore<
-        crate::LogicalObjectStore<acyclic_objects::v2::local::LocalObjects>,
+        crate::LogicalObjectStore<acyclic_objects::v1::local::LocalObjects>,
     >,
 >;
 
@@ -1049,7 +1052,7 @@ pub type MemoryAuthorityBackend =
 
 #[cfg(all(feature = "memory", feature = "distributed"))]
 /// Filesystem object adapter backed by the public in-memory Objects provider.
-pub type MemoryObjectBackend = crate::LogicalObjectStore<acyclic_objects::v2::MemoryObjects>;
+pub type MemoryObjectBackend = crate::LogicalObjectStore<acyclic_objects::v1::MemoryObjects>;
 
 #[cfg(all(test, feature = "memory", feature = "distributed"))]
 pub(crate) type MemoryCheckout = Checkout<MemoryAuthorityBackend, MemoryObjectBackend>;
@@ -1801,11 +1804,11 @@ pub enum FsError {
     /// Durable local Objects initialization or recovery failed.
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     #[error(transparent)]
-    LocalObjects(#[from] acyclic_objects::v2::local::LocalOpenError),
+    LocalObjects(#[from] acyclic_objects::v1::local::LocalOpenError),
     /// The canonical filesystem Objects bucket could not be opened.
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     #[error("local filesystem Objects bucket initialization failed: {0}")]
-    LocalObjectsBucket(acyclic_objects::v2::Error),
+    LocalObjectsBucket(acyclic_objects::v1::Error),
     /// Local provider root setup failed before either canonical provider opened.
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     #[error("local filesystem root setup failed: {0}")]
@@ -2141,7 +2144,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
 impl
     Fs<
         crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>,
-        crate::LogicalObjectStore<acyclic_objects::v2::MemoryObjects>,
+        crate::LogicalObjectStore<acyclic_objects::v1::MemoryObjects>,
     >
 {
     /// Creates the deterministic infrastructure-free composition from the exact public reference
@@ -2149,7 +2152,7 @@ impl
     #[must_use]
     pub fn memory() -> Self {
         let stream = std::sync::Arc::new(acyclic_stream::MemoryStream::default());
-        let (objects, bucket) = acyclic_objects::v2::MemoryObjects::with_default_bucket();
+        let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
         Self::from_memory_providers(stream, std::sync::Arc::new(objects), bucket)
     }
 
@@ -2160,8 +2163,8 @@ impl
     #[must_use]
     pub fn from_memory_providers(
         stream: std::sync::Arc<acyclic_stream::MemoryStream>,
-        objects: std::sync::Arc<acyclic_objects::v2::MemoryObjects>,
-        bucket: acyclic_objects::v2::wire::BucketRef,
+        objects: std::sync::Arc<acyclic_objects::v1::MemoryObjects>,
+        bucket: acyclic_objects::v1::wire::BucketRef,
     ) -> Self {
         Self::new(
             crate::distributed::StreamAuthorityStore::new(stream),
@@ -2194,60 +2197,81 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     ///
     /// Fails if limits are invalid or either durable backend cannot initialize.
     pub async fn local(options: LocalOptions) -> Result<Self, FsError> {
-        static REGISTRY: OnceLock<tokio::sync::Mutex<LocalRootRegistry>> = OnceLock::new();
-        let requested_root = options.root.clone();
-        let root = tokio::task::spawn_blocking(move || {
-            std::fs::create_dir_all(&requested_root)?;
-            std::fs::canonicalize(requested_root)
-        })
-        .await
-        .map_err(|_| FsError::LocalInitializationWorker)?
-        .map_err(FsError::LocalRoot)?;
-        let mut options = options;
-        options.root = root.clone();
-        let registry = REGISTRY.get_or_init(|| tokio::sync::Mutex::new(LocalRootRegistry::new()));
-        let opening = {
-            let mut registrations = registry.lock().await;
-            if let Some(existing) = registrations.get(&root)
-                && let Some(inner) = existing.live.upgrade()
-            {
-                if existing.options != options {
-                    return Err(FsError::LocalOptionsConflict);
-                }
-                return Ok(Self { inner });
-            }
-            prepare_local_root_open(&mut registrations, &root, &options)
-        };
-        // Opening a root may wait for old provider handles or native I/O to finish. Keep that
-        // wait per-root so unrelated roots can attach and respond to hooks concurrently.
-        let _opening = opening.lock().await;
-        let lifecycle = {
-            let registrations = registry.lock().await;
-            let existing = registrations
-                .get(&root)
-                .ok_or(FsError::LocalInitializationWorker)?;
-            if let Some(inner) = existing.live.upgrade() {
-                if existing.options != options {
-                    return Err(FsError::LocalOptionsConflict);
-                }
-                return Ok(Self { inner });
-            }
-            Arc::clone(&existing.lifecycle)
-        };
-        let ownership = lifecycle.lock_owned().await;
-        let open_options = options.clone();
-        let fs = run_local_initialization(ownership, move |ownership| async move {
-            let ownership = OwnershipAnchor::new(ownership);
-            Self::open_local_unshared(open_options, Some(ownership)).await
-        })
-        .await??;
-        let mut registrations = registry.lock().await;
-        let existing = registrations
-            .get_mut(&root)
-            .ok_or(FsError::LocalInitializationWorker)?;
-        existing.options = options;
-        existing.live = Arc::downgrade(&fs.inner);
-        Ok(fs)
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.local",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+        );
+        let worker_context = span.clone();
+        crate::obs::outcome_on(
+            &span,
+            crate::obs::in_span(&span, async move {
+                static REGISTRY: OnceLock<tokio::sync::Mutex<LocalRootRegistry>> = OnceLock::new();
+                let requested_root = options.root.clone();
+                let root = tokio::task::spawn_blocking(crate::obs::in_context(
+                    worker_context.clone(),
+                    move || {
+                        std::fs::create_dir_all(&requested_root)?;
+                        std::fs::canonicalize(requested_root)
+                    },
+                ))
+                .await
+                .map_err(|_| FsError::LocalInitializationWorker)?
+                .map_err(FsError::LocalRoot)?;
+                let mut options = options;
+                options.root = root.clone();
+                let registry =
+                    REGISTRY.get_or_init(|| tokio::sync::Mutex::new(LocalRootRegistry::new()));
+                let opening = {
+                    let mut registrations = registry.lock().await;
+                    if let Some(existing) = registrations.get(&root)
+                        && let Some(inner) = existing.live.upgrade()
+                    {
+                        if existing.options != options {
+                            return Err(FsError::LocalOptionsConflict);
+                        }
+                        return Ok(Self { inner });
+                    }
+                    prepare_local_root_open(&mut registrations, &root, &options)
+                };
+                // Opening a root may wait for old provider handles or native I/O to finish. Keep that
+                // wait per-root so unrelated roots can attach and respond to hooks concurrently.
+                let _opening = opening.lock().await;
+                let lifecycle = {
+                    let registrations = registry.lock().await;
+                    let existing = registrations
+                        .get(&root)
+                        .ok_or(FsError::LocalInitializationWorker)?;
+                    if let Some(inner) = existing.live.upgrade() {
+                        if existing.options != options {
+                            return Err(FsError::LocalOptionsConflict);
+                        }
+                        return Ok(Self { inner });
+                    }
+                    Arc::clone(&existing.lifecycle)
+                };
+                let ownership = lifecycle.lock_owned().await;
+                let open_options = options.clone();
+                let fs = run_local_initialization(
+                    ownership,
+                    worker_context.clone(),
+                    move |ownership| async move {
+                        let ownership = OwnershipAnchor::new(ownership);
+                        Self::open_local_unshared(open_options, Some(ownership)).await
+                    },
+                )
+                .await??;
+                let mut registrations = registry.lock().await;
+                let existing = registrations
+                    .get_mut(&root)
+                    .ok_or(FsError::LocalInitializationWorker)?;
+                existing.options = options;
+                existing.live = Arc::downgrade(&fs.inner);
+                Ok(fs)
+            })
+            .await,
+        )
     }
 
     async fn open_local_unshared(
@@ -2283,7 +2307,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             let maximum_object_bytes = objects.maximum_object_bytes;
             let objects = std::sync::Arc::new(match &lifecycle {
                 Some(ownership) => {
-                    acyclic_objects::v2::local::LocalObjects::open_with_ownership_anchor(
+                    acyclic_objects::v1::local::LocalObjects::open_with_ownership_anchor(
                         root.join("objects"),
                         objects,
                         ownership.clone(),
@@ -2291,23 +2315,23 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                     .await?
                 }
                 None => {
-                    acyclic_objects::v2::local::LocalObjects::open(root.join("objects"), objects)
+                    acyclic_objects::v1::local::LocalObjects::open(root.join("objects"), objects)
                         .await?
                 }
             });
-            let bucket = acyclic_objects::v2::wire::BucketRef {
+            let bucket = acyclic_objects::v1::wire::BucketRef {
                 name: "filesystem-objects".to_owned(),
             };
             match objects
-                .head_bucket(acyclic_objects::v2::wire::HeadBucketRequest {
+                .head_bucket(acyclic_objects::v1::wire::HeadBucketRequest {
                     bucket: Some(bucket.clone()),
                 })
                 .await
             {
                 Ok(_) => {}
-                Err(error) if error.code == acyclic_objects::v2::wire::ErrorCode::NotFound => {
+                Err(error) if error.code == acyclic_objects::v1::wire::ErrorCode::NotFound => {
                     objects
-                        .create_bucket(acyclic_objects::v2::wire::CreateBucketRequest {
+                        .create_bucket(acyclic_objects::v1::wire::CreateBucketRequest {
                             name: bucket.name.clone(),
                             mutation: None,
                         })
@@ -2358,87 +2382,81 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     ///
     /// Fails, sweeping nothing, when anything live cannot be marked, and
     /// stops at the first storage failure while sweeping.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.collect_local_garbage",
-            level = "info",
-            skip_all,
-            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub async fn collect_local_garbage(
         &self,
         core_state: Option<&crate::LocalCoreStateStore>,
         cancellation: &CancellationToken,
     ) -> Result<LocalGarbageCollection, FsError> {
-        crate::obs::outcome(
-            async move {
-                let collection = Arc::clone(self.inner.objects.collection().ok_or(
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.collect_local_garbage",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty
+        );
+        let result = crate::obs::in_span(&span, async move {
+            let collection = Arc::clone(self.inner.objects.collection().ok_or(FsError::Object(
+                ObjectStoreError::Rejected("the local object store does not collect".to_owned()),
+            ))?);
+            let collecting = collection.begin().await;
+            let candidates = self.local_object_candidates(cancellation).await?;
+            let mut marker = crate::kernel::Marker::new(&self.inner.objects, cancellation);
+            let shadow_limits = self
+                .mark_local_authorities(&mut marker, cancellation)
+                .await?;
+            #[cfg(feature = "s3-http")]
+            {
+                let multipart = crate::active_s3_multipart_objects(
+                    self.inner.authority.provider().as_ref(),
+                    &self.inner.objects,
+                    crate::FilesystemS3Limits::default(),
+                    crate::S3MultipartRetentionLimits::default(),
+                    WorkBudget::UNBOUNDED,
+                    cancellation,
+                )
+                .await
+                .map_err(|_| {
                     FsError::Object(ObjectStoreError::Rejected(
-                        "the local object store does not collect".to_owned(),
-                    )),
-                )?);
-                let collecting = collection.begin().await;
-                let candidates = self.local_object_candidates(cancellation).await?;
-                let mut marker = crate::kernel::Marker::new(&self.inner.objects, cancellation);
-                let shadow_limits = self
-                    .mark_local_authorities(&mut marker, cancellation)
-                    .await?;
-                #[cfg(feature = "s3-http")]
-                {
-                    let multipart = crate::active_s3_multipart_objects(
-                        self.inner.authority.provider().as_ref(),
-                        &self.inner.objects,
-                        crate::FilesystemS3Limits::default(),
-                        crate::S3MultipartRetentionLimits::default(),
-                        WorkBudget::UNBOUNDED,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(|_| {
-                        FsError::Object(ObjectStoreError::Rejected(
-                            "active S3 multipart retention scan failed".to_owned(),
-                        ))
-                    })?;
-                    marker.keep(multipart.value);
+                        "active S3 multipart retention scan failed".to_owned(),
+                    ))
+                })?;
+                marker.keep(multipart.value);
+            }
+            if let Some(core_state) = core_state {
+                marker.set_limits(shadow_limits);
+                for record in core_state.lazy_shadow_records().await.map_err(|error| {
+                    FsError::Object(ObjectStoreError::Rejected(error.to_string()))
+                })? {
+                    marker.record(&record).await.map_err(mark_error)?;
                 }
-                if let Some(core_state) = core_state {
-                    marker.set_limits(shadow_limits);
-                    for record in core_state.lazy_shadow_records().await.map_err(|error| {
-                        FsError::Object(ObjectStoreError::Rejected(error.to_string()))
-                    })? {
+            }
+            for held in collection.held() {
+                match held {
+                    crate::collection::Held::Checkout(held) => {
+                        marker.set_limits(DecodeLimits::for_volume(held.config));
+                        marker
+                            .generation(GenerationId::new(held.base.digest))
+                            .await
+                            .map_err(mark_error)?;
+                        marker.working(&held.working).await.map_err(mark_error)?;
+                    }
+                    crate::collection::Held::Record { record, config } => {
+                        marker.set_limits(DecodeLimits::for_volume(config));
                         marker.record(&record).await.map_err(mark_error)?;
                     }
                 }
-                for held in collection.held() {
-                    match held {
-                        crate::collection::Held::Checkout(held) => {
-                            marker.set_limits(DecodeLimits::for_volume(held.config));
-                            marker
-                                .generation(GenerationId::new(held.base.digest))
-                                .await
-                                .map_err(mark_error)?;
-                            marker.working(&held.working).await.map_err(mark_error)?;
-                        }
-                        crate::collection::Held::Record { record, config } => {
-                            marker.set_limits(DecodeLimits::for_volume(config));
-                            marker.record(&record).await.map_err(mark_error)?;
-                        }
-                    }
-                }
-                marker.set_limits(shadow_limits);
-                marker.lineage_roots().await.map_err(mark_error)?;
-                let unmarked = candidates
-                    .into_iter()
-                    .filter(|(object, _)| !marker.marked().contains(object))
-                    .collect::<Vec<_>>();
-                drop(marker);
-                self.sweep_local_objects(&collecting, unmarked, cancellation)
-                    .await
             }
-            .await,
-        )
+            marker.set_limits(shadow_limits);
+            marker.lineage_roots().await.map_err(mark_error)?;
+            let unmarked = candidates
+                .into_iter()
+                .filter(|(object, _)| !marker.marked().contains(object))
+                .collect::<Vec<_>>();
+            drop(marker);
+            self.sweep_local_objects(&collecting, unmarked, cancellation)
+                .await
+        })
+        .await;
+        crate::obs::outcome_on(&span, result)
     }
 
     /// Every current filesystem key and its conditional-deletion validator.
@@ -2453,7 +2471,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         loop {
             cancellation.check()?;
             let page = provider
-                .list(acyclic_objects::v2::wire::ListObjectsRequest {
+                .list(acyclic_objects::v1::wire::ListObjectsRequest {
                     bucket: Some(bucket.clone()),
                     prefix: "fs/v1/".to_owned(),
                     page_size: 256,
@@ -2503,12 +2521,12 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 };
                 collecting.sweeping(object);
                 let deleted = provider
-                    .delete(acyclic_objects::v2::wire::DeleteObjectRequest {
+                    .delete(acyclic_objects::v1::wire::DeleteObjectRequest {
                         bucket: Some(bucket.clone()),
                         object_key: crate::distributed::object_key(object),
-                        preconditions: Some(acyclic_objects::v2::wire::Preconditions {
+                        preconditions: Some(acyclic_objects::v1::wire::Preconditions {
                             condition: Some(
-                                acyclic_objects::v2::wire::preconditions::Condition::IfMatch(etag),
+                                acyclic_objects::v1::wire::preconditions::Condition::IfMatch(etag),
                             ),
                         }),
                         mutation: None,
@@ -2901,24 +2919,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     /// # Errors
     ///
     /// Returns the same typed failures as [`Self::create_workspace`].
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.create_workspace",
-            level = "info",
-            skip_all,
-            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub async fn create_workspace_with_config(
         &self,
         name: impl AsRef<str>,
         config: VolumeConfig,
     ) -> Result<crate::Workspace<A, O>, crate::workspace::WorkspaceError> {
-        crate::obs::outcome(
-            self.create_workspace_with_config_operation(name, config, None)
-                .await,
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.create_workspace",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty
+        );
+        let result = crate::obs::in_span(
+            &span,
+            self.create_workspace_with_config_operation(name, config, None),
         )
+        .await;
+        crate::obs::outcome_on(&span, result)
     }
 
     pub(crate) async fn create_workspace_with_config_operation(
@@ -2959,46 +2976,42 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ///
     /// Rejects invalid or absent names and malformed or unsupported creation
     /// state.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.open_workspace",
-            level = "info",
-            skip_all,
-            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub async fn open_workspace(
         &self,
         name: impl AsRef<str>,
     ) -> Result<crate::Workspace<A, O>, crate::workspace::WorkspaceError> {
-        crate::obs::outcome(
-            async move {
-                let name = crate::WorkspaceName::new(name)?;
-                let id = crate::WorkspaceId::derive(self.inner.workspace_namespace, &name);
-                let volume = self
-                    .open_volume(
-                        id.volume_id(),
-                        WorkBudget::UNBOUNDED,
-                        &CancellationToken::new(),
-                    )
-                    .await
-                    .map_err(crate::workspace::WorkspaceError::engine)?
-                    .value;
-                volume
-                    .resolve_head_generation(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                    .await
-                    .map_err(crate::workspace::WorkspaceError::engine)?;
-                Ok(crate::Workspace {
-                    name,
-                    id,
-                    volume,
-                    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-                    source: None,
-                })
-            }
-            .await,
-        )
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.open_workspace",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty
+        );
+        let result = crate::obs::in_span(&span, async move {
+            let name = crate::WorkspaceName::new(name)?;
+            let id = crate::WorkspaceId::derive(self.inner.workspace_namespace, &name);
+            let volume = self
+                .open_volume(
+                    id.volume_id(),
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await
+                .map_err(crate::workspace::WorkspaceError::engine)?
+                .value;
+            volume
+                .resolve_head_generation(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .map_err(crate::workspace::WorkspaceError::engine)?;
+            Ok(crate::Workspace {
+                name,
+                id,
+                volume,
+                #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+                source: None,
+            })
+        })
+        .await;
+        crate::obs::outcome_on(&span, result)
     }
 
     /// Adopts an already authenticated volume into the workspace facade.
@@ -3032,43 +3045,39 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     /// # Errors
     ///
     /// Rejects invalid or absent names and returns typed storage failures.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.delete_workspace",
-            level = "info",
-            skip_all,
-            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub async fn delete_workspace(
         &self,
         name: impl AsRef<str>,
         idempotency_key: crate::IdempotencyKey,
     ) -> Result<crate::workspace::WorkspaceDelete, crate::workspace::WorkspaceError> {
-        crate::obs::outcome(
-            async move {
-                let name = crate::WorkspaceName::new(name)?;
-                let id = crate::WorkspaceId::derive(self.inner.workspace_namespace, &name);
-                let volume = match self
-                    .open_volume(
-                        id.volume_id(),
-                        WorkBudget::UNBOUNDED,
-                        &CancellationToken::new(),
-                    )
-                    .await
-                {
-                    Ok(volume) => volume.value,
-                    Err(failure) if matches!(failure.error, FsError::WorkspaceDeleted) => {
-                        return Ok(crate::workspace::WorkspaceDelete::AlreadyDeleted);
-                    }
-                    Err(failure) => return Err(crate::workspace::WorkspaceError::engine(failure)),
-                };
-                self.delete_workspace_volume(&volume, idempotency_key.operation_id())
-                    .await
-            }
-            .await,
-        )
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.delete_workspace",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty
+        );
+        let result = crate::obs::in_span(&span, async move {
+            let name = crate::WorkspaceName::new(name)?;
+            let id = crate::WorkspaceId::derive(self.inner.workspace_namespace, &name);
+            let volume = match self
+                .open_volume(
+                    id.volume_id(),
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await
+            {
+                Ok(volume) => volume.value,
+                Err(failure) if matches!(failure.error, FsError::WorkspaceDeleted) => {
+                    return Ok(crate::workspace::WorkspaceDelete::AlreadyDeleted);
+                }
+                Err(failure) => return Err(crate::workspace::WorkspaceError::engine(failure)),
+            };
+            self.delete_workspace_volume(&volume, idempotency_key.operation_id())
+                .await
+        })
+        .await;
+        crate::obs::outcome_on(&span, result)
     }
 
     /// Builds and stores the forked generation root for a new workspace, then
@@ -3307,50 +3316,46 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     /// Makes every object `records` reach durable, so a record another
     /// durable store keeps, such as a removed identity a lazy workspace still
     /// resolves, never outlives its content across a crash.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.make_records_durable",
-            level = "info",
-            skip_all,
-            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub(crate) async fn make_records_durable(
         &self,
         config: VolumeConfig,
         records: &[FileRecord],
         cancellation: &CancellationToken,
     ) -> Result<crate::PublicationHold, FsError> {
-        crate::obs::outcome(
-            async move {
-                let proven_at = self.inner.objects.collection_sweeps();
-                let (closure, work) = crate::kernel::prove_record_closure_async(
-                    &self.inner.objects,
-                    records,
-                    closure_limits(config),
-                    WorkBudget::UNBOUNDED,
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.make_records_durable",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty
+        );
+        let result = crate::obs::in_span(&span, async move {
+            let proven_at = self.inner.objects.collection_sweeps();
+            let (closure, work) = crate::kernel::prove_record_closure_async(
+                &self.inner.objects,
+                records,
+                closure_limits(config),
+                WorkBudget::UNBOUNDED,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| FsError::from(failure.error))?;
+            let flushed = self
+                .inner
+                .objects
+                .flush_before_publish(
+                    crate::PublicationScope::Closure {
+                        objects: &closure,
+                        proven_at,
+                    },
+                    remaining(work, WorkBudget::UNBOUNDED).map_err(|failure| failure.error)?,
                     cancellation,
                 )
                 .await
                 .map_err(|failure| FsError::from(failure.error))?;
-                let flushed = self
-                    .inner
-                    .objects
-                    .flush_before_publish(
-                        crate::PublicationScope::Closure {
-                            objects: &closure,
-                            proven_at,
-                        },
-                        remaining(work, WorkBudget::UNBOUNDED).map_err(|failure| failure.error)?,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(|failure| FsError::from(failure.error))?;
-                Ok(flushed.value)
-            }
-            .await,
-        )
+            Ok(flushed.value)
+        })
+        .await;
+        crate::obs::outcome_on(&span, result)
     }
 
     /// Durably retains one generation under a retention label. Repeating the
@@ -4642,22 +4647,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ///
     /// Returns a typed measured failure for invalid/unsupported semantics,
     /// cancellation, storage, authentication, authority conflict, or budget.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.create_volume",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-                volume_id = crate::obs::hex(&volume_id.into_bytes()),
-            )
-        )
-    )]
     pub async fn create_volume_with_id(
         &self,
         volume_id: VolumeId,
@@ -4665,9 +4654,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Volume<A, O>> {
-        self.create_volume_with_id_operation(volume_id, config, None, budget, cancellation)
-            .await
-            .observe("create_volume")
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.create_volume",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+            volume_id = crate::obs::hex(&volume_id.into_bytes()),
+        );
+        let result = crate::obs::in_span(
+            &span,
+            self.create_volume_with_id_operation(volume_id, config, None, budget, cancellation),
+        )
+        .await;
+        result.observe_on(&span, "create_volume")
     }
 
     async fn create_volume_with_id_operation(
@@ -4721,29 +4723,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ///
     /// Returns a typed measured failure when authority is absent/corrupt, its
     /// creation fact is invalid, semantics are unsupported, or work is denied.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.open_volume",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-                volume_id = crate::obs::hex(&volume_id.into_bytes()),
-            )
-        )
-    )]
     pub async fn open_volume(
         &self,
         volume_id: VolumeId,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Volume<A, O>> {
-        async move {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.open_volume",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+            volume_id = crate::obs::hex(&volume_id.into_bytes()),
+        );
+        let result = crate::obs::in_span(&span, async move {
             cancellation
                 .check()
                 .map_err(|error| OperationFailure::before_work(error.into()))?;
@@ -4760,9 +4756,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 },
                 work,
             })
-        }
-        .await
-        .observe("open_volume")
+        })
+        .await;
+        result.observe_on(&span, "open_volume")
     }
 
     /// Reads one exact immutable object for resumable manifest transfer.
@@ -4825,21 +4821,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ///
     /// Returns typed manifest, cursor, cancellation, allocation, storage, or
     /// bounded-work failures with exact retained-buffer accounting.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.export_generation_batch",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-            )
-        )
-    )]
     pub async fn export_generation_batch(
         &self,
         manifest: &GenerationExportManifest,
@@ -4849,18 +4830,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<GenerationTransferBatch> {
-        export_generation_batch_async(
-            &self.inner.objects,
-            manifest,
-            cursor,
-            maximum_objects,
-            maximum_object_bytes,
-            budget,
-            cancellation,
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.export_generation_batch",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+        );
+        let result = crate::obs::in_span(
+            &span,
+            export_generation_batch_async(
+                &self.inner.objects,
+                manifest,
+                cursor,
+                maximum_objects,
+                maximum_object_bytes,
+                budget,
+                cancellation,
+            ),
         )
         .await
-        .map_err(|failure| OperationFailure::new(map_transfer_error(failure.error), *failure.work))
-        .observe("export_generation_batch")
+        .map_err(|failure| OperationFailure::new(map_transfer_error(failure.error), *failure.work));
+        result.observe_on(&span, "export_generation_batch")
     }
 
     /// Idempotently imports one manifest-aligned page of immutable bodies.
@@ -4873,21 +4866,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ///
     /// Returns typed manifest, cursor/body bound, cancellation, storage, or
     /// exact-work failures while retaining imported-prefix work.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.import_generation_batch",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-            )
-        )
-    )]
     pub async fn import_generation_batch(
         &self,
         manifest: &GenerationExportManifest,
@@ -4897,18 +4875,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<TransferCursor> {
-        import_generation_batch_async(
-            &self.inner.objects,
-            manifest,
-            cursor,
-            bodies,
-            maximum_objects,
-            budget,
-            cancellation,
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.import_generation_batch",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+        );
+        let result = crate::obs::in_span(
+            &span,
+            import_generation_batch_async(
+                &self.inner.objects,
+                manifest,
+                cursor,
+                bodies,
+                maximum_objects,
+                budget,
+                cancellation,
+            ),
         )
         .await
-        .map_err(|failure| OperationFailure::new(map_transfer_error(failure.error), *failure.work))
-        .observe("import_generation_batch")
+        .map_err(|failure| OperationFailure::new(map_transfer_error(failure.error), *failure.work));
+        result.observe_on(&span, "import_generation_batch")
     }
 
     /// Restores a volume authority from a fully imported immutable generation.
@@ -4921,21 +4911,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ///
     /// Returns typed configuration, volume-identity, closure, authority,
     /// cancellation, or bounded-work failures.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.restore_volume",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-            )
-        )
-    )]
     pub async fn restore_volume(
         &self,
         manifest: &GenerationExportManifest,
@@ -4943,7 +4918,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Volume<A, O>> {
-        async move {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.restore_volume",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+        );
+        let result = crate::obs::in_span(&span, async move {
             cancellation
                 .check()
                 .map_err(|error| OperationFailure::before_work(error.into()))?;
@@ -4975,9 +4959,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 cancellation,
             )
             .await
-        }
-        .await
-        .observe("restore_volume")
+        })
+        .await;
+        result.observe_on(&span, "restore_volume")
     }
 
     /// Durably creates a volume's authority with its creation record, once
@@ -5242,22 +5226,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
     ///
     /// Rejects zero bounds, foreign/malformed generations, storage corruption,
     /// cancellation, allocation failure, or work beyond the admitted budget.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.diff_generations",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-                volume_id = crate::obs::hex(&self.id.into_bytes()),
-            )
-        )
-    )]
     pub async fn diff_generations(
         &self,
         before: GenerationId,
@@ -5266,7 +5234,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<GenerationDiff> {
-        async move {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.diff_generations",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+            volume_id = crate::obs::hex(&self.id.into_bytes()),
+        );
+        let result = crate::obs::in_span(&span, async move {
             if maximum_changes == 0 {
                 return Err(OperationFailure::before_work(FsError::InvalidDiff));
             }
@@ -5323,9 +5301,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                 cancellation,
             )
             .await
-        }
-        .await
-        .observe("diff_generations")
+        })
+        .await;
+        result.observe_on(&span, "diff_generations")
     }
 
     /// Resolves the exact generation root object and, for a writable
@@ -5388,22 +5366,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
     /// generation roots, volume mismatch, authority inconsistency,
     /// cancellation, or work outside the admitted budget. Descendant objects
     /// are authenticated lazily by the exact operation that demands them.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.checkout",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-                volume_id = crate::obs::hex(&self.id.into_bytes()),
-            )
-        )
-    )]
     pub async fn checkout(
         &self,
         selector: GenerationSelector,
@@ -5411,7 +5373,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Checkout<A, O>> {
-        async move {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.checkout",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+            volume_id = crate::obs::hex(&self.id.into_bytes()),
+        );
+        let result = crate::obs::in_span(&span, async move {
             cancellation
                 .check()
                 .map_err(|error| OperationFailure::before_work(error.into()))?;
@@ -5491,9 +5463,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                 },
                 work,
             })
-        }
-        .await
-        .observe("checkout")
+        })
+        .await;
+        result.observe_on(&span, "checkout")
     }
 
     async fn resolve_head_generation(
@@ -6162,21 +6134,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 
     /// Reads one exact logical range without mutating checkout state.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.pinned.read_file_range",
-            level = "debug",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-            )
-        )
-    )]
     pub async fn read_file_range(
         &self,
         path: &NamespacePath,
@@ -6184,7 +6141,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<FileRangeRead> {
-        async move {
+        let span = crate::obs::span!(
+            DEBUG,
+            "acyclic.fs.pinned.read_file_range",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+        );
+        let result = crate::obs::in_span(&span, async move {
             if range.length > self.volume.config.limits.maximum_read_bytes {
                 return Err(OperationFailure::before_work(FsError::FileRead(
                     FileRangeReadError::InvalidRange,
@@ -6208,9 +6174,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
             .map_err(|failure| failure.map_with_prior_work(work, FsError::FileRead))?;
             work = add(work, read.work)?;
             Ok(FsReceipt { value: read, work })
-        }
-        .await
-        .observe("pinned.read_file_range")
+        })
+        .await;
+        result.observe_on(&span, "pinned.read_file_range")
     }
 
     /// Reads exact opaque symbolic-link target bytes without following it.
@@ -6625,22 +6591,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Rejects non-writable/prepared checkouts, foreign generations, truncated
     /// change frontiers, malformed storage, cancellation, or bounded-work failure.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.prepare_merge",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
-            )
-        )
-    )]
     pub async fn prepare_merge(
         &mut self,
         theirs: GenerationId,
@@ -6649,7 +6599,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<MergePreparation> {
-        async move {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.prepare_merge",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+            volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+        );
+        let result = crate::obs::in_span(&span, async move {
             if self.mode.access != AccessMode::ReadWrite
                 || self.mode.mutations != MutationMode::PrivateOverlay
             {
@@ -6730,9 +6690,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     work,
                 }),
             }
-        }
-        .await
-        .observe("prepare_merge")
+        })
+        .await;
+        result.observe_on(&span, "prepare_merge")
     }
 
     /// Builds a deterministic complete manifest for the current immutable or
@@ -6783,36 +6743,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Returns typed canonical encoding, storage, cancellation, allocation, or
     /// bounded-work failures.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.checkpoint",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
-            )
-        )
-    )]
     pub async fn checkpoint(
         &self,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<GenerationId> {
-        async move {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.checkpoint",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+            volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+        );
+        let result = crate::obs::in_span(&span, async move {
             let checkpoint = self.checkpoint_root(budget, cancellation).await?;
             Ok(FsReceipt {
                 value: GenerationId::new(checkpoint.value.digest),
                 work: checkpoint.work,
             })
-        }
-        .await
-        .observe("checkpoint")
+        })
+        .await;
+        result.observe_on(&span, "checkpoint")
     }
 
     async fn checkpoint_root(
@@ -6889,28 +6843,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Rejects pinned, live, or dirty checkouts and returns exact authority,
     /// storage, authentication, cancellation, or budget failures.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.refresh_head",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
-            )
-        )
-    )]
     pub async fn refresh_head(
         &mut self,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<GenerationId> {
-        async move {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.refresh_head",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+            volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+        );
+        let result = crate::obs::in_span(&span, async move {
             if !matches!(
                 self.mode.consistency,
                 ConsistencyMode::Manual | ConsistencyMode::TrackingSafe
@@ -6956,9 +6904,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 value: self.generation_id(),
                 work,
             })
-        }
-        .await
-        .observe("refresh_head")
+        })
+        .await;
+        result.observe_on(&span, "refresh_head")
     }
 
     /// Safely advances to the current head and rebases the private candidate.
@@ -6972,31 +6920,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Returns measured authority, probe, decode, replay, cancellation, or
     /// budget failures without changing the checkout unless the full rebase succeeds.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.rebase_head",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
-            )
-        )
-    )]
     pub async fn rebase_head(
         &mut self,
         maximum_conflicts: u32,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<RebaseDecision> {
-        self.rebase_head_unobserved(maximum_conflicts, budget, cancellation)
-            .await
-            .observe("rebase_head")
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.rebase_head",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+            volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+        );
+        let result = crate::obs::in_span(
+            &span,
+            self.rebase_head_unobserved(maximum_conflicts, budget, cancellation),
+        )
+        .await;
+        result.observe_on(&span, "rebase_head")
     }
 
     /// [`Self::rebase_head`] without its span, for operations that have their own.
@@ -7161,28 +7106,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Rejects non-live checkouts and returns a typed region conflict rather
     /// than crossing any prior observation or pending mutation dependency.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.refresh_live",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
-            )
-        )
-    )]
     pub async fn refresh_live(
         &mut self,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<GenerationId> {
-        async move {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.refresh_live",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+            volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+        );
+        let result = crate::obs::in_span(&span, async move {
             if self.mode.consistency != ConsistencyMode::Live {
                 return Err(OperationFailure::before_work(FsError::RefreshNotAllowed));
             }
@@ -7191,9 +7130,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 value: self.generation_id(),
                 work: synchronized.work,
             })
-        }
-        .await
-        .observe("refresh_live")
+        })
+        .await;
+        result.observe_on(&span, "refresh_live")
     }
 
     async fn synchronize_live(
@@ -7391,31 +7330,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Rejects non-writable modes and returns exact planning, storage,
     /// cancellation, semantic, or work-budget failures.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.mutate",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
-            )
-        )
-    )]
     pub async fn mutate(
         &mut self,
         operations: Vec<Mutation>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        self.mutate_unobserved(operations, budget, cancellation)
-            .await
-            .observe("mutate")
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.mutate",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+            volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+        );
+        let result = crate::obs::in_span(
+            &span,
+            self.mutate_unobserved(operations, budget, cancellation),
+        )
+        .await;
+        result.observe_on(&span, "mutate")
     }
 
     /// [`Self::mutate`] without its span, for operations that have their own.
@@ -7453,22 +7389,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     /// Rejects non-live modes, an existing unresolved candidate, zero bounds,
     /// and returns exact mutation, rebase, publication, cancellation, storage,
     /// or work-budget failures.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.mutate_live",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
-            )
-        )
-    )]
     pub async fn mutate_live(
         &mut self,
         operations: Vec<Mutation>,
@@ -7478,7 +7398,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<LiveMutationOutcome> {
-        async move {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.mutate_live",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+            volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+        );
+        let result = crate::obs::in_span(&span, async move {
             self.validate_live_operation(maximum_attempts)?;
             if self.has_pending_mutations() {
                 return Err(OperationFailure::before_work(FsError::PendingLiveMutation));
@@ -7502,9 +7432,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 value: publication.value,
                 work,
             })
-        }
-        .await
-        .observe("mutate_live")
+        })
+        .await;
+        result.observe_on(&span, "mutate_live")
     }
 
     /// Compiles, atomically applies, and durably publishes one authored live transaction.
@@ -8298,94 +8228,94 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     /// Rejects excessive input, unsupported kinds, invalid ranges,
     /// non-writable checkouts, semantic conflicts, cancellation, storage
     /// failures, or work beyond the caller's exact budget.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.apply_authored_transaction",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
-            )
-        )
-    )]
     pub async fn apply_authored_transaction(
         &mut self,
         authored: Vec<AuthoredMutation>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<AuthoredTransactionResult> {
-        in_heap(move || async move {
-            let maximum = usize::try_from(self.volume.config.limits.maximum_mutations_per_batch)
-                .unwrap_or(usize::MAX);
-            let operation_count = authored
-                .iter()
-                .try_fold(0_usize, |count, mutation| {
-                    count.checked_add(authored_mutation_operation_count(mutation))
-                })
-                .ok_or_else(|| OperationFailure::before_work(FsError::TooManyPendingMutations))?;
-            if authored.len() > maximum
-                || authored.capacity() > maximum
-                || operation_count > maximum
-            {
-                return Err(OperationFailure::before_work(
-                    FsError::TooManyPendingMutations,
-                ));
-            }
-            let mut work = WorkCounters::default();
-            let mut operations = Vec::new();
-            let mut created_file_ids = Vec::new();
-            // Metadata objects are immutable. Reuse durable admissions throughout
-            // this authored transaction, including across paths and file kinds.
-            let mut staged_metadata = AuthoredMetadataCache::new();
-            operations.try_reserve_exact(operation_count).map_err(|_| {
-                OperationFailure::before_work(FsError::PendingMutationAllocationFailed)
-            })?;
-            created_file_ids
-                .try_reserve_exact(authored.len())
-                .map_err(|_| {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.apply_authored_transaction",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+            volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+        );
+        let result = crate::obs::in_span(
+            &span,
+            in_heap(move || async move {
+                let maximum =
+                    usize::try_from(self.volume.config.limits.maximum_mutations_per_batch)
+                        .unwrap_or(usize::MAX);
+                let operation_count = authored
+                    .iter()
+                    .try_fold(0_usize, |count, mutation| {
+                        count.checked_add(authored_mutation_operation_count(mutation))
+                    })
+                    .ok_or_else(|| {
+                        OperationFailure::before_work(FsError::TooManyPendingMutations)
+                    })?;
+                if authored.len() > maximum
+                    || authored.capacity() > maximum
+                    || operation_count > maximum
+                {
+                    return Err(OperationFailure::before_work(
+                        FsError::TooManyPendingMutations,
+                    ));
+                }
+                let mut work = WorkCounters::default();
+                let mut operations = Vec::new();
+                let mut created_file_ids = Vec::new();
+                // Metadata objects are immutable. Reuse durable admissions throughout
+                // this authored transaction, including across paths and file kinds.
+                let mut staged_metadata = AuthoredMetadataCache::new();
+                operations.try_reserve_exact(operation_count).map_err(|_| {
                     OperationFailure::before_work(FsError::PendingMutationAllocationFailed)
                 })?;
+                created_file_ids
+                    .try_reserve_exact(authored.len())
+                    .map_err(|_| {
+                        OperationFailure::before_work(FsError::PendingMutationAllocationFailed)
+                    })?;
 
-            for authored_mutation in authored {
-                cancellation
-                    .check()
-                    .map_err(|error| OperationFailure::new(error.into(), work))?;
-                let created = self
-                    .compile_authored_mutation(
-                        authored_mutation,
-                        &mut operations,
-                        &mut work,
-                        &mut staged_metadata,
-                        budget,
-                        cancellation,
-                    )
-                    .await?;
-                created_file_ids.push(created);
-            }
-            if operations.is_empty() {
-                return Ok(FsReceipt {
+                for authored_mutation in authored {
+                    cancellation
+                        .check()
+                        .map_err(|error| OperationFailure::new(error.into(), work))?;
+                    let created = self
+                        .compile_authored_mutation(
+                            authored_mutation,
+                            &mut operations,
+                            &mut work,
+                            &mut staged_metadata,
+                            budget,
+                            cancellation,
+                        )
+                        .await?;
+                    created_file_ids.push(created);
+                }
+                if operations.is_empty() {
+                    return Ok(FsReceipt {
+                        value: AuthoredTransactionResult { created_file_ids },
+                        work,
+                    });
+                }
+                let mutation = self
+                    .mutate_unobserved(operations, remaining(work, budget)?, cancellation)
+                    .await
+                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+                work = add(work, mutation.work)?;
+                Ok(FsReceipt {
                     value: AuthoredTransactionResult { created_file_ids },
                     work,
-                });
-            }
-            let mutation = self
-                .mutate_unobserved(operations, remaining(work, budget)?, cancellation)
-                .await
-                .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-            work = add(work, mutation.work)?;
-            Ok(FsReceipt {
-                value: AuthoredTransactionResult { created_file_ids },
-                work,
-            })
-        })
-        .await
-        .observe("apply_authored_transaction")
+                })
+            }),
+        )
+        .await;
+        result.observe_on(&span, "apply_authored_transaction")
     }
 
     /// Applies a large ordered capture without exposing an intermediate candidate.
@@ -9279,7 +9209,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     /// `parent_components` come from an already-admitted path's own prefix,
     /// so reconstructing it cannot exceed the same volume's bounds; if it
     /// somehow did, this returns `Ok(None)` rather than inventing an
-    /// unrelated error — callers fall back to their own exact-match result.
+    /// unrelated error â€” callers fall back to their own exact-match result.
     async fn find_case_folded_sibling(
         &mut self,
         parent_components: &[LogicalName],
@@ -9754,22 +9684,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Returns measured path, blob, mutation, storage, cancellation,
     /// allocation, or bounded-work failures.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.write_file",
-            level = "debug",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
-            )
-        )
-    )]
     pub async fn write_file(
         &mut self,
         path: NamespacePath,
@@ -9778,15 +9692,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        self.change_content(
-            path,
-            ContentChange::Write { offset, bytes },
-            ContentTimes::Preserve,
-            budget,
-            cancellation,
+        let span = crate::obs::span!(
+            DEBUG,
+            "acyclic.fs.write_file",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+            volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+        );
+        let result = crate::obs::in_span(
+            &span,
+            self.change_content(
+                path,
+                ContentChange::Write { offset, bytes },
+                ContentTimes::Preserve,
+                budget,
+                cancellation,
+            ),
         )
-        .await
-        .observe("write_file")
+        .await;
+        result.observe_on(&span, "write_file")
     }
 
     /// Captures one regular file as an ephemeral path-independent open view.
@@ -10663,29 +10590,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Fails as a whole only if the group's summed work overflows; every
     /// other failure, including an exhausted budget, belongs to its change.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.apply_group",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
-            )
-        )
-    )]
     pub async fn apply_group(
         &mut self,
         changes: Vec<GroupedChange>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Vec<Result<GroupedOutcome, FsError>>> {
-        async move {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.apply_group",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+            volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+        );
+        let result = crate::obs::in_span(&span, async move {
             let mut work = WorkCounters::default();
             let mut staged_metadata = AuthoredMetadataCache::new();
             let mut compiled = Vec::with_capacity(changes.len());
@@ -10749,9 +10670,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 value.push(applied);
             }
             Ok(FsReceipt { value, work })
-        }
-        .await
-        .observe("apply_group")
+        })
+        .await;
+        result.observe_on(&span, "apply_group")
     }
 
     async fn compile_grouped(
@@ -11368,29 +11289,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Rejects clean/non-writable checkouts and returns exact checkpoint,
     /// closure, authority, cancellation, or budget failures.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.commit",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
-            )
-        )
-    )]
     pub async fn commit(
         &mut self,
         operation_id: OperationId,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<CheckoutCommitOutcome> {
-        async move {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.commit",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+            volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+        );
+        let result = crate::obs::in_span(&span, async move {
             if self.mode.access != AccessMode::ReadWrite
                 || self.mode.mutations != MutationMode::PrivateOverlay
             {
@@ -11398,29 +11313,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             }
             self.publish_pending(operation_id, None, budget, cancellation)
                 .await
-        }
-        .await
-        .observe("commit")
+        })
+        .await;
+        result.observe_on(&span, "commit")
     }
 
     /// Publishes this overlay only while the supplied durable operation lease
     /// remains active at the authority linearization point.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.commit_with_permit",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
-            )
-        )
-    )]
     pub async fn commit_with_permit(
         &mut self,
         operation_id: OperationId,
@@ -11428,17 +11327,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<CheckoutCommitOutcome> {
-        in_heap(move || async move {
-            if self.mode.access != AccessMode::ReadWrite
-                || self.mode.mutations != MutationMode::PrivateOverlay
-            {
-                return Err(OperationFailure::before_work(FsError::MutationNotAllowed));
-            }
-            self.publish_pending_with_permit(operation_id, None, permit, budget, cancellation)
-                .await
-        })
-        .await
-        .observe("commit_with_permit")
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.commit_with_permit",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+            volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+        );
+        let result = crate::obs::in_span(
+            &span,
+            in_heap(move || async move {
+                if self.mode.access != AccessMode::ReadWrite
+                    || self.mode.mutations != MutationMode::PrivateOverlay
+                {
+                    return Err(OperationFailure::before_work(FsError::MutationNotAllowed));
+                }
+                self.publish_pending_with_permit(operation_id, None, permit, budget, cancellation)
+                    .await
+            }),
+        )
+        .await;
+        result.observe_on(&span, "commit_with_permit")
     }
 
     /// Anchors a separately journaled lazy overlay to an exact checkout
@@ -12114,31 +12026,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Returns the same measured fail-closed outcomes as [`Self::lookup_no_follow`],
     /// plus explicit empty and excessive-batch rejection.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.lookup_batch_no_follow",
-            level = "debug",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
-            )
-        )
-    )]
     pub async fn lookup_batch_no_follow(
         &mut self,
         paths: &[NamespacePath],
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<PathBatchLookup> {
-        self.lookup_batch_no_follow_unobserved(paths, budget, cancellation)
-            .await
-            .observe("lookup_batch_no_follow")
+        let span = crate::obs::span!(
+            DEBUG,
+            "acyclic.fs.lookup_batch_no_follow",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+            volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+        );
+        let result = crate::obs::in_span(
+            &span,
+            self.lookup_batch_no_follow_unobserved(paths, budget, cancellation),
+        )
+        .await;
+        result.observe_on(&span, "lookup_batch_no_follow")
     }
 
     async fn lookup_batch_no_follow_unobserved(
@@ -12258,22 +12167,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Returns measured path, kind, pagination, dependency, storage,
     /// cancellation, or bounded-work failures.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.list_directory",
-            level = "debug",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
-            )
-        )
-    )]
     pub async fn list_directory(
         &mut self,
         path: &NamespacePath,
@@ -12282,9 +12175,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<DirectoryPage> {
-        self.list_directory_with_bound(path, after, false, maximum_entries, budget, cancellation)
-            .await
-            .observe("list_directory")
+        let span = crate::obs::span!(
+            DEBUG,
+            "acyclic.fs.list_directory",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+            volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+        );
+        let result = crate::obs::in_span(
+            &span,
+            self.list_directory_with_bound(
+                path,
+                after,
+                false,
+                maximum_entries,
+                budget,
+                cancellation,
+            ),
+        )
+        .await;
+        result.observe_on(&span, "list_directory")
     }
 
     async fn list_directory_with_bound(
@@ -13062,22 +12975,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Returns measured path, kind, range, authentication, dependency,
     /// cancellation, storage, allocation, or bounded-work failures.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.read_file_range",
-            level = "debug",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                work.items = crate::obs::Empty,
-                work.bytes = crate::obs::Empty,
-                work.durability = crate::obs::Empty,
-                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
-            )
-        )
-    )]
     pub async fn read_file_range(
         &mut self,
         path: &NamespacePath,
@@ -13085,7 +12982,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<FileRangeRead> {
-        async move {
+        let span = crate::obs::span!(
+            DEBUG,
+            "acyclic.fs.read_file_range",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+            volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+        );
+        let result = crate::obs::in_span(&span, async move {
             if range.length > self.volume.config.limits.maximum_read_bytes {
                 return Err(OperationFailure::before_work(FsError::FileRead(
                     FileRangeReadError::InvalidRange,
@@ -13120,9 +13027,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             }
             read.work = work;
             Ok(FsReceipt { value: read, work })
-        }
-        .await
-        .observe("read_file_range")
+        })
+        .await;
+        result.observe_on(&span, "read_file_range")
     }
     async fn lookup_file_record_by_id(
         &self,

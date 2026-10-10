@@ -10,13 +10,13 @@ use acyclic_machines::{
     Capability, CompatibilityPolicy, CreateMachine, IdempotencyKey, Image, MachineObservation,
     MachineState, MachinesProvider, MutationOutcome, OperationPhase, ProviderError,
 };
-use acyclic_objects::v2::ObjectsProvider;
+use acyclic_objects::v1::ObjectsProvider;
 use acyclic_stream::StreamProvider;
 use futures::StreamExt;
 use std::num::NonZeroU32;
 
 /// Canonical language-neutral Objects conformance inventory.
-pub const OBJECTS_SUITE: &[u8] = acyclic_objects::v2::conformance::SUITE;
+pub const OBJECTS_SUITE: &[u8] = acyclic_objects::v1::conformance::SUITE;
 
 /// Canonical language-neutral harness conformance inventory.
 pub const HARNESS_SUITE: &[u8] = include_bytes!("../vectors/harness.json");
@@ -58,7 +58,7 @@ pub async fn stream(provider: &dyn StreamProvider) -> Result<(), String> {
 ///
 /// The suite retains state and idempotency keys under the `conformance` namespace.
 pub async fn objects(provider: &dyn ObjectsProvider) -> Result<(), String> {
-    acyclic_objects::v2::conformance::verify(provider, "conformance")
+    acyclic_objects::v1::conformance::verify(provider, "conformance")
         .await
         .map_err(|error| error.to_string())
 }
@@ -372,14 +372,14 @@ mod tests {
 
     #[test]
     fn exported_objects_inventory_matches_the_logical_suite() {
-        assert_eq!(OBJECTS_SUITE, include_bytes!("../vectors/objects-v2.json"));
+        assert_eq!(OBJECTS_SUITE, include_bytes!("../vectors/objects-v1.json"));
     }
 
     #[tokio::test]
     async fn family_memory_providers_conform() -> Result<(), String> {
         let stream_provider = MemoryStream::default();
         let (objects_provider, filesystem_bucket) =
-            acyclic_objects::v2::MemoryObjects::with_default_bucket();
+            acyclic_objects::v1::MemoryObjects::with_default_bucket();
         let filesystem = acyclic_fs::Fs::from_memory_providers(
             Arc::new(stream_provider.clone()),
             Arc::new(objects_provider.clone()),
@@ -404,7 +404,7 @@ mod tests {
             return Err("filesystem did not publish through the profile's public Stream".into());
         }
         let filesystem_objects = objects_provider
-            .list(acyclic_objects::v2::wire::ListObjectsRequest {
+            .list(acyclic_objects::v1::wire::ListObjectsRequest {
                 bucket: Some(filesystem_bucket),
                 prefix: "fs/v1/".to_owned(),
                 page_size: 128,

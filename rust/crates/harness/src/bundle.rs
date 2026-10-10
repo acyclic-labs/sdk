@@ -901,6 +901,302 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct RecordingTurnJournal {
+        replays: std::sync::atomic::AtomicUsize,
+        events: std::sync::Mutex<Vec<crate::executor::ExecutionEvent>>,
+    }
+
+    impl ExecutionJournal for RecordingTurnJournal {
+        fn replay<'a>(
+            &'a self,
+            _: crate::OperationId,
+            _: u64,
+            _: u32,
+        ) -> BoxFuture<'a, Result<Vec<crate::executor::ExecutionRecord>>> {
+            self.replays
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async { Ok(Vec::new()) }.boxed()
+        }
+
+        fn append<'a>(
+            &'a self,
+            _: crate::OperationId,
+            _: String,
+            event: crate::executor::ExecutionEvent,
+        ) -> BoxFuture<'a, Result<()>> {
+            async move {
+                self.events
+                    .lock()
+                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .push(event);
+                Err(Error::Unsupported(
+                    "stock journal dispatch forbidden".into(),
+                ))
+            }
+            .boxed()
+        }
+
+        fn stage<'a>(
+            &'a self,
+            operation: crate::OperationId,
+            key: String,
+            bytes: Vec<u8>,
+            media_type: &'static str,
+        ) -> BoxFuture<'a, Result<crate::conversation::FileRef>> {
+            UnusedJournal.stage(operation, key, bytes, media_type)
+        }
+
+        fn load<'a>(
+            &'a self,
+            file: &'a crate::conversation::FileRef,
+        ) -> BoxFuture<'a, Result<Vec<u8>>> {
+            UnusedJournal.load(file)
+        }
+
+        fn verify_input_file<'a>(
+            &'a self,
+            _: &'a crate::conversation::FileRef,
+        ) -> BoxFuture<'a, Result<()>> {
+            async { Ok(()) }.boxed()
+        }
+
+        fn verify_selected_context<'a>(
+            &'a self,
+            _: crate::OperationId,
+            _: &'a crate::projection::SelectedModelContext,
+        ) -> BoxFuture<'a, Result<()>> {
+            async { Ok(()) }.boxed()
+        }
+
+        fn open_interaction<'a>(
+            &'a self,
+            id: crate::InteractionId,
+            interaction: crate::interaction::Interaction,
+        ) -> BoxFuture<'a, Result<()>> {
+            UnusedJournal.open_interaction(id, interaction)
+        }
+
+        fn interaction_outcome<'a>(
+            &'a self,
+            id: crate::InteractionId,
+        ) -> BoxFuture<'a, Result<Option<crate::interaction::InteractionOutcome>>> {
+            UnusedJournal.interaction_outcome(id)
+        }
+    }
+
+    struct RecordingExecutor {
+        expected: Vec<TurnInput>,
+        outputs: Vec<TurnOutput>,
+        received: std::sync::Mutex<Vec<TurnInput>>,
+    }
+
+    impl Executor for RecordingExecutor {
+        fn execute<'a>(
+            &'a self,
+            input: TurnInput,
+            _: &'a dyn ExecutionJournal,
+        ) -> BoxFuture<'a, Result<TurnOutput>> {
+            async move {
+                let mut received = self
+                    .received
+                    .lock()
+                    .map_err(|_| Error::Storage("executor lock poisoned".into()))?;
+                let index = received.len();
+                assert_eq!(input, self.expected[index], "complete executor input");
+                received.push(input);
+                Ok(self.outputs[index].clone())
+            }
+            .boxed()
+        }
+    }
+
+    #[derive(Default)]
+    struct ForbiddenStockModel(std::sync::atomic::AtomicUsize);
+
+    impl ModelProvider for ForbiddenStockModel {
+        fn generate<'a>(
+            &'a self,
+            _: crate::model::PreparedModelRequest,
+            _: crate::model::ModelDispatch,
+        ) -> acyclic_stream::BoxProviderStream<'a, Result<crate::model::ModelEvent>> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(futures::stream::once(async {
+                Err(Error::Unsupported("stock model dispatch forbidden".into()))
+            }))
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            _: crate::model::ModelAttempt,
+        ) -> BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async {
+                Err(Error::Unsupported(
+                    "stock model reconciliation forbidden".into(),
+                ))
+            }
+            .boxed()
+        }
+    }
+
+    #[derive(Default)]
+    struct ForbiddenStockTools(std::sync::atomic::AtomicUsize);
+
+    impl CodingToolHost for ForbiddenStockTools {
+        fn definition(&self, name: &str, description: &str) -> Result<ToolDefinition> {
+            Host {
+                definition_name: None,
+            }
+            .definition(name, description)
+        }
+
+        fn execute<'a>(
+            &'a self,
+            _: &'a str,
+            _: ToolInvocation,
+        ) -> BoxFuture<'a, Result<ToolResult>> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async { Err(Error::Unsupported("stock tool dispatch forbidden".into())) }.boxed()
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            _: &'a str,
+            _: ToolInvocation,
+        ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async {
+                Err(Error::Unsupported(
+                    "stock tool reconciliation forbidden".into(),
+                ))
+            }
+            .boxed()
+        }
+
+        fn project(&self, _: &str, _: &ToolInvocation, _: &ToolResult) -> Result<Value> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(Error::Unsupported("stock tool projection forbidden".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn custom_executor_owns_complete_turn_input_output_without_stock_events() -> Result<()> {
+        use crate::conversation::{
+            Attachment, FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef,
+        };
+        use crate::model::{
+            FileProjectionPolicy, ModelContent, ModelContentPart, ModelMessage, ModelRole,
+        };
+        use crate::projection::{ModelContextSelection, SelectedModelContext};
+        use crate::resources::ProviderRef;
+        use std::sync::atomic::Ordering;
+
+        let file = FileRef::new(
+            VolumeRef::new(
+                ProviderRef::new("example", "filesystem", "1")?,
+                "custom-turn",
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(crate::AgentId::from_bytes(1_u128.to_be_bytes())),
+            )?,
+            "artifact.txt",
+            "version-1",
+            FileDescriptor::from_bytes(b"custom artifact", "text/plain")?,
+            "artifact.txt",
+        )?;
+        let inputs = (1_u32..=2)
+            .map(|index| {
+                let content = ModelContent::Parts(vec![
+                    ModelContentPart::Text {
+                        text: format!("custom input {index}"),
+                    },
+                    ModelContentPart::File {
+                        file: file.clone(),
+                        policy: FileProjectionPolicy::Reference,
+                    },
+                ]);
+                TurnInput::from_selected_context(
+                    crate::OperationId::from_bytes((10 + u128::from(index)).to_be_bytes()),
+                    SelectedModelContext {
+                        selection: ModelContextSelection {
+                            checkpoint: (index == 1).then(|| file.clone()),
+                            conversation_revision: 20 + u64::from(index),
+                            message_ids: vec![
+                                uuid::Uuid::from_u128(30 + u128::from(index)),
+                                uuid::Uuid::from_u128(40 + u128::from(index)),
+                            ],
+                        },
+                        messages: vec![
+                            ModelMessage {
+                                role: ModelRole::System,
+                                content: ModelContent::Text(format!("custom context {index}")),
+                            },
+                            ModelMessage {
+                                role: ModelRole::User,
+                                content,
+                            },
+                        ],
+                    },
+                    index,
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let outputs = (1..=2)
+            .map(|index| TurnOutput {
+                text: format!("custom output {index}"),
+                attachments: vec![Attachment { file: file.clone(), label: Some(format!("custom label {index}")) }],
+                metadata: json!({"executor": "custom", "invocation": index, "nested": {"complete": true}}),
+                steps: index,
+            })
+            .collect::<Vec<_>>();
+        let executor = Arc::new(RecordingExecutor {
+            expected: inputs.clone(),
+            outputs: outputs.clone(),
+            received: std::sync::Mutex::new(Vec::new()),
+        });
+        let journal = Arc::new(RecordingTurnJournal::default());
+        let model = Arc::new(ForbiddenStockModel::default());
+        let tools = Arc::new(ForbiddenStockTools::default());
+        let bundle = HarnessBuilder::new()
+            .model(
+                Model::new("example", "stock", "1", Value::Null)?,
+                model.clone(),
+            )
+            .tools(coding_tools(tools.clone())?)
+            .grant("model:generate")
+            .journal(journal.clone())
+            .executor(executor.clone())
+            .build()?;
+
+        // Distinct invocations catch both cached output and reconstruction that
+        // loses file parts, selected-history provenance, metadata or attachments.
+        for (input, output) in inputs.iter().zip(&outputs) {
+            assert_eq!(
+                bundle.run(input.clone()).await?,
+                *output,
+                "complete executor output"
+            );
+        }
+        assert_eq!(
+            *executor
+                .received
+                .lock()
+                .map_err(|_| Error::Storage("executor lock poisoned".into()))?,
+            inputs
+        );
+        assert_eq!(journal.replays.load(Ordering::SeqCst), 0);
+        assert!(
+            journal
+                .events
+                .lock()
+                .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                .is_empty()
+        );
+        assert_eq!(model.0.load(Ordering::SeqCst), 0);
+        assert_eq!(tools.0.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn builder_rejects_missing_or_conflicting_bindings() -> Result<()> {
         assert!(HarnessBuilder::new().build().is_err());

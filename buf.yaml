@@ -7,12 +7,6 @@ deps:
 lint:
   use:
     - STANDARD
-  # These established wire contracts use zero for unencoded bytes, a valid
-  # codec rather than an unspecified value. Preserve their public names.
-  ignore_only:
-    ENUM_ZERO_VALUE_SUFFIX:
-      - proto/objects/v2/objects.proto
-      - rust/crates/stream/proto/stream/v2/stream.proto
   except:
     - PACKAGE_DIRECTORY_MATCH
     - RPC_REQUEST_RESPONSE_UNIQUE

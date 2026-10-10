@@ -22,7 +22,7 @@ use crate::{
     resources::{ArtifactRef, ProviderRef},
     runtime::ContentBindings,
 };
-use acyclic_objects::v2::{ObjectsProvider, wire};
+use acyclic_objects::v1::{ObjectsProvider, wire};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -643,7 +643,7 @@ impl ContentResidencyVerifier for ObjectContentStore {
     clippy::needless_pass_by_value,
     reason = "maps the owned provider error at async boundaries"
 )]
-fn storage(error: acyclic_objects::v2::Error) -> Error {
+fn storage(error: acyclic_objects::v1::Error) -> Error {
     Error::Storage(error.to_string())
 }
 
@@ -668,7 +668,7 @@ mod tests {
         fork::ForkPreparation,
         resources::{GenerationRef, ProviderRef, StreamRef},
     };
-    use acyclic_objects::v2::{MemoryObjects, MemoryOptions};
+    use acyclic_objects::v1::{MemoryObjects, MemoryOptions};
 
     #[tokio::test]
     async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Result<()> {

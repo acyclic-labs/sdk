@@ -22,7 +22,7 @@ use std::future::Future;
 use thiserror::Error;
 use uuid::Uuid;
 
-const STATE_VERSION: u32 = 9;
+const STATE_VERSION: u32 = 1;
 const COMMIT_DOMAIN: &[u8] = b"acyclic-fs-git-compat-commit-v1\0";
 const ACTION_DOMAIN: &[u8] = b"acyclic-fs-git-compat-action-v1\0";
 const GREP_READ_CONCURRENCY: usize = 32;
@@ -5724,6 +5724,19 @@ mod tests {
     use crate::kernel::{FileMetadata, MetadataField};
     use crate::{Digest, Fs, WorkspaceName};
     use std::sync::Mutex;
+
+    #[test]
+    fn current_state_round_trips_and_obsolete_versions_are_rejected() {
+        let state = GitCompatState::new("main", WorkspaceId::from_bytes([1; 16]));
+        let encoded = serde_json::to_vec(&state).expect("encode current state");
+        let mut decoded: GitCompatState =
+            serde_json::from_slice(&encoded).expect("decode current state");
+        assert!(validate_git_state(&decoded).is_ok());
+        for version in [0, 2, 9, u32::MAX] {
+            decoded.version = version;
+            assert!(validate_git_state(&decoded).is_err());
+        }
+    }
 
     #[derive(Debug, Error)]
     #[error("test executor failure")]

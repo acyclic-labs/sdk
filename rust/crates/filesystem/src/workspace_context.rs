@@ -304,6 +304,8 @@ impl<S: WorkspaceContextStore> WorkspaceContextRegistry<S> {
     /// filesystem changes before invoking this topology operation. Verifying
     /// the complete context set makes concurrent descendant creation fail the
     /// CAS rather than leaving a child bound to a missing parent root.
+    /// Every record in that snapshot must satisfy the stored-record contract;
+    /// incompatible snapshots fail before lifecycle or root-removal checks.
     pub async fn remove_root(
         &self,
         context_id: WorkspaceContextId,
@@ -315,15 +317,17 @@ impl<S: WorkspaceContextStore> WorkspaceContextRegistry<S> {
                 .list()
                 .await
                 .map_err(WorkspaceContextError::Store)?;
-            let by_id = contexts
-                .into_iter()
-                .map(|context| (context.context_id, context))
-                .collect::<BTreeMap<_, _>>();
+            let mut by_id = BTreeMap::new();
+            for context in contexts {
+                validate_record(&context, context.context_id)?;
+                if by_id.insert(context.context_id, context).is_some() {
+                    return Err(WorkspaceContextError::IncompatibleState);
+                }
+            }
             let mut context = by_id
                 .get(&context_id)
                 .cloned()
                 .ok_or(WorkspaceContextError::IncompatibleState)?;
-            validate_record(&context, context_id)?;
             if context.state == WorkspaceContextState::Discarded {
                 return Err(WorkspaceContextError::Discarded);
             }
@@ -963,6 +967,8 @@ mod tests {
         loads: Arc<AtomicUsize>,
         lists: Arc<AtomicUsize>,
         swaps: Arc<AtomicUsize>,
+        duplicate_list: bool,
+        insert_before_swap: Mutex<Option<WorkspaceContext>>,
     }
 
     impl CountingContextStore {
@@ -994,7 +1000,11 @@ mod tests {
 
         async fn list(&self) -> Result<Vec<WorkspaceContext>, Self::Error> {
             self.lists.fetch_add(1, Ordering::Relaxed);
-            self.inner.list().await
+            let mut records = self.inner.list().await?;
+            if self.duplicate_list {
+                records.extend(records.last().cloned());
+            }
+            Ok(records)
         }
 
         async fn compare_and_swap(
@@ -1016,6 +1026,18 @@ mod tests {
             require_exact_set: bool,
         ) -> Result<bool, Self::Error> {
             self.swaps.fetch_add(1, Ordering::Relaxed);
+            let inserted = self
+                .insert_before_swap
+                .lock()
+                .expect("injection lock")
+                .take();
+            if let Some(record) = inserted {
+                assert!(
+                    self.inner
+                        .compare_and_swap(record.context_id, 0, record)
+                        .await?
+                );
+            }
             self.inner
                 .compare_and_swap_many(expected_revisions, replacements, require_exact_set)
                 .await
@@ -1140,6 +1162,254 @@ mod tests {
             registry.remove_root(context(41), numbered_root(1)).await,
             Err(WorkspaceContextError::InvalidRoots)
         ));
+    }
+
+    #[tokio::test]
+    async fn deep_fork_chain_root_removal_keeps_unrelated_lineage_and_live_descendants() {
+        const DEPTH: u128 = 1024;
+        let ordered_context = |number: u128| WorkspaceContextId::from_bytes(number.to_be_bytes());
+        let registry = WorkspaceContextRegistry::new(CountingContextStore::default());
+        // The unrelated chain sorts before the root being removed, exercising
+        // cached ancestor walks before inspecting that root's descendants.
+        registry
+            .register_root(ordered_context(1), scaled_roots(0, 2))
+            .await
+            .expect("unrelated root");
+        for generation in 1..=DEPTH {
+            registry
+                .register_child(
+                    ordered_context(generation + 1),
+                    ordered_context(generation),
+                    scaled_roots(generation, 2),
+                )
+                .await
+                .expect("deep unrelated child");
+        }
+        let target = ordered_context(DEPTH + 2);
+        registry
+            .register_root(target, scaled_roots(0, 2))
+            .await
+            .expect("independent target root");
+        let before = registry
+            .resolve(target)
+            .await
+            .expect("target before removal");
+        let mut expected_records = registry
+            .store()
+            .list()
+            .await
+            .expect("all records before removal");
+        registry.store().reset();
+        let removed = registry
+            .remove_root(target, numbered_root(2))
+            .await
+            .expect("unrelated descendants do not block removal");
+        assert_eq!(registry.store().counts(), (0, 1, 1));
+        assert_eq!(removed.revision, before.revision + 1);
+        assert_eq!(removed.roots.len(), 1);
+        assert_eq!(
+            removed.roots.get(&numbered_root(1)),
+            before.roots.get(&numbered_root(1))
+        );
+        *expected_records
+            .iter_mut()
+            .find(|record| record.context_id == target)
+            .expect("target record") = removed;
+        assert_eq!(
+            registry
+                .store()
+                .list()
+                .await
+                .expect("all records after removal"),
+            expected_records
+        );
+        registry
+            .adopt_root(target, before.roots[&numbered_root(2)].clone())
+            .await
+            .expect("restore target binding");
+
+        for generation in 1..=DEPTH {
+            registry
+                .register_child(
+                    ordered_context(DEPTH * 2 + 3 - generation),
+                    if generation == 1 {
+                        target
+                    } else {
+                        ordered_context(DEPTH * 2 + 4 - generation)
+                    },
+                    scaled_roots(generation, 2),
+                )
+                .await
+                .expect("deep target child");
+            registry
+                .set_active(ordered_context(DEPTH * 2 + 3 - generation), false)
+                .await
+                .expect("freeze retained descendant");
+        }
+        // Frozen descendants remain retained and must still block removal.
+        let records_before = registry
+            .store()
+            .list()
+            .await
+            .expect("all records before rejection");
+        registry.store().reset();
+        assert!(matches!(
+            registry.remove_root(target, numbered_root(2)).await,
+            Err(WorkspaceContextError::RootInUse)
+        ));
+        assert_eq!(registry.store().counts(), (0, 1, 0));
+        assert_eq!(
+            registry
+                .store()
+                .list()
+                .await
+                .expect("all records after rejection"),
+            records_before
+        );
+    }
+
+    #[tokio::test]
+    async fn root_removal_rechecks_a_concurrently_registered_descendant() {
+        let registry = WorkspaceContextRegistry::new(CountingContextStore::default());
+        let before = registry
+            .register_root(context(41), scaled_roots(0, 2))
+            .await
+            .expect("target root");
+        let child = WorkspaceContext {
+            version: WORKSPACE_CONTEXT_VERSION,
+            revision: 1,
+            context_id: context(42),
+            parent_context_id: Some(context(41)),
+            roots: scaled_roots(1, 2)
+                .into_iter()
+                .map(|root| (root.root_id, root))
+                .collect(),
+            state: WorkspaceContextState::Active,
+        };
+        *registry
+            .store()
+            .insert_before_swap
+            .lock()
+            .expect("injection lock") = Some(child.clone());
+        registry.store().reset();
+        assert!(matches!(
+            registry.remove_root(context(41), numbered_root(2)).await,
+            Err(WorkspaceContextError::RootInUse)
+        ));
+        assert_eq!(registry.store().counts(), (0, 2, 1));
+        assert_eq!(registry.resolve(context(41)).await.expect("target"), before);
+        assert_eq!(
+            registry.resolve(context(42)).await.expect("new child"),
+            child
+        );
+    }
+
+    #[tokio::test]
+    async fn root_removal_rejects_invalid_stored_records_before_publication() {
+        let mut accepted = Vec::new();
+        for corruption in 0..9 {
+            let registry = WorkspaceContextRegistry::new(CountingContextStore {
+                duplicate_list: corruption == 7,
+                ..CountingContextStore::default()
+            });
+            registry
+                .register_root(context(41), scaled_roots(0, 2))
+                .await
+                .expect("target root");
+            registry
+                .register_root(context(42), scaled_roots(0, 2))
+                .await
+                .expect("unrelated root");
+            {
+                let mut state = registry.store().inner.state.lock().expect("store lock");
+                let record = state.records.get_mut(&context(42)).expect("stored context");
+                match corruption {
+                    0 => record.version = 0,
+                    1 => record.revision = 0,
+                    2 => record.roots.clear(),
+                    7 => {}
+                    8 => record.version += 1,
+                    _ => {
+                        let root = record.roots.get_mut(&numbered_root(1)).expect("root");
+                        match corruption {
+                            3 => root.root_id = numbered_root(99),
+                            4 => root.source_path = PathBuf::from("relative"),
+                            5 => root.mount_path = Some(PathBuf::from("relative")),
+                            6 => root.workspace_name.clear(),
+                            _ => unreachable!(),
+                        }
+                    }
+                }
+            }
+            let before = registry
+                .store()
+                .inner
+                .list()
+                .await
+                .expect("corrupt snapshot");
+            registry.store().reset();
+            if !matches!(
+                registry.remove_root(context(41), numbered_root(2)).await,
+                Err(WorkspaceContextError::IncompatibleState)
+            ) {
+                accepted.push(corruption);
+                continue;
+            }
+            assert_eq!(registry.store().counts(), (0, 1, 0));
+            assert_eq!(
+                registry
+                    .store()
+                    .inner
+                    .list()
+                    .await
+                    .expect("unchanged snapshot"),
+                before
+            );
+        }
+        assert!(accepted.is_empty(), "accepted corruptions {accepted:?}");
+    }
+
+    #[tokio::test]
+    async fn root_removal_rejects_cyclic_and_missing_ancestry_without_mutation() {
+        for cyclic in [false, true] {
+            let registry = WorkspaceContextRegistry::new(MemoryWorkspaceContextStore::new());
+            registry
+                .register_root(context(41), scaled_roots(0, 2))
+                .await
+                .expect("target root");
+            registry
+                .register_root(context(42), scaled_roots(0, 2))
+                .await
+                .expect("unrelated root");
+            // Persisted adapters can return malformed lineage after corruption.
+            // Registration intentionally cannot create either of these states.
+            registry
+                .store()
+                .state
+                .lock()
+                .expect("store lock")
+                .records
+                .get_mut(&context(42))
+                .expect("unrelated context")
+                .parent_context_id = Some(if cyclic { context(42) } else { context(99) });
+            let before = registry
+                .store()
+                .list()
+                .await
+                .expect("records before removal");
+            assert!(matches!(
+                registry.remove_root(context(41), numbered_root(2)).await,
+                Err(WorkspaceContextError::IncompatibleState)
+            ));
+            assert_eq!(
+                registry
+                    .store()
+                    .list()
+                    .await
+                    .expect("records after removal"),
+                before
+            );
+        }
     }
 
     #[tokio::test]

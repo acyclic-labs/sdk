@@ -2,7 +2,7 @@
 
 For Node/Bun gRPC, import `createStreamGrpcClient` from
 `@acyclic-labs/stream/grpc` with `{ endpoint, token }`. It exposes every
-canonical Stream v2 RPC, including streaming reads/follow and atomic multi-path
+canonical Stream v1 RPC, including streaming reads/follow and atomic multi-path
 `Commit`. Optional `caCertificate` adds a private PEM CA;
 `maximumMessageBytes` bounds each message. Browser applications use
 `HttpStreamProvider`. History remains indefinitely retained.

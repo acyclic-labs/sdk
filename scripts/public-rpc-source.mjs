@@ -47,18 +47,21 @@ export function createSourceInspector(root, read = path => {
 
   return (service, rpc) => {
     const [, family, version, serviceName] = service.typeName.split(".");
-    const empty = { rustGrpc: false, rustHttp: false, typescriptGrpcNodeBun: false, typescriptHttp: false, typescriptGrpcWeb: false, typescriptPackageExported: false };
-    if (family === "objects" && version === "v1") return empty;
     const objects = family === "objects";
     const stream = family === "stream";
+    if ((objects || stream) && version !== "v1") throw new Error("unsupported current contract");
     const unified = family === "actors" || family === "workers";
     const rustBase = `rust/crates/${family}/src/`;
     const tsBase = `typescript/packages/${family}/src/`;
     const operation = objects ? objectMethods[rpc.name] ?? rpc.localName : rpc.localName;
     const rustName = snake(operation);
-    const rustRoot = source(`${rustBase}${objects ? "v2/mod.rs" : "lib.rs"}`);
-    const grpc = source(`${rustBase}${objects ? "v2/" : ""}grpc.rs`);
-    const http = source(`${rustBase}${objects ? "v2/" : ""}http.rs`);
+    if (objects) {
+      const contracts = source(`${rustBase}lib.rs`).match(/^pub mod v[0-9]+;/gm) ?? [];
+      if (contracts.length !== 1 || contracts[0] !== `pub mod ${version};`) throw new Error("Objects must expose one current contract module");
+    }
+    const rustRoot = source(`${rustBase}${objects ? "v1/mod.rs" : "lib.rs"}`);
+    const grpc = source(`${rustBase}${objects ? "v1/" : ""}grpc.rs`);
+    const http = source(`${rustBase}${objects ? "v1/" : ""}http.rs`);
     // Actors' tonic declarations are generated in Cargo OUT_DIR, so the clean
     // checkout has no stable generated .rs path to inspect. The checked-in
     // operation macro, Rust route table, and generated TS facade are the
@@ -88,7 +91,7 @@ export function createSourceInspector(root, read = path => {
         rustMethod(source(`${rustBase}generated/acyclic.${family}.${version}.tonic.rs`).split(`pub mod ${family}_service_server`)[0], rustName));
     const rustHttp = module("http") && rustMethod(objects || stream
       ? rustImpl(http, objects ? "impl ObjectsProvider for HttpObjects" : "impl StreamProvider for HttpStream") : http, rustName);
-    const grpcPath = `${tsBase}${objects ? "v2-grpc" : "grpc"}.ts`;
+    const grpcPath = `${tsBase}${objects ? "v1-grpc" : "grpc"}.ts`;
     const typescriptGrpcNodeBun = family === "actors"
       ? semanticOperation &&
         actorsTypescriptClient.includes("nativeBinding()") && actorsTypescriptClient.includes("wasmBinding()")
@@ -96,13 +99,13 @@ export function createSourceInspector(root, read = path => {
       ? semanticOperation && workersBinding.includes("function loadNative()") &&
         workersBinding.includes("module.WorkersClient.connectResult(config,") &&
         client.includes("export const createWorkersGrpcClient =") && client.includes("=> new WorkersClient(options)") && exported(grpcPath, "./client.js")
-      : factory(grpcPath, objects ? "createObjectsV2GrpcClients" : `create${family[0].toUpperCase()}${family.slice(1)}GrpcClient`, serviceName);
+      : factory(grpcPath, objects ? "createObjectsV1GrpcClients" : `create${family[0].toUpperCase()}${family.slice(1)}GrpcClient`, serviceName);
     // Unified clients use gRPC-Web in browsers; their compatibility aliases do
     // not expose the retired raw HTTP implementation. Inventory both honestly.
     const typescriptHttp = unified
       ? false
       : objects
-      ? method(`${tsBase}v2.ts`, "ObjectsV2Provider", operation) && method(`${tsBase}v2-http.ts`, "HttpObjectsV2", "invoke") && source(`${tsBase}v2-http.ts`).includes("extends ObjectsV2Provider")
+      ? method(`${tsBase}v1.ts`, "ObjectsV1Provider", operation) && method(`${tsBase}v1-http.ts`, "HttpObjectsV1", "invoke") && source(`${tsBase}v1-http.ts`).includes("extends ObjectsV1Provider")
       : method(`${tsBase}http.ts`, stream ? "HttpStreamProvider" : `Http${family[0].toUpperCase()}${family.slice(1)}Client`, operation);
     const typescriptGrpcWeb = semanticOperation && (family === "actors"
       ? client.includes("function wasmBinding()") && actorsClient.includes("tonic_web_wasm_client::Client::new_with_options(") &&
@@ -118,9 +121,9 @@ export function createSourceInspector(root, read = path => {
         manifest.exports?.["./proto"]?.default === `./generated/proto/${family}/${version}/${family}_pb.js` &&
         exported(`${tsBase}index.ts`, "./client.js")
       : manifest.exports?.["."]?.default === "./dist/index.js" &&
-        manifest.exports?.["./grpc"]?.default === `./dist/${objects ? "v2-grpc" : "grpc"}.js` &&
+        manifest.exports?.["./grpc"]?.default === `./dist/${objects ? "v1-grpc" : "grpc"}.js` &&
         manifest.exports?.["./proto"]?.default === `./generated/proto/${family}/${version}/${family}_pb.js` &&
-        (objects ? exported(`${tsBase}index.ts`, "./v2.js") && exported(`${tsBase}index.ts`, "./v2-http.js") : exported(`${tsBase}index.ts`, family === "workers" ? "./client.js" : "./http.js"));
+        (objects ? exported(`${tsBase}index.ts`, "./v1.js") && exported(`${tsBase}index.ts`, "./v1-http.js") : exported(`${tsBase}index.ts`, family === "workers" ? "./client.js" : "./http.js"));
     return { rustGrpc, rustHttp, typescriptGrpcNodeBun, typescriptHttp, typescriptGrpcWeb: Boolean(typescriptGrpcWeb), typescriptPackageExported: Boolean(typescriptPackageExported) };
   };
 }

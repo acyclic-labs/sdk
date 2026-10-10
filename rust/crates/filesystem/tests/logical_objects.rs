@@ -1,11 +1,11 @@
-//! Immutable filesystem composition over the canonical Objects v2 provider.
+//! Immutable filesystem composition over the canonical Objects v1 provider.
 #![cfg(feature = "distributed")]
 
 use acyclic_fs::storage::{
     ObjectId, ObjectKind, ObjectReadRequest, ObjectStoreError, ObjectWrite, object_digest,
 };
 use acyclic_fs::{AsyncObjectStore, CancellationToken, LogicalObjectStore, WorkBudget};
-use acyclic_objects::v2::{MemoryObjects, MemoryOptions, ObjectsProvider, wire};
+use acyclic_objects::v1::{MemoryObjects, MemoryOptions, ObjectsProvider, wire};
 use bytes::Bytes;
 use std::sync::Arc;
 

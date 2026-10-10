@@ -1,3 +1,4 @@
+import { wasmSurfaceComparison } from "./tracked-wasm-surfaces.mjs";
 import { serviceGenerate } from "./generate-actors.mjs";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -11,6 +12,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 if (args.some(arg => arg !== "--source-only") || args.length > 1) throw new Error("usage: check-generated.mjs [--source-only]");
 const sourceOnly = args.includes("--source-only");
+const compareWasmSurfaces = wasmSurfaceComparison(root);
 for (const key of ["actors", "workers", "stream"]) {
   const facts = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "native-family", root, key], { cwd: root, encoding: "utf8" });
   if (facts.error) throw facts.error;
@@ -39,27 +41,6 @@ const generatedFiles = directory => {
   visit(directory, "");
   return files.sort();
 };
-// Closure invoke names include private crate build hashes. Rust 1.98 expands
-// those names to include the closure's type, but the hashes still vary by host.
-const wasmPrivateClosureName = /wasm_bindgen__convert__closures_____invoke__h[0-9a-f]+|wasm_bindgen_[0-9a-f]{8,16}___convert__closures[A-Za-z0-9_]*/g;
-const canonicalPrivateClosureName = name => name.startsWith("wasm_bindgen__")
-  ? "wasm_bindgen__convert__closures_____invoke__h<private>"
-  : name.replace(/(wasm_bindgen|js_sys|web_sys|core)_[0-9a-f]{8,16}(?=_)/g, "$1_<private>");
-const canonicalGeneratedJs = source => source
-  .replace(wasmPrivateClosureName, canonicalPrivateClosureName)
-  .replace(/shim_idx: \d+/g, "shim_idx: <private>");
-const declarationBlocks = source => source
-  .split(/\r?\n/)
-  .reduce((blocks, line) => {
-    if (line.startsWith("export ")) blocks.push(line);
-    else if (blocks.length > 0) blocks[blocks.length - 1] += `\n${line}`;
-    return blocks;
-  }, [])
-  .map(block => block
-    .replace(wasmPrivateClosureName, canonicalPrivateClosureName)
-    .replace(/\s+/g, " ")
-    .trim())
-  .sort();
 const runtimeFingerprint = value => {
   if (typeof value === "bigint") return `${value}n`;
   if (value instanceof Uint8Array) return [...value];
@@ -77,7 +58,7 @@ const wasmSmoke = {
   harness: module => module.decodeAggregateKind(1),
   inference: module => typeof module.validate_customer_wire === "function",
   machines: module => module.httpRoutes(),
-  objects: module => module.objects_v2_http_type("objects/get", false),
+  objects: module => module.objects_v1_http_type("objects/get", false),
   stream: module => {
     if (module.is_stream_error_code("retired")) {
       throw new Error("Stream WASM still accepts a retired-path error");
@@ -106,15 +87,7 @@ const checkWasmPackage = async ([packageName, basename]) => {
     throw new Error(`${packageName} WASM rebuild failed with status ${built.status ?? "unknown"}`);
   }
   const packageRoot = join(root, `typescript/packages/${packageName}/generated/wasm`);
-  for (const extension of [".js", ".d.ts", "_bg.wasm.d.ts"]) {
-    const fresh = readFileSync(join(output, `${basename}${extension}`), "utf8");
-    const committed = readFileSync(join(packageRoot, `${basename}${extension}`), "utf8");
-    const normalizedFresh = extension === ".js" ? canonicalGeneratedJs(fresh) : declarationBlocks(fresh).join("\n");
-    const normalizedCommitted = extension === ".js" ? canonicalGeneratedJs(committed) : declarationBlocks(committed).join("\n");
-    if (normalizedFresh !== normalizedCommitted) {
-      throw new Error(`generated WASM ${extension} drift: ${packageName}`);
-    }
-  }
+  compareWasmSurfaces(packageName, basename, output);
   const freshWasm = readFileSync(join(output, `${basename}_bg.wasm`));
   const committedWasm = readFileSync(join(packageRoot, `${basename}_bg.wasm`));
   if (!WebAssembly.validate(freshWasm) || !WebAssembly.validate(committedWasm)) {
