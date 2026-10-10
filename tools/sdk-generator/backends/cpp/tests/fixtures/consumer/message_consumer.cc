@@ -9,7 +9,7 @@
 #include <google/protobuf/util/message_differencer.h>
 #include "actors/v1/actors.pb.h"
 #include "workers/v1/workers.pb.h"
-#include "stream/v2/stream.pb.h"
+#include "stream/v1/stream.pb.h"
 using namespace google::protobuf;
 void check(bool ok, const std::string& message) { if (!ok) throw std::runtime_error(message); }
 void populate(Message& message, int depth=0) {
@@ -37,7 +37,7 @@ void roundtrip(const Message& message) {
 }
 int main(int argc,char** argv) { try {
  check(argc==4,"three descriptor paths required");
- const char* names[]={"actors/v1/actors.proto","workers/v1/workers.proto","stream/v2/stream.proto"};int methods=0;
+ const char* names[]={"actors/v1/actors.proto","workers/v1/workers.proto","stream/v1/stream.proto"};int methods=0;
  for(int n=0;n<3;++n) {
   std::ifstream input(argv[n+1],std::ios::binary);FileDescriptorSet rust;check(rust.ParseFromIstream(&input),"cannot parse Rust descriptor set");
   FileDescriptorProto expected,actual;bool found=false;
@@ -57,10 +57,10 @@ int main(int argc,char** argv) { try {
  const std::string bytes("\0\xff",2);
  acyclic::actors::v1::CreateActorRequest actor;actor.set_code_sha256(bytes);check(actor.code_sha256()==bytes,"Actor bytes changed");roundtrip(actor);
  acyclic::workers::v1::PublishVersionRequest worker;worker.set_javascript_module(bytes);check(worker.javascript_module()==bytes,"Worker bytes changed");roundtrip(worker);
- acyclic::stream::v2::AppendRequest append;append.set_path("probe");append.add_records(bytes);append.add_records("");append.set_if_tail(std::numeric_limits<uint64_t>::max());append.set_idempotency_key(bytes);check(append.has_if_tail()&&append.if_tail()==std::numeric_limits<uint64_t>::max()&&append.records(0)==bytes&&append.records(1).empty(),"Append bounds or bytes changed");roundtrip(append);
- acyclic::stream::v2::AppendRequest zero;zero.set_if_tail(0);check(zero.has_if_tail()&&zero.SerializeAsString()==std::string("\x18\0",2),"optional zero presence differs");roundtrip(zero);zero.clear_if_tail();check(!zero.has_if_tail(),"optional clear differs");
- acyclic::stream::v2::ReadRequest read;read.set_from(std::numeric_limits<uint64_t>::max());read.set_limit(std::numeric_limits<uint32_t>::max());check(read.SerializeAsString()==std::string("\x10\xff\xff\xff\xff\xff\xff\xff\xff\xff\x01\x18\xff\xff\xff\xff\x0f",17),"unsigned maximum wire bits differ");roundtrip(read);
- acyclic::stream::v2::AppendResponse response;response.mutable_committed()->set_tail(123);roundtrip(response);response.mutable_conflict()->set_actual_tail(456);check(!response.has_committed()&&response.has_conflict(),"oneof switch differs");roundtrip(response);response.clear_outcome();check(response.outcome_case()==acyclic::stream::v2::AppendResponse::OUTCOME_NOT_SET,"oneof clear differs");
+ acyclic::stream::v1::AppendRequest append;append.set_path("probe");append.add_records(bytes);append.add_records("");append.set_if_tail(std::numeric_limits<uint64_t>::max());append.set_idempotency_key(bytes);check(append.has_if_tail()&&append.if_tail()==std::numeric_limits<uint64_t>::max()&&append.records(0)==bytes&&append.records(1).empty(),"Append bounds or bytes changed");roundtrip(append);
+ acyclic::stream::v1::AppendRequest zero;zero.set_if_tail(0);check(zero.has_if_tail()&&zero.SerializeAsString()==std::string("\x18\0",2),"optional zero presence differs");roundtrip(zero);zero.clear_if_tail();check(!zero.has_if_tail(),"optional clear differs");
+ acyclic::stream::v1::ReadRequest read;read.set_from(std::numeric_limits<uint64_t>::max());read.set_limit(std::numeric_limits<uint32_t>::max());check(read.SerializeAsString()==std::string("\x10\xff\xff\xff\xff\xff\xff\xff\xff\xff\x01\x18\xff\xff\xff\xff\x0f",17),"unsigned maximum wire bits differ");roundtrip(read);
+ acyclic::stream::v1::AppendResponse response;response.mutable_committed()->set_tail(123);roundtrip(response);response.mutable_conflict()->set_actual_tail(456);check(!response.has_committed()&&response.has_conflict(),"oneof switch differs");roundtrip(response);response.clear_outcome();check(response.outcome_case()==acyclic::stream::v1::AppendResponse::OUTCOME_NOT_SET,"oneof clear differs");
  std::cout<<"PASS C++ complete file descriptors, "<<methods<<" RPC message pairs, bytes, unsigned bounds, optional zero and oneof controls\n";return 0;
  } catch(const std::exception& error){std::cerr<<error.what()<<"\n";return 1;}
 }
