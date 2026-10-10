@@ -18,6 +18,11 @@ updates:
     patterns: ["*"]
     multi-ecosystem-group: sdk-dependencies
     rebase-strategy: disabled
+    # Unpublished native companions are versioned by the SDK release.
+    ignore:
+      - dependency-name: "@acyclic-labs/actors-darwin-arm64"
+      - dependency-name: "@acyclic-labs/actors-linux-x64-gnu"
+      - dependency-name: "@acyclic-labs/actors-win32-x64-msvc"
   - package-ecosystem: github-actions
     directory: /
     patterns: ["*"]
