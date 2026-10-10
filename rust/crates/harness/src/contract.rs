@@ -65,7 +65,6 @@ pub use json::{
     JsonBounds, JsonCodecCharge, canonical_json_bytes_bounded, json_bytes_bounded_trusted,
     json_from_slice_bounded_trusted,
 };
-pub(crate) use json::admit_json;
 
 /// One sorted-key JSON encoding for durable identities and Rust/WASM output.
 /// The canonical bounded serializer preserves Value integer/float and duplicate

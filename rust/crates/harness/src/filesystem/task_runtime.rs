@@ -853,7 +853,10 @@ where
         }
         // Verify the original admission before touching this task's passive wake.
         let admission = self.host.observe_admission(task).await?;
-        if self.host.observe_task(task).await?.outcome.is_some_and(|outcome| outcome.is_terminal()) {
+        if matches!(
+            self.host.observe_task(task).await?.outcome,
+            Some(Outcome::Succeeded(_) | Outcome::Failed { .. } | Outcome::Cancelled)
+        ) {
             return Ok(None);
         }
         let work = deadline::run(

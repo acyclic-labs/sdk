@@ -33,7 +33,7 @@ use acyclic_stream::{MemoryStream, StreamClient};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     sync::Arc,
 };
 use uuid::Uuid;

@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::{
-    Capabilities, Limits,
+    Capabilities,
+    core::Limits,
     conversation::{Attachment, ContentPublisher, FileRef, PrivateDirectoryPage},
     core::AuthorityIssuer,
     resource_preparation::{CreatedContentBinding, CreatedResourceOperation, CreatedResourceReceipt,
