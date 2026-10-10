@@ -4953,6 +4953,22 @@ pub(crate) mod tests {
         additional: Vec<String>,
     ) -> Result<EffectTaskFixture<P>> {
         let payloads = Arc::new(MemoryPayloads::new()?);
+        let (host, binding, runtime_scope) = effect_task_fixture_with_storage(
+            stream, provider, additional, payloads.clone(), payloads.clone(), &payloads.volume,
+        ).await?;
+        Ok(EffectTaskFixture { host, binding, payloads, runtime_scope })
+    }
+
+    #[cfg(feature = "filesystem")]
+    #[allow(clippy::type_complexity)]
+    async fn effect_task_fixture_with_storage<P: StreamProvider>(
+        stream: StreamClient<P>,
+        provider: &str,
+        additional: Vec<String>,
+        payloads: Arc<dyn SchedulerPayloadStore>,
+        reader: Arc<dyn ContentResidencyVerifier>,
+        payload_volume: &VolumeRef,
+    ) -> Result<(Arc<CoordinatorTaskHost<P>>, TaskJournalOwner<P>, RuntimeScope)> {
         let authority = Authority {
             kind: AggregateKind::Task,
             id: "effect-task-owner".into(),
@@ -4966,9 +4982,7 @@ pub(crate) mod tests {
             "effect:run".into(),
             "effect:plan".into(),
             capability::effect_provider(provider),
-            payloads
-                .volume
-                .capability(crate::conversation::VolumeOperation::Read)?,
+            payload_volume.capability(crate::conversation::VolumeOperation::Read)?,
         ];
         grants.extend(additional);
         let grants = Capabilities::new(grants);
@@ -4994,10 +5008,10 @@ pub(crate) mod tests {
         let mut machines = MachineRegistry::default();
         machines.register(implementation)?;
         let host = Arc::new(CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&stream, payloads.clone()).await?,
+            DistributedCoordinator::open(&stream, reader.clone()).await?,
             stream.clone(),
             payloads.clone(),
-            payloads.clone(),
+            reader,
             authority,
             signed,
             issuer.verifier(),
@@ -5038,12 +5052,7 @@ pub(crate) mod tests {
         host.start_task(&lease).await?;
         let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
         let binding = host.journal_owner(task, fence.clone()).await?;
-        Ok(EffectTaskFixture {
-            host,
-            binding,
-            payloads,
-            runtime_scope,
-        })
+        Ok((host, binding, runtime_scope))
     }
 
     #[cfg(feature = "filesystem")]
@@ -5385,6 +5394,309 @@ pub(crate) mod tests {
             .ok_or_else(|| Error::NotFound("reopened owned task".into()))?;
         assert!(operation.cancellation_requested);
         assert!(operation.reservation.is_some());
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn owned_task_journal_native_release_requires_original_settlement_and_binding()
+    -> std::result::Result<(), crate::NativeRootVerificationError> {
+        use crate::executor::{ExecutionEvent, ExecutionJournal as _, ToolFailureKind};
+        use crate::filesystem::{
+            FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
+            FilesystemSchedulerPayloadStore, FilesystemWorkflowJournal,
+        };
+        use crate::workflow::WorkflowJournal as _;
+
+        // Keep the older custom-provider fixture unchanged. This qualification
+        // uses the stock pinned Filesystem reader, not a fake measured adapter.
+        let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = acyclic_stream::LocalStream::open(directory.path(), Default::default())
+            .await.map_err(|error| Error::Storage(error.to_string()))?;
+        let stream = StreamClient::new(Arc::new(provider));
+        let filesystem_provider = ProviderRef::new("native-owned-release", "filesystem", "2")?;
+        let filesystem = Arc::new(FilesystemHost::new(
+            acyclic_fs::Fs::memory(), filesystem_provider.clone(),
+        )?);
+        let agent = AgentId::from_bytes([1; 16]);
+        let volume = VolumeRef::new(
+            filesystem_provider.clone(), "native-owned", VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+        )?;
+        filesystem.create_volume(&volume).await?;
+        let authority = Authority { kind: AggregateKind::Task, id: "effect-task-owner".into() };
+        let issuer = AuthorityIssuer::new("effect-task", [51; 32], authority);
+        let volume_grants = vec![
+            volume.capability(crate::conversation::VolumeOperation::Read)?,
+            volume.capability(crate::conversation::VolumeOperation::Write)?,
+        ];
+        let content_scope = issuer.root_for_agent(
+            agent, "native-owned-content", Capabilities::new(volume_grants.clone()),
+        );
+        let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
+            filesystem.clone(), volume.clone(), &issuer.verifier(), &content_scope, 65_536,
+        )?);
+        let reader = Arc::new(FilesystemContentVerifier::new(
+            filesystem.clone(), issuer.verifier(), content_scope.clone(), 65_536,
+        )?);
+        let (host, owner, runtime_scope) = effect_task_fixture_with_storage(
+            stream.clone(), "test.native-release", volume_grants,
+            payloads, reader, &volume,
+        ).await?;
+        let (task, fence) = owner.task_binding();
+        let fence = fence.clone();
+        let operation = OperationId::from_bytes(task.into_bytes());
+        let attempt = OperationId::from_bytes([54; 16]);
+        let workflow = Arc::new(FilesystemWorkflowJournal::for_task(
+            owner.clone(), filesystem.clone(), volume.clone(),
+            issuer.verifier(), content_scope.clone(), 65_536,
+        )?);
+        let journal = FilesystemExecutionJournal::for_task(
+            owner.clone(), attempt, filesystem.clone(), volume.clone(),
+            issuer.verifier(), content_scope.clone(), 65_536,
+        )?;
+        let units = 100_000;
+        let bytes = 100_000_000;
+        let budget = acyclic_fs::WorkBudget {
+            authority_records_read: units, authority_records_appended: units,
+            authority_bytes_read: bytes, authority_bytes_written: bytes,
+            object_probes: units, backend_read_operations: units, backend_write_operations: units,
+            durability_operations: units, page_reads: units, page_writes: units,
+            object_bytes_read: bytes, object_bytes_written: bytes, bytes_hashed: bytes,
+            bytes_copied: bytes, bytes_encoded: bytes, source_bytes_read: bytes,
+            source_path_components: units, source_entries_visited: units, output_bytes: bytes,
+            items_examined: units, items_returned: units, allocation_operations: units,
+            peak_allocation_bytes: bytes, materializations: units,
+        };
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|failure| failure.error)?;
+        assert!(!journal.release_if_quiescent_with_native_work(&work, &workflow).await?);
+        workflow.admit(owner.workflow_admission().clone()).await?;
+        assert!(!journal.release_if_quiescent_with_native_work(&work, &workflow).await?);
+        journal.append(attempt, "started".into(), ExecutionEvent::Started).await?;
+        let invocation = crate::tool::ToolInvocation::for_model_call(
+            attempt, 0, "native-owned-tool".into(), "test".into(), serde_json::json!({}),
+        );
+        let invocation = crate::executor::stage_json(
+            &journal, attempt, "tool-invocation", &invocation,
+        ).await?;
+        journal.append(attempt, "tool-started".into(), ExecutionEvent::ToolStarted {
+            step: 0, call_id: "native-owned-tool".into(), invocation,
+        }).await?;
+        let machine_identity = owner.workflow_admission().initial.machine.clone();
+        let mut workflow_host = crate::workflow::DurableWorkflowHost::open(
+            host.machines.clone(), owner.workflow_admission().initial.clone(), workflow.clone(),
+        ).await?;
+        workflow_host.step(
+            OperationId::from_bytes([57; 16]), IdempotencyKey::new("native-suspended-step")?,
+            serde_json::json!(0),
+        ).await?;
+        assert!(!journal.release_if_quiescent_with_native_work(&work, &workflow).await?);
+        {
+            let coordinator = host.coordinator.lock().await;
+            let current = coordinator.scheduler().operation(operation)
+                .ok_or_else(|| Error::NotFound("original active native release task".into()))?;
+            assert_eq!(current.phase, crate::scheduler::OperationPhase::Running);
+            assert!(current.reservation.is_some());
+        }
+        journal.append(attempt, "tool-failed".into(), ExecutionEvent::ToolFailed {
+            step: 0, call_id: "native-owned-tool".into(), reason: ToolFailureKind::ExecutorRejected,
+        }).await?;
+
+        // Both refusal paths preserve the typed native failure and the lease;
+        // cancellation does not perform any work beyond its constructor prefix.
+        let cancelled = acyclic_fs::CancellationToken::new();
+        let cancelled_work = acyclic_fs::NativeMaterializationWork::new(budget, &cancelled)
+            .map_err(|failure| failure.error)?;
+        let cancelled_prefix = cancelled_work.receipt();
+        cancelled.cancel();
+        assert!(matches!(
+            journal.release_if_quiescent_with_native_work(&cancelled_work, &workflow).await,
+            Err(crate::NativeRootVerificationError::Native(
+                acyclic_fs::NativeTreeMaterializationError::Cancelled
+            ))
+        ));
+        assert_eq!(cancelled_work.receipt(), cancelled_prefix);
+        let quota_work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget { backend_read_operations: 0, ..budget }, &cancellation,
+        ).map_err(|failure| failure.error)?;
+        let quota_live = quota_work.live_allocation_bytes();
+        assert!(matches!(
+            journal.release_if_quiescent_with_native_work(&quota_work, &workflow).await,
+            Err(crate::NativeRootVerificationError::Native(
+                acyclic_fs::NativeTreeMaterializationError::Work(
+                    acyclic_fs::WorkError::BudgetExceeded { counter: "backend_read_operations", .. }
+                )
+            ))
+        ));
+        assert_eq!(quota_work.receipt().backend_read_operations, 0);
+        assert_eq!(quota_work.live_allocation_bytes(), quota_live);
+        assert!(host.coordinator.lock().await.scheduler().operation(operation)
+            .ok_or_else(|| Error::NotFound("quota-refused original task".into()))?
+            .reservation.is_some());
+
+        // These witnesses come from the actual authenticated source observer.
+        // Independently advancing either source tail must fail the original
+        // three-tail publication, without consuming the still-current lease.
+        {
+            let proof_io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+            let pending = proof_io.native_result(workflow.prove_release_with_io(&proof_io).await)?
+                .ok_or_else(|| Error::NotFound("original Suspended source proof".into()))?;
+            let execution_tail = stream.stream(format!("harness/v2/execution/{attempt}"))?
+                .tail().await?;
+            workflow_host.step(
+                OperationId::from_bytes([58; 16]), IdempotencyKey::new("native-next-suspended-step")?,
+                serde_json::json!(0),
+            ).await?;
+            assert!(matches!(
+                owner.release_quiescent_execution_with_native_work(
+                    attempt, execution_tail, &pending, &work,
+                ).await,
+                Err(crate::NativeRootVerificationError::Owner(Error::Conflict(_)))
+            ));
+            let coordinator = host.coordinator.lock().await;
+            let reservation = coordinator.scheduler().operation(operation)
+                .and_then(|current| current.reservation.as_ref())
+                .ok_or_else(|| Error::NotFound("workflow-raced original lease".into()))?;
+            assert_eq!(crate::scheduler::LeaseFence::from(reservation), fence);
+        }
+        {
+            let proof_io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+            let pending = proof_io.native_result(workflow.prove_release_with_io(&proof_io).await)?
+                .ok_or_else(|| Error::NotFound("current Suspended source proof".into()))?;
+            let execution_tail = stream.stream(format!("harness/v2/execution/{attempt}"))?
+                .tail().await?;
+            let invocation = crate::tool::ToolInvocation::for_model_call(
+                attempt, 1, "interleaved-native-tool".into(), "test".into(), serde_json::json!({}),
+            );
+            let invocation = crate::executor::stage_json(
+                &journal, attempt, "interleaved-tool-invocation", &invocation,
+            ).await?;
+            journal.append(attempt, "interleaved-tool-started".into(), ExecutionEvent::ToolStarted {
+                step: 1, call_id: "interleaved-native-tool".into(), invocation,
+            }).await?;
+            assert!(matches!(
+                owner.release_quiescent_execution_with_native_work(
+                    attempt, execution_tail, &pending, &work,
+                ).await,
+                Err(crate::NativeRootVerificationError::Owner(Error::Conflict(_)))
+            ));
+            assert!(!journal.release_if_quiescent_with_native_work(&work, &workflow).await?);
+            let coordinator = host.coordinator.lock().await;
+            let reservation = coordinator.scheduler().operation(operation)
+                .and_then(|current| current.reservation.as_ref())
+                .ok_or_else(|| Error::NotFound("execution-raced original lease".into()))?;
+            assert_eq!(crate::scheduler::LeaseFence::from(reservation), fence);
+        }
+        journal.append(attempt, "interleaved-tool-failed".into(), ExecutionEvent::ToolFailed {
+            step: 1, call_id: "interleaved-native-tool".into(), reason: ToolFailureKind::ExecutorRejected,
+        }).await?;
+
+        let workflow_path = format!("harness/v2/workflows/{operation}");
+        let execution_path = format!("harness/v2/execution/{attempt}");
+        let workflow_tail = stream.stream(&workflow_path)?.tail().await?;
+        let execution_tail = stream.stream(&execution_path)?.tail().await?;
+        assert_eq!(workflow_tail, 2);
+        assert_eq!(execution_tail, 5);
+        assert!(journal.release_if_quiescent_with_native_work(&work, &workflow).await?);
+        assert!(host.coordinator.lock().await.scheduler().operation(operation)
+            .ok_or_else(|| Error::NotFound("settled original task".into()))?
+            .reservation.is_none());
+        assert_eq!(stream.stream(&workflow_path)?.tail().await?, workflow_tail);
+        assert_eq!(stream.stream(&execution_path)?.tail().await?, execution_tail);
+        assert!(work.receipt().authority_records_read > 0);
+        assert!(work.receipt().authority_records_appended > 0);
+        assert!(work.receipt().object_bytes_read > 0);
+        assert!(work.receipt().bytes_hashed > 0);
+
+        // A real replacement reservation supplies the mismatched fence; no
+        // sealed proof or witness is fabricated to exercise this negative gate.
+        let worker = crate::distributed::Worker {
+            id: "replacement-native-worker".into(), available: Default::default(),
+            labels: BTreeMap::new(),
+        };
+        let crate::distributed::WorkPull::Claimed(replacement) =
+            host.pull_operation(&worker, operation).await?
+        else { return Err(Error::NotFound("replacement native lease".into()).into()); };
+        host.start_task(&replacement).await?;
+        let replacement_owner = host.journal_owner(
+            task, crate::scheduler::LeaseFence::from(&replacement.reservation),
+        ).await?;
+        assert_ne!(replacement_owner.task_binding().1, &fence);
+        let replacement_workflow = FilesystemWorkflowJournal::for_task(
+            replacement_owner.clone(), filesystem.clone(), volume.clone(),
+            issuer.verifier(), content_scope.clone(), 65_536,
+        )?;
+        let denied_prefix = work.receipt();
+        assert!(matches!(
+            journal.release_if_quiescent_with_native_work(&work, &replacement_workflow).await,
+            Err(crate::NativeRootVerificationError::Owner(Error::Unauthorized(_)))
+        ));
+        assert_eq!(work.receipt(), denied_prefix);
+        let replacement_journal = FilesystemExecutionJournal::for_task(
+            replacement_owner.clone(), OperationId::from_bytes([55; 16]),
+            filesystem.clone(), volume.clone(), issuer.verifier(), content_scope.clone(), 65_536,
+        )?;
+        let other_volume = VolumeRef::new(
+            filesystem_provider, "other-native-owned", VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+        )?;
+        filesystem.create_volume(&other_volume).await?;
+        let other_scope = issuer.root_for_agent(agent, "other-native-content", Capabilities::new(vec![
+            other_volume.capability(crate::conversation::VolumeOperation::Read)?,
+            other_volume.capability(crate::conversation::VolumeOperation::Write)?,
+        ]));
+        let other_volume_workflow = FilesystemWorkflowJournal::for_task(
+            replacement_owner, filesystem.clone(), other_volume,
+            issuer.verifier(), other_scope, 65_536,
+        )?;
+        assert!(matches!(
+            replacement_journal.release_if_quiescent_with_native_work(&work, &other_volume_workflow).await,
+            Err(crate::NativeRootVerificationError::Owner(Error::Unauthorized(_)))
+        ));
+        assert_eq!(work.receipt(), denied_prefix);
+        let other_issuer = AuthorityIssuer::new("other-native-owner", [91; 32], Authority {
+            kind: AggregateKind::Task, id: "other-native-owner".into(),
+        });
+        assert!(matches!(
+            FilesystemWorkflowJournal::for_task(
+                owner, filesystem.clone(), volume.clone(), other_issuer.verifier(),
+                content_scope.clone(), 65_536,
+            ),
+            Err(Error::Unauthorized(_))
+        ));
+        assert_eq!(work.receipt(), denied_prefix);
+
+        let other_operation = OperationId::from_bytes([56; 16]);
+        host.admit(TaskAdmissionRecord {
+            operation_id: other_operation,
+            task: host.tasks.get::<Value, Value>("test.effect")?.identity().clone(),
+            machine: machine_identity, input: serde_json::json!(0),
+            input_schema: serde_json::json!({"type":"integer"}),
+            output_schema: serde_json::json!({"type":"integer"}), parent: None,
+            grants: runtime_scope.grants().clone(), limits: runtime_scope.limits(),
+            run_limits: runtime_scope.run_limits(), policy: None, extensions: None, execution: None,
+        }).await?;
+        let crate::distributed::WorkPull::Claimed(other_lease) =
+            host.pull_operation(&worker, other_operation).await?
+        else { return Err(Error::NotFound("other real native lease".into()).into()); };
+        host.start_task(&other_lease).await?;
+        let other_owner = host.journal_owner(
+            TaskId::from_bytes(other_operation.into_bytes()),
+            crate::scheduler::LeaseFence::from(&other_lease.reservation),
+        ).await?;
+        let other_workflow = FilesystemWorkflowJournal::for_task(
+            other_owner, filesystem, volume, issuer.verifier(), content_scope, 65_536,
+        )?;
+        assert!(matches!(
+            replacement_journal.release_if_quiescent_with_native_work(&work, &other_workflow).await,
+            Err(crate::NativeRootVerificationError::Owner(Error::Unauthorized(_)))
+        ));
+        assert_eq!(work.receipt(), denied_prefix);
+        assert!(host.coordinator.lock().await.scheduler().operation(operation)
+            .ok_or_else(|| Error::NotFound("binding-refused original lease".into()))?
+            .reservation.is_some());
         Ok(())
     }
 
