@@ -205,10 +205,7 @@ pub async fn prepare_summary_fork_context<P: StreamProvider>(
         .conversation()
         .filter(|conversation| conversation.agent.is_some())
         .ok_or_else(|| Error::Invalid("summary fork parent conversation is unbound".into()))?;
-    let through_sequence = conversation
-        .messages()
-        .last()
-        .map_or(0, |message| message.sequence);
+    let through_sequence = conversation.logical_revision();
     let (checkpoint, context) = load_canonical_checkpoint_through(
         journal,
         &selection.checkpoint,
