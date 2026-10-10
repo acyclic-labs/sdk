@@ -9,6 +9,7 @@ test('every supported action reference is pinned and alternative YAML forms fail
   pinnedActions('workflow.yml','if: ${{ !cancelled() }}');
   pinnedActions('workflow.yml','if: ${{\n  !cancelled()\n}}');
   pinnedActions('workflow.yml',"if: ${{ !cancelled() &&\n  needs.build.result == 'success' }}");
+  pinnedActions('workflow.yml',"group: release-${{ github.workflow }}-${{ github.event_name ==\n  'pull_request' && github.ref || github.sha }}");
   for (const source of ['- {uses: actions/checkout@main}', '- "uses": actions/checkout@main',
     '- uses: actions/checkout@main', '- uses: *action', '- {"uses": actions/checkout@main}',
     '- uses: |-\n    actions/checkout@main', '- uses: >\n    actions/checkout@main',

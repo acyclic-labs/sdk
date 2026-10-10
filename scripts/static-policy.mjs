@@ -15,7 +15,7 @@ export function pinnedActions(file, source) {
       scalarIndent = null;
     }
     if (line.trimStart().startsWith('#')) continue;
-    if (line.includes('${{') && !line.slice(line.indexOf('${{')).includes('}}')) expression = true;
+    if (line.includes('${{') && !line.slice(line.lastIndexOf('${{')).includes('}}')) expression = true;
     // Mask quoted values while retaining quoted mapping keys. Text in a
     // step name or environment value is not an action reference.
     const keys = line.replace(/"(?:\\.|[^"\\])*"|'(?:''|[^'])*'/g,
