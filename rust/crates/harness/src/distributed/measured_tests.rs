@@ -952,3 +952,30 @@ async fn scheduler_json_admission_quota_cancel_and_duplicate_faults_precede_orig
     assert!(SchedulerEventJsonAdmission::prepare(deep.as_bytes(),&mut work).is_err());
     Ok(())
 }
+
+#[tokio::test]
+async fn scheduler_json_quota_guard_releases_unused_and_cancelled_reservations() -> Result<()> {
+    let bytes = crate::contract::canonical_json_bytes(&SchedulerEvent::LeaseReleased {
+        operation_id:OperationId::from_bytes([126;16]),
+        fence:LeaseFence {reservation_id:"guard-owned".into(),placement:"worker".into()},
+    })?;
+    let cancellation = CancellationToken::new();
+    let mut sizing = HistoryWork::new(budget(),&cancellation);
+    let admission = SchedulerEventJsonAdmission::prepare(&bytes,&mut sizing)?;
+    let exact = admission.maximum_owned_bytes;
+    drop(admission);
+    let mut allowance = budget();
+    allowance.peak_allocation_bytes = exact;
+    let mut work = HistoryWork::new(allowance,&cancellation);
+    // The same exact reservation fits twice only if the unused witness releases
+    // its true quota custody; cumulative lexical work is intentionally retained.
+    drop(SchedulerEventJsonAdmission::prepare(&bytes,&mut work)?);
+    let admission = SchedulerEventJsonAdmission::prepare(&bytes,&mut work)?;
+    cancellation.cancel();
+    assert!(matches!(admission.decode(),Err(Error::Invalid(_))));
+    assert_eq!(work.receipt().peak_allocation_bytes,exact);
+    assert_eq!(work.receipt().backend_read_operations,0);
+    assert_eq!(work.receipt().backend_write_operations,0);
+    assert_eq!(work.receipt().allocation_operations,0);
+    Ok(())
+}

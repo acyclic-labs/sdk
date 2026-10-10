@@ -2625,8 +2625,14 @@ impl<'a,'w> SchedulerEventJsonAdmission<'a,'w> {
         // Cancellation retains its original typed first cause; serde is not
         // involved in converting lexical/quota/cancellation failures.
         self.work.check_cancellation()?;
-        let event:SchedulerEvent = crate::contract::json_from_slice(self.input)
+        // The observed original lexical prelude has already run. Continue the
+        // same original serde body directly, without a second unobserved scan.
+        let mut decoder = serde_json::Deserializer::from_slice(self.input);
+        decoder.disable_recursion_limit();
+        let event:SchedulerEvent = serde::Deserialize::deserialize(&mut decoder)
             .map_err(|error| Error::Storage(error.to_string()))?;
+        decoder.end().map_err(|error| Error::Storage(error.to_string()))?;
+        drop(decoder);
         self.work.check_cancellation()?;
         let retained = event.logical_owned_bytes()?;
         let slack = self.maximum_owned_bytes.checked_sub(retained)
