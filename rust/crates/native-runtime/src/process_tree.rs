@@ -56,31 +56,39 @@ pub struct ProcessInput {
     pub complete: bool,
 }
 
-struct PendingStdin {
-    bytes: Vec<u8>,
+enum CaptureInput<'a> {
+    Exchange { initial: &'a [u8], maximum: usize },
+    Literal(&'a [u8]),
+}
+
+struct PendingStdin<'a> {
+    bytes: std::borrow::Cow<'a, [u8]>,
     written: usize,
     maximum: usize,
     complete: bool,
     stopped: bool,
+    terminate_on_completion: bool,
 }
 
-impl PendingStdin {
-    fn new(initial: &[u8], maximum: usize) -> io::Result<Self> {
-        if maximum == 0 || initial.len() > maximum {
+impl<'a> PendingStdin<'a> {
+    fn new(input: CaptureInput<'a>) -> io::Result<Self> {
+        let (initial, maximum, terminate_on_completion) = match input {
+            CaptureInput::Exchange { initial, maximum } => (initial, maximum, true),
+            CaptureInput::Literal(initial) => (initial, initial.len(), false),
+        };
+        if (terminate_on_completion && maximum == 0) || initial.len() > maximum {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid process input allowance",
             ));
         }
-        let mut bytes = Vec::new();
-        bytes.try_reserve(initial.len()).map_err(io::Error::other)?;
-        bytes.extend_from_slice(initial);
         Ok(Self {
-            bytes,
+            bytes: std::borrow::Cow::Borrowed(initial),
             written: 0,
             maximum,
-            complete: false,
+            complete: !terminate_on_completion,
             stopped: false,
+            terminate_on_completion,
         })
     }
 
@@ -101,7 +109,7 @@ impl PendingStdin {
         }
         if self.complete && self.written == self.bytes.len() && !self.stopped {
             tree.close_stdin();
-            tree.terminate_descendants()?;
+            if self.terminate_on_completion { tree.terminate_descendants()?; }
             self.stopped = true;
             progressed = true;
         }
@@ -125,10 +133,11 @@ impl PendingStdin {
                     "process input limit exceeded; effects may have occurred",
                 )
             })?;
-        self.bytes
-            .try_reserve(total - self.bytes.len())
-            .map_err(io::Error::other)?;
-        self.bytes.extend_from_slice(&action.bytes);
+        if !action.bytes.is_empty() {
+            let bytes = self.bytes.to_mut();
+            bytes.try_reserve(total - bytes.len()).map_err(io::Error::other)?;
+            bytes.extend_from_slice(&action.bytes);
+        }
         self.complete = action.complete;
         Ok(())
     }
@@ -366,6 +375,23 @@ impl ProcessTree {
         })
     }
 
+    /// Writes the exact admitted input, closes stdin after its final byte and
+    /// observes normal child completion in the existing bounded capture loop.
+    /// Empty input closes stdin immediately. Unlike protocol completion, EOF
+    /// does not terminate the process or its containment.
+    pub fn wait_with_input_observed(
+        &mut self,
+        timeout: Duration,
+        max_output_bytes: usize,
+        input: &[u8],
+        check: impl FnMut() -> io::Result<()>,
+    ) -> Result<Output, ProcessCaptureFailure> {
+        self.capture_output(
+            timeout, max_output_bytes, Some(CaptureInput::Literal(input)), check,
+            |_| Ok(ProcessInput::default()),
+        )
+    }
+
     /// Performs a bounded streaming exchange in the same capture/cleanup loop.
     /// The host supplies an admitted protocol and checks durable intent. Neither
     /// callback may block or perform unbounded work. Input bounds cover the
@@ -384,7 +410,7 @@ impl ProcessTree {
         self.capture_output(
             timeout,
             max_output_bytes,
-            Some((initial, max_input_bytes)),
+            Some(CaptureInput::Exchange { initial, maximum: max_input_bytes }),
             check,
             observe,
         )
@@ -394,7 +420,7 @@ impl ProcessTree {
         &mut self,
         timeout: Duration,
         max_bytes: usize,
-        input: Option<(&[u8], usize)>,
+        input: Option<CaptureInput<'_>>,
         mut check: impl FnMut() -> io::Result<()>,
         mut observe: impl FnMut(&[u8]) -> io::Result<ProcessInput>,
     ) -> Result<Output, ProcessCaptureFailure> {
@@ -424,7 +450,7 @@ impl ProcessTree {
                 ))
             })?;
             let mut input = input
-                .map(|(initial, maximum)| PendingStdin::new(initial, maximum))
+                .map(PendingStdin::new)
                 .transpose()
                 .map_err(ProcessCaptureFailure::before_capture)?;
             let child = self.child.as_mut().ok_or_else(|| {

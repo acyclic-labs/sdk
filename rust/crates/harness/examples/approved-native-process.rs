@@ -835,6 +835,7 @@ fn native_request(
         cancellation_poll_ms: 10,
         maximum_output_bytes: 8192,
         maximum_result_bytes: 65_536,
+        standard_input: None,
         mcp_stdio: mcp.map(|method| McpStdioRequest {
             initialization: OperationId::from_bytes([31; 16]),
             operation: OperationId::from_bytes([32; 16]),

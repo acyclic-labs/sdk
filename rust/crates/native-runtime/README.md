@@ -66,6 +66,12 @@ path before reaping. `wait_with_output(timeout, max_bytes)` closes stdin, polls 
 pipes without reader threads, and cleans up on exit, overflow, or timeout.
 The output bound covers retained payload across both streams, with an 8 KiB
 scratch buffer; allocator bookkeeping and OS pipe buffers are outside it.
+`wait_with_input_observed` uses the same collector and borrows the caller's
+literal input. It writes nonblocking prefixes, closes stdin after the last byte
+(including an explicitly empty input), and waits for normal child completion.
+Unlike the existing interactive exchange, finishing literal input does not
+terminate the child. Input, process containment and output allowances remain
+the caller's explicit policy; this primitive adds no argument interpretation.
 Existing temporary-file capture consumers retain their separate file-size
 polling policy, which is not a hard disk-usage limit.
 

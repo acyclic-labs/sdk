@@ -188,10 +188,15 @@ pub struct NativeProcessRequest {
     pub maximum_output_bytes: u32,
     /// Positive bound for the complete serialized result, including metadata.
     pub maximum_result_bytes: u32,
-    /// Optional exact MCP exchange. Absence preserves the closed-stdin contract
-    /// and canonical approval bytes of existing native process requests.
+    /// Optional exact MCP exchange; mutually exclusive with literal standard input.
+    /// Absence preserves canonical approval bytes of existing requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_stdio: Option<crate::mcp::stdio::McpStdioRequest>,
+    /// Exact literal bytes written to stdin, followed by EOF without terminating
+    /// the process. Some(empty) requests EOF explicitly; None preserves the
+    /// ordinary closed-stdin contract. Mutually exclusive with `mcp_stdio`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standard_input: Option<Vec<u8>>,
     /// Exact namespace, volumes, generations, authority revisions and work bounds.
     pub view: NativeViewManifest,
 }
