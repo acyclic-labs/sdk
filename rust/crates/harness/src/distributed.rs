@@ -226,8 +226,8 @@ pub trait SchedulerPayloadStore: acyclic_stream::ProviderPlatform {
         _idempotency_key: &'a str,
         _bytes: &'a [u8],
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> BoxFuture<'a,std::result::Result<(FileRef,acyclic_fs::NativeAllocation),crate::durable_host::NativeRootVerificationError>> {
-        Box::pin(async { Err(Error::Unsupported("scheduler payload store has no native work observer".into()).into()) })
+    ) -> BoxFuture<'a,Result<(FileRef,acyclic_fs::NativeAllocation)>> {
+        Box::pin(async { Err(Error::Unsupported("scheduler payload store has no native work observer".into())) })
     }
 }
 

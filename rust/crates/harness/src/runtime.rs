@@ -4574,7 +4574,7 @@ impl TaskContext {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn read_file_with_native_work(
         &self, file: &FileRef, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> std::result::Result<(Vec<u8>,acyclic_fs::NativeAllocation),crate::durable_host::NativeRootVerificationError> {
+    ) -> Result<(Vec<u8>,acyclic_fs::NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let result = async {
             file.validate()?;
@@ -4601,7 +4601,7 @@ impl TaskContext {
             verified?;
             Ok(output)
         }.await;
-        crate::durable_host::NativeRootVerificationError::finish(result,io.take_native_failure())
+        result
     }
 
     /// Resolves an immutable artifact without coupling its provider to the
@@ -4957,7 +4957,7 @@ impl TaskContext {
     pub async fn stage_file_once_with_native_work(
         &self, operation_id: OperationId, path: &str, bytes: &[u8],
         media_type: &str, display_name: &str, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> std::result::Result<(FileRef,acyclic_fs::NativeAllocation),crate::durable_host::NativeRootVerificationError> {
+    ) -> Result<(FileRef,acyclic_fs::NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let result = async {
             if bytes.len() as u64 > self.scope.limits.file_bytes || path.len() > self.scope.limits.path_bytes {
@@ -4988,7 +4988,7 @@ impl TaskContext {
             content.reader.verify_with_native_work(file,self.scope.limits.file_bytes,work).await?;
             Ok(output)
         }.await;
-        crate::durable_host::NativeRootVerificationError::finish(result,io.take_native_failure())
+        result
     }
 
     /// Publishes immutable artifact bytes under a caller-retained operation ID.

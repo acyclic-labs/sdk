@@ -73,18 +73,7 @@ impl Inventory<'_> {
     }
     fn file(&mut self, file: &FileRef) -> Result<()> {
         self.visit()?;
-        // The source's actual capacities are a pre-clone upper bound. String
-        // clones copy their lengths; no namespace builder/encoding is invoked.
-        let provider = file.volume().provider();
-        let owner = match file.volume().owner() {
-            crate::conversation::VolumeOwner::Project(owner)
-            | crate::conversation::VolumeOwner::Session(owner) => owner.len() as u64,
-            crate::conversation::VolumeOwner::Agent(_) => 0,
-        };
-        let copied = [provider.namespace(),provider.family(),provider.version(),file.volume().id(),
-            file.path(),file.version(),file.display_name(),file.descriptor().media_type()]
-            .into_iter().try_fold(owner,|sum,text| sum.checked_add(text.len() as u64)
-                .ok_or_else(|| Error::Invalid("file clone copy work overflows".into())))?;
+        let copied = file.logical_clone_owned_bytes()?;
         self.add(if self.live {file.logical_owned_bytes()?} else {copied},copied)
     }
     fn checkpoint(&mut self, checkpoint: &CheckpointRef) -> Result<()> {

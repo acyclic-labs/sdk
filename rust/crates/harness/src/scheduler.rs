@@ -830,18 +830,21 @@ impl Scheduler {
         };
         // Check every revision this event advances before mutating anything,
         // so a rejected event leaves the projection unchanged.
-        let mut advanced = vec![primary];
-        advanced.extend(declared_parent);
-        match &event {
-            SchedulerEvent::CancellationRequested {
-                operation_id,
-                recursive,
-            } => advanced.extend(self.cancellation_frontier(*operation_id, *recursive)),
-            SchedulerEvent::Orchestrated { cancel, .. } => advanced.extend(cancel),
-            _ => {}
+        for id in std::iter::once(primary).chain(declared_parent) {
+            if let Some(operation) = self.operations.get(&id) { next_revision(operation.revision)?; }
         }
-        for operation in advanced.iter().filter_map(|id| self.operations.get(id)) {
-            next_revision(operation.revision)?;
+        match &event {
+            SchedulerEvent::CancellationRequested {operation_id,recursive} => {
+                for id in self.cancellation_frontier(*operation_id,*recursive) {
+                    if let Some(operation) = self.operations.get(&id) { next_revision(operation.revision)?; }
+                }
+            },
+            SchedulerEvent::Orchestrated {cancel,..} => {
+                for id in cancel {
+                    if let Some(operation) = self.operations.get(id) { next_revision(operation.revision)?; }
+                }
+            },
+            _ => {},
         }
         match event {
             SchedulerEvent::SessionConfigured {

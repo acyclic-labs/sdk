@@ -840,7 +840,7 @@ impl crate::filesystem::TaskCommandHost for CreatedIoCommands {
 }
 
 #[tokio::test]
-async fn created_scope_executes_existing_workflow_and_journal_input_boundaries() -> std::result::Result<(),NativeRootVerificationError> {
+async fn created_scope_executes_existing_workflow_and_journal_input_boundaries() -> Result<()> {
     use crate::executor::ExecutionJournal as _;
     use crate::filesystem::{
         FilesystemExecutionJournal, FilesystemTaskRuntime, TaskWorkerAttempt, TaskWorkerOutcome,
@@ -860,7 +860,7 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
     let cancellation = acyclic_fs::CancellationToken::new();
     let native_work = acyclic_fs::NativeMaterializationWork::new(
         creation_control_budget(),&cancellation,
-    ).map_err(|failure| NativeRootVerificationError::Native(failure.error))?;
+    ).map_err(|failure| Error::NativeWork {cause:failure.error,custody:None})?;
     let pending = original_owner.outcome_with_native_work(&native_work).await?;
     assert!(pending.0.is_none());
     assert_eq!(pending.1.bytes(),0);
@@ -936,7 +936,7 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
     cancellation.cancel();
     let before = native_work.receipt();
     assert!(matches!(original_owner.outcome_with_native_work(&native_work).await,
-        Err(NativeRootVerificationError::Native(acyclic_fs::NativeTreeMaterializationError::Cancelled))));
+        Err(Error::NativeWork {cause:acyclic_fs::NativeTreeMaterializationError::Cancelled,..})));
     assert_eq!(native_work.receipt().backend_read_operations,before.backend_read_operations);
     Ok(())
 }
