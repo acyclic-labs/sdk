@@ -1,5 +1,7 @@
-import { DemandLoader, RequestScheduler, Harness, PageWindow, IndexedDbClientStore, HydrationCache, ScheduledTransport,
-  type FileRef, type OperationId } from "@acyclic-labs/harness";
+import { DemandLoader, RequestScheduler, Harness, HarnessClient, ProjectionStore, ClientViews,
+  PageWindow, IndexedDbClientStore, HydrationCache, ScheduledTransport,
+  type FileRef, type OperationId, type ReplayCursor, type ClientDomain, type ClientObservation,
+  type ClientHypothesis } from "@acyclic-labs/harness";
 
 const result = document.querySelector<HTMLElement>("#result")!;
 const assert = (value: unknown, message: string): void => { if (!value) throw new Error(message); };
@@ -115,20 +117,90 @@ try {
   assert(disposedResult.name === "AbortError" && boundary.residency.demand === 0, "completed provider published a disposed browser result");
   boundaryScheduler.dispose();
 
-  // Exercise the existing atomic browser transaction, retaining its honest
-  // cursor-only contract. This is not projection-checkpoint recovery evidence.
+  // The verified immutable reference, projection cut and local hypothesis share
+  // one checkpoint. Storage does not authenticate facts or operation outcomes.
   const databaseName = `harness-cl3-${crypto.randomUUID()}`;
   const state = new IndexedDbClientStore({ databaseName, maximumCommands: 2, maximumBytes: 8192 });
   const operationId = harness.identity("operation", "01010101-0101-0101-0101-010101010101") as OperationId;
   const authority = { kind: "conversation", id: "demand-browser" } as const;
+  type Value = Readonly<{ content: FileRef }>;
+  type Evidence = ClientObservation<Value>;
+  const samePin = (file: FileRef): boolean => JSON.stringify(file) === JSON.stringify(selected);
+  const basis = "conversation:demand-browser/pinned-1/1/browser/demand";
+  const verified: Evidence = { fact: { key: "message", basis, value: { content: selected }, bytes: 2048 }, operation: null, work: 1 };
+  const trusted = new WeakSet<object>([verified]);
+  const domain: ClientDomain<Value, null, Evidence> = {
+    identity: "17",
+    validate: (_fact, predicted) => {
+      if (!samePin(predicted.content)) throw new Error("foreign immutable pin");
+      return { bytes: 2048, work: 1 };
+    },
+    observe: evidence => { if (!trusted.has(evidence)) throw new Error("untrusted fact"); return evidence; },
+    corresponds: (predicted, canonical) => ({ matches: samePin(predicted.content) && samePin(canonical.content), work: 1 }),
+    restore: (fact, branch) => {
+      if (fact.basis !== basis || branch.basis !== basis || branch.adapter !== "17" ||
+          branch.operation !== null || branch.prediction !== "Pending" || branch.outcome !== "Unknown" ||
+          !samePin(branch.predicted.content)) throw new Error("untrusted hypothesis provenance");
+      return { bytes: 2048, work: 1 };
+    },
+  };
+  const limits = { records: 2, branches: 2, edges: 2, bytes: 32768, work: 64, retention: 10n, visible: 2 };
+  const original = new ClientViews(domain, "72", 0n, limits);
+  original.observe("message", verified);
+  const branch = original.begin({ key: "message", basis, operation: null, predicted: { content: selected },
+    assumption: null, dependencies: [], expires: 5n });
+  type Cut = { content: FileRef | null; sequence: bigint; hypothesis: ClientHypothesis<Value, null> };
+  const initial: Cut = { content: null, sequence: original.sequence(), hypothesis: original.checkpoint(branch) };
+  const kernels: ClientViews<Value, null, Evidence>[] = [];
+  const recovery = {
+    authority, identity: "browser/demand/conversation:demand-browser/message-reducer-1/schema-1/adapter-17",
+    encode: (cut: Cut) => cut,
+    decode: (data: unknown, cursor: ReplayCursor): Cut => {
+      const cut = data as Cut;
+      if (cursor.generation !== "pinned-1" || cursor.revision !== 1n || cut.content === null ||
+          !samePin(cut.content) || cut.sequence !== 1n || cut.hypothesis.branch !== branch) throw new Error("invalid projection cut");
+      const kernel = new ClientViews(domain, "72", cut.sequence, limits);
+      try {
+        kernel.observe("message", verified);
+        kernel.restore(cut.hypothesis);
+        assert(samePin(kernel.view("message", [branch]).value.content), "restored speculation lost immutable pin");
+        kernels.push(kernel);
+      } catch (error) { kernel.dispose(); throw error; }
+      return cut;
+    },
+  };
+  const reduce = (cut: Cut, event: { event: FileRef }): Cut => {
+    if (!samePin(event.event)) throw new Error("foreign authoritative event pin");
+    return { ...cut, content: event.event };
+  };
   await state.put({ operationId, authority, kind: "message.append", payload: { content: selected }, offlineSafe: true });
-  await state.commit(authority, { generation: "pinned-1", revision: 1n }, operationId);
+  const stop = new AbortController();
+  const client = new HarnessClient<FileRef>({ connect: async () => ({ send: async () => {}, close() {},
+    async *[Symbol.asyncIterator]() {
+      yield { authority, generation: "pinned-1", fromRevision: 0n, throughRevision: 1n, live: true,
+        events: [{ authority, revision: 1n, operationId, event: selected }] };
+      stop.abort();
+    } }) }, state);
+  const projection = new ProjectionStore(client, initial, reduce, recovery);
+  projection.start(); await client.run(stop.signal);
   const restarted = new IndexedDbClientStore({ databaseName });
   assert((await restarted.load()).length === 0 && (await restarted.loadCursors()).get("conversation:demand-browser")?.revision === 1n, "atomic cursor/outbox restart");
+  const resumedStop = new AbortController();
+  let resumed!: ProjectionStore<Cut, FileRef>;
+  const second = new HarnessClient<FileRef>({ connect: async cursors => {
+    assert(cursors.get("conversation:demand-browser")?.revision === 1n && resumed.getSnapshot().content !== null && kernels.length === 1,
+      "network resumed before validated projection and hypothesis recovery");
+    resumedStop.abort(); return { send: async () => {}, close() {}, async *[Symbol.asyncIterator]() {} };
+  } }, restarted);
+  resumed = new ProjectionStore(second, initial, reduce, recovery);
+  resumed.start(); await second.run(resumedStop.signal);
+  assert(kernels[0]!.checkpoint(branch).outcome === "Unknown", "persistence invented operation completion");
+  projection.dispose(); resumed.dispose(); client.dispose(); second.dispose(); original.dispose();
+  for (const kernel of kernels) kernel.dispose();
   demand.dispose(); baselineCache.clear(); scheduler.dispose(); harness.free();
   assert(scheduler.residency.requests === 0 && demand.residency.bytes === 0, "disposed residency");
   result.dataset.status = "passed";
-  result.textContent = JSON.stringify({ coldReads: 1, coldBytes, baselineReads, baselineBytes, warmReads: 100000, baselineMs, warmMs, warmTransferredBytes: 0, warmReceiptAllocations: 0, demandResidentBytes: boundedBytes, retainedEntries: 2, cancelledReaderAttachments: retainedAttachments, cancelledConnectionCloses: closed });
+  result.textContent = JSON.stringify({ coldReads: 1, coldBytes, baselineReads, baselineBytes, warmReads: 100000, baselineMs, warmMs, warmTransferredBytes: 0, warmReceiptAllocations: 0, demandResidentBytes: boundedBytes, retainedEntries: 2, cancelledReaderAttachments: retainedAttachments, cancelledConnectionCloses: closed, recoveredProjectionRevision: "1", recoveredBranch: branch, recoveredOutcome: "Unknown" });
 } catch (error) {
   result.dataset.status = "failed";
   result.textContent = error instanceof Error ? error.stack ?? error.message : String(error);

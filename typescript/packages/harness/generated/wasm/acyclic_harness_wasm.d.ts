@@ -1576,9 +1576,17 @@ export class WasmClientViews {
      */
     begin(metadata: any, predicted: any, assumption: any): string;
     /**
+     * Export one explicitly selected hypothesis, preserving reference values.
+     */
+    checkpoint(branch: string): any;
+    /**
      * Remove one local prediction; never cancels a durable effect.
      */
     discard(branch: string): any;
+    /**
+     * Configure the trusted restore validator once, before importing branches.
+     */
+    enableRestore(validator: Function): void;
     /**
      * Pure construction; callbacks run only on explicit transitions.
      */
@@ -1595,6 +1603,14 @@ export class WasmClientViews {
      * Resident record/branch/edge counts and conservatively accounted bytes.
      */
     residency(): any;
+    /**
+     * Import a bounded checkpoint only through the trusted domain validator.
+     */
+    restore(checkpoint: any): void;
+    /**
+     * Data-only allocation watermark. Never recycles an imported identity.
+     */
+    sequence(): bigint;
     /**
      * Inspect outcome metadata without serializing hypothesis bodies.
      */
@@ -2505,11 +2521,15 @@ export interface InitOutput {
     readonly wasmbrowserhistoryreader_readPage: (a: number, b: any, c: any) => any;
     readonly wasmclientviews_advance: (a: number, b: any) => [number, number, number];
     readonly wasmclientviews_begin: (a: number, b: any, c: any, d: any) => [number, number, number, number];
+    readonly wasmclientviews_checkpoint: (a: number, b: any) => [number, number, number];
     readonly wasmclientviews_discard: (a: number, b: any) => [number, number, number];
+    readonly wasmclientviews_enableRestore: (a: number, b: any) => [number, number];
     readonly wasmclientviews_new: (a: any, b: any, c: any, d: any, e: any, f: any, g: any) => [number, number, number];
     readonly wasmclientviews_observe: (a: number, b: any, c: any) => [number, number, number];
     readonly wasmclientviews_release: (a: number, b: any) => [number, number];
     readonly wasmclientviews_residency: (a: number) => [number, number, number];
+    readonly wasmclientviews_restore: (a: number, b: any) => [number, number];
+    readonly wasmclientviews_sequence: (a: number) => bigint;
     readonly wasmclientviews_status: (a: number, b: any) => [number, number, number];
     readonly wasmclientviews_view: (a: number, b: any, c: any) => [number, number, number];
     readonly wasmcontentstore_generation: (a: number) => [number, number, number];

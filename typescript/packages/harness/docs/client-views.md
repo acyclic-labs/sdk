@@ -101,8 +101,20 @@ authoritative client events; repeated starts are idempotent. It remains attached
 across UI subscriber churn so no projection events disappear when a UI unmounts.
 `dispose()` detaches the client and clears owned subscriptions. Event reducers
 must return immutable state and return the same reference for unchanged results.
-Transport replay/checkpoint correctness remains with `HarnessClient` and the
-separate durable-state work; `start()` cannot replay events delivered earlier.
+For durable use, supply the optional recovery adapter described in
+[durable composition](client-demand.md#durable-composition). `HarnessClient`
+commits the prepared projection checkpoint with its cursor and acknowledgement
+before publication and restores validated cuts before transport resume.
+`start()` cannot replay events delivered earlier.
+
+`checkpoint(branch)` exports bounded hypothesis metadata with shared immutable
+values. Save `sequence()` and logical time with the host checkpoint. Restore
+authenticated canonical facts first, advance logical time, and import parents
+before children into a new kernel with that recovered allocation watermark.
+The optional trusted domain `restore` validator checks exact pins, adapter and
+recorded outcomes; without it import is `Unsupported`. The kernel preserves
+identity/dependencies, rejects stale/colliding imports and recomputes admission.
+Data alone never turns a prediction or an indeterminate operation into a fact.
 
 An optional `./worker` bridge carries selected snapshots over explicitly owned
 MessagePorts. It creates no worker and transports no commands or evidence. Supply
@@ -135,8 +147,8 @@ active selections instead of maintaining several additional routing indexes.
 Qualification covers bounded outcome exploration and real installed framework
 lifecycle/SSR/hydration controls. It is not an unrestricted proof of arbitrary
 host callbacks, network delivery, durable recovery or all JavaScript heap/RSS
-allocations. No persistence, journal transport, inference or authority path was
-added by this layer.
+allocations. The durable extension uses the existing cursor/outbox transaction
+and Rust hypothesis indexes; it adds no journal transport or authority path.
 
 The temporary source-mutation runner was removed after its six focused fault
 controls detected equality, disposal, capacity, outcome routing, provenance and
@@ -144,7 +156,7 @@ worker-byte failures. The retained tests cover those contracts directly; the
 existing hosted Chromium driver runs the real React/Svelte consumer without a
 new matrix or browser automation framework.
 
-Local qualification used the existing native client/public-consumer tests and
+The original framework qualification used the existing native client/public-consumer tests and
 strict Harness Clippy on Windows, Linux and macOS, plus the production WASM
 build/strict check. The affected Harness suite passed under repository-pinned
 Bun 1.4.2 on Linux. A fresh installed archive imported the optional core exports

@@ -1,10 +1,14 @@
 import { expect, test } from "bun:test";
 import { IDBFactory } from "fake-indexeddb";
+import "fake-indexeddb/auto";
 import {
   HarnessClient,
   HydrationCache,
   IndexedDbClientStore,
   MemoryOutbox,
+  MemoryCursorStore,
+  ProjectionStore,
+  ClientCheckpointConflict,
   PageWindow,
   TerminalAdmissionError,
   type ClientCommand,
@@ -28,6 +32,129 @@ const content: FileRef = {
   descriptor: { sha256: Array(32).fill(0), byte_length: 0, media_type: "text/plain" },
   display_name: "committed.txt",
 };
+
+test("client admits finite caller work before retaining it and snapshots queued commands", async () => {
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const persisted: ClientCommand[] = [];
+  const outbox = {
+    load: async () => persisted,
+    delete: async () => {},
+    put: async (command: ClientCommand) => { await blocked; persisted.push(command); },
+  };
+  const client = new HarnessClient({ connect: async () => { throw new Error("offline"); } }, outbox,
+    new MemoryCursorStore(), { requests: 2, bytes: 8192, commandBytes: 4096 });
+  const mutableAuthority = { ...authority };
+  const command: ClientCommand = { operationId, authority: mutableAuthority, kind: "message.append", payload: {}, offlineSafe: true };
+  const first = client.submit(command);
+  const second = client.submit(command);
+  await expect(client.submit(command)).rejects.toThrow("capacity exhausted");
+  mutableAuthority.id = "mutated-after-admission";
+  release();
+  await Promise.all([first, second]);
+  expect(persisted.map(value => value.authority.id)).toEqual(["conversation-1", "conversation-1"]);
+  mutableAuthority.id = "conversation-1";
+  await expect(client.submit({ ...command, payload: { metadata: { oversized: new Array(1_000_000) } } } as unknown as ClientCommand))
+    .rejects.toThrow("byte capacity");
+  expect(persisted).toHaveLength(2);
+});
+
+test("durable projection restores the committed cut before reconnect and refuses identity drift", async () => {
+  const indexedDB = new IDBFactory();
+  let opened = 0;
+  const originalOpen = indexedDB.open.bind(indexedDB);
+  indexedDB.open = (...args) => { opened++; return originalOpen(...args); };
+  const options = { indexedDB, databaseName: "projection-recovery" };
+  const store = new IndexedDbClientStore(options);
+  expect(opened).toBe(0);
+  await store.put({ operationId, authority, kind: "message.append", payload: {}, offlineSafe: true });
+  const recovery = {
+    authority, identity: "tenant/reducer/schema/adapter-1", encode: (value: number) => value,
+    decode: (value: unknown, cursor: ReplayCursor) => {
+      if (cursor.generation !== "one" || typeof value !== "number" || value !== Number(cursor.revision)) throw new Error("invalid cut");
+      return value;
+    },
+  };
+  const controller = new AbortController();
+  const connection: Connection<number> = {
+    send: async () => {}, close: () => {},
+    async *[Symbol.asyncIterator]() {
+      yield { authority, generation: "one", fromRevision: 0n, throughRevision: 1n, live: true,
+        events: [{ authority, operationId, revision: 1n, event: 1 }] };
+      controller.abort();
+    },
+  };
+  const first = new HarnessClient<number>({ connect: async () => connection }, store);
+  const projection = new ProjectionStore(first, 0, (state, event) => state + event.event, recovery);
+  projection.start();
+  await first.run(controller.signal);
+  expect(projection.getSnapshot()).toBe(1);
+  expect(await store.load()).toEqual([]);
+  const reopened = new IndexedDbClientStore(options);
+  const stop = new AbortController();
+  let restored!: ProjectionStore<number, number>;
+  const second = new HarnessClient<number>({ connect: async cursors => {
+    expect(restored.getSnapshot()).toBe(1);
+    expect(cursors.get("conversation:conversation-1")?.revision).toBe(1n);
+    stop.abort(); return { send: async () => {}, close: () => {}, async *[Symbol.asyncIterator]() {} };
+  } }, reopened);
+  restored = new ProjectionStore(second, 0, (state, event) => state + event.event, recovery);
+  restored.start();
+  await second.run(stop.signal);
+  await expect(store.commit(authority, { generation: "one", revision: 2n }, undefined,
+    { identity: recovery.identity, state: 2 }, null)).rejects.toBeInstanceOf(ClientCheckpointConflict);
+  expect((await store.loadCursors()).get("conversation:conversation-1")?.revision).toBe(1n);
+  await expect(store.putCursor(authority, { generation: "one", revision: 2n }))
+    .rejects.toBeInstanceOf(ClientCheckpointConflict);
+  let connections = 0;
+  const third = new HarnessClient<number>({ connect: async () => { connections++; return connection; } }, reopened);
+  const repaired = new ProjectionStore(third, 0, (state, event) => state + event.event, { ...recovery, identity: "changed-adapter" });
+  repaired.start();
+  await expect(third.run()).rejects.toThrow("identity mismatch");
+  expect(connections).toBe(0);
+  // Explicit authority recovery compares against the stored cut, even when
+  // the old adapter cannot decode it; no guessed state is published first.
+  await third.rebase(authority, { generation: "one", revision: 2n },
+    { identity: "changed-adapter", state: 2 });
+  expect((await reopened.loadCursors()).get("conversation:conversation-1")?.revision).toBe(2n);
+  expect(repaired.getSnapshot()).toBe(2);
+  repaired.dispose();
+});
+
+test("checkpoint failure preserves projection, cursor and original retry identity", async () => {
+  const indexedDB = new IDBFactory();
+  const options = { indexedDB, databaseName: "projection-failure", maximumCheckpointBytes: 128 };
+  const store = new IndexedDbClientStore(options);
+  const command: ClientCommand = { operationId, authority, kind: "message.append", payload: {}, offlineSafe: true };
+  await store.put(command);
+  const stop = new AbortController();
+  const delivery: Delivery<number> = { authority, generation: "one", fromRevision: 0n, throughRevision: 1n,
+    live: true, events: [{ authority, revision: 1n, operationId, event: 1 }] };
+  const client = new HarnessClient<number>({ connect: async () => ({ send: async () => {}, close: () => {},
+    async *[Symbol.asyncIterator]() { yield delivery; } }) }, store);
+  const projection = new ProjectionStore(client, 0, (value, event) => value + event.event, {
+    authority, identity: "adapter", encode: value => ({ value, tooLarge: "x".repeat(1000) }),
+    decode: value => (value as { value: number }).value,
+  });
+  projection.start();
+  client.failure.subscribe(() => stop.abort());
+  await client.run(stop.signal);
+  expect(client.failure.getSnapshot()).toBeInstanceOf(RangeError);
+  expect(projection.getSnapshot()).toBe(0);
+  const reopened = new IndexedDbClientStore({ ...options, maximumCheckpointBytes: 4096, maximumCursors: 1 });
+  expect((await reopened.loadCursors()).size).toBe(0);
+  expect((await reopened.load())[0]?.operationId).toBe(operationId);
+  await reopened.putCursor(authority, { generation: "one", revision: 0n });
+  await expect(reopened.commit({ ...authority, id: "another" }, { generation: "one", revision: 1n }, operationId))
+    .rejects.toThrow("cursor capacity");
+  expect((await reopened.load())[0]?.operationId).toBe(operationId);
+  expect((await reopened.loadCursors()).get("conversation:conversation-1")?.revision).toBe(0n);
+  const broken = new HarnessClient<number>({ connect: async () => { throw new Error("must not connect"); } }, reopened);
+  new ProjectionStore(broken, 0, (value, event) => value + event.event, {
+    authority, identity: "adapter", encode: value => value, decode: value => value as number,
+  }).start();
+  await expect(broken.run()).rejects.toThrow("matching recoverable projection");
+});
 
 test("offline outbox accepts only explicitly safe non-approval commands", async () => {
   const outbox = new MemoryOutbox();
@@ -182,6 +309,41 @@ test("IndexedDB preserves enqueue order across restart and isolates database nam
     earlierKey,
   ]);
   expect(await new IndexedDbClientStore({ indexedDB, databaseName: "other-client" }).load()).toEqual([]);
+});
+
+test("IndexedDB pages a fixed enqueue cut and refuses same-version databases without its index", async () => {
+  const indexedDB = new IDBFactory();
+  const state = new IndexedDbClientStore({ indexedDB, databaseName: "paged-outbox", maximumCommands: 80 });
+  const ids = Array.from({ length: 70 }, (_, i) =>
+    `01010101-0101-0101-0101-${String(100 - i).padStart(12, "0")}` as OperationId);
+  for (const id of ids) await state.put({ operationId: id, authority, kind: "message.append", payload: {}, offlineSafe: true });
+  const first = await state.loadPage();
+  expect(first.commands.map(command => command.operationId)).toEqual(ids.slice(0, 64));
+  await state.put({ operationId, authority, kind: "message.append", payload: {}, offlineSafe: true });
+  const tail = await state.loadPage(first.afterSequence, first.throughSequence);
+  expect(tail.commands.map(command => command.operationId)).toEqual(ids.slice(64));
+  expect(tail.afterSequence).toBe(tail.throughSequence);
+  expect((await state.load()).map(command => command.operationId)).toEqual([...ids, operationId]);
+  await new Promise<void>((resolve, reject) => {
+    const opening = indexedDB.open("no-sequence-index", 3);
+    opening.onupgradeneeded = () => {
+      opening.result.createObjectStore("outbox", { keyPath: "operationId" });
+      opening.result.createObjectStore("cursors", { keyPath: "authority" });
+    };
+    opening.onerror = () => reject(opening.error);
+    opening.onsuccess = () => { opening.result.close(); resolve(); };
+  });
+  let connections = 0;
+  const rejected = new IndexedDbClientStore({ indexedDB, databaseName: "no-sequence-index" });
+  const client = new HarnessClient({ connect: async () => { connections++; throw new Error("must not connect"); } }, rejected);
+  await expect(client.run()).rejects.toThrow("sequence index is unsupported");
+  expect(connections).toBe(0);
+  await new Promise<void>((resolve, reject) => {
+    const deleting = indexedDB.deleteDatabase("no-sequence-index");
+    deleting.onsuccess = () => resolve();
+    deleting.onblocked = () => reject(new Error("rejected database stayed open"));
+    deleting.onerror = () => reject(deleting.error);
+  });
 });
 
 test("v2 IndexedDB refuses legacy outbox records without reading or rewriting them", async () => {
@@ -605,8 +767,10 @@ test("a later listener failure does not replay earlier committed batch events", 
 
 test("terminal admission removes a safe command from the retry outbox", async () => {
   const controller = new AbortController();
+  let sends = 0;
   const connection: Connection = {
     async send() {
+      sends++;
       controller.abort();
       throw new TerminalAdmissionError("rejected");
     },
@@ -615,9 +779,12 @@ test("terminal admission removes a safe command from the retry outbox", async ()
   };
   const outbox = new MemoryOutbox();
   await outbox.put({ operationId, authority, kind: "message.append", payload: {}, offlineSafe: true });
+  const unsent = "02020202-0202-0202-0202-020202020202" as OperationId;
+  await outbox.put({ operationId: unsent, authority, kind: "message.append", payload: {}, offlineSafe: true });
   const client = new HarnessClient({ connect: async () => connection }, outbox);
   await client.run(controller.signal);
-  expect(await outbox.load()).toEqual([]);
+  expect((await outbox.load()).map(command => command.operationId)).toEqual([unsent]);
+  expect(sends).toBe(1);
 });
 
 test("hydration cache obeys entry and byte bounds", () => {
