@@ -335,6 +335,16 @@ fn metadata_bytes<T>() -> Result<usize, Error> {
         .ok_or(Error::Budget)
 }
 
+fn dependency_bytes(length: usize, capacity: usize) -> Result<usize, Error> {
+    let backing = capacity
+        .checked_mul(std::mem::size_of::<Dependency>())
+        .ok_or(Error::Budget)?;
+    let indexes = length
+        .checked_mul(metadata_bytes::<Dependency>()?)
+        .ok_or(Error::Budget)?;
+    backing.checked_add(indexes).ok_or(Error::Budget)
+}
+
 /// Demand-scoped client kernel. Construction grants no authority and starts no work.
 pub struct Client<D: Domain> {
     domain: D,
@@ -455,23 +465,10 @@ impl<D: Domain> Client<D> {
         if work > self.limits.work - unique.len() {
             return Err(Error::Budget);
         }
+        let dependencies_bytes = dependency_bytes(unique.len(), request.dependencies.capacity())?;
         let bytes = bytes
             .checked_add(metadata_bytes::<Branch<D>>()?)
-            .and_then(|n| {
-                n.checked_add(
-                    request
-                        .dependencies
-                        .capacity()
-                        .checked_mul(std::mem::size_of::<Dependency>())?,
-                )
-            })
-            .and_then(|n| {
-                n.checked_add(
-                    unique
-                        .len()
-                        .checked_mul(metadata_bytes::<Dependency>().ok()?)?,
-                )
-            })
+            .and_then(|n| n.checked_add(dependencies_bytes))
             .ok_or(Error::Budget)?;
         if bytes > self.limits.bytes.saturating_sub(self.bytes) {
             return Err(Error::Budget);
