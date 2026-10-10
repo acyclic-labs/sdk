@@ -49,6 +49,7 @@ for (const lane of JSON.parse(readFileSync(".github/qualification-lanes.json", "
 const expected = [
   ".github\\workflows\\publish-crate.yml:ubuntu-24.04",
   ".github\\workflows\\publish-npm.yml:ubuntu-24.04",
+  ".github\\workflows\\static.yml:ubuntu-24.04",
 ];
 if (process.platform !== "win32") {
   for (let index = 0; index < expected.length; index += 1) {

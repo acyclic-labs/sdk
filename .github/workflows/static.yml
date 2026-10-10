@@ -1,0 +1,30 @@
+name: SDK Static
+on:
+  pull_request: null
+  push:
+    branches:
+      - main
+  workflow_dispatch: null
+permissions:
+  contents: read
+concurrency:
+  group: static-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  static:
+    name: SDK Static
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+      - name: Static repository checks
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/static-ci.mjs
