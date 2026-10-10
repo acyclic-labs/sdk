@@ -539,6 +539,11 @@ export class HarnessClient<Event = unknown> {
   /** Installs an authoritative snapshot cursor after synchronously resetting projections. */
   async rebase(authority: Authority, cursor: ReplayCursor, resetProjections: (() => void) | ClientCheckpoint): Promise<void> {
     validateCursor(cursor);
+    const bytes = retainedDataBytes({ authority, cursor,
+      checkpoint: typeof resetProjections === "function" ? null : resetProjections }, this.admission.commandBytes);
+    authority = { ...authority };
+    cursor = { ...cursor };
+    if (typeof resetProjections !== "function") resetProjections = cloneStructuredValue(resetProjections, new Set()) as ClientCheckpoint;
     let connection: Connection<Event> | undefined;
     try {
       await this.#serializeState(async () => {
@@ -568,7 +573,7 @@ export class HarnessClient<Event = unknown> {
           throw error;
         }
         this.#cursors.set(key, cursor);
-      });
+      }, bytes);
     } finally {
       await connection?.close();
     }

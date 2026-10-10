@@ -64,10 +64,7 @@ fn persisted_hypotheses_preserve_identity_dependencies_and_recompute_budgets() {
         .begin(request(1, 0, 10, 13, Some(11), vec![child]))
         .unwrap();
     assert_eq!(next.sequence, 3);
-    assert_eq!(
-        restored.discard(parent).unwrap(),
-        vec![parent, child, next]
-    );
+    assert_eq!(restored.discard(parent).unwrap(), vec![parent, child, next]);
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
