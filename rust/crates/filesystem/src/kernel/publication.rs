@@ -122,6 +122,8 @@ struct PreparedPublication {
     proof: GenerationProof,
     commit: ProposedCommit,
     work: WorkCounters,
+    /// Actual owned proof and payload capacities that survive preparation.
+    retained_bytes: u64,
 }
 
 /// Fail-closed generation-publication errors.
@@ -443,10 +445,19 @@ fn prepare_publication(
         ));
     }
     let payload_bytes = usize_to_u64(publication_payload_length());
+    let proof_retained_bytes = usize_to_u64(proof.objects.capacity())
+        .checked_mul(usize_to_u64(std::mem::size_of::<ObjectId>()))
+        .and_then(|objects| {
+            usize_to_u64(proof.root.parents.capacity())
+                .checked_mul(usize_to_u64(std::mem::size_of::<crate::GenerationId>()))
+                .and_then(|parents| objects.checked_add(parents))
+        })
+        .ok_or_else(|| OperationFailure::new(WorkError::Overflow.into(), work))?;
     let fingerprint_bytes = usize_to_u64(fingerprint_input_length(operation_context));
     let fingerprint_domain = fingerprint_domain(operation_context);
-    let peak_allocation_bytes = payload_bytes
-        .checked_add(fingerprint_bytes)
+    let peak_allocation_bytes = proof_retained_bytes
+        .checked_add(payload_bytes)
+        .and_then(|bytes| bytes.checked_add(fingerprint_bytes))
         .ok_or_else(|| OperationFailure::new(WorkError::Overflow.into(), work))?;
     let semantic_work = WorkCounters {
         bytes_encoded: payload_bytes
@@ -466,6 +477,15 @@ fn prepare_publication(
     work.verify(budget)
         .map_err(|error| OperationFailure::new(error.into(), work))?;
     let payload = encode_publication_payload(request.volume_id, request.generation_root);
+    let retained_bytes = proof_retained_bytes
+        .checked_add(usize_to_u64(payload.capacity()))
+        .ok_or_else(|| OperationFailure::new(WorkError::Overflow.into(), work))?;
+    let actual_peak = retained_bytes
+        .checked_add(fingerprint_bytes)
+        .ok_or_else(|| OperationFailure::new(WorkError::Overflow.into(), work))?;
+    work.peak_allocation_bytes = work.peak_allocation_bytes.max(actual_peak);
+    work.verify(budget)
+        .map_err(|error| OperationFailure::new(error.into(), work))?;
     let fingerprint = publication_fingerprint(request, operation_context, &payload);
     Ok(PreparedPublication {
         proof,
@@ -475,6 +495,7 @@ fn prepare_publication(
             payload: Bytes::from(payload),
         },
         work,
+        retained_bytes,
     })
 }
 

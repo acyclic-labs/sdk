@@ -20,3 +20,21 @@ budgets include gate IO and the encoded replay buffers retained during decoding.
 Portable provider and property tests remain compiled on this target. Only native
 process, native filesystem and socket fixtures use native-only target dependencies;
 the WASM test target uses portable Tokio features and the browser entropy backend.
+
+## Original publication custody
+
+`AsyncObjectStore::prepare_generation_publication` receives the original `PublishGenerationRequest`, complete `GenerationProof`, exact `GuardedAppend`, and closure/sweep scope after flush and before the canonical authority CAS. The publication hold stays live through preparation and CAS; custody failure prevents CAS. Object-store decorators forward the same context to their durable provider. Default preparation establishes no hosted custody.
+
+`kernel::encode_generation_publication_evidence` retains the original request, root, complete sorted manifest, admitted configuration, `logical_file_bytes: u128`, proposed commit, permit, epoch, and expected head in versioned binary bytes with SHA256. Recovery requires the digest from protected original custody. Decoding returns original metadata, never a fresh proof or an accepted result. Only an exact authoritative Stream record or committed envelope establishes settlement time. A later current head cannot settle an earlier unknown reply.
+
+Initial-volume and retention owners can encode their original proof and append with `kernel::encode_original_generation_evidence`. `AsyncObjectStore::historical_generation_evidence` is an optional provider-owned read capability: it returns original protected bytes and digest for an exact settled record. Its decoder checks the original operation, fingerprint, payload, epoch, sequence, previous digest, root, and configuration against that record. No archive, second journal, global registry, retained-root claim, or collection permission is created by these SDK values.
+
+The external hosted filesystem provider must atomically retain original evidence and its exact `ObjectId -> Objects GenerationRef` mapping in its existing protected accepted-operation custody before CAS, retain the closure through the private retained-root capability, and reconcile the exact accepted record after ambiguous outcomes. The separate initial-volume, fork-retention, and pin boundaries need that same owner integration. The SDK does not supply that hosted service or authorize its GC. `PublicationHold::none()` is only an empty local gate, not remote custody or release permission.
+
+## Accounting evidence
+
+`accounting::accounting_page` takes a finite work budget and projects at most 256 dense authority facts per page. Cursors bind sequence, digest, and authoritative settlement time; each call pins a head before replay, so later concurrent appends cannot change already-consumed cursors. Facts preserve exact operation identity and canonical `Published`, `Retained`, and `WorkspaceDeleted` transitions. Logical sizes come solely from the original `GenerationProof.logical_file_bytes`, including sparse holes and counting hard-linked identities once; they do not describe RSS, physical allocation, resident memory, or billable usage.
+
+The Stream adapter derives time from the exact authoritative record and validates committed-envelope path, sequence, and bytes. Legacy and offline commits omit settlement time and fail with `MissingTime`. A private accounting-only adapter can read retired history; ordinary reads, retries, and writes remain fenced.
+
+Historical reads prefer the provider's protected original projection, so collected generation bodies are not needed when that capability exists. Without it, only the exact root named by the historical record is authenticated; missing or corrupt original bodies fail with `Proof`, never a zero size, invented time, or current-head substitution. Accounting cursors and transport ACKs neither establish protected custody nor authorize collection.

@@ -227,7 +227,10 @@ impl<'a> Decoder<'a> {
             .map_err(|_| CanonicalDecodeError::Truncated)
     }
 
-    pub(crate) fn bounded_bytes(&mut self, maximum: u32) -> Result<Vec<u8>, CanonicalDecodeError> {
+    pub(crate) fn bounded_slice(
+        &mut self,
+        maximum: u32,
+    ) -> Result<&'a [u8], CanonicalDecodeError> {
         let length = self.u32()?;
         if length > maximum {
             return Err(CanonicalDecodeError::FieldTooLarge {
@@ -236,10 +239,14 @@ impl<'a> Decoder<'a> {
             });
         }
         let length = usize::try_from(length).map_err(|_| CanonicalDecodeError::LengthOverflow)?;
-        let source = self.take(length)?;
+        self.take(length)
+    }
+
+    pub(crate) fn bounded_bytes(&mut self, maximum: u32) -> Result<Vec<u8>, CanonicalDecodeError> {
+        let source = self.bounded_slice(maximum)?;
         let mut value = Vec::new();
         value
-            .try_reserve_exact(length)
+            .try_reserve_exact(source.len())
             .map_err(|_| CanonicalDecodeError::AllocationFailed)?;
         value.extend_from_slice(source);
         Ok(value)

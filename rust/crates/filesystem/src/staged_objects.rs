@@ -901,6 +901,36 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         Some(&self.collection)
     }
 
+    async fn prepare_generation_publication(
+        &self,
+        request: &crate::kernel::PublishGenerationRequest,
+        proof: &crate::kernel::GenerationProof,
+        append: &crate::GuardedAppend,
+        scope: PublicationScope<'_>,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<()> {
+        self.inner
+            .prepare_generation_publication(request, proof, append, scope, budget, cancellation)
+            .await
+    }
+
+    async fn historical_generation_evidence(
+        &self,
+        authority_id: crate::AuthorityId,
+        record: &crate::DurableCommit,
+        maximum_bytes: u64,
+        maximum_objects: u64,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<Option<crate::kernel::HistoricalGenerationEvidence>> {
+        self.inner
+            .historical_generation_evidence(
+                authority_id, record, maximum_bytes, maximum_objects, budget, cancellation,
+            )
+            .await
+    }
+
     async fn read(
         &self,
         object_id: ObjectId,

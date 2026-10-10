@@ -678,6 +678,65 @@ pub trait AsyncObjectStore: StorageProvider {
         }
     }
 
+    /// Prepares the original canonical append after its closure has been flushed.
+    /// The publisher keeps its `PublicationHold` live through this call and CAS.
+    ///
+    /// A hosted provider must durably retain these original values and its exact
+    /// object-reference mapping in existing protected custody before returning.
+    /// Preparation is not acceptance; unknown append outcomes must be reconciled
+    /// against the exact authoritative record, never a later current head.
+    /// The default explicitly supplies no hosted or historical custody.
+    fn prepare_generation_publication(
+        &self,
+        _request: &crate::kernel::PublishGenerationRequest,
+        _proof: &crate::kernel::GenerationProof,
+        _append: &GuardedAppend,
+        _scope: PublicationScope<'_>,
+        _budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = ObjectResult<()>> + StorageFuture {
+        async move {
+            cancellation.check().map_err(|_| {
+                crate::storage::ObjectFailure::before_work(
+                    crate::storage::ObjectStoreError::Cancelled,
+                )
+            })?;
+            Ok(crate::storage::ObjectReceipt {
+                value: (),
+                work: crate::WorkCounters::default(),
+            })
+        }
+    }
+
+    /// Reads original protected proof evidence for exactly this settled record.
+    ///
+    /// Providers return the SHA256 from their protected original custody, not
+    /// from caller-supplied bytes. The archive must have been admitted before
+    /// publication and survive collection and ambiguous acceptance. `None`
+    /// means this backend has no such capability; it does not authorize a
+    /// current-head reconstruction or collection of unread original evidence.
+    fn historical_generation_evidence(
+        &self,
+        _authority_id: crate::AuthorityId,
+        _record: &crate::DurableCommit,
+        _maximum_bytes: u64,
+        _maximum_objects: u64,
+        _budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = ObjectResult<Option<crate::kernel::HistoricalGenerationEvidence>>> + StorageFuture {
+        async move {
+            cancellation.check().map_err(|_| {
+                crate::storage::ObjectFailure::before_work(
+                    crate::storage::ObjectStoreError::Cancelled,
+                )
+            })?;
+            Ok(crate::storage::ObjectReceipt {
+                value: None,
+                work: crate::WorkCounters::default(),
+            })
+        }
+    }
+
     /// The collection this store runs while it stays open, if it collects.
     fn collection(&self) -> Option<&Arc<crate::Collection>> {
         None

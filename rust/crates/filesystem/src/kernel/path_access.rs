@@ -309,6 +309,69 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
         self.store.decoded_cache_admit(key, value)
     }
 
+    async fn flush_before_publish(
+        &self,
+        scope: crate::PublicationScope<'_>,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<crate::PublicationHold> {
+        let resident = self.resident_bytes()?;
+        let receipt = self.store.flush_before_publish(
+            scope, budget_after_resident(budget, resident)?, cancellation,
+        ).await.map_err(|failure| {
+            merge_backend_failure(WorkCounters::default(), *failure.work, resident, failure.error)
+        })?;
+        let work = merge_backend_peak(WorkCounters::default(), receipt.work, resident, budget)?;
+        Ok(ObjectReceipt { value: receipt.value, work })
+    }
+
+    fn collection(&self) -> Option<&std::sync::Arc<crate::Collection>> {
+        self.store.collection()
+    }
+
+    fn collection_sweeps(&self) -> u64 {
+        self.store.collection_sweeps()
+    }
+
+    async fn prepare_generation_publication(
+        &self,
+        request: &crate::kernel::PublishGenerationRequest,
+        proof: &crate::kernel::GenerationProof,
+        append: &crate::GuardedAppend,
+        scope: crate::PublicationScope<'_>,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<()> {
+        let resident = self.resident_bytes()?;
+        let receipt = self.store.prepare_generation_publication(
+            request, proof, append, scope, budget_after_resident(budget, resident)?, cancellation,
+        ).await.map_err(|failure| {
+            merge_backend_failure(WorkCounters::default(), *failure.work, resident, failure.error)
+        })?;
+        let work = merge_backend_peak(WorkCounters::default(), receipt.work, resident, budget)?;
+        Ok(ObjectReceipt { value: (), work })
+    }
+
+    async fn historical_generation_evidence(
+        &self,
+        authority_id: crate::AuthorityId,
+        record: &crate::DurableCommit,
+        maximum_bytes: u64,
+        maximum_objects: u64,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<Option<crate::kernel::HistoricalGenerationEvidence>> {
+        let resident = self.resident_bytes()?;
+        let receipt = self.store.historical_generation_evidence(
+            authority_id, record, maximum_bytes, maximum_objects,
+            budget_after_resident(budget, resident)?, cancellation,
+        ).await.map_err(|failure| {
+            merge_backend_failure(WorkCounters::default(), *failure.work, resident, failure.error)
+        })?;
+        let work = merge_backend_peak(WorkCounters::default(), receipt.work, resident, budget)?;
+        Ok(ObjectReceipt { value: receipt.value, work })
+    }
+
     async fn put(
         &self,
         object_id: ObjectId,

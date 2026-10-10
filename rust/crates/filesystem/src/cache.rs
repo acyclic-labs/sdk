@@ -1029,6 +1029,51 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
         self.decoded_admit(key, value)
     }
 
+    async fn flush_before_publish(
+        &self,
+        scope: crate::PublicationScope<'_>,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<crate::PublicationHold> {
+        self.inner.flush_before_publish(scope, budget, cancellation).await
+    }
+
+    fn collection(&self) -> Option<&std::sync::Arc<crate::Collection>> {
+        self.inner.collection()
+    }
+
+    fn collection_sweeps(&self) -> u64 {
+        self.inner.collection_sweeps()
+    }
+
+    async fn prepare_generation_publication(
+        &self,
+        request: &crate::kernel::PublishGenerationRequest,
+        proof: &crate::kernel::GenerationProof,
+        append: &crate::GuardedAppend,
+        scope: crate::PublicationScope<'_>,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<()> {
+        self.inner.prepare_generation_publication(
+            request, proof, append, scope, budget, cancellation,
+        ).await
+    }
+
+    async fn historical_generation_evidence(
+        &self,
+        authority_id: crate::AuthorityId,
+        record: &crate::DurableCommit,
+        maximum_bytes: u64,
+        maximum_objects: u64,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<Option<crate::kernel::HistoricalGenerationEvidence>> {
+        self.inner.historical_generation_evidence(
+            authority_id, record, maximum_bytes, maximum_objects, budget, cancellation,
+        ).await
+    }
+
     async fn put(
         &self,
         object_id: ObjectId,
