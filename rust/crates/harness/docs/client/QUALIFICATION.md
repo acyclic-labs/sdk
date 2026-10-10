@@ -5,8 +5,9 @@ Scope: the portable Harness client speculation/view module, data-only hypothesis
 Baseline independently verified with `git ls-remote origin refs/heads/main`:
 `e646b77d440631af72eecb29411b7c7497687994`. The owner subsequently rebased onto
 independently verified actual main `fe001e9e732bd94bc200f27f793b8c34c557d1ac`.
-Production source blob: `490df1b5eefc1038971f4c5cbec645041355f0d6`.
-Platform and exact-head final qualification remain open until recorded below.
+Mutation-qualified kernel blob: `490df1b5eefc1038971f4c5cbec645041355f0d6`.
+Relocated Harness module blob: `f85dc4942f15a1067fc8099e3bc7e010730d586e`; its only changes are module wording and the included README documentation.
+Final platform receipts are recorded below; hosted and actual-main gates remain open.
 
 ## Invariants and assumptions
 
@@ -151,6 +152,42 @@ the public Harness consumer. Rust 1.98.1 and wasm-bindgen-test runner 0.2.117 we
 used. These receipts remain scoped source evidence; the later package/fixture
 partition requires affected closure qualification below.
 
-Open: final Harness package/current consumer and relocated-module platform
-qualification; required exact-head SDK Qualification; qualified PR merge and
-independent actual-main SHA/tree verification. An open gate is not a pass.
+The final Harness source snapshot `06b7e77e3d605c6d150ee1c395d3cb033610511c`
+passed the following affected closure checks:
+
+* Windows, WSL/Linux and macOS (`ssh ivar`): all eleven production/public-consumer
+  tests and Harness strict `--all-targets --all-features` Clippy. Final Windows
+  execution used an isolated artifact directory after shared-target external
+  consumers caused stale dependency type mismatches. The same locked source
+  passed there without a source change. Native reduced-feature strict lint was
+  blocked by existing Stream `obs` dead-code warnings; no such pass is claimed.
+* Installed Chromium 154: the identical eleven Harness-owned tests through a
+  temporary external WASM consumer, with the normal Harness `--features wasm`
+  target library strict lint. Direct Harness package WASM tests encounter its
+  existing native networking dev features (`mio`); the external consumer selects
+  the portable production graph without changing those shared declarations.
+  Its manifest is an ignored qualification artifact, not a new product/package.
+* Existing publication metadata check passes, with no root workspace or release
+  entry change against main. Ordinary Harness packaging stops on existing
+  unpublished `acyclic-fs = 0.2.0` (and companion releases), so no unpatched
+  registry-ready pass is claimed. Explicit local-companion patches produced a
+  162-file Harness candidate archive containing the exact module blob. Its SHA256
+  is `88542e0d753f5ee1f0c301ebde97b2ea014071f1fe8d2d6061d57574bb9d423e`.
+  Fresh native and installed Chromium consumers of that actual archive pass all
+  eleven tests. This proves the stated local source closure, not publication.
+* The relocated Harness Divan benchmark repeats the same allocation totals:
+  zero for warm views, 2 / 72 B for canonical reconciliation and 5 / 936 B for
+  selective reconciliation; cold demand totals match the table. For 1/8/16 records,
+  medians were canonical views 19.03/19.42/20 ns, predicted views
+  25.67/25.47/26.64 ns, canonical reconciliation 197.9/216.7/222.9 ns and
+  selective reconciliation 495.4/467.3/551.7 ns. All remain within the recorded
+  comparison threshold. This host was shared with other builds; maxima remain
+  scheduling evidence rather than a latency guarantee.
+
+The historical eight mutation controls apply to the same executable kernel:
+relocation changes only documentation, import paths and package declarations,
+not transition logic. Subsequent receipt-only edits to this qualification file
+change no production, test, example, benchmark, normalized manifest or lock input.
+
+Open: required exact-head SDK Qualification, qualified PR merge, and independent
+actual-main SHA/tree verification. An open gate is not a pass.
