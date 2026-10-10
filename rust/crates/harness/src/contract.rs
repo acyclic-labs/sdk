@@ -61,6 +61,7 @@ pub(crate) fn next_revision(revision: u64) -> Result<u64> {
 }
 
 mod json;
+pub(crate) use json::admit_json;
 mod event_json;
 pub(crate) use event_json::{
     EventPayloadJsonAdmission, audited_serde_diagnostic_bytes, event_payload_json_admission,
