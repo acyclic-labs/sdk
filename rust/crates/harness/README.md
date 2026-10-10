@@ -221,3 +221,37 @@ OS cooperation is a liveness assumption: capture, observation and cleanup bounds
 not a hard wall-clock guarantee for an unresponsive operating system.
 Bounded vector-slot collections and sorted native-health registries centralize
 bounded state in the canonical owners, not a second execution engine.
+
+### Durable mailbox steering and subtree cancellation
+
+The retained task topology supplies the default parent↔direct-child mail route;
+it never grants file access. Both admissions must authorize the exact pinned
+payload and its size. Other routes require the sender's `mail:send` and the
+recipient's `mail:read`. `CoordinatorTaskHost::send_owned` and WASM `send` return
+`MailSendAck` with the exact sender, recipient, operation and payload; a lost
+reply can be recovered by the same fenced send. Changing the recipient or file
+under that identity is rejected.
+
+`FilesystemTaskRuntime::task_context(task, fence)` binds `TaskContext::send`
+and `inbox` to that same retained mailbox owner; stock workers and tool/model
+contexts receive it automatically. Unbound contexts cannot fall back to an
+unfenced state-provider send, and an attenuated view cannot reuse the original
+mailbox token under changed grants or file limits.
+
+`filesystem::MailboxModelMachine` receives one item through a sole
+`MailReceiveTaskCommand`, then commits that item and its one-based cursor in the
+workflow checkpoint before emitting the pinned model command. Its input has
+`receive` and `model` WorkflowCommands; the model payload sets
+`ModelTaskCommand::mailbox_operation` to the receive operation. Stock dispatch
+checks the original receive cursor and immutable inbox receipt, then adds the
+file using bounded-full projection before the **new** model admission. Restart
+uses that checkpoint, not the latest inbox tail; an already admitted model
+request is never edited. Register the machine in the ordinary task and machine
+registries. A receive command cannot share an outbox with another command.
+
+`TaskCancelCommand` and Rust/WASM `cancel_child_owned`/`cancelChild` request a
+direct child's complete subtree through the existing recursive scheduler
+intent. They require the parent's retained lease and `operation:cancel`, and
+bind the cancellation operation to the exact child across retries and restart.
+A successful request does not prove provider stop or release an uncertain
+effect's reservation; reconciliation still uses the original effect journals.

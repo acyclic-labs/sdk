@@ -243,6 +243,12 @@ where
     /// Observes the original authenticated outbox without executing a machine
     /// callback. It does not grant checkpoint or command publication authority.
     pub(crate) async fn observe_latest_outbox(&self) -> Result<Option<crate::workflow::MachineTransition>> {
+        Ok(self.observe_latest_record().await?.map(|record| record.transition))
+    }
+
+    /// Reads just the latest authenticated checkpoint envelope, never a swarm
+    /// or an unbounded history body.
+    pub(crate) async fn observe_latest_record(&self) -> Result<Option<WorkflowRecord>> {
         let owner = self.owner.as_ref()
             .ok_or_else(|| Error::Unsupported("task outbox observation requires its original owner".into()))?;
         owner.verify(true).await?;
@@ -265,7 +271,7 @@ where
             .into_iter().next()
             .ok_or_else(|| Error::Storage("original outbox record is absent".into()))?;
         owner.verify(true).await?;
-        Ok(Some(record.transition))
+        Ok(Some(record))
     }
 
     async fn verified_history(

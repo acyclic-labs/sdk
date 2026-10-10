@@ -1107,19 +1107,17 @@ async fn worker_restart_with_options(
                         },
                     })
                 } else {
-                    serde_json::to_value(ModelTaskCommand {
-                        input: if with_model_approval {
-                            ModelContent::Part(acyclic_harness::model::ModelContentPart::File {
-                                file: payloads.stage(operation, "model-input", b"hello").await?,
-                                policy: acyclic_harness::model::FileProjectionPolicy::Reference,
-                            })
-                        } else {
-                            ModelContent::Text("hello".into())
-                        },
-                        selected_context: None,
-                        max_steps: if with_model_approval { 2 } else { 1 },
-                        max_output_tokens: Some(8_192),
-                    })
+                    serde_json::to_value(ModelTaskCommand { input: if with_model_approval {
+                        ModelContent::Part(acyclic_harness::model::ModelContentPart::File {
+                            file: payloads.stage(operation, "model-input", b"hello").await?,
+                            policy: acyclic_harness::model::FileProjectionPolicy::Reference,
+                        })
+                    } else {
+                        ModelContent::Text("hello".into())
+                    },
+                    selected_context: None,
+                    max_steps: if with_model_approval { 2 } else { 1 },
+                    max_output_tokens: Some(8_192),, mailbox_operation: None })
                 }
                 .map_err(|error| Error::Invalid(error.to_string()))?;
                 let bytes = serde_json::to_vec(&payload)
