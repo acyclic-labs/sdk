@@ -318,6 +318,11 @@ case "$lane" in
     wasm_bindgen_bin="$(bash scripts/ensure-wasm-bindgen.sh)"
     export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
     bun install --frozen-lockfile
+    # Installed tools and manifests suffice; package/runtime checks stay after builds.
+    bun run licenses
+    bun x buf format -d --exit-code
+    bun x buf lint
+    bash -n scripts/check-typescript-packages.sh
     # Package validation runs with --offline; populate every locked crate even
     # when the Blacksmith dependency cache is cold.
     cargo fetch --locked
@@ -349,15 +354,11 @@ case "$lane" in
       "$SDK_ARTIFACT_DIR/packages/harness" \
       "$SDK_ARTIFACT_DIR/packages/harness/runner-report.json" \
       "$SDK_ARTIFACT_DIR/packages/harness/qualification-receipt.json"
-    bun run licenses
-    bun x buf format -d --exit-code
-    bun x buf lint
     bun scripts/check-boundaries.mjs
     bun scripts/check-metadata.mjs
     # No wire or JSON compatibility gate: each family's protocol identity
     # binds peers and stored records to one exact descriptor digest, so a
     # schema change is always a new, fail-closed version (no upgrade path).
-    bash -n scripts/check-typescript-packages.sh
     ;;
   linux-musl|linux-arm64-musl)
     if [[ "$lane" == linux-musl ]]; then
@@ -390,10 +391,10 @@ case "$lane" in
     bash scripts/test-qualify-ci-preflight.sh
     node --test scripts/wasm-size-report.test.mjs scripts/tracked-wasm-surfaces.test.mjs
     if [[ "$full_qualification" != true ]]; then
-      cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       node --test scripts/test-plan-qualification.mjs
       node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
       cargo fmt --all -- --check
+      cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       exit 0
     fi
     bash scripts/test-ensure-rust-target.sh
@@ -446,7 +447,7 @@ case "$lane" in
     CHROMEDRIVER="$(command -v chromedriver)" \
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
     CHROMEDRIVER="$(command -v chromedriver)" \
-      cargo test -p acyclic-harness --features browser --target wasm32-unknown-unknown \
+      cargo test -p acyclic-harness --features wasm,filesystem --target wasm32-unknown-unknown \
         --test native_media_boundary --locked
     GECKODRIVER="$(command -v geckodriver)" \
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked

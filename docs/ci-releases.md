@@ -58,3 +58,13 @@ source and contents.
 Manual diagnostic qualification remains available in `qualification.yml`,
 `native-mount-qualification.yml`, `agent-host-qualification.yml`, and
 `sdk-generator.yml`. These diagnostics do not publish a release.
+
+Qualification keeps installed-tool license and protobuf checks ahead of Linux
+compilation; generated-surface and package checks still follow their builds.
+Strict first-party script checking consumes the pinned YAML parser through an
+`unknown`-returning declaration and guarded workflow mappings. Release output
+helpers require `GITHUB_OUTPUT` before doing source or artifact work.
+
+The Harness Chrome media-boundary scenario selects `wasm,filesystem`: its test
+is filesystem-gated and memory-backed. It does not qualify an IndexedDB provider
+or establish that the ordinary browser runtime passes.

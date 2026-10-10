@@ -64,6 +64,7 @@ test('an interrupted publication resumes its exact remaining assets', async () =
     fs.writeFileSync(path.join(directory, 'a.tgz'), 'original a');
     fs.writeFileSync(path.join(directory, 'b.tgz'), 'original b');
     const env = { SOURCE_SHA: 'a'.repeat(40), VERSION: '1.2.3', GITHUB_REPOSITORY: 'owner/sdk' };
+    /** @type {{tag_name: string, target_commitish: string, draft: boolean, assets: {name: string, digest: string}[]}} */
     const release = { tag_name: 'acyclic-v1.2.3', target_commitish: env.SOURCE_SHA, draft: true, assets: [] };
     const uploaded = [];
     let interrupted = false;

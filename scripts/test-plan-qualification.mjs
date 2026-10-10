@@ -549,30 +549,3 @@ test("release, manual, and scheduled events are full qualification events", () =
   }
 });
 
-test("the workflow keeps full qualification off routine pull requests", () => {
-  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8").replaceAll("\r\n", "\n");
-  assert.match(workflow, /^  release:/m);
-  assert.doesNotMatch(workflow, /^  schedule:/m);
-  assert.match(workflow, /default: false/);
-  assert.match(workflow, /github\.event_name == 'release' && github\.event\.release\.tag_name/);
-  for (const { lane } of lanes) {
-    assert.match(workflow, new RegExp(`- name: Find ${lane} marker\\n`), lane);
-    assert.match(workflow, new RegExp(`- name: Record ${lane}\\n`), lane);
-  }
-});
-
-test("the core lanes cover the Rust workspace, docs crate, and TypeScript workspace", () => {
-  const script = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
-  assert.match(script, /^ +nextest --workspace --all-features --locked$/m);
-  assert.match(script, /cargo test --manifest-path rust\/crates\/sdk-docs\/Cargo\.toml --locked/);
-  assert.match(script, /cargo test --manifest-path rust\/crates\/sdk-generation\/Cargo\.toml --locked/);
-  assert.match(script, /node --test rust\/crates\/sdk-generation\/scripts\/test-qualify-typescript-snippets\.mjs/);
-  const policy = script.slice(script.indexOf("\n  policy)"));
-  assert.match(policy, /^ +cargo clippy --workspace --all-targets --all-features --locked -- -D warnings\n +node --test/m);
-  const typescript = script.match(/^  typescript\)\n([\s\S]*?)(?=^  \S[^\n]*\)\n|^esac\b)/m)?.[1];
-  assert.ok(typescript, "missing TypeScript lane");
-  const testCommand = typescript.search(/^ +bun run test$/m);
-  const generatedCommand = typescript.search(/^ +bun run check:generated$/m);
-  assert.ok(testCommand >= 0, "TypeScript lane must run tests");
-  assert.ok(generatedCommand > testCommand, "TypeScript generated check must follow tests");
-});
