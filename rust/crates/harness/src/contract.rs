@@ -558,6 +558,7 @@ impl Error {
                     | Native::Cancelled
                     | Native::Work(_)
                     | Native::Allocation(_)
+                    | Native::AllocationFailed(_)
                     | Native::IndeterminatePreparation => ErrorCode::Storage,
                 }
             }
@@ -569,6 +570,16 @@ impl Error {
     #[must_use]
     pub fn kind(&self) -> &'static str {
         self.code().as_str_name()
+    }
+}
+
+/// Moves a native cause without formatting it or manufacturing allocation custody.
+/// Measured producers with owned diagnostics transfer their existing guard
+/// explicitly through `NativeWork` instead of using this conversion.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl From<acyclic_fs::NativeTreeMaterializationError> for Error {
+    fn from(cause: acyclic_fs::NativeTreeMaterializationError) -> Self {
+        Self::NativeWork { cause, custody: None }
     }
 }
 
