@@ -1,5 +1,6 @@
 import "fake-indexeddb/auto";
 import { expect, test } from "bun:test";
+import { jsonToolProjection } from "@acyclic-labs/harness";
 import {
   BrowserTaskAuthority, BrowserTaskRegistry, BrowserTaskRuntime,
   initializeBrowserRuntime, type BrowserTaskOptions, type BrowserWorkLease, type BrowserRecoveredWork,
@@ -91,6 +92,104 @@ test("installed browser entry executes the ordinary registered runtime", async (
     expect(generations).toBe(1);
     expect(await runtime.runOperation(worker, stock.task_id, 4)).toBeNull();
     expect(generations).toBe(1);
+  } finally {
+    runtime?.free();
+    registry.free();
+    owner.free();
+  }
+});
+
+test("installed browser deadline binding denies expired tool and model dispatch using the real wall clock", async () => {
+  await initializeBrowserRuntime();
+  const id = crypto.randomUUID();
+  const owner = new BrowserTaskAuthority({ kind: "task", id }, "installed-deadline", new Uint8Array(32).fill(23), []);
+  const registry = new BrowserTaskRegistry();
+  let runtime: BrowserTaskRuntime | undefined;
+  try {
+    const agent = "15151515-1515-1515-1515-151515151515";
+    const provider = { namespace: "installed-deadline", family: "filesystem", version: "2" };
+    const volume = { provider, id: "private", class: "agent_private" as const, owner: { kind: "agent" as const, id: agent } };
+    const deadline = BigInt(Date.now() - 1);
+    const options: BrowserTaskOptions = {
+      filesystem_database: `installed-deadline-fs-${id}`, stream_database: `installed-deadline-stream-${id}`,
+      maximum_object_bytes: 1048576n, maximum_payload_bytes: 65536n, filesystem_provider: provider, volume,
+      stream_limits: { commands: 1000n, journal_bytes: 1048576n, paths: 100, path_bytes: 65536,
+        records: 1000, payload_bytes: 1048576, commits: 1000, idempotency_results: 1000 },
+      limits: { file_bytes: 65536n, path_bytes: 1024n, attachments: 4n, render_bytes: 65536n,
+        model_steps: 4n, model_events_per_step: 16n, tool_calls_per_step: 4n, context_messages: 16n },
+      run_limits: { concurrency: 2n, max_steps: 4n, deadline_epoch_ms: deadline },
+      session_limits: { active_tasks: 2n, total_tasks: 3n, depth: 1, model_steps: 4n }, concurrency: 2,
+    };
+    const scope = owner.issueScopeForAgent(agent, "owner", [
+      "operation:declare", "operation:observe", "operation:cancel", "operation:wake",
+      "task:spawn:installed.deadline@1", "task:spawn:acyclic.stock_turn@1", "tool:call:test.effect", "model:generate",
+      owner.volumeCapability(volume, "read"), owner.volumeCapability(volume, "write"),
+    ]);
+    let transitions = 0;
+    let tools = 0;
+    let models = 0;
+    registry.registerMachine({ name: "installed.deadline", version: "1", digest: new Array(32).fill(42),
+      state_schema: { type: "object" }, input_schema: { type: "object" }, output_schema: { type: "integer" }, requirements: [] },
+    (input: unknown) => input, (state: unknown) => {
+      transitions++;
+      const input = state as { operation: string; file: unknown };
+      return { state, commands: [{ operation_id: input.operation, kind: "acyclic.tool.v1", payload: input.file }],
+        status: { kind: "suspended" } };
+    });
+    registry.registerStockTurn();
+    registry.registerTool({ name: "test.effect", revision: "1", description: "Expired deadline dispatch sentinel",
+      input_schema: { type: "object" }, output_schema: { type: "string" },
+      projection_schema: (await jsonToolProjection({ type: "string" })).schema },
+    () => { tools++; throw new Error("expired task dispatched a tool"); },
+    () => { tools++; throw new Error("unstarted expired task reconciled a tool"); },
+    () => { throw new Error("expired task projected a tool result"); });
+    const open = async () => {
+      const value = await BrowserTaskRuntime.open(options, owner, registry, scope);
+      value.configureModel({ provider: "installed-deadline", name: "forbidden", revision: "1", options: {} },
+        () => { models++; throw new Error("expired task dispatched a model"); },
+        () => { models++; throw new Error("unstarted expired task reconciled a model"); },
+        () => ({ context_tokens: 131072, output_tokens: 8192 }),
+        (bytes, request_digest) => ({ request_digest, fixed_tokens: bytes.byteLength,
+          message_tokens: JSON.parse(new TextDecoder().decode(bytes)).messages.map(() => 0) }),
+        { kind: "disabled" });
+      return value;
+    };
+    runtime = await open();
+    await runtime.initializeVolume();
+    const worker = { id: "installed-deadline-worker", available: {}, labels: {} };
+    for (const model of [false, true]) {
+      const command = crypto.randomUUID();
+      const file = await runtime.stage(command, model ? "model" : "tool", new TextEncoder().encode(JSON.stringify(
+        model ? { input: "do not generate", max_steps: 1 } : { name: "test.effect", revision: "1", arguments: {} })));
+      const admission = await runtime.admit(crypto.randomUUID(), model ? "acyclic.stock_turn" : "installed.deadline", "1",
+        model ? { operation_id: command, kind: "acyclic.model.v1", payload: file } : { operation: command, file });
+      expect(admission.kind).toBe("accepted");
+      if (admission.kind !== "accepted") throw new Error(`deadline admission ${admission.kind}`);
+      const work = await runtime.runOperation(worker, admission.task_id, 4);
+      expect(work?.kind).toBe("unresolved");
+      if (work?.kind !== "unresolved") throw new Error(`expired deadline work ${work?.kind}`);
+      expect(work.error.message).not.toContain("unsupported");
+      const originalReservation = work.lease.reservation;
+      runtime.free();
+      runtime = await open();
+      const retained = await runtime.recoverWork(admission.task_id);
+      expect(retained.kind).toBe("unresolved");
+      if (retained.kind !== "unresolved") throw new Error(`deadline recovery ${retained.kind}`);
+      expect(retained.lease.reservation).toEqual(originalReservation);
+      const observation = await runtime.observeTask(admission.task_id);
+      expect(observation.run_limits.deadline_epoch_ms).toBe(deadline);
+      expect(observation.cancellation_requested).toBe(true);
+      expect(observation.reservation).toEqual({
+        reservation_id: originalReservation.id, placement: originalReservation.placement,
+      });
+      expect((await runtime.resume(work.lease, 4)).kind).toBe("unresolved");
+      const outcome = await runtime.outcome(admission.task_id);
+      expect(outcome === null || (typeof outcome === "object" && "Indeterminate" in outcome)).toBe(true);
+    }
+    expect(options.run_limits.deadline_epoch_ms).toBe(deadline);
+    expect(transitions).toBe(0);
+    expect(tools).toBe(0);
+    expect(models).toBe(0);
   } finally {
     runtime?.free();
     registry.free();

@@ -32,6 +32,7 @@ const PAGES = [
   "../harness/test/browser-task-tool-malformed.html",
   "../harness/test/browser-task-model.html",
   "../harness/test/browser-task-mail.html",
+  "../harness/test/browser-task-deadline.html",
 ];
 // The one deadline a page has. Pages wait on their own actors without one,
 // except for an actor to start (see `openActor`).
