@@ -37,6 +37,22 @@ pub fn decode_observation(
     Ok(value)
 }
 
+/// Decodes a canonical retained native retry outcome with storage-qualified paths.
+/// Public transport and public fact decoders must use [`decode_observation`].
+/// # Errors
+/// Rejects malformed/noncanonical bytes, invalid qualifiers or facts and exceeded bounds.
+pub fn decode_storage_observation(
+    input: &[u8],
+    maximum_bytes: usize,
+) -> Result<IdempotencyObservation, StreamError> {
+    let value = wire_codec::observation_with_path(
+        decode::<wire::IdempotencyObservation>(input, maximum_bytes)?,
+        &StreamPath::from_storage,
+    ).map_err(|_| StreamError::InvalidArgument)?;
+    validate_observation(&value)?;
+    Ok(value)
+}
+
 /// Encodes a complete immutable successful envelope, including record facts.
 /// # Errors
 /// Rejects malformed facts, zero bounds and output exceeding `maximum_bytes`.
@@ -58,6 +74,26 @@ pub fn decode_envelope(
     let value =
         wire_codec::envelope_from_wire(decode::<wire::CommittedEnvelope>(input, maximum_bytes)?)
             .map_err(|_| StreamError::InvalidArgument)?;
+    validate_envelope(&value)?;
+    Ok(value)
+}
+
+/// Decodes a retained native preparation whose paths may be storage-qualified.
+///
+/// Uses the same canonical protobuf envelope and record validation as
+/// [`decode_envelope`]. Only storage path decoding differs; public transport
+/// decoders must not use this entry point.
+/// # Errors
+/// Rejects malformed/noncanonical bytes, invalid qualifiers, nested qualifiers,
+/// invalid facts and exceeded bounds.
+pub fn decode_storage_envelope(
+    input: &[u8],
+    maximum_bytes: usize,
+) -> Result<CommittedEnvelope, StreamError> {
+    let value = wire_codec::envelope_with_path(
+        decode::<wire::CommittedEnvelope>(input, maximum_bytes)?,
+        StreamPath::from_storage,
+    ).map_err(|_| StreamError::InvalidArgument)?;
     validate_envelope(&value)?;
     Ok(value)
 }

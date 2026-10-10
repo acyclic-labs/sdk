@@ -23,8 +23,8 @@
       "default": "./generated/proto/actors/v1/actors_pb.js"
     },
     "./client": {
-      "default": "./dist/client.js",
-      "types": "./dist/client.d.ts"
+      "types": "./dist/client.d.ts",
+      "default": "./dist/client.js"
     }
   },
   "types": "./dist/index.d.ts",

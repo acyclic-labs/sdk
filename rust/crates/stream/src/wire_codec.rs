@@ -103,6 +103,13 @@ pub(crate) fn mutation_from_wire(
 pub(crate) fn observation_from_wire(
     value: wire::IdempotencyObservation,
 ) -> Result<IdempotencyObservation, StreamError> {
+    observation_with_path(value, &path)
+}
+
+pub(crate) fn observation_with_path(
+    value: wire::IdempotencyObservation,
+    decode_path: &impl Fn(String) -> Result<StreamPath, StreamError>,
+) -> Result<IdempotencyObservation, StreamError> {
     let request_digest = <[u8; 32]>::try_from(value.request_digest.as_ref())
         .map_err(|_| StreamError::Unavailable)?;
     let outcome = match value.outcome.ok_or(StreamError::Unavailable)? {
@@ -111,15 +118,15 @@ pub(crate) fn observation_from_wire(
         }
         wire::idempotency_observation::Outcome::Fork(value) => {
             IdempotencyOutcome::Fork(ForkReceipt {
-                source: path(value.source)?,
-                destination: path(value.destination)?,
+                source: decode_path(value.source)?,
+                destination: decode_path(value.destination)?,
                 forked_at: value.forked_at,
                 tail: value.tail,
                 commit_id: commit_id(&value.commit_id)?,
             })
         }
         wire::idempotency_observation::Outcome::Commit(value) => {
-            IdempotencyOutcome::Commit(commit_outcome_from_wire(value)?)
+            IdempotencyOutcome::Commit(commit_outcome_with_path(value, decode_path)?)
         }
     };
     Ok(IdempotencyObservation {
@@ -176,18 +183,26 @@ pub(crate) fn append_outcome_wire(value: AppendOutcome) -> wire::AppendResponse 
     }
 }
 
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub(crate) fn commit_outcome_from_wire(
     value: wire::CommitResponse,
 ) -> Result<CommitOutcome, StreamError> {
+    commit_outcome_with_path(value, &path)
+}
+
+fn commit_outcome_with_path(
+    value: wire::CommitResponse,
+    decode_path: &impl Fn(String) -> Result<StreamPath, StreamError>,
+) -> Result<CommitOutcome, StreamError> {
     match value.outcome.ok_or(StreamError::Unavailable)? {
         wire::commit_response::Outcome::Committed(envelope) => {
-            Ok(CommitOutcome::Committed(envelope_from_wire(envelope)?))
+            Ok(CommitOutcome::Committed(envelope_with_path(envelope, decode_path)?))
         }
         wire::commit_response::Outcome::Conflict(conflicts) => Ok(CommitOutcome::Conflict(
             conflicts
                 .conflicts
                 .into_iter()
-                .map(conflict_from_wire)
+                .map(|conflict| conflict_with_path(conflict, decode_path))
                 .collect::<Result<_, _>>()?,
         )),
     }
@@ -421,12 +436,19 @@ pub fn fork_receipt_to_wire(value: &crate::ForkReceipt) -> wire::ForkReceipt {
 pub(crate) fn envelope_from_wire(
     value: wire::CommittedEnvelope,
 ) -> Result<CommittedEnvelope, StreamError> {
+    envelope_with_path(value, path)
+}
+
+pub(crate) fn envelope_with_path(
+    value: wire::CommittedEnvelope,
+    decode_path: impl Fn(String) -> Result<StreamPath, StreamError>,
+) -> Result<CommittedEnvelope, StreamError> {
     Ok(CommittedEnvelope {
         commit_id: commit_id(&value.commit_id)?,
         mutations: value
             .mutations
             .into_iter()
-            .map(committed_mutation)
+            .map(|mutation| committed_mutation_with_path(mutation, &decode_path))
             .collect::<Result<_, _>>()?,
     })
 }
@@ -479,13 +501,14 @@ pub fn envelope_to_wire(value: crate::CommittedEnvelope) -> wire::CommittedEnvel
     }
 }
 
-pub(crate) fn committed_mutation(
+fn committed_mutation_with_path(
     value: wire::CommittedMutation,
+    decode_path: &impl Fn(String) -> Result<StreamPath, StreamError>,
 ) -> Result<CommittedMutation, StreamError> {
     match value.mutation.ok_or(StreamError::Unavailable)? {
         wire::committed_mutation::Mutation::Append(value) => {
             Ok(CommittedMutation::Append(CommittedAppend {
-                path: path(value.path)?,
+                path: decode_path(value.path)?,
                 start: value.start,
                 end: value.end,
                 tail: value.tail,
@@ -498,8 +521,8 @@ pub(crate) fn committed_mutation(
         }
         wire::committed_mutation::Mutation::Fork(value) => {
             Ok(CommittedMutation::Fork(CommittedFork {
-                source: path(value.source)?,
-                destination: path(value.destination)?,
+                source: decode_path(value.source)?,
+                destination: decode_path(value.destination)?,
                 forked_at: value.forked_at,
                 tail: value.tail,
                 records: value
@@ -581,17 +604,18 @@ fn committed_mutation_to_wire(value: crate::CommittedMutation) -> wire::Committe
     }
 }
 
-pub(crate) fn conflict_from_wire(
+fn conflict_with_path(
     value: wire::CommitConflict,
+    decode_path: &impl Fn(String) -> Result<StreamPath, StreamError>,
 ) -> Result<CommitConflict, StreamError> {
     match value.conflict.ok_or(StreamError::Unavailable)? {
         wire::commit_conflict::Conflict::Tail(value) => Ok(CommitConflict::Tail {
-            path: path(value.path)?,
+            path: decode_path(value.path)?,
             expected: value.expected,
             actual: value.actual,
         }),
         wire::commit_conflict::Conflict::Exists(value) => Ok(CommitConflict::Exists {
-            path: path(value.path)?,
+            path: decode_path(value.path)?,
         }),
     }
 }

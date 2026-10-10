@@ -38,6 +38,16 @@ Replicated providers can use `request::append_digest`, `request::fork_digest`, a
 
 `persistence::encode_observation` / `decode_observation` and `encode_envelope` / `decode_envelope` preserve complete terminal retry outcomes and immutable envelopes using existing generated Stream v1 protobuf messages. Each takes an explicit positive byte bound. Invalid facts, malformed bytes and noncanonical encodings fail closed, including unknown fields. The storage owner supplies its own checksum/container, account and request-digest binding, accepted ID/time durability and atomic publication; these codecs do not establish acceptance or authenticate stored bytes. No optional feature is required.
 
+Shared native storage may use `StreamPath::qualify_storage`, `from_storage` and
+`unqualify_storage` with a protected, account-derived namespace hash. The canonical
+storage qualifier is forbidden in public paths and preserves the complete public
+path byte/segment allowance. Public HTTP/gRPC/permission decoders must continue
+to use `StreamPath::new`. `persistence::decode_storage_envelope` and
+`decode_storage_observation` read retained native preparations/retry facts using
+the same canonical protobuf; public fact decoding rejects qualified paths.
+Native providers own account registration, namespace authorization, original
+public retry-digest binding and response unqualification.
+
 Use `children_page` to discover large agent or stream hierarchies. Its ordered continuation carries the exact last hierarchy-changing commit ID; a concurrent path creation returns `HierarchyChanged`, so restart the traversal instead of silently missing or duplicating a child. Ancestor paths are materialized lazily when descendants are created; no fork lineage is required for discovery.
 
 `LocalStream` writes one first-party v1 journal/snapshot format. The journal magic is `ACYCLIC-STREAM-LOCAL-V1\0`; the snapshot magic is `ACYCLIC-STREAM-SNAP-V01\0`. Both bind eight little-endian limit words and a journal epoch. A snapshot then holds the canonical `ACYCLIC-STREAM-STATE-V1\0` state and a SHA-256 checksum. A journal frame holds a four-byte little-endian payload length, an eight-byte sampled Unix commit timestamp, the canonical command protobuf and a SHA-256 checksum. There are no expiry fields, format readers or migration branches. Other bytes are incompatible.

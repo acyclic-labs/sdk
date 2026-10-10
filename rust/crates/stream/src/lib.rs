@@ -116,6 +116,11 @@ impl StreamPath {
     /// Validates and owns one path.
     pub fn new(path: impl AsRef<str>) -> Result<Self, StreamError> {
         let path = path.as_ref();
+        Self::validate_public(path)?;
+        Ok(Self(Arc::from(path)))
+    }
+
+    fn validate_public(path: &str) -> Result<(), StreamError> {
         if path.is_empty()
             || path.len() > MAX_PATH_BYTES
             || !path.is_ascii()
@@ -141,7 +146,70 @@ impl StreamPath {
         if count > MAX_ITEMS {
             return Err(StreamError::LimitExceeded);
         }
+        Ok(())
+    }
+
+    /// Qualifies an account-relative path for a shared native storage authority.
+    ///
+    /// The qualifier is forbidden in public paths and does not add a path
+    /// segment or consume the caller's public path-length allowance. Transport
+    /// decoders must continue to use [`Self::new`], never [`Self::from_storage`].
+    /// # Errors
+    /// Rejects a path that is already storage-qualified.
+    pub fn qualify_storage(&self, namespace: &[u8; 32]) -> Result<Self, StreamError> {
+        Self::validate_public(&self.0)?;
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut path = String::with_capacity(66 + self.0.len());
+        path.push('\u{1f}');
+        for byte in namespace {
+            path.push(char::from(HEX[usize::from(byte >> 4)]));
+            path.push(char::from(HEX[usize::from(byte & 15)]));
+        }
+        path.push('\u{1f}');
+        path.push_str(&self.0);
         Ok(Self(Arc::from(path)))
+    }
+
+    /// Decodes a persisted native path, including a canonical storage qualifier.
+    ///
+    /// This is not a public request decoder. The unqualified suffix still
+    /// satisfies every public path limit and syntax rule.
+    /// # Errors
+    /// Rejects malformed qualifiers, nested qualifiers and invalid public suffixes.
+    pub fn from_storage(path: impl AsRef<str>) -> Result<Self, StreamError> {
+        let path = path.as_ref();
+        if !path.starts_with('\u{1f}') {
+            return Self::new(path);
+        }
+        let bytes = path.as_bytes();
+        if bytes.get(65) != Some(&31)
+            || bytes.get(1..65).is_none_or(|namespace|
+                !namespace.iter().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte)))
+        {
+            return Err(StreamError::InvalidPath);
+        }
+        let logical = path.get(66..).ok_or(StreamError::InvalidPath)?;
+        Self::validate_public(logical)?;
+        Ok(Self(Arc::from(path)))
+    }
+
+    /// Returns the public path only when its persisted qualifier is exactly
+    /// the authenticated account's namespace.
+    /// # Errors
+    /// Rejects unqualified, malformed or foreign-account paths.
+    pub fn unqualify_storage(&self, namespace: &[u8; 32]) -> Result<Self, StreamError> {
+        let bytes = self.0.as_bytes();
+        if bytes.first() != Some(&31) || bytes.get(65) != Some(&31) {
+            return Err(StreamError::InvalidPath);
+        }
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        if namespace.iter().enumerate().any(|(index, byte)|
+            bytes.get(1 + index * 2) != Some(&HEX[usize::from(byte >> 4)])
+                || bytes.get(2 + index * 2) != Some(&HEX[usize::from(byte & 15)]))
+        {
+            return Err(StreamError::InvalidPath);
+        }
+        Self::new(self.0.get(66..).ok_or(StreamError::InvalidPath)?)
     }
 
     /// Canonical path text.
