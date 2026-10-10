@@ -30,6 +30,7 @@ impl ModelProvider for ByteModel {
     }
     fn generate<'a>(&'a self, request: PreparedModelRequest, _: ModelDispatch) -> BoxProviderStream<'a, Result<ModelEvent>> {
         self.dispatches.fetch_add(1, Ordering::SeqCst);
+        assert!(request.request().tools.is_empty(), "unadvertised sampling tools leaked from the supplied executor");
         if self.pause { return Box::pin(futures::stream::pending()); }
         let last = request.request().messages.last().map(|message| &message.content);
         let text = format!("recorded:{last:?}");
@@ -428,11 +429,15 @@ async fn ordinary_task_stock_model_tool_callback_loop_reopens_complete_without_n
     });
     for create in [true, false] {
         let (disk, issuer, _) = journal(root.path(), create).await?;
-        let callbacks: Arc<dyn McpCallbackAdmission> = Arc::new(McpRuntimeCallbacks::new(executor(Arc::clone(&callback_model), scope.clone())?, disk.clone(), "deterministic".into(), sampling_policy())?);
-        let transport: Arc<dyn McpToolTransport> = Arc::new(HttpMcpTransport::new(Arc::new(NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?), endpoint.clone(), None, 8192, 2000)?.with_callbacks(policy(), callbacks)?);
         let mut catalog = super::catalog();
         catalog.revision = "g1".into();
         let projection: Arc<dyn acyclic_harness::tool::ToolProjection> = Arc::new(super::Projection);
+        let mut sampling_tools = ToolRegistry::new();
+        let plain_transport: Arc<dyn McpToolTransport> = Arc::new(HttpMcpTransport::new(Arc::new(NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?), endpoint.clone(), None, 8192, 2000)?);
+        catalog.install(&mut sampling_tools, None, &plain_transport, &projection, 8, 8192)?;
+        let sampling_executor = StockExecutor::new(Model::new("byte-model", "deterministic", "1", json!({}))?, callback_model.clone(), ContextPipeline::default(), sampling_tools).with_tool_authority(scope.clone(), None)?;
+        let callbacks: Arc<dyn McpCallbackAdmission> = Arc::new(McpRuntimeCallbacks::new(sampling_executor, disk.clone(), "deterministic".into(), sampling_policy())?);
+        let transport: Arc<dyn McpToolTransport> = Arc::new(HttpMcpTransport::new(Arc::new(NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?), endpoint.clone(), None, 8192, 2000)?.with_callbacks(policy(), callbacks)?);
         let mut tools = ToolRegistry::new();
         catalog.install(&mut tools, None, &transport, &projection, 8, 8192)?;
         let executor = Arc::new(StockExecutor::new(Model::new("byte-model", "tool-turn", "1", json!({}))?, model.clone(), ContextPipeline::default(), tools.clone()).with_tool_authority(scope.clone(), None)?);

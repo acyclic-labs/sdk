@@ -771,8 +771,9 @@ Remote system prompts remain external user data. Transcript order and assistant
 roles are retained; an assistant-final transcript uses the host's explicit
 continuation input, not a fabricated fallback. Image/audio sampling requires an
 explicit native-media policy and normal scoped `stage_file_once` publication;
-decoded bytes and native-model work are bounded before dispatch. No sampling
-tool capability is advertised, and returned tool calls are unsupported.
+decoded bytes and native-model work are bounded before dispatch. The adapter
+removes the supplied executor's ordinary tool registry: no sampling tool
+capability is advertised, and returned tool calls are unsupported.
 Form elicitation requires `interaction:route`, compiled schema validation and
 the ordinary recorded interaction answer. URL elicitation is not advertised.
 
