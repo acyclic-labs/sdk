@@ -143,6 +143,40 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     )
     .await?
     .with_content_verifier(storage.content_verifier.clone());
+    // Admit a checkpoint-backed selection through the closed assistant record,
+    // then retire the entire resident suffix through the normal store API.
+    let conversation = aggregate
+        .reducer()
+        .conversation()
+        .ok_or_else(|| Error::Invalid("conversation not bound".into()))?;
+    let selection = crate::conversation::ModelContextSelection {
+        conversation_revision: conversation.logical_revision(),
+        message_ids: conversation
+            .messages()
+            .iter()
+            .map(|message| message.id)
+            .collect(),
+        checkpoint: Some(reference.clone()),
+    };
+    aggregate
+        .execute(Command {
+            operation_id: OperationId::new(),
+            idempotency_key: IdempotencyKey::new("summary-parent-complete-cut")?,
+            expected_revision: aggregate.reducer().revision(),
+            scope: storage.scope.clone(),
+            causal_parent: None,
+            action: Action::SelectModelContext { selection },
+        })
+        .await?;
+    aggregate.compact_conversation_projection()?;
+    let retired = aggregate
+        .reducer()
+        .conversation()
+        .ok_or_else(|| Error::Invalid("conversation not bound".into()))?;
+    assert_eq!(retired.logical_revision(), 4);
+    assert_eq!(retired.resident_after_sequence(), 4);
+    assert!(retired.messages().is_empty());
+
     let history = HistoryReader::new(&storage.stream, &storage.conversation, storage.verifier())?;
     let cursor = history.pin(0).await?;
     let prepared = prepare_summary_fork_context(
