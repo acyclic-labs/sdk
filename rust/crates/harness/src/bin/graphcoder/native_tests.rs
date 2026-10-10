@@ -33,6 +33,7 @@ async fn composition(root: &std::path::Path) -> Result<Config> {
         stream_provider, private_volume: volume,
         owner: AuthorityBinding { authority, issuer: "terminal-native-regression".into(), key: [22; 32], scope },
         observed_authorities: vec![], generation: "terminal-native-generation-1".into(),
+        model_invocation_ledger: root.join("model-invocations.jsonl"),
         limits: Limits::default(), run_limits: TaskRunLimits::default(),
         session_limits: SessionLimits { active_tasks: 4, total_tasks: 4, depth: 3, model_steps: 4 },
         concurrency: 4, deterministic_delay_ms: 0,
@@ -89,6 +90,16 @@ async fn actual_stock_root_children_grandchild_reopen_without_effect_repetition(
         observed.push(outcome);
     }
     assert_eq!(String::from_utf8(claims).map_err(|error| Error::Invalid(error.to_string()))?.matches("lease-json-hex=").count(), 4);
+    let invocation_bytes = std::fs::read(&config.model_invocation_ledger)
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let invocations = invocation_bytes.split(|byte| *byte == b'\n').filter(|line| !line.is_empty())
+        .map(serde_json::from_slice::<serde_json::Value>).collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let generated = invocations.iter().filter(|entry| entry["phase"] == "generate").collect::<Vec<_>>();
+    assert_eq!(generated.len(), 4, "same output cannot hide a repeated provider dispatch");
+    assert_eq!(generated.iter().filter_map(|entry| entry["operation_id"].as_str()).collect::<BTreeSet<_>>().len(), 4);
+    assert!(generated.iter().all(|entry| entry["format_version"] == 1 && entry["step"] == 0
+        && entry["request_digest"].as_str().is_some_and(|digest| digest.len() == 64)));
     drop(session);
     let session = NativeSession::open(config.clone()).await?;
     for (index, task) in tasks.into_iter().enumerate() {
@@ -97,6 +108,9 @@ async fn actual_stock_root_children_grandchild_reopen_without_effect_repetition(
         assert!(session.run(task, &worker, &mut claims).await?.contains("worker idle"));
         assert!(claims.is_empty(), "terminal tasks must not be redispatched after reopen");
     }
+    assert_eq!(std::fs::read(&config.model_invocation_ledger)
+        .map_err(|error| Error::Storage(error.to_string()))?, invocation_bytes,
+        "completed task inspection/reopen must not invoke even a same-output provider again");
     let mut forged = config;
     forged.owner.key = [99; 32];
     assert!(matches!(NativeSession::open(forged).await, Err(Error::Unauthorized(_))));

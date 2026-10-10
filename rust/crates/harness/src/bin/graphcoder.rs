@@ -225,7 +225,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut cursor = api.cursor();
     let fixture_mode = matches!(api, Backend::Fixture(_));
     let stdin = std::io::stdin();
-    let interactive = !headless && stdin.is_terminal();
+    let stdin_is_terminal = stdin.is_terminal();
+    let interactive = !headless && stdin_is_terminal;
     let mut input = input_lines()?;
     let mut output = std::io::stdout().lock();
     let mut scrollback = terminal::Scrollback::default();
@@ -233,6 +234,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut parent = None;
     #[cfg(feature = "filesystem-local")]
     let mut workers = tokio::task::JoinSet::<acyclic_harness::Result<String>>::new();
+    writeln!(output, "terminal-mode stdin-is-terminal={stdin_is_terminal} interactive={interactive} headless={headless} process-id={}",
+        std::process::id())?;
     writeln!(output, "{}", if fixture_mode {
         "GraphCoder — fixture wire; UI playback only, no durable effects"
     } else {

@@ -27,6 +27,85 @@ if (!binary || !isAbsolute(binary) || !statSync(binary).isFile()
   throw new Error("usage: node scripts/test-graphcoder.mjs ABSOLUTE_INSTALLED_BINARY [ABSOLUTE_NATIVE_CONFIG] [--full ABSOLUTE_SCENARIO_DIR]");
 }
 const digest = path => createHash("sha256").update(readFileSync(path)).digest("hex");
+const operationId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const requestDigest = /^[0-9a-f]{64}$/;
+const invocationKeys = ["format_version", "operation_id", "phase", "request_digest", "step"];
+let modelIdentityBlake3;
+function modelExecutionOperation(task, command) {
+  assert.match(task, operationId);
+  assert.match(command, operationId);
+  // Independent SDK execution_operation derivation, using the repository's
+  // existing @noble/hashes primitive: domain + actual task + admitted command
+  // UUID bytes, first16 bytes with no version/variant rewrite. Response purpose
+  // leaves this execution identity unchanged.
+  const input = Buffer.concat([Buffer.from("harness/v2/task-execution\0"),
+    Buffer.from(task.replaceAll("-", ""), "hex"), Buffer.from(command.replaceAll("-", ""), "hex")]);
+  assert.ok(input.length <= 64, "canonical model identity derivation fits one BLAKE3 block");
+  const hex = Buffer.from(modelIdentityBlake3(input)).subarray(0, 16).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+function invocationLedgerPath(facts, configuration, label) {
+  if (typeof facts.model_invocation_ledger !== "string" || !isAbsolute(facts.model_invocation_ledger)
+      || configuration.model_invocation_ledger !== facts.model_invocation_ledger) {
+    throw new Error(`${label}: installed qualification prerequisite missing: matching absolute manifest/Config.model_invocation_ledger`);
+  }
+  try {
+    const info = statSync(facts.model_invocation_ledger);
+    assert.ok(info.isFile() && info.size <= 1_048_576, "finite regular provider invocation ledger");
+  } catch (cause) {
+    throw new Error(`${label}: installed qualification prerequisite unavailable: persisted actual provider invocation ledger`,
+      { cause });
+  }
+  return facts.model_invocation_ledger;
+}
+function parseInvocationLedger(bytes) {
+  assert.ok(Buffer.isBuffer(bytes) && bytes.length <= 1_048_576, "invocation ledger exceeds 1MiB");
+  const text = bytes.toString("utf8");
+  assert.deepEqual(Buffer.from(text, "utf8"), bytes, "invocation ledger must be strict UTF-8");
+  if (!text.length) return [];
+  assert.ok(text.endsWith("\n"), "invocation ledger has an incomplete durable row");
+  const lines = text.slice(0, -1).split("\n");
+  assert.ok(lines.length <= 128, "invocation ledger exceeds 128 rows");
+  return lines.map(line => {
+    // This observer format has only flat string/integer fields. Reject repeated
+    // keys rather than accepting JSON.parse's silent last-value replacement.
+    assert.match(line, /^\{\s*"[a-z_]+"\s*:\s*(?:"[^"\\]*"|(?:0|[1-9][0-9]*))\s*(?:,\s*"[a-z_]+"\s*:\s*(?:"[^"\\]*"|(?:0|[1-9][0-9]*))\s*)*\}$/,
+      "invocation ledger must contain strict flat JSONL records");
+    const keys = [...line.matchAll(/"([a-z_]+)"\s*:/g)].map(match => match[1]).sort();
+    assert.deepEqual(keys, invocationKeys, "invocation ledger schema or duplicate key differs");
+    const row = JSON.parse(line);
+    assert.equal(row.format_version, 1, "invocation format version");
+    assert.ok(row.phase === "generate" || row.phase === "reconcile", "invocation phase");
+    assert.match(row.operation_id, operationId, "canonical model OperationId");
+    assert.ok(Number.isInteger(row.step) && row.step >= 0 && row.step <= 0xffff_ffff, "invocation step is u32");
+    assert.match(row.request_digest, requestDigest, "invocation request digest");
+    return row;
+  });
+}
+function verifyInvocations(bytes, expected, requiredReconciles = []) {
+  const rows = parseInvocationLedger(bytes);
+  const generates = new Set();
+  const reconciles = new Set();
+  for (const row of rows) {
+    const original = expected.get(row.operation_id);
+    assert.ok(original, `unexpected actual model operation ${row.operation_id}`);
+    assert.equal(row.step, original.step, "observer step differs from original dispatch");
+    assert.equal(row.request_digest, original.request_digest, "observer request differs from original dispatch");
+    if (row.phase === "generate") {
+      assert.ok(!generates.has(row.operation_id),
+        "duplicate generate: identical request and identical output still represent another actual invocation");
+      generates.add(row.operation_id);
+    } else {
+      assert.ok(generates.has(row.operation_id), "reconcile must retain an original observed generate");
+      reconciles.add(row.operation_id);
+    }
+  }
+  assert.equal(generates.size, expected.size, "exactly one genuine generate per dispatched model task");
+  for (const operation of requiredReconciles) {
+    assert.ok(reconciles.has(operation), "original interrupted attempt must have an actual provider reconcile invocation");
+  }
+  return rows;
+}
 console.log(`binary=${binary}`);
 console.log(`binary_sha256=${digest(binary)}`);
 console.log(`suite_sha256=${digest(fileURLToPath(import.meta.url))}`);
@@ -276,6 +355,34 @@ if (scenarioDirectory) {
     "full qualification requires an explicitly bounded real dispatch window for steering and process death");
   assert.deepEqual(fullConfig.session_limits, manifest.session_limits,
     "actual original native configuration, not manifest assertions, fixes the finite session budget");
+  const ledgerPath = invocationLedgerPath(manifest, fullConfig, "positive");
+  try {
+    // Full-only dependency: standalone playback/stock pipe checks stay built-in
+    // Node-only. Reuse filesystem-descriptor-digest.mjs's existing hash library.
+    ({ blake3: modelIdentityBlake3 } = await import("@noble/hashes/blake3.js"));
+  } catch (cause) {
+    throw new Error("full installed scenario prerequisite unavailable: repository @noble/hashes BLAKE3 dependency",
+      { cause });
+  }
+  const observedModels = new Map();
+  let retainedLedgerBytes = Buffer.alloc(0);
+  const snapshotInvocations = (name, requiredReconciles = []) => {
+    const info = statSync(ledgerPath);
+    assert.ok(info.isFile() && info.size <= 1_048_576, "bounded actual provider ledger before reading");
+    const bytes = readFileSync(ledgerPath);
+    assert.deepEqual(bytes.subarray(0, retainedLedgerBytes.length), retainedLedgerBytes,
+      "persisted invocation evidence must survive process death/reopen without deletion or rewriting");
+    const rows = verifyInvocations(bytes, observedModels, requiredReconciles);
+    const artifact = join(scenarioDirectory, `model-invocations-${name}.jsonl`);
+    assert.notEqual(artifact, ledgerPath, "evidence artifact never edits the production observer ledger");
+    writeFileSync(artifact, bytes);
+    console.log(JSON.stringify({ evidence: "actual provider invocation JSONL", checkpoint: name,
+      ledger: ledgerPath, artifact, bytes: bytes.length, rows: rows.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"), contents: bytes.toString("utf8") }));
+    retainedLedgerBytes = bytes;
+    return bytes;
+  };
+  snapshotInvocations("prepared-no-model-dispatch");
   const temporary = mkdtempSync(join(tmpdir(), "graphcoder-full-installed-"));
   let active;
   let negativeActive;
@@ -290,6 +397,24 @@ if (scenarioDirectory) {
     assert.ok(isAbsolute(path) && statSync(path).isFile() && statSync(path).size <= 1_048_576,
       "producer must supply a finite retained artifact");
     return JSON.parse(readFileSync(path, "utf8"));
+  };
+  const bindDispatch = (task, command, barrier, transition) => {
+    assert.equal(command.kind, "acyclic.model.v1", "actual admitted WorkflowCommand must be a model command");
+    assert.match(command.operation_id, operationId);
+    assert.notEqual(command.operation_id, task, "model OperationId is not a TaskId cast");
+    const execution = modelExecutionOperation(task, command.operation_id);
+    assert.equal(barrier[1], execution,
+      "actual provider dispatch uses SDK execution identity derived from the admitted model WorkflowCommand");
+    assert.match(barrier[2], requestDigest, "original dispatch request digest");
+    assert.ok(transition?.commands.some(value => isDeepStrictEqual(value, command)),
+      "actual committed workflow transition dispatches the exact admitted model command");
+    assert.ok(!observedModels.has(execution), "distinct positive actual model execution operations");
+    observedModels.set(execution, { task, command_operation: command.operation_id, step: 0, request_digest: barrier[2] });
+  };
+  const modelCheckpoint = async (client, name, task, lease) => {
+    const checkpoint = await client.commandJson(`/checkpoint ${input(name, { caller: task, lease })}`, "checkpoint");
+    assert.equal(checkpoint.task, task, "model operation binding observes the actual original task checkpoint");
+    return checkpoint;
   };
   const queueMailbox = async (client, facts, label) => {
     const rootLease = load(facts.leases.root);
@@ -314,7 +439,8 @@ if (scenarioDirectory) {
     })}`, /queued task=([0-9a-f-]+) admission-operation=([0-9a-f-]+)/);
     assert.equal(admitted[2], operation);
     assert.notEqual(admitted[1], facts.tasks.root);
-    return { task: admitted[1], operation, receiveOperation, modelOperation };
+    return { task: admitted[1], operation, receiveOperation, modelOperation,
+      modelCommand: { operation_id: modelOperation, kind: "acyclic.model.v1", payload: model.file } };
   };
   try {
     const { root, left, right, grandchild } = manifest.tasks;
@@ -566,6 +692,8 @@ if (scenarioDirectory) {
     assert.equal(consumed.checkpoint.state.mail.sequence, 1);
     assert.deepEqual(consumed.checkpoint.state.mail.payload, manifest.files.root_project_before);
     assert.equal(consumed.transition.commands[0].operation_id, mailbox.modelOperation);
+    bindDispatch(mailbox.task, mailbox.modelCommand, mailboxDispatch, consumed.transition);
+    snapshotInvocations("mailbox-original-dispatch");
     await active.commandJson(`/mail ${input("mailbox-later-steer", {
       caller: root, lease: leases.root, recipient: mailbox.task,
       operation: randomUUID(), payload: manifest.files.root_project_after,
@@ -731,6 +859,10 @@ if (scenarioDirectory) {
     assert.equal(negative.session_limits.total_tasks, 11, "negative store has exactly one below the full actual admission count");
     console.log(`negative_native_scenario_sha256=${digest(manifest.negative_control)}`);
     console.log(`negative_native_config_sha256=${digest(negative.config)}`);
+    const negativeLedgerPath = invocationLedgerPath(negative, load(negative.config), "negative");
+    assert.notEqual(negativeLedgerPath, ledgerPath, "negative store has a separate actual invocation observer");
+    const negativeLedgerBytes = readFileSync(negativeLedgerPath);
+    verifyInvocations(negativeLedgerBytes, new Map());
     negativeActive = new InstalledSession("native-full-real-one-below-budget", negative.config);
     await negativeActive.expect(/actual local Harness runtime/);
     await queueMailbox(negativeActive, negative, "negative");
@@ -879,17 +1011,27 @@ if (scenarioDirectory) {
     active = new InstalledSession("native-full-child-completion-and-original-root-service-fault", manifest.config);
     await active.expect(/actual local Harness runtime/);
     const outcomes = new Map([[mailbox.task, mailboxOutcome]]);
-    for (const [task, leasePath] of [
-      [left, manifest.leases.left], [right, manifest.leases.right],
-      [grandchild, manifest.leases.grandchild], [crossTask, crossLeasePath],
+    for (const [task, leasePath, command] of [
+      [left, manifest.leases.left, manifest.callers.left.admission.input],
+      [right, manifest.leases.right, manifest.callers.right.admission.input],
+      [grandchild, manifest.leases.grandchild, manifest.callers.grandchild.admission.input],
+      [crossTask, crossLeasePath, crossInput.request.child.input],
     ]) {
       const started = active.stdout.length;
+      const dispatchedFrom = active.stderr.length;
       await active.command(`/resume ${leasePath}`, /original lease submitted for authoritative reconciliation/);
+      const dispatch = await active.expect(
+        /deterministic-dispatch operation=([0-9a-f-]+) step=0 request=([0-9a-f]+)/,
+        "stderr", dispatchedFrom);
+      const checkpoint = await modelCheckpoint(active, `model-dispatch-${task}`, task, load(leasePath));
+      bindDispatch(task, command, dispatch, checkpoint.transition);
+      snapshotInvocations(`descendant-${task}-original-dispatch`);
       await active.expect(new RegExp(`worker completed task=${task}`), "stdout", started);
       const outcome = await active.commandJson(`/outcome ${task}`, "task");
       assert.ok(outcome.outcome.Succeeded, "actual admitted descendant model task must complete");
       assert.match(outcome.outcome.Succeeded.text, /^deterministic request=[0-9a-f]+ step=0$/);
       outcomes.set(task, outcome);
+      snapshotInvocations(`descendant-${task}-completed`);
     }
     const rootBeforeFault = await active.commandJson(`/outcome ${root}`, "task");
     assert.equal(rootBeforeFault.outcome, null, "fault uses the original still-live root admission, never an extra task");
@@ -902,6 +1044,9 @@ if (scenarioDirectory) {
     const rootDispatch = await active.expect(
       /deterministic-dispatch operation=([0-9a-f-]+) step=0 request=([0-9a-f]+)/,
       "stderr", rootDispatchStart);
+    const rootCheckpoint = await modelCheckpoint(active, "root-original-model-checkpoint", root, leases.root);
+    bindDispatch(root, manifest.callers.root.admission.input, rootDispatch, rootCheckpoint.transition);
+    const beforeKillLedger = snapshotInvocations("root-before-process-kill");
     assert.ok(!active.stdout.slice(rootStart).includes(`worker completed task=${root}`),
       "service fault must interrupt a real root dispatch, not kill an already completed worker");
     assert.equal(active.finished, null);
@@ -910,12 +1055,16 @@ if (scenarioDirectory) {
     assert.equal(active.requestedKill, true, "OS must accept the explicit installed service kill, not an unrelated launch or natural-exit failure");
     assert.ok(killed.signal !== null || killed.code !== 0, "actual installed service process must die");
     assert.ok(!active.stdout.slice(rootStart).includes(`worker completed task=${root}`));
+    assert.deepEqual(snapshotInvocations("root-after-process-kill"), beforeKillLedger,
+      "synced original invocation bytes survive actual OS process death exactly");
     assert.equal(digest(manifest.leases.root), rootLeaseHash);
     assert.deepEqual(readFileSync(manifest.leases.root), rootLeaseBytes,
       "resume retains exact original lease bytes, not a new reservation or UI recreation");
 
     active = new InstalledSession("native-full-original-root-lease-and-publication-recovery", manifest.config);
     await active.expect(/actual local Harness runtime/);
+    assert.deepEqual(snapshotInvocations("root-cold-open-before-resume"), beforeKillLedger,
+      "opening providers cannot itself generate or replace original invocation evidence");
     await active.command(`/reconcile ${retained.root.child.operation_id}`, /retained=Some/);
     const recoveredPublication = await active.commandJson(`/publication-reconcile ${manifest.native_publication_request}`, "publication");
     assert.equal(recoveredPublication.status, "applied");
@@ -932,8 +1081,22 @@ if (scenarioDirectory) {
     assert.ok(rootOutcome.outcome.Succeeded.text.includes(rootDispatch[2]),
       "resumed root completion binds the exact request observed before actual service death");
     outcomes.set(root, rootOutcome);
+    const rootModelOperation = modelExecutionOperation(root, manifest.callers.root.admission.input.operation_id);
+    const reconciledLedger = snapshotInvocations("root-original-lease-reconciled", [rootModelOperation]);
+    assert.equal(parseInvocationLedger(reconciledLedger).filter(value => value.phase === "generate").length,
+      parseInvocationLedger(beforeKillLedger).filter(value => value.phase === "generate").length,
+    "same-lease recovery invokes actual reconcile without another generate");
     const bootstrapStart = active.stdout.length;
+    const bootstrapDispatchStart = active.stderr.length;
     await active.command(`/resume ${manifest.leases.bootstrap_seed}`, /original lease submitted for authoritative reconciliation/);
+    const bootstrapDispatch = await active.expect(
+      /deterministic-dispatch operation=([0-9a-f-]+) step=0 request=([0-9a-f]+)/,
+      "stderr", bootstrapDispatchStart);
+    const bootstrapCheckpoint = await modelCheckpoint(active, "bootstrap-original-model-checkpoint",
+      manifest.tasks.bootstrap_seed, load(manifest.leases.bootstrap_seed));
+    bindDispatch(manifest.tasks.bootstrap_seed, manifest.callers.bootstrap_seed.admission.input,
+      bootstrapDispatch, bootstrapCheckpoint.transition);
+    snapshotInvocations("bootstrap-original-dispatch", [rootModelOperation]);
     await active.expect(new RegExp(`worker completed task=${manifest.tasks.bootstrap_seed}`), "stdout", bootstrapStart);
     const bootstrapOutcome = await active.commandJson(`/outcome ${manifest.tasks.bootstrap_seed}`, "task");
     assert.ok(bootstrapOutcome.outcome.Succeeded,
@@ -945,12 +1108,36 @@ if (scenarioDirectory) {
       outcomes.set(preparation.task, prepared);
     }
     assert.equal(outcomes.size, 12, "all twelve actual admissions have authoritative terminal outcomes");
+    const expectedModelOperations = [
+      ...["bootstrap_seed", "root", "left", "right", "grandchild"].map(label =>
+        modelExecutionOperation(manifest.tasks[label], manifest.callers[label].admission.input.operation_id)),
+      modelExecutionOperation(mailbox.task, mailbox.modelCommand.operation_id),
+      modelExecutionOperation(crossTask, crossInput.request.child.input.operation_id),
+    ];
+    assert.equal(new Set(expectedModelOperations).size, 7, "seven distinct actual admitted model commands");
+    for (const label of ["bootstrap_seed", "root", "left", "right", "grandchild"]) {
+      const caller = manifest.callers[label];
+      assert.notEqual(caller.admission.input.operation_id, caller.admission.operation_id,
+        "actual model WorkflowCommand operation is distinct from admission operation");
+      assert.notEqual(caller.admission.input.operation_id, caller.agent,
+        "actual model WorkflowCommand operation is distinct from actor agent");
+    }
+    assert.notEqual(mailbox.modelOperation, mailbox.operation, "mailbox model is not its task admission");
+    assert.notEqual(crossInput.request.child.input.operation_id, crossInput.request.child.operation_id,
+      "new cross-source child model is not its child admission");
+    assert.notEqual(crossInput.request.child.input.operation_id, publishedCross.new_child_agent,
+      "new cross-source child model is not its agent identity");
+    assert.deepEqual([...observedModels.keys()].sort(), expectedModelOperations.sort(),
+      "bootstrap, four logical actors, ordinary mailbox and real cross-source child each invoked the provider");
+    const completedLedger = snapshotInvocations("all-seven-authoritatively-completed", [rootModelOperation]);
     await active.command("/reopen", /providers reopened; no admission or effect resent/);
     for (const [task, original] of outcomes) {
       const reopened = await active.commandJson(`/outcome ${task}`, "task");
       assert.deepEqual(reopened, original);
       await active.command(`/run ${task}`, /worker idle task=/);
     }
+    assert.deepEqual(snapshotInvocations("warm-reopen-and-repeat-outcomes", [rootModelOperation]), completedLedger,
+      "warm reopen, authoritative outcome replay and idle completed runs cannot invoke the model again");
     await active.quit();
     active = new InstalledSession("native-full-cold-reopen-retains-exact-completed-graph", manifest.config);
     await active.expect(/actual local Harness runtime/);
@@ -963,9 +1150,67 @@ if (scenarioDirectory) {
     assert.equal(digest(nativeFacts.concurrent_edit_path), concurrentEditHash);
     assert.equal(digest(negative.native_publication.conflicting_edit_path), overlappingHash);
     await active.quit();
+    assert.deepEqual(snapshotInvocations("cold-reopen-and-repeat-outcomes", [rootModelOperation]), completedLedger,
+      "cold reopen and same completed outputs cannot hide another actual generate");
+    assert.ok(statSync(negativeLedgerPath).size <= 1_048_576, "finite separate negative invocation ledger");
+    assert.deepEqual(readFileSync(negativeLedgerPath), negativeLedgerBytes,
+      "existing negative controls admit no extra model/fault task and cannot contaminate positive invocation proof");
+    // Verifier controls mutate retained REAL observer bytes only in memory.
+    // They never write the production ledger, invent a runtime receipt, admit
+    // another fault/model task, or substitute echoed completion text as proof.
+    const realRows = parseInvocationLedger(completedLedger);
+    const realLines = completedLedger.toString("utf8").trimEnd().split("\n");
+    const rootGenerateIndex = realRows.findIndex(value =>
+      value.phase === "generate" && value.operation_id === rootModelOperation);
+    assert.ok(rootGenerateIndex >= 0);
+    const rejectObserverControl = (name, bytes, reason) => {
+      assert.throws(() => verifyInvocations(bytes, observedModels, [rootModelOperation]), reason,
+        `${name}: independent observer verifier must reject retained-byte counterexample`);
+      console.log(JSON.stringify({ case: name, evidence: "in-memory mutation of retained real provider ledger; no runtime receipt",
+        source_sha256: createHash("sha256").update(completedLedger).digest("hex"),
+        mutation_sha256: createHash("sha256").update(bytes).digest("hex"),
+        unchanged_root_output: rootOutcome.outcome.Succeeded.text }));
+    };
+    rejectObserverControl("observer-duplicate-generate-same-request-same-output",
+      Buffer.concat([completedLedger, Buffer.from(`${realLines[rootGenerateIndex]}\n`)]), /duplicate generate/);
+    const corruptRootRow = patch => {
+      const lines = [...realLines];
+      lines[rootGenerateIndex] = JSON.stringify({ ...realRows[rootGenerateIndex], ...patch });
+      return Buffer.from(`${lines.join("\n")}\n`);
+    };
+    rejectObserverControl("observer-corrupt-original-request-digest", corruptRootRow({
+      request_digest: `${rootDispatch[2][0] === "0" ? "1" : "0"}${rootDispatch[2].slice(1)}`,
+    }), /observer request differs/);
+    rejectObserverControl("observer-corrupt-original-step", corruptRootRow({ step: 1 }), /observer step differs/);
+    rejectObserverControl("observer-task-id-is-not-model-operation",
+      corruptRootRow({ operation_id: root }), /unexpected actual model operation/);
+    rejectObserverControl("observer-missing-genuine-generate",
+      Buffer.from(`${realLines.filter((_, index) => index !== rootGenerateIndex).join("\n")}\n`),
+      /reconcile must retain|exactly one genuine generate/);
+    rejectObserverControl("observer-missing-real-root-reconcile",
+      Buffer.from(`${realLines.filter((_, index) =>
+        realRows[index].phase !== "reconcile" || realRows[index].operation_id !== rootModelOperation).join("\n")}\n`),
+      /actual provider reconcile invocation/);
+    const duplicateKeyLines = [...realLines];
+    duplicateKeyLines[rootGenerateIndex] = realLines[rootGenerateIndex].replace(
+      /^\{/, `{"operation_id":"${rootModelOperation}",`);
+    rejectObserverControl("observer-duplicate-json-key",
+      Buffer.from(`${duplicateKeyLines.join("\n")}\n`), /schema or duplicate key/);
+    rejectObserverControl("observer-incomplete-durable-row",
+      completedLedger.subarray(0, completedLedger.length - 1), /incomplete durable row/);
+    rejectObserverControl("observer-row-bound",
+      Buffer.from(`${Array.from({ length: 129 }, () => realLines[rootGenerateIndex]).join("\n")}\n`), /exceeds 128 rows/);
+    rejectObserverControl("observer-byte-bound", Buffer.alloc(1_048_577, 0x20), /exceeds 1MiB/);
+    rejectObserverControl("observer-command-id-is-not-derived-execution",
+      corruptRootRow({ operation_id: manifest.callers.root.admission.input.operation_id }),
+      /unexpected actual model operation/);
+    assert.deepEqual(readFileSync(ledgerPath), completedLedger,
+      "all retained-byte negative controls leave the actual production observer evidence untouched");
     console.log(JSON.stringify({ case: "native-full-installed-qualified", evidence: "actual pipes, not PTY",
       logical_agent_tasks: [root, left, right, grandchild, crossTask],
-      ordinary_mailbox_task: mailbox.task, retained_root_lease_sha256: rootLeaseHash }));
+      ordinary_mailbox_task: mailbox.task, retained_root_lease_sha256: rootLeaseHash,
+      actual_model_operations: expectedModelOperations, model_invocation_ledger: ledgerPath,
+      model_invocation_ledger_sha256: createHash("sha256").update(completedLedger).digest("hex") }));
   } finally {
     if (active) await active.stop();
     if (negativeActive) await negativeActive.stop();

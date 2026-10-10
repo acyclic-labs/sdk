@@ -25,9 +25,9 @@ owner, not inferred from a fork reference, task label or environment credential.
 Its fields are `filesystem_root`, `stream_root` (absolute paths),
 `filesystem_provider`, `stream_provider`, `private_volume`, `owner`,
 `observed_authorities`, `generation`, `limits`, `run_limits`, `session_limits`,
-`concurrency`, optional `deterministic_delay_ms` (0–5000), `fork_sources`,
-`tools`, `native_publications`, and optional `project_source_root`. Each authority
-binding contains `authority`,
+`concurrency`, `model_invocation_ledger` (absolute diagnostic path), optional
+`deterministic_delay_ms` (0–5000), `fork_sources`, `tools`, `native_publications`,
+and optional `project_source_root`. Each authority binding contains `authority`,
 `issuer`, `key` (32 bytes), and an original signed `scope`. Keep this credential
 file private. Each `fork_sources` entry retains the original authenticated
 caller/snapshot/owner/project/exact-request tuple for report publication binding
@@ -64,6 +64,23 @@ Live-model, native-process, remote
 and unbound optional adapters remain explicitly unavailable. Native filesystem
 publication is available only through the explicitly bound SDK approval plan.
 REPL/code-mode and Tree-sitter are outside the original GraphCoder delivery scope.
+
+The actual deterministic provider durably appends `generate` and `reconcile`
+entry records to `model_invocation_ledger`, independently of rendered output.
+This finite diagnostic sink is not UI persistence, task state, a result cache or
+replay input. It records duplicate invocation rather than masking it. Records
+contain the actual SDK execution operation, step and exact request digest and
+are synced before the dispatch barrier. One shared provider owns the append
+mutex per session; reopening retains the same file. Bounds are 128 records and
+1 MiB; interrupted records or exhausted allowance fail explicitly.
+
+The installed verifier reads that original ledger directly, binds live model
+commands and request barriers to the SDK execution identity, requires seven
+distinct generations and root reconciliation without another generation, and
+retains raw bytes/hash across process death and warm/cold reopen. Negative
+controls mutate copies of real observer bytes, including duplicate dispatch with
+identical output; production observer files are never rewritten by the verifier.
+The negative fixture uses its own unchanged empty ledger.
 
 ## Interaction and bounded inspection
 

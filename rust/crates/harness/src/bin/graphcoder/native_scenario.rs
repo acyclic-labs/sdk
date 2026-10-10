@@ -137,11 +137,17 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         filesystem_provider: filesystem_provider.clone(), stream_provider: stream_provider.clone(),
         private_volume: private.clone(), owner: owner.clone(), observed_authorities: Vec::new(),
         generation: format!("qualification-{}", uuid::Uuid::new_v4()), limits, run_limits,
+        model_invocation_ledger: root.join("model-invocations.jsonl"),
         session_limits: SessionLimits { active_tasks: 6, total_tasks, depth: 3, model_steps: 7 },
         concurrency: 6, deterministic_delay_ms: 2000, fork_sources: Vec::new(),
         tools: Default::default(), native_publications: Vec::new(),
         project_source_root: None,
     };
+    // Open the actual diagnostic provider sink before any model invocation.
+    // This records nothing; generate/reconcile alone append observer evidence.
+    drop(super::provider::Deterministic::new(
+        config.deterministic_delay_ms, &config.model_invocation_ledger,
+    )?);
     let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&config.filesystem_root)).await
         .map_err(|error| Error::Storage(error.to_string()))?;
     let native_root = root.join("native-project");
@@ -352,6 +358,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         "bootstrap": "genuine ordinary fork-machine/provider precreation; no model dispatch; not a PTY claim",
         "authentication": "explicit credential-free trusted local AuthorityIssuer; NOT production authentication",
         "config": config_path, "tasks": identities, "callers": caller_records,
+        "model_invocation_ledger": producer.config.model_invocation_ledger,
         "preparations": producer.preparations, "files": producer.references, "file_refs": file_refs,
         "leases": producer.leases, "cursor_protobuf": cursor_path,
         "native_publication": publication, "native_publication_request": publication_path,

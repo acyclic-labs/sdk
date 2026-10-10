@@ -63,6 +63,7 @@ pub struct Config {
     pub owner: AuthorityBinding,
     pub observed_authorities: Vec<AuthorityBinding>,
     pub generation: String,
+    pub model_invocation_ledger: PathBuf,
     pub limits: Limits,
     pub run_limits: TaskRunLimits,
     pub session_limits: SessionLimits,
@@ -117,6 +118,7 @@ pub struct NativeSession {
     pub(super) files: Arc<Files>,
     pub(super) runtime: Arc<Runtime>,
     model: Model,
+    model_provider: Arc<super::provider::Deterministic>,
 }
 
 impl NativeSession {
@@ -208,9 +210,12 @@ impl NativeSession {
         ).await?.with_recursive_source(source.recursive_source()));
         source.bind_runtime(&runtime)?;
         let model = super::provider::model(config.deterministic_delay_ms);
+        let model_provider = Arc::new(super::provider::Deterministic::new(
+            config.deterministic_delay_ms, &config.model_invocation_ledger,
+        )?);
         Ok(Self {
             config, stream, files, runtime,
-            model,
+            model, model_provider,
         })
     }
 
@@ -314,7 +319,7 @@ impl NativeSession {
 
     pub async fn resume(&self, lease: WorkLease) -> Result<String> {
         let commands = self.runtime.commands().with_model(
-            self.model.clone(), Arc::new(super::provider::Deterministic::new(self.config.deterministic_delay_ms)),
+            self.model.clone(), self.model_provider.clone(),
             Default::default(), Default::default(),
         );
         render_attempt(self.runtime.resume_task(lease, &commands, 16).await)
