@@ -62,6 +62,29 @@ Use `HarnessBuilder.limits({ ... })` to narrow the shared v2 file, path, attachm
 
 `run(prompt)` executes a live local turn even if a durable host is bound. Durable work uses `admit` with a stable operation ID and a versioned resumable task; host-backed contexts require recorded tool, interaction, timer, and child-admission boundaries.
 
+The `@acyclic-labs/harness/browser` entry exports `BrowserTaskAuthority`,
+`BrowserTaskRegistry`, `BrowserTaskRuntime`, and their generated contracts.
+Initialize WASM with `initializeBrowserRuntime()`, register versioned machines
+or `registerStockTurn()`, and open the runtime with explicit browser provider,
+session, payload, and execution limits and a signed scope. Volume initialization
+and task admission are separate operations. Model composition requires the
+selected provider's capacity and request-token accounting callbacks and an
+explicit compaction policy.
+
+The browser adapter runs the ordinary Rust task lifecycle over IndexedDB
+Filesystem and Stream providers. Worker and tab messages carry wake hints;
+the retained journals determine admission, work ownership, and completion.
+Carry the bounded wake cursor between pages. Keep an unresolved or yielded
+work lease and resume that exact attempt rather than claiming another lease.
+
+Durable mail binds a sender/message identity to one recipient and immutable
+payload. The receiver mailbox record and its derived location commit atomically;
+recovery checks the original record, commit, and complete value before reporting
+success. Mailbox observation does not acknowledge model consumption. This
+receipt-backed format uses `mail/by-recipient` and `mail/by-intent` paths.
+Previous unindexed mailbox records are outside this format and are not loaded;
+use fresh journals when moving from that format.
+
 `AgentHarness.children(parent, revision, afterSlot, maximum)` asks the owner-retained state provider for direct task children, independently of conversation forks. Pages are bounded and ordered by stable slot; carry the returned revision into subsequent calls so a changed hierarchy fails explicitly instead of silently skipping a child. The stock coordinator exposes only same-owner children after authenticating the parent.
 
 `HarnessBuilder.execution(provider)` and `ExecutionScope.execution(provider)` select an exact durable placement route for new tasks. An execution provider supplies a compatible state owner and spawner, qualifies the registered task build and accessible inputs, and returns a Rust-validated build/environment/readiness commitment. The owner retains that placement in each task or batch request; reconciliation loads it without re-qualifying against a changed environment. Live JavaScript closures cannot cross that route; remote work requires a registered resumable build admitted with a stable operation ID. The stock local route has `execution: null` and cannot pretend to run a remote build. Providers must explicitly arrange input transfer or mounts and scoped credentials; selecting a remote environment does not make local paths, connections, or secrets available there.
