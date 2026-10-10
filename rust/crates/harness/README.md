@@ -100,6 +100,16 @@ owner-controlled storage; ordinary content refs cannot substitute for them.
 Filesystem creation identity for binding an already-created child to its native
 overlay. It does not authorize creation or start another fork.
 
+An optional explicit child result volume uses the same original fork, protected
+allocation claims and admission proofs. Its mandatory `Result` role creates an
+empty, unmounted private volume with READ/WRITE custody; it is never inferred
+from private-volume order and never replaces the unique ordinary `Scratch`
+writer. `stage_artifact` selects this result binding when present.
+`child_scratch_creation_proof` instead retains only the original scratch identity,
+sharing the existing provider handle without copying a lease. Its measured
+settlement authorization checks that original task, agent and allocation plus
+current-fenced WRITE; a native physical leaf receipt remains separately required.
+
 The filesystem task runtime enforces the originally admitted absolute deadline
 through the host's current clock and native or browser-worker timers. Expiry
 records cancellation but does not claim an uncertain command stopped.
@@ -114,9 +124,19 @@ authenticated journal proves no dispatch occurred.
 Measured conversation binding threads one optional SDK-work observer through the
 original coordinator refresh, bounds and conditional append/recovery engine.
 These counters describe actual SDK calls and exposed source/encoded bytes, not
-provider-internal OS IO. The binding agent and grant come from the original task
-owner. An overdue measured fresh preflight rejects before hidden cancellation IO;
+provider-internal OS IO. The executing agent comes from the current sealed scratch
+allocation, including read-only provenance. Only proofless roots may use their
+verified original declaration agent, matching the configured host. Child fork
+audiences come from that protected allocation; roots require a verified original
+canonical conversation-bind proof retained on the same task owner, never a
+tenant/task-UUID projection. An overdue measured fresh preflight rejects before hidden cancellation IO;
 it does not claim durable cancellation, stopped effects or released capacity.
+Budgeted owner append preparation admits canonical fence codec growth, hashing and
+copies through the original SDK-work observer before allocation. Ordinary mail
+send exposes no caller work budget: it preflights the entire typed canonical
+envelope against the Stream record limit before encode/hash, then uses the
+existing provider append gate. This finite record bound is not an SDK-work receipt
+or a claim about opaque provider allocations.
 
 `AgentHarness::children` asks the retained task owner for a bounded page of direct children, independent of conversation forks and task dependencies. The coordinator authenticates the parent, exposes only same-owner children in stable slot order, and requires its revision on continuation so concurrent admissions cannot silently skip a child. A caller from another owner cannot declare a child under that parent merely by knowing its ID.
 

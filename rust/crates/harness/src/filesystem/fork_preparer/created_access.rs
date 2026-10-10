@@ -35,7 +35,10 @@ struct AuthenticatedAllocation {
     generation: GenerationRef,
     prepared_generation: GenerationRef,
     agent: crate::AgentId,
+    authority: Option<Authority>,
     default_writer: bool,
+    artifact_writer: bool,
+    creation_operation: acyclic_fs::OperationId,
 }
 
 fn task_origin(claim: &AllocationClaim) -> Result<&ResourceCreationOrigin> {
@@ -69,8 +72,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     if serde_json::to_value(&fork).map_err(|error| Error::Invalid(error.to_string()))? != request.payload {
         return Err(Error::Unauthorized("fork payload is not the exact admitted request".into()));
     }
-    let volumes = [&fork.preparation.child_private_volume, &fork.preparation.child_project_volume];
-    let resources = volumes.iter().map(|volume| {
+    let resources = creation_volumes(&fork).map(|(volume,_)| {
         if volume.provider() != &host.provider {
             return Err(Error::Unauthorized("created volume belongs to another provider".into()));
         }
@@ -81,7 +83,9 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
     let index = resources.iter().position(|resource| resource == &proof.resource)
         .ok_or_else(|| Error::Unauthorized("proof does not name a created fork volume".into()))?;
-    let evidence = allocation_ref(host.provider.clone(), volumes[index])?;
+    let (selected_volume, _) = creation_volumes(&fork).nth(index)
+        .ok_or_else(|| Error::Unauthorized("created allocation index is absent".into()))?;
+    let evidence = allocation_ref(host.provider.clone(), selected_volume)?;
     if evidence.as_resource() != &proof.evidence {
         return Err(Error::Unauthorized("proof does not name this protected allocation journal".into()));
     }
@@ -97,7 +101,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let binding = seed_binding_bounded(&seed, Some(&io))?;
     let mut selected = None;
     let mut original_origin = None;
-    for (volume_index, volume) in volumes.into_iter().enumerate() {
+    for (volume_index, (volume, role)) in creation_volumes(&fork).enumerate() {
         let allocation = allocation_ref(host.provider.clone(), volume)?;
         let claim = read_record_bounded::<A, O, AllocationClaim>(host, &allocation, "/claim.json", record_limit, Some(&io))
             .await?.ok_or_else(|| Error::Unauthorized("created allocation claim is missing".into()))?;
@@ -106,6 +110,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let origin = task_origin(&claim)?;
         if claim.operation_id != fork.operation_id || claim.preparation_digest != digest
             || claim.parent != fork.parent || claim.child != fork.child || claim.volume != *volume
+            || claim.role != role
             || retained_binding != binding || &origin.owner != owner
             || origin.preparation_task != proof.preparation
             || Some(origin.parent_task) != request.child.parent
@@ -116,37 +121,44 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             return Err(Error::Unauthorized("created allocation does not authenticate the original task request".into()));
         }
         original_origin = Some(origin.clone());
-        let prepared_generation = if volume_index == 0 {
-            seed.child_private_generation.clone()
-        } else {
-            seed.resources.iter().find_map(|resource| match &resource.revision {
+        let prepared_generation = match role {
+            ForkAllocationRole::Scratch => seed.child_private_generation.clone(),
+            ForkAllocationRole::Project => seed.resources.iter().find_map(|resource| match &resource.revision {
                 ResourceRevision::Project { volume: project, generation } if project == volume => Some(generation.clone()),
                 _ => None,
-            }).ok_or_else(|| Error::Unauthorized("original child project generation is absent".into()))?
+            }).ok_or_else(|| Error::Unauthorized("original child project generation is absent".into()))?,
+            ForkAllocationRole::Result => seed.child_result_generation.clone()
+                .ok_or_else(|| Error::Unauthorized("original child result generation is absent".into()))?,
         };
         let workspace = workspace_ref(host.provider.clone(), &volume.storage_name()?)?;
         let original_workspace = bounded_io::open(host, &workspace, &io).await?;
         bounded_io::generation(host, &original_workspace, &prepared_generation, &io).await?;
         let creation_key = IdempotencyKey::new(format!(
             "fork:{}:{}:{}", fork.operation_id, hex::encode(digest),
-            if volume_index == 0 { "scratch" } else { "project" },
+            match role { ForkAllocationRole::Scratch => "scratch", ForkAllocationRole::Project => "project", ForkAllocationRole::Result => "result" },
         ))?;
         let initial = io.receive(original_workspace.operation_generation_measured(
             super::super::filesystem_key(&creation_key), io.remaining()?, &io.cancellation,
         ).await)?.ok_or_else(|| Error::Unauthorized("original fork allocation operation is missing".into()))?;
         let generation = host.generation_ref(&initial)?;
-        let captured_generation = seed.resources.iter().find_map(|resource| match &resource.revision {
-            ResourceRevision::PrivateVolume { volume: captured, generation, .. }
-            | ResourceRevision::Project { volume: captured, generation } if captured == volume => Some(generation),
-            _ => None,
-        }).ok_or_else(|| Error::Unauthorized("original allocated volume is absent from the seed".into()))?;
+        let captured_generation = match role {
+            ForkAllocationRole::Result => seed.child_result_generation.as_ref(),
+            _ => seed.resources.iter().find_map(|resource| match &resource.revision {
+                ResourceRevision::PrivateVolume { volume: captured, generation, .. }
+                | ResourceRevision::Project { volume: captured, generation } if captured == volume => Some(generation),
+                _ => None,
+            }),
+        }.ok_or_else(|| Error::Unauthorized("original allocated volume is absent from the seed".into()))?;
         if captured_generation != &generation {
             return Err(Error::Unauthorized("seed capture differs from the original allocation operation".into()));
         }
         if volume_index == index {
             selected = Some(AuthenticatedAllocation {
                 origin: origin.clone(), volume: volume.clone(), generation, prepared_generation,
-                agent: fork.child_agent, default_writer: volume_index == 0,
+                agent: fork.child_agent, default_writer: role == ForkAllocationRole::Scratch,
+                artifact_writer: role == ForkAllocationRole::Result,
+                authority: (role == ForkAllocationRole::Scratch).then(|| fork.child.clone()),
+                creation_operation: acyclic_fs::OperationId::from_bytes(super::super::filesystem_key(&creation_key).into_bytes()),
             });
         }
     }
@@ -175,6 +187,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
                 origin: allocation.origin.clone(), generation: allocation.generation.clone(),
                 prepared_generation: allocation.prepared_generation,
                 volume: allocation.volume.clone(),
+                agent: allocation.agent, creation_operation: allocation.creation_operation,
                 reader: FilesystemContentVerifier::new(self.host.clone(), self.issuer.verifier(), scope.clone(), request.maximum_bytes)?,
                 writer: FilesystemContentPublisher::new(self.host.clone(), allocation.volume.clone(), &self.issuer.verifier(), &scope, request.maximum_bytes)?,
             });
@@ -185,6 +198,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
                     CreatedResourceOperation::WriteVolume(allocation.volume.clone())],
                 content: vec![CreatedContentBinding {
                     volume: allocation.volume, default_writer: allocation.default_writer,
+                    authority: allocation.authority,
+                    artifact_writer: allocation.artifact_writer,
+                    scratch_creation: allocation.default_writer.then(|| crate::resource_preparation::ChildScratchCreationProof::new(access.clone())),
                     binding: ContentBindings { reader: access.clone(), writer: Some(access) },
                 }],
             })
@@ -201,8 +217,21 @@ struct CreatedFilesystemAccess<A, O> {
     generation: GenerationRef,
     prepared_generation: GenerationRef,
     volume: VolumeRef,
+    agent: crate::AgentId,
+    creation_operation: acyclic_fs::OperationId,
     reader: FilesystemContentVerifier<A, O>,
     writer: FilesystemContentPublisher<A, O>,
+}
+
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
+    crate::resource_preparation::ScratchCreationIdentity for CreatedFilesystemAccess<A,O>
+{
+    fn original_task(&self) -> crate::TaskId { crate::TaskId::from_bytes(self.origin.intended_child.into_bytes()) }
+    fn agent(&self) -> crate::AgentId { self.agent }
+    fn volume(&self) -> &VolumeRef { &self.volume }
+    fn creation_operation(&self) -> acyclic_fs::OperationId { self.creation_operation }
+    fn initial_generation(&self) -> &GenerationRef { &self.generation }
+    fn origin(&self) -> &ResourceCreationOrigin { &self.origin }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CreatedFilesystemAccess<A, O> {
@@ -276,6 +305,7 @@ mod tests {
                 "scratch", VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes([83; 16])),
             )?,
+            role: ForkAllocationRole::Scratch,
         };
         assert!(matches!(task_origin(&claim), Err(Error::Unauthorized(_))));
         Ok(())

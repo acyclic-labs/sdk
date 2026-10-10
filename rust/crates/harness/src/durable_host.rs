@@ -43,8 +43,42 @@ use tokio::sync::Mutex;
 #[serde(deny_unknown_fields)]
 struct MailEvent {
     sender: TaskId,
+    recipient: TaskId,
     message_id: OperationId,
+    schema_revision: u32,
+    route_revision: u32,
     payload: FileRef,
+}
+
+const MAIL_SCHEMA_REVISION: u32 = 1;
+const MAIL_ROUTE_REVISION: u32 = 1;
+
+impl MailEvent {
+    fn encode(&self, maximum_bytes: u64) -> Result<Vec<u8>> {
+        // Count the whole typed envelope, including destination and revisions,
+        // before allocating canonical bytes or deriving publication digests.
+        crate::contract::validate_json_byte_bound(self, maximum_bytes)?;
+        crate::contract::canonical_json_bytes(self)
+    }
+
+    fn decode(bytes: &[u8], recipient: TaskId) -> Result<Self> {
+        let value: Value = crate::contract::json_from_slice(bytes)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        if crate::contract::canonical_json_bytes(&value)?.as_slice() != bytes {
+            return Err(Error::Storage("mail event is not canonical JSON".into()));
+        }
+        let event: Self = serde_json::from_value(value)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        if event.recipient != recipient
+            || event.schema_revision != MAIL_SCHEMA_REVISION
+            || event.route_revision != MAIL_ROUTE_REVISION
+        {
+            return Err(Error::Storage(
+                "mail route or schema revision differs".into(),
+            ));
+        }
+        Ok(event)
+    }
 }
 
 // Derived receipt only: the original mailbox bytes and shared commit remain
@@ -55,6 +89,8 @@ struct MailLocation {
     sender: TaskId,
     message_id: OperationId,
     recipient: TaskId,
+    schema_revision: u32,
+    route_revision: u32,
     sequence: u64,
     value_digest: [u8; 32],
 }
@@ -188,6 +224,9 @@ pub struct TaskJournalOwner<P> {
     output_schema: Value,
     input_grants: crate::Capabilities,
     input_created: Option<Arc<crate::resource_preparation::CreatedResourceAccess>>,
+    input_agent: Option<crate::AgentId>,
+    input_is_root: bool,
+    root_binding: Arc<std::sync::OnceLock<crate::store::VerifiedRootBinding>>,
     deadline_epoch_ms: Option<u64>,
     input_limits: crate::conversation::Limits,
     extensions: Option<crate::core::ExtensionAdmission>,
@@ -292,6 +331,98 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             return Err(Error::Unauthorized(format!("task scope lacks {grant}")));
         }
         Ok(())
+    }
+
+    /// Checks the original cached grant with bounded canonical identity work.
+    /// No Stream or filesystem reads are claimed by this pure authorization.
+    pub fn require_volume_grant_measured(
+        &self,
+        volume: &crate::conversation::VolumeRef,
+        operation: crate::conversation::VolumeOperation,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
+        let mut work = crate::store::history::HistoryWork::new(budget, cancellation);
+        let result = work.preflight().and_then(|()|
+            self.require_volume_grant_with_work(volume, operation, &mut work));
+        work.finish(result)
+    }
+
+    fn require_volume_grant_with_work(
+        &self, volume: &crate::conversation::VolumeRef,
+        operation: crate::conversation::VolumeOperation,
+        io: &mut dyn crate::store::history::HistoryIo,
+    ) -> Result<()> {
+            volume.validate()?;
+            let remaining = io.remaining()?;
+            let encoded = crate::contract::canonical_json_bytes_bounded(volume,
+                crate::contract::JsonBounds {
+                    maximum_bytes: remaining.bytes_encoded,
+                    maximum_items: remaining.bytes_encoded,
+                    maximum_depth: 256,
+                }, &mut |charge| io.codec_charge(charge),
+            )?;
+            io.retain_owned((encoded.capacity() - encoded.len()) as u64)?;
+            if io.remaining()?.bytes_hashed < encoded.len() as u64 {
+                return Err(Error::Invalid("volume grant hash exceeds admitted work".into()));
+            }
+            let digest = blake3::hash(&encoded);
+            io.receive_work(acyclic_fs::WorkCounters {
+                bytes_hashed: encoded.len() as u64, ..acyclic_fs::WorkCounters::default()
+            })?;
+            let retained = encoded.capacity() as u64;
+            drop(encoded);
+            io.release_owned(retained);
+            io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes:64, items:0 })?;
+            let hex = digest.to_hex();
+            let prefix: &[u8] = match operation {
+                crate::conversation::VolumeOperation::Read => b"volume:read:",
+                crate::conversation::VolumeOperation::Write => b"volume:write:",
+            };
+            io.codec_charge(crate::contract::JsonCodecCharge::Copy { bytes:(prefix.len() + hex.len()) as u64 })?;
+            let mut grant = [0; 77];
+            grant[..prefix.len()].copy_from_slice(prefix);
+            grant[prefix.len()..prefix.len()+hex.len()].copy_from_slice(hex.as_bytes());
+            let grant = std::str::from_utf8(&grant[..prefix.len()+hex.len()])
+                .map_err(|_| Error::Invalid("volume grant identity is not UTF-8".into()))?;
+            if !self.input_grants.contains(grant) {
+                return Err(Error::Unauthorized("task scope lacks required volume grant".into()));
+            }
+            Ok(())
+    }
+
+    /// Obtains only the original currently selected scratch allocation. This is
+    /// not a result-volume proof, root allocation fallback or native leaf receipt.
+    pub fn child_scratch_creation_proof(&self) -> Result<crate::resource_preparation::ChildScratchCreationProof> {
+        let binding = self.input_created.as_ref()
+            .ok_or_else(|| Error::Unauthorized("task has no created scratch allocation".into()))?
+            .current_content()?
+            .ok_or_else(|| Error::Unauthorized("task has no current scratch allocation".into()))?;
+        let proof = binding.scratch_creation.as_ref()
+            .ok_or_else(|| Error::Unauthorized("current scratch is not a verified filesystem allocation".into()))?;
+        if proof.original_task() != self.task_id || Some(proof.agent()) != self.input_agent
+            || proof.volume() != &binding.volume
+        {
+            return Err(Error::Unauthorized("scratch allocation belongs to another original task".into()));
+        }
+        Ok(proof.clone())
+    }
+
+    pub(crate) async fn authorize_created_scratch_settlement_measured(
+        &self, proof: &crate::resource_preparation::ChildScratchCreationProof,
+        budget: acyclic_fs::WorkBudget, cancellation: &acyclic_fs::CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
+        let mut work = crate::store::history::HistoryWork::new(budget,cancellation);
+        let result = async {
+            work.preflight()?;
+            if !self.child_scratch_creation_proof()?.same_identity(proof) {
+                return Err(Error::Unauthorized("scratch settlement substituted allocation evidence".into()));
+            }
+            self.require_volume_grant_with_work(proof.volume(), crate::conversation::VolumeOperation::Write, &mut work)?;
+            self.condition_with_work(crate::distributed::JournalWrite::Settlement, &mut Some(&mut work)).await?;
+            Ok(())
+        }.await;
+        work.finish(result)
     }
 
     pub(crate) fn require_interaction_grant(&self) -> Result<()> {
@@ -420,6 +551,39 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.condition_with_work(crate::distributed::JournalWrite::Fresh, work).await.map(|_| ())
+    }
+
+    /// Verifies the original task's current fresh-dispatch fence using the
+    /// existing SDK-call ledger, not inferred provider-internal OS work.
+    pub async fn verify_dispatch_measured(
+        &self,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
+        self.verify_write_measured(crate::distributed::JournalWrite::Fresh, budget, cancellation).await
+    }
+
+    /// Retained effects may settle under their original fence after cancellation.
+    pub async fn verify_settlement_measured(
+        &self,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
+        self.verify_write_measured(crate::distributed::JournalWrite::Settlement, budget, cancellation).await
+    }
+
+    async fn verify_write_measured(
+        &self,
+        write: crate::distributed::JournalWrite,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
+        let mut work = crate::store::history::HistoryWork::new(budget, cancellation);
+        let result = async {
+            work.preflight()?;
+            self.condition_with_work(write, &mut Some(&mut work)).await.map(|_| ())
+        }.await;
+        work.finish(result)
     }
 
     /// Authenticates one immutable resource request under this ordinary task's
@@ -553,7 +717,61 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if !self.input_grants.contains(capability::CONVERSATION_BIND) {
             return Err(Error::Unauthorized("task scope lacks conversation:bind".into()));
         }
-        Ok(self.host.owner_scope.agent())
+        Ok(self.input_agent)
+    }
+
+    pub(crate) fn authenticated_fork_agent(&self) -> Result<crate::AgentId> {
+        if !self.input_grants.contains(capability::FORK_PUBLISH) {
+            return Err(Error::Unauthorized("task scope lacks fork:publish".into()));
+        }
+        self.input_agent.ok_or_else(|| Error::Unauthorized("task has no authenticated current agent".into()))
+    }
+
+    pub(crate) fn binding_origin(&self) -> (TaskId, [u8;32], &crate::scheduler::LeaseFence) {
+        (self.task_id, self.workflow.request_digest, &self.fence)
+    }
+
+    pub(crate) fn retain_root_binding(&self, proof: crate::store::VerifiedRootBinding) -> Result<()> {
+        if !self.input_is_root || proof.original_task() != self.task_id
+            || proof.admission_digest() != self.workflow.request_digest
+            || proof.fence() != &self.fence
+            || self.authenticated_binding_agent()? != Some(proof.agent())
+        {
+            return Err(Error::Unauthorized("root binding proof belongs to another owner or lease".into()));
+        }
+        if let Err(proof) = self.root_binding.set(proof) {
+            let retained = self.root_binding.get().ok_or_else(|| Error::Conflict("root binding cache is unavailable".into()))?;
+            if retained.audience() != proof.audience() || retained.bind_operation() != proof.bind_operation() {
+                return Err(Error::Conflict("root binding audience or operation changed".into()));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn authenticate_fork_parent(&self, parent: &Authority) -> Result<()> {
+        self.authenticated_fork_agent()?;
+        let audience = match &self.input_created {
+            Some(access) => access.current_content()?.and_then(|binding| binding.authority.as_ref()),
+            None if self.input_is_root => self.root_binding.get().map(|proof| proof.audience()),
+            None => None,
+        }.ok_or_else(|| Error::Unauthorized("current caller has no authenticated publication audience".into()))?;
+        if audience != parent {
+            return Err(Error::Unauthorized("fork parent differs from the current caller audience".into()));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn authenticate_binding_scope(
+        &self,
+        audience: &Authority,
+        scope: &Scope,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        let agent = self.authenticated_binding_agent()?.ok_or_else(|| Error::Unauthorized("binding owner has no authenticated agent".into()))?;
+        if scope.agent() != Some(agent) || !scope.capabilities().contains(capability::CONVERSATION_BIND) {
+            return Err(Error::Unauthorized("binding scope differs from the original task actor or grant".into()));
+        }
+        self.host.verifier.verify_scope_for_with_work(audience, scope, work)
     }
 
     pub(crate) async fn append_conversation(
@@ -684,14 +902,27 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         hash.update(b"harness/v2/owned-journal\0");
         hash.update(key.as_bytes());
         hash.update(&self.task_id.into_bytes());
-        let encoded_fence = crate::contract::canonical_json_bytes(&self.fence)?;
-        if let Some(io) = work.as_deref_mut() {
-            io.retain_owned(encoded_fence.len() as u64)?;
-            io.encoded_bytes(encoded_fence.len() as u64)?;
-        }
+        let encoded_fence = if let Some(io) = work.as_deref_mut() {
+            let remaining = io.remaining()?;
+            let bounds = crate::contract::JsonBounds {
+                maximum_bytes: remaining.bytes_encoded,
+                maximum_items: remaining.bytes_encoded,
+                maximum_depth: 256,
+            };
+            let encoded = crate::contract::canonical_json_bytes_bounded(
+                &self.fence, bounds, &mut |charge| io.codec_charge(charge),
+            )?;
+            // The codec admitted logical output before allocation. Account for
+            // additional exposed Vec capacity without charging output twice.
+            io.retain_owned((encoded.capacity() - encoded.len()) as u64)?;
+            encoded
+        } else {
+            crate::contract::canonical_json_bytes(&self.fence)?
+        };
         hash.update(&encoded_fence);
-        if let Some(io) = work.as_deref_mut() { io.release_owned(encoded_fence.len() as u64); }
+        let retained_fence = encoded_fence.capacity() as u64;
         drop(encoded_fence);
+        if let Some(io) = work.as_deref_mut() { io.release_owned(retained_fence); }
         let CommitCondition::Tail { expected, .. } = &owner else {
             return Err(Error::Invalid("coordinator tail condition required".into()));
         };
@@ -1449,10 +1680,21 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         task_id: TaskId,
         fence: crate::scheduler::LeaseFence,
     ) -> Result<TaskJournalOwner<P>> {
-        let admission = self
-            .read_retained_admission(OperationId::from_bytes(task_id.into_bytes()))
-            .await?;
+        let declaration = self.retained_declaration(OperationId::from_bytes(task_id.into_bytes()))
+            .await?.ok_or_else(|| Error::NotFound("task admission".into()))?;
+        let admission = self.read_declared_admission(&declaration).await?;
         let scope = self.authenticated_scope(&admission).await?;
+        let input_agent = match scope.current_created_agent()? {
+            Some(agent) => Some(agent),
+            None if admission.parent.is_none() && admission.resource_proofs.is_empty() => {
+                let agent = declaration.owner_scope.agent();
+                if agent != self.owner_scope.agent() {
+                    return Err(Error::Unauthorized("root current actor differs from original declaration".into()));
+                }
+                agent
+            }
+            None => None,
+        };
         let machine = self
             .machines
             .resolve(&admission.machine)
@@ -1478,6 +1720,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             output_schema: admission.output_schema,
             input_grants: admission.grants,
             input_created: scope.created_access(),
+            input_agent,
+            input_is_root: admission.parent.is_none() && admission.resource_proofs.is_empty(),
+            root_binding: Arc::new(std::sync::OnceLock::new()),
             input_limits: admission.limits,
             deadline_epoch_ms: admission.run_limits.deadline_epoch_ms,
             extensions: admission.extensions,
@@ -1856,6 +2101,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 OperationId::from_bytes(parent.into_bytes()),
             ).await?;
             let mut receipts = Vec::with_capacity(admission.resource_proofs.len());
+            let mut current_default: Option<(usize, OperationId)> = None;
             for proof in &admission.resource_proofs {
                 let provider = self.resource_creation.iter().find(|provider| {
                     provider.provider() == &proof.provider
@@ -1890,6 +2136,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     return Err(Error::Unauthorized("creation authority was not narrowed from the parent".into()));
                 }
                 let inherited = request.child != *admission;
+                let mut origin_distance = 0;
                 if inherited {
                     if !parent_admission.resource_proofs.contains(proof) {
                         return Err(Error::Unauthorized("created resource proof is not inherited from the parent".into()));
@@ -1916,6 +2163,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         let mut found = false;
                         while let Some(operation) = cursor {
                             if operation == request.child.operation_id {
+                                origin_distance = lineage.len() + 1;
                                 found = true;
                                 break;
                             }
@@ -1942,10 +2190,17 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 {
                     return Err(Error::Unauthorized("resource allocation provenance changed".into()));
                 }
+                if receipt.content.iter().any(|binding| binding.default_writer)
+                    && current_default.is_none_or(|(distance, _)| origin_distance < distance)
+                {
+                    current_default = Some((origin_distance, receipt.origin.intended_child));
+                }
                 receipts.push(receipt);
             }
             visited.remove(&admission.operation_id);
-            crate::resource_preparation::CreatedResourceAccess::consume(admission, receipts).map(Some)
+            crate::resource_preparation::CreatedResourceAccess::consume(
+                admission, receipts, current_default.map(|(_, origin)| origin),
+            ).map(Some)
         })
     }
 
@@ -2018,6 +2273,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .retained_declaration(operation_id)
             .await?
             .ok_or_else(|| Error::NotFound("task admission".into()))?;
+        self.read_declared_admission(&spec).await
+    }
+
+    async fn read_declared_admission(&self, spec: &OperationSpec) -> Result<TaskAdmissionRecord> {
+        let operation_id = spec.operation_id;
         if let Some(limits) = self.session_limits {
             let mut coordinator = self.coordinator.lock().await;
             // Session configuration and parent links are immutable. A cached
@@ -2121,7 +2381,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     fn mailbox(&self, task_id: TaskId) -> Result<acyclic_stream::Stream<P>> {
         self.stream
-            .stream(format!("harness/v2/mail/by-recipient/{task_id}"))
+            .stream(format!("harness/v3/mail/by-recipient/{task_id}"))
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 
@@ -2355,10 +2615,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let event = MailEvent {
             sender,
+            recipient,
             message_id,
+            schema_revision: MAIL_SCHEMA_REVISION,
+            route_revision: MAIL_ROUTE_REVISION,
             payload,
         };
-        crate::contract::canonical_json_bytes(&event)
+        event.encode(acyclic_stream::MAX_RECORD_BYTES as u64)
     }
 
     /// Observes the original atomic mail receipt; never publishes another send.
@@ -2382,7 +2645,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         message: OperationId,
     ) -> Result<acyclic_stream::StreamPath> {
         Ok(acyclic_stream::StreamPath::new(format!(
-            "harness/v2/mail/by-intent/{sender}/{message}"
+            "harness/v3/mail/by-intent/{sender}/{message}"
         ))?)
     }
 
@@ -2416,6 +2679,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .map_err(|error| Error::Storage(error.to_string()))?;
         if retained.sender != sender
             || retained.message_id != message
+            || retained.schema_revision != MAIL_SCHEMA_REVISION
+            || retained.route_revision != MAIL_ROUTE_REVISION
             || crate::contract::canonical_json_bytes(&retained)?.as_slice() != record.value.as_ref()
         {
             return Err(Error::Storage("mail location identity differs".into()));
@@ -2462,15 +2727,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             sender,
             message_id: message,
             recipient,
+            schema_revision: MAIL_SCHEMA_REVISION,
+            route_revision: MAIL_ROUTE_REVISION,
             sequence,
             value_digest: *blake3::hash(bytes).as_bytes(),
         };
+        crate::contract::validate_json_byte_bound(&location, MAX_MAIL_LOCATION_BYTES as u64)?;
         let encoded = Bytes::from(crate::contract::canonical_json_bytes(&location)?);
-        if encoded.len() > MAX_MAIL_LOCATION_BYTES {
-            return Err(Error::Invalid(
-                "mail location exceeds its bounded format".into(),
-            ));
-        }
         Ok((location, encoded))
     }
 
@@ -2494,7 +2757,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 .collect::<Vec<_>>(),
         ))?;
         let mut hash = blake3::Hasher::new();
-        hash.update(b"acyclic.harness.mail-publication.v1\0");
+        hash.update(b"acyclic.harness.mail-publication.v2\0");
         hash.update(&physical);
         Ok(StreamKey::new(Bytes::copy_from_slice(
             hash.finalize().as_bytes(),
@@ -3248,13 +3511,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                     .checked_add(1)
                     .ok_or_else(|| Error::Storage("inbox sequence exhausted".into()))?;
 
-                let value: Value = crate::contract::json_from_slice(&record.value)
-                    .map_err(|error| Error::Storage(error.to_string()))?;
-                if crate::contract::canonical_json_bytes(&value)? != record.value.as_ref() {
-                    return Err(Error::Storage("mail event is not canonical JSON".into()));
-                }
-                let event: MailEvent = serde_json::from_value(value)
-                    .map_err(|error| Error::Storage(error.to_string()))?;
+                let event = MailEvent::decode(&record.value, task_id)?;
                 event.payload.validate()?;
                 recipient_admission.limits.validate_file(&event.payload)?;
                 if !read_granted(&recipient_admission.grants, &event.payload)? {
@@ -3452,7 +3709,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{
         AgentId, Capabilities, GroupId,
@@ -3467,7 +3724,7 @@ mod tests {
     #[cfg(feature = "filesystem")]
     mod resource_preparation;
     #[cfg(feature = "filesystem")]
-    mod created_resource_access;
+    pub(crate) mod created_resource_access;
 
     struct MemoryPayloads {
         volume: VolumeRef,
@@ -3486,6 +3743,269 @@ mod tests {
                 files: Mutex::new(BTreeMap::new()),
             })
         }
+    }
+
+    // Finite byte-identity model: two choices for each of the six envelope
+    // fields. Unsupported revisions are identity probes, not accepted mail.
+    #[tokio::test]
+    async fn bounded_mail_envelope_identity_and_missing_field_controls() -> Result<()> {
+        let payloads = MemoryPayloads::new()?;
+        let operation = OperationId::from_bytes([8; 16]);
+        let first = payloads.stage(operation, "first", b"7").await?;
+        let second = payloads.stage(operation, "second", b"8").await?;
+        let mut cases = Vec::new();
+        let mut identities = BTreeSet::new();
+        for mask in 0..64_u8 {
+            let event = MailEvent {
+                sender: TaskId::from_bytes([1 + (mask & 1); 16]),
+                recipient: TaskId::from_bytes([3 + ((mask >> 1) & 1); 16]),
+                message_id: OperationId::from_bytes([5 + ((mask >> 2) & 1); 16]),
+                schema_revision: 1 + u32::from((mask >> 3) & 1),
+                route_revision: 1 + u32::from((mask >> 4) & 1),
+                payload: if mask & 32 == 0 { first.clone() } else { second.clone() },
+            };
+            let bytes = crate::contract::canonical_json_bytes(&event)?;
+            assert!(identities.insert(bytes.clone()), "different envelopes aliased");
+            if mask & 24 == 0 {
+                let restored = MailEvent::decode(&bytes, event.recipient)?;
+                assert_eq!(crate::contract::canonical_json_bytes(&restored)?, bytes);
+            } else {
+                assert!(matches!(
+                    MailEvent::decode(&bytes, event.recipient),
+                    Err(Error::Storage(_))
+                ));
+            }
+            cases.push(event);
+        }
+        assert_eq!(identities.len(), 64);
+        for omitted in [
+            "sender", "recipient", "message_id", "schema_revision", "route_revision", "payload",
+        ] {
+            let mut broken_identities = BTreeSet::new();
+            for event in &cases {
+                let mut fields = serde_json::to_value(event)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                assert!(fields.as_object_mut().expect("mail object").remove(omitted).is_some());
+                let bytes = crate::contract::canonical_json_bytes(&fields)?;
+                assert!(matches!(
+                    MailEvent::decode(&bytes, event.recipient),
+                    Err(Error::Storage(_))
+                ), "missing field accepted: {omitted}");
+                broken_identities.insert(bytes);
+            }
+            assert_eq!(broken_identities.len(), 32, "field-removal probe: {omitted}");
+        }
+        let event = &cases[0];
+        let encoded = crate::contract::canonical_json_bytes(event)?;
+        assert_eq!(event.encode(encoded.len() as u64)?, encoded);
+        assert!(matches!(
+            event.encode(encoded.len() as u64 - 1),
+            Err(Error::Invalid(_))
+        ));
+        let mut previous = serde_json::to_value(event)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        for field in ["recipient", "schema_revision", "route_revision"] {
+            previous.as_object_mut().expect("mail object").remove(field);
+        }
+        let previous_size = crate::contract::canonical_json_bytes(&previous)?.len() as u64;
+        assert!(matches!(event.encode(previous_size), Err(Error::Invalid(_))));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn atomic_mail_envelope_reuse_and_hostile_inbox_controls() -> Result<()> {
+        let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+        let payloads = Arc::new(MemoryPayloads::new()?);
+        let authority = Authority {
+            kind: AggregateKind::Task,
+            id: "mail-envelope-owner".into(),
+        };
+        let issuer = AuthorityIssuer::new("mail-envelope", [7; 32], authority.clone());
+        let grants = Capabilities::new([
+            "operation:declare".to_owned(),
+            "operation:observe".to_owned(),
+            "operation:cancel".to_owned(),
+            "task:spawn:test.mail@1".to_owned(),
+            "mail:send".to_owned(),
+            "mail:read".to_owned(),
+            payloads.volume.capability(crate::conversation::VolumeOperation::Read)?,
+        ]);
+        let signed = issuer.root("owner", grants.clone());
+        let runtime_scope = RuntimeScope::new(grants, Limits::default())?;
+        let implementation = Arc::new(BatchMachine {
+            identity: MachineIdentity {
+                name: "test.mail".into(),
+                version: "1".into(),
+                digest: [3; 32],
+            },
+            schema: serde_json::json!({"type":"integer"}),
+        });
+        let definition = TaskDefinition::<Value, Value>::resumable(
+            implementation.clone(),
+            serde_json::json!({"type":"integer"}),
+            serde_json::json!({"type":"integer"}),
+        )?;
+        let task_identity = definition.identity().clone();
+        let machine = implementation.identity.clone();
+        let mut tasks = TaskRegistry::default();
+        tasks.register(definition)?;
+        let mut machines = MachineRegistry::default();
+        machines.register(implementation)?;
+        let host = CoordinatorTaskHost::new(
+            DistributedCoordinator::open(&stream, payloads.clone()).await?,
+            stream.clone(),
+            payloads.clone(),
+            payloads.clone(),
+            authority,
+            signed,
+            issuer.verifier(),
+            runtime_scope.clone(),
+            tasks,
+            machines,
+            Arc::new(SystemUnixMillisClock),
+        )?;
+        for index in 1..=3_u8 {
+            host.admit(TaskAdmissionRecord {
+                resource_proofs: Vec::new(),
+                operation_id: OperationId::from_bytes([index; 16]),
+                task: task_identity.clone(),
+                machine: machine.clone(),
+                input: serde_json::json!(0),
+                input_schema: serde_json::json!({"type":"integer"}),
+                output_schema: serde_json::json!({"type":"integer"}),
+                parent: None,
+                grants: runtime_scope.grants().clone(),
+                limits: runtime_scope.limits(),
+                run_limits: runtime_scope.run_limits(),
+                policy: None,
+                extensions: None,
+                execution: None,
+            }).await?;
+        }
+        let sender = TaskId::from_bytes([1; 16]);
+        let recipient = TaskId::from_bytes([2; 16]);
+        let other = TaskId::from_bytes([3; 16]);
+        let message = OperationId::from_bytes([8; 16]);
+        let payload = payloads.stage(message, "body", b"7").await?;
+        let changed = payloads.stage(message, "changed", b"8").await?;
+        host.send(sender, recipient, message, payload.clone()).await?;
+        host.send(sender, recipient, message, payload.clone()).await?;
+        let retained = host.mailbox(recipient)?.read(0, 1).await?
+            .try_collect::<Vec<_>>().await?;
+        let event = MailEvent::decode(&retained[0].value, recipient)?;
+        assert_eq!(event.sender, sender);
+        assert_eq!(event.recipient, recipient);
+        assert_eq!(event.message_id, message);
+        assert_eq!(event.schema_revision, MAIL_SCHEMA_REVISION);
+        assert_eq!(event.route_revision, MAIL_ROUTE_REVISION);
+        assert_eq!(host.inbox(recipient, 0, 4).await?.len(), 1);
+        for (destination, body) in [(other, payload.clone()), (recipient, changed)] {
+            assert!(matches!(
+                host.send(sender, destination, message, body).await,
+                Err(Error::Conflict(_))
+            ));
+        }
+        for (schema_revision, route_revision) in [(2, 1), (1, 2)] {
+            let altered = MailEvent {
+                schema_revision, route_revision,
+                ..MailEvent::decode(&retained[0].value, recipient)?
+            };
+            let bytes = Bytes::from(crate::contract::canonical_json_bytes(&altered)?);
+            assert!(matches!(
+                host.publish_mail(sender, recipient, message, bytes, None).await,
+                Err(Error::Conflict(_))
+            ));
+        }
+        assert_eq!(host.mailbox(recipient)?.bounds().await?.tail, 1);
+        assert!(host.inbox(other, 0, 4).await?.is_empty());
+        assert!(host.outcome(recipient).await?.is_none());
+
+        let original = serde_json::to_value(&event)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let mut hostile = Vec::new();
+        let mut wrong_recipient = original.clone();
+        wrong_recipient["recipient"] = serde_json::json!(other);
+        hostile.push(("recipient".to_owned(), wrong_recipient));
+        for field in ["schema_revision", "route_revision"] {
+            for revision in [0_u32, 2, u32::MAX] {
+                let mut value = original.clone();
+                value[field] = serde_json::json!(revision);
+                hostile.push((format!("{field}:{revision}"), value));
+            }
+        }
+        for field in [
+            "sender", "recipient", "message_id", "schema_revision", "route_revision", "payload",
+        ] {
+            let mut value = original.clone();
+            assert!(value.as_object_mut().expect("mail object").remove(field).is_some());
+            hostile.push((format!("missing:{field}"), value));
+        }
+        let mut unknown = original.clone();
+        unknown["unexpected"] = serde_json::json!(true);
+        hostile.push(("unknown-field".into(), unknown));
+        for (index, (label, mut value)) in hostile.into_iter().enumerate() {
+            let operation = OperationId::from_bytes([100 + index as u8; 16]);
+            if value.get("message_id").is_some() {
+                value["message_id"] = serde_json::json!(operation);
+            }
+            let bytes = Bytes::from(crate::contract::canonical_json_bytes(&value)?);
+            // Retain hostile bytes through the real atomic engine, including a
+            // genuine shared-commit location. Rejection must come from the
+            // production envelope reader, not a missing receipt or mock.
+            host.publish_mail(sender, recipient, operation, bytes, None).await?;
+            assert!(matches!(
+                host.inbox(recipient, 1 + index as u64, 1).await,
+                Err(Error::Storage(_))
+            ), "hostile envelope exposed: {label}");
+        }
+        for fault in 0..7_u8 {
+            use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, CommitRequest};
+            let operation = OperationId::from_bytes([150 + fault; 16]);
+            let event = MailEvent {
+                sender, recipient, message_id: operation,
+                schema_revision: MAIL_SCHEMA_REVISION,
+                route_revision: MAIL_ROUTE_REVISION,
+                payload: payload.clone(),
+            };
+            let bytes = Bytes::from(event.encode(acyclic_stream::MAX_RECORD_BYTES as u64)?);
+            let mailbox = host.mailbox(recipient)?;
+            let sequence = mailbox.bounds().await?.tail;
+            let (location, _) = CoordinatorTaskHost::<MemoryStream>::mail_location(
+                sender, recipient, operation, sequence, &bytes,
+            )?;
+            let mut receipt = serde_json::to_value(location)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            match fault {
+                0 => receipt["schema_revision"] = serde_json::json!(0),
+                1 => receipt["schema_revision"] = serde_json::json!(2),
+                2 => receipt["route_revision"] = serde_json::json!(0),
+                3 => receipt["route_revision"] = serde_json::json!(2),
+                4 => { receipt.as_object_mut().expect("location object").remove("schema_revision"); }
+                5 => { receipt.as_object_mut().expect("location object").remove("route_revision"); }
+                _ => receipt["unexpected"] = serde_json::json!(true),
+            }
+            let location_path = CoordinatorTaskHost::<MemoryStream>::mail_location_path(sender, operation)?;
+            let committed = stream.commit(CommitRequest {
+                conditions: vec![
+                    CommitCondition::Tail { path: mailbox.path().clone(), expected: sequence },
+                    CommitCondition::Absent { path: location_path.clone() },
+                ],
+                mutations: vec![
+                    CommitMutation::Append { path: mailbox.path().clone(), records: vec![bytes] },
+                    CommitMutation::Append {
+                        path: location_path,
+                        records: vec![Bytes::from(crate::contract::canonical_json_bytes(&receipt)?)],
+                    },
+                ],
+                idempotency_key: StreamKey::new(Bytes::from(vec![200 + fault]))?,
+            }).await?;
+            assert!(matches!(committed, CommitOutcome::Committed(_)));
+            assert!(matches!(
+                host.inbox(recipient, sequence, 1).await,
+                Err(Error::Storage(_))
+            ), "malformed atomic location exposed: {fault}");
+        }
+        Ok(())
     }
 
 
@@ -4430,6 +4950,7 @@ mod tests {
             let journal = crate::filesystem::FilesystemExecutionJournal::for_task(
                 host.journal_owner(task_id, fence.clone()).await?,
                 attempt,
+                attempt,
                 filesystem.clone(),
                 volume.clone(),
                 issuer.verifier(),
@@ -4451,6 +4972,8 @@ mod tests {
             let bytes = Bytes::from(
                 serde_json::to_vec(&serde_json::json!({
                     "operation_id": pending_operation,
+                    "turn_operation": pending_operation,
+                    "version": 2,
                     "retry_digest": digest.to_hex().to_string(),
                     "event": ExecutionEvent::Started { request_digest: [9; 32] },
                 }))
@@ -4611,6 +5134,7 @@ mod tests {
             let adopted = crate::filesystem::FilesystemExecutionJournal::for_task(
                 host.journal_owner(task_id, fence.clone()).await?,
                 uncharged,
+                uncharged,
                 filesystem.clone(),
                 volume.clone(),
                 issuer.verifier(),
@@ -4694,6 +5218,7 @@ mod tests {
                 .await?;
             let journal = crate::filesystem::FilesystemExecutionJournal::for_task(
                 host.journal_owner(task_id, fence.clone()).await?,
+                attempt,
                 attempt,
                 filesystem.clone(),
                 volume.clone(),
@@ -4847,6 +5372,7 @@ mod tests {
             let journal = crate::filesystem::FilesystemExecutionJournal::for_task(
                 binding,
                 attempt,
+                attempt,
                 filesystem.clone(),
                 volume.clone(),
                 issuer.verifier(),
@@ -4963,6 +5489,8 @@ mod tests {
                 let key = StreamKey::new(Bytes::copy_from_slice(digest.as_bytes()))?;
                 let bytes = Bytes::from(serde_json::to_vec(&serde_json::json!({
                 "operation_id": pending_operation,
+                "turn_operation": pending_operation,
+                "version": 2,
                 "retry_digest": digest.to_hex().to_string(),
                 "event": crate::executor::ExecutionEvent::Started { request_digest: [9; 32] },
             })).map_err(|error| Error::Invalid(error.to_string()))?);
@@ -5043,6 +5571,7 @@ mod tests {
             );
             let journal = crate::filesystem::FilesystemExecutionJournal::for_task(
                 host.journal_owner(task_id, fence.clone()).await?,
+                attempt,
                 attempt,
                 filesystem.clone(),
                 volume.clone(),
@@ -5128,6 +5657,7 @@ mod tests {
             assert_eq!(journal.replay(attempt, 64, 64).await?.len(), 10);
             let reopened = crate::filesystem::FilesystemExecutionJournal::for_task(
                 host.journal_owner(task_id, fence.clone()).await?,
+                attempt,
                 attempt,
                 filesystem.clone(),
                 volume.clone(),

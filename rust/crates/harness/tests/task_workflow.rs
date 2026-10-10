@@ -1549,7 +1549,7 @@ async fn worker_restart_with_options(
                     ));
                     assert_eq!(
                         stream
-                            .stream(format!("harness/v2/mail/by-recipient/{task}"))?
+                            .stream(format!("harness/v3/mail/by-recipient/{task}"))?
                             .bounds()
                             .await?
                             .tail,
@@ -1781,7 +1781,7 @@ async fn worker_restart_with_options(
             ));
             assert!(
                 stream
-                    .stream(format!("harness/v2/mail/by-recipient/{task}"))?
+                    .stream(format!("harness/v3/mail/by-recipient/{task}"))?
                     .bounds()
                     .await
                     .is_err()
@@ -2405,6 +2405,7 @@ async fn stock_restart_with_publication_fault(
                 let journal = FilesystemExecutionJournal::for_task(
                     host.journal_owner(task, fence.clone()).await?,
                     execution.operation_id(),
+                    OperationId::from_bytes([8; 16]),
                     filesystem.clone(),
                     volume.clone(),
                     issuer.verifier(),

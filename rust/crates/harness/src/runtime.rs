@@ -1945,6 +1945,25 @@ impl RuntimeScope {
         lease.fence()
     }
 
+    /// Current actor comes from the provider-authenticated scratch allocation,
+    /// including read-only attenuation, never from a declarer or a task UUID.
+    pub(crate) fn current_created_agent(&self) -> Result<Option<crate::AgentId>> {
+        self.current_created_private_volume()?.map(|volume| match volume.owner() {
+            crate::conversation::VolumeOwner::Agent(agent) => Ok(*agent),
+            _ => Err(Error::Unauthorized("current created scratch is not agent-owned".into())),
+        }).transpose()
+    }
+
+    pub(crate) fn current_created_private_volume(&self) -> Result<Option<&VolumeRef>> {
+        Ok(self.created_access.as_ref().map(|access| access.current_content())
+            .transpose()?.flatten().map(|binding| &binding.volume))
+    }
+
+    pub(crate) fn current_created_authority(&self) -> Result<Option<&crate::core::Authority>> {
+        Ok(self.created_access.as_ref().map(|access| access.current_content())
+            .transpose()?.flatten().and_then(|binding| binding.authority.as_ref()))
+    }
+
     pub(crate) fn created_grants(&self) -> Option<&Capabilities> {
         self.created_access.as_ref().map(|access| &access.grants)
     }
@@ -1973,6 +1992,11 @@ impl RuntimeScope {
         self.created_access.as_ref()?.content.iter().find(|binding| {
             volume.map_or(binding.default_writer, |volume| &binding.volume == volume)
         }).map(|binding| &binding.binding)
+    }
+
+    fn created_artifact_content(&self) -> Option<&ContentBindings> {
+        self.created_access.as_ref()?.content.iter().find(|binding| binding.artifact_writer)
+            .map(|binding| &binding.binding)
     }
 
     pub(crate) fn created_access(&self) -> Option<Arc<crate::resource_preparation::CreatedResourceAccess>> {
@@ -4657,7 +4681,7 @@ impl TaskContext {
         display_name: &str,
     ) -> Result<FileRef> {
         self.stage_bound_file(
-            self.scope.created_content(None).or(self.harness.artifacts.as_ref()),
+            self.scope.created_artifact_content().or_else(|| self.scope.created_content(None)).or(self.harness.artifacts.as_ref()),
             operation_id,
             path,
             bytes,

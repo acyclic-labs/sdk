@@ -550,7 +550,8 @@ where
             self.verifier.clone(),
             self.signed.clone(),
             self.maximum_payload_bytes.min(limits.file_bytes),
-        )?;
+        )?
+        .with_turn(operation, turn);
         let mut replay = ExecutionReplay::new(operation);
         let mut latest = None;
         while let Some(page) = replay.next_page(&journal).await? {
@@ -762,6 +763,7 @@ where
             FilesystemExecutionJournal::for_task(
                 self.host.journal_owner(task, fence).await?,
                 execution_operation(task, turn),
+                turn,
                 self.filesystem.clone(),
                 self.volume.clone(),
                 self.verifier.clone(),

@@ -39,6 +39,30 @@ const MAX_REQUEST_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_REPORT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CAPTURE_BYTES: u64 = 4 * 1024 * 1024;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ForkAllocationRole { Scratch, Project, Result }
+
+fn creation_volumes(request: &ForkRequest) -> impl Iterator<Item=(&VolumeRef,ForkAllocationRole)> {
+    [
+        (Some(&request.preparation.child_private_volume), ForkAllocationRole::Scratch),
+        (Some(&request.preparation.child_project_volume), ForkAllocationRole::Project),
+        (request.preparation.child_result_volume.as_ref(), ForkAllocationRole::Result),
+    ].into_iter().filter_map(|(volume, role)| volume.map(|volume| (volume,role)))
+}
+
+fn seed_creation_volumes(seed: &ForkSeed) -> Result<impl Iterator<Item=(&VolumeRef,ForkAllocationRole)>> {
+    let project = seed.resources.iter().find_map(|resource| match &resource.revision {
+        ResourceRevision::Project { volume, .. } => Some(volume),
+        _ => None,
+    }).ok_or_else(|| Error::Invalid("fork has no child project".into()))?;
+    Ok([
+        (Some(&seed.child_private_volume), ForkAllocationRole::Scratch),
+        (Some(project), ForkAllocationRole::Project),
+        (seed.child_result_volume.as_ref(), ForkAllocationRole::Result),
+    ].into_iter().filter_map(|(volume,role)| volume.map(|volume| (volume,role))))
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AllocationClaim {
@@ -48,6 +72,7 @@ struct AllocationClaim {
     parent: Authority,
     child: Authority,
     volume: VolumeRef,
+    role: ForkAllocationRole,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -213,12 +238,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
     /// Exact created identities for this provider's fork request, without IO.
     pub fn creation_resources(&self, request: &ForkRequest) -> Result<Vec<ResourceRef>> {
         request.validate()?;
-        [
-            &request.preparation.child_private_volume,
-            &request.preparation.child_project_volume,
-        ]
-        .into_iter()
-        .map(|volume| {
+        creation_volumes(request).map(|(volume,_)| {
             if volume.provider() != &self.host.provider {
                 return Err(Error::Invalid(
                     "fork resource belongs to another provider".into(),
@@ -237,6 +257,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
     /// enclosing Harness operation. This pure identity grants no access.
     pub fn project_creation_operation(&self, request: &ForkRequest) -> Result<acyclic_fs::OperationId> {
         request.validate()?;
+        self.creation_operation(request, ForkAllocationRole::Project)
+    }
+
+    /// Actual Filesystem operation that created the optional unmounted result slot.
+    pub fn result_creation_operation(&self, request: &ForkRequest) -> Result<acyclic_fs::OperationId> {
+        request.validate()?;
+        if request.preparation.child_result_volume.is_none() {
+            return Err(Error::Invalid("fork has no result allocation".into()));
+        }
+        self.creation_operation(request, ForkAllocationRole::Result)
+    }
+
+    fn creation_operation(&self, request: &ForkRequest, role: ForkAllocationRole) -> Result<acyclic_fs::OperationId> {
         struct DigestWriter { hash: blake3::Hasher, length: u64, maximum: u64 }
         impl std::io::Write for DigestWriter {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -256,7 +289,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
             maximum: self.journal_limit(MAX_REQUEST_BYTES),
         };
         serde_json::to_writer(&mut digest, request).map_err(|error| Error::Invalid(error.to_string()))?;
-        let key = project_creation_key(request.operation_id, digest.hash.finalize())?;
+        let suffix = match role { ForkAllocationRole::Scratch => "scratch", ForkAllocationRole::Project => "project", ForkAllocationRole::Result => "result" };
+        let key = IdempotencyKey::new(format!("fork:{}:{}:{suffix}",request.operation_id,digest.hash.finalize()))?;
         Ok(acyclic_fs::OperationId::from_bytes(super::filesystem_key(&key).into_bytes()))
     }
 
@@ -270,11 +304,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         let resources = self.creation_resources(request)?;
         resources
             .into_iter()
-            .zip([
-                &request.preparation.child_private_volume,
-                &request.preparation.child_project_volume,
-            ])
-            .map(|(resource, volume)| {
+            .zip(creation_volumes(request))
+            .map(|(resource, (volume, _))| {
                 Ok(crate::resource_preparation::ResourceCreationProofRef {
                     provider: self.host.provider.clone(),
                     preparation,
@@ -347,10 +378,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
             return Ok(());
         };
         let digest = *blake3::hash(&self.encode(request, self.journal_limit(MAX_REQUEST_BYTES))?).as_bytes();
-        for volume in [
-            &request.preparation.child_private_volume,
-            &request.preparation.child_project_volume,
-        ] {
+        for (volume, role) in creation_volumes(request) {
             let journal = allocation_ref(self.host.provider.clone(), volume)?;
             let retained = read_record_bounded::<A, O, AllocationClaim>(&self.host, &journal, "/claim.json", self.journal_limit(MAX_REQUEST_BYTES), self.io.as_ref())
             .await?
@@ -362,6 +390,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
                 parent: request.parent.clone(),
                 child: request.child.clone(),
                 volume: volume.clone(),
+                role,
             };
             if !same_allocation_claim(&retained, &expected) {
                 return Err(Error::Unauthorized(
@@ -699,10 +728,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
             .ok_or_else(|| Error::Invalid("fork has no project selection".into()))?;
         let request_bytes = self.encode(&request, self.journal_limit(MAX_REQUEST_BYTES))?;
         let request_digest = blake3::hash(&request_bytes);
-        for volume in [
-            &request.preparation.child_private_volume,
-            &request.preparation.child_project_volume,
-        ] {
+        for (volume, role) in creation_volumes(&request) {
             self.verify_task_lease(false).await?;
             self.host
                 .claim_fork_allocation_bounded(AllocationClaim {
@@ -715,6 +741,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
                     parent: request.parent.clone(),
                     child: request.child.clone(),
                     volume: volume.clone(),
+                    role,
                 }, self.journal_limit(MAX_REQUEST_BYTES), self.io.as_ref())
                 .await?;
         }
@@ -758,6 +785,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
             &self.host, &self.project, source_generation,
             &request.preparation.child_project_volume, None, &project_key, self.io.as_ref(),
         ).await?;
+        let (child_result_volume, child_result_generation) = if let Some(volume) = &request.preparation.child_result_volume {
+            self.verify_task_lease(false).await?;
+            let key = IdempotencyKey::new(format!("fork:{}:{request_digest}:result",request.operation_id))?;
+            let result = bounded_io::fork(
+                &self.host, source_private, private_generation, volume,
+                Some(Vec::new()), &key, self.io.as_ref(),
+            ).await?;
+            (Some(volume.clone()), Some(result.generation))
+        } else { (None,None) };
         let (
             mut child_private_generation,
             mut inherited_context,
@@ -969,6 +1005,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
             captures,
             child_private_volume: private.clone(),
             child_private_generation,
+            child_result_volume,
+            child_result_generation,
             inherited_context,
             summary,
             inherited_through_sequence,
@@ -1098,7 +1136,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "fork allocation belongs to another Filesystem provider".into(),
             ));
         }
-        for volume in [&seed.child_private_volume, child_project] {
+        for (volume, role) in seed_creation_volumes(seed)? {
             self.claim_fork_allocation(AllocationClaim {
                 operation_id: seed.operation_id,
                 preparation_digest: digest,
@@ -1106,6 +1144,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 parent: seed.parent.clone(),
                 child: seed.child.clone(),
                 volume: volume.clone(),
+                role,
             })
             .await?;
         }
@@ -1125,6 +1164,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             || claim.parent != seed.parent
             || claim.child != seed.child
             || claim.volume != *volume
+            || seed_creation_volumes(seed)?.find(|(candidate,_)| *candidate == volume).map(|(_,role)| role) != Some(claim.role)
         {
             return Err(Error::Conflict(
                 "fork child volume belongs to another preparation".into(),
@@ -1149,19 +1189,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
     async fn bind_fork_seed_bounded(&self, seed: &ForkSeed, maximum_bytes: u64, io: Option<&PreparationIo>) -> Result<()> {
         let binding = seed_binding_bounded(seed, io)?;
-        for volume in [
-            &seed.child_private_volume,
-            seed.resources
-                .iter()
-                .find_map(|resource| {
-                    if let ResourceRevision::Project { volume, .. } = &resource.revision {
-                        Some(volume)
-                    } else {
-                        None
-                    }
-                })
-                .ok_or_else(|| Error::Invalid("fork has no child project".into()))?,
-        ] {
+        for (volume, role) in seed_creation_volumes(seed)? {
             let journal = allocation_ref(self.provider.clone(), volume)?;
             let claim =
                 read_record_bounded::<A, O, AllocationClaim>(self, &journal, "/claim.json", maximum_bytes, io)
@@ -1173,6 +1201,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 || claim.parent != seed.parent
                 || claim.child != seed.child
                 || claim.volume != *volume
+                || claim.role != role
             {
                 return Err(Error::Conflict(
                     "fork child volume belongs to another preparation".into(),
@@ -1458,6 +1487,7 @@ mod task_origin_tests {
             parent,
             child,
             volume: volume.clone(),
+            role: ForkAllocationRole::Scratch,
         };
         host.claim_fork_allocation(claim.clone()).await?;
         let mut recovery = claim.clone();

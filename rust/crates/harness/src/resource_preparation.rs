@@ -216,10 +216,62 @@ pub fn created_resource_capability(resource: &ResourceRef, operation: &str) -> R
 pub struct CreatedContentBinding {
     /// Exact volume mapped by the provider's authenticated allocation record.
     pub volume: crate::conversation::VolumeRef,
+    /// Exact aggregate audience authenticated with this allocation, if the
+    /// provider supplies a canonical published child binding.
+    pub authority: Option<crate::core::Authority>,
     /// Existing provider reader/writer machinery, not a second content engine.
     pub binding: crate::runtime::ContentBindings,
     /// Selects the task's ordinary content destination; at most one is allowed.
     pub default_writer: bool,
+    /// Explicit result slot authenticated by the allocation provider; never inferred
+    /// from private volume ordering. This slot is not the ordinary scratch writer.
+    pub artifact_writer: bool,
+    /// Original protected filesystem allocation identity, not a physical leaf receipt.
+    #[cfg(feature = "filesystem")]
+    pub scratch_creation: Option<ChildScratchCreationProof>,
+}
+
+#[cfg(feature = "filesystem")]
+pub(crate) trait ScratchCreationIdentity: Send + Sync {
+    fn original_task(&self) -> crate::TaskId;
+    fn agent(&self) -> crate::AgentId;
+    fn volume(&self) -> &crate::conversation::VolumeRef;
+    fn creation_operation(&self) -> acyclic_fs::OperationId;
+    fn initial_generation(&self) -> &crate::resources::GenerationRef;
+    fn origin(&self) -> &ResourceCreationOrigin;
+}
+
+/// Opaque identity of the original child scratch allocation. It shares the
+/// already retained provider handle; cloning it allocates or copies no lease.
+#[cfg(feature = "filesystem")]
+#[derive(Clone)]
+pub struct ChildScratchCreationProof {
+    identity: Arc<dyn ScratchCreationIdentity>,
+}
+
+#[cfg(feature = "filesystem")]
+impl ChildScratchCreationProof {
+    pub(crate) fn new(identity: Arc<dyn ScratchCreationIdentity>) -> Self { Self { identity } }
+    pub fn original_task(&self) -> crate::TaskId { self.identity.original_task() }
+    pub fn agent(&self) -> crate::AgentId { self.identity.agent() }
+    pub fn volume(&self) -> &crate::conversation::VolumeRef { self.identity.volume() }
+    pub fn creation_operation(&self) -> acyclic_fs::OperationId { self.identity.creation_operation() }
+    pub fn initial_generation(&self) -> &crate::resources::GenerationRef { self.identity.initial_generation() }
+    pub(crate) fn origin(&self) -> &ResourceCreationOrigin { self.identity.origin() }
+    pub(crate) fn same_identity(&self, other: &Self) -> bool {
+        self.original_task() == other.original_task() && self.agent() == other.agent()
+            && self.volume() == other.volume() && self.creation_operation() == other.creation_operation()
+            && self.initial_generation() == other.initial_generation() && self.origin() == other.origin()
+    }
+
+    /// Authenticates original allocation custody and current-fenced WRITE through
+    /// the same task owner's settlement path. No native physical IO is claimed.
+    pub async fn authorize_settlement_measured<P: acyclic_stream::StreamProvider + 'static>(
+        &self, owner: &crate::durable_host::TaskJournalOwner<P>,
+        budget: acyclic_fs::WorkBudget, cancellation: &acyclic_fs::CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
+        owner.authorize_created_scratch_settlement_measured(self,budget,cancellation).await
+    }
 }
 
 /// Authenticated result of one explicitly trusted provider verification.
@@ -268,9 +320,21 @@ pub(crate) struct CreatedResourceAccess {
 }
 
 impl CreatedResourceAccess {
+    pub(crate) fn current_content(&self) -> Result<Option<&CreatedContentBinding>> {
+        let Some(binding) = self.content.iter().find(|binding| binding.default_writer)
+        else { return Ok(None); };
+        if binding.volume.class() != crate::conversation::VolumeClass::AgentPrivate
+            || !matches!(binding.volume.owner(), crate::conversation::VolumeOwner::Agent(_))
+        {
+            return Err(Error::Unauthorized("current created scratch is not agent-owned private content".into()));
+        }
+        Ok(Some(binding))
+    }
+
     pub(crate) fn consume(
         admission: &TaskAdmissionRecord,
         receipts: Vec<CreatedResourceReceipt>,
+        current_default_origin: Option<OperationId>,
     ) -> Result<Self> {
         if receipts.len() != admission.resource_proofs.len() || receipts.is_empty() {
             return Err(Error::Unauthorized("created resource receipts are incomplete".into()));
@@ -279,6 +343,7 @@ impl CreatedResourceAccess {
         let mut content = Vec::new();
         let mut volumes = BTreeSet::new();
         let mut default_writer = false;
+        let mut artifact_writer = false;
         for (proof, receipt) in admission.resource_proofs.iter().zip(receipts) {
             if receipt.resource != proof.resource || receipt.evidence != proof.evidence
                 || receipt.origin.preparation_task != proof.preparation
@@ -306,7 +371,20 @@ impl CreatedResourceAccess {
                 };
                 labels.insert(label);
             }
-            for binding in receipt.content {
+            for mut binding in receipt.content {
+                if (binding.default_writer || binding.artifact_writer) && binding.binding.writer.is_none() {
+                    return Err(Error::Unauthorized("created default content has no writer".into()));
+                }
+                binding.default_writer &= current_default_origin == Some(receipt.origin.intended_child);
+                binding.artifact_writer &= current_default_origin == Some(receipt.origin.intended_child);
+                #[cfg(feature = "filesystem")]
+                if let Some(proof) = &binding.scratch_creation {
+                    if proof.volume() != &binding.volume || proof.origin() != &receipt.origin
+                        || binding.artifact_writer
+                    {
+                        return Err(Error::Unauthorized("scratch proof differs from created allocation".into()));
+                    }
+                }
                 let read = binding.volume.capability(crate::conversation::VolumeOperation::Read)?;
                 let write = binding.volume.capability(crate::conversation::VolumeOperation::Write)?;
                 if !labels.contains(&read)
@@ -314,11 +392,16 @@ impl CreatedResourceAccess {
                     || !volumes.insert(crate::contract::canonical_json_bytes(&binding.volume)?)
                     || binding.binding.writer.as_ref().is_some_and(|writer|
                         writer.volume() != &binding.volume || !labels.contains(&write))
+                    || (binding.artifact_writer && (artifact_writer || binding.default_writer
+                        || binding.binding.writer.is_none()
+                        || binding.volume.class() != crate::conversation::VolumeClass::AgentPrivate
+                        || !matches!(binding.volume.owner(), crate::conversation::VolumeOwner::Agent(_))))
                     || (binding.default_writer && (default_writer || binding.binding.writer.is_none()))
                 {
                     return Err(Error::Unauthorized("created content mapping differs from receipt".into()));
                 }
                 default_writer |= binding.default_writer;
+                artifact_writer |= binding.artifact_writer;
                 content.push(binding);
             }
         }

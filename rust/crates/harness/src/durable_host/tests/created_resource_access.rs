@@ -21,7 +21,7 @@ use acyclic_fs::{Fs, MemoryAuthorityBackend, MemoryObjectBackend};
 use acyclic_stream::BoxProviderFuture;
 use serde::{Deserialize, Serialize};
 
-type MemoryFilesystem = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
+pub(crate) type MemoryFilesystem = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
 
 struct CreatedControlMachine {
     identity: MachineIdentity,
@@ -226,23 +226,24 @@ impl ResourceCreationProvider for SandboxCreator {
     }
 }
 
-struct CreationFixture {
-    host: Arc<CoordinatorTaskHost<MemoryStream>>,
-    harness: Arc<AgentHarness>,
-    filesystem: Arc<MemoryFilesystem>,
-    filesystem_provider: ProviderRef,
+pub(crate) struct CreationFixture {
+    pub(crate) host: Arc<CoordinatorTaskHost<MemoryStream>>,
+    pub(crate) harness: Arc<AgentHarness>,
+    pub(crate) filesystem: Arc<MemoryFilesystem>,
+    pub(crate) stream: StreamClient<MemoryStream>,
+    pub(crate) filesystem_provider: ProviderRef,
     creator: Arc<SandboxCreator>,
-    root_scope: RuntimeScope,
+    pub(crate) root_scope: RuntimeScope,
     task: crate::registry::ComponentIdentity,
     machine: MachineIdentity,
     schema: Value,
-    root: TaskId,
-    root_lease: crate::distributed::WorkLease,
-    worker: crate::distributed::Worker,
+    pub(crate) root: TaskId,
+    pub(crate) root_lease: crate::distributed::WorkLease,
+    pub(crate) worker: crate::distributed::Worker,
 }
 
 impl CreationFixture {
-    async fn new() -> Result<Self> {
+    pub(crate) async fn new() -> Result<Self> {
         let stream = StreamClient::new(Arc::new(MemoryStream::default()));
         let filesystem_provider = ProviderRef::new("created-controls", "filesystem", "2")?;
         let filesystem = Arc::new(FilesystemHost::new(Fs::memory(), filesystem_provider.clone())?);
@@ -257,9 +258,10 @@ impl CreationFixture {
             "operation:declare".into(), "operation:observe".into(), "operation:cancel".into(),
             "task:spawn:test.created@1".into(), "resource:create:custom".into(),
             "fork:publish".into(), payload_volume.capability(VolumeOperation::Read)?,
+            "conversation:bind".into(),
             payload_volume.capability(VolumeOperation::Write)?,
         ]);
-        let signed = issuer.root("owner", grants.clone());
+        let signed = issuer.root_for_agent(AgentId::from_bytes([80; 16]), "owner", grants.clone());
         let root_scope = RuntimeScope::new(grants, Limits::default())?
             .with_run_limits(crate::runtime::TaskRunLimits {
                 concurrency: Some(16), max_steps: Some(4), deadline_epoch_ms: None,
@@ -324,7 +326,8 @@ impl CreationFixture {
             return Err(Error::NotFound("created root lease".into()));
         };
         host.start_task(&root_lease).await?;
-        Ok(Self { host, harness, filesystem, filesystem_provider, creator,
+        let stream = host.stream.clone();
+        Ok(Self { host, harness, filesystem, stream, filesystem_provider, creator,
             root_scope, task, machine, schema, root, root_lease, worker })
     }
 
@@ -369,7 +372,7 @@ impl CreationFixture {
         Ok((owner.resource_preparation(request.clone()).await?, lease))
     }
 
-    async fn admit_child(&self, child: TaskAdmissionRecord) -> Result<Admission<TaskId>> {
+    pub(crate) async fn admit_child(&self, child: TaskAdmissionRecord) -> Result<Admission<TaskId>> {
         let admitted = self.host.admit_owned(child, (&self.root_lease.reservation).into()).await?;
         if let Admission::Accepted(task) = &admitted {
             self.start_next(*task).await?;
@@ -527,24 +530,36 @@ async fn cancelled_parent_cannot_consume_existing_created_allocation() -> Result
     Ok(())
 }
 
-struct PreparedFilesystemChild {
-    request: ResourcePreparationRequest,
-    private: VolumeRef,
-    project: VolumeRef,
-    seed: crate::fork::ForkSeed,
+pub(crate) struct PreparedFilesystemChild {
+    pub(crate) request: ResourcePreparationRequest,
+    pub(crate) private: VolumeRef,
+    pub(crate) project: VolumeRef,
+    pub(crate) seed: crate::fork::ForkSeed,
+    pub(crate) report: crate::fork::ForkReport,
+    pub(crate) parent: crate::core::Reducer,
+    pub(crate) parent_scope: crate::core::Scope,
+    pub(crate) parent_verifier: crate::core::AuthorityVerifier,
 }
 
 impl CreationFixture {
-    async fn create_filesystem_child(&self) -> Result<PreparedFilesystemChild> {
+    pub(crate) async fn create_filesystem_child(&self) -> Result<PreparedFilesystemChild> {
+        self.create_filesystem_child_with_grants(&[]).await
+    }
+
+    pub(crate) async fn create_filesystem_child_with_grants(&self, additional: &[&str]) -> Result<PreparedFilesystemChild> {
+        self.create_filesystem_child_with_options(additional, false).await
+    }
+
+    async fn create_filesystem_child_with_options(&self, additional: &[&str], with_result: bool) -> Result<PreparedFilesystemChild> {
         use crate::core::{Action, Command, SchemaRegistry};
         use crate::fork::{ForkPreparation, ForkPreparer, ForkRequest, ForkSelection, ResourceRevision};
         use crate::resources::StreamRef;
         use crate::store::StreamAggregate;
 
         let parent = Authority { kind: AggregateKind::Conversation, id: "created-fork-parent".into() };
-        let parent_agent = AgentId::from_bytes([90; 16]);
+        let parent_agent = AgentId::from_bytes([80; 16]);
         let child_agent = AgentId::from_bytes([91; 16]);
-        let fork_issuer = AuthorityIssuer::new("created-fork", [90; 32], parent.clone());
+        let fork_issuer = AuthorityIssuer::new("created-owner", [80; 32], parent.clone());
         let parent_project = VolumeRef::new(
             self.filesystem_provider.clone(), "parent-project", VolumeClass::Project,
             VolumeOwner::Project("created-project".into()),
@@ -563,7 +578,7 @@ impl CreationFixture {
         let resolver = Arc::new(FilesystemContentVerifier::new(
             self.filesystem.clone(), fork_issuer.verifier(), fork_scope.clone(), 65_536,
         )?);
-        let fork_stream = StreamClient::new(Arc::new(MemoryStream::default()));
+        let fork_stream = self.host.stream.clone();
         let mut aggregate = StreamAggregate::open(
             &fork_stream, parent.clone(), fork_issuer.verifier(), SchemaRegistry::new(),
         ).await?;
@@ -581,6 +596,10 @@ impl CreationFixture {
             self.filesystem_provider.clone(), "child-private", VolumeClass::AgentPrivate,
             VolumeOwner::Agent(child_agent),
         )?;
+        let result = with_result.then(|| VolumeRef::new(
+            self.filesystem_provider.clone(), "child-result", VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(child_agent),
+        )).transpose()?;
         let stream_provider = ProviderRef::new("created-controls", "stream", "2")?;
         let fork = ForkRequest {
             operation_id: OperationId::from_bytes([92; 16]), parent: parent.clone(),
@@ -589,6 +608,7 @@ impl CreationFixture {
             child_agent, attached_agents: Vec::new(),
             preparation: ForkPreparation {
                 child_project_volume: project.clone(), child_private_volume: private.clone(),
+                child_result_volume: result.clone(),
                 summary: None, inherited_through_sequence: 0, maximum_inherited_messages: 1,
                 maximum_inherited_bytes: 65_536, maximum_inherited_references: 1,
             },
@@ -613,7 +633,7 @@ impl CreationFixture {
         ).await?;
         let preparer = FilesystemForkPreparer::new(
             self.filesystem.clone(), aggregate.reducer().clone(), fork_issuer.verifier(),
-            fork_scope, fork.selections.iter().find_map(|selection| match &selection.revision {
+            fork_scope.clone(), fork.selections.iter().find_map(|selection| match &selection.revision {
                 ResourceRevision::Project { volume, .. } => Some(volume.clone()), _ => None,
             }).ok_or_else(|| Error::Invalid("fork fixture project missing".into()))?,
             stream_provider, resolver,
@@ -625,11 +645,17 @@ impl CreationFixture {
             private.capability(VolumeOperation::Read)?, private.capability(VolumeOperation::Write)?,
             project.capability(VolumeOperation::Read)?, project.capability(VolumeOperation::Write)?,
         ]);
+        child.grants = Capabilities::new(child.grants.iter().chain(additional.iter().copied()));
+        if let Some(result) = &result {
+            child.grants = Capabilities::new(child.grants.iter().chain([
+                result.capability(VolumeOperation::Read)?, result.capability(VolumeOperation::Write)?,
+            ].iter().map(String::as_str)));
+        }
         child = child.with_resource_proofs(preparer.creation_proofs(&fork, TaskId::from_bytes([83; 16]))?)?;
         let request = ResourcePreparationRequest {
             provider: self.filesystem_provider.clone(), child,
             resources: preparer.creation_resources(&fork)?, creation_grant: "fork:publish".into(),
-            maximum_resources: 2, maximum_work: 16_384, maximum_bytes: 16 * 1_024 * 1_024,
+            maximum_resources: if with_result {3} else {2}, maximum_work: 16_384, maximum_bytes: 16 * 1_024 * 1_024,
             payload: serde_json::to_value(&fork).map_err(|e| Error::Invalid(e.to_string()))?,
         };
         let creation_operation = preparer.project_creation_operation(&fork)?;
@@ -645,8 +671,9 @@ impl CreationFixture {
         drop(encoded);
         let (preparation, _) = self.prepare(&request).await?;
         let report = preparer.with_task_preparation(Arc::new(preparation))?.prepare(fork).await?;
-        let seed = report.into_seed()?;
-        Ok(PreparedFilesystemChild { request, private, project, seed })
+        let seed = report.clone().into_seed()?;
+        Ok(PreparedFilesystemChild { request, private, project, seed, report,
+            parent: aggregate.reducer().clone(), parent_scope: fork_scope, parent_verifier: fork_issuer.verifier() })
     }
 }
 
@@ -661,6 +688,9 @@ async fn ordinary_task_io_uses_verified_created_volume_without_root_grant_wideni
     assert!(matches!(fixture.admit_child(created.request.child.clone()).await?, Admission::Accepted(_)));
     let task = TaskId::from_bytes([84; 16]);
     let context = fixture.harness.durable_context(task, created.request.child.operation_id).await?;
+    assert_eq!(context.scope().current_created_private_volume()?, Some(&created.private));
+    assert_eq!(context.scope().current_created_agent()?, Some(created.seed.child_agent));
+    assert_eq!(context.scope().current_created_authority()?, Some(&created.seed.child));
     let file = context.stage_file(
         OperationId::from_bytes([93; 16]), "ordinary/result.txt", b"created private bytes",
         "text/plain", "result.txt",
@@ -680,6 +710,8 @@ async fn ordinary_task_io_uses_verified_created_volume_without_root_grant_wideni
     assert_eq!(reopened.read_file(&file).await?, b"created private bytes");
     let read_only = reopened.scoped(Capabilities::new([read.clone()]), reopened.scope().limits())?;
     assert_eq!(read_only.read_file(&file).await?, b"created private bytes");
+    assert_eq!(read_only.scope().current_created_agent()?, Some(created.seed.child_agent));
+    assert_eq!(read_only.scope().current_created_authority()?, Some(&created.seed.child));
     assert!(read_only.stage_file(
         OperationId::from_bytes([94; 16]), "ordinary/denied.txt", b"denied", "text/plain", "denied.txt",
     ).await.is_err());
@@ -824,6 +856,7 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
     )?;
     let journal = FilesystemExecutionJournal::for_task(
         fixture.host.journal_owner(task, fence.clone()).await?, OperationId::from_bytes([103; 16]),
+        OperationId::from_bytes([103; 16]),
         fixture.filesystem.clone(), volume.clone(), fixture.host.verifier.clone(),
         fixture.host.owner_scope.clone(), 65_536,
     )?;
@@ -854,5 +887,103 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
     assert_eq!(context.read_file(&output).await?, b"real created-volume command");
     assert!(!fixture.root_scope.grants().contains(&created.private.capability(VolumeOperation::Write)?));
     assert!(matches!(runtime.task_host().outcome(task).await?, Some(Outcome::Succeeded(_))));
+    Ok(())
+}
+
+fn creation_control_budget() -> acyclic_fs::WorkBudget {
+    let units = 16_384;
+    let bytes = 16 * 1_024 * 1_024;
+    acyclic_fs::WorkBudget {
+        authority_records_read: units, authority_records_appended: units,
+        authority_bytes_read: bytes, authority_bytes_written: bytes,
+        object_probes: units, backend_read_operations: units, backend_write_operations: units,
+        durability_operations: units, page_reads: units, page_writes: units,
+        object_bytes_read: bytes, object_bytes_written: bytes, bytes_hashed: bytes,
+        bytes_copied: bytes, bytes_encoded: bytes, source_bytes_read: bytes,
+        source_path_components: units, source_entries_visited: units, output_bytes: bytes,
+        items_examined: units, items_returned: units, allocation_operations: units,
+        peak_allocation_bytes: bytes, materializations: units,
+    }
+}
+
+#[tokio::test]
+async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_scope() -> Result<()> {
+    let fixture = CreationFixture::new().await?;
+    let created = fixture.create_filesystem_child_with_options(
+        &["fork:publish","conversation:bind"],true,
+    ).await?;
+    assert_eq!(created.request.resources.len(),3);
+    assert_eq!(created.request.child.resource_proofs.len(),3);
+    let result = created.seed.child_result_volume.as_ref()
+        .ok_or_else(|| Error::NotFound("created result slot".into()))?;
+    assert_ne!(result,&created.private);
+    assert_ne!(result,&created.project);
+    assert!(created.seed.child_result_generation.is_some());
+    assert!(!created.seed.resources.iter().any(|resource| match &resource.revision {
+        crate::fork::ResourceRevision::PrivateVolume { volume,.. }
+        | crate::fork::ResourceRevision::Project { volume,.. } => volume == result,
+        _ => false,
+    }));
+    assert!(!fixture.root_scope.grants().contains(&result.capability(VolumeOperation::Write)?));
+    fixture.admit_child(created.request.child.clone()).await?;
+    let task = TaskId::from_bytes(created.request.child.operation_id.into_bytes());
+    let context = fixture.harness.durable_context(task,created.request.child.operation_id).await?;
+    let file = context.stage_file(
+        OperationId::from_bytes([110;16]),"scratch/control.txt",b"scratch",
+        "text/plain","control.txt",
+    ).await?;
+    let artifact = context.stage_artifact(
+        OperationId::from_bytes([111;16]),"artifacts/control.txt",b"result",
+        "text/plain","control.txt",
+    ).await?;
+    assert_eq!(file.volume(),&created.private);
+    assert_eq!(artifact.volume(),result);
+    assert_eq!(context.read_file(&artifact).await?,b"result");
+    assert_eq!(context.scope().current_created_agent()?,Some(created.seed.child_agent));
+    let observation = fixture.host.observe_task(task).await?;
+    let reservation = observation.reservation
+        .ok_or_else(|| Error::NotFound("created child reservation".into()))?;
+    let owner = fixture.host.journal_owner(task,(&reservation).into()).await?;
+    assert_eq!(owner.authenticated_binding_agent()?,Some(created.seed.child_agent));
+    owner.authenticate_fork_parent(&created.seed.child)?;
+    assert!(owner.authenticate_fork_parent(&fixture.host.authority).is_err());
+    let proof = owner.child_scratch_creation_proof()?;
+    assert_eq!(proof.original_task(),task);
+    assert_eq!(proof.agent(),created.seed.child_agent);
+    assert_eq!(proof.volume(),&created.private);
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let authorized = proof.authorize_settlement_measured(&owner,creation_control_budget(),&cancellation).await;
+    assert!(authorized.result.is_ok());
+    assert!(authorized.counters.backend_read_operations > 0);
+    let root_owner = fixture.host.journal_owner(
+        fixture.root,(&fixture.root_lease.reservation).into(),
+    ).await?;
+    assert!(root_owner.child_scratch_creation_proof().is_err());
+    let hostile = proof.authorize_settlement_measured(&root_owner,creation_control_budget(),&cancellation).await;
+    assert!(hostile.result.is_err());
+    assert_eq!(hostile.counters.backend_read_operations,0);
+    let denied = proof.authorize_settlement_measured(&owner,acyclic_fs::WorkBudget::default(),&cancellation).await;
+    assert!(denied.result.is_err());
+    assert_eq!(denied.counters.backend_read_operations,0);
+    cancellation.cancel();
+    let cancelled = proof.authorize_settlement_measured(&owner,creation_control_budget(),&cancellation).await;
+    assert!(cancelled.result.is_err());
+    assert_eq!(cancelled.counters.backend_read_operations,0);
+
+    // The actual provider reauthenticates every result write. Even unchanged
+    // refs and cached handles cannot reinterpret an original result as scratch.
+    let claim = workspace_ref(fixture.filesystem_provider.clone(),
+        &format!("fork-allocation-{}",result.storage_name()?))?;
+    let bytes = fixture.filesystem.read(&claim,None,"/claim.json",65_536).await?;
+    let mut record: Value = crate::contract::json_from_slice(&bytes)
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    record["role"] = serde_json::json!("scratch");
+    fixture.filesystem.apply(&claim,None,&[WorkspaceMutation::PutFile {
+        path:"/claim.json".into(),bytes:crate::contract::canonical_json_bytes(&record)?,
+    }],&IdempotencyKey::new("corrupt-result-role")?).await?;
+    assert!(context.stage_artifact(
+        OperationId::from_bytes([112;16]),"artifacts/after-corruption.txt",b"must not publish",
+        "text/plain","after-corruption.txt",
+    ).await.is_err());
     Ok(())
 }

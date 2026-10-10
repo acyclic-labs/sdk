@@ -1,4 +1,6 @@
 //! Stream-backed execution observations with private Filesystem payloads.
+//! Version 2 observations bind the execution namespace to its original turn.
+//! Unversioned records are not replayable after this envelope cutover.
 
 use super::{FilesystemHost, FilesystemInteractionHost, InternalContentClass};
 use crate::contract::capability;
@@ -196,10 +198,14 @@ impl ExecutionSummary {
     }
 }
 
+const OBSERVATION_VERSION: u32 = 2;
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Observation {
+    version: u32,
     operation_id: OperationId,
+    turn_operation: OperationId,
     retry_digest: String,
     event: ExecutionEvent,
 }
@@ -207,13 +213,16 @@ struct Observation {
 impl Observation {
     fn encode(
         operation_id: OperationId,
+        turn_operation: OperationId,
         claim_id: &str,
         event: &ExecutionEvent,
     ) -> Result<(StreamKey, String, Bytes)> {
         let digest = blake3::hash(format!("{operation_id}:{claim_id}").as_bytes());
         let retry_digest = digest.to_hex().to_string();
         let bytes = serde_json::to_vec(&Self {
+            version: OBSERVATION_VERSION,
             operation_id,
+            turn_operation,
             retry_digest: retry_digest.clone(),
             event: event.clone(),
         })
@@ -231,6 +240,11 @@ impl Observation {
     }
 }
 
+struct TaskExecutionIdentity {
+    operation: OperationId,
+    turn: OperationId,
+}
+
 /// Durable, ref-only journal for one exact agent-private volume.
 pub struct FilesystemExecutionJournal<P, A, O> {
     stream: StreamClient<P>,
@@ -243,6 +257,7 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     input_verifier: Option<Arc<dyn ContentResidencyVerifier>>,
     interactions: Option<FilesystemInteractionHost<P, A, O>>,
     owner: Option<(TaskJournalOwner<P>, OperationId)>,
+    execution: Option<TaskExecutionIdentity>,
     verified: tokio::sync::Mutex<ExecutionSummary>,
     conversation_projection: tokio::sync::Mutex<Option<StreamAggregate<P>>>,
     history_read_limits: Option<crate::store::HistoryReadLimits>,
@@ -250,10 +265,17 @@ pub struct FilesystemExecutionJournal<P, A, O> {
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
     /// Binds one execution to the task's exact lease and coordinator provider.
+    /// The original turn identifies committed context independently of this
+    /// task's execution namespace.
     /// Fresh model starts require their matching retained shared-budget claim.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "task, execution, original turn and storage bindings are explicit"
+    )]
     pub fn for_task(
         owner: TaskJournalOwner<P>,
         operation_id: OperationId,
+        turn_operation: OperationId,
         host: Arc<FilesystemHost<A, O>>,
         volume: VolumeRef,
         verifier: AuthorityVerifier,
@@ -275,14 +297,30 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             maximum_payload_bytes,
         )?;
         journal.owner = Some((owner, operation_id));
+        journal.execution = Some(TaskExecutionIdentity {
+            operation: operation_id,
+            turn: turn_operation,
+        });
         Ok(journal)
+    }
+
+    /// Binds passive replay to an original turn without granting a task lease.
+    pub(super) fn with_turn(mut self, operation: OperationId, turn: OperationId) -> Self {
+        self.execution = Some(TaskExecutionIdentity { operation, turn });
+        self
+    }
+
+    fn turn_operation(&self, operation: OperationId) -> OperationId {
+        self.execution
+            .as_ref()
+            .map_or(operation, |identity| identity.turn)
     }
 
     fn require_operation(&self, operation: OperationId) -> Result<()> {
         if self
-            .owner
+            .execution
             .as_ref()
-            .is_some_and(|(_, bound)| *bound != operation)
+            .is_some_and(|bound| bound.operation != operation)
         {
             return Err(Error::Unauthorized(
                 "journal belongs to another task execution".into(),
@@ -407,7 +445,12 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         let limits = owner.map_or_else(Limits::default, TaskJournalOwner::input_limits);
         self.verify_canonical_publication(operation_id, &event, limits)
             .await?;
-        let (key, retry_digest, bytes) = Observation::encode(operation_id, claim_id, &event)?;
+        let (key, retry_digest, bytes) = Observation::encode(
+            operation_id,
+            self.turn_operation(operation_id),
+            claim_id,
+            &event,
+        )?;
         let retry_key = *blake3::hash(retry_digest.as_bytes()).as_bytes();
         let event_digest = crate::contract::canonical_json_digest(&event)?;
         let mut summary = self.verified.lock().await;
@@ -557,6 +600,10 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         A: AsyncAuthorityStore + 'static,
         O: AsyncObjectStore + 'static,
     {
+        self.require_operation(envelope.operation_id)?;
+        if self.execution.is_some() {
+            self.replay_verified(envelope.operation_id, 0, 1).await?;
+        }
         let previous = match &envelope.selection.checkpoint {
             Some(reference) => {
                 Some(crate::executor::load_canonical_checkpoint(self, reference, limits).await?)
@@ -577,7 +624,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             self.verifier.clone(),
         )?;
         let event = reader
-            .operation_event(envelope.operation_id)
+            .operation_event(self.turn_operation(envelope.operation_id))
             .await?
             .ok_or_else(|| {
                 Error::Conflict("checkpoint source selection is not the committed admission".into())
@@ -858,6 +905,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             input_verifier: None,
             interactions,
             owner: None,
+            execution: None,
             verified: tokio::sync::Mutex::new(ExecutionSummary::default()),
             conversation_projection: tokio::sync::Mutex::new(None),
             history_read_limits: None,
@@ -1167,11 +1215,21 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 .map_err(|error| {
                     Error::Storage(format!("execution journal record is invalid: {error}"))
                 })?;
+            if observation.version != OBSERVATION_VERSION {
+                return Err(Error::Storage(
+                    "execution journal observation version is unsupported".into(),
+                ));
+            }
             if observation.operation_id != operation_id
                 || !keys.insert(observation.retry_digest.clone())
             {
                 return Err(Error::Storage(
                     "execution journal identity is invalid".into(),
+                ));
+            }
+            if observation.turn_operation != self.turn_operation(operation_id) {
+                return Err(Error::Conflict(
+                    "execution journal belongs to another original turn".into(),
                 ));
             }
             let model = self.verify_event_refs(&observation.event).await?;
@@ -1519,6 +1577,10 @@ where
         selected: &'a SelectedModelContext,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            self.require_operation(operation_id)?;
+            let turn_operation = self.turn_operation(operation_id);
+            // A retained observation pins the original-turn association on reopen.
+            self.replay_verified(operation_id, 0, 1).await?;
             let verifier = self.input_verifier.as_ref().ok_or_else(|| {
                 Error::Unsupported("conversation content verifier is not bound".into())
             })?;
@@ -1537,9 +1599,12 @@ where
                 self.verifier.audience(),
                 self.verifier.clone(),
             )?;
-            let event = reader.operation_event(operation_id).await?.ok_or_else(|| {
-                Error::Conflict("turn has no committed model-context selection".into())
-            })?;
+            let event = reader
+                .operation_event(turn_operation)
+                .await?
+                .ok_or_else(|| {
+                    Error::Conflict("turn has no committed model-context selection".into())
+                })?;
             let crate::core::EventPayload::ModelContextSelected {
                 selection: committed,
             } = event.payload
@@ -1784,6 +1849,143 @@ mod tests {
         executor::ModelPurpose,
         resources::ProviderRef,
     };
+
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one production journal roundtrip and isolated persisted-header adversaries"
+    )]
+    async fn observation_reopen_preserves_original_turn_and_rejects_header_substitution()
+    -> Result<()> {
+        let provider = ProviderRef::new("observation-identity", "filesystem", "2")?;
+        let host = Arc::new(FilesystemHost::new(
+            acyclic_fs::Fs::memory(),
+            provider.clone(),
+        )?);
+        let agent = AgentId::new();
+        let volume = VolumeRef::new(
+            provider,
+            "observation-identity",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+        )?;
+        host.create_volume(&volume).await?;
+        let issuer = crate::core::AuthorityIssuer::new(
+            "observation-identity",
+            [81; 32],
+            crate::core::Authority {
+                kind: crate::core::AggregateKind::Conversation,
+                id: crate::ConversationId::new().to_string(),
+            },
+        );
+        let scope = issuer.root_for_agent(
+            agent,
+            "owner",
+            crate::Capabilities::new([
+                volume.capability(VolumeOperation::Read)?,
+                volume.capability(VolumeOperation::Write)?,
+            ]),
+        );
+        let stream = StreamClient::new(Arc::new(acyclic_stream::MemoryStream::default()));
+        let open = |operation, turn| {
+            FilesystemExecutionJournal::new(
+                stream.clone(),
+                host.clone(),
+                volume.clone(),
+                issuer.verifier(),
+                scope.clone(),
+                4096,
+            )
+            .map(|journal| journal.with_turn(operation, turn))
+        };
+        let turn = OperationId::new();
+        let operation = super::super::task_runtime::execution_operation(crate::TaskId::new(), turn);
+        assert_ne!(operation, turn);
+        let event = ExecutionEvent::Started {
+            request_digest: [9; 32],
+        };
+        open(operation, turn)?
+            .append(operation, "start".into(), event.clone())
+            .await?;
+        let reopened = open(operation, turn)?;
+        let records = reopened.replay(operation, 0, 1).await?;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records.first().map(|record| &record.event), Some(&event));
+        reopened
+            .append(operation, "start".into(), event.clone())
+            .await?;
+        assert_eq!(reopened.replay(operation, 0, 2).await?.len(), 1);
+        assert!(matches!(
+            open(operation, OperationId::new())?
+                .replay(operation, 0, 1)
+                .await,
+            Err(Error::Conflict(message)) if message.contains("another original turn")
+        ));
+        assert!(matches!(
+            reopened.replay(turn, 0, 1).await,
+            Err(Error::Unauthorized(_))
+        ));
+        let (_, first_retry, _) = Observation::encode(operation, turn, "first", &event)?;
+        let (_, second_retry, _) = Observation::encode(operation, turn, "second", &event)?;
+        assert_ne!(first_retry, second_retry);
+        // Summary provider attempts have their own operation, not a new journal
+        // namespace. Substituting that operation into the envelope must fail.
+        let summary_operation = ModelPurpose::Summary.attempt_operation(operation);
+        assert_ne!(summary_operation, operation);
+        for mutation in [
+            "wrong_execution",
+            "summary_attempt_as_execution",
+            "wrong_turn",
+            "missing_turn",
+            "missing_version",
+            "old_version",
+            "unknown_version",
+            "wrong_version_type",
+            "unknown_field",
+        ] {
+            let target = OperationId::new();
+            let (_, _, bytes) = Observation::encode(target, turn, "start", &event)?;
+            let mut wire: serde_json::Value = serde_json::from_slice(&bytes)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            match mutation {
+                "wrong_execution" => wire["operation_id"] = serde_json::json!(operation),
+                "summary_attempt_as_execution" => {
+                    wire["operation_id"] = serde_json::json!(summary_operation);
+                }
+                "wrong_turn" => wire["turn_operation"] = serde_json::json!(OperationId::new()),
+                "missing_turn" => {
+                    wire.as_object_mut().ok_or_else(|| Error::Invalid("envelope".into()))?
+                        .remove("turn_operation");
+                }
+                "missing_version" => {
+                    wire.as_object_mut().ok_or_else(|| Error::Invalid("envelope".into()))?
+                        .remove("version");
+                }
+                "old_version" => wire["version"] = serde_json::json!(1),
+                "unknown_version" => wire["version"] = serde_json::json!(3),
+                "wrong_version_type" => wire["version"] = serde_json::json!("2"),
+                "unknown_field" => wire["event_operation"] = serde_json::json!(operation),
+                _ => unreachable!("enumerated envelope mutation"),
+            }
+            let journal = open(target, turn)?;
+            journal.path(target)?
+                .append_batch(
+                    vec![Bytes::from(serde_json::to_vec(&wire)
+                        .map_err(|error| Error::Invalid(error.to_string()))?)],
+                    Some(0),
+                    None,
+                )
+                .await?;
+            assert!(
+                matches!(
+                    open(target, turn)?.replay(target, 0, 1).await,
+                    Err(Error::Storage(_) | Error::Conflict(_))
+                ),
+                "accepted {mutation}"
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn compaction_publication_requires_settled_summary_before_response() -> Result<()> {
@@ -2203,6 +2405,16 @@ mod tests {
             .ok_or_else(|| Error::NotFound("cold history".into()))?;
         let omitted_source = source(history, omitted.clone(), content.as_ref(), limits).await?;
         let complete_source = source(history, complete.clone(), content.as_ref(), limits).await?;
+        let selected = select_model_context_at_revision(
+            history,
+            complete.clone(),
+            content.as_ref(),
+            limits.context_messages,
+            limits.attachments,
+            limits.render_bytes,
+            limits.attachments,
+        )
+        .await?;
         let placeholder = references
             .last()
             .ok_or_else(|| Error::NotFound("cold placeholder".into()))?
@@ -2232,6 +2444,36 @@ mod tests {
             maximum_events: 4,
             maximum_bytes: 16_384,
         })?;
+        // The committed conversation operation is the original turn, while
+        // stock execution and its checkpoint retain the task-derived namespace.
+        let execution_operation = super::super::task_runtime::execution_operation(
+            crate::TaskId::new(),
+            complete_operation,
+        );
+        assert_ne!(execution_operation, complete_operation);
+        let bound = new_journal()?
+            .with_turn(execution_operation, complete_operation)
+            .with_history_read_limits(crate::store::HistoryReadLimits {
+                maximum_events: 4,
+                maximum_bytes: 16_384,
+            })?;
+        bound
+            .verify_selected_context(execution_operation, &selected)
+            .await?;
+        bound
+            .verify_canonical_source(
+                &envelope(execution_operation, complete.clone()),
+                &complete_source,
+                limits,
+            )
+            .await?;
+        assert!(matches!(
+            new_journal()?
+                .with_turn(execution_operation, omitted_operation)
+                .verify_selected_context(execution_operation, &selected)
+                .await,
+            Err(Error::Conflict(message)) if message.contains("committed turn")
+        ));
         provider.forbid_writes.store(true, Ordering::SeqCst);
         provider.observation_reads.store(0, Ordering::SeqCst);
         assert!(

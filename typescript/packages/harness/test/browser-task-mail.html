@@ -36,13 +36,20 @@ try {
   assert(sent.work.kind === "yielded", `sender did not yield after mail publication: ${describe(sent)}`);
   const inbox = await runtime.inbox(receiver.task_id, 0n, 4);
   assert(inbox.length === 1 && inbox[0].sequence === 1n, `delivery not durably acknowledged: ${describe(inbox)}`);
+  assert(inbox[0].task_id === receiver.task_id, "inbox exposure changed exact envelope recipient");
+  assert(inbox[0].payload.path === payload.path && inbox[0].payload.version === payload.version, "inbox changed immutable payload identity");
   assert(typeof inbox[0].payload.descriptor.byte_length === "number", "inbox FileRef differs from generated Number contract");
   assert(await runtime.outcome(receiver.task_id) === null, "delivery fabricated recipient consumption");
   runtime.free();
   runtime = await fixture.open();
   result.dataset.waiting = "redeliver exact intent after lost acknowledgment and reopen";
-  await runtime.send(sent.work.lease, receiver.task_id, inbox[0].message_id, payload);
-  assert((await runtime.inbox(receiver.task_id, 0n, 4)).length === 1, "exact redelivery duplicated receiver bytes");
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await runtime.send(sent.work.lease, receiver.task_id, inbox[0].message_id, payload);
+    const redelivered = await runtime.inbox(receiver.task_id, 0n, 4);
+    assert(redelivered.length === 1 && redelivered[0].task_id === receiver.task_id &&
+      redelivered[0].message_id === inbox[0].message_id && redelivered[0].sequence === 1n,
+      "exact redelivery duplicated or replaced receiver identity");
+  }
   const changed = await stage(command, "changed", "different message");
   let rejected = false;
   try { await runtime.send(sent.work.lease, receiver.task_id, inbox[0].message_id, changed); }
