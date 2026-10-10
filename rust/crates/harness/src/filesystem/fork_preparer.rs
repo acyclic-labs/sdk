@@ -82,6 +82,37 @@ struct SeedBinding {
     digest: [u8; 32],
 }
 
+impl bounded_io::UploadRecord for SeedBinding {
+    fn logical_owned_bytes(&self) -> Result<u64> {
+        // The complete decoded record is an inline fixed-size digest.
+        Ok(0)
+    }
+}
+
+impl bounded_io::UploadRecord for AllocationClaim {
+    fn logical_owned_bytes(&self) -> Result<u64> {
+        let provider = self.volume.provider();
+        let owner = match self.volume.owner() {
+            crate::conversation::VolumeOwner::Project(owner)
+            | crate::conversation::VolumeOwner::Session(owner) => owner.len(),
+            crate::conversation::VolumeOwner::Agent(_) => 0,
+        };
+        let mut bytes = [
+            self.parent.id.len(), self.child.id.len(), provider.namespace().len(),
+            provider.family().len(), provider.version().len(), self.volume.id().len(), owner,
+        ].into_iter().try_fold(0_u64, |total,length| total.checked_add(length as u64)
+            .ok_or_else(|| Error::Invalid("allocation decode ownership overflows".into())))?;
+        if let Some(origin) = &self.task_origin {
+            for length in [origin.owner.id.len(), origin.creation_fence.reservation_id.len(),
+                origin.creation_fence.placement.len()] {
+                bytes = bytes.checked_add(length as u64)
+                    .ok_or_else(|| Error::Invalid("allocation origin ownership overflows".into()))?;
+            }
+        }
+        Ok(bytes)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CaptureAttempt {
@@ -1334,10 +1365,33 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         seed: &ForkSeed,
         volume: &VolumeRef,
     ) -> Result<()> {
-        let journal = allocation_ref(self.provider.clone(), volume)?;
-        let claim = read_record::<A, O, AllocationClaim>(self, &journal, "/claim.json", MAX_REQUEST_BYTES)
+        self.verify_fork_allocation_io(seed,volume,None).await
+    }
+
+    pub(crate) async fn verify_fork_allocation_io(
+        &self, seed: &ForkSeed, volume: &VolumeRef, io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        let journal_hold;
+        let journal = allocation_ref_io(&self.provider, volume, io)?;
+        journal_hold = io.map(|io| {
+            let resource = journal.as_resource();
+            let provider = resource.provider();
+            let bytes = [resource.key().len(),provider.namespace().len(),provider.family().len(),provider.version().len()]
+                .into_iter().try_fold(0_u64, |total,bytes| total.checked_add(bytes as u64)
+                    .ok_or_else(|| Error::Invalid("allocation journal ownership overflows".into())))?;
+            io.guard_owned(bytes)
+        }).transpose()?;
+        let claim = read_record_decoded_bounded::<A,O,AllocationClaim>(
+            self,&journal,"/claim.json",MAX_REQUEST_BYTES,io,
+            |bytes, io| match io {
+                Some(io) => io.decode_json(bytes),
+                None => crate::contract::json_from_slice(bytes)
+                    .map_err(|error| Error::Invalid(format!("fork allocation is invalid: {error}"))),
+            },
+        )
             .await?
             .ok_or_else(|| Error::Unauthorized("fork child volume was not allocated".into()))?;
+        let validation = (|| {
         if claim.operation_id != seed.operation_id
             || claim.parent != seed.parent
             || claim.child != seed.child
@@ -1348,16 +1402,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "fork child volume belongs to another preparation".into(),
             ));
         }
-        let binding = read_record::<A, O, SeedBinding>(self, &journal, "/seed.json", MAX_REQUEST_BYTES)
+        Ok(())
+        })();
+        let retained = bounded_io::UploadRecord::logical_owned_bytes(&claim)?;
+        drop(claim);
+        if let Some(io) = io { io.release(retained)?; }
+        validation?;
+        let binding = read_record_decoded_bounded::<A,O,SeedBinding>(
+            self,&journal,"/seed.json",MAX_REQUEST_BYTES,io,
+            |bytes, io| match io {
+                Some(io) => io.decode_json(bytes),
+                None => crate::contract::json_from_slice(bytes)
+                    .map_err(|error| Error::Invalid(format!("fork seed binding is invalid: {error}"))),
+            },
+        )
             .await?
             .ok_or_else(|| {
                 Error::Unauthorized("fork seed was not bound to its allocation".into())
             })?;
-        if binding != seed_binding(seed)? {
+        if binding != seed_binding_bounded(seed,io)? {
             return Err(Error::Conflict(
                 "fork seed differs from its allocated publication".into(),
             ));
         }
+        drop(journal);
+        drop(journal_hold);
         Ok(())
     }
 
@@ -1457,13 +1526,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 }
 
 fn same_allocation_claim(retained: &AllocationClaim, requested: &AllocationClaim) -> bool {
-    let mut expected = requested.clone();
-    if let (Some(prior), Some(current)) = (&retained.task_origin, &mut expected.task_origin) {
-        // A legitimate recovery owns a new current reservation. Keep the first
-        // creation fence in the protected record; compare all other bindings.
-        current.creation_fence = prior.creation_fence.clone();
+    if retained.operation_id != requested.operation_id
+        || retained.preparation_digest != requested.preparation_digest
+        || retained.parent != requested.parent || retained.child != requested.child
+        || retained.volume != requested.volume || retained.role != requested.role {
+        return false;
     }
-    retained == &expected
+    // Recovery changes only the current reservation: retain the original
+    // creation fence without cloning either complete claim or lease strings.
+    match (&retained.task_origin,&requested.task_origin) {
+        (None,None) => true,
+        (Some(prior),Some(current)) =>
+            prior.owner == current.owner && prior.parent_task == current.parent_task
+                && prior.preparation_task == current.preparation_task
+                && prior.intended_child == current.intended_child
+                && prior.admission_digest == current.admission_digest
+                && prior.request_digest == current.request_digest,
+        _ => false,
+    }
 }
 
 fn allocation_ref(provider: ProviderRef, volume: &VolumeRef) -> Result<WorkspaceRef> {
@@ -1473,15 +1553,45 @@ fn allocation_ref(provider: ProviderRef, volume: &VolumeRef) -> Result<Workspace
     )
 }
 
+fn allocation_ref_io(provider: &ProviderRef, volume: &VolumeRef, io: Option<&PreparationIo>) -> Result<WorkspaceRef> {
+    let Some(io) = io else { return allocation_ref(provider.clone(),volume); };
+    let volume_hold;
+    let volume_name = bounded_io::volume_storage_name(volume,Some(io))?;
+    volume_hold = io.guard_owned(volume_name.len() as u64)?;
+    let length = "fork-allocation-".len().checked_add(volume_name.len())
+        .ok_or_else(|| Error::Invalid("allocation journal name overflows".into()))?;
+    io.claim(length as u64)?;
+    let name_hold = io.guard_owned(length as u64)?;
+    io.allocation_attempt(length as u64)?;
+    let mut name = String::with_capacity(length);
+    name.push_str("fork-allocation-");
+    name.push_str(&volume_name);
+    drop(volume_name);
+    drop(volume_hold);
+    bounded_io::strings(io,&[provider.namespace(),provider.family(),provider.version()])?;
+    io.claim(length as u64)?;
+    let result = workspace_ref(provider.clone(),&name);
+    drop(name);
+    drop(name_hold);
+    result
+}
+
 fn seed_binding(seed: &ForkSeed) -> Result<SeedBinding> {
     seed_binding_bounded(seed, None)
 }
 
 fn seed_binding_bounded(seed: &ForkSeed, io: Option<&PreparationIo>) -> Result<SeedBinding> {
     seed.validate()?;
-    Ok(SeedBinding {
-        digest: *blake3::hash(&encode_bounded(seed, MAX_REPORT_BYTES, io)?).as_bytes(),
-    })
+    let encoded_hold;
+    let encoded = encode_bounded(seed,MAX_REPORT_BYTES,io)?;
+    encoded_hold = io.map(|io| io.guard_owned(encoded.len() as u64)).transpose()?;
+    let hash = acyclic_fs::WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() };
+    if let Some(io) = io { io.preflight(hash)?; }
+    let digest = *blake3::hash(&encoded).as_bytes();
+    if let Some(io) = io { io.charge(hash)?; }
+    drop(encoded);
+    drop(encoded_hold);
+    Ok(SeedBinding {digest})
 }
 
 fn encode_bounded<T: Serialize>(value: &T, maximum_bytes: u64, io: Option<&PreparationIo>) -> Result<Vec<u8>> {
@@ -1607,10 +1717,25 @@ async fn read_record_bounded<A: AsyncAuthorityStore, O: AsyncObjectStore, T: Des
     host: &FilesystemHost<A, O>, journal: &WorkspaceRef, path: &str, maximum_bytes: u64,
     io: Option<&PreparationIo>,
 ) -> Result<Option<T>> {
-    match bounded_io::read(host, journal, path, maximum_bytes, io).await {
-        Ok(bytes) => crate::contract::json_from_slice(&bytes)
-            .map(Some)
+    read_record_decoded_bounded(host,journal,path,maximum_bytes,io, |bytes,_|
+        crate::contract::json_from_slice(bytes)
             .map_err(|error| Error::Invalid(format!("fork journal record is invalid: {error}"))),
+    ).await
+}
+
+async fn read_record_decoded_bounded<A: AsyncAuthorityStore, O: AsyncObjectStore,T>(
+    host: &FilesystemHost<A,O>, journal: &WorkspaceRef, path: &str, maximum_bytes:u64,
+    io: Option<&PreparationIo>,
+    decode: impl FnOnce(&[u8], Option<&PreparationIo>)->Result<T>,
+) -> Result<Option<T>> {
+    match bounded_io::read(host, journal, path, maximum_bytes, io).await {
+        Ok(bytes) => {
+            let raw = io.map(|io| io.reserve_decode(bytes.len() as u64)).transpose()?;
+            let value = decode(&bytes,io);
+            drop(bytes);
+            drop(raw);
+            value.map(Some)
+        }
         Err(Error::NotFound(_)) => Ok(None),
         Err(error) => Err(error),
     }
@@ -1685,6 +1810,43 @@ mod task_origin_tests {
             .await?
             .ok_or_else(|| Error::NotFound("retained allocation".into()))?;
         assert_eq!(retained, claim);
+        // Decode the actual retained provider record through the same audited
+        // codec used by the finite allocation verifier, not a Value heap label.
+        let bytes = host.read(&journal,None,"/claim.json",65_536).await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::WorkBudget {
+            source_bytes_read: 65_536,items_examined: 4_096,
+            peak_allocation_bytes: 65_536,..Default::default()
+        };
+        let io = PreparationIo::from_budget(budget,&cancellation)?;
+        let raw_hold = io.reserve_decode(bytes.len() as u64)?;
+        let decoded: AllocationClaim = io.decode_json(&bytes)?;
+        assert_eq!(decoded,claim);
+        let owned = bounded_io::UploadRecord::logical_owned_bytes(&decoded)?;
+        assert_eq!(io.owned_bytes()?,bytes.len() as u64+owned);
+        drop(decoded);
+        io.release(owned)?;
+        drop(raw_hold);
+        assert_eq!(io.owned_bytes()?,0);
+        let denied = PreparationIo::from_budget(
+            acyclic_fs::WorkBudget { peak_allocation_bytes:0,..budget },&cancellation,
+        )?;
+        assert!(denied.decode_json::<AllocationClaim>(&bytes).is_err());
+        assert_eq!(denied.owned_bytes()?,0);
+        let mut malformed: serde_json::Value = crate::contract::json_from_slice(&bytes)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        malformed.as_object_mut().ok_or_else(|| Error::Invalid("claim object".into()))?
+            .remove("role");
+        let malformed = encode_record(&malformed,65_536)?;
+        let rejected = PreparationIo::from_budget(budget,&cancellation)?;
+        assert!(rejected.decode_json::<AllocationClaim>(&malformed).is_err());
+        assert_eq!(rejected.owned_bytes()?,0);
+        for role in [ForkAllocationRole::Project,ForkAllocationRole::Result] {
+            let mut changed = claim.clone();
+            changed.role = role;
+            assert!(matches!(host.claim_fork_allocation(changed).await,
+                Err(Error::Conflict(_))));
+        }
         for field in 0..6 {
             let mut changed = claim.clone();
             let origin = changed

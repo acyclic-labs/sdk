@@ -240,6 +240,7 @@ impl<P: StreamProvider> crate::resource_preparation::CreatedTaskLease
 struct TaskRootBinding {
     proof: std::sync::OnceLock<crate::store::VerifiedRootBinding>,
     gate: tokio::sync::Mutex<()>,
+    pending: std::sync::OnceLock<(OperationId,[u8;32],[u8;32])>,
 }
 
 /// One worker's exact task lease, bound to the coordinator's own Stream provider.
@@ -717,6 +718,45 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.require_volume_grant_with_work(volume, operation, &mut io)
     }
 
+    /// Reads the original owned task's actual terminal result on the same
+    /// native ledger. This read grants no execution/publication lease: terminal
+    /// tasks no longer have one. Nonterminal or uncertain work returns `None`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn outcome_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<crate::Outcome<FileRef>>> {
+        let mut io = crate::store::history::native_work_io(work)?;
+        let mut coordinator = self.host.coordinator.lock().await;
+        coordinator.refresh_with_work(&mut Some(&mut io)).await?;
+        let operation = coordinator.observe_operation_ref_with_work(
+            &self.host.owner, &self.host.owner_scope, &self.host.verifier,
+            self.operation_id(), &mut Some(&mut io),
+        )?;
+        if operation.phase != crate::scheduler::OperationPhase::Terminal {
+            return Ok(None);
+        }
+        let Some(outcome) = &operation.outcome else {
+            return Err(Error::Invalid("terminal original task lacks its outcome".into()));
+        };
+        let outcome = match outcome {
+            crate::Outcome::Succeeded(reference) => {
+                let bytes = crate::filesystem::UploadRecord::logical_owned_bytes(reference)?;
+                crate::store::history::HistoryIo::retain_owned(&mut io, bytes)?;
+                crate::store::history::HistoryIo::codec_charge(&mut io,
+                    crate::contract::JsonCodecCharge::Copy {bytes})?;
+                crate::Outcome::Succeeded(reference.clone())
+            },
+            crate::Outcome::Failed {message} => crate::Outcome::Failed {
+                message: crate::store::history::HistoryIo::clone_text(&mut io,message)?,
+            },
+            crate::Outcome::Cancelled => crate::Outcome::Cancelled,
+            crate::Outcome::Indeterminate {..} => {
+                return Err(Error::Invalid("uncertain task outcome cannot be terminal".into()));
+            },
+        };
+        Ok(Some(outcome))
+    }
+
     /// Verifies the original task's current fresh-dispatch fence using the
     /// existing SDK-call ledger, not inferred provider-internal OS work.
     pub async fn verify_dispatch_measured(
@@ -866,9 +906,15 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         operation: OperationId,
         records: &[crate::executor::ExecutionRecord],
     ) -> Result<()> {
-        self.host
-            .verify_model_history(self.task_id, operation, records)
-            .await
+        self.verify_model_history_with_work(operation,records.iter(),&mut None).await
+    }
+
+    pub(crate) async fn verify_model_history_with_work<'a>(
+        &self, operation: OperationId,
+        records: impl Iterator<Item=&'a crate::executor::ExecutionRecord> + Clone,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.host.verify_model_history_with_work(self.task_id,operation,records,work).await
     }
 
     pub(crate) fn require_effect_grants(&self, provider: &str, planning: bool) -> Result<()> {
@@ -918,6 +964,22 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if let Some(proof) = self.root_binding.as_ref().and_then(|state| state.proof.get()) {
             if proof.audience() != audience || proof.bind_operation() != operation || proof.intent_digest() != intent {
                 return Err(Error::Conflict("root binding audience, operation or intent changed".into()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Pins a denial-only choice after protected scope authentication and
+    /// measured audience hashing. It survives lost acknowledgment; it never
+    /// supplies publication authority in place of a verified root bind.
+    pub(crate) fn pin_root_binding_choice(
+        &self, operation: OperationId, intent: [u8;32], audience_digest: [u8;32],
+    ) -> Result<()> {
+        let Some(state) = &self.root_binding else { return Ok(()); };
+        let choice = (operation,intent,audience_digest);
+        if let Err(choice) = state.pending.set(choice) {
+            if state.pending.get() != Some(&choice) {
+                return Err(Error::Conflict("root binding publication choice changed".into()));
             }
         }
         Ok(())
@@ -1243,7 +1305,17 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         operation: OperationId,
         records: &[crate::executor::ExecutionRecord],
     ) -> Result<()> {
-        if !records.iter().any(|record| {
+        self.verify_model_history_with_work(task,operation,records.iter(),&mut None).await
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) async fn verify_model_history_with_work<'a>(
+        &self, task: TaskId, operation: OperationId,
+        records: impl Iterator<Item=&'a crate::executor::ExecutionRecord> + Clone,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
+        if !records.clone().any(|record| {
             matches!(
                 record.event,
                 crate::executor::ExecutionEvent::ModelStarted { .. }
@@ -1253,12 +1325,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let task_operation = OperationId::from_bytes(task.into_bytes());
         let mut coordinator = self.coordinator.lock().await;
-        coordinator.refresh().await?;
-        coordinator.observe_operation(
+        coordinator.refresh_with_work(work).await?;
+        coordinator.observe_operation_ref_with_work(
             &self.owner,
             &self.owner_scope,
             &self.verifier,
-            task_operation,
+            task_operation, work,
         )?;
         for record in records {
             if let crate::executor::ExecutionEvent::ModelStarted {
@@ -1841,9 +1913,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(retained && self.clock.now_unix_millis() >= deadline)
     }
 
-    /// Uses the existing owner-authenticated wake publication, with stable input.
+    /// Wakes the exact retained waiting command using the existing owner-
+    /// authenticated revision CAS. This does not dispatch or replace that command.
     #[cfg(feature = "filesystem")]
-    pub(crate) async fn wake_command(
+    pub async fn wake_command(
         &self,
         task: TaskId,
         revision: u64,

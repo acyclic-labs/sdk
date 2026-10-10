@@ -856,6 +856,12 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
         operation_revision: observation.revision,
     };
     let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
+    let original_owner = fixture.host.journal_owner(task,fence.clone()).await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let native_work = acyclic_fs::NativeMaterializationWork::new(
+        creation_control_budget(),&cancellation,
+    ).map_err(|failure| Error::Storage(failure.error.to_string()))?;
+    assert!(original_owner.outcome_with_native_work(&native_work).await?.is_none());
     let context = fixture.harness.durable_context(task, created.request.child.operation_id).await?;
     let command_payload = context.stage_file_once(
         OperationId::from_bytes([102; 16]), "ordinary/command.json",
@@ -900,6 +906,18 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
     assert_eq!(context.read_file(&output).await?, b"real created-volume command");
     assert!(!fixture.root_scope.grants().contains(&created.private.capability(VolumeOperation::Write)?));
     assert!(matches!(runtime.task_host().outcome(task).await?, Some(Outcome::Succeeded(_))));
+    // A terminal read uses the original authenticated owner, not an invented
+    // settlement lease: actual completion has already released that lease.
+    assert!(matches!(
+        original_owner.outcome_with_native_work(&native_work).await?,
+        Some(Outcome::Succeeded(_))
+    ));
+    assert!(native_work.receipt().backend_read_operations > 0);
+    assert!(original_owner.verify_with_native_work(true,&native_work).await.is_err());
+    cancellation.cancel();
+    let before = native_work.receipt();
+    assert!(original_owner.outcome_with_native_work(&native_work).await.is_err());
+    assert_eq!(native_work.receipt().backend_read_operations,before.backend_read_operations);
     Ok(())
 }
 
@@ -927,6 +945,15 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
     ).await?;
     assert_eq!(created.request.resources.len(),3);
     assert_eq!(created.request.child.resource_proofs.len(),3);
+    let allocation_cancellation = acyclic_fs::CancellationToken::new();
+    let allocation_io = crate::filesystem::PreparationIo::from_budget(
+        creation_control_budget(),&allocation_cancellation,
+    )?;
+    fixture.filesystem.verify_fork_allocation_io(
+        &created.seed,&created.private,Some(&allocation_io),
+    ).await?;
+    assert!(allocation_io.receipt().backend_read_operations > 0);
+    assert_eq!(allocation_io.owned_bytes()?,0);
     let result = created.seed.child_result_volume.as_ref()
         .ok_or_else(|| Error::NotFound("created result slot".into()))?;
     assert_ne!(result,&created.private);
@@ -998,6 +1025,44 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
         OperationId::from_bytes([112;16]),"artifacts/after-corruption.txt",b"must not publish",
         "text/plain","after-corruption.txt",
     ).await.is_err());
+    let rejected_io = crate::filesystem::PreparationIo::from_budget(
+        creation_control_budget(),&allocation_cancellation,
+    )?;
+    assert!(fixture.filesystem.verify_fork_allocation_io(
+        &created.seed,result,Some(&rejected_io),
+    ).await.is_err());
+    assert!(rejected_io.receipt().backend_read_operations > 0);
+    assert_eq!(rejected_io.owned_bytes()?,0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn uncertain_root_choice_is_denial_only_and_rejects_identity_substitution() -> Result<()> {
+    let fixture = CreationFixture::new().await?;
+    let owner = fixture.host.journal_owner(
+        fixture.root,(&fixture.root_lease.reservation).into(),
+    ).await?;
+    let operation = OperationId::from_bytes([113;16]);
+    let intent = [114;32];
+    let audience = [115;32];
+    owner.pin_root_binding_choice(operation,intent,audience)?;
+    owner.pin_root_binding_choice(operation,intent,audience)?;
+    for offset in 0..32 {
+        let mut changed_intent = intent;
+        changed_intent[offset] ^= 1;
+        assert!(matches!(owner.pin_root_binding_choice(operation,changed_intent,audience),
+            Err(Error::Conflict(_))));
+        let mut changed_audience = audience;
+        changed_audience[offset] ^= 1;
+        assert!(matches!(owner.pin_root_binding_choice(operation,intent,changed_audience),
+            Err(Error::Conflict(_))));
+    }
+    assert!(matches!(owner.pin_root_binding_choice(
+        OperationId::from_bytes([116;16]),intent,audience),Err(Error::Conflict(_))));
+    // A pinned uncertain choice is not a verified BindConversation proof and
+    // cannot turn the coordinator's tenant authority into a fork audience.
+    assert!(owner.root_binding.as_ref().and_then(|state| state.proof.get()).is_none());
+    assert!(owner.authenticate_fork_parent(&fixture.host.authority).is_err());
     Ok(())
 }
 

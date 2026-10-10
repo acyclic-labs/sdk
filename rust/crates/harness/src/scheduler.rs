@@ -186,13 +186,20 @@ impl OperationSpec {
         owner: &Authority,
         verifier: &crate::core::AuthorityVerifier,
     ) -> Result<()> {
+        self.verify_owner_with_work(owner,verifier,&mut None)
+    }
+
+    pub(crate) fn verify_owner_with_work(
+        &self, owner: &Authority, verifier: &crate::core::AuthorityVerifier,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
         if self.owner.authority() != owner {
             return Err(Error::Unauthorized(
                 "declaration belongs to another owner".into(),
             ));
         }
         verifier.verify_audience(owner)?;
-        verifier.verify(&self.owner_scope)?;
+        verifier.verify_scope_for_with_work(owner,&self.owner_scope,work)?;
         if !self
             .owner_scope
             .capabilities()
