@@ -90,6 +90,8 @@ runs:
 
     - name: Enable compiler cache
       uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a # v0.0.9
+      with:
+        version: v0.18.0
 
     - name: Find Visual Studio clang
       id: clang
