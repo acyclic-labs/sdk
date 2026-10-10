@@ -705,6 +705,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         }
     }
     for retained in 1..=1_000_u128 {
+        provider.reset_io();
         let id = EffectId::from_bytes(uuid::Uuid::from_u128(retained + 10_000_000).into_bytes());
         ordinal += 1;
         aggregate
@@ -740,6 +741,17 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 Action::ResolveEffect { observation },
             ))
             .await?;
+        let publication_io = provider.io_snapshot();
+        assert!(publication_io.reads <= 512);
+        assert!(publication_io.tails <= 512);
+        assert!(publication_io.writes <= 512);
+        assert!(publication_io.records <= 512);
+        assert!(publication_io.read_bytes <= 1_048_576);
+        assert!(publication_io.write_bytes <= 1_048_576);
+        assert!(publication_io.inspections <= 512);
+        assert!(publication_io.commit_reads <= 512);
+        assert!(publication_io.receipt_bytes <= 1_048_576);
+        assert!(publication_io.other_calls <= 512);
         if matches!(retained, 1 | 100 | 1_000) {
             assert_eq!(aggregate.reducer().resident_terminal_effect_count(), 2);
             assert_eq!(aggregate.reducer().resident_effect_count(), 5);
@@ -782,6 +794,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 maximum_events: 3,
                 maximum_bytes: 1_000_000,
             };
+            provider.reset_io();
             let archive_reader = HistoryReader::new(&stream, &authority, issuer.verifier())?;
             let archive_cut = archive_reader.pin(0).await?;
             provider.observation_bytes.store(0, Ordering::SeqCst);
@@ -790,6 +803,44 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                     .effect(&archive_cut, effect_id, probe)
                     .await?,
                 Some(completed.clone())
+            );
+            let archive_io = provider.io_snapshot();
+            assert!(archive_io.reads <= 137);
+            assert!(archive_io.tails <= 131);
+            assert_eq!(archive_io.writes, 0);
+            assert_eq!(archive_io.records, 0);
+            assert_eq!(archive_io.write_bytes, 0);
+            assert_eq!(archive_io.inspections, 0);
+            assert_eq!(archive_io.commit_reads, 0);
+            assert_eq!(archive_io.receipt_bytes, 0);
+            assert_eq!(archive_io.other_calls, 0);
+            let (node_count, node_bytes, certificate_count, certificate_bytes) = {
+                let retained_records = provider
+                    .root_records
+                    .lock()
+                    .map_err(|_| acyclic_harness::Error::Invalid("IO observer poisoned".into()))?;
+                let mut counts = (0_u64, 0_u64, 0_u64, 0_u64);
+                for ((path, _), bytes) in retained_records.iter() {
+                    if path.contains("/nodes/") {
+                        counts.0 += 1;
+                        counts.1 += bytes;
+                        assert!(*bytes <= 1_024);
+                    } else {
+                        counts.2 += 1;
+                        counts.3 += bytes;
+                        assert!(*bytes <= 4_096);
+                    }
+                }
+                counts
+            };
+            assert_eq!(certificate_count, aggregate.reducer().revision());
+            assert!(
+                node_count
+                    > u64::try_from(retained)
+                        .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?
+            );
+            println!(
+                "effect_root_io retained={retained} publication={publication_io:?} archive={archive_io:?} nodes={node_count} node_bytes={node_bytes} certificates={certificate_count} certificate_bytes={certificate_bytes}"
             );
             let exact = HistoryReadLimits {
                 maximum_events: 3,
@@ -1205,7 +1256,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     };
     assert_eq!(
         aggregate.effect(effect_id, final_limits).await?,
-        Some(completed)
+        Some(completed.clone())
     );
     assert!(
         final_reader
@@ -1219,6 +1270,133 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             )
             .await
             .is_err()
+    );
+    // Every differing bit has an admitted terminal effect. The all-ones key
+    // therefore requires all 128 strictly ordered branches at the original cut.
+    let worst_id = EffectId::from_bytes(uuid::Uuid::from_u128(u128::MAX).into_bytes());
+    let mut worst_completed = None;
+    for bit in 0..=128_u32 {
+        let bits = if bit == 0 {
+            u128::MAX
+        } else {
+            u128::MAX ^ (1_u128 << (bit - 1))
+        };
+        let id = EffectId::from_bytes(uuid::Uuid::from_u128(bits).into_bytes());
+        provider.forbid_writes.store(false, Ordering::SeqCst);
+        provider.reset_io();
+        ordinal += 1;
+        aggregate
+            .execute(fresh(
+                ordinal,
+                aggregate.reducer().revision(),
+                plan(id, false),
+            ))
+            .await?;
+        ordinal += 1;
+        aggregate
+            .execute(fresh(
+                ordinal,
+                aggregate.reducer().revision(),
+                Action::MarkEffectDispatched {
+                    effect_id: id,
+                    attempt_id: EffectAttemptId::from_bytes(id.into_bytes()),
+                },
+            ))
+            .await?;
+        let state = aggregate
+            .reducer()
+            .effect(id)
+            .ok_or_else(|| acyclic_harness::Error::Invalid("depth effect missing".into()))?;
+        let observation = registry
+            .dispatch_and_attest(&issuer, id, state, EffectDispatch::from_state(id, state)?)
+            .await?;
+        ordinal += 1;
+        aggregate
+            .execute(fresh(
+                ordinal,
+                aggregate.reducer().revision(),
+                Action::ResolveEffect { observation },
+            ))
+            .await?;
+        if bit == 0 {
+            worst_completed = aggregate.reducer().effect(id).cloned();
+        }
+        let io = provider.io_snapshot();
+        assert!(io.reads <= 512 && io.tails <= 512 && io.writes <= 512 && io.records <= 512);
+        assert!(
+            io.read_bytes <= 1_048_576
+                && io.write_bytes <= 1_048_576
+                && io.receipt_bytes <= 1_048_576
+        );
+        assert!(io.other_calls <= 512 && io.inspections <= 512 && io.commit_reads <= 512);
+        assert_eq!(aggregate.reducer().resident_effect_count(), 5);
+    }
+    let worst_completed = worst_completed
+        .ok_or_else(|| acyclic_harness::Error::Invalid("depth projection missing".into()))?;
+    provider.forbid_writes.store(true, Ordering::SeqCst);
+    provider.reset_io();
+    let worst_reader = HistoryReader::new(&stream, &authority, issuer.verifier())?;
+    let worst_cut = worst_reader.pin(0).await?;
+    assert_eq!(
+        worst_reader
+            .effect(
+                &worst_cut,
+                worst_id,
+                HistoryReadLimits {
+                    maximum_events: 3,
+                    maximum_bytes: 1_048_576
+                }
+            )
+            .await?,
+        Some(worst_completed.clone())
+    );
+    let worst_io = provider.io_snapshot();
+    assert_eq!(worst_io.reads, 137);
+    assert_eq!(worst_io.tails, 131);
+    assert_eq!(worst_io.writes, 0);
+    assert_eq!(worst_io.other_calls, 0);
+    let worst_limits = HistoryReadLimits {
+        maximum_events: 3,
+        maximum_bytes: worst_io.read_bytes,
+    };
+    assert_eq!(
+        worst_reader
+            .effect(&worst_cut, worst_id, worst_limits)
+            .await?,
+        Some(worst_completed.clone())
+    );
+    assert!(
+        worst_reader
+            .effect(
+                &worst_cut,
+                worst_id,
+                HistoryReadLimits {
+                    maximum_bytes: worst_limits.maximum_bytes - 1,
+                    ..worst_limits
+                }
+            )
+            .await
+            .is_err()
+    );
+    println!("effect_root_maximum_depth original={worst_io:?}");
+    provider.forbid_writes.store(false, Ordering::SeqCst);
+    ordinal += 1;
+    aggregate
+        .execute(fresh(
+            ordinal,
+            aggregate.reducer().revision(),
+            Action::TransitionLifecycle {
+                to: LifecycleState::Waiting,
+                reason: None,
+            },
+        ))
+        .await?;
+    provider.forbid_writes.store(true, Ordering::SeqCst);
+    assert_eq!(
+        worst_reader
+            .effect(&worst_cut, worst_id, worst_limits)
+            .await?,
+        Some(worst_completed)
     );
     Ok(())
 }
