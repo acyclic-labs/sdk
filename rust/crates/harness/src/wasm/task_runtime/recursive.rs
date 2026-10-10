@@ -70,6 +70,8 @@ impl WasmRecursiveForkSource {
 
     /// Creates only canonical input. The caller separately admits the registered
     /// ordinary preparation machine, and retains its original admission receipt.
+    /// This consumer retains `snapshot()` externally; it does not substitute an
+    /// owner file checkpoint or a mutable latest source during recovery.
     #[wasm_bindgen(js_name = preparationRequest)]
     pub fn preparation_request(&self, preparation_task: String,
         #[wasm_bindgen(unchecked_param_type = "WasmTaskAdmissionWire")] child: JsValue,
@@ -81,7 +83,7 @@ impl WasmRecursiveForkSource {
             return Err(js_error(Error::Unauthorized("fork child has a different original caller".into())));
         }
         let request = fork_preparation_request(&self.binding.preparer, self.binding.request.clone(),
-            TaskId::parse(&preparation_task).map_err(js_error)?, child, from_js(command)?, from_js(limits)?)
+            TaskId::parse(&preparation_task).map_err(js_error)?, child, from_js(command)?, from_js(limits)?, None)
             .map_err(js_error)?;
         to_js(&request)
     }
