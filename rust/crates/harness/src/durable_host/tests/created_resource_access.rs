@@ -331,7 +331,7 @@ impl CreationFixture {
             root_scope, task, machine, schema, root, root_lease, worker })
     }
 
-    fn admission(&self, byte: u8, input: Value) -> TaskAdmissionRecord {
+    pub(crate) fn admission(&self, byte: u8, input: Value) -> TaskAdmissionRecord {
         TaskAdmissionRecord {
             resource_proofs: Vec::new(), operation_id: OperationId::from_bytes([byte; 16]),
             task: self.task.clone(), machine: self.machine.clone(), input,

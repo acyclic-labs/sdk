@@ -211,6 +211,13 @@ impl<P: StreamProvider> crate::resource_preparation::CreatedTaskLease
     }
 }
 
+#[cfg(feature = "filesystem")]
+#[derive(Default)]
+struct TaskRootBinding {
+    proof: std::sync::OnceLock<crate::store::VerifiedRootBinding>,
+    gate: tokio::sync::Mutex<()>,
+}
+
 /// One worker's exact task lease, bound to the coordinator's own Stream provider.
 /// Journal constructors use this binding to atomically fence their publications.
 #[cfg(feature = "filesystem")]
@@ -226,7 +233,7 @@ pub struct TaskJournalOwner<P> {
     input_created: Option<Arc<crate::resource_preparation::CreatedResourceAccess>>,
     input_agent: Option<crate::AgentId>,
     input_is_root: bool,
-    root_binding: Arc<std::sync::OnceLock<crate::store::VerifiedRootBinding>>,
+    root_binding: Option<Arc<TaskRootBinding>>,
     deadline_epoch_ms: Option<u64>,
     input_limits: crate::conversation::Limits,
     extensions: Option<crate::core::ExtensionAdmission>,
@@ -550,7 +557,55 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.condition_with_work(crate::distributed::JournalWrite::Fresh, work).await.map(|_| ())
+        self.verify_with_work(false, work).await
+    }
+
+    pub(crate) async fn verify_with_work(
+        &self, allow_settlement: bool,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        let write = if allow_settlement { crate::distributed::JournalWrite::Settlement }
+            else { crate::distributed::JournalWrite::Fresh };
+        self.condition_with_work(write, work).await.map(|_| ())
+    }
+
+    /// Checks the original owner fence and current created scratch WRITE using
+    /// the caller's same native-work ledger and cancellation token. Provider
+    /// internals are not inferred as physical IO.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn verify_with_native_work(
+        &self, allow_settlement: bool, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let mut io = crate::store::history::native_work_io(work)?;
+        if let Some(binding) = self.input_created.as_ref()
+            .map(|access| access.current_content()).transpose()?.flatten()
+        {
+            if binding.binding.writer.is_none() {
+                return Err(Error::Unauthorized("current created scratch has no WRITE custody".into()));
+            }
+            self.require_volume_grant_with_work(&binding.volume, crate::conversation::VolumeOperation::Write, &mut io)?;
+        }
+        self.verify_with_work(allow_settlement, &mut Some(&mut io)).await
+    }
+
+    /// Authorizes exact retained volume custody on that same native-work ledger.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn require_volume_grant_with_native_work(
+        &self, volume: &crate::conversation::VolumeRef,
+        operation: crate::conversation::VolumeOperation,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let mut io = crate::store::history::native_work_io(work)?;
+        if operation == crate::conversation::VolumeOperation::Write {
+            if let Some(binding) = self.input_created.as_ref()
+                .and_then(|access| access.content.iter().find(|binding| &binding.volume == volume))
+            {
+                if binding.binding.writer.is_none() {
+                    return Err(Error::Unauthorized("created volume has no retained WRITE custody".into()));
+                }
+            }
+        }
+        self.require_volume_grant_with_work(volume, operation, &mut io)
     }
 
     /// Verifies the original task's current fresh-dispatch fence using the
@@ -711,9 +766,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(())
     }
 
-    /// Binding authority comes from the authenticated original owner, never
-    /// an agent supplied in a preparation request.
-    pub(crate) fn authenticated_binding_agent(&self) -> Result<Option<crate::AgentId>> {
+    /// Returns the authenticated executing agent from current sealed creation
+    /// provenance, or the verified matching proofless-root declaration. Never
+    /// trusts a preparer's requested agent or the declaring parent as a child.
+    pub fn authenticated_binding_agent(&self) -> Result<Option<crate::AgentId>> {
         if !self.input_grants.contains(capability::CONVERSATION_BIND) {
             return Err(Error::Unauthorized("task scope lacks conversation:bind".into()));
         }
@@ -731,6 +787,22 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         (self.task_id, self.workflow.request_digest, &self.fence)
     }
 
+    /// Serializes root bind replay/commit/cache on this same owner handle only.
+    pub(crate) async fn lock_root_binding(&self) -> Option<tokio::sync::MutexGuard<'_,()>> {
+        Some(self.root_binding.as_ref()?.gate.lock().await)
+    }
+
+    pub(crate) fn check_root_binding(
+        &self, audience: &Authority, operation: OperationId, intent: [u8;32],
+    ) -> Result<()> {
+        if let Some(proof) = self.root_binding.as_ref().and_then(|state| state.proof.get()) {
+            if proof.audience() != audience || proof.bind_operation() != operation || proof.intent_digest() != intent {
+                return Err(Error::Conflict("root binding audience, operation or intent changed".into()));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn retain_root_binding(&self, proof: crate::store::VerifiedRootBinding) -> Result<()> {
         if !self.input_is_root || proof.original_task() != self.task_id
             || proof.admission_digest() != self.workflow.request_digest
@@ -739,10 +811,12 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         {
             return Err(Error::Unauthorized("root binding proof belongs to another owner or lease".into()));
         }
-        if let Err(proof) = self.root_binding.set(proof) {
-            let retained = self.root_binding.get().ok_or_else(|| Error::Conflict("root binding cache is unavailable".into()))?;
-            if retained.audience() != proof.audience() || retained.bind_operation() != proof.bind_operation() {
-                return Err(Error::Conflict("root binding audience or operation changed".into()));
+        let state = self.root_binding.as_ref().ok_or_else(|| Error::Unauthorized("owner has no root binding cache".into()))?;
+        if let Err(proof) = state.proof.set(proof) {
+            let retained = state.proof.get().ok_or_else(|| Error::Conflict("root binding cache is unavailable".into()))?;
+            if retained.audience() != proof.audience() || retained.bind_operation() != proof.bind_operation()
+                || retained.intent_digest() != proof.intent_digest() {
+                return Err(Error::Conflict("root binding audience, operation or intent changed".into()));
             }
         }
         Ok(())
@@ -752,7 +826,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.authenticated_fork_agent()?;
         let audience = match &self.input_created {
             Some(access) => access.current_content()?.and_then(|binding| binding.authority.as_ref()),
-            None if self.input_is_root => self.root_binding.get().map(|proof| proof.audience()),
+            None if self.input_is_root => self.root_binding.as_ref().and_then(|state| state.proof.get()).map(|proof| proof.audience()),
             None => None,
         }.ok_or_else(|| Error::Unauthorized("current caller has no authenticated publication audience".into()))?;
         if audience != parent {
@@ -770,6 +844,12 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let agent = self.authenticated_binding_agent()?.ok_or_else(|| Error::Unauthorized("binding owner has no authenticated agent".into()))?;
         if scope.agent() != Some(agent) || !scope.capabilities().contains(capability::CONVERSATION_BIND) {
             return Err(Error::Unauthorized("binding scope differs from the original task actor or grant".into()));
+        }
+        if !self.input_is_root {
+            let binding = match &self.input_created { Some(access) => access.current_content()?, None => None };
+            if binding.and_then(|binding| binding.authority.as_ref()) != Some(audience) {
+                return Err(Error::Unauthorized("binding audience differs from the current sealed child".into()));
+            }
         }
         self.host.verifier.verify_scope_for_with_work(audience, scope, work)
     }
@@ -1710,6 +1790,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         };
         self.machines.validate_checkpoint(&workflow.initial)?;
         let stream = self.coordinator.lock().await.journal_client();
+        let input_is_root = admission.parent.is_none() && admission.resource_proofs.is_empty();
         let owner = TaskJournalOwner {
             host: self.clone(),
             stream,
@@ -1721,8 +1802,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             input_grants: admission.grants,
             input_created: scope.created_access(),
             input_agent,
-            input_is_root: admission.parent.is_none() && admission.resource_proofs.is_empty(),
-            root_binding: Arc::new(std::sync::OnceLock::new()),
+            input_is_root,
+            root_binding: input_is_root.then(|| Arc::new(TaskRootBinding::default())),
             input_limits: admission.limits,
             deadline_epoch_ms: admission.run_limits.deadline_epoch_ms,
             extensions: admission.extensions,
