@@ -421,6 +421,29 @@ impl AuthorityVerifier {
         Ok(())
     }
 
+    // An archive observation authenticates an original publication cut and
+    // complete effect-index root. It grants no capability or event admission.
+    pub(crate) fn effect_history_root_proof(
+        &self,
+        revision: u64,
+        canonical_digest: [u8; 32],
+        root: Option<[u8; 32]>,
+    ) -> Result<[u8; 32]> {
+        let canonical = crate::contract::canonical_json_bytes(&(
+            &self.id,
+            &self.audience,
+            self.audience.stream_path()?,
+            revision,
+            canonical_digest,
+            root,
+        ))?;
+        let mut hasher = blake3::Hasher::new_keyed(&self.key);
+        hasher.update(b"harness/v1/effect-history-root\0");
+        hasher.update(&(canonical.len() as u64).to_le_bytes());
+        hasher.update(&canonical);
+        Ok(*hasher.finalize().as_bytes())
+    }
+
     /// Rejects accidental pairing with another aggregate authority.
     pub fn verify_audience(&self, authority: &Authority) -> Result<()> {
         if &self.audience == authority {

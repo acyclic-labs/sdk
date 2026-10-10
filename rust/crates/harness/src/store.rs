@@ -1,6 +1,7 @@
 //! Direct Stream persistence for durable aggregate histories.
 
 mod checkpoints;
+mod effect_heads;
 mod effects;
 mod history;
 pub use checkpoints::{DEFAULT_PROJECTION_EVENTS, default_projection_read_limits};

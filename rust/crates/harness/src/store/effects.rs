@@ -1,6 +1,6 @@
 //! Exact effect transitions derived from their original canonical atomic commits.
 
-use super::{HistoryCursor, HistoryReadLimits, operations};
+use super::{HistoryCursor, HistoryReadLimits, effect_heads, operations};
 use crate::{
     EffectId, Error, Result,
     core::{Authority, AuthorityVerifier, Event, EventPayload, Reducer},
@@ -46,12 +46,7 @@ async fn verified<P: StreamProvider>(
         return Err(Error::Invalid("effect lookup exceeds byte bound".into()));
     }
     let location: EffectLocation = crate::executor::decode_json(&record.value)?;
-    if location.effect_id != effect
-        || location
-            .location
-            .effect_position
-            .is_some_and(|position| position != record.sequence)
-    {
+    if location.effect_id != effect || location.location.effect_position != Some(record.sequence) {
         return Err(Error::Storage("effect locator identity differs".into()));
     }
     let (event, bytes) = operations::verify_operation_locator(
@@ -78,7 +73,15 @@ pub(super) async fn add_publication_index<P: StreamProvider>(
     publication: &mut operations::IndexedPublication,
 ) -> Result<()> {
     let Some(effect_id) = crate::core::event_effect_id(&event.payload) else {
-        return Ok(());
+        return effect_heads::publication(
+            client,
+            reducer.authority(),
+            &reducer.event_verifier(),
+            event,
+            None,
+            publication,
+        )
+        .await;
     };
     let path = path(reducer.authority(), effect_id)?;
     let expected = if matches!(event.payload, EventPayload::EffectPlanned { .. }) {
@@ -127,7 +130,21 @@ pub(super) async fn add_publication_index<P: StreamProvider>(
         expected,
         Bytes::from(crate::contract::canonical_json_bytes(&location)?),
     );
-    Ok(())
+    effect_heads::publication(
+        client,
+        reducer.authority(),
+        &reducer.event_verifier(),
+        event,
+        Some((
+            effect_id,
+            effect_heads::Head {
+                revision: event.revision,
+                position: expected,
+            },
+        )),
+        publication,
+    )
+    .await
 }
 
 pub(super) async fn read<P: StreamProvider>(
@@ -146,12 +163,8 @@ pub(super) async fn read<P: StreamProvider>(
             "effect history bounds or cursor are invalid".into(),
         ));
     }
-    let path = path(&cursor.authority, effect)?;
-    let count = tail(client, &path).await?;
-    if count > u64::from(limits.maximum_events) {
-        return Err(Error::Invalid(
-            "effect history exceeds event allowance".into(),
-        ));
+    if cursor.through_revision == 0 {
+        return Ok(Vec::new());
     }
     let canonical_tail = match client.stream(cursor.authority.stream_path()?)?.tail().await {
         Ok(tail) => tail,
@@ -163,13 +176,30 @@ pub(super) async fn read<P: StreamProvider>(
             "effect cursor exceeds committed canonical tail".into(),
         ));
     }
-    if count == 0 && cursor.through_revision != 0 {
-        return Err(Error::Unsupported(
-            "missing original effect index cannot prove absence".into(),
+    let selected = effect_heads::select(
+        client,
+        &cursor.authority,
+        verifier,
+        effect,
+        cursor.through_revision,
+        limits.maximum_bytes,
+    )
+    .await?;
+    let Some(head) = selected.head else {
+        return Ok(Vec::new());
+    };
+    let count = head
+        .position
+        .checked_add(1)
+        .ok_or_else(|| Error::Storage("effect original prefix count overflows".into()))?;
+    if count > u64::from(limits.maximum_events) {
+        return Err(Error::Invalid(
+            "effect history exceeds event allowance".into(),
         ));
     }
+    let path = path(&cursor.authority, effect)?;
     let mut events = Vec::new();
-    let mut used = 0_u64;
+    let mut used = selected.consumed_bytes;
     let mut previous_revision = 0;
     for position in 0..count {
         let remaining = limits
@@ -197,8 +227,12 @@ pub(super) async fn read<P: StreamProvider>(
                 "effect transition revisions are not increasing".into(),
             ));
         }
-        if event.revision > cursor.through_revision {
-            break;
+        if event.revision > head.revision
+            || (position == head.position && event.revision != head.revision)
+        {
+            return Err(Error::Storage(
+                "effect transition differs from complete original cut".into(),
+            ));
         }
         previous_revision = event.revision;
         events.push(event);
