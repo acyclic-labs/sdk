@@ -5,18 +5,20 @@
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 use acyclic_harness::{
     Admission, Error, OperationId, Result, TaskId,
-    conversation::{ContentGrant, FileRef, Limits, VolumeRef},
-    core::{Authority, AuthorityIssuer, AuthorityVerifier, SchemaRegistry, Scope},
+    conversation::{ContentPublisher as _, Limits, VolumeRef},
+    core::{Authority, AuthorityIssuer, AuthorityVerifier, SchemaRegistry, Scope, Snapshot},
     distributed::{WorkLease, WorkPull, Worker},
     executor::TurnOutput,
-    filesystem::{FilesystemContentVerifier, FilesystemForkVerifier, FilesystemHost,
-        FilesystemProjectMergeVerifier, FilesystemTaskRuntime, StockTurnMachine,
+    filesystem::{FilesystemContentPublisher, FilesystemContentVerifier, FilesystemForkVerifier, FilesystemHost,
+        FilesystemProjectMergeVerifier, FilesystemResourceCreationProvider, FilesystemTaskRuntime,
+        ForkPreparationMachine, MailboxModelMachine, StockTurnMachine, restore_recursive_fork_source,
         StreamHistoryForkVerifier, TaskWorkerAttempt, TaskWorkerOutcome},
-    fork::CompositeForkVerifier,
+    fork::{CompositeForkVerifier, ForkReport},
     model::{Model, ModelContent},
     resources::ProviderRef,
-    runtime::{DurableTaskHost as _, RuntimeScope, RuntimeTask, TaskRegistry, TaskRunLimits},
-    scheduler::SessionLimits,
+    resource_preparation::ResourcePreparationRequest,
+    runtime::{DurableTaskHost as _, RuntimeScope, RuntimeTask, TaskContext, TaskDefinition, TaskRegistry, TaskRunLimits},
+    scheduler::{LeaseFence, SessionLimits},
     store::{HistoryReadLimits, HistoryReader, StreamAggregate},
     wire,
     wire_api::{HarnessWireApi, OperationControlRequest, negotiate,
@@ -26,12 +28,12 @@ use acyclic_harness::{
 };
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream, LocalStream, StreamClient};
 use futures::stream;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::Arc};
 
 use super::terminal::{MAX_FRAME_BYTES, MAX_PAGE_EVENTS};
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthorityBinding {
     pub authority: Authority,
@@ -50,7 +52,7 @@ impl AuthorityBinding {
 
 /// A producer-owned explicit local composition. Never derived from environment
 /// credentials, user-facing task labels, fork IDs or display cursor state.
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub filesystem_root: PathBuf,
@@ -67,16 +69,49 @@ pub struct Config {
     pub concurrency: usize,
     #[serde(default)]
     pub deterministic_delay_ms: u32,
+    #[serde(default)]
+    pub fork_sources: Vec<ForkSourceConfig>,
+    #[serde(default)]
+    pub tools: super::native_tools::NativeToolsConfig,
+    #[serde(default)]
+    pub native_publications: Vec<super::native_writeback::NativePublicationConfig>,
 }
 
-type Files = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
-type Runtime = FilesystemTaskRuntime<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
+impl Config {
+    /// Decode one finite producer configuration, independently of input frames.
+    pub fn from_file(path: &std::path::Path) -> Result<Self> {
+        use std::io::Read as _;
+        const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+        let file = std::fs::File::open(path).map_err(|error| Error::Storage(error.to_string()))?;
+        let mut bytes = Vec::new();
+        file.take(MAX_CONFIG_BYTES + 1).read_to_end(&mut bytes)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        if bytes.len() as u64 > MAX_CONFIG_BYTES {
+            return Err(Error::Invalid("native configuration exceeds one MiB".into()));
+        }
+        serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(format!("native configuration: {error}")))
+    }
+}
+
+pub(super) type Files = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
+pub(super) type Runtime = FilesystemTaskRuntime<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
+
+/// Producer-retained original caller checkpoint and its exact owner binding.
+/// Canonical restore authenticates it; presentation never infers child/task IDs.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForkSourceConfig {
+    pub caller: TaskId,
+    pub owner: AuthorityBinding,
+    pub project: VolumeRef,
+    pub snapshot: Snapshot,
+}
 
 pub struct NativeSession {
-    config: Config,
-    stream: StreamClient<LocalStream>,
-    files: Arc<Files>,
-    runtime: Runtime,
+    pub(super) config: Config,
+    pub(super) stream: StreamClient<LocalStream>,
+    pub(super) files: Arc<Files>,
+    pub(super) runtime: Arc<Runtime>,
     model: Model,
 }
 
@@ -85,15 +120,34 @@ impl NativeSession {
         if !config.filesystem_root.is_absolute() || !config.stream_root.is_absolute()
             || config.generation.is_empty() || config.generation.len() > 128
             || config.observed_authorities.len() > 64 || config.concurrency == 0
-            || config.deterministic_delay_ms > 5000
+            || config.deterministic_delay_ms > 5000 || config.fork_sources.len() > 64
+            || config.native_publications.len() > 64
         {
             return Err(Error::Invalid("native composition requires absolute paths and finite bounds".into()));
         }
         config.limits.validate()?;
+        if !cfg!(feature = "native-execution") && !config.native_publications.is_empty() {
+            return Err(Error::Unsupported("native root publication requires native-execution".into()));
+        }
         let verifier = config.owner.verifier()?;
         for binding in &config.observed_authorities {
             binding.verifier()?;
         }
+        for source in &config.fork_sources {
+            source.owner.verifier()?;
+            source.project.validate()?;
+            acyclic_harness::core::Reducer::restore(
+                source.snapshot.clone(), source.owner.verifier()?, SchemaRegistry::default(),
+            )?;
+        }
+        for publication in &config.native_publications {
+            publication.validate()?;
+        }
+        acyclic_native_runtime::initialize_native_io_services()
+            .map_err(|error| Error::Storage(format!("native IO service startup: {error}")))?;
+        #[cfg(feature = "native-execution")]
+        acyclic_fs::initialize_native_mount_services()
+            .map_err(|error| Error::Storage(format!("native mount service startup: {error}")))?;
         let files = Arc::new(FilesystemHost::new(
             acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&config.filesystem_root)).await
                 .map_err(|error| Error::Storage(error.to_string()))?,
@@ -103,18 +157,37 @@ impl NativeSession {
             LocalStream::open(&config.stream_root, Default::default()).await
                 .map_err(|error| Error::Storage(error.to_string()))?,
         ));
+        let source = super::native_tools::NativeToolSource::new(&config, stream.clone(), files.clone())?;
+        let toolset = source.tools(MAX_FRAME_BYTES as u64)?;
         let machine = Arc::new(StockTurnMachine::new());
         let mut tasks = TaskRegistry::default();
         tasks.register(machine.definition()?)?;
+        let preparation = Arc::new(ForkPreparationMachine::new());
+        tasks.register(preparation.definition()?)?;
+        let mailbox = Arc::new(MailboxModelMachine::default());
+        tasks.register(TaskDefinition::<serde_json::Value, serde_json::Value>::resumable(
+            mailbox.clone(), serde_json::json!({
+                "type":"object","required":["receive","model"],
+                "properties":{"receive":{"type":"object"},"model":{"type":"object"}},
+                "additionalProperties":false,
+            }), serde_json::json!({"type":"object"}),
+        )?.requires("host")?.requires("model")?)?;
         let mut machines = MachineRegistry::default();
         machines.register(machine)?;
+        machines.register(preparation)?;
+        machines.register(mailbox)?;
         let scope = RuntimeScope::new(config.owner.scope.capabilities().clone(), config.limits)?
             .with_run_limits(config.run_limits)?;
-        let runtime = Runtime::open(
+        let creation = Arc::new(FilesystemResourceCreationProvider::new(
+            files.clone(), AuthorityIssuer::new(&config.owner.issuer, config.owner.key, config.owner.authority.clone()),
+        )?);
+        let runtime = Arc::new(Runtime::open_with_creation_providers(
             stream.clone(), files.clone(), config.private_volume.clone(), verifier,
-            config.owner.scope.clone(), scope, tasks, machines, Default::default(),
+            config.owner.scope.clone(), scope, tasks, machines, toolset.tools,
             config.session_limits, config.concurrency, MAX_FRAME_BYTES as u64,
-        ).await?;
+            Arc::new(acyclic_stream::SystemUnixMillisClock), None, vec![creation], toolset.resumable_tools,
+        ).await?.with_recursive_source(source.recursive_source()));
+        source.bind_runtime(&runtime)?;
         let model = super::provider::model(config.deterministic_delay_ms);
         Ok(Self {
             config, stream, files, runtime,
@@ -153,15 +226,44 @@ impl NativeSession {
         }
     }
 
-    pub fn prompt_command(text: &str, operation: OperationId) -> Result<WorkflowCommand> {
-        Ok(WorkflowCommand {
-            operation_id: operation,
-            kind: acyclic_harness::filesystem::MODEL_TASK_COMMAND_KIND.into(),
-            payload: serde_json::to_value(acyclic_harness::filesystem::ModelTaskCommand {
-                input: ModelContent::Text(text.into()), selected_context: None,
-                max_steps: 1, max_output_tokens: Some(256),
-            }).map_err(|error| Error::Invalid(error.to_string()))?,
-        })
+    /// Admit exact producer-authored preparation input under its retained caller.
+    /// This neither allocates resources nor invents the child agent/task relation.
+    pub async fn queue_preparation(
+        &self,
+        operation: OperationId,
+        parent: TaskId,
+        caller_lease: &WorkLease,
+        request: ResourcePreparationRequest,
+    ) -> Result<Admission<RuntimeTask<ForkReport>>> {
+        request.validate()?;
+        if request.child.parent != Some(parent) {
+            return Err(Error::Unauthorized("preparation child belongs to a different caller".into()));
+        }
+        let definition = self.runtime.harness().task("acyclic.fork_preparation@1")?;
+        let admission = self.runtime.task_host().observe_admission(parent).await?;
+        if admission.operation_id != caller_lease.operation.operation_id {
+            return Err(Error::Unauthorized("preparation lease belongs to a different admitted caller".into()));
+        }
+        self.runtime.task_context(parent, LeaseFence::from(&caller_lease.reservation)).await?
+            .admit(operation, &definition, request).await
+    }
+
+    pub async fn prompt_command(&self, text: &str, operation: OperationId) -> Result<WorkflowCommand> {
+        let bytes = serde_json::to_vec(&acyclic_harness::filesystem::ModelTaskCommand {
+            input: ModelContent::Text(text.into()), selected_context: None,
+            max_steps: 1, max_output_tokens: Some(256), mailbox_operation: None,
+        }).map_err(|error| Error::Invalid(error.to_string()))?;
+        if bytes.len() > MAX_FRAME_BYTES {
+            return Err(Error::Invalid("published prompt command exceeds terminal bounds".into()));
+        }
+        let publisher = FilesystemContentPublisher::new(
+            self.files.clone(), self.config.private_volume.clone(), &self.config.owner.verifier()?,
+            &self.config.owner.scope, MAX_FRAME_BYTES as u64,
+        )?;
+        let payload = publisher.stage_once(operation, &format!("graphcoder-inputs/{operation}.json"),
+            &bytes, "application/json", "GraphCoder prompt command").await?;
+        Ok(WorkflowCommand { operation_id: operation,
+            kind: acyclic_harness::filesystem::MODEL_TASK_COMMAND_KIND.into(), payload })
     }
 
     pub async fn claim(&self, task: TaskId, worker: &Worker) -> Result<WorkPull> {
@@ -188,20 +290,139 @@ impl NativeSession {
         // emitting provider-controlled terminal controls.
         writeln!(output, "worker-claim task={task} lease-json-hex={}", lease_hex(&lease)?)
             .and_then(|()| output.flush()).map_err(|error| Error::Storage(error.to_string()))?;
-        let commands = self.runtime.commands().with_model(
-            self.model.clone(), Arc::new(super::provider::Deterministic::new(self.config.deterministic_delay_ms)),
-            Default::default(), Default::default(),
-        );
-        render_attempt(self.runtime.resume_task(lease, &commands, 16).await)
+        self.resume(lease).await
     }
 
     pub async fn resume(&self, lease: WorkLease) -> Result<String> {
-        let commands = self.runtime.commands().with_model(
+        let mut commands = self.runtime.commands().with_model(
             self.model.clone(), Arc::new(super::provider::Deterministic::new(self.config.deterministic_delay_ms)),
             Default::default(), Default::default(),
         );
-        let attempt = self.runtime.resume_task(lease, &commands, 16).await;
-        render_attempt(attempt)
+        let (task, identity) = self.runtime.harness()
+            .reconcile_admission(lease.operation.operation_id).await?
+            .ok_or_else(|| Error::NotFound("original work lease admission".into()))?;
+        if identity.name == "acyclic.fork_preparation"
+            && self.runtime.task_host().outcome(task).await?.is_none()
+        {
+            let admission = self.runtime.task_host().observe_admission(task).await?;
+            let preparation: ResourcePreparationRequest = serde_json::from_value(admission.input)
+                .map_err(|error| Error::Invalid(format!("retained fork preparation input: {error}")))?;
+            preparation.validate()?;
+            if preparation.source_checkpoint.is_none() {
+                let request: acyclic_harness::fork::ForkRequest = serde_json::from_value(preparation.payload)
+                    .map_err(|error| Error::Invalid(format!("retained fork source request: {error}")))?;
+                let source = self.config.fork_sources.iter().find(|source| {
+                    Some(source.caller) == preparation.child.parent
+                        && source.owner.authority == request.parent
+                        && source.snapshot.revision == request.parent_revision
+                }).ok_or_else(|| Error::Unsupported(
+                    "original caller fork checkpoint/provider binding is unavailable; latest source is never substituted".into(),
+                ))?;
+                let verifier = source.owner.verifier()?;
+                let reducer = acyclic_harness::core::Reducer::restore(
+                    source.snapshot.clone(), verifier.clone(), SchemaRegistry::default(),
+                )?;
+                let binding = restore_recursive_fork_source(
+                    self.files.clone(), &self.stream, &reducer, verifier, source.owner.scope.clone(),
+                    source.project.clone(), self.config.stream_provider.clone(), request,
+                    HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 },
+                ).await?;
+                commands = commands.with_fork_preparer(binding.preparer);
+            }
+        }
+        render_attempt(self.runtime.resume_task(lease, &commands, 16).await)
+    }
+
+    /// Resolve the caller through canonical admission and verify its actual
+    /// retained fence before granting any scoped file/mail/workflow handle.
+    pub async fn caller_context(&self, caller: TaskId, lease: &WorkLease) -> Result<TaskContext> {
+        let (retained, _) = self.runtime.harness()
+            .reconcile_admission(lease.operation.operation_id).await?
+            .ok_or_else(|| Error::NotFound("original caller admission".into()))?;
+        if retained != caller {
+            return Err(Error::Unauthorized("original lease belongs to a different caller task".into()));
+        }
+        self.runtime.task_context(caller, LeaseFence::from(&lease.reservation)).await
+    }
+
+    /// Bind a conversation to the retained caller's authenticated allocation,
+    /// never to a display label or a newly chosen child agent UUID.
+    pub async fn caller_binding(&self, caller: TaskId) -> Result<&AuthorityBinding> {
+        let inspection = self.runtime.inspect_source(caller, caller).await?;
+        let agent = inspection.agent()?;
+        let binding = self.config.fork_sources.iter().rev()
+            .find(|source| source.caller == caller).map(|source| &source.owner)
+            .or_else(|| self.config.tools.callers.iter().find(|source| source.task == caller).map(|source| &source.owner))
+            .or_else(|| self.config.tools.forks.iter().find(|source| source.admission.task_id() == caller).map(|source| &source.child))
+            .ok_or_else(|| Error::Unsupported("caller conversation provider binding unavailable".into()))?;
+        binding.verifier()?;
+        if binding.scope.agent() != Some(agent) {
+            return Err(Error::Unauthorized("conversation binding differs from actual created caller".into()));
+        }
+        Ok(binding)
+    }
+
+    pub async fn queue_mailbox(
+        &self, operation: OperationId, caller: TaskId, lease: &WorkLease,
+        input: serde_json::Value,
+    ) -> Result<Admission<RuntimeTask<serde_json::Value>>> {
+        let definition = self.runtime.harness().task("acyclic.mailbox_model@1")?;
+        self.caller_context(caller, lease).await?.admit(operation, &definition, input).await
+    }
+
+    /// Publish only an authoritative successful preparation and admit exactly
+    /// its retained child, under the original caller fence and creator proofs.
+    pub async fn publish_preparation(&self, caller: TaskId, lease: &WorkLease, preparation: TaskId) -> Result<String> {
+        self.caller_context(caller, lease).await?;
+        let admission = self.runtime.task_host().observe_admission(preparation).await?;
+        if admission.parent != Some(caller) || admission.task.name != "acyclic.fork_preparation" {
+            return Err(Error::Unauthorized("preparation does not belong to this original caller".into()));
+        }
+        let input: ResourcePreparationRequest = serde_json::from_value(admission.input)
+            .map_err(|error| Error::Invalid(format!("retained preparation input: {error}")))?;
+        input.validate()?;
+        let Some(acyclic_harness::Outcome::Succeeded(value)) = self.runtime.task_host().outcome(preparation).await? else {
+            return Err(Error::Conflict("preparation has no authoritative successful report".into()));
+        };
+        let report: ForkReport = serde_json::from_value(value)
+            .map_err(|error| Error::Invalid(format!("retained fork report: {error}")))?;
+        report.validate()?;
+        if input.child.parent != Some(caller)
+            || serde_json::to_value(&report.request).map_err(|error| Error::Invalid(error.to_string()))? != input.payload
+        {
+            return Err(Error::Unauthorized("report changed the exact retained preparation/caller".into()));
+        }
+        let parent_binding = self.config.fork_sources.iter().find(|source| {
+            source.caller == caller && source.owner.authority == report.request.parent
+                && source.snapshot.revision == report.request.parent_revision
+        }).ok_or_else(|| Error::Unsupported("original source publication binding unavailable".into()))?;
+        let child_binding = self.config.observed_authorities.iter()
+            .find(|binding| binding.authority == report.request.child)
+            .ok_or_else(|| Error::Unsupported("explicit child conversation provider binding unavailable".into()))?;
+        let content = Arc::new(FilesystemContentVerifier::new(
+            self.files.clone(), parent_binding.owner.verifier()?, parent_binding.owner.scope.clone(),
+            MAX_FRAME_BYTES as u64,
+        )?);
+        let mut parent = StreamAggregate::open_with_read_limits(
+            &self.stream, parent_binding.owner.authority.clone(), parent_binding.owner.verifier()?,
+            SchemaRegistry::default(), HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 },
+        ).await?.with_content_verifier(content)
+            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(vec![
+                Arc::new(FilesystemForkVerifier::new(self.files.clone(), MAX_FRAME_BYTES as u64)?),
+                Arc::new(StreamHistoryForkVerifier::new(self.config.stream_provider.clone())?),
+            ])?));
+        let mut child = StreamAggregate::open_with_read_limits(
+            &self.stream, child_binding.authority.clone(), child_binding.verifier()?,
+            SchemaRegistry::default(), HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 },
+        ).await?;
+        let seed = child.spawn_from_report(&mut parent, report,
+            parent_binding.owner.scope.clone(), child_binding.scope.clone()).await?;
+        let operation = input.child.operation_id;
+        let admitted = self.runtime.task_host().admit_owned(input.child, LeaseFence::from(&lease.reservation)).await?;
+        Ok(format!("fork-json={}\n", serde_json::json!({
+            "preparation": preparation, "new_child_agent": seed.child_agent,
+            "child_admission_operation": operation, "admission": admitted, "seed": seed,
+        })))
     }
 
     pub async fn reconcile(&self, operation: OperationId) -> Result<String> {
@@ -211,22 +432,21 @@ impl NativeSession {
 
     pub async fn children(&self, task: TaskId, revision: Option<u64>, after: Option<String>) -> Result<String> {
         let page = self.runtime.harness().children(task, revision, after, MAX_PAGE_EVENTS).await?;
-        Ok(super::terminal::text(&format!("children parent-task={task} {page:?}\n")))
+        let encoded = serde_json::to_string(&page).map_err(|error| Error::Invalid(error.to_string()))?;
+        Ok(format!("{}children-json={encoded}\n",
+            super::terminal::text(&format!("children parent-task={task} {page:?}\n"))))
     }
 
     pub async fn outcome(&self, task: TaskId) -> Result<String> {
         let admission = self.runtime.task_host().observe_admission(task).await?;
         let outcome = self.runtime.task_host().outcome(task).await?;
-        Ok(super::terminal::text(&format!("task={task} admission-operation={} outcome={outcome:?}\n", admission.operation_id)))
+        let encoded = serde_json::to_string(&serde_json::json!({
+            "task": task, "admission_operation": admission.operation_id, "outcome": outcome,
+        })).map_err(|error| Error::Invalid(error.to_string()))?;
+        Ok(format!("{}task-json={encoded}\n", super::terminal::text(
+            &format!("task={task} admission-operation={} outcome={outcome:?}\n", admission.operation_id))))
     }
 
-    pub async fn read(&self, file: &FileRef, maximum: u64) -> Result<bytes::Bytes> {
-        if maximum == 0 || maximum > MAX_FRAME_BYTES as u64 {
-            return Err(Error::Invalid("file display exceeds terminal bounds".into()));
-        }
-        let grant = ContentGrant::verify_read(&self.config.owner.verifier()?, &self.config.owner.scope, file)?;
-        self.files.read_content(file, &grant, maximum).await
-    }
 }
 
 pub fn lease_hex(lease: &WorkLease) -> Result<String> {

@@ -4,6 +4,11 @@ use acyclic_harness::{AgentId, Capabilities, Outcome,
 use std::collections::BTreeSet;
 
 async fn composition(root: &std::path::Path) -> Result<Config> {
+    acyclic_native_runtime::initialize_native_io_services()
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    #[cfg(feature = "native-execution")]
+    acyclic_fs::initialize_native_mount_services()
+        .map_err(|error| Error::Storage(error.to_string()))?;
     let provider = ProviderRef::new("terminal-native-regression", "filesystem", "2")?;
     let stream_provider = ProviderRef::new("terminal-native-regression", "stream", "2")?;
     let agent = AgentId::from_bytes([21; 16]);
@@ -31,13 +36,16 @@ async fn composition(root: &std::path::Path) -> Result<Config> {
         limits: Limits::default(), run_limits: TaskRunLimits::default(),
         session_limits: SessionLimits { active_tasks: 4, total_tasks: 4, depth: 3, model_steps: 4 },
         concurrency: 4, deterministic_delay_ms: 0,
+        fork_sources: vec![],
+        tools: Default::default(),
+        native_publications: vec![],
     })
 }
 
 async fn queue(session: &NativeSession, index: u8, parent: Option<TaskId>) -> Result<TaskId> {
     let operation = OperationId::from_bytes([index; 16]);
     let command_operation = OperationId::from_bytes([index + 20; 16]);
-    let command = NativeSession::prompt_command(&format!("input-{index}"), command_operation)?;
+    let command = session.prompt_command(&format!("input-{index}"), command_operation).await?;
     match session.queue(operation, command, parent).await? {
         Admission::Accepted(RuntimeTask::Durable { task_id, .. }) => Ok(task_id),
         Admission::Accepted(RuntimeTask::Live(_)) => Err(Error::Conflict("native task was not durable".into())),
@@ -91,5 +99,40 @@ async fn actual_stock_root_children_grandchild_reopen_without_effect_repetition(
     let mut forged = config;
     forged.owner.key = [99; 32];
     assert!(matches!(NativeSession::open(forged).await, Err(Error::Unauthorized(_))));
+    Ok(())
+}
+
+#[tokio::test]
+async fn prompt_reference_retains_exact_publication_across_reopen_and_rejects_rebinding() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let config = composition(directory.path()).await?;
+    let session = NativeSession::open(config.clone()).await?;
+    let command_operation = OperationId::from_bytes([66; 16]);
+    let original = session.prompt_command("retained original prompt", command_operation).await?;
+    assert_eq!(original.operation_id, command_operation);
+    assert_eq!(original.kind, acyclic_harness::filesystem::MODEL_TASK_COMMAND_KIND);
+    assert!(original.payload.descriptor().byte_length() <= MAX_FRAME_BYTES as u64);
+    let repeated = session.prompt_command("retained original prompt", command_operation).await?;
+    assert_eq!(original.payload, repeated.payload);
+    assert!(session.prompt_command("different prompt at same operation", command_operation).await.is_err());
+    assert!(matches!(session.prompt_command(
+        &"x".repeat(MAX_FRAME_BYTES + 1), OperationId::from_bytes([67; 16]),
+    ).await, Err(Error::Invalid(_))));
+    drop(session);
+    let session = NativeSession::open(config).await?;
+    let reopened = session.prompt_command("retained original prompt", command_operation).await?;
+    assert_eq!(original.payload, reopened.payload);
+    let task = match session.queue(OperationId::from_bytes([68; 16]), original, None).await? {
+        Admission::Accepted(RuntimeTask::Durable { task_id, .. }) => task_id,
+        Admission::Accepted(RuntimeTask::Live(_)) => return Err(Error::Conflict("native task was not durable".into())),
+        Admission::Rejected { reason } => return Err(Error::Conflict(reason)),
+        Admission::Indeterminate { operation_id } => return Err(Error::Indeterminate(operation_id)),
+    };
+    let worker = Worker {
+        id: "terminal-reference-worker".into(), available: Default::default(),
+        labels: Default::default(),
+    };
+    session.run(task, &worker, &mut Vec::new()).await?;
+    assert!(matches!(session.runtime.task_host().outcome(task).await?, Some(Outcome::Succeeded(_))));
     Ok(())
 }
