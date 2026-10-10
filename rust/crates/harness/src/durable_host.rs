@@ -1239,12 +1239,12 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 work,
             )
             .await?;
-        publication.add_index(&mut request);
+        publication.add_index_with_work(&mut request)?;
         if fresh && self.deadline_epoch_ms.is_some_and(|deadline| self.host.clock.now_unix_millis() >= deadline) {
             return Err(Error::Indeterminate(self.operation_id()));
         }
-        match crate::distributed::commit_keyed_with_work(
-            &self.stream, request, publication.operation_id, work,
+        match crate::distributed::commit_prepared_with_work(
+            &self.stream, request, publication.operation_id,
         ).await? {
             acyclic_stream::CommitOutcome::Conflict(_) => Ok(false),
             acyclic_stream::CommitOutcome::Committed(envelope) => {
@@ -1299,27 +1299,20 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         .await
     }
 
-    async fn prepare_append(
-        &self,
-        path: &acyclic_stream::StreamPath,
-        expected_tail: u64,
-        key: &StreamKey,
-        bytes: &Bytes,
-        write: crate::distributed::JournalWrite,
-    ) -> Result<acyclic_stream::CommitRequest> {
-        self.prepare_append_with_work(path, expected_tail, key, bytes, write, &mut None).await
-    }
 
-    async fn prepare_append_with_work(
+    async fn prepare_append_with_work<'a, 'b>(
         &self,
         path: &acyclic_stream::StreamPath,
         expected_tail: u64,
         key: &StreamKey,
         bytes: &Bytes,
         write: crate::distributed::JournalWrite,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<acyclic_stream::CommitRequest> {
-        use acyclic_stream::{CommitCondition, CommitMutation};
+        work: &'a mut Option<&'b mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<crate::distributed::PreparedCommitRequest<'a, 'b>> {
+        use acyclic_stream::CommitCondition;
+        if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
+            return Err(Error::Invalid("owned journal record exceeds the canonical byte bound".into()));
+        }
         let owner = self.condition_with_work(write, work).await?;
         if let Some(io) = work.as_deref_mut() { io.begin_call()?; }
         let target = match self.stream.bounds(path.as_str()).await {
@@ -1337,14 +1330,20 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         // revision gets its own recovery key; the journal's CAS and retry index
         // still prevent duplicate logical records.
         let mut hash = blake3::Hasher::new();
-        hash.update(b"harness/v2/owned-journal\0");
-        hash.update(key.as_bytes());
-        hash.update(&self.task_id.into_bytes());
+        let mut hash_part = |bytes: &[u8]| -> Result<()> {
+            if let Some(io) = work.as_deref_mut() { io.hashed_bytes(bytes.len() as u64)?; }
+            hash.update(bytes);
+            Ok(())
+        };
+        hash_part(b"harness/v2/owned-journal\0")?;
+        hash_part(key.as_bytes())?;
+        hash_part(&self.task_id.into_bytes())?;
+        drop(hash_part);
         let encoded_fence = if let Some(io) = work.as_deref_mut() {
-            let remaining = io.remaining()?;
+            io.admit_encoding(1)?;
             let bounds = crate::contract::JsonBounds {
-                maximum_bytes: remaining.bytes_encoded,
-                maximum_items: remaining.bytes_encoded,
+                maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
+                maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64,
                 maximum_depth: 256,
             };
             let encoded = crate::contract::canonical_json_bytes_bounded(
@@ -1357,27 +1356,43 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         } else {
             crate::contract::canonical_json_bytes(&self.fence)?
         };
-        hash.update(&encoded_fence);
+        let hash_admission = match work.as_deref_mut() {
+            Some(io) => io.hashed_bytes(encoded_fence.len() as u64),
+            None => Ok(()),
+        };
+        if hash_admission.is_ok() { hash.update(&encoded_fence); }
         let retained_fence = encoded_fence.capacity() as u64;
         drop(encoded_fence);
-        if let Some(io) = work.as_deref_mut() { io.release_owned(retained_fence); }
+        let release = match work.as_deref_mut() {
+            Some(io) => io.release_owned(retained_fence),
+            None => Ok(()),
+        };
+        hash_admission?;
+        release?;
         let CommitCondition::Tail { expected, .. } = &owner else {
             return Err(Error::Invalid("coordinator tail condition required".into()));
         };
-        hash.update(&expected.to_le_bytes());
-        hash.update(path.as_str().as_bytes());
-        hash.update(&expected_tail.to_le_bytes());
-        hash.update(&[u8::from(matches!(target, CommitCondition::Absent { .. }))]);
-        hash.update(blake3::hash(bytes).as_bytes());
-        let transaction_key = StreamKey::new(Bytes::copy_from_slice(hash.finalize().as_bytes()))?;
-        Ok(acyclic_stream::CommitRequest {
-            conditions: vec![owner, target],
-            mutations: vec![CommitMutation::Append {
-                path: path.clone(),
-                records: vec![bytes.clone()],
-            }],
-            idempotency_key: transaction_key,
-        })
+        let mut hash_part = |bytes: &[u8]| -> Result<()> {
+            if let Some(io) = work.as_deref_mut() { io.hashed_bytes(bytes.len() as u64)?; }
+            hash.update(bytes);
+            Ok(())
+        };
+        hash_part(&expected.to_le_bytes())?;
+        hash_part(path.as_str().as_bytes())?;
+        hash_part(&expected_tail.to_le_bytes())?;
+        hash_part(&[u8::from(matches!(target, CommitCondition::Absent { .. }))])?;
+        drop(hash_part);
+        if let Some(io) = work.as_deref_mut() { io.hashed_bytes(bytes.len() as u64)?; }
+        let payload_digest = blake3::hash(bytes);
+        if let Some(io) = work.as_deref_mut() { io.hashed_bytes(32)?; }
+        hash.update(payload_digest.as_bytes());
+        let mut request = crate::distributed::PreparedCommitRequest::new_with_digest(
+            *hash.finalize().as_bytes(), work,
+        )?;
+        request.push_condition(owner)?;
+        request.push_condition(target)?;
+        request.append(path.clone(), bytes.clone())?;
+        Ok(request)
     }
 
     pub(crate) async fn append(
@@ -1388,12 +1403,40 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         bytes: Bytes,
         write: crate::distributed::JournalWrite,
     ) -> Result<bool> {
+        self.append_with_work(path, expected_tail, key, bytes, write, &mut None).await
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) async fn append_with_native_work(
+        &self,
+        path: acyclic_stream::StreamPath,
+        expected_tail: u64,
+        key: &StreamKey,
+        bytes: Bytes,
+        write: crate::distributed::JournalWrite,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<bool> {
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.append_with_work(path, expected_tail, key, bytes, write, &mut Some(&mut io)).await
+    }
+
+    async fn append_with_work(
+        &self,
+        path: acyclic_stream::StreamPath,
+        expected_tail: u64,
+        key: &StreamKey,
+        bytes: Bytes,
+        write: crate::distributed::JournalWrite,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<bool> {
         use acyclic_stream::{CommitOutcome, CommittedMutation};
         let request = self
-            .prepare_append(&path, expected_tail, key, &bytes, write)
+            .prepare_append_with_work(&path, expected_tail, key, &bytes, write, work)
             .await?;
-        let outcome =
-            crate::distributed::commit_keyed(&self.stream, request, self.operation_id()).await?;
+        let outcome = crate::distributed::commit_prepared_with_work(
+            &self.stream, request, self.operation_id(),
+        ).await?;
         match outcome {
             CommitOutcome::Conflict(_) => Ok(false),
             CommitOutcome::Committed(envelope) => {
@@ -5849,6 +5892,12 @@ pub(crate) mod tests {
         host.claim_model_dispatch(task_id, attempt, 0, model_digest, fence.clone())
             .await?;
         #[cfg(feature = "filesystem")]
+        let mut workflow_prepare_io = None;
+        #[cfg(feature = "filesystem")]
+        let mut execution_prepare_io = None;
+        #[cfg(feature = "filesystem")]
+        let mut approval_prepare_io = None;
+        #[cfg(feature = "filesystem")]
         let (workflow, filesystem, volume, content_scope, original_owner, original_pending) = {
             use crate::workflow::{DurableWorkflowHost, WorkflowJournal};
             let provider = ProviderRef::new("owned-workflow", "filesystem", "2")?;
@@ -5984,12 +6033,13 @@ pub(crate) mod tests {
                 acyclic_stream::StreamPath::new(format!("harness/v2/workflows/{operation_id}"))?;
             let key = StreamKey::new(Bytes::from_static(b"owned-before-replacement"))?;
             let original_pending = original_owner
-                .prepare_append(
+                .prepare_append_with_work(
                     &path,
                     1,
                     &key,
                     &Bytes::from_static(b"never published"),
                     crate::distributed::JournalWrite::Fresh,
+                    &mut workflow_prepare_io,
                 )
                 .await?;
             (
@@ -6040,12 +6090,13 @@ pub(crate) mod tests {
                 "harness/v2/execution/{pending_operation}"
             ))?;
             let pending = original_owner
-                .prepare_append(
+                .prepare_append_with_work(
                     &path,
                     0,
                     &key,
                     &bytes,
                     crate::distributed::JournalWrite::Fresh,
+                    &mut execution_prepare_io,
                 )
                 .await?;
             journal
@@ -6331,12 +6382,13 @@ pub(crate) mod tests {
                 Err(Error::Conflict(_))
             ));
             let pending = original_owner
-                .prepare_append(
+                .prepare_append_with_work(
                     &acyclic_stream::StreamPath::new(conversation.stream_path()?)?,
                     2,
                     &StreamKey::new(Bytes::from_static(b"approval-before-replacement"))?,
                     &Bytes::from_static(b"must not publish"),
                     crate::distributed::JournalWrite::Fresh,
+                    &mut approval_prepare_io,
                 )
                 .await?;
             (journal, conversation_issuer, id, request, pending)
@@ -6390,7 +6442,7 @@ pub(crate) mod tests {
         let (replacement_approval, cancellation_approval_pending) = {
             use crate::executor::ExecutionJournal;
             assert!(matches!(
-                stream.commit(approval_pending).await?,
+                crate::distributed::commit_prepared_with_work(&stream, approval_pending, operation_id).await?,
                 acyclic_stream::CommitOutcome::Conflict(_)
             ));
             assert!(
@@ -6416,7 +6468,7 @@ pub(crate) mod tests {
             );
             let binding = host.journal_owner(task_id, fence.clone()).await?;
             let pending = binding
-                .prepare_append(
+                .prepare_append_with_work(
                     &acyclic_stream::StreamPath::new(
                         conversation_issuer.verifier().audience().stream_path()?,
                     )?,
@@ -6424,6 +6476,7 @@ pub(crate) mod tests {
                     &StreamKey::new(Bytes::from_static(b"approval-before-cancellation"))?,
                     &Bytes::from_static(b"must not publish"),
                     crate::distributed::JournalWrite::Fresh,
+                    &mut approval_prepare_io,
                 )
                 .await?;
             let journal = crate::filesystem::FilesystemExecutionJournal::for_task(
@@ -6469,7 +6522,7 @@ pub(crate) mod tests {
             use crate::workflow::WorkflowJournal;
             assert!(
                 matches!(
-                    stream.commit(original_pending).await?,
+                    crate::distributed::commit_prepared_with_work(&stream, original_pending, operation_id).await?,
                     acyclic_stream::CommitOutcome::Conflict(_)
                 ),
                 "lease replacement after preflight must atomically prevent publication"
@@ -6499,12 +6552,13 @@ pub(crate) mod tests {
                 acyclic_stream::StreamPath::new(format!("harness/v2/workflows/{operation_id}"))?;
             let key = StreamKey::new(Bytes::from_static(b"owned-pending"))?;
             let pending = binding
-                .prepare_append(
+                .prepare_append_with_work(
                     &path,
                     1,
                     &key,
                     &Bytes::from_static(b"never published"),
                     crate::distributed::JournalWrite::Fresh,
+                    &mut workflow_prepare_io,
                 )
                 .await?;
             let journal = crate::filesystem::FilesystemWorkflowJournal::for_task(
@@ -6528,7 +6582,7 @@ pub(crate) mod tests {
             {
                 assert!(
                     matches!(
-                        stream.commit(execution_pending).await?,
+                        crate::distributed::commit_prepared_with_work(&stream, execution_pending, operation_id).await?,
                         acyclic_stream::CommitOutcome::Conflict(_)
                     ),
                     "lease replacement must atomically fence execution publication"
@@ -6553,12 +6607,13 @@ pub(crate) mod tests {
             })).map_err(|error| Error::Invalid(error.to_string()))?);
                 host.journal_owner(task_id, fence.clone())
                     .await?
-                    .prepare_append(
+                    .prepare_append_with_work(
                         &path,
                         0,
                         &key,
                         &bytes,
                         crate::distributed::JournalWrite::Fresh,
+                        &mut execution_prepare_io,
                     )
                     .await?
             };
@@ -6581,7 +6636,7 @@ pub(crate) mod tests {
             use crate::executor::{ExecutionEvent, ExecutionJournal};
             assert!(
                 matches!(
-                    stream.commit(execution_pending).await?,
+                    crate::distributed::commit_prepared_with_work(&stream, execution_pending, operation_id).await?,
                     acyclic_stream::CommitOutcome::Conflict(_)
                 ),
                 "cancellation must atomically fence execution publication"
@@ -6790,7 +6845,7 @@ pub(crate) mod tests {
             use crate::workflow::WorkflowJournal;
             assert!(
                 matches!(
-                    stream.commit(pending).await?,
+                    crate::distributed::commit_prepared_with_work(&stream, pending, operation_id).await?,
                     acyclic_stream::CommitOutcome::Conflict(_)
                 ),
                 "cancellation after preflight must atomically prevent publication"
@@ -6826,7 +6881,7 @@ pub(crate) mod tests {
         {
             use crate::executor::ExecutionJournal;
             assert!(matches!(
-                stream.commit(cancellation_approval_pending).await?,
+                crate::distributed::commit_prepared_with_work(&stream, cancellation_approval_pending, operation_id).await?,
                 acyclic_stream::CommitOutcome::Conflict(_)
             ));
             assert!(
