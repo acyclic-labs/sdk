@@ -38,7 +38,7 @@ async fn append_source<P: StreamProvider>(
 ) -> Result<u64> {
     let canonical = crate::contract::canonical_json_bytes(&event)?;
     let bytes = encode(revision, event.operation_id(), key,
-        *blake3::hash(&canonical).as_bytes(), canonical, time);
+        *blake3::hash(&canonical).as_bytes(), canonical, time)?;
     let length = bytes.len() as u64;
     client.stream(COORDINATOR_PATH)?.append_batch(
         vec![Bytes::from(bytes)], Some(revision - 1), None,
@@ -420,23 +420,23 @@ async fn index_canonical_codec_admits_encoded_copy_and_owned_growth_before_publi
         let cancellation = CancellationToken::new();
         let mut work = HistoryWork::new(allowance, &cancellation);
         work.preflight()?;
-        let result = coordinator.ensure_intent_location_with_work(location.clone(),
+        let result = coordinator.ensure_intent_location_with_work(&location,
             &mut Some(&mut work)).await;
         let failure = work.finish(result).expect_err("canonical storage must be preadmitted");
         assert!(matches!(failure.error, Error::Invalid(_)));
-        assert_eq!(failure.work.backend_read_operations, 1);
+        assert_eq!(failure.work.backend_read_operations, u64::from(mode == 0));
         assert_eq!(failure.work.backend_write_operations, 0);
         assert_eq!(failure.work.authority_records_appended, 0);
         assert_eq!(failure.work.authority_bytes_written, 0);
         assert!(failure.work.bytes_encoded <= allowance.bytes_encoded);
         assert!(failure.work.bytes_copied <= allowance.bytes_copied);
         assert!(failure.work.peak_allocation_bytes <= allowance.peak_allocation_bytes);
-        assert_eq!(provider.io_snapshot().reads, 1);
+        assert_eq!(provider.io_snapshot().reads, u64::from(mode == 0));
         assert_eq!(provider.io_snapshot().writes, 0);
         assert!(client.bounds(&intent_location_path(&location.key)).await.is_err());
         // The exact original event/location is still publishable through the
         // same engine; quota rejection leaves no partial immutable index.
-        coordinator.ensure_intent_location_with_work(location.clone(), &mut None).await?;
+        coordinator.ensure_intent_location_with_work(&location, &mut None).await?;
         assert_eq!(client.bounds(&intent_location_path(&location.key)).await?.tail, 1);
     }
     Ok(())
@@ -464,5 +464,393 @@ async fn direct_idempotent_commit_receipts_acknowledge_without_claiming_new_dura
     assert_eq!(work.receipt().backend_read_operations, 0);
     assert_eq!(provider.io_snapshot().inspections, 0);
     assert_eq!(client.bounds("harness/v2/execution/measured-commit").await?.tail, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn borrowed_observation_authorizes_original_state_without_clone_encoding_or_sdk_io() -> Result<()> {
+    let provider = Arc::new(FaultStream::default());
+    let client = StreamClient::new(provider.clone());
+    let operation = OperationId::from_bytes([113; 16]);
+    seed(&client, &[operation]).await?;
+    let coordinator = DistributedCoordinator::open(&client, Arc::new(UnmeasuredContent::default())).await?;
+    let declaration = spec(operation, 0)?;
+    let owner = declaration.owner.authority();
+    let issuer = crate::core::AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
+    let scope = issuer.root("borrow-observe", crate::Capabilities::new(["operation:observe"]));
+    let ordinary = coordinator.observe_operation(owner, &scope, &issuer.verifier(), operation)?;
+    let mut allowance = budget();
+    allowance.bytes_encoded = 0;
+    allowance.bytes_copied = 0;
+    allowance.allocation_operations = 0;
+    allowance.peak_allocation_bytes = 0;
+    allowance.backend_read_operations = 0;
+    allowance.backend_write_operations = 0;
+    let cancellation = CancellationToken::new();
+    let mut work = HistoryWork::new(allowance, &cancellation);
+    work.preflight()?;
+    provider.reset_io();
+    let borrowed = coordinator.observe_operation_ref_with_work(owner, &scope, &issuer.verifier(),
+        operation, &mut Some(&mut work))?;
+    assert!(std::ptr::eq(borrowed, coordinator.scheduler().operation(operation)
+        .expect("original scheduler operation")));
+    assert_eq!(borrowed, &ordinary);
+    assert!(work.receipt().bytes_hashed > 0);
+    assert_eq!(work.receipt().bytes_encoded, 0);
+    assert_eq!(work.receipt().bytes_copied, 0);
+    assert_eq!(work.receipt().allocation_operations, 0);
+    assert_eq!(work.receipt().peak_allocation_bytes, 0);
+    assert_eq!(provider.io_snapshot().reads, 0);
+    assert_eq!(provider.io_snapshot().writes, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn borrowed_observation_preserves_current_and_original_signed_grant_denials() -> Result<()> {
+    use crate::core::{AggregateKind, Authority, AuthorityIssuer};
+    for mode in 0..4 {
+        let provider = Arc::new(FaultStream::default());
+        let client = StreamClient::new(provider.clone());
+        let operation = OperationId::from_bytes([114; 16]);
+        let mut coordinator = DistributedCoordinator::open(&client, Arc::new(UnmeasuredContent::default())).await?;
+        let mut declaration = spec(operation, 0)?;
+        let owner = declaration.owner.authority().clone();
+        let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
+        if mode == 3 {
+            declaration.owner_scope = issuer.root("original-without-declare",
+                crate::Capabilities::new(["operation:observe"]));
+        }
+        append_source(&client, 1, "borrow-original-grant",
+            SchedulerEvent::Declared { spec: Box::new(declaration) }, 1).await?;
+        coordinator.refresh().await?;
+        let caller_owner = if mode == 2 {
+            Authority { kind: AggregateKind::Task, id: "foreign-owner".into() }
+        } else { owner };
+        let caller_issuer = AuthorityIssuer::new("test-runtime", [9; 32], caller_owner.clone());
+        let scope = match mode {
+            0 => caller_issuer.root("missing-observe", crate::Capabilities::new(["operation:declare"])),
+            1 => AuthorityIssuer::new("test-runtime", [8; 32], caller_owner.clone())
+                .root("foreign-key", crate::Capabilities::new(["operation:observe"])),
+            _ => caller_issuer.root("valid-observe", crate::Capabilities::new(["operation:observe"])),
+        };
+        let expected = coordinator.observe_operation(&caller_owner, &scope, &caller_issuer.verifier(),
+            operation).expect_err("original authorization must reject");
+        provider.reset_io();
+        let cancellation = CancellationToken::new();
+        let mut work = HistoryWork::new(budget(), &cancellation);
+        work.preflight()?;
+        let actual = coordinator.observe_operation_ref_with_work(&caller_owner, &scope,
+            &caller_issuer.verifier(), operation, &mut Some(&mut work))
+            .expect_err("borrowed authorization must reject identically");
+        assert_eq!(actual.to_string(), expected.to_string());
+        assert_eq!(work.receipt().bytes_encoded, 0);
+        assert_eq!(work.receipt().bytes_copied, 0);
+        assert_eq!(provider.io_snapshot().reads, 0);
+        assert_eq!(provider.io_snapshot().writes, 0);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn borrowed_owner_proof_hashing_respects_shared_quota_and_cancellation() -> Result<()> {
+    let provider = Arc::new(FaultStream::default());
+    let client = StreamClient::new(provider.clone());
+    let operation = OperationId::from_bytes([115; 16]);
+    seed(&client, &[operation]).await?;
+    let coordinator = DistributedCoordinator::open(&client, Arc::new(UnmeasuredContent::default())).await?;
+    let declaration = spec(operation, 0)?;
+    let owner = declaration.owner.authority();
+    let issuer = crate::core::AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
+    let scope = issuer.root("bounded-borrow", crate::Capabilities::new(["operation:observe"]));
+    for cancel in [false, true] {
+        let cancellation = CancellationToken::new();
+        if cancel { cancellation.cancel(); }
+        let mut allowance = budget();
+        if !cancel { allowance.bytes_hashed = 0; }
+        let mut work = HistoryWork::new(allowance, &cancellation);
+        provider.reset_io();
+        let result = coordinator.observe_operation_ref_with_work(owner, &scope, &issuer.verifier(),
+            operation, &mut Some(&mut work));
+        assert!(matches!(result, Err(Error::Invalid(_))));
+        assert_eq!(work.receipt().bytes_hashed, 0);
+        assert_eq!(work.receipt().bytes_encoded, 0);
+        assert_eq!(work.receipt().bytes_copied, 0);
+        assert_eq!(provider.io_snapshot().reads, 0);
+        assert_eq!(provider.io_snapshot().writes, 0);
+    }
+    Ok(())
+}
+
+async fn admitted_fixture(
+    client: &StreamClient<FaultStream>,
+    operation: OperationId,
+) -> Result<(DistributedCoordinator<FaultStream>, WorkLease)> {
+    seed(client, &[operation]).await?;
+    let mut coordinator = DistributedCoordinator::open(client, Arc::new(UnmeasuredContent::default())).await?;
+    let lease = coordinator.pull(&Worker {
+        id: "measured-release-worker".into(),
+        available: ResourceSnapshot::default(),
+        labels: BTreeMap::new(),
+    }).await?.ok_or_else(|| Error::NotFound("original admitted lease".into()))?;
+    Ok((coordinator, lease))
+}
+
+#[tokio::test]
+async fn measured_lease_release_keeps_original_append_recovery_identity_and_acknowledgments() -> Result<()> {
+    for mode in 0..3 {
+        let provider = Arc::new(FaultStream::default());
+        let client = StreamClient::new(provider.clone());
+        let operation = OperationId::from_bytes([116; 16]);
+        let (mut coordinator, lease) = admitted_fixture(&client, operation).await?;
+        let mut ordinary = DistributedCoordinator::open(&client, Arc::new(UnmeasuredContent::default())).await?;
+        provider.lose_ack.store(mode != 0, Ordering::SeqCst);
+        provider.hide_receipt.store(mode == 2, Ordering::SeqCst);
+        provider.reset_io();
+        let cancellation = CancellationToken::new();
+        let mut work = HistoryWork::new(budget(), &cancellation);
+        work.preflight()?;
+        let result = coordinator.release_lease_with_work(&lease,
+            IdempotencyKey::new("original-measured-release")?, &mut Some(&mut work)).await;
+        let io = provider.io_snapshot();
+        let counters = work.receipt();
+        assert_eq!(counters.backend_read_operations, io.reads + io.inspections);
+        assert_eq!(counters.backend_write_operations, io.writes);
+        assert_eq!(counters.page_writes, 0);
+        assert_eq!(counters.durability_operations, 0);
+        if mode == 2 {
+            assert!(matches!(result, Err(Error::Indeterminate(id)) if id == operation));
+            assert_eq!(counters.authority_records_appended, 0);
+            assert_eq!(counters.authority_bytes_written, 0);
+        } else {
+            assert_eq!(result?, CoordinatorApply::Applied);
+            assert_eq!(counters.authority_records_appended, 1 + u64::from(mode == 0));
+            assert_eq!(ordinary.release_lease(&lease,
+                IdempotencyKey::new("original-measured-release")?).await?, CoordinatorApply::Replayed);
+            assert_eq!(ordinary.scheduler(), coordinator.scheduler());
+        }
+        provider.hide_receipt.store(false, Ordering::SeqCst);
+        let reopened = DistributedCoordinator::open(&client, Arc::new(UnmeasuredContent::default())).await?;
+        let retained = reopened.scheduler().operation(operation)
+            .ok_or_else(|| Error::NotFound("released original task".into()))?;
+        assert_eq!(retained.phase, crate::scheduler::OperationPhase::WaitingForCapacity);
+        assert!(retained.reservation.is_none());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn measured_lease_release_quota_and_cancellation_reject_before_publication() -> Result<()> {
+    for mode in 0..4 {
+        let provider = Arc::new(FaultStream::default());
+        let client = StreamClient::new(provider.clone());
+        let operation = OperationId::from_bytes([117; 16]);
+        let (mut coordinator, lease) = admitted_fixture(&client, operation).await?;
+        let revision = coordinator.revision;
+        let cancellation = CancellationToken::new();
+        if mode == 0 { cancellation.cancel(); }
+        let mut allowance = budget();
+        if mode == 1 { allowance.backend_write_operations = 0; }
+        if mode == 2 { allowance.bytes_encoded = 0; }
+        if mode == 3 { allowance.allocation_operations = 0; }
+        let mut work = HistoryWork::new(allowance, &cancellation);
+        provider.reset_io();
+        let result = coordinator.release_lease_with_work(&lease,
+            IdempotencyKey::new("release-before-io")?, &mut Some(&mut work)).await;
+        let failure = work.finish(result).expect_err("bounded source admission must stop publication");
+        assert!(matches!(failure.error, Error::Invalid(_)));
+        assert_eq!(failure.work.backend_write_operations, 0);
+        assert_eq!(failure.work.authority_records_appended, 0);
+        assert_eq!(provider.io_snapshot().writes, 0);
+        assert_eq!(coordinator.revision, revision);
+        assert_eq!(client.stream(COORDINATOR_PATH)?.tail().await?, revision);
+        assert_eq!(coordinator.scheduler().operation(operation)
+            .and_then(|operation| operation.reservation.as_ref()), Some(&lease.reservation));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn measured_quiescent_suspension_uses_original_atomic_execution_cas_and_commit_recovery() -> Result<()> {
+    for mode in 0..4 {
+        let provider = Arc::new(FaultStream::default());
+        let client = StreamClient::new(provider.clone());
+        let operation = OperationId::from_bytes([118; 16]);
+        let execution = OperationId::from_bytes([119; 16]);
+        let (mut coordinator, lease) = admitted_fixture(&client, operation).await?;
+        let fence = LeaseFence::from(&lease.reservation);
+        coordinator.apply(operation, IdempotencyKey::new("quiescent-start")?,
+            SchedulerEvent::Started {operation_id:operation, fence:fence.clone()}).await?;
+        let revision = coordinator.revision;
+        provider.commit_lose_ack.store(mode == 1 || mode == 2, Ordering::SeqCst);
+        provider.hide_receipt.store(mode == 2, Ordering::SeqCst);
+        provider.execution_race.store(mode == 3, Ordering::SeqCst);
+        provider.reset_io();
+        let cancellation = CancellationToken::new();
+        let mut work = HistoryWork::new(budget(), &cancellation);
+        work.preflight()?;
+        let result = coordinator.apply_if_execution_quiescent_with_work(
+            IdempotencyKey::new("measured-quiescent")?,
+            SchedulerEvent::WorkflowSuspended {
+                operation_id:operation, fence, workflow_revision:1, waiting_command:Some(execution),
+            }, execution, 0, None, &mut Some(&mut work),
+        ).await;
+        let io = provider.io_snapshot();
+        assert_eq!(work.receipt().backend_read_operations, io.reads + io.inspections);
+        assert_eq!(work.receipt().backend_write_operations, io.writes);
+        if mode == 3 {
+            assert!(matches!(result, Err(Error::Conflict(_))));
+            assert_eq!(work.receipt().authority_records_appended, 0);
+            assert_eq!(client.stream(COORDINATOR_PATH)?.tail().await?, revision);
+        } else if mode == 2 {
+            assert!(matches!(result, Err(Error::Indeterminate(id)) if id == operation));
+            assert_eq!(work.receipt().authority_records_appended, 0);
+        } else {
+            assert_eq!(result?, CoordinatorApply::Applied);
+            assert_eq!(work.receipt().authority_records_appended, 1 + u64::from(mode == 0));
+            assert!(work.receipt().authority_records_read >= 1 + u64::from(mode == 1));
+        }
+        provider.hide_receipt.store(false, Ordering::SeqCst);
+        let reopened = DistributedCoordinator::open(&client, Arc::new(UnmeasuredContent::default())).await?;
+        assert_eq!(reopened.scheduler().operation(operation)
+            .ok_or_else(|| Error::NotFound("quiescent task".into()))?.phase,
+            if mode == 3 {crate::scheduler::OperationPhase::Running}
+            else {crate::scheduler::OperationPhase::Suspended});
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn measured_quiescent_release_requires_witness_and_the_same_owner_verified_revision() -> Result<()> {
+    let provider = Arc::new(FaultStream::default());
+    let client = StreamClient::new(provider.clone());
+    let operation = OperationId::from_bytes([120; 16]);
+    let execution = OperationId::from_bytes([121; 16]);
+    let (mut coordinator, lease) = admitted_fixture(&client, operation).await?;
+    let cancellation = CancellationToken::new();
+    let mut work = HistoryWork::new(budget(), &cancellation);
+    provider.reset_io();
+    assert!(matches!(coordinator.apply_if_execution_quiescent_with_work(
+        IdempotencyKey::new("no-workflow-witness")?,
+        SchedulerEvent::LeaseReleased {
+            operation_id:operation, fence:LeaseFence::from(&lease.reservation),
+        }, execution, 0, None, &mut Some(&mut work),
+    ).await, Err(Error::Invalid(_))));
+    assert_eq!(provider.io_snapshot().reads, 0);
+    assert_eq!(provider.io_snapshot().writes, 0);
+    // A real other coordinator moves the original task after this cached owner
+    // snapshot. Its original immutable index is already published.
+    let mut remote = DistributedCoordinator::open(&client, Arc::new(UnmeasuredContent::default())).await?;
+    remote.apply(operation, IdempotencyKey::new("remote-original-start")?,
+        SchedulerEvent::Started {
+            operation_id:operation, fence:LeaseFence::from(&lease.reservation),
+        }).await?;
+    provider.reset_io();
+    let result = coordinator.apply_if_execution_quiescent_with_work(
+        IdempotencyKey::new("stale-owner-suspension")?,
+        SchedulerEvent::WorkflowSuspended {
+            operation_id:operation, fence:LeaseFence::from(&lease.reservation),
+            workflow_revision:1, waiting_command:Some(execution),
+        }, execution, 0, None, &mut Some(&mut work),
+    ).await;
+    assert!(matches!(result, Err(Error::Conflict(_))));
+    assert!(work.receipt().authority_records_read >= 1);
+    assert_eq!(provider.io_snapshot().writes, 0);
+    assert_eq!(coordinator.revision, remote.revision);
+    assert_eq!(coordinator.scheduler(), remote.scheduler());
+    Ok(())
+}
+
+#[tokio::test]
+async fn measured_declaration_preserves_original_scope_key_and_never_uses_unmeasured_content() -> Result<()> {
+    for mode in 0..4 {
+        let provider = Arc::new(FaultStream::default());
+        let client = StreamClient::new(provider.clone());
+        let content = Arc::new(UnmeasuredContent::default());
+        let mut coordinator = DistributedCoordinator::open(&client, content.clone()).await?;
+        let declaration = spec(OperationId::from_bytes([122; 16]), 0)?;
+        let owner = declaration.owner.authority().clone();
+        let issuer = crate::core::AuthorityIssuer::new("test-runtime", [9;32], owner.clone());
+        let scope = issuer.root("measured-declaration", crate::Capabilities::new(
+            if mode == 1 {vec!["operation:observe"]} else {vec!["operation:declare"]},
+        ));
+        let wrong = crate::core::AuthorityIssuer::new("test-runtime", [8;32], owner.clone());
+        let cancellation = CancellationToken::new();
+        let mut allowance = budget();
+        if mode == 3 {allowance.bytes_hashed = 0;}
+        let mut work = HistoryWork::new(allowance, &cancellation);
+        provider.reset_io();
+        let result = coordinator.declare_operation_with_work(&owner, &scope,
+            &if mode == 2 {wrong.verifier()} else {issuer.verifier()},
+            declaration, IdempotencyKey::new("measured-declaration")?,
+            &mut Some(&mut work),
+        ).await;
+        if mode == 0 {
+            assert!(matches!(result, Err(Error::Unsupported(_))));
+            assert_eq!(provider.io_snapshot().reads, 2);
+        } else {
+            assert!(matches!(result, Err(Error::Unauthorized(_)) | Err(Error::Invalid(_))));
+            assert_eq!(provider.io_snapshot().reads, 0);
+        }
+        assert_eq!(content.0.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.io_snapshot().writes, 0);
+        assert_eq!(coordinator.revision, 0);
+        assert_eq!(work.receipt().authority_records_appended, 0);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn measured_original_declaration_publishes_and_replays_with_real_filesystem_verification() -> Result<()> {
+    use crate::{
+        AgentId, Capabilities,
+        conversation::{ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
+        filesystem::{FilesystemContentVerifier, FilesystemHost},
+        resources::ProviderRef,
+    };
+    let fs_provider = ProviderRef::new("declaration-sdk-source", "filesystem", "2")?;
+    let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::memory(), fs_provider.clone())?);
+    let agent = AgentId::from_bytes([123;16]);
+    let volume = VolumeRef::new(fs_provider, "declaration-state", VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(agent))?;
+    host.create_volume(&volume).await?;
+    let owner = crate::core::Authority {
+        kind:crate::core::AggregateKind::Task, id:"owner".into(),
+    };
+    let issuer = crate::core::AuthorityIssuer::new("test-runtime", [9;32], owner.clone());
+    let file_scope = issuer.root_for_agent(agent, "declaration-content", Capabilities::new([
+        volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?,
+    ]));
+    let grant = ContentGrant::verify(&issuer.verifier(), &file_scope, &volume, VolumeOperation::Write)?;
+    let state = host.put_content(&volume, &grant, "state/initial.json", b"null",
+        "application/json", "initial.json", 4096, &IdempotencyKey::new("declaration-state")?).await?;
+    let content: Arc<dyn ContentResidencyVerifier> = Arc::new(FilesystemContentVerifier::new(
+        host, issuer.verifier(), file_scope, 4096,
+    )?);
+    let provider = Arc::new(FaultStream::default());
+    let client = StreamClient::new(provider.clone());
+    let mut coordinator = DistributedCoordinator::open(&client, content.clone()).await?;
+    let mut ordinary = DistributedCoordinator::open(&client, content).await?;
+    let operation = OperationId::from_bytes([124;16]);
+    let mut declaration = spec(operation, 0)?;
+    declaration.state = state;
+    let scope = issuer.root("declaration-authority", Capabilities::new(["operation:declare"]));
+    let cancellation = CancellationToken::new();
+    let mut work = HistoryWork::new(budget(), &cancellation);
+    work.preflight()?;
+    provider.reset_io();
+    let result = coordinator.declare_operation_with_work(&owner, &scope, &issuer.verifier(),
+        declaration.clone(), IdempotencyKey::new("original-measured-declaration")?,
+        &mut Some(&mut work)).await;
+    assert_eq!(result?, CoordinatorApply::Applied);
+    assert_eq!(coordinator.revision, 1);
+    assert_eq!(work.receipt().authority_records_appended, 2);
+    assert!(work.receipt().object_bytes_read >= 8); // original verify before append and replay
+    assert!(work.receipt().authority_bytes_read > 0);
+    assert!(work.receipt().bytes_encoded > 0);
+    assert!(work.receipt().bytes_hashed > 0);
+    assert_eq!(ordinary.declare_operation(&owner, &scope, &issuer.verifier(),
+        declaration, IdempotencyKey::new("original-measured-declaration")?).await?,
+        CoordinatorApply::Replayed);
+    assert_eq!(ordinary.scheduler(), coordinator.scheduler());
     Ok(())
 }
