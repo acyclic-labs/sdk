@@ -840,7 +840,7 @@ impl crate::filesystem::TaskCommandHost for CreatedIoCommands {
 }
 
 #[tokio::test]
-async fn created_scope_executes_existing_workflow_and_journal_input_boundaries() -> Result<()> {
+async fn created_scope_executes_existing_workflow_and_journal_input_boundaries() -> std::result::Result<(),NativeRootVerificationError> {
     use crate::executor::ExecutionJournal as _;
     use crate::filesystem::{
         FilesystemExecutionJournal, FilesystemTaskRuntime, TaskWorkerAttempt, TaskWorkerOutcome,
@@ -860,8 +860,11 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
     let cancellation = acyclic_fs::CancellationToken::new();
     let native_work = acyclic_fs::NativeMaterializationWork::new(
         creation_control_budget(),&cancellation,
-    ).map_err(|failure| Error::Storage(failure.error.to_string()))?;
-    assert!(original_owner.outcome_with_native_work(&native_work).await?.is_none());
+    ).map_err(|failure| NativeRootVerificationError::Native(failure.error))?;
+    let pending = original_owner.outcome_with_native_work(&native_work).await?;
+    assert!(pending.0.is_none());
+    assert_eq!(pending.1.bytes(),0);
+    drop(pending);
     let context = fixture.harness.durable_context(task, created.request.child.operation_id).await?;
     let live_before = native_work.live_allocation_bytes();
     let staged = context.stage_file_once_with_native_work(
@@ -924,15 +927,16 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
     assert!(matches!(runtime.task_host().outcome(task).await?, Some(Outcome::Succeeded(_))));
     // A terminal read uses the original authenticated owner, not an invented
     // settlement lease: actual completion has already released that lease.
-    assert!(matches!(
-        original_owner.outcome_with_native_work(&native_work).await?,
-        Some(Outcome::Succeeded(_))
-    ));
+    let terminal = original_owner.outcome_with_native_work(&native_work).await?;
+    assert!(matches!(&terminal.0,Some(Outcome::Succeeded(_))));
+    assert!(terminal.1.bytes() > 0);
+    drop(terminal);
     assert!(native_work.receipt().backend_read_operations > 0);
     assert!(original_owner.verify_with_native_work(true,&native_work).await.is_err());
     cancellation.cancel();
     let before = native_work.receipt();
-    assert!(original_owner.outcome_with_native_work(&native_work).await.is_err());
+    assert!(matches!(original_owner.outcome_with_native_work(&native_work).await,
+        Err(NativeRootVerificationError::Native(acyclic_fs::NativeTreeMaterializationError::Cancelled))));
     assert_eq!(native_work.receipt().backend_read_operations,before.backend_read_operations);
     Ok(())
 }

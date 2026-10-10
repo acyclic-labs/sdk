@@ -4570,31 +4570,34 @@ impl TaskContext {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn read_file_with_native_work(
         &self, file: &FileRef, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Vec<u8>, acyclic_fs::NativeAllocation)> {
+    ) -> std::result::Result<(Vec<u8>,acyclic_fs::NativeAllocation),crate::durable_host::NativeRootVerificationError> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        file.validate()?;
-        self.scope.limits.validate_file(file)?;
-        if !read_granted_measured(&self.scope.grants,file,&io)? {
-            return Err(Error::Unauthorized("task scope cannot read this file".into()));
-        }
-        let reader = if let Some(reader) = self.scope.created_reference(file) {
-            reader.as_ref()
-        } else {
-            self.content_binding(Some(file.volume()))
-                .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?.reader.as_ref()
-        };
-        let output = reader.read_with_native_work(
-            file,self.scope.limits.file_bytes,work,
-        ).await?;
-        if file.descriptor().byte_length() != output.0.len() as u64 {
-            return Err(Error::Storage("content reader returned another file length".into()));
-        }
-        let hash = acyclic_fs::WorkCounters {bytes_hashed:output.0.len() as u64,..Default::default()};
-        io.preflight(hash)?;
-        let verified = file.descriptor().verify(&output.0);
-        io.charge(hash)?;
-        verified?;
-        Ok(output)
+        let result = async {
+            file.validate()?;
+            self.scope.limits.validate_file(file)?;
+            if !read_granted_measured(&self.scope.grants,file,&io)? {
+                return Err(Error::Unauthorized("task scope cannot read this file".into()).into());
+            }
+            let reader = if let Some(reader) = self.scope.created_reference(file) {
+                reader.as_ref()
+            } else {
+                self.content_binding(Some(file.volume()))
+                    .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?.reader.as_ref()
+            };
+            let output = reader.read_with_native_work(
+                file,self.scope.limits.file_bytes,work,
+            ).await?;
+            if file.descriptor().byte_length() != output.0.len() as u64 {
+                return Err(Error::Storage("content reader returned another file length".into()).into());
+            }
+            let hash = acyclic_fs::WorkCounters {bytes_hashed:output.0.len() as u64,..Default::default()};
+            io.preflight(hash)?;
+            let verified = file.descriptor().verify(&output.0);
+            io.charge(hash)?;
+            verified?;
+            Ok(output)
+        }.await;
+        crate::durable_host::NativeRootVerificationError::finish(result,io.take_native_failure())
     }
 
     /// Resolves an immutable artifact without coupling its provider to the
@@ -4950,35 +4953,38 @@ impl TaskContext {
     pub async fn stage_file_once_with_native_work(
         &self, operation_id: OperationId, path: &str, bytes: &[u8],
         media_type: &str, display_name: &str, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(FileRef, acyclic_fs::NativeAllocation)> {
+    ) -> std::result::Result<(FileRef,acyclic_fs::NativeAllocation),crate::durable_host::NativeRootVerificationError> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        if bytes.len() as u64 > self.scope.limits.file_bytes || path.len() > self.scope.limits.path_bytes {
-            return Err(Error::Invalid("file exceeds task content limits".into()));
-        }
-        let content = self.content_binding(None)
-            .ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
-        let writer = self.bound_content_writer_measured(Some(content),&io)?;
-        if !content.reader.supports_native_read(writer.volume(),work)? {
-            return Err(Error::Unsupported("original content reader has no native-work engine".into()));
-        }
-        let output = writer.stage_once_with_native_work(
-            operation_id,path,bytes,media_type,display_name,work,
-        ).await?;
-        let file = &output.0;
-        self.scope.limits.validate_file(file)?;
-        if file.volume() != writer.volume() || file.path() != path
-            || file.display_name() != display_name || file.descriptor().media_type() != media_type
-            || file.descriptor().byte_length() != bytes.len() as u64
-        {
-            return Err(Error::Storage("content publisher returned another file identity".into()));
-        }
-        let hash = acyclic_fs::WorkCounters {bytes_hashed:bytes.len() as u64,..Default::default()};
-        io.preflight(hash)?;
-        let verified = file.descriptor().verify(bytes);
-        io.charge(hash)?;
-        verified?;
-        content.reader.verify_with_native_work(file,self.scope.limits.file_bytes,work).await?;
-        Ok(output)
+        let result = async {
+            if bytes.len() as u64 > self.scope.limits.file_bytes || path.len() > self.scope.limits.path_bytes {
+                return Err(Error::Invalid("file exceeds task content limits".into()).into());
+            }
+            let content = self.content_binding(None)
+                .ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
+            let writer = self.bound_content_writer_measured(Some(content),&io)?;
+            if !content.reader.supports_native_read(writer.volume(),work)? {
+                return Err(Error::Unsupported("original content reader has no native-work engine".into()).into());
+            }
+            let output = writer.stage_once_with_native_work(
+                operation_id,path,bytes,media_type,display_name,work,
+            ).await?;
+            let file = &output.0;
+            self.scope.limits.validate_file(file)?;
+            if file.volume() != writer.volume() || file.path() != path
+                || file.display_name() != display_name || file.descriptor().media_type() != media_type
+                || file.descriptor().byte_length() != bytes.len() as u64
+            {
+                return Err(Error::Storage("content publisher returned another file identity".into()).into());
+            }
+            let hash = acyclic_fs::WorkCounters {bytes_hashed:bytes.len() as u64,..Default::default()};
+            io.preflight(hash)?;
+            let verified = file.descriptor().verify(bytes);
+            io.charge(hash)?;
+            verified?;
+            content.reader.verify_with_native_work(file,self.scope.limits.file_bytes,work).await?;
+            Ok(output)
+        }.await;
+        crate::durable_host::NativeRootVerificationError::finish(result,io.take_native_failure())
     }
 
     /// Publishes immutable artifact bytes under a caller-retained operation ID.

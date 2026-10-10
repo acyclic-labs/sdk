@@ -235,6 +235,37 @@ impl<P: StreamProvider> crate::resource_preparation::CreatedTaskLease
     }
 }
 
+/// Preserves an actual native quota/cancellation failure separately from an
+/// original authenticated Harness-owner rejection, without formatting either.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[derive(Debug, thiserror::Error)]
+pub enum NativeRootVerificationError {
+    #[error("{0}")]
+    Native(#[from] acyclic_fs::NativeTreeMaterializationError),
+    #[error("{0}")]
+    Owner(#[from] Error),
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl NativeRootVerificationError {
+    /// Only internal observer markers may recover a captured native failure.
+    /// A later cleanup failure must not replace an original owner error.
+    pub(crate) fn finish<T>(
+        result: std::result::Result<T,Self>,
+        native: Option<acyclic_fs::NativeTreeMaterializationError>,
+    ) -> std::result::Result<T,Self> {
+        let marker = result.as_ref().err().is_some_and(|error| match error {
+            Self::Owner(Error::Indeterminate(operation)) => operation.into_bytes() == [0;16],
+            Self::Owner(Error::Storage(message)) => message.is_empty(),
+            _ => false,
+        });
+        if marker {
+            if let Some(error) = native { return Err(Self::Native(error)); }
+        }
+        result
+    }
+}
+
 #[cfg(feature = "filesystem")]
 #[derive(Default)]
 struct TaskRootBinding {
@@ -522,6 +553,66 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             )
             .await
     }
+    /// Consumes only the original journal's sealed current Pending witness and
+    /// settled execution tail. Uncertain work keeps its original reservation.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn release_quiescent_execution_with_native_work(
+        &self, execution: OperationId, tail: u64,
+        pending: &crate::filesystem::WorkflowReleaseWitness<'_,P>,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> std::result::Result<bool,NativeRootVerificationError> {
+        let mut io = crate::store::history::native_work_io(work)?;
+        let result: Result<bool> = async {
+            if pending.task_binding() != (self.task_id,&self.fence) {
+                return Err(Error::Unauthorized("pending workflow belongs to another task or fence".into()));
+            }
+            let mut coordinator = self.host.coordinator.lock().await;
+            coordinator.refresh_with_work(&mut Some(&mut io)).await?;
+            let operation = coordinator.observe_operation_ref_with_work(
+                &self.host.owner,&self.host.owner_scope,&self.host.verifier,
+                self.operation_id(),&mut Some(&mut io),
+            )?;
+            crate::scheduler::require_execution_owner(operation,&self.fence,true)?;
+            if operation.cancellation_requested {
+                return Err(Error::Conflict("read-only close cannot settle task cancellation".into()));
+            }
+            if operation.phase == crate::scheduler::OperationPhase::Reconciling {
+                return Ok(false);
+            }
+            let revision = operation.revision;
+            // The canonical fence bytes are the original worker-key hash
+            // input, not a serialization performed solely to count cloning.
+            let remaining = crate::store::history::HistoryIo::remaining(&io)?;
+            let encoded = crate::contract::canonical_json_bytes_bounded(
+                &self.fence,crate::contract::JsonBounds {
+                    maximum_bytes:remaining.bytes_encoded,maximum_items:remaining.items_examined,
+                    maximum_depth:256,
+                },&mut |charge| crate::store::history::HistoryIo::codec_charge(&mut io,charge),
+            )?;
+            crate::store::history::HistoryIo::hashed_bytes(&mut io,encoded.len() as u64)?;
+            let digest = blake3::hash(&encoded);
+            let encoded_length = encoded.len() as u64;
+            drop(encoded);
+            crate::store::history::HistoryIo::release_owned(&mut io,encoded_length)?;
+            let mut key = String::new();
+            let digits = if revision == 0 {1} else {revision.ilog10() as usize+1};
+            crate::store::history::HistoryIo::reserve_text(&mut io,&mut key,122+digits)?;
+            use std::fmt::Write as _;
+            write!(&mut key,"task-worker:release:{}:{}:{revision}",self.operation_id(),digest.to_hex())
+                .map_err(|_| Error::Invalid("lease release key formatting failed".into()))?;
+            let fence = crate::scheduler::LeaseFence {
+                reservation_id:crate::store::history::HistoryIo::clone_text(&mut io,&self.fence.reservation_id)?,
+                placement:crate::store::history::HistoryIo::clone_text(&mut io,&self.fence.placement)?,
+            };
+            coordinator.apply_if_execution_quiescent_with_work(
+                IdempotencyKey::new(key)?,
+                crate::scheduler::SchedulerEvent::LeaseReleased {operation_id:self.operation_id(),fence},
+                execution,tail,Some((pending.path(),pending.tail())),&mut Some(&mut io),
+            ).await?;
+            Ok(true)
+        }.await;
+        NativeRootVerificationError::finish(result.map_err(Into::into),io.take_native_failure())
+    }
 
     pub(crate) fn validate_storage(
         &self,
@@ -679,23 +770,26 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.condition_with_work(write, work).await.map(|_| ())
     }
 
-    /// Checks the original owner fence and current created scratch WRITE using
-    /// the caller's same native-work ledger and cancellation token. Provider
-    /// internals are not inferred as physical IO.
+    /// Checks the original owner fence on the caller's same native ledger.
+    /// Fresh dispatch additionally requires current created scratch WRITE.
+    /// Settlement grants neither namespace writes nor a new effect.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn verify_with_native_work(
         &self, allow_settlement: bool, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
+    ) -> std::result::Result<(),NativeRootVerificationError> {
         let mut io = crate::store::history::native_work_io(work)?;
-        if let Some(binding) = self.input_created.as_ref()
-            .map(|access| access.current_content()).transpose()?.flatten()
-        {
-            if binding.binding.writer.is_none() {
-                return Err(Error::Unauthorized("current created scratch has no WRITE custody".into()));
+        let result: Result<()> = async {
+            if !allow_settlement && let Some(binding) = self.input_created.as_ref()
+                .map(|access| access.current_content()).transpose()?.flatten()
+            {
+                if binding.binding.writer.is_none() {
+                    return Err(Error::Unauthorized("current created scratch has no WRITE custody".into()));
+                }
+                self.require_volume_grant_with_work(&binding.volume, crate::conversation::VolumeOperation::Write, &mut io)?;
             }
-            self.require_volume_grant_with_work(&binding.volume, crate::conversation::VolumeOperation::Write, &mut io)?;
-        }
-        self.verify_with_work(allow_settlement, &mut Some(&mut io)).await
+            self.verify_with_work(allow_settlement, &mut Some(&mut io)).await
+        }.await;
+        NativeRootVerificationError::finish(result.map_err(Into::into),io.take_native_failure())
     }
 
     /// Authorizes exact retained volume custody on that same native-work ledger.
@@ -704,18 +798,21 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self, volume: &crate::conversation::VolumeRef,
         operation: crate::conversation::VolumeOperation,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
+    ) -> std::result::Result<(),NativeRootVerificationError> {
         let mut io = crate::store::history::native_work_io(work)?;
-        if operation == crate::conversation::VolumeOperation::Write {
-            if let Some(binding) = self.input_created.as_ref()
-                .and_then(|access| access.content.iter().find(|binding| &binding.volume == volume))
-            {
-                if binding.binding.writer.is_none() {
-                    return Err(Error::Unauthorized("created volume has no retained WRITE custody".into()));
+        let result: Result<()> = (|| {
+            if operation == crate::conversation::VolumeOperation::Write {
+                if let Some(binding) = self.input_created.as_ref()
+                    .and_then(|access| access.content.iter().find(|binding| &binding.volume == volume))
+                {
+                    if binding.binding.writer.is_none() {
+                        return Err(Error::Unauthorized("created volume has no retained WRITE custody".into()));
+                    }
                 }
             }
-        }
-        self.require_volume_grant_with_work(volume, operation, &mut io)
+            self.require_volume_grant_with_work(volume, operation, &mut io)
+        })();
+        NativeRootVerificationError::finish(result.map_err(Into::into),io.take_native_failure())
     }
 
     /// Reads the original owned task's actual terminal result on the same
@@ -724,37 +821,45 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn outcome_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<crate::Outcome<FileRef>>> {
+    ) -> std::result::Result<(Option<crate::Outcome<FileRef>>,acyclic_fs::NativeAllocation),NativeRootVerificationError> {
         let mut io = crate::store::history::native_work_io(work)?;
-        let mut coordinator = self.host.coordinator.lock().await;
-        coordinator.refresh_with_work(&mut Some(&mut io)).await?;
-        let operation = coordinator.observe_operation_ref_with_work(
-            &self.host.owner, &self.host.owner_scope, &self.host.verifier,
-            self.operation_id(), &mut Some(&mut io),
-        )?;
-        if operation.phase != crate::scheduler::OperationPhase::Terminal {
-            return Ok(None);
-        }
-        let Some(outcome) = &operation.outcome else {
-            return Err(Error::Invalid("terminal original task lacks its outcome".into()));
-        };
-        let outcome = match outcome {
-            crate::Outcome::Succeeded(reference) => {
-                let bytes = crate::filesystem::UploadRecord::logical_owned_bytes(reference)?;
-                crate::store::history::HistoryIo::retain_owned(&mut io, bytes)?;
-                crate::store::history::HistoryIo::codec_charge(&mut io,
-                    crate::contract::JsonCodecCharge::Copy {bytes})?;
-                crate::Outcome::Succeeded(reference.clone())
-            },
-            crate::Outcome::Failed {message} => crate::Outcome::Failed {
-                message: crate::store::history::HistoryIo::clone_text(&mut io,message)?,
-            },
-            crate::Outcome::Cancelled => crate::Outcome::Cancelled,
-            crate::Outcome::Indeterminate {..} => {
-                return Err(Error::Invalid("uncertain task outcome cannot be terminal".into()));
-            },
-        };
-        Ok(Some(outcome))
+        let result = async {
+            let mut coordinator = self.host.coordinator.lock().await;
+            coordinator.refresh_with_work(&mut Some(&mut io)).await?;
+            let operation = coordinator.observe_operation_ref_with_work(
+                &self.host.owner, &self.host.owner_scope, &self.host.verifier,
+                self.operation_id(), &mut Some(&mut io),
+            )?;
+            if operation.phase != crate::scheduler::OperationPhase::Terminal {
+                return Ok((None,work.retain_owned(0)?));
+            }
+            let Some(outcome) = &operation.outcome else {
+                return Err(Error::Invalid("terminal original task lacks its outcome".into()).into());
+            };
+            let output = match outcome {
+                crate::Outcome::Succeeded(reference) => {
+                    let bytes = crate::filesystem::UploadRecord::logical_owned_bytes(reference)?;
+                    let custody = work.retain_owned(bytes)?;
+                    crate::store::history::HistoryIo::codec_charge(&mut io,
+                        crate::contract::JsonCodecCharge::Copy {bytes})?;
+                    (crate::Outcome::Succeeded(reference.clone()),custody)
+                },
+                crate::Outcome::Failed {message} => {
+                    work.charge(acyclic_fs::WorkCounters {
+                        bytes_copied:message.len() as u64,
+                        allocation_operations:u64::from(!message.is_empty()),..Default::default()
+                    })?;
+                    let custody = work.retain_owned(message.len() as u64)?;
+                    (crate::Outcome::Failed {message:message.clone()},custody)
+                },
+                crate::Outcome::Cancelled => (crate::Outcome::Cancelled,work.retain_owned(0)?),
+                crate::Outcome::Indeterminate {..} => {
+                    return Err(Error::Invalid("uncertain task outcome cannot be terminal".into()).into());
+                },
+            };
+            Ok((Some(output.0),output.1))
+        }.await;
+        NativeRootVerificationError::finish(result,io.take_native_failure())
     }
 
     /// Verifies the original task's current fresh-dispatch fence using the
@@ -1768,7 +1873,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         };
         if let Some((execution, tail)) = idle_execution {
             coordinator
-                .suspend_if_execution_idle(key, event, execution, tail)
+                .apply_if_execution_quiescent(key, event, execution, tail)
                 .await?;
         } else {
             coordinator.apply(operation_id, key, event).await?;
