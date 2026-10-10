@@ -24,11 +24,10 @@ use bytes::Bytes;
 use futures::TryStreamExt as _;
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{collections::BTreeMap, sync::Arc};
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const COORDINATOR_PATH: &str = "harness/v3/coordinator/events";
 const COORDINATOR_WIRE_VERSION: &str = "3";
@@ -118,6 +117,11 @@ pub struct ChildOperationPageRequest<'a> {
 
 /// Pull worker capacity and placement identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(
+    feature = "wasm",
+    tsify(large_number_types_as_bigints, hashmap_as_object)
+)]
 pub struct Worker {
     /// Stable worker identity.
     pub id: String,
@@ -130,12 +134,18 @@ pub struct Worker {
 
 /// Work atomically claimed from the coordinator.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct WorkLease {
     /// Complete immutable operation declaration.
     pub operation: OperationSpec,
     /// Pinned execution allocation.
     pub reservation: Reservation,
     /// Latest durable resumable checkpoint, if any.
+    #[cfg_attr(
+        feature = "wasm",
+        tsify(type = "(WasmResourceRefWire & { kind: 'checkpoint' }) | null")
+    )]
     pub checkpoint: Option<crate::resources::CheckpointRef>,
     /// Coordinator-observed revision associated with this reservation. Recovery
     /// may observe progress since the reservation's initial admission.
@@ -1980,6 +1990,13 @@ fn decode(bytes: &[u8]) -> Result<(u64, OperationId, String, [u8; 32], u64, Sche
     ))
 }
 
+#[cfg(target_arch = "wasm32")]
+fn current_time_millis() -> Result<u64> {
+    use acyclic_stream::UnixMillisClock as _;
+    Ok(acyclic_stream::SystemUnixMillisClock.now_unix_millis())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn current_time_millis() -> Result<u64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

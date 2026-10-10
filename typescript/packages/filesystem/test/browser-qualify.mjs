@@ -216,6 +216,8 @@ async function runPage(browser, observer, origin, page) {
   let last;
   try {
     observed = await until(deadline, `${page} result`, async () => {
+      const uncaught = events.find((event) => event.startsWith("uncaught:"));
+      if (uncaught !== undefined) return { status: "failed", text: uncaught };
       const evaluated = await browser.send(
         "Runtime.evaluate",
         {
@@ -230,6 +232,8 @@ async function runPage(browser, observer, origin, page) {
     }).catch((error) => {
       throw new Error(`${error.message}; the page was waiting for: ${last?.waiting || "nothing"}`);
     });
+  } catch (error) {
+    return { page, passed: false, text: String(error.stack ?? error), events };
   } finally {
     await browser.send("Target.closeTarget", { targetId }).catch(() => {});
   }
