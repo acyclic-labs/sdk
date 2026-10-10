@@ -2,6 +2,7 @@
 
 use crate::wire;
 use prost::Message;
+use std::sync::Arc;
 use tonic::{
     Request, Status,
     metadata::{Ascii, MetadataValue},
@@ -61,12 +62,17 @@ pub enum ConnectError {
     /// Private CA must contain between one byte and 64 KiB.
     #[error("invalid Workers private CA")]
     InvalidCaCertificate,
+    /// The platform certificate verifier could not be initialized.
+    #[error("Workers platform certificate verifier: {0}")]
+    PlatformVerifier(#[source] rustls::Error),
     /// URI or TLS connection failed.
     #[error(transparent)]
     Transport(#[from] tonic::transport::Error),
 }
 
-/// Connect using standard TLS roots and account-bound bearer metadata.
+/// Connect trusting the operating system's roots with account-bound bearer metadata.
+///
+/// On Linux, `SSL_CERT_FILE` and `SSL_CERT_DIR` select the native roots.
 ///
 /// # Errors
 /// Returns an error for invalid configuration or an unavailable TLS endpoint.
@@ -74,7 +80,8 @@ pub async fn connect(endpoint: &str, token: &str) -> Result<Client, ConnectError
     connect_with_ca_certificate(endpoint, token, None).await
 }
 
-/// Connect with an optional additional private CA, scoped to this connection.
+/// Connect trusting exactly `ca` when supplied, otherwise the platform's roots.
+/// A supplied CA replaces, rather than augments, ambient trust for this connection.
 ///
 /// # Errors
 /// Returns an error for invalid configuration, CA bytes, or TLS connection.
@@ -88,18 +95,24 @@ pub async fn connect_with_ca_certificate(
     }
     let authorization =
         crate::client_config::authorization(token).map_err(|()| ConnectError::InvalidCredential)?;
-    let mut tls = ClientTlsConfig::new().with_webpki_roots();
-    if let Some(ca) = ca {
-        if ca.is_empty() || ca.len() > 64 * 1024 {
-            return Err(ConnectError::InvalidCaCertificate);
+    let configured = Endpoint::from_shared(endpoint.to_owned())?
+        .http2_max_header_list_size(tonic_web_wasm_client::limits::HEADER_LIST_BYTES);
+    let configured = match ca {
+        Some(ca) => {
+            if ca.is_empty() || ca.len() > 64 * 1024 {
+                return Err(ConnectError::InvalidCaCertificate);
+            }
+            configured.tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(ca)))?
         }
-        tls = tls.ca_certificate(Certificate::from_pem(ca));
-    }
-    let channel = Endpoint::from_shared(endpoint.to_owned())?
-        .http2_max_header_list_size(tonic_web_wasm_client::limits::HEADER_LIST_BYTES)
-        .tls_config(tls)?
-        .connect()
-        .await?;
+        None => {
+            let verifier = rustls_platform_verifier::Verifier::new(Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .map_err(ConnectError::PlatformVerifier)?;
+            configured.tls_config_with_verifier(ClientTlsConfig::new(), Arc::new(verifier))?
+        }
+    };
+    let channel = configured.connect().await?;
     Ok(
         wire::workers_service_client::WorkersServiceClient::with_origin(
             tonic::service::interceptor::InterceptedService::new(
@@ -122,3 +135,7 @@ pub fn error_detail(status: &Status) -> Option<wire::Error> {
     let detail = wire::Error::decode(status.details()).ok()?;
     (detail.code != wire::ErrorCode::Unspecified as i32).then_some(detail)
 }
+
+#[cfg(test)]
+#[path = "grpc_tls_tests.rs"]
+mod tls_tests;

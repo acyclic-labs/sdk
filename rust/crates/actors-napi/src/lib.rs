@@ -385,7 +385,7 @@ impl NativeActorsClient {
         )
         .await)
     }
-    /// Connect with an additional native CA certificate.
+    /// Connect trusting exclusively the supplied native PEM CA certificate.
     #[napi(factory, js_name = "connectWithCa")]
     pub async fn connect_with_ca(
         endpoint: String,
@@ -401,7 +401,7 @@ impl NativeActorsClient {
         .map(Self::from_client)
         .map_err(napi_error)
     }
-    /// Structured connection result with a native CA certificate.
+    /// Structured connection result trusting exclusively the supplied native PEM CA.
     #[napi(js_name = "connectWithCaResult")]
     pub async fn connect_with_ca_result(
         endpoint: String,

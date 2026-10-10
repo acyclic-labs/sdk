@@ -176,12 +176,16 @@ impl Client {
                 )
                 .await
                 .map_err(|error| {
-                    let code = if matches!(error, crate::grpc::ConnectError::Transport(_)) {
+                    let code = if matches!(
+                        error,
+                        crate::grpc::ConnectError::Transport(_)
+                            | crate::grpc::ConnectError::PlatformVerifier(_)
+                    ) {
                         "unavailable"
                     } else {
                         "invalid_argument"
                     };
-                    Failure::local(code, error)
+                    Failure::local(code, format!("{error:?}"))
                 })?;
                 #[cfg(target_arch = "wasm32")]
                 let inner = {

@@ -196,7 +196,7 @@ fn stream_error(error: &StreamError) -> NativeStreamErrorMetadata {
 
 fn connect_error(error: &grpc::ConnectError) -> NativeStreamErrorMetadata {
     let code = match &error {
-        grpc::ConnectError::Endpoint(_) => "transport",
+        grpc::ConnectError::Endpoint(_) | grpc::ConnectError::PlatformVerifier(_) => "transport",
         grpc::ConnectError::InsecureEndpoint
         | grpc::ConnectError::InvalidCredential
         | grpc::ConnectError::InvalidCaCertificate
@@ -205,7 +205,11 @@ fn connect_error(error: &grpc::ConnectError) -> NativeStreamErrorMetadata {
     };
     NativeStreamErrorMetadata {
         code: code.to_owned(),
-        message: error.to_string(),
+        message: if code == "transport" {
+            format!("{error:?}")
+        } else {
+            error.to_string()
+        },
     }
 }
 
@@ -507,7 +511,7 @@ impl NativeStreamClient {
         })
     }
 
-    /// Connects with one caller-pinned private CA certificate.
+    /// Connects trusting exclusively the caller-pinned private PEM CA certificate.
     #[napi(factory, js_name = "connectWithCa")]
     pub async fn connect_with_ca(
         endpoint: String,
@@ -991,6 +995,15 @@ mod tests {
     use tokio::net::TcpListener;
     use tonic::transport::{Identity, Server, ServerTlsConfig};
     use tonic::{Request, Status};
+
+    #[test]
+    fn platform_verifier_failure_is_transport_and_retains_its_cause() {
+        let metadata = connect_error(&grpc::ConnectError::PlatformVerifier(
+            rustls::Error::General("native trust initialization failed".to_owned()),
+        ));
+        assert_eq!(metadata.code, "transport");
+        assert!(metadata.message.contains("native trust initialization failed"));
+    }
 
     struct DropSentinel(Arc<AtomicBool>);
 

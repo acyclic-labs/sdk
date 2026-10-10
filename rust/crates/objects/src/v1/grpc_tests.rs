@@ -8,6 +8,10 @@ use tonic::{
     transport::{Identity, Server, ServerTlsConfig},
 };
 
+mod tls {
+    include!("grpc_tls_tests.rs");
+}
+
 #[derive(Clone)]
 struct Fixture(MemoryObjects);
 fn authenticated<T>(request: Request<T>) -> Result<T, Status> {

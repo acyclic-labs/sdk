@@ -8,6 +8,13 @@ cargo add acyclic-stream
 
 The default `grpc` feature provides the service client; `local` enables the durable local implementation. `MemoryStream` is deterministic but process-local. Use `StreamPath::new` to validate a path, keep the returned cursor when consuming records, and use an idempotency key plus tail precondition when retrying or coordinating writes.
 
+Native Rust gRPC and the Node/Bun N-API companion trust the platform roots through
+`rustls-platform-verifier`: Windows certificate-chain APIs, macOS Security.framework,
+and Linux native roots selected by `SSL_CERT_FILE` and `SSL_CERT_DIR`. A supplied
+PEM CA is **the only trust** for the connection, including pooled and eager clients;
+it replaces ambient trust. This does not change HTTP, browser, or direct
+TypeScript ConnectRPC transport trust.
+
 On browser WASM builds, `BrowserStream::open(name, limits)` binds that same Rust state machine to a strict `IndexedDB` command journal. It implements the ordinary `StreamProvider` contract, including atomic multi-path commits and provider-clock deadlines. Native and browser persistence share the command codec and Rust replay. Tabs and workers serialize refresh, admission and publication in one transaction on one named database; this gives no atomicity across databases, filesystem volumes or other providers. Browser storage eviction and origin quotas remain platform limits.
 
 Each handle retains a disposable Rust cache and catches up only new journal commands. Initial recovery and total retention are bounded by `BrowserStreamLimits` (default 65,536 commands and 256 MiB of journal bytes) and `MemoryLimits`. New work fails at capacity while exact retained replay still succeeds. Cancellation or persistence failure invalidates unpublished cached state. Live follow polls durable state every 100 ms while consumed, so killing a publisher before any wakeup cannot hide its committed records. Dropping the cursor ends that polling. The provider does not run or schedule application work. Provider hooks use `BoxProviderFuture`, `BoxProviderStream`, `ProviderTask` and `ProviderPlatform`: native futures remain `Send` and native providers remain `Send + Sync`; WASM hooks retain event-loop ownership.

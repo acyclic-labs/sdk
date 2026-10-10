@@ -28,6 +28,12 @@ The default `grpc` feature exposes the authenticated remote client. Enable `http
 for `HttpObjects`. Both transports require HTTPS and a caller-supplied bearer
 credential. For a private-CA gRPC endpoint, pass the caller-supplied PEM
 certificate to `GrpcObjects::connect`.
+Without a supplied CA, native gRPC trusts the platform roots through
+`rustls-platform-verifier`: Windows certificate-chain APIs, macOS
+Security.framework, and Linux native roots selected by `SSL_CERT_FILE` and
+`SSL_CERT_DIR`. A supplied CA is **the only trust** for that connection, including
+`connect_with_identity`; it does not augment ambient roots. Client identity and
+server trust remain independent. HTTP and browser trust behavior is unchanged.
 
 ```rust,no_run
 # #[cfg(feature = "grpc")]

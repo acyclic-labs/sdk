@@ -27,9 +27,11 @@ hand-maintained operation list in the client. `HttpActorsClient`
 remains a compatibility alias while callers move to the platform-neutral name.
 Actor invocation includes request and response headers.
 
-Native callers connecting to a private endpoint may additionally provide
-`caCertificate` as DER or PEM bytes. The option is carried to the Rust N-API
-TLS connector; browser calls continue to use the browser trust store.
+The installed native Rust companion trusts the operating system's roots
+(on Linux, `SSL_CERT_FILE` and `SSL_CERT_DIR`). Native callers may provide
+`caCertificate` as PEM bytes; this is **the only trust** for that connection,
+not an addition to ambient roots. Browser and WASM-fallback calls keep browser
+trust and reject caller-supplied CA configuration.
 
 `bun run build` rebuilds the WASM bridge before TypeScript declarations. The
 package tarball includes that bridge and the generated Protobuf artifacts; no

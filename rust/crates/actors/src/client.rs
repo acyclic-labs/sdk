@@ -323,7 +323,7 @@ pub async fn connect(endpoint: &str, token: &str) -> Result<Client, ConnectError
     connect_with_ca_certificate(endpoint, token, None).await
 }
 
-/// Connect with an optional caller-pinned private CA on native targets.
+/// Connect trusting exclusively the supplied PEM CA on native targets, or platform roots if absent.
 #[allow(
     clippy::needless_return,
     reason = "target-specific branches return distinct native and browser backends"
@@ -347,7 +347,10 @@ pub async fn connect_with_ca_certificate(
                 crate::grpc::ConnectError::InvalidCaCertificate => {
                     Error::Configuration("invalid Actors private CA certificate".into())
                 }
-                crate::grpc::ConnectError::Transport(error) => Error::Transport(error.to_string()),
+                crate::grpc::ConnectError::PlatformVerifier(error) => {
+                    Error::Transport(error.to_string())
+                }
+                crate::grpc::ConnectError::Transport(error) => Error::Transport(format!("{error:?}")),
             })?;
         return Ok(Client {
             inner: Backend::Grpc(inner),

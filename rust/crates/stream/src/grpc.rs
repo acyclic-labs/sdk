@@ -67,6 +67,9 @@ pub enum ConnectError {
     /// Caller-supplied private CA bundle is empty or exceeds its fixed bound.
     #[error("invalid Stream private CA certificate")]
     InvalidCaCertificate,
+    /// The platform certificate verifier could not be initialized.
+    #[error("Stream platform certificate verifier: {0}")]
+    PlatformVerifier(#[source] rustls::Error),
     /// At least one independently reachable endpoint is required.
     #[error("at least one Stream endpoint is required")]
     NoEndpoints,
@@ -113,7 +116,8 @@ fn check_command_size<T: Message>(request: &T) -> Result<(), Status> {
 }
 
 impl Client {
-    /// Connects to a TLS endpoint with an account-bound bearer credential.
+    /// Connects trusting the platform's roots with an account-bound bearer credential.
+    /// On Linux, `SSL_CERT_FILE` and `SSL_CERT_DIR` select native roots.
     pub async fn connect(
         endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
@@ -133,7 +137,7 @@ impl Client {
         Self::connect_with_tls(endpoints, bearer_token, None)
     }
 
-    /// Connects to a TLS endpoint augmented by one caller-pinned private CA certificate.
+    /// Connects to a TLS endpoint trusting exclusively the caller-pinned private CA.
     pub async fn connect_with_ca_certificate(
         endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
@@ -158,7 +162,7 @@ impl Client {
         Self::connect_eager_endpoints([endpoint], bearer_token, None).await
     }
 
-    /// Eagerly connects through ambient roots plus one caller-pinned private CA.
+    /// Eagerly connects trusting exclusively the caller-pinned private CA.
     pub async fn connect_eager_with_ca_certificate(
         endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
@@ -168,7 +172,7 @@ impl Client {
             .await
     }
 
-    /// Connects to independently reachable endpoints using one caller-pinned private CA.
+    /// Connects to independent endpoints trusting exclusively the caller-pinned private CA.
     pub async fn connect_endpoints_with_ca_certificate<I, S>(
         endpoints: I,
         bearer_token: impl AsRef<str>,
@@ -249,6 +253,16 @@ impl Client {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        let verifier = if certificate_pem.is_none() {
+            Some(Arc::new(
+                rustls_platform_verifier::Verifier::new(Arc::new(
+                    rustls::crypto::ring::default_provider(),
+                ))
+                .map_err(ConnectError::PlatformVerifier)?,
+            ))
+        } else {
+            None
+        };
         let mut configured = Vec::new();
         for endpoint in endpoints.into_iter().take(MAX_ENDPOINTS + 1) {
             if configured.len() == MAX_ENDPOINTS {
@@ -258,20 +272,19 @@ impl Client {
             if endpoint.len() > MAX_ENDPOINT_URI_BYTES {
                 return Err(ConnectError::EndpointLimit);
             }
-            // `Endpoint::new` enables the compiled WebPKI roots for HTTPS. The lower-level
-            // `from_shared` constructor leaves TLS disabled and fails only on first use.
-            let mut endpoint = Endpoint::new(endpoint.to_owned())?.connect_timeout(connect_timeout);
+            let endpoint =
+                Endpoint::from_shared(endpoint.to_owned())?.connect_timeout(connect_timeout);
             if endpoint.uri().scheme_str() != Some("https") {
                 return Err(ConnectError::InsecureEndpoint);
             }
-            if let Some(certificate_pem) = certificate_pem {
-                endpoint = endpoint.tls_config(
+            configured.push(if let Some(verifier) = &verifier {
+                endpoint.tls_config_with_verifier(ClientTlsConfig::new(), verifier.clone())?
+            } else {
+                endpoint.tls_config(
                     ClientTlsConfig::new()
-                        .with_enabled_roots()
-                        .ca_certificate(Certificate::from_pem(certificate_pem)),
-                )?;
-            }
-            configured.push(endpoint);
+                        .ca_certificates(certificate_pem.map(Certificate::from_pem)),
+                )?
+            });
         }
         if configured.is_empty() {
             return Err(ConnectError::NoEndpoints);
@@ -1509,6 +1522,10 @@ mod tests {
     use tonic::transport::{Identity, Server, ServerTlsConfig};
     use wire::stream_service_server::{StreamService, StreamServiceServer};
 
+    mod tls {
+        include!("grpc_tls_tests.rs");
+    }
+
     #[tokio::test]
     async fn served_body_errors_remain_on_owned_span_when_polled_by_another_caller()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -2677,7 +2694,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn private_ca_https_connection_preserves_ambient_roots_and_exact_bearer()
+    async fn private_ca_https_connection_trusts_only_declared_ca_and_exact_bearer()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let certified = generate_simple_self_signed(["localhost".to_owned()])?;
         let certificate_pem = certified.cert.pem();

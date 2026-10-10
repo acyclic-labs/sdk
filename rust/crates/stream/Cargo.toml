@@ -32,7 +32,7 @@ required-features = ["local"]
 
 [features]
 default = ["grpc"]
-grpc = ["dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost"]
+grpc = ["dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/rt"]
 http = ["dep:reqwest"]
 local = ["dep:fs2", "dep:libc", "tokio/rt-multi-thread"]
 wasm = ["dep:serde", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:indexed_db_futures"]
@@ -71,6 +71,8 @@ acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 pin-project-lite = "0.2.17"
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"], optional = true }
 tracing.workspace = true
+rustls = { workspace = true, optional = true }
+rustls-platform-verifier = { workspace = true, optional = true }
 
 [build-dependencies]
 protoc-bin-vendored.workspace = true

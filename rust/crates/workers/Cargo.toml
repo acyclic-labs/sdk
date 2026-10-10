@@ -52,11 +52,13 @@ http-body = "1.1.0"
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability" }
 reqwest.workspace = true
 tonic-web-wasm-client = { package = "acyclic-tonic-web-wasm-client", version = "=0.2.0", path = "../../vendor/tonic-web-wasm-client-0.9.2" }
-tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "router", "transport", "tls-ring", "tls-webpki-roots"] }
+tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "router", "transport", "tls-ring"] }
 napi = { workspace = true, features = ["tokio_rt"], optional = true }
 napi-derive = { workspace = true, optional = true }
 tokio = { version = "1.48.0", default-features = false, features = ["time"] }
 tracing.workspace = true
+rustls.workspace = true
+rustls-platform-verifier.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] }
@@ -70,6 +72,8 @@ gloo-timers = { version = "=0.4.0", features = ["futures"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio.workspace = true
 tracing-subscriber.workspace = true
+rcgen = "0.14.10"
+tempfile = "3.27.0"
 
 [build-dependencies]
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["codegen"] }

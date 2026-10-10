@@ -41,6 +41,9 @@ pub enum ConnectError {
     /// Connection could not be established.
     #[error(transparent)]
     Transport(#[from] tonic::transport::Error),
+    /// The platform certificate verifier could not be initialized.
+    #[error("Objects platform certificate verifier: {0}")]
+    PlatformVerifier(#[source] rustls::Error),
 }
 
 /// Logical Objects client. Every request carries a sensitive bearer credential.
@@ -181,7 +184,9 @@ impl GrpcObjects {
         )
         .await
     }
-    /// Connects over authenticated TLS with an optional additional private CA.
+    /// Connects trusting the platform's roots, or exclusively the supplied private CA.
+    ///
+    /// On Linux, `SSL_CERT_FILE` and `SSL_CERT_DIR` select native roots when `ca` is absent.
     ///
     /// # Errors
     /// Rejects invalid credentials, non-HTTPS endpoints, oversized CA bundles, or failed connections.
@@ -246,7 +251,7 @@ impl GrpcObjects {
             .parse()
             .map_err(|_| ConnectError::InvalidConfiguration)?;
         authorization.set_sensitive(true);
-        let mut tls = ClientTlsConfig::new().with_webpki_roots();
+        let mut tls = ClientTlsConfig::new();
         if let Some(ca) = ca {
             if ca.is_empty() || ca.len() > super::MAX_PEM_BYTES {
                 return Err(ConnectError::InvalidConfiguration);
@@ -256,8 +261,16 @@ impl GrpcObjects {
         if let Some(identity) = identity {
             tls = tls.identity(identity);
         }
+        let endpoint = if ca.is_some() {
+            endpoint.tls_config(tls)?
+        } else {
+            let verifier = rustls_platform_verifier::Verifier::new(std::sync::Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .map_err(ConnectError::PlatformVerifier)?;
+            endpoint.tls_config_with_verifier(tls, std::sync::Arc::new(verifier))?
+        };
         let channel = endpoint
-            .tls_config(tls)?
             .connect_timeout(std::time::Duration::from_secs(10))
             // Requests carry their own deadlines. This ceiling must permit
             // caller-selected streaming budgets to reach the transport.

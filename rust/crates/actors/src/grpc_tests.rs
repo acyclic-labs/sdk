@@ -19,6 +19,10 @@ use tracing_subscriber::{
     registry::LookupSpan,
 };
 
+mod tls {
+    include!("grpc_tls_tests.rs");
+}
+
 struct Data(std::collections::VecDeque<http_body::Frame<Bytes>>);
 impl http_body::Body for Data {
     type Data = Bytes;

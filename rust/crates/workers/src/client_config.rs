@@ -39,7 +39,7 @@ pub struct WorkersClientOptions {
     /// Positive whole-operation deadline, bounded to `i32::MAX` milliseconds.
     #[ts(optional)]
     pub deadline_millis: Option<u32>,
-    /// Additional native PEM root, at most 64 KiB; browser trust is platform-owned.
+    /// Exclusive native PEM trust, at most 64 KiB; browser trust is platform-owned.
     #[ts(optional)]
     pub ca_certificate: Option<String>,
     /// ASCII request metadata pairs; protocol/authentication fields are reserved.

@@ -44,7 +44,7 @@ export interface ActorsCallOptions {
 export interface ActorsOptions {
   readonly endpoint: string;
   readonly token: string;
-  /** Optional native trust root for private or test endpoints. */
+  /** Exclusive native PEM trust; omitted uses the operating system's roots. */
   readonly caCertificate?: Uint8Array;
   /** Native callers may inject the built N-API binding. */
   readonly binding?: ActorsRustBinding;

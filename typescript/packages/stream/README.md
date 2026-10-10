@@ -50,8 +50,11 @@ const client = new StreamClient(new GrpcStreamProvider({ endpoint, token }));
 The gRPC provider supports streaming reads and cancellable follow, forks,
 idempotency inspection, and atomic multi-path commits. Requests and unary
 responses use the same Rust validation and projection as the memory provider.
-Message sizes are bounded; an optional private CA certificate extends system
-trust. Token creation uses the HTTP provider because the Stream gRPC service
+Message sizes are bounded; the direct TypeScript gRPC provider's optional CA
+augments Node trust. The installed Rust N-API companion instead uses native
+platform roots (on Linux, `SSL_CERT_FILE` and `SSL_CERT_DIR`); its supplied PEM CA
+is **the only trust** for the connection. HTTP and browser trust is unchanged.
+Token creation uses the HTTP provider because the Stream gRPC service
 does not publish a token RPC. Browsers use the HTTP provider.
 
 For a service, use `new StreamClient(new HttpStreamProvider({ endpoint, token }))` or `Stream.fromEnv()` with `ACYCLIC_STREAM_ENDPOINT` and `ACYCLIC_API_KEY`. Service endpoints must be HTTPS. Sequence numbers are `bigint`; persist the last consumed cursor and resume reads or `follow` from the appropriate position. Use `ifTail` for optimistic append concurrency and an idempotency key when retrying mutations.
