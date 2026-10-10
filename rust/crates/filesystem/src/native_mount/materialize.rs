@@ -2421,7 +2421,8 @@ mod restore_recovery_tests {
         let competing = acquire_restore_lock(relative, &destination, false);
         let fenced = matches!(
             &competing,
-            Err(MaterializeError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock
+            Err(MaterializeError::Io(error))
+                if error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
         );
         drop(competing);
         // Release before assertions: even the broken-lock mutation must finish.
