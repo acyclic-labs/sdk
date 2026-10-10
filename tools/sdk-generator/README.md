@@ -17,6 +17,7 @@ tools/sdk-generator/
     cpp/                C++ producer and installed native loopback RPC controls
     swift/              Swift producer, archive admission and installed native RPC controls
     elixir/             Elixir producer, archive admission and installed message qualification
+    erlang/             Erlang producer, archive admission and installed native RPC controls
 ```
 
 Each backend consumes the canonical Rust exports through maintained generators.
@@ -24,7 +25,7 @@ Add a backend directory when it contains executable tooling; keep generated SDK
 source and package artifacts in their language package or requested output path.
 Do not check tool downloads, caches or generation output into this directory.
 
-Java, .NET, Ruby, Dart, PHP, C++, Swift and Elixir use the same layout within each backend:
+Java, .NET, Ruby, Dart, PHP, C++, Swift, Elixir and Erlang use the same layout within each backend:
 
 ```text
 <backend>/
