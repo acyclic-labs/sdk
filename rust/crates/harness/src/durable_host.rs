@@ -5492,6 +5492,40 @@ pub(crate) mod tests {
             OperationId::from_bytes([57; 16]), IdempotencyKey::new("native-suspended-step")?,
             serde_json::json!(0),
         ).await?;
+        // Cold selected-state reads keep the actual audited decode allowance
+        // on the original operation ledger until the returned DTO drops.
+        {
+            let baseline = work.live_allocation_bytes();
+            let observed = workflow.observe_transition_with_native_work(1, &work).await?;
+            assert_eq!(observed.0.next.revision, 1);
+            assert!(matches!(observed.0.transition.status, crate::workflow::MachineStatus::Suspended));
+            assert!(observed.1.bytes() > 0);
+            assert_eq!(work.live_allocation_bytes(), baseline + observed.1.bytes());
+            drop(observed);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+            let admitted = workflow.admission_with_native_work(&work).await?;
+            assert_eq!(admitted.0.as_ref(), Some(owner.workflow_admission()));
+            assert!(admitted.1.bytes() > 0);
+            assert_eq!(work.live_allocation_bytes(), baseline + admitted.1.bytes());
+            drop(admitted);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+            let denied_work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::WorkBudget { backend_read_operations: 0, ..budget }, &cancellation,
+            ).map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+            let denied_live = denied_work.live_allocation_bytes();
+            assert!(matches!(workflow.observe_transition_with_native_work(1, &denied_work).await,
+                Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(_), .. })));
+            assert_eq!(denied_work.receipt().backend_read_operations, 0);
+            assert_eq!(denied_work.live_allocation_bytes(), denied_live);
+            let cancelled = acyclic_fs::CancellationToken::new();
+            let cancelled_work = acyclic_fs::NativeMaterializationWork::new(budget, &cancelled)
+                .map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+            let prefix = cancelled_work.receipt();
+            cancelled.cancel();
+            assert!(matches!(workflow.admission_with_native_work(&cancelled_work).await,
+                Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
+            assert_eq!(cancelled_work.receipt(), prefix);
+        }
         assert!(!journal.release_if_quiescent_with_native_work(&work, &workflow).await?);
         {
             let coordinator = host.coordinator.lock().await;

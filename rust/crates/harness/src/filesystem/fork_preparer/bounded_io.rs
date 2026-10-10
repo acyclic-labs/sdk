@@ -96,6 +96,7 @@ audited_preparation_records!(
     FileRef,
     crate::workflow::WorkflowRecord,
     crate::workflow::WorkflowAdmission,
+    crate::workflow::MachineCheckpoint,
 );
 
 pub(crate) struct ReservedDecoded<'a, T> {

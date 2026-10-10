@@ -150,6 +150,15 @@ where
         scope: Scope,
         maximum_payload_bytes: u64,
     ) -> Result<Self> {
+        Self::new_with_io(stream, host, workflow_id, volume, verifier, scope,
+            maximum_payload_bytes, None)
+    }
+
+    pub(crate) fn new_with_io(
+        stream: StreamClient<P>, host: Arc<FilesystemHost<A, O>>, workflow_id: &str,
+        volume: VolumeRef, verifier: AuthorityVerifier, scope: Scope,
+        maximum_payload_bytes: u64, io: Option<&PreparationIo>,
+    ) -> Result<Self> {
         if workflow_id.is_empty()
             || workflow_id == "."
             || workflow_id == ".."
@@ -162,16 +171,39 @@ where
         {
             return Err(Error::Invalid("workflow journal binding is invalid".into()));
         }
-        ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Read)?;
-        ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Write)?;
-        let path = format!("harness/v2/workflows/{workflow_id}");
-        stream
-            .stream(&path)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+        if let Some(io) = io {
+            ContentGrant::verify_original_volume_with_io(&verifier, &scope, &volume, VolumeOperation::Read, io)?;
+            ContentGrant::verify_original_volume_with_io(&verifier, &scope, &volume, VolumeOperation::Write, io)?;
+        } else {
+            ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Read)?;
+            ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Write)?;
+        }
+        let path_hold;
+        let path = crate::contract::preparation_format(
+            format_args!("harness/v2/workflows/{workflow_id}"), io)?;
+        path_hold = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
+        let stream_hold;
+        let (validated, held) = Self::observation_stream_from(&stream, &path, io)?;
+        stream_hold = held;
+        drop(validated);
+        drop(stream_hold);
+        let id_hold;
+        let workflow_id = if let Some(io) = io {
+            let copied = acyclic_fs::WorkCounters { bytes_copied: workflow_id.len() as u64, ..Default::default() };
+            io.preflight(copied)?;
+            io.claim(workflow_id.len() as u64)?;
+            id_hold = Some(io.guard_owned(workflow_id.len() as u64)?);
+            io.allocation_attempt(workflow_id.len() as u64)?;
+            let owned = workflow_id.to_owned();
+            io.charge(copied)?;
+            owned
+        } else { id_hold = None; workflow_id.to_owned() };
+        if let Some(held) = path_hold { held.into_retained(); }
+        if let Some(held) = id_hold { held.into_retained(); }
         Ok(Self {
             stream,
             host,
-            workflow_id: workflow_id.to_owned(),
+            workflow_id,
             path,
             volume,
             verifier,
@@ -319,18 +351,49 @@ where
     /// Reads one committed transition for passive observation. Command bodies
     /// are verified individually by the task reader before readiness checks.
     pub(crate) async fn observe_transition(&self, revision: u64) -> Result<WorkflowRecord> {
-        let after = revision
-            .checked_sub(1)
+        self.observe_transition_with_io(revision, None).await
+    }
+
+    pub(crate) async fn observe_transition_with_io(
+        &self, revision: u64, io: Option<&PreparationIo>,
+    ) -> Result<WorkflowRecord> {
+        let after = revision.checked_sub(1)
             .ok_or_else(|| Error::Invalid("zero observation revision".into()))?;
-        self.replay_records(after, 1, false, false)
+        self.replay_records_with_io(after, 1, false, false, io)
             .await?
             .into_iter()
             .next()
             .ok_or_else(|| Error::Storage("observed workflow checkpoint is absent".into()))
     }
 
-    /// Observes the original authenticated outbox without executing a machine
-    /// callback. It does not grant checkpoint or command publication authority.
+    /// Reads the exact historical transition using the original native ledger.
+    /// The returned guard owns its audited logical decode allowance until the
+    /// record's last use; it is not an opaque allocator-footprint measurement.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn observe_transition_with_native_work(
+        &self, revision: u64, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(WorkflowRecord, acyclic_fs::NativeAllocation)> {
+        let io = PreparationIo::from_native_work(work)?;
+        let record = self.observe_transition_with_io(revision, Some(&io)).await?;
+        let retained = io.owned_bytes()?;
+        let custody = io.into_native_custody(retained)?;
+        Ok((record, custody))
+    }
+
+    /// Reads original admission through the canonical authenticated engine,
+    /// retaining its audited logical decode allowance with the returned DTO.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn admission_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Option<WorkflowAdmission>, acyclic_fs::NativeAllocation)> {
+        let io = PreparationIo::from_native_work(work)?;
+        let admission = self.read_admission_with_io(Some(&io)).await?;
+        let retained = io.owned_bytes()?;
+        let custody = io.into_native_custody(retained)?;
+        Ok((admission, custody))
+    }
+
+    /// Original authenticated outbox observation; no machine callback executes.
     pub(crate) async fn observe_latest_outbox(&self) -> Result<Option<crate::workflow::MachineTransition>> {
         Ok(self.observe_latest_record().await?.map(|record| record.transition))
     }
@@ -406,12 +469,18 @@ where
     }
 
     fn check_observation_cancellation(&self, io: Option<&PreparationIo>) -> Result<()> {
-        if let Some(io) = io { io.cancellation.check().map_err(|error| Error::Storage(error.to_string()))?; }
+        if let Some(io) = io { io.check_cancellation()?; }
         Ok(())
     }
 
     fn observation_stream<'a>(
         &self, path: &str, io: Option<&'a PreparationIo>,
+    ) -> Result<(acyclic_stream::Stream<P>, Option<super::DecodeReservation<'a>>)> {
+        Self::observation_stream_from(&self.stream, path, io)
+    }
+
+    fn observation_stream_from<'a>(
+        stream: &StreamClient<P>, path: &str, io: Option<&'a PreparationIo>,
     ) -> Result<(acyclic_stream::Stream<P>, Option<super::DecodeReservation<'a>>)> {
         let held = if let Some(io) = io {
             let work = acyclic_fs::WorkCounters {
@@ -424,16 +493,16 @@ where
             io.charge(work)?;
             Some(hold)
         } else { None };
-        Ok((self.stream.stream(path)?, held))
+        Ok((stream.stream(path)?, held))
     }
 
     async fn next_observation_record<'a>(
         entries: &mut acyclic_stream::RecordStream, io: Option<&'a PreparationIo>,
     ) -> Result<Option<(acyclic_stream::Record, Option<super::DecodeReservation<'a>>)>> {
-        if let Some(io) = io { io.cancellation.check().map_err(|error| Error::Storage(error.to_string()))?; }
+        if let Some(io) = io { io.check_cancellation()?; }
         let held;
         let Some(record) = entries.try_next().await? else {
-            if let Some(io) = io { io.cancellation.check().map_err(|error| Error::Storage(error.to_string()))?; }
+            if let Some(io) = io { io.check_cancellation()?; }
             return Ok(None);
         };
         held = if let Some(io) = io {
@@ -561,7 +630,7 @@ where
         self.read_admission_with_io(None).await
     }
 
-    async fn read_admission_with_io(&self, io: Option<&PreparationIo>) -> Result<Option<WorkflowAdmission>> {
+    pub(crate) async fn read_admission_with_io(&self, io: Option<&PreparationIo>) -> Result<Option<WorkflowAdmission>> {
         let _path;
         let path = crate::contract::preparation_format(
             format_args!("harness/v2/workflow-admissions/{}", self.workflow_id), io,

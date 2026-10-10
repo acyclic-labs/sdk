@@ -147,6 +147,14 @@ Bind Summary intent with `FilesystemForkPreparer::with_summary_history(selection
 
 `FilesystemWorkflowJournal` applies the same rule to resumable state-machine transitions: checkpoint state and input live in descriptor-verified private files, while its Stream contains only exact `FileRef` records. Emitted `WorkflowCommand`s contain stable operation IDs, kinds, and immutable argument refs—not inline command bodies. The journal verifies each command payload's owner-private residency before commit and on public replay. Normal commits reuse a verified in-process checkpoint/identity summary; cold recovery and uncertain appends rescan authoritative record envelopes before proceeding. Workflow lifetime and identity counts have no fixed ceilings. Caller-selected task/session budgets and payload limits remain authoritative; lazy bounded identity projections remain an open recovery gate. A lost append acknowledgement is reconciled by operation identity instead of blindly dispatching the transition again.
 
+Cold native workflow observers use the same selected-transition and admission
+read engines with original `PreparationIo` or the journal's
+`observe_transition_with_native_work`/`admission_with_native_work` APIs.
+Their returned guards retain the actual audited logical decode reservation,
+not an opaque allocator-footprint estimate, through the last use of the DTO.
+The runtime still authenticates original admission and rechecks the suspension
+slot; it acquires no lease and executes no machine callback.
+
 `FilesystemSchedulerPayloadStore` stages join, quorum, and reducer JSON results in an explicitly granted agent-private volume. The coordinator verifies each exact staged result and its declared schema before publishing its `FileRef`, and repeats that verification on replay.
 
 For a scheduler-owned task workflow, obtain `CoordinatorTaskHost::journal_owner(task_id, fence).await` from an `Arc` of the host, then use `FilesystemWorkflowJournal::for_task` with that binding. The binding's `workflow_admission()` supplies the initial checkpoint and request digest derived from the retained task admission and registered machine. The constructor uses the coordinator's own Stream provider and fixes the journal path to the task ID. Admission and transition publications atomically compare both the coordinator revision and journal tail; cancellation or a lease change between validation and publication prevents the write. Checkpoint retries also require the current uncancelled lease, and records must reproduce the pinned machine transition. Private payload staging precedes this transaction and can leave unused files after a conflict. Generic command dispatch and persistent composition remain required; this constructor alone is not a complete persistent task runner.
