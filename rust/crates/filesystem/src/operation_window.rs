@@ -2669,7 +2669,7 @@ mod tests {
                     .tail(
                         stream_lease_path(
                             workspace,
-                            original.lease_id,
+                            original.id,
                             original.expires_at_millis,
                         )
                         .expect("original gate path"),

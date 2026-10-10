@@ -156,30 +156,7 @@ pub fn decode(route: &str, input: &[u8], maximum_bytes: usize) -> Result<Vec<u8>
             }
             .encode_to_vec()
         }
-        "commit" => {
-            let value = object(&value, &["request", "options"])?;
-            let request = object(field(value, "request")?, &["conditions", "mutations"])?;
-            let options = object(
-                field(value, "options")?,
-                &["idempotencyKey", "deadlineUnixMillis"],
-            )?;
-            let conditions = field(request, "conditions")?
-                .as_array()
-                .ok_or("invalid_argument")?;
-            let mutations = field(request, "mutations")?
-                .as_array()
-                .ok_or("invalid_argument")?;
-            if conditions.len() > crate::MAX_ITEMS || mutations.len() > crate::MAX_ITEMS {
-                return Err("limit_exceeded");
-            }
-            wire::CommitRequest {
-                conditions: conditions.iter().map(condition).collect::<Result<_>>()?,
-                mutations: mutations.iter().map(mutation).collect::<Result<_>>()?,
-                idempotency_key: bytes(field(options, "idempotencyKey")?)?,
-                deadline_unix_millis: optional(Some(options), "deadlineUnixMillis", sequence)?,
-            }
-            .encode_to_vec()
-        }
+        "commit" => decode_commit(&value)?.encode_to_vec(),
         "commits/read" => {
             let value = object(&value, &["commitId"])?;
             wire::ReadCommitRequest {
@@ -193,6 +170,30 @@ pub fn decode(route: &str, input: &[u8], maximum_bytes: usize) -> Result<Vec<u8>
         return Err("limit_exceeded");
     }
     Ok(message)
+}
+
+fn decode_commit(value: &Value) -> Result<wire::CommitRequest> {
+    let value = object(value, &["request", "options"])?;
+    let request = object(field(value, "request")?, &["conditions", "mutations"])?;
+    let options = object(
+        field(value, "options")?,
+        &["idempotencyKey", "deadlineUnixMillis"],
+    )?;
+    let conditions = field(request, "conditions")?
+        .as_array()
+        .ok_or("invalid_argument")?;
+    let mutations = field(request, "mutations")?
+        .as_array()
+        .ok_or("invalid_argument")?;
+    if conditions.len() > crate::MAX_ITEMS || mutations.len() > crate::MAX_ITEMS {
+        return Err("limit_exceeded");
+    }
+    Ok(wire::CommitRequest {
+        conditions: conditions.iter().map(condition).collect::<Result<_>>()?,
+        mutations: mutations.iter().map(mutation).collect::<Result<_>>()?,
+        idempotency_key: bytes(field(options, "idempotencyKey")?)?,
+        deadline_unix_millis: optional(Some(options), "deadlineUnixMillis", sequence)?,
+    })
 }
 fn condition(value: &Value) -> Result<wire::CommitCondition> {
     let value = object(value, &["path", "ifTail", "ifAbsent"])?;
