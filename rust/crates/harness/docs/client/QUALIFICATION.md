@@ -224,6 +224,37 @@ restored in finally. The mock numeric adapter adds only a configurable conservat
 prediction byte estimate for the overflow trace, with unchanged normal estimates
 and allocation ownership. There is no new production engine or verification framework.
 
-Open for the repaired runtime: renewed thirteen-test platform/browser/archive
-consumer gates, strict lint, allocation/timing comparison, exact-head SDK
-Qualification, qualified merge and independent actual-main verification.
+Final repaired runtime snapshot: `d2ea64b134364964dd80945aa9a13ef8084f4165`,
+module blob `cea8641d8b617fc29e5803e47b65115a43ff0f2a`. Windows, WSL/Linux and
+macOS each pass all thirteen tests and strict Harness all-target/all-feature lint.
+The identical thirteen tests pass in installed Chromium through the portable
+external consumer; normal Harness WASM library strict lint also passes. The
+initial repair crossed the existing 100-line function limit, so dependency storage
+accounting was mechanically extracted into a checked scalar helper. That
+lint-failing source is historical; all final platform receipts above use the
+extracted helper. Both new budget mutations were then repeated and assertion-killed
+on this final module, followed by exact byte restoration and a passing normal suite.
+The other eight controls exercise unchanged authority, identity and transition logic.
+
+The actual repaired candidate archive has SHA256
+`06ca62d5ea656b6261f41d57a4f28300fa0b8444c659130752828061819c31f1`.
+Its module blob matches the frozen source. Fresh native and Chromium consumers
+compile its archived production, twelve transition scenarios, public-consumer test
+and example: all thirteen pass. Local unpublished companion patches remain
+explicit; the existing unpatched registry packaging limitation remains unchanged.
+
+The final Harness benchmark retains zero warm-view allocations, 2 / 72 B canonical
+and 5 / 936 B selective reconciliation allocations, with unchanged cold allocation
+totals. For 1/8/16 records, final medians are canonical views 19.23/23.53/26.26 ns,
+predicted views 18.45/31.34/25.09 ns, canonical reconciliation 189.7/247.5/236.6 ns,
+selective reconciliation 432/447.6/494.5 ns, cold canonical
+255.5 ns/1.373 us/2.872 us and cold speculative 505 ns/3.466 us/6.932 us.
+All are within the recorded comparison threshold; shared-host timing variation
+remains outside any latency guarantee.
+
+Subsequent edits to this receipt file change no qualified runtime, README, tests,
+examples, benchmark, manifest or lock input. At this receipt snapshot, required
+new-head SDK Qualification, qualified merge and independent actual-main
+verification remain open; closing evidence belongs to
+[PR336](https://github.com/acyclic-labs/sdk/pull/336). Older green checks are not
+qualification of the repaired head.
