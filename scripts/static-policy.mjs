@@ -2,7 +2,12 @@
 // visible to this dependency-free static check. Unsupported YAML forms fail.
 export function pinnedActions(file, source) {
   let scalarIndent = null;
+  let expression = false;
   for (const line of source.split('\n')) {
+    if (expression) {
+      if (line.includes('}}')) expression = false;
+      continue;
+    }
     if (!line.trim()) continue;
     const indent = line.match(/^\s*/)[0].length;
     if (scalarIndent !== null) {
@@ -10,6 +15,7 @@ export function pinnedActions(file, source) {
       scalarIndent = null;
     }
     if (line.trimStart().startsWith('#')) continue;
+    if (line.includes('${{') && !line.slice(line.indexOf('${{')).includes('}}')) expression = true;
     // Mask quoted values while retaining quoted mapping keys. Text in a
     // step name or environment value is not an action reference.
     const keys = line.replace(/"(?:\\.|[^"\\])*"|'(?:''|[^'])*'/g,
