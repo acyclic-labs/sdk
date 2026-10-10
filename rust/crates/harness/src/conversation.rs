@@ -391,7 +391,7 @@ impl ContentGrant {
             volume: proof.project().clone(),
             operation: VolumeOperation::Read,
             exact_file: None,
-            directory_prefix: None,
+            directory_prefix: Some(String::new()),
         }
     }
 

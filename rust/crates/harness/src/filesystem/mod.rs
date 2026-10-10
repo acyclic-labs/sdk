@@ -85,6 +85,7 @@ mod task_runtime;
 mod recursive;
 mod mailbox_machine;
 mod default_tools;
+pub(crate) use default_tools::finite_budget;
 mod configured_recursive_tools;
 pub use configured_recursive_tools::{
     ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller,
@@ -3071,7 +3072,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         path: &str,
     ) -> Result<()> {
         volume.validate()?;
-        volume.directory_read_capability(path)?;
+        if !path.is_empty() {
+            crate::conversation::validate_content_path(path)?;
+        }
         if volume.provider() != &self.provider {
             return Err(Error::Invalid(
                 "private directory belongs to another provider or class".into(),

@@ -892,7 +892,7 @@ async fn read(context: &TaskContext, file: &FileRef, maximum: u64, cancellation:
     context.read_file_measured(file, finite_budget(maximum, maximum), cancellation).await
         .map(|receipt| receipt.value).map_err(|failure| failure.error)
 }
-fn finite_budget(work: u64, bytes: u64) -> WorkBudget {
+pub(crate) fn finite_budget(work: u64, bytes: u64) -> WorkBudget {
     WorkBudget {
         authority_records_read: work, authority_records_appended: work,
         authority_bytes_read: bytes, authority_bytes_written: bytes,

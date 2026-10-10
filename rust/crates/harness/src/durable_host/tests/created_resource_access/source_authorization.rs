@@ -59,7 +59,11 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     let child = TaskId::from_bytes([84; 16]);
     let project = created.project;
     let workspace = workspace_ref(fixture.filesystem_provider.clone(), &project.storage_name()?)?;
-    let generation = fixture.filesystem.resolve(&workspace).await?.generation;
+    let initial_generation = fixture.filesystem.resolve(&workspace).await?.generation;
+    let generation = fixture.filesystem.apply(&workspace, Some(&initial_generation), &[
+        crate::filesystem::WorkspaceMutation::PutFile { path:"/selected.txt".into(), bytes:b"frozen selected".to_vec() },
+        crate::filesystem::WorkspaceMutation::PutFile { path:"/second.txt".into(), bytes:b"second".to_vec() },
+    ], &IdempotencyKey::new("source-inspection-files")?).await?;
     let parent_project = VolumeRef::new(fixture.filesystem_provider.clone(), "parent-project", VolumeClass::Project,
         VolumeOwner::Project("created-project".into()))?;
     let parent_workspace = workspace_ref(fixture.filesystem_provider.clone(), &parent_project.storage_name()?)?;
@@ -100,6 +104,47 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     other_purpose.policy_scope = issuer.root("harness.other-purpose.v1", Capabilities::new(["harness.other-purpose.v1"]));
     fixture.host.verifier.verify(&other_purpose.policy_scope)?;
     assert!(other_purpose.verify_scope(&fixture.host.verifier).is_err());
+    // The public selected boundary consumes only the sealed operation handle.
+    // No donor READ capability is installed in the original caller context.
+    let mut budget_value = serde_json::to_value(acyclic_fs::WorkBudget::default())
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    for allowance in budget_value.as_object_mut().ok_or_else(|| Error::Invalid("budget shape".into()))?.values_mut() {
+        *allowance = serde_json::json!(1_000_000);
+    }
+    let budget: acyclic_fs::WorkBudget = serde_json::from_value(budget_value)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let snapshot = ProjectSourceSnapshot { project:project.clone(), generation:generation.clone(), native_snapshot:None };
+    let inspected = runtime.inspect_project_source(&context, owner.clone(), handle.clone(), operation, child, &snapshot, budget).await?;
+    let (selected_file, selected_bytes) = inspected.read_path(&project, "", "selected.txt", &generation).await?;
+    assert_eq!(selected_bytes, b"frozen selected");
+    assert!(matches!(context.read_file(&selected_file).await, Err(Error::Unauthorized(_))));
+    assert_eq!(inspected.read_file(&selected_file).await?, b"frozen selected");
+    assert!(!inspected.diff(&selected_file, &selected_file).await?);
+    let page = inspected.list(&project, "", "", &generation, None, 1).await?;
+    assert_eq!(page.entries.len(), 1);
+    assert!(page.has_more);
+    let second_page = inspected.list(&project, "", "", &generation, Some(&page.entries[0].name), 1).await?;
+    assert_eq!(second_page.entries.len(), 1);
+    assert_ne!(page.entries[0].name, second_page.entries[0].name);
+    assert!(inspected.read_path(&project, "", ".system/hidden", &generation).await.is_err());
+    assert!(inspected.read_path(&project, "selected", "selected.txt", &generation).await.is_err());
+    assert!(inspected.read_path(&policy.bootstrap.project, "", "selected.txt", &generation).await.is_err());
+    assert!(inspected.read_path(&project, "", "selected.txt", &initial_generation).await.is_err());
+    assert!(runtime.inspect_project_source(&context, owner.clone(), handle.clone(),
+        OperationId::from_bytes([125;16]), child, &snapshot, budget).await.is_err());
+    assert!(runtime.inspect_project_source(&context, owner.clone(), handle.clone(),
+        operation, fixture.root, &snapshot, budget).await.is_err());
+    assert!(runtime.inspect_project_source(&context, owner.clone(), handle.clone(),
+        operation, child, &snapshot, acyclic_fs::WorkBudget::UNBOUNDED).await.is_err());
+    let spent = inspected.project_work().ok_or_else(|| Error::Invalid("selected receipt absent".into()))?;
+    assert!(spent.backend_read_operations > 0 && spent.output_bytes > 0);
+    assert_eq!(context.scope().grants(), &original);
+    let mut denied_budget = budget;
+    denied_budget.output_bytes = 1;
+    let denied = runtime.inspect_project_source(&context, owner.clone(), handle.clone(),
+        operation, child, &snapshot, denied_budget).await?;
+    assert!(denied.read_path(&project, "", "selected.txt", &generation).await.is_err());
+    assert_eq!(fixture.filesystem.resolve(&workspace).await?.generation, generation);
     let cancelled_guard = acyclic_fs::CancellationToken::new();
     let cancelled_owner = Arc::new(fixture.host.journal_owner(fixture.root, context.owned_task_fence()?).await?
         .with_invocation_cancellation(&cancelled_guard));
@@ -108,6 +153,8 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         ProjectSourceSnapshot {project:project.clone(),generation:generation.clone(),native_snapshot:None},
         1_000_000, 128 * 1_024 * 1_024).await.is_err());
     assert!(cancelled_owner.restore_project_source_authorization(&context, handle.authorization()).await.is_err());
+    assert!(runtime.inspect_project_source(&context, cancelled_owner.clone(), handle.clone(),
+        operation, child, &snapshot, budget).await.is_err());
     // Root, ancestor, sibling and deeper descendant use the same actual graph,
     // never an actor-supplied tree or a copied foreign scope.
     owner.authorize_project_source(&context, &issuer, &policy, fixture.root, operation,
@@ -135,6 +182,8 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     sibling_owner.authorize_project_source(&sibling_context, &issuer, &policy, child, operation,
         ProjectSourceSnapshot { project:project.clone(),generation:generation.clone(),native_snapshot:None },
         1_000_000, 128 * 1_024 * 1_024).await?;
+    assert!(runtime.inspect_project_source(&sibling_context, sibling_owner.clone(), handle.clone(),
+        operation, child, &snapshot, budget).await.is_err());
     let mut descendant = created.request.child.clone();
     descendant.operation_id = OperationId::from_bytes([123;16]);
     descendant.parent = Some(child);
@@ -144,6 +193,12 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     owner.authorize_project_source(&context, &issuer, &policy, TaskId::from_bytes([123;16]), operation,
         ProjectSourceSnapshot {project:project.clone(),generation:generation.clone(),native_snapshot:None},
         1_000_000, 128 * 1_024 * 1_024).await?;
+    let advanced = fixture.filesystem.apply(&workspace, Some(&generation), &[
+        crate::filesystem::WorkspaceMutation::PutFile { path:"/selected.txt".into(), bytes:b"new mutable head".to_vec() },
+    ], &IdempotencyKey::new("source-inspection-advanced-head")?).await?;
+    assert_ne!(advanced, generation);
+    assert_eq!(inspected.read_path(&project, "", "selected.txt", &generation).await?.1, b"frozen selected");
+    assert_eq!(fixture.filesystem.resolve(&workspace).await?.generation, advanced);
     let mut foreign_root = fixture.admission(124, serde_json::json!({}));
     foreign_root.parent = None;
     fixture.host.admit(foreign_root).await?;
@@ -221,6 +276,8 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     assert!(owner.authorize_project_source(&context, &issuer, &policy, fixture.root, operation,
         policy.bootstrap.clone(), 1_000_000, 128 * 1_024 * 1_024).await.is_err());
     assert!(owner.restore_project_source_authorization(&context, handle.authorization()).await.is_err());
+    assert!(inspected.read_file(&selected_file).await.is_err());
+    assert!(inspected.list(&snapshot.project, "", "", &snapshot.generation, None, 1).await.is_err());
     // Issued immutable preparation survives a legitimate original caller
     // recovery. Fresh use through the old opaque context above did not.
     let crate::distributed::WorkPull::Claimed(recovered_root) = fixture.host.recover_work(fixture.root).await? else {
@@ -233,12 +290,17 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         .with_invocation_cancellation(&recovered_guard));
     assert_eq!(recovered_owner.restore_project_source_authorization(&recovered_context, handle.authorization())
         .await?.authorization(), handle.authorization());
+    let recovered_inspection = runtime.inspect_project_source(&recovered_context, recovered_owner.clone(),
+        handle.clone(), operation, child, &snapshot, budget).await?;
+    assert_eq!(recovered_inspection.read_file(&selected_file).await?, b"frozen selected");
     let mut forged_intent = handle.authorization().clone();
     forged_intent.operation_id = OperationId::from_bytes([133;16]);
     assert!(recovered_owner.restore_project_source_authorization(&recovered_context, &forged_intent).await.is_err());
     assert_eq!(recovered_owner.restore_project_source(&recovered_context, &prepared_request).await?
         .as_ref().map(|handle|handle.authorization()), Some(handle.authorization()));
     assert!(helper_owner.resource_preparation(prepared_request).await?.project_source().is_some());
+    recovered_guard.cancel();
+    assert!(recovered_inspection.read_file(&selected_file).await.is_err());
     fixture.host.coordinator.lock().await.cancel_operation(
         &fixture.host.owner, &fixture.host.owner_scope, &fixture.host.verifier,
         OperationId::from_bytes(fixture.root.into_bytes()), IdempotencyKey::new("source-cancel-original")?, true,

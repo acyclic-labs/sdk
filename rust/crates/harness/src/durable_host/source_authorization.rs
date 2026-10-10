@@ -141,6 +141,27 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
         Ok(handle)
     }
+
+    pub(crate) async fn verify_project_source_handle(
+        self: &Arc<Self>, context: &crate::runtime::TaskContext,
+        handle: &ProjectSourceReadHandle,
+    ) -> Result<()> {
+        let cancellation = self.invocation_cancellation.as_ref().ok_or_else(|| {
+            Error::Unauthorized("selected project read requires actual invocation cancellation".into())
+        })?;
+        if context.durable_task_id() != Some(self.task_id)
+            || context.owned_task_fence()? != self.fence
+            || context.scope().grants() != &self.input_grants
+            || handle.authorization().caller_admission_digest != self.original_admission_digest
+            || cancellation.is_cancelled()
+        {
+            return Err(Error::Unauthorized("selected project read lacks its current original owner".into()));
+        }
+        self.verify(false).await?;
+        self.host.verify_project_source_authorization(handle.authorization(), self.task_id).await?;
+        self.verify(false).await?;
+        cancellation.check().map_err(|_| Error::Unauthorized("selected project invocation cancelled".into()))
+    }
 }
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
@@ -239,6 +260,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     async fn seal_project_source_authorization(
         &self, record: &ProjectSourceAuthorization, parent: TaskId,
     ) -> Result<ProjectSourceReadHandle> {
+        self.verify_project_source_authorization(record, parent).await?;
+        ProjectSourceReadHandle::seal(record.clone(), &self.verifier)
+    }
+
+    async fn verify_project_source_authorization(
+        &self, record: &ProjectSourceAuthorization, parent: TaskId,
+    ) -> Result<()> {
         record.verify_scope(&self.verifier)?;
         if record.owner != self.owner || record.caller_task != parent {
             return Err(Error::Unauthorized("project source differs from original caller or owning coordinator".into()));
@@ -265,6 +293,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         // For bootstrap roots, the original issuer MAC attests the mandatory
         // provider's protected allocation verification. No raw root scope does.
-        ProjectSourceReadHandle::seal(record.clone(), &self.verifier)
+        Ok(())
     }
 }

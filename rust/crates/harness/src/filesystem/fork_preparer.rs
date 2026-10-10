@@ -32,7 +32,7 @@ use std::{collections::BTreeSet, sync::Arc};
 use uuid::Uuid;
 
 mod created_access;
-pub(super) mod bounded_io;
+pub(crate) mod bounded_io;
 pub(crate) use bounded_io::PreparationIo;
 pub use created_access::FilesystemResourceCreationProvider;
 

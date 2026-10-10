@@ -146,3 +146,54 @@ Durable mailbox messages carry a validated `FileRef`, not inline payload bytes. 
 When a conversation references files from several owners, bind their authenticated readers with `composeContentBindings(contracts, [{ volume, content }, ...])`. An optional third `ContentMountResolver` resolves unknown owner volumes lazily; its owner-bound `requireFileRead` checks each exact ref, and `requireDirectoryPath` authenticates every lazy directory listing or path read. Explicit bindings take precedence, and the fallback supplies only reads, never the composite writer. Routing uses the exact volume and owner identity carried by each `FileRef`, so distinct agents on one provider can be mounted together. The composition never makes a reference itself an access grant.
 
 `HarnessBuilder.forkPreparer(...)` captures parent-selected resources; `forkPublisher(...)` binds a trusted parent-owned publication provider. `AgentHarness.spawnFromReport(report)` validates the complete report and exact Rust-derived seed before requesting publication. The facade checks the provider's returned identity, but cannot independently prove its storage state: a qualified publisher must authenticate both signed scopes, append the exact seed to the parent Stream, and durably bind the fresh child with the correct causal parent before reporting success. If acknowledgement is uncertain, `reconcileSpawn(report)` observes the same operation ID; it never recaptures resources or silently starts another child. Rust's `StreamAggregate::spawn_from_report` is the reference implementation of that trusted boundary.
+
+## Headless selected inspection
+
+The `browser` entrypoint's `inspectTaskSource(runtime, callerTask, sourceTask)`
+resolves the retained source identity without adopting its grants. Its metadata
+and `runtime.children(parent, revision, afterSlot, maximum)` come from the
+canonical owner child index; no second registry or hydrated swarm is retained.
+Select one authorized project/scratch volume and immutable generation for
+`list`/`readPath`; `diff` reads only its two selected immutable refs. A source
+identity or file ref never grants body access: every operation uses the caller's
+retained scope and the owner-authenticated content reader.
+`inspection.project()` resolves the source's unambiguous original project
+allocation snapshot from its authenticated creation receipt. It does not resolve
+the mutable source head, copy foreign history, or transfer the source's grants.
+
+Rust additionally exposes `FilesystemTaskRuntime::inspect_project_source` for
+explicit RootService-authorized workspace selection. Supply the original opaque
+task owner/context, sealed `ProjectSourceReadHandle`, exact original operation,
+source task/project/generation/native snapshot, and finite `WorkBudget`.
+`TaskSourceInspection<P, A, O>` consumes that handle privately; caller grants do
+not change, and serialized authorization is an opaque purpose-bound MAC
+attestation, not a usable volume-read scope. This permits no transcript access.
+Reads/listing/diff reject other volumes/generations, internal paths and stale
+owners. Current-owner guards run before and after SDK awaits using the actual
+invocation driver's cancellation token; cancellation does not attest that an
+uncertain remote effect stopped.
+
+Native unresolved data must use the actual trusted lazy binding:
+`read_native_path`, `read_native_link`, `lookup_native_path`,
+`list_native_directory` and `prepare_native_selected_import`. Each takes the
+exact frozen SDK snapshot and the caller's finite remaining budget as its last
+argument, intersected with the reader's cumulative allowance. Authored-only
+`read_path`/`list` reject native selections rather than treating unresolved data
+as an empty filesystem. Native methods retain genuine SDK success/failure
+receipts; charge constructor `project_work()` once, then each returned receipt
+once. Cumulative `project_work()` includes selected filesystem/SDK-buffer work,
+not coordinator journal authentication or opaque-provider physical I/O.
+Selected-import preparation produces the real immutable-source plan: committing
+into caller-owned destination storage still requires its original write
+authority, exact-root approval and concurrent-edit protection.
+
+`runtime.headlessExecution(task, fence, turn)` opens the configured real model and
+admitted tools with the ordinary task-owned execution journal. Use its
+`operationId()` in the turn input, `modelStep(input, step, priorMessages)` for
+one public stock model step, and `resolveModelTools(input, step)` to settle only
+the calls admitted by that retained step. Ready messages feed the next step;
+pending/rejected approvals remain explicit. Native Rust exposes the same methods
+on `FilesystemTaskExecution` and `TaskSourceInspection`. Durable custom loops
+checkpoint transitions using `workflow_journal`/canonical workflow commands,
+not suspended async stacks. Cancellation intent does not prove effect stoppage.
+

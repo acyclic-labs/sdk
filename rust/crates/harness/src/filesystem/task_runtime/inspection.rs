@@ -5,15 +5,24 @@ use crate::conversation::{FileRef, PrivateDirectoryPage};
 use crate::resources::GenerationRef;
 use crate::runtime::{TaskAdmissionRecord, TaskChildrenPage};
 
+mod project;
+use project::ProjectSourceReader;
+
+enum SourceReader<P, A, O> {
+    Caller(TaskContext),
+    Project(ProjectSourceReader<P, A, O>),
+}
+
 /// A retained source identity and a separately authorized reader. Selecting the
 /// source never adopts its grants, mounts its resources, or acquires a lease.
-pub struct TaskSourceInspection {
+pub struct TaskSourceInspection<P, A, O> {
     source: TaskAdmissionRecord,
-    reader: TaskContext,
+    reader: SourceReader<P, A, O>,
     volumes: Vec<crate::durable_host::TaskVolumeSnapshot>,
 }
 
-impl TaskSourceInspection {
+impl<P, A, O> TaskSourceInspection<P, A, O>
+where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {
     /// Exact owner-authenticated source admission, not an executable context.
     #[must_use]
     pub const fn source(&self) -> &TaskAdmissionRecord { &self.source }
@@ -51,7 +60,10 @@ impl TaskSourceInspection {
 
     /// Reads one exact immutable file under the CALLER's retained authority.
     pub async fn read_file(&self, file: &FileRef) -> Result<Vec<u8>> {
-        self.reader.read_file(file).await
+        match &self.reader {
+            SourceReader::Caller(reader) => reader.read_file(file).await,
+            SourceReader::Project(reader) => reader.read_file(file).await,
+        }
     }
 
     /// Lists only the selected directory at the explicit immutable generation.
@@ -63,9 +75,14 @@ impl TaskSourceInspection {
         if after.is_some_and(|name| name.is_empty() || name.contains('/') || name.contains('\\')) {
             return Err(Error::Invalid("invalid selected directory cursor".into()));
         }
-        self.reader.list_private_directory(
-            volume, granted_prefix, path, Some(generation), after, maximum_entries,
-        ).await
+        match &self.reader {
+            SourceReader::Caller(reader) => reader.list_private_directory(
+                volume, granted_prefix, path, Some(generation), after, maximum_entries,
+            ).await,
+            SourceReader::Project(reader) => reader.list(
+                volume, granted_prefix, path, generation, after, maximum_entries,
+            ).await,
+        }
     }
 
     /// Reads just one selected path at the explicit immutable generation.
@@ -73,15 +90,40 @@ impl TaskSourceInspection {
         &self, volume: &VolumeRef, granted_prefix: &str, path: &str,
         generation: &GenerationRef,
     ) -> Result<(FileRef, Vec<u8>)> {
-        self.reader.read_private_path(volume, granted_prefix, path, Some(generation)).await
+        match &self.reader {
+            SourceReader::Caller(reader) => reader.read_private_path(volume, granted_prefix, path, Some(generation)).await,
+            SourceReader::Project(reader) => reader.read_path(volume, granted_prefix, path, generation).await,
+        }
     }
 
     /// Compares two selected immutable files, authenticating BOTH references.
     /// This deliberately does not scan directories or resolve mutable heads.
     pub async fn diff(&self, before: &FileRef, after: &FileRef) -> Result<bool> {
+        if let SourceReader::Project(reader) = &self.reader {
+            return reader.diff(before, after).await;
+        }
         let before_bytes = self.read_file(before).await?;
         let after_bytes = self.read_file(after).await?;
         Ok(before_bytes != after_bytes)
+    }
+
+    /// Immutable operation attestation, not a serialized filesystem read grant.
+    #[must_use]
+    pub fn project_authorization(&self) -> Option<&crate::source_authorization::ProjectSourceAuthorization> {
+        match &self.reader {
+            SourceReader::Caller(_) => None,
+            SourceReader::Project(reader) => Some(reader.authorization()),
+        }
+    }
+
+    /// Cumulative measured filesystem/SDK-buffer work for this selected reader,
+    /// including failed boundaries. Coordinator journal authentication is separate.
+    #[must_use]
+    pub fn project_work(&self) -> Option<acyclic_fs::WorkCounters> {
+        match &self.reader {
+            SourceReader::Caller(_) => None,
+            SourceReader::Project(reader) => Some(reader.work()),
+        }
     }
 }
 
@@ -99,12 +141,40 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
 
     /// Resolves retained source metadata while retaining only the caller's read
     /// authority. Both identities are authenticated by the existing task owner.
-    pub async fn inspect_source(&self, caller: TaskId, source: TaskId) -> Result<TaskSourceInspection> {
+    pub async fn inspect_source(&self, caller: TaskId, source: TaskId) -> Result<TaskSourceInspection<P, A, O>> {
         let caller_admission = self.host.observe_admission(caller).await?;
         let source = self.host.observe_admission(source).await?;
         let reader = self.harness.durable_context(caller, caller_admission.operation_id).await?;
         let volumes = self.host.observe_volume_snapshots(TaskId::from_bytes(source.operation_id.into_bytes())).await?;
-        Ok(TaskSourceInspection { source, reader, volumes })
+        Ok(TaskSourceInspection { source, reader: SourceReader::Caller(reader), volumes })
+    }
+
+    /// Opens one operation-authorized project selection without changing caller
+    /// grants or granting transcript/private access. The original opaque owner
+    /// must carry its actual invocation cancellation token. A recovered owner
+    /// authenticates the same immutable attestation; an old reader stays fenced.
+    #[allow(clippy::too_many_arguments, reason = "original owner, exact selection and finite budget are explicit")]
+    pub async fn inspect_project_source(
+        &self, context: &TaskContext, owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
+        handle: crate::source_authorization::ProjectSourceReadHandle,
+        operation: OperationId, source: TaskId,
+        snapshot: &crate::source_authorization::ProjectSourceSnapshot,
+        budget: acyclic_fs::WorkBudget,
+    ) -> Result<TaskSourceInspection<P, A, O>> {
+        handle.require_selection(operation, source, &snapshot.project, &snapshot.generation, snapshot.native_snapshot.as_ref())?;
+        if !budget.has_finite_allowances() {
+            return Err(Error::Invalid("selected inspection requires finite caller allowances".into()));
+        }
+        budget.verify(crate::filesystem::finite_budget(
+            handle.authorization().maximum_work, handle.authorization().maximum_bytes,
+        )).map_err(|error| Error::Invalid(error.to_string()))?;
+        owner.verify_project_source_handle(context, &handle).await?;
+        let admission = self.host.observe_admission(source).await?;
+        owner.verify(false).await?;
+        let volumes = self.host.observe_volume_snapshots(admission.task_id()).await?;
+        owner.verify(false).await?;
+        let reader = ProjectSourceReader::open(self.filesystem.clone(), owner, handle, context.scope().limits(), budget).await?;
+        Ok(TaskSourceInspection { source: admission, reader: SourceReader::Project(reader), volumes })
     }
 }
 
