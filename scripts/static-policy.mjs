@@ -1,42 +1,25 @@
-// Keep workflow Actions in ordinary block mappings so every reference is
-// visible to this dependency-free static check. Unsupported YAML forms fail.
+import YAML from './vendor/yaml.cjs';
+
+// Parse actual workflow and composite-action mappings. Script strings,
+// comments and ordinary values never become action references.
 export function pinnedActions(file, source) {
-  let scalarIndent = null;
-  let expression = false;
-  for (const line of source.split('\n')) {
-    if (expression) {
-      if (line.includes('}}')) expression = false;
-      continue;
+  const document = YAML.parseDocument(source, {merge: true});
+  if (document.errors.length) throw new Error(file + ': ' + document.errors[0].message);
+  const workflow = document.toJS({maxAliasCount: 100});
+  const action = value => {
+    if (typeof value !== 'string' || (!value.startsWith('./') && !/^[^@]+@[0-9a-f]{40}$/.test(value))) {
+      throw new Error(file + ': action must be pinned: ' + String(value));
     }
-    if (!line.trim()) continue;
-    const indent = line.match(/^\s*/)[0].length;
-    if (scalarIndent !== null) {
-      if (indent > scalarIndent) continue;
-      scalarIndent = null;
-    }
-    if (line.trimStart().startsWith('#')) continue;
-    if (line.includes('${{') && !line.slice(line.lastIndexOf('${{')).includes('}}')) expression = true;
-    // Mask quoted values while retaining quoted mapping keys. Text in a
-    // step name or environment value is not an action reference.
-    const keys = line.replace(/"(?:\\.|[^"\\])*"|'(?:''|[^'])*'/g,
-      (value, offset) => /^\s*:/.test(line.slice(offset + value.length)) ? value : ' '.repeat(value.length));
-    const mapping = keys.replace(/\$\{\{.*?(?:\}\}|$)/g, '');
-    if (/(?:^\s*(?:-\s*)?|:\s*|[{,]\s*)[&*!]/.test(mapping) ||
-        /(?:^\s*(?:-\s*)?|[{,]\s*)["'][^\n]*["']\s*:/.test(mapping)) {
-      throw new Error(`${file}: YAML anchors, aliases, tags and quoted mapping keys are unsupported; use ordinary block mappings`);
-    }
-    const key = /(?:^\s*(?:-\s*)?|[{,]\s*)(?:uses|["']uses["'])\s*:/.test(keys);
-    if (!key && /^\s*(?:-\s*)?[^:]+:\s*[|>][0-9+-]*(?:\s+#.*)?\s*$/.test(line)) {
-      scalarIndent = indent;
-      continue;
-    }
-    if (!key) continue;
-    const action = line.match(/^\s*(?:-\s*)?uses:\s*["']?([^\s"'#]+)/)?.[1];
-    if (!action) throw new Error(`${file}: uses must be an unquoted block mapping key`);
-    if (!action.startsWith('./') && !/^[^@]+@[0-9a-f]{40}$/.test(action)) {
-      throw new Error(`${file}: action must be pinned: ${action}`);
-    }
+  };
+  const steps = items => {
+    if (!Array.isArray(items)) return;
+    for (const step of items) if (step && Object.hasOwn(step, 'uses')) action(step.uses);
+  };
+  for (const job of Object.values(workflow?.jobs ?? {})) {
+    if (job && Object.hasOwn(job, 'uses')) action(job.uses);
+    steps(job?.steps);
   }
+  steps(workflow?.runs?.steps);
 }
 
 export const rustFormatNeeded = changed => changed.some(file => file.endsWith('.rs') ||
