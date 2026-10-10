@@ -941,7 +941,7 @@ impl StockExecutor {
                 "tool prefix has another execution identity".into(),
             ));
         };
-        if !self.matches_request_digest(input, request_digest).await? {
+        if !self.matches_request_digest(input, request_digest)? {
             return Err(Error::Conflict(
                 "tool prefix has another execution identity".into(),
             ));
@@ -1070,7 +1070,7 @@ impl StockExecutor {
 
     fn request_digest(&self, input: &TurnInput) -> Result<[u8; 32]> {
         let mut request = json!({
-            "executor": "acyclic.stock.v6",
+            "executor": "acyclic.stock.v7",
             "input": input,
             "model": self.model,
             "max_output_tokens": self.max_output_tokens,
@@ -1107,31 +1107,11 @@ impl StockExecutor {
         crate::contract::canonical_json_digest(&request)
     }
 
-    async fn matches_request_digest(&self, input: &TurnInput, existing: &[u8; 32]) -> Result<bool> {
-        if existing == &self.request_digest(input)? {
-            return Ok(true);
-        }
-        let (Some((context, _)), Some((host, task, fence))) = (&self.task_context, &self.task)
-        else {
-            return Ok(false);
-        };
-        if context.id().into_bytes() != task.into_bytes() {
-            return Ok(false);
-        }
-        // Older stock turns bound task identity, input and tool scope, but did
-        // not carry TaskContext in Started. Only the original durable host may
-        // authenticate the omitted scope fields; process-local replay cannot.
-        let mut previous = self.clone();
-        previous.task_context = None;
-        if existing != &previous.request_digest(input)? {
-            return Ok(false);
-        }
-        host.verify_execution_owner(*task, fence.clone()).await?;
-        let admitted = host.resume_scope(*task, context.id()).await?;
-        Ok(admitted.grants() == context.scope().grants()
-            && admitted.limits() == context.scope().limits()
-            && admitted.run_limits() == context.scope().run_limits()
-            && admitted.extensions() == context.scope().extensions())
+    fn matches_request_digest(&self, input: &TurnInput, existing: &[u8; 32]) -> Result<bool> {
+        // v7 binds the complete admitted TaskContext. Older v6 histories
+        // omitted admission identity, task run limits and extension selection;
+        // they are rejected rather than inferring those fields during replay.
+        Ok(existing == &self.request_digest(input)?)
     }
 
     /// Replays the durable journal for one turn, verifying it is gapless and bound to the
@@ -1155,7 +1135,7 @@ impl StockExecutor {
         match records.first().map(|record| &record.event) {
             Some(ExecutionEvent::Started {
                 request_digest: existing,
-            }) if self.matches_request_digest(input, existing).await? => {}
+            }) if self.matches_request_digest(input, existing)? => {}
             Some(_) => {
                 return Err(Error::Conflict(
                     "execution identity is bound to another request or configuration".into(),
@@ -4290,6 +4270,27 @@ mod tests {
         let journal = Journal::default();
         let previous = Journal::default();
         base.ensure_started(&previous, &input).await?;
+        let old_request = json!({
+            "executor": "acyclic.stock.v6",
+            "input": input,
+            "model": base.model,
+            "max_output_tokens": base.max_output_tokens,
+            "context": base.context.contracts(),
+            "tools": base.tools.definitions()?,
+            "limits": base.limits,
+            "tool_scope": (base.tool_scope.grants(), base.tool_scope.limits()),
+            "policy": base.policy_identity.as_ref(),
+            "inherited_prefix": base.inherited_prefix.as_ref().map(|(reference, _)| reference),
+            "compaction": base.compaction,
+            "model_capacity": base.model_capacity()?,
+        });
+        let old_digest = crate::contract::canonical_json_digest(&old_request)?;
+        if let ExecutionEvent::Started { request_digest } = &mut previous.0.lock().unwrap()[0].event
+        {
+            *request_digest = old_digest;
+        } else {
+            return Err(Error::Conflict("legacy control has no Started".into()));
+        }
         assert!(matches!(
             executor.ensure_started(&previous, &input).await,
             Err(Error::Conflict(_))
