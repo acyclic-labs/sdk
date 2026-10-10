@@ -121,7 +121,7 @@ pub fn select_turn_delta(
     }
     if append {
         if conversation.message(current.id).is_some()
-            || current.sequence != conversation.messages.len() as u64 + 1
+            || current.sequence != conversation.logical_revision() + 1
         {
             return Err(Error::Conflict(
                 "new user does not extend canonical history".into(),
@@ -138,11 +138,15 @@ pub fn select_turn_delta(
         reference
             .descriptor()
             .verify(&crate::contract::canonical_json_bytes(envelope)?)?;
-        validate_model_context_selection_at_revision(
-            conversation,
-            &envelope.selection,
-            envelope.selection.conversation_revision,
-        )?;
+        if !conversation
+            .checkpoint_covers_archived_prefix(&reference, envelope.selection.conversation_revision)
+        {
+            validate_model_context_selection_at_revision(
+                conversation,
+                &envelope.selection,
+                envelope.selection.conversation_revision,
+            )?;
+        }
         if envelope.selection.conversation_revision >= current.sequence {
             return Err(Error::Conflict(
                 "checkpoint already covers the current user".into(),
@@ -170,7 +174,7 @@ pub fn select_turn_delta(
         ));
     }
     Ok(ModelContextSelection {
-        conversation_revision: conversation.messages.len() as u64 + u64::from(append),
+        conversation_revision: conversation.logical_revision() + u64::from(append),
         message_ids: ids,
         checkpoint,
     })
@@ -205,7 +209,7 @@ pub(crate) fn select_turn_suffix(
     validate_selected_tool_pairs(conversation, current, &ids)?;
     let selection = ModelContextSelection {
         checkpoint: None,
-        conversation_revision: conversation.messages.len() as u64 + u64::from(append),
+        conversation_revision: conversation.logical_revision() + u64::from(append),
         message_ids: ids,
     };
     if !append {
@@ -502,8 +506,7 @@ pub async fn select_model_context_at_revision<R: AttachmentListResolver + ?Sized
         &selection,
         selection.conversation_revision,
     )?;
-    let loaded_revision = u64::try_from(conversation.messages.len())
-        .map_err(|_| Error::Invalid("conversation message count exceeds u64".into()))?;
+    let loaded_revision = conversation.logical_revision();
     let loaded_selection = ModelContextSelection {
         checkpoint: selection.checkpoint.clone(),
         conversation_revision: loaded_revision,
@@ -746,7 +749,7 @@ mod tests {
         let id = Uuid::new_v4();
         conversation.append(ConversationMessage {
             id,
-            sequence: conversation.messages.len() as u64 + 1,
+            sequence: conversation.logical_revision() + 1,
             kind,
             content: content.clone(),
             attachments: ReferencedAttachments::Inline { items: Vec::new() },

@@ -553,8 +553,10 @@ fn checked_compaction_budget(
     context: &crate::context::Context,
     count: &crate::context::ModelTokenCount,
     capacity: crate::context::ModelContextCapacity,
+    maximum_messages: usize,
 ) -> Result<(usize, usize)> {
-    let (through, maximum) = policy.projection_budget(context, count)?;
+    let (through, maximum) =
+        policy.projection_budget_with_message_limit(context, count, maximum_messages)?;
     let mandatory_tokens = crate::context::mandatory_positions(context, through, &policy.retention)
         .iter()
         .try_fold(u64::from(count.fixed_tokens), |total, position| {
@@ -1469,10 +1471,32 @@ impl StockExecutor {
                 {
                     return Ok(retained);
                 }
-                if !policy.needs_compaction(accounting.capacity, input_tokens)? {
+                // Leave room for the response and the next canonical user input.
+                // Small messages can exhaust the admitted count before token capacity.
+                let token_pressure = policy.needs_compaction(accounting.capacity, input_tokens)?;
+                let possible_message_pressure = projection.canonical.is_some()
+                    && projection.context.messages.len() > self.compaction_message_limit(true, 0);
+                if !possible_message_pressure && !token_pressure {
                     return Ok(prepared);
                 }
-                self.compact_response(journal, input, step, projection, accounting)
+                let source = match &projection.canonical {
+                    Some(reference) => {
+                        load_json::<crate::context::Context>(journal, reference).await?
+                    }
+                    None => projection.context.clone(),
+                };
+                let stage_messages = projection
+                    .context
+                    .messages
+                    .len()
+                    .saturating_sub(source.messages.len());
+                let message_pressure = projection.canonical.is_some()
+                    && source.messages.len() > 1
+                    && source.messages.len() > self.compaction_message_limit(true, stage_messages);
+                if !message_pressure && !token_pressure {
+                    return Ok(prepared);
+                }
+                self.compact_response(journal, input, step, projection, accounting, source)
                     .await
             }
             _ => Err(Error::Storage(
@@ -1580,6 +1604,13 @@ impl StockExecutor {
         Ok(None)
     }
 
+    fn compaction_message_limit(&self, canonical: bool, stage_messages: usize) -> usize {
+        self.limits
+            .context_messages
+            .saturating_sub(if canonical { 2 } else { 0 })
+            .saturating_sub(stage_messages)
+    }
+
     async fn compact_response(
         &self,
         journal: &dyn ExecutionJournal,
@@ -1587,13 +1618,10 @@ impl StockExecutor {
         step: u32,
         projection: ResponseProjection,
         accounting: ContextAccounting,
+        context: crate::context::Context,
     ) -> Result<crate::model::PreparedModelRequest> {
         let crate::context::CompactionPolicy::Threshold(policy) = &self.compaction else {
             return Err(Error::Invalid("automatic compaction is disabled".into()));
-        };
-        let context = match &projection.canonical {
-            Some(reference) => load_json::<crate::context::Context>(journal, reference).await?,
-            None => projection.context.clone(),
         };
         let canonical_request = crate::model::PreparedModelRequest::prepare(
             self.request_from_context(&context)?,
@@ -1605,8 +1633,20 @@ impl StockExecutor {
             accounting.count.clone()
         };
         count.validate(&canonical_request)?;
-        let (through, maximum) =
-            checked_compaction_budget(policy, &context, &count, accounting.capacity)?;
+        let (through, maximum) = checked_compaction_budget(
+            policy,
+            &context,
+            &count,
+            accounting.capacity,
+            self.compaction_message_limit(
+                projection.canonical.is_some(),
+                projection
+                    .context
+                    .messages
+                    .len()
+                    .saturating_sub(context.messages.len()),
+            ),
+        )?;
         let mut source = context.clone();
         source.messages.truncate(through);
         source.current_input_index = source
@@ -1622,13 +1662,9 @@ impl StockExecutor {
             Some(summary),
             policy.retention.clone(),
         )?;
-        let compaction = stage_json(
-            journal,
-            input.operation_id,
-            &format!("context:{step}:compaction"),
-            &reference,
-        )
-        .await?;
+        let compaction_key = format!("context:{step}:compaction");
+        let compaction =
+            stage_json(journal, input.operation_id, &compaction_key, &reference).await?;
         let checkpoint = self
             .stage_canonical_checkpoint(
                 journal,
@@ -3639,6 +3675,53 @@ mod tests {
                 ]))
             })
         }
+    }
+
+    #[tokio::test]
+    async fn fixed_custom_context_uses_its_full_message_allowance() -> Result<()> {
+        let journal = Journal::default();
+        let provider = Arc::new(CountedModel {
+            capacity: 65_536,
+            ..CountedModel::default()
+        });
+        let source = crate::context::Context {
+            messages: vec![ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text("fixed instruction".into()),
+            }],
+            ..crate::context::Context::default()
+        };
+        let executor = StockExecutor::new(
+            Model::new("synthetic", "fixed-context", "1", json!({}))?,
+            provider.clone(),
+            ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
+                "fixed",
+                "1",
+                Arc::new(source),
+                crate::context::ContextPlacement::Prepend,
+            )) as Arc<dyn crate::context::ContextStage>]),
+            ToolRegistry::new(),
+        )
+        .with_limits(Limits {
+            context_messages: 2,
+            ..Limits::default()
+        });
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("small input".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        let output = executor.execute(input.clone(), &journal).await?;
+        assert_eq!(executor.execute(input, &journal).await?, output);
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].messages.len(), 2);
+        assert_eq!(
+            requests[0].messages[0].content,
+            ModelContent::Text("fixed instruction".into())
+        );
+        Ok(())
     }
 
     #[tokio::test]

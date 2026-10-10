@@ -120,6 +120,17 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
             .len(),
         3
     );
+    {
+        let aggregate = storage.open_conversation(limits).await?;
+        let conversation = aggregate
+            .reducer()
+            .conversation()
+            .ok_or_else(|| Error::Invalid("conversation not bound".into()))?;
+        assert_eq!(conversation.logical_revision(), 4);
+        assert_eq!(conversation.resident_after_sequence(), 3);
+        assert_eq!(conversation.messages().len(), 1);
+        assert_eq!(conversation.messages()[0].sequence, 4);
+    }
     let reference =
         crate::executor::canonical_checkpoint_for_operation(storage.journal.as_ref(), last, limits)
             .await?
@@ -835,4 +846,117 @@ async fn assert_cold_summary_reads(
         assert_eq!(observed.maximum.load(Ordering::SeqCst), 1);
     }
     stage.ok_or_else(|| Error::Invalid("cold Summary fixture did not run".into()))
+}
+
+#[tokio::test]
+async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
+    let mut storage = MemoryHarnessStorage::new(AgentId::new(), 262_144).await?;
+    let model = Arc::new(SummaryModel::default());
+    let limits = Limits {
+        context_messages: 8,
+        ..Limits::default()
+    };
+    let instructions = Arc::new(Context {
+        messages: [
+            "Keep the user's constraints.",
+            "Preserve original references.",
+        ]
+        .into_iter()
+        .map(|text| crate::model::ModelMessage {
+            role: crate::model::ModelRole::System,
+            content: crate::model::ModelContent::Text(text.into()),
+        })
+        .collect(),
+        ..Context::default()
+    });
+    let build_bundle = |storage: &MemoryHarnessStorage| -> Result<crate::bundle::HarnessBundle> {
+        storage
+            .builder()
+            .model(
+                Model::new("synthetic", "small-message-continuation", "1", Value::Null)?,
+                model.clone(),
+            )
+            .grant("model:generate")
+            .limits(limits)
+            .context(crate::context::ContextPipeline::new([Arc::new(
+                crate::context::SourceStage::new(
+                    "instructions",
+                    "1",
+                    instructions.clone(),
+                    crate::context::ContextPlacement::Prepend,
+                ),
+            )
+                as Arc<dyn crate::context::ContextStage>]))
+            .build()
+    };
+    let mut bundle = build_bundle(&storage)?;
+    let mut original = None;
+    for index in 0..20 {
+        let operation = OperationId::new();
+        let input = storage
+            .stage(
+                operation,
+                &format!("turns/{index}/input.txt"),
+                b"small input",
+                "text/plain",
+                "input.txt",
+            )
+            .await?;
+        let output = storage
+            .run_conversation(&bundle, operation, input.clone(), Vec::new(), 1)
+            .await?;
+        if original.is_none() {
+            original = Some((operation, input, output));
+        }
+        let aggregate = storage.open_conversation(limits).await?;
+        let conversation = aggregate
+            .reducer()
+            .conversation()
+            .ok_or_else(|| Error::Invalid("conversation not bound".into()))?;
+        assert_eq!(conversation.logical_revision(), (index + 1) * 2);
+        assert!(conversation.messages().len() <= limits.context_messages);
+        if index >= 3 {
+            assert!(conversation.resident_after_sequence() > 0);
+        }
+        drop(aggregate);
+        if index == 17 {
+            // Reconstruct the real journal and bundle with original authority
+            // and providers. No original projection or execution cache survives.
+            storage.journal = Arc::new(
+                FilesystemExecutionJournal::new(
+                    storage.stream.clone(),
+                    storage.host.clone(),
+                    storage.volume.clone(),
+                    storage.verifier(),
+                    storage.scope.clone(),
+                    storage.maximum_file_bytes,
+                )?
+                .with_input_verifier(storage.content_verifier.clone()),
+            );
+            bundle = build_bundle(&storage)?;
+        }
+    }
+    let requests = model
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .len();
+    assert!(requests > 20, "count pressure must admit summary requests");
+    let (operation, input, expected) =
+        original.ok_or_else(|| Error::Invalid("missing original turn".into()))?;
+    assert_eq!(
+        storage
+            .run_conversation(&bundle, operation, input, Vec::new(), 1)
+            .await?,
+        expected
+    );
+    assert_eq!(
+        model
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len(),
+        requests
+    );
+    Ok(())
 }

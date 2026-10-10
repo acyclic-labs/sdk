@@ -501,6 +501,28 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             .await
     }
 
+    pub(super) fn context_history_limits(
+        &self,
+        limits: Limits,
+    ) -> Result<crate::store::HistoryReadLimits> {
+        limits.validate()?;
+        Ok(if let Some(limits) = self.history_read_limits {
+            limits
+        } else {
+            let maximum_events = u32::try_from(limits.context_messages).map_err(|_| {
+                Error::Invalid("canonical delta count exceeds portable history bound".into())
+            })?;
+            let maximum_bytes = (acyclic_stream::MAX_RECORD_BYTES as u64)
+                .checked_mul(2)
+                .and_then(|bytes| bytes.checked_mul(u64::from(maximum_events)))
+                .ok_or_else(|| Error::Invalid("canonical delta byte bound overflows".into()))?;
+            crate::store::HistoryReadLimits {
+                maximum_events,
+                maximum_bytes,
+            }
+        })
+    }
+
     async fn verify_canonical_source(
         &self,
         envelope: &crate::context::CanonicalContextCheckpoint,
@@ -552,21 +574,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             after_revision: 0,
             through_revision: event.revision,
         };
-        let history_limits = if let Some(limits) = self.history_read_limits {
-            limits
-        } else {
-            let maximum_events = u32::try_from(limits.context_messages).map_err(|_| {
-                Error::Invalid("canonical delta count exceeds portable history bound".into())
-            })?;
-            let maximum_bytes = (acyclic_stream::MAX_RECORD_BYTES as u64)
-                .checked_mul(2)
-                .and_then(|bytes| bytes.checked_mul(u64::from(maximum_events)))
-                .ok_or_else(|| Error::Invalid("canonical delta byte bound overflows".into()))?;
-            crate::store::HistoryReadLimits {
-                maximum_events,
-                maximum_bytes,
-            }
-        };
+        let history_limits = self.context_history_limits(limits)?;
         let loaded = reader
             .conversation_range(
                 &cursor,
@@ -1081,6 +1089,20 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             .map_err(|_| Error::Storage("conversation projection is absent".into()))?;
         aggregate.set_limits(limits)?;
         let through = aggregate.tail_revision().await?;
+        if through.saturating_sub(aggregate.reducer().revision())
+            > u64::from(crate::store::DEFAULT_PROJECTION_EVENTS)
+        {
+            *aggregate = StreamAggregate::open(
+                &self.stream,
+                self.verifier.audience().clone(),
+                self.verifier.clone(),
+                self.schemas.clone(),
+            )
+            .await?
+            .with_content_verifier(Arc::clone(verifier));
+            aggregate.set_limits(limits)?;
+            return Ok(aggregate);
+        }
         while !aggregate
             .refresh_through(through, EXECUTION_REPLAY_PAGE_RECORDS)
             .await?

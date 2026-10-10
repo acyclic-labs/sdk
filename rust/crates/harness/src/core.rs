@@ -421,6 +421,29 @@ impl AuthorityVerifier {
         Ok(())
     }
 
+    // An archive observation authenticates an original publication cut and
+    // complete effect-index root. It grants no capability or event admission.
+    pub(crate) fn effect_history_root_proof(
+        &self,
+        revision: u64,
+        canonical_digest: [u8; 32],
+        root: Option<[u8; 32]>,
+    ) -> Result<[u8; 32]> {
+        let canonical = crate::contract::canonical_json_bytes(&(
+            &self.id,
+            &self.audience,
+            self.audience.stream_path()?,
+            revision,
+            canonical_digest,
+            root,
+        ))?;
+        let mut hasher = blake3::Hasher::new_keyed(&self.key);
+        hasher.update(b"harness/v1/effect-history-root\0");
+        hasher.update(&(canonical.len() as u64).to_le_bytes());
+        hasher.update(&canonical);
+        Ok(*hasher.finalize().as_bytes())
+    }
+
     /// Rejects accidental pairing with another aggregate authority.
     pub fn verify_audience(&self, authority: &Authority) -> Result<()> {
         if &self.audience == authority {
@@ -565,6 +588,22 @@ pub struct EffectState {
     pub status: EffectStatus,
     /// Ordered unique attempts made against the provider.
     pub attempts: Vec<EffectAttemptId>,
+}
+
+pub(super) fn settled_effect(status: &EffectStatus) -> bool {
+    matches!(
+        status,
+        EffectStatus::Succeeded { .. } | EffectStatus::Failed { .. }
+    )
+}
+
+pub(crate) fn event_effect_id(payload: &EventPayload) -> Option<EffectId> {
+    match payload {
+        EventPayload::EffectPlanned { effect_id, .. }
+        | EventPayload::EffectDispatched { effect_id, .. } => Some(*effect_id),
+        EventPayload::EffectResolved { observation } => Some(observation.effect_id),
+        _ => None,
+    }
 }
 
 /// Schema-validated event payload retained in canonical history.
@@ -1471,6 +1510,9 @@ pub struct Reducer {
     resident_event_limit: usize,
     active_extension_revision: Option<u64>,
     effects: BTreeMap<EffectId, EffectState>,
+    indexed_terminal_effects: VecDeque<EffectId>,
+    effects_archived: bool,
+    resident_terminal_effect_limit: usize,
     forks: BTreeMap<Authority, ForkSeed>,
     published_merges: BTreeSet<(String, Vec<u8>)>,
     conversation: ConversationState,
@@ -1501,6 +1543,9 @@ impl Reducer {
             resident_event_limit: usize::MAX,
             active_extension_revision: None,
             effects: BTreeMap::new(),
+            indexed_terminal_effects: VecDeque::new(),
+            effects_archived: false,
+            resident_terminal_effect_limit: usize::MAX,
             forks: BTreeMap::new(),
             published_merges: BTreeSet::new(),
             conversation: ConversationState::default(),
@@ -1804,6 +1849,7 @@ impl Reducer {
             command,
             Migration::Unverified,
             false,
+            None,
         ))
     }
 
@@ -1816,7 +1862,7 @@ impl Reducer {
                 "verified migration planner requires a migration action".into(),
             ));
         }
-        self.plan_with_migration_boundary(command, Migration::Verified, false)
+        self.plan_with_migration_boundary(command, Migration::Verified, false, None)
     }
 
     /// Only the owning Stream adapter calls this after its authoritative identity lookup.
@@ -1848,6 +1894,41 @@ impl Reducer {
                 Migration::Unverified
             },
             true,
+            None,
+        ))
+    }
+
+    /// Selects only fresh effect transitions whose original projection may
+    /// have been retired. The owning store authenticates that projection.
+    pub(crate) fn archived_effect_for_command(&self, command: &Command) -> Option<EffectId> {
+        let effect_id = match &command.action {
+            Action::MarkEffectDispatched { effect_id, .. } => *effect_id,
+            Action::ResolveEffect { observation } => observation.effect_id,
+            _ => return None,
+        };
+        (self.effects_archived && !self.effects.contains_key(&effect_id)).then_some(effect_id)
+    }
+
+    /// Borrows one authenticated terminal projection in the original planner.
+    /// No reducer clone or cache mutation is needed for the original rejection.
+    pub(crate) fn plan_with_archived_effect(
+        &self,
+        command: &Command,
+        effect_id: EffectId,
+        effect: &EffectState,
+    ) -> Result<ApplyResult> {
+        if self.archived_effect_for_command(command) != Some(effect_id)
+            || !settled_effect(&effect.status)
+        {
+            return Err(Error::Storage(
+                "archived effect does not match terminal planning target".into(),
+            ));
+        }
+        crate::obs::outcome(self.plan_with_migration_boundary(
+            command,
+            Migration::Unverified,
+            true,
+            Some((effect_id, effect)),
         ))
     }
 
@@ -1887,6 +1968,7 @@ impl Reducer {
         command: &Command,
         migration: Migration,
         identity_checked: bool,
+        archived_effect: Option<(EffectId, &EffectState)>,
     ) -> Result<ApplyResult> {
         self.verify_command_scope(command)?;
         let intent = canonical_intent(command)?;
@@ -1900,7 +1982,7 @@ impl Reducer {
                 "operation identity is already bound to another intent".into(),
             ));
         }
-        if !identity_checked && self.archived_through_revision() != 0 {
+        if !identity_checked && (self.archived_through_revision() != 0 || self.effects_archived) {
             return Err(Error::Unsupported(
                 "operation identity requires authoritative archive lookup".into(),
             ));
@@ -1916,6 +1998,7 @@ impl Reducer {
             command.scope.agent(),
             command.operation_id,
             command.action.kind(),
+            archived_effect,
         )?;
         match &command.action {
             Action::MigrateExtensionState { content, .. } => {
@@ -1947,7 +2030,7 @@ impl Reducer {
             command.causal_parent.as_ref(),
         )?;
         let revision = next_revision(self.revision)?;
-        let payload = self.transition(&command.action)?;
+        let payload = self.transition(&command.action, archived_effect)?;
         let mut event = Event {
             revision,
             operation_id: command.operation_id,
@@ -1961,6 +2044,21 @@ impl Reducer {
         Ok(ApplyResult::Applied { event })
     }
 
+    fn transition_effect<'a>(
+        &'a self,
+        effect_id: &EffectId,
+        archived: Option<(EffectId, &'a EffectState)>,
+    ) -> Result<&'a EffectState> {
+        self.effects
+            .get(effect_id)
+            .or_else(|| {
+                archived
+                    .filter(|(id, _)| id == effect_id)
+                    .map(|(_, state)| state)
+            })
+            .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))
+    }
+
     /// Authorizes one transition identically when planned and when committed.
     fn authorize(
         &self,
@@ -1968,16 +2066,14 @@ impl Reducer {
         agent: Option<AgentId>,
         operation_id: OperationId,
         (kind, subject): (TransitionKind, Subject<'_>),
+        archived_effect: Option<(EffectId, &EffectState)>,
     ) -> Result<()> {
         require(kind.spec().2)?;
         match subject {
             Subject::None => Ok(()),
             Subject::PlannedEffect => require(capability::EFFECT_PLAN),
             Subject::Effect(effect_id) => {
-                let effect = self
-                    .effects
-                    .get(effect_id)
-                    .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
+                let effect = self.transition_effect(effect_id, archived_effect)?;
                 require(&capability::effect_provider(&effect.provider))
             }
             Subject::Interaction(resolution) => {
@@ -2074,6 +2170,7 @@ impl Reducer {
             event.scope.agent(),
             event.operation_id,
             event.payload.kind(),
+            None,
         )?;
         validate_causal_parent(&self.authority, self.revision, event.causal_parent.as_ref())?;
         self.apply_payload(&event.payload, event.revision)?;
@@ -2104,7 +2201,137 @@ impl Reducer {
             .collect())
     }
 
-    /// Returns the current effect status.
+    pub(crate) fn set_resident_terminal_effect_limit(&mut self, maximum: usize) -> Result<()> {
+        if maximum == 0 {
+            return Err(Error::Invalid(
+                "terminal effect cache limit must be positive".into(),
+            ));
+        }
+        if maximum == usize::MAX {
+            self.resident_terminal_effect_limit = maximum;
+            return Ok(());
+        }
+        let indexed: BTreeSet<_> = self.indexed_terminal_effects.iter().collect();
+        let protected = self
+            .effects
+            .iter()
+            .filter(|(id, effect)| settled_effect(&effect.status) && !indexed.contains(id))
+            .count();
+        if protected > maximum {
+            return Err(Error::Unsupported(
+                "unindexed terminal effects exceed cache allowance".into(),
+            ));
+        }
+        self.resident_terminal_effect_limit = maximum;
+        self.trim_terminal_effects(protected);
+        Ok(())
+    }
+
+    pub(crate) fn mark_indexed_terminal_effect(&mut self, event: &Event) -> Result<()> {
+        let EventPayload::EffectResolved { observation } = &event.payload else {
+            return Ok(());
+        };
+        if !settled_effect(&observation.status) {
+            return Ok(());
+        }
+        let state = self
+            .effects
+            .get(&observation.effect_id)
+            .ok_or_else(|| Error::Storage("indexed terminal effect is absent".into()))?;
+        if state.status != observation.status {
+            return Err(Error::Storage(
+                "indexed terminal effect differs from admitted result".into(),
+            ));
+        }
+        // Original core transitions settle an effect only once. Every caller
+        // marks the just-applied canonical head, so only an immediate repeated
+        // mark can already be eligible. Avoid a lifetime queue scan while the
+        // staged rollout still retains terminal effects by default.
+        if self.indexed_terminal_effects.back() != Some(&observation.effect_id) {
+            self.indexed_terminal_effects
+                .push_back(observation.effect_id);
+        }
+        if self.resident_terminal_effect_limit == usize::MAX {
+            return Ok(());
+        }
+        self.set_resident_terminal_effect_limit(self.resident_terminal_effect_limit)
+    }
+
+    pub(crate) fn enforce_terminal_effect_limit(&mut self) -> Result<()> {
+        if self.resident_terminal_effect_limit == usize::MAX {
+            return Ok(());
+        }
+        self.set_resident_terminal_effect_limit(self.resident_terminal_effect_limit)
+    }
+
+    fn trim_terminal_effects(&mut self, protected: usize) {
+        let budget = self
+            .resident_terminal_effect_limit
+            .saturating_sub(protected);
+        while self.indexed_terminal_effects.len() > budget {
+            if let Some(effect) = self.indexed_terminal_effects.pop_front() {
+                self.effects.remove(&effect);
+                self.effects_archived = true;
+            }
+        }
+    }
+
+    /// Number of resident active and cached terminal effect projections.
+    #[must_use]
+    pub fn resident_effect_count(&self) -> usize {
+        self.effects.len()
+    }
+
+    /// Cached known successes/failures; indeterminate effects remain active.
+    #[must_use]
+    pub fn resident_terminal_effect_count(&self) -> usize {
+        self.effects
+            .values()
+            .filter(|effect| settled_effect(&effect.status))
+            .count()
+    }
+
+    /// Reconstructs one read-only effect using the same authorization and
+    /// payload reducer as canonical replay. Callers have already bound every
+    /// sparse revision to its original atomic effect locator and canonical event.
+    pub(crate) fn project_effect(
+        authority: Authority,
+        verifier: AuthorityVerifier,
+        effect_id: EffectId,
+        events: &[Event],
+    ) -> Result<EffectState> {
+        let mut projection = Self::new(authority, verifier, SchemaRegistry::default());
+        let mut previous = 0;
+        for event in events {
+            if event.revision <= previous || event_effect_id(&event.payload) != Some(effect_id) {
+                return Err(Error::Storage(
+                    "effect projection has invalid identity or order".into(),
+                ));
+            }
+            projection.authority_verifier.verify_event(event)?;
+            projection.authorize(
+                |capability| require_recorded_capability(&event.scope, capability),
+                event.scope.agent(),
+                event.operation_id,
+                event.payload.kind(),
+                None,
+            )?;
+            validate_causal_parent(
+                &projection.authority,
+                event.revision - 1,
+                event.causal_parent.as_ref(),
+            )?;
+            projection.apply_payload(&event.payload, event.revision)?;
+            previous = event.revision;
+        }
+        projection
+            .effects
+            .remove(&effect_id)
+            .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))
+    }
+
+    /// Returns the current resident effect status. Archived effects require the
+    /// owner-bound `HistoryReader` rather than guessing absence from this cache.
     #[must_use]
     pub fn effect(&self, effect_id: EffectId) -> Option<&EffectState> {
         self.effects.get(&effect_id)
@@ -2167,7 +2394,7 @@ impl Reducer {
                 "fork child must have a distinct agent identity".into(),
             ));
         }
-        if seed.inherited_through_sequence > self.conversation.messages.len() as u64 {
+        if seed.inherited_through_sequence > self.conversation.logical_revision() {
             return Err(Error::Invalid(
                 "fork inherited prefix exceeds parent conversation".into(),
             ));
@@ -2201,6 +2428,11 @@ impl Reducer {
                     "inherited conversation differs from authoritative parent history".into(),
                 ));
             }
+        }
+        if self.conversation.resident_after_sequence() > 0 && inherited_count > 0 {
+            return Err(Error::Invalid(
+                "fork grant capture requires authenticated archived history".into(),
+            ));
         }
         let mut published_refs = std::collections::BTreeMap::new();
         let mut published_manifests = std::collections::BTreeSet::new();
@@ -2347,7 +2579,11 @@ impl Reducer {
                   its EventPayload; splitting per-arm would scatter one command's validation \
                   across many functions without clarifying any of them"
     )]
-    fn transition(&self, action: &Action) -> Result<EventPayload> {
+    fn transition(
+        &self,
+        action: &Action,
+        archived_effect: Option<(EffectId, &EffectState)>,
+    ) -> Result<EventPayload> {
         match action {
             Action::TransitionLifecycle { to, reason } => {
                 validate_lifecycle(self.lifecycle, *to)?;
@@ -2520,10 +2756,7 @@ impl Reducer {
                 effect_id,
                 attempt_id,
             } => {
-                let effect = self
-                    .effects
-                    .get(effect_id)
-                    .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
+                let effect = self.transition_effect(effect_id, archived_effect)?;
                 let may_retry = effect.status == EffectStatus::Indeterminate
                     && effect.guarantee == EffectGuarantee::IdempotentRetry;
                 if effect.status != EffectStatus::Planned && !may_retry {
@@ -2547,10 +2780,7 @@ impl Reducer {
                         "effect resolution must be terminal or indeterminate".into(),
                     ));
                 }
-                let effect = self
-                    .effects
-                    .get(&observation.effect_id)
-                    .ok_or_else(|| Error::NotFound(format!("effect {}", observation.effect_id)))?;
+                let effect = self.transition_effect(&observation.effect_id, archived_effect)?;
                 self.authority_verifier.verify_effect(observation)?;
                 validate_effect_observation(effect, observation)?;
                 if effect.attempts.last() != Some(&observation.attempt_id) {

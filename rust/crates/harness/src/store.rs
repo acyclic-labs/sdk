@@ -1,6 +1,10 @@
 //! Direct Stream persistence for durable aggregate histories.
 
+mod checkpoints;
+mod effect_heads;
+mod effects;
 mod history;
+pub use checkpoints::{DEFAULT_PROJECTION_EVENTS, default_projection_read_limits};
 pub(crate) mod operations;
 pub use history::*;
 
@@ -18,7 +22,7 @@ use crate::{
     fork::{CompositeForkVerifier, ForkPreparer, ForkReport, ForkRequest, ForkSeed},
     interaction::InteractionOutcome,
     merge::ProjectMergeVerifier,
-    wire_codec::{decode_event, encode_event},
+    wire_codec::decode_event,
 };
 use acyclic_stream::{
     CommitOutcome, IdempotencyKey as StreamIdempotencyKey, IdempotencyOutcome, Stream,
@@ -28,6 +32,11 @@ use bytes::Bytes;
 use futures::TryStreamExt as _;
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
+
+/// Existing default retained until the native receipt consumer adopts the
+/// authoritative async lookup. Finite retirement is currently explicit opt-in;
+/// default activation remains required composition work after consumer landing.
+pub const DEFAULT_TERMINAL_EFFECTS: usize = usize::MAX;
 
 fn fork_child_binding(seed: &ForkSeed) -> Result<(OperationId, EventReference)> {
     let revision = seed
@@ -188,6 +197,7 @@ pub struct StreamAggregate<P> {
     merge_verifier: Option<Arc<dyn ProjectMergeVerifier>>,
     extension_migrations: Option<Arc<dyn ExtensionMigrationProvider>>,
     limits: Limits,
+    effect_history_limits: HistoryReadLimits,
 }
 
 impl<P: StreamProvider> StreamAggregate<P> {
@@ -549,14 +559,65 @@ impl<P: StreamProvider> StreamAggregate<P> {
         schemas: SchemaRegistry,
     ) -> Result<Self> {
         crate::obs::outcome(
-            Self::open_inner(client, authority, authority_verifier, schemas, None).await,
+            Self::open_with_read_limits(
+                client,
+                authority,
+                authority_verifier,
+                schemas,
+                default_projection_read_limits(),
+            )
+            .await,
         )
+    }
+
+    /// Opens the latest authenticated durable projection and a finite canonical suffix.
+    /// The allowance includes checkpoint pointer, payload, canonical anchor and suffix.
+    /// Missing checkpoints for established histories fail rather than replaying from zero.
+    pub async fn open_with_read_limits(
+        client: &StreamClient<P>,
+        authority: Authority,
+        authority_verifier: AuthorityVerifier,
+        schemas: SchemaRegistry,
+        limits: HistoryReadLimits,
+    ) -> Result<Self> {
+        Self::open_with_projection_limits(
+            client,
+            authority,
+            authority_verifier,
+            schemas,
+            limits,
+            DEFAULT_TERMINAL_EFFECTS,
+        )
+        .await
+    }
+
+    /// Opens with finite cold input bounds and a configurable terminal-effect
+    /// cache. Only originally indexed successes/failures can be retired; active
+    /// and indeterminate effects remain resident. Zero cache size is invalid.
+    pub async fn open_with_projection_limits(
+        client: &StreamClient<P>,
+        authority: Authority,
+        authority_verifier: AuthorityVerifier,
+        schemas: SchemaRegistry,
+        limits: HistoryReadLimits,
+        maximum_terminal_effects: usize,
+    ) -> Result<Self> {
+        Self::open_inner(
+            client,
+            authority,
+            authority_verifier,
+            schemas,
+            None,
+            limits,
+            maximum_terminal_effects,
+        )
+        .await
     }
 
     /// Restores an integrity-checked snapshot, then replays its retained suffix.
     ///
-    /// Snapshot storage belongs to the Filesystem integration; Stream remains
-    /// the canonical event history and the snapshot is only an accelerator.
+    /// Caller-supplied storage is supported alongside default Stream checkpoints.
+    /// Snapshot bytes, cached events and suffix share the ordinary finite default allowance.
     #[cfg_attr(
         not(target_arch = "wasm32"),
         tracing::instrument(
@@ -574,15 +635,60 @@ impl<P: StreamProvider> StreamAggregate<P> {
         snapshot: Snapshot,
     ) -> Result<Self> {
         crate::obs::outcome(
-            Self::open_inner(
+            Self::open_from_snapshot_with_read_limits(
                 client,
                 authority,
                 authority_verifier,
                 schemas,
-                Some(snapshot),
+                snapshot,
+                default_projection_read_limits(),
             )
             .await,
         )
+    }
+
+    /// Restores caller-supplied authenticated state under one cumulative input
+    /// allowance for serialized snapshot bytes, cached events and canonical suffix.
+    pub async fn open_from_snapshot_with_read_limits(
+        client: &StreamClient<P>,
+        authority: Authority,
+        authority_verifier: AuthorityVerifier,
+        schemas: SchemaRegistry,
+        snapshot: Snapshot,
+        limits: HistoryReadLimits,
+    ) -> Result<Self> {
+        Self::open_inner(
+            client,
+            authority,
+            authority_verifier,
+            schemas,
+            Some(snapshot),
+            limits,
+            DEFAULT_TERMINAL_EFFECTS,
+        )
+        .await
+    }
+
+    /// Restores caller state with explicit cold input and terminal cache limits.
+    pub async fn open_from_snapshot_with_projection_limits(
+        client: &StreamClient<P>,
+        authority: Authority,
+        authority_verifier: AuthorityVerifier,
+        schemas: SchemaRegistry,
+        snapshot: Snapshot,
+        limits: HistoryReadLimits,
+        maximum_terminal_effects: usize,
+    ) -> Result<Self> {
+        Self::open_inner(
+            client,
+            authority,
+            authority_verifier,
+            schemas,
+            Some(snapshot),
+            limits,
+            maximum_terminal_effects,
+        )
+        .await
     }
 
     async fn open_inner(
@@ -591,11 +697,24 @@ impl<P: StreamProvider> StreamAggregate<P> {
         authority_verifier: AuthorityVerifier,
         schemas: SchemaRegistry,
         snapshot: Option<Snapshot>,
+        limits: HistoryReadLimits,
+        maximum_terminal_effects: usize,
     ) -> Result<Self> {
         authority_verifier.verify_audience(&authority)?;
+        if limits.maximum_events == 0 || limits.maximum_bytes == 0 || maximum_terminal_effects == 0
+        {
+            return Err(Error::Invalid(
+                "projection read bounds must be positive".into(),
+            ));
+        }
+        let reader = HistoryReader::new(client, &authority, authority_verifier.clone())?;
+        let loaded = match snapshot {
+            Some(snapshot) => checkpoints::supplied(client, &authority, snapshot, limits).await?,
+            None => checkpoints::load(client, &authority, &authority_verifier, limits).await?,
+        };
         let path = authority.stream_path()?;
         let stream = client.stream(path)?;
-        let mut reducer = if let Some(snapshot) = snapshot {
+        let mut reducer = if let Some(snapshot) = loaded.snapshot {
             if snapshot.authority != authority {
                 return Err(Error::Invalid(
                     "snapshot authority does not match requested aggregate".into(),
@@ -606,23 +725,26 @@ impl<P: StreamProvider> StreamAggregate<P> {
             Reducer::new(authority, authority_verifier, schemas)
         };
         reducer.set_resident_event_limit(1024)?;
+        reducer.set_resident_terminal_effect_limit(maximum_terminal_effects)?;
         let start = reducer.revision();
-        let mut replay = stream.replay(start);
-        while let Some(page) = replay.next_page().await? {
-            for record in page {
-                let (event_authority, event) = decode_event(&record.value)?;
-                if &event_authority != reducer.authority() {
-                    return Err(Error::Storage(
-                        "event authority does not match its Stream aggregate".into(),
-                    ));
-                }
-                if event.revision != record.sequence.saturating_add(1) {
-                    return Err(Error::Storage(
-                        "event revision does not match its Stream sequence".into(),
-                    ));
-                }
-                reducer.apply_committed(event)?;
-            }
+        let remaining_events = limits.maximum_events - loaded.consumed_events;
+        if loaded.through_revision < start
+            || loaded.through_revision - start > u64::from(remaining_events)
+        {
+            return Err(Error::Invalid(
+                "projection suffix exceeds event allowance".into(),
+            ));
+        }
+        if start < loaded.through_revision {
+            Self::restore_suffix(
+                client,
+                &reader,
+                &mut reducer,
+                loaded.through_revision,
+                remaining_events,
+                limits.maximum_bytes.saturating_sub(loaded.consumed_bytes),
+            )
+            .await?;
         }
         crate::obs::obs_record!(
             "rev" = reducer.revision(),
@@ -637,7 +759,115 @@ impl<P: StreamProvider> StreamAggregate<P> {
             merge_verifier: None,
             extension_migrations: None,
             limits: Limits::default(),
+            effect_history_limits: default_projection_read_limits(),
         })
+    }
+
+    async fn restore_suffix(
+        client: &StreamClient<P>,
+        reader: &HistoryReader<P>,
+        reducer: &mut Reducer,
+        through: u64,
+        maximum_events: u32,
+        maximum_bytes: u64,
+    ) -> Result<()> {
+        if maximum_bytes == 0 {
+            return Err(Error::Invalid(
+                "projection suffix exceeds byte allowance".into(),
+            ));
+        }
+        let read = reader
+            .read_page_counted(
+                &HistoryCursor {
+                    authority: reducer.authority().clone(),
+                    after_revision: reducer.revision(),
+                    through_revision: through,
+                },
+                HistoryReadLimits {
+                    maximum_events,
+                    maximum_bytes,
+                },
+            )
+            .await?;
+        if read.page.cursor.after_revision != through {
+            return Err(Error::Invalid(
+                "projection suffix exceeds byte allowance".into(),
+            ));
+        }
+        let mut used = read.bytes;
+        for (event, record) in read.page.events.into_iter().zip(read.records) {
+            let (indexed, bytes) = effects::retirement_proof(
+                client,
+                reducer.authority(),
+                &event,
+                &record,
+                maximum_bytes.saturating_sub(used),
+            )
+            .await?;
+            used = used
+                .checked_add(bytes)
+                .filter(|total| *total <= maximum_bytes)
+                .ok_or_else(|| Error::Invalid("projection suffix exceeds byte allowance".into()))?;
+            reducer.apply_committed(event.clone())?;
+            if indexed {
+                reducer.mark_indexed_terminal_effect(&event)?;
+            }
+            reducer.enforce_terminal_effect_limit()?;
+        }
+        Ok(())
+    }
+
+    /// Configures retirement of originally indexed successful/failed effects.
+    /// Active/indeterminate states and protected legacy terminal entries stay resident.
+    pub fn with_resident_terminal_effect_limit(mut self, maximum: usize) -> Result<Self> {
+        self.reducer.set_resident_terminal_effect_limit(maximum)?;
+        Ok(self)
+    }
+
+    /// Sets the finite archive allowance used by effect permission checks and
+    /// fresh transitions, including exact retries whose terminal state was retired.
+    pub fn with_effect_history_read_limits(mut self, limits: HistoryReadLimits) -> Result<Self> {
+        if limits.maximum_events == 0 || limits.maximum_bytes == 0 {
+            return Err(Error::Invalid(
+                "effect history bounds must be positive".into(),
+            ));
+        }
+        self.effect_history_limits = limits;
+        Ok(self)
+    }
+
+    /// Reads an exact typed effect at this aggregate's current committed cut.
+    /// Cached data and archival data share explicit input/output bounds; this
+    /// observation never refreshes, dispatches or admits an operation.
+    pub async fn effect(
+        &self,
+        effect: crate::EffectId,
+        limits: HistoryReadLimits,
+    ) -> Result<Option<crate::core::EffectState>> {
+        if limits.maximum_events == 0 || limits.maximum_bytes == 0 {
+            return Err(Error::Invalid("effect read bounds must be positive".into()));
+        }
+        if let Some(state) = self.reducer.effect(effect) {
+            crate::contract::validate_json_byte_bound(state, limits.maximum_bytes)?;
+            return Ok(Some(state.clone()));
+        }
+        self.history_reader()?
+            .effect(
+                &HistoryCursor {
+                    authority: self.reducer.authority().clone(),
+                    after_revision: 0,
+                    through_revision: self.reducer.revision(),
+                },
+                effect,
+                limits,
+            )
+            .await
+    }
+
+    fn apply_published_event(&mut self, event: &crate::core::Event) -> Result<ApplyResult> {
+        let result = self.reducer.apply_committed(event.clone())?;
+        self.reducer.mark_indexed_terminal_effect(event)?;
+        Ok(result)
     }
 
     /// Configures the event/retry cache; canonical Stream history and live projections remain authoritative.
@@ -652,6 +882,14 @@ impl<P: StreamProvider> StreamAggregate<P> {
     /// identities and selections are resolved through the existing atomic index.
     pub fn set_resident_event_limit(&mut self, maximum: usize) -> Result<()> {
         self.reducer.set_resident_event_limit(maximum)
+    }
+
+    /// Retires only closed, checkpoint-covered conversation records from memory.
+    /// Canonical Stream events and atomic identity indexes remain unchanged.
+    /// Old selections and replies must be resolved through the history reader;
+    /// this cache operation admits no events and grants no authority.
+    pub fn compact_conversation_projection(&mut self) -> Result<()> {
+        self.reducer.compact_conversation_projection()
     }
 
     /// Installs the provider boundary that verifies every message file before admission.
@@ -768,7 +1006,15 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     "aggregate must refresh to the indexed operation boundary".into(),
                 ));
             }
-            return self.reducer.apply_committed(event).map(Some);
+            let indexed =
+                effects::retirement_proof_for_event(&self.client, self.reducer.authority(), &event)
+                    .await?;
+            let result = self.reducer.apply_committed(event.clone())?;
+            if indexed {
+                self.reducer.mark_indexed_terminal_effect(&event)?;
+            }
+            self.reducer.enforce_terminal_effect_limit()?;
+            return Ok(Some(result));
         }
         Ok(Some(ApplyResult::Replayed { event }))
     }
@@ -855,7 +1101,19 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     "aggregate refresh event binding is invalid".into(),
                 ));
             }
-            self.reducer.apply_committed(event)?;
+            let (indexed, _) = effects::retirement_proof(
+                &self.client,
+                self.reducer.authority(),
+                &event,
+                &record,
+                2 * acyclic_stream::MAX_RECORD_BYTES as u64,
+            )
+            .await?;
+            self.reducer.apply_committed(event.clone())?;
+            if indexed {
+                self.reducer.mark_indexed_terminal_effect(&event)?;
+            }
+            self.reducer.enforce_terminal_effect_limit()?;
             consumed += 1;
         }
         if consumed == 0 {
@@ -906,9 +1164,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
         self.validate_causal_reference(event.causal_parent.as_ref())
             .await?;
-        let bytes = encode_event(self.reducer.authority(), &event)?;
-        let publication =
-            operations::IndexedPublication::new(self.reducer.authority(), &event, bytes)?;
+        let publication = checkpoints::publication(&self.client, &self.reducer, &event).await?;
         let request = publication.request(&self.client, idempotency_key).await?;
         // The private-volume reservation spans the final scan and the Stream
         // append. An unknown append result retains the durable reservation.
@@ -957,8 +1213,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 observation: crate::core::EffectAttestation { effect_id, .. },
             } => {
                 let effect = self
-                    .reducer
-                    .effect(*effect_id)
+                    .effect(*effect_id, self.effect_history_limits)
+                    .await?
                     .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
                 owner.require_effect_grants(&effect.provider, false)?;
                 if matches!(command.action, Action::ResolveEffect { .. }) {
@@ -984,27 +1240,26 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self.validate_admission_content(&command.action).await?;
         self.validate_causal_reference(event.causal_parent.as_ref())
             .await?;
-        let bytes = encode_event(self.reducer.authority(), &event)?;
+        let publication = checkpoints::publication(&self.client, &self.reducer, &event).await?;
         let key = stream_idempotency_key(self.stream.path().as_str(), &command.idempotency_key)?;
-        if !owner
-            .append_conversation(
-                &operations::IndexedPublication::new(self.reducer.authority(), &event, bytes)?,
-                &key,
-                write,
-            )
-            .await?
-        {
+        if !owner.append_conversation(&publication, &key, write).await? {
             return Err(Error::Conflict(
                 "task publication lost its owner or conversation tail".into(),
             ));
         }
-        self.reducer
-            .apply_committed(event)
+        self.apply_published_event(&event)
             .map_err(|_| Error::Indeterminate(command.operation_id))
     }
 
     async fn plan_command(&self, command: &Command, fresh_migration: bool) -> Result<ApplyResult> {
         if !fresh_migration {
+            if let Some(effect_id) = self.reducer.archived_effect_for_command(command)
+                && let Some(effect) = self.effect(effect_id, self.effect_history_limits).await?
+            {
+                return self
+                    .reducer
+                    .plan_with_archived_effect(command, effect_id, &effect);
+            }
             return self.reducer.plan_indexed(command, false);
         }
         if let Action::MigrateExtensionState {
@@ -1090,7 +1345,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 if publication.verify(&envelope).is_err() {
                     return Err(Error::Indeterminate(publication.operation_id));
                 }
-                match self.reducer.apply_committed(event) {
+                match self.apply_published_event(&event) {
                     Ok(result) => Ok(result),
                     Err(_) => return Err(Error::Indeterminate(command.operation_id)),
                 }
@@ -1429,6 +1684,7 @@ fn stream_idempotency_key(path: &str, value: &IdempotencyKey) -> Result<StreamId
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wire_codec::encode_event;
     use crate::{
         Capabilities, OperationId,
         conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
@@ -1987,6 +2243,38 @@ mod tests {
                 provider.forbid_writes.store(false, Ordering::SeqCst);
             }
         }
+        // The large checkpoint spans reused immutable chunks. Restore through
+        // the real default constructor with writes prohibited, then compare the
+        // complete logical-prefix identity with the original live reducer.
+        provider.forbid_writes.store(true, Ordering::SeqCst);
+        let restored =
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?;
+        assert_eq!(restored.reducer().revision(), writer.reducer().revision());
+        let restored_history = restored
+            .reducer()
+            .conversation()
+            .ok_or_else(|| Error::Invalid("restored conversation missing".into()))?;
+        let live_history = writer
+            .reducer()
+            .conversation()
+            .ok_or_else(|| Error::Invalid("live conversation missing".into()))?;
+        assert_eq!(restored_history.logical_revision(), 10_000);
+        assert_eq!(
+            restored_history.history_prefix_digest(10_000)?,
+            live_history.history_prefix_digest(10_000)?
+        );
+        assert!(
+            restored
+                .reducer()
+                .events_after(restored.reducer().archived_through_revision(), 64)?
+                .len()
+                <= 64
+        );
+        assert!(provider.observation_maximum.load(Ordering::SeqCst) <= 64);
+        // Subsequent one-record index observations have their own measurement
+        // window; the cold canonical suffix above legitimately reads 17 records.
+        provider.observation_maximum.store(0, Ordering::SeqCst);
+        provider.forbid_writes.store(false, Ordering::SeqCst);
         let archived = writer.reducer().archived_through_revision();
         assert_eq!(archived, writer.reducer().revision() - 1);
         assert_eq!(writer.reducer().events_after(archived, 2)?.len(), 1);
@@ -2097,6 +2385,36 @@ mod tests {
             maximum_bytes: 65_536,
         };
         provider.observation_reads.store(0, Ordering::SeqCst);
+        let selected = reader
+            .selected_conversation(&pinned, &selection, range_limits)
+            .await?;
+        assert_eq!(
+            selected
+                .messages()
+                .iter()
+                .map(|message| message.id)
+                .collect::<Vec<_>>(),
+            selection.message_ids
+        );
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 6);
+        assert_eq!(provider.observation_maximum.load(Ordering::SeqCst), 1);
+        assert!(selected.agent.is_none());
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        assert!(matches!(
+            reader
+                .selected_conversation(
+                    &pinned,
+                    &selection,
+                    HistoryReadLimits {
+                        maximum_events: 2,
+                        ..range_limits
+                    }
+                )
+                .await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 0);
+        provider.observation_reads.store(0, Ordering::SeqCst);
         assert_eq!(
             reader
                 .conversation_range(&pinned, 9_997, 10_000, range_limits)
@@ -2166,6 +2484,29 @@ mod tests {
                     &pinned,
                     9_997,
                     10_000,
+                    HistoryReadLimits {
+                        maximum_bytes: two_record_bytes,
+                        ..range_limits
+                    }
+                )
+                .await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 4);
+        let last_selection = crate::conversation::ModelContextSelection {
+            conversation_revision: 10_000,
+            message_ids: [9_998, 9_999, 10_000]
+                .into_iter()
+                .map(|sequence| message(sequence).id)
+                .collect(),
+            checkpoint: None,
+        };
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        assert!(matches!(
+            reader
+                .selected_conversation(
+                    &pinned,
+                    &last_selection,
                     HistoryReadLimits {
                         maximum_bytes: two_record_bytes,
                         ..range_limits
@@ -3439,6 +3780,506 @@ mod tests {
         )
         .await?;
         assert_eq!(reopened.reducer().revision(), 3);
+        Ok(())
+    }
+
+    fn projection_command(identity: u128, revision: u64) -> Result<Command> {
+        let mut command = command(1)?;
+        command.operation_id = OperationId::from_bytes(identity.to_le_bytes());
+        command.idempotency_key = IdempotencyKey::new(format!("projection-{identity}"))?;
+        command.expected_revision = revision;
+        Ok(command)
+    }
+
+    #[tokio::test]
+    async fn checkpoint_open_pins_canonical_cut_before_selecting_checkpoint() -> Result<()> {
+        use std::sync::atomic::Ordering;
+        let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+        let client = StreamClient::new(provider.clone());
+        let mut writer = with_content(
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
+        );
+        for cut in [64_u64, 128] {
+            while writer.reducer().revision() < cut {
+                let revision = writer.reducer().revision();
+                writer
+                    .execute(projection_command(u128::from(revision + 1), revision)?)
+                    .await?;
+            }
+            // Model the older checkpoint-tail observation made immediately
+            // before the boundary commit became visible to the canonical read.
+            provider
+                .stale_projection_head_tail
+                .store(cut / 64, Ordering::SeqCst);
+            provider.forbid_writes.store(true, Ordering::SeqCst);
+            let cold =
+                StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?;
+            assert_eq!(cold.reducer().revision(), cut);
+            assert_eq!(cold.reducer().snapshot()?.events.len(), 1);
+            assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
+            provider
+                .stale_projection_head_tail
+                .store(0, Ordering::SeqCst);
+            provider.forbid_writes.store(false, Ordering::SeqCst);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn default_cold_projection_reads_fixed_work_at_increasing_history() -> Result<()> {
+        use std::sync::atomic::Ordering;
+        let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+        let client = StreamClient::new(provider.clone());
+        let mut writer = with_content(
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
+        );
+        for cut in [64_u64, 1_024, 10_240] {
+            while writer.reducer().revision() < cut + 5 {
+                let revision = writer.reducer().revision();
+                writer
+                    .execute(projection_command(u128::from(revision + 1), revision)?)
+                    .await?;
+            }
+            provider.forbid_writes.store(true, Ordering::SeqCst);
+            provider.observation_reads.store(0, Ordering::SeqCst);
+            provider.observation_maximum.store(0, Ordering::SeqCst);
+            let started = std::time::Instant::now();
+            let mut cold = with_content(
+                StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
+            );
+            let elapsed = started.elapsed();
+            assert_eq!(cold.reducer().revision(), cut + 5);
+            assert_eq!(cold.reducer().snapshot()?.events.len(), 6);
+            assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 4);
+            assert_eq!(provider.observation_maximum.load(Ordering::SeqCst), 5);
+            let bytes = crate::contract::canonical_json_bytes(&cold.reducer().snapshot()?)?.len();
+            assert!(bytes < 32_768);
+            eprintln!(
+                "cold-projection retained={} reads=4 max_records=5 resident_events=6 serialized_bytes={} elapsed_ns={}",
+                cut + 5,
+                bytes,
+                elapsed.as_nanos()
+            );
+            assert!(matches!(
+                cold.execute(projection_command(1, 0)?).await?,
+                ApplyResult::Replayed { .. }
+            ));
+            assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
+            provider.forbid_writes.store(false, Ordering::SeqCst);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn default_cold_projection_enforces_bounds_and_recovers_failed_observations() -> Result<()>
+    {
+        use std::sync::atomic::Ordering;
+        let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+        let client = StreamClient::new(provider.clone());
+        let mut writer = with_content(
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
+        );
+        for revision in 0..69 {
+            writer
+                .execute(projection_command(u128::from(revision + 1), revision)?)
+                .await?;
+        }
+        drop(writer);
+        provider.forbid_writes.store(true, Ordering::SeqCst);
+        let defaults = default_projection_read_limits();
+        let loaded =
+            checkpoints::load(&client, &authority(), &issuer().verifier(), defaults).await?;
+        let suffix = HistoryReader::new(&client, &authority(), issuer().verifier())?
+            .read_page(
+                &HistoryCursor {
+                    authority: authority(),
+                    after_revision: 64,
+                    through_revision: 69,
+                },
+                defaults,
+            )
+            .await?;
+        let suffix_bytes = suffix.events.iter().try_fold(0_u64, |sum, event| {
+            Ok::<_, Error>(sum + encode_event(&authority(), event)?.len() as u64)
+        })?;
+        let exact = HistoryReadLimits {
+            maximum_events: 6,
+            maximum_bytes: loaded.consumed_bytes + suffix_bytes,
+        };
+        assert_eq!(
+            StreamAggregate::open_with_read_limits(
+                &client,
+                authority(),
+                issuer().verifier(),
+                schemas(),
+                exact
+            )
+            .await?
+            .reducer()
+            .revision(),
+            69
+        );
+        for limits in [
+            HistoryReadLimits {
+                maximum_events: 5,
+                ..exact
+            },
+            HistoryReadLimits {
+                maximum_bytes: exact.maximum_bytes - 1,
+                ..exact
+            },
+            HistoryReadLimits {
+                maximum_events: 0,
+                ..exact
+            },
+        ] {
+            assert!(
+                StreamAggregate::open_with_read_limits(
+                    &client,
+                    authority(),
+                    issuer().verifier(),
+                    schemas(),
+                    limits
+                )
+                .await
+                .is_err()
+            );
+        }
+        for fault in [1, 2, 3, 4] {
+            provider.history_read_fault.store(fault, Ordering::SeqCst);
+            assert!(
+                StreamAggregate::open(&client, authority(), issuer().verifier(), schemas())
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                StreamAggregate::open(&client, authority(), issuer().verifier(), schemas())
+                    .await?
+                    .reducer()
+                    .revision(),
+                69
+            );
+        }
+        assert!(
+            StreamAggregate::open(
+                &client,
+                authority(),
+                AuthorityIssuer::new("test", [8; 32], authority()).verifier(),
+                schemas()
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn projection_checkpoint_commit_loss_preserves_original_admission() -> Result<()> {
+        use std::sync::atomic::Ordering;
+        for fault in [1, 2, 3, 4, 5] {
+            let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+            let client = StreamClient::new(provider.clone());
+            let mut writer = with_content(
+                StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
+            );
+            for revision in 0..63 {
+                writer
+                    .execute(projection_command(u128::from(revision + 1), revision)?)
+                    .await?;
+            }
+            let original = projection_command(64, 63)?;
+            provider
+                .aggregate_commit_fault
+                .store(fault, Ordering::SeqCst);
+            let _uncertain = writer.execute(original.clone()).await;
+            drop(writer);
+            let mut cold = with_content(
+                StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
+            );
+            cold.execute(original.clone()).await?;
+            assert_eq!(cold.reducer().revision(), 64);
+            assert!(matches!(
+                cold.execute(original).await?,
+                ApplyResult::Replayed { .. }
+            ));
+            assert_eq!(
+                client
+                    .stream("harness/v3/projection-checkpoints/conversations/conversation-1")?
+                    .tail()
+                    .await?,
+                1
+            );
+        }
+        Ok(())
+    }
+
+    fn forge_projection_payload(
+        location: &mut Value,
+        payload: &mut Vec<u8>,
+        mode: u8,
+    ) -> Result<()> {
+        if mode == 1 {
+            let mut forged: Value = crate::contract::json_from_slice(payload)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            forged["projection"]["lifecycle"] = json!("completed");
+            let digest = crate::contract::canonical_json_digest(&(
+                &forged["format_version"],
+                &forged["authority"],
+                &forged["revision"],
+                &forged["events"],
+                &forged["projection"],
+            ))?;
+            forged["state_digest"] = json!(digest);
+            *payload = crate::contract::canonical_json_bytes(&forged)?;
+            location["digest"] = json!(*blake3::hash(payload).as_bytes());
+            location["bytes"] = json!(payload.len());
+            location["chunks"] = json!([{
+                "digest": *blake3::hash(payload).as_bytes(), "bytes": payload.len()
+            }]);
+        } else if mode == 4 {
+            location["bytes"] = json!(u64::MAX);
+        } else if mode == 5 {
+            payload[0] ^= 1;
+        } else if mode == 6 {
+            location["chunks"] = json!([]);
+        } else if mode == 7 {
+            location["chunks"][0]["bytes"] = json!(0);
+        } else if mode == 8 {
+            location["chunks"][0]["bytes"] = json!(1);
+        }
+        Ok(())
+    }
+
+    async fn publish_copied_projection(
+        client: &StreamClient<MemoryStream>,
+        canonical: &[acyclic_stream::Record],
+        head_path: acyclic_stream::StreamPath,
+        head_bytes: Bytes,
+        non_atomic: bool,
+    ) -> Result<()> {
+        use acyclic_stream::{CommitCondition, CommitMutation, CommitRequest};
+        let stream = client.stream(authority().stream_path()?)?;
+        stream
+            .append_batch(
+                canonical[..63]
+                    .iter()
+                    .map(|record| record.value.clone())
+                    .collect(),
+                Some(0),
+                None,
+            )
+            .await?;
+        if non_atomic {
+            stream.append(canonical[63].value.clone()).await?;
+            client
+                .stream(head_path.as_str())?
+                .append(head_bytes)
+                .await?;
+        } else {
+            let outcome = client
+                .commit(CommitRequest {
+                    conditions: vec![
+                        CommitCondition::Tail {
+                            path: stream.path().clone(),
+                            expected: 63,
+                        },
+                        CommitCondition::Absent {
+                            path: head_path.clone(),
+                        },
+                    ],
+                    mutations: vec![
+                        CommitMutation::Append {
+                            path: stream.path().clone(),
+                            records: vec![canonical[63].value.clone()],
+                        },
+                        CommitMutation::Append {
+                            path: head_path,
+                            records: vec![head_bytes],
+                        },
+                    ],
+                    idempotency_key: StreamIdempotencyKey::new("copied-projection")?,
+                })
+                .await?;
+            assert!(matches!(outcome, CommitOutcome::Committed(_)));
+        }
+        Ok(())
+    }
+
+    // Copy authentic events into an independent provider, then vary the derived
+    // projection's visibility or bytes. This keeps the signed canonical control
+    // valid while attacking the new cold-restore boundary itself.
+    async fn copied_projection_client(
+        source: &StreamClient<crate::test_stream::LostSessionAck<MemoryStream>>,
+        mode: u8,
+    ) -> Result<StreamClient<MemoryStream>> {
+        use acyclic_stream::StreamPath;
+        let head_path =
+            StreamPath::new("harness/v3/projection-checkpoints/conversations/conversation-1")?;
+        let index = source
+            .stream(head_path.as_str())?
+            .read(0, 1)
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
+        let mut location: Value = crate::contract::json_from_slice(&index[0].value)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let digest: [u8; 32] = serde_json::from_value(location["chunks"][0]["digest"].clone())
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let chunk_path = format!(
+            "harness/v3/projection-chunks/conversations/conversation-1/{}",
+            blake3::Hash::from_bytes(digest).to_hex()
+        );
+        let chunk = source
+            .stream(&chunk_path)?
+            .read(0, 1)
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
+        let mut payload = chunk[0].value.to_vec();
+        forge_projection_payload(&mut location, &mut payload, mode)?;
+        let canonical = source
+            .stream(authority().stream_path()?)?
+            .read(0, 64)
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        if mode != 0 {
+            let digest: [u8; 32] = serde_json::from_value(if mode == 6 {
+                json!(*blake3::hash(&payload).as_bytes())
+            } else {
+                location["chunks"][0]["digest"].clone()
+            })
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+            client
+                .stream(format!(
+                    "harness/v3/projection-chunks/conversations/conversation-1/{}",
+                    blake3::Hash::from_bytes(digest).to_hex()
+                ))?
+                .append(Bytes::from(payload))
+                .await?;
+        }
+        publish_copied_projection(
+            &client,
+            &canonical,
+            head_path,
+            Bytes::from(crate::contract::canonical_json_bytes(&location)?),
+            mode == 3,
+        )
+        .await?;
+        Ok(client)
+    }
+
+    #[tokio::test]
+    async fn cold_projection_rejects_forged_state_and_non_atomic_heads() -> Result<()> {
+        let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+        let source = StreamClient::new(provider);
+        let mut writer = with_content(
+            StreamAggregate::open(&source, authority(), issuer().verifier(), schemas()).await?,
+        );
+        for revision in 0..64 {
+            writer
+                .execute(projection_command(u128::from(revision + 1), revision)?)
+                .await?;
+        }
+        for mode in 0..=8 {
+            let client = copied_projection_client(&source, mode).await?;
+            let result =
+                StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await;
+            match mode {
+                1 => assert!(matches!(result, Err(Error::Unauthorized(_)))),
+                2 => assert_eq!(result?.reducer().revision(), 64),
+                _ => assert!(result.is_err()),
+            }
+        }
+        Ok(())
+    }
+    #[tokio::test]
+    async fn supplied_projection_charges_snapshot_and_suffix_before_io() -> Result<()> {
+        use std::sync::atomic::Ordering;
+        let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+        let client = StreamClient::new(provider.clone());
+        let mut writer = with_content(
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
+        );
+        for revision in 0..64 {
+            writer
+                .execute(projection_command(u128::from(revision + 1), revision)?)
+                .await?;
+        }
+        let snapshot = writer.reducer().snapshot_with_event_limit(1)?;
+        let snapshot_bytes = crate::contract::canonical_json_bytes(&snapshot)?.len() as u64;
+        for revision in 64..69 {
+            writer
+                .execute(projection_command(u128::from(revision + 1), revision)?)
+                .await?;
+        }
+        let suffix = client
+            .stream(authority().stream_path()?)?
+            .read(64, 5)
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
+        let bytes = snapshot_bytes
+            + suffix
+                .iter()
+                .map(|record| record.value.len() as u64)
+                .sum::<u64>();
+        provider.forbid_writes.store(true, Ordering::SeqCst);
+        let restored = StreamAggregate::open_from_snapshot_with_read_limits(
+            &client,
+            authority(),
+            issuer().verifier(),
+            schemas(),
+            snapshot.clone(),
+            HistoryReadLimits {
+                maximum_events: 6,
+                maximum_bytes: bytes,
+            },
+        )
+        .await?;
+        assert_eq!(restored.reducer().revision(), 69);
+        for limits in [
+            HistoryReadLimits {
+                maximum_events: 5,
+                maximum_bytes: bytes,
+            },
+            HistoryReadLimits {
+                maximum_events: 6,
+                maximum_bytes: bytes - 1,
+            },
+        ] {
+            assert!(
+                StreamAggregate::open_from_snapshot_with_read_limits(
+                    &client,
+                    authority(),
+                    issuer().verifier(),
+                    schemas(),
+                    snapshot.clone(),
+                    limits,
+                )
+                .await
+                .is_err()
+            );
+        }
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        assert!(
+            StreamAggregate::open_from_snapshot_with_read_limits(
+                &client,
+                authority(),
+                issuer().verifier(),
+                schemas(),
+                snapshot,
+                HistoryReadLimits {
+                    maximum_events: 6,
+                    maximum_bytes: snapshot_bytes - 1
+                },
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 0);
         Ok(())
     }
 }

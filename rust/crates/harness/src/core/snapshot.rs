@@ -11,7 +11,7 @@ use crate::{
     interaction::{InteractionResolution, InteractionTicket},
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Versioned, issuer-authenticated accelerator; Stream events remain authoritative.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -44,6 +44,10 @@ struct Projection {
     configured_extensions: Vec<(ExtensionDependency, ExtensionConfiguration)>,
     active_configurations: Vec<ExtensionConfiguration>,
     effects: BTreeMap<EffectId, EffectState>,
+    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
+    indexed_terminal_effects: VecDeque<EffectId>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    effects_archived: bool,
     forks: Vec<(Authority, ForkSeed)>,
     published_merges: BTreeSet<(String, Vec<u8>)>,
     conversation: ConversationState,
@@ -54,10 +58,25 @@ struct Projection {
     bindings: Vec<(ExtensionDependency, [u8; 32])>,
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 impl Reducer {
     /// Captures issuer-authenticated state for direct projection restoration.
-    /// The event cache is a suffix; conversation and terminal projections still need cold retention.
+    /// Closed checkpoint-covered conversation prefixes are represented by their
+    /// authenticated logical cut and digest. Terminal projections still need cold retention.
     pub fn snapshot(&self) -> Result<Snapshot> {
+        self.snapshot_with_event_limit(self.events.len())
+    }
+
+    /// Captures the same authenticated projection with a bounded retry suffix.
+    /// A nonempty projection must retain its head event for canonical binding.
+    pub fn snapshot_with_event_limit(&self, maximum_events: usize) -> Result<Snapshot> {
+        if maximum_events == 0 && self.revision != 0 {
+            return Err(Error::Invalid("snapshot must retain its head event".into()));
+        }
+        let conversation = self.checkpointed_conversation()?;
         let projection = Projection {
             lifecycle: self.lifecycle,
             active_extensions: self.active_extensions.clone(),
@@ -66,18 +85,25 @@ impl Reducer {
             configured_extensions: self.configured_extensions.clone().into_iter().collect(),
             active_configurations: self.active_configurations.clone(),
             effects: self.effects.clone(),
+            indexed_terminal_effects: self.indexed_terminal_effects.clone(),
+            effects_archived: self.effects_archived,
             forks: self.forks.clone().into_iter().collect(),
             published_merges: self.published_merges.clone(),
-            conversation: self.conversation.clone(),
+            conversation,
             latest_context_checkpoint: self.latest_context_checkpoint.clone(),
             interactions: self.interactions.clone(),
             bindings: registry_bindings(&self.schemas)?,
         };
         let mut snapshot = Snapshot {
-            format_version: 5,
+            format_version: 6,
             authority: self.authority.clone(),
             revision: self.revision,
-            events: self.events.iter().cloned().collect(),
+            events: self
+                .events
+                .iter()
+                .skip(self.events.len().saturating_sub(maximum_events))
+                .cloned()
+                .collect(),
             projection,
             state_digest: [0; 32],
             attestation: [0; 32],
@@ -85,6 +111,43 @@ impl Reducer {
         snapshot.state_digest = snapshot.digest()?;
         snapshot.attestation = self.authority_verifier.attest_snapshot(&snapshot)?;
         Ok(snapshot)
+    }
+
+    fn resident_checkpoint_selection(&self) -> Option<&crate::conversation::ModelContextSelection> {
+        self.events
+            .iter()
+            .rev()
+            .find_map(|event| match &event.payload {
+                super::EventPayload::ModelContextSelected { selection }
+                    if selection.checkpoint.as_ref() == self.latest_context_checkpoint.as_ref()
+                        && selection.checkpoint.is_some() =>
+                {
+                    Some(selection)
+                }
+                _ => None,
+            })
+    }
+
+    fn checkpointed_conversation(&self) -> Result<ConversationState> {
+        let checkpoint_selection = self.resident_checkpoint_selection();
+        match checkpoint_selection {
+            Some(selection) => self.conversation.checkpointed_suffix(selection),
+            None => Ok(self.conversation.clone()),
+        }
+    }
+
+    pub(crate) fn compact_conversation_projection(&mut self) -> Result<()> {
+        let selection = self.resident_checkpoint_selection();
+        let Some(selection) = selection else {
+            return Ok(());
+        };
+        if selection.conversation_revision <= self.conversation.resident_after_sequence()
+            || self.conversation.unresolved_user().is_some()
+        {
+            return Ok(());
+        }
+        self.conversation = self.conversation.checkpointed_suffix(selection)?;
+        Ok(())
     }
 
     /// Restores authenticated state without invoking any historical transition.
@@ -117,6 +180,9 @@ impl Reducer {
             resident_event_limit: usize::MAX,
             operation_positions,
             effects: projection.effects,
+            indexed_terminal_effects: projection.indexed_terminal_effects,
+            effects_archived: projection.effects_archived,
+            resident_terminal_effect_limit: usize::MAX,
             forks: projection.forks.into_iter().collect(),
             published_merges: projection.published_merges,
             conversation: projection.conversation,
@@ -138,7 +204,7 @@ impl Snapshot {
     }
 
     fn verify(&self, verifier: &AuthorityVerifier, schemas: &SchemaRegistry) -> Result<()> {
-        if self.format_version != 5 {
+        if self.format_version != 6 {
             return Err(Error::Unsupported(format!(
                 "snapshot format {}",
                 self.format_version
@@ -151,6 +217,20 @@ impl Snapshot {
         if verifier.attest_snapshot(self)? != self.attestation {
             return Err(Error::Unauthorized(
                 "snapshot admission attestation is invalid".into(),
+            ));
+        }
+        let eligible: BTreeSet<_> = self.projection.indexed_terminal_effects.iter().collect();
+        if eligible.len() != self.projection.indexed_terminal_effects.len()
+            || eligible.iter().any(|id| {
+                !self
+                    .projection
+                    .effects
+                    .get(id)
+                    .is_some_and(|state| super::settled_effect(&state.status))
+            })
+        {
+            return Err(Error::Invalid(
+                "snapshot indexed terminal effects are invalid".into(),
             ));
         }
         let mut identities = BTreeSet::new();
@@ -201,7 +281,7 @@ impl AuthorityVerifier {
             snapshot.state_digest,
         ))?;
         let mut hasher = blake3::Hasher::new_keyed(&self.key);
-        hasher.update(b"harness/v5/reducer-checkpoint\0");
+        hasher.update(b"harness/v6/reducer-checkpoint\0");
         hasher.update(&(canonical.len() as u64).to_le_bytes());
         hasher.update(&canonical);
         Ok(*hasher.finalize().as_bytes())

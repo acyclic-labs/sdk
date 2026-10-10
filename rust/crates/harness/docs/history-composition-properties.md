@@ -12,16 +12,77 @@ provider reconciliation own admission and effects.
 | A history traversal excludes later appends. | `HistoryReader::pin` captures an authority and event cut. `read_page` advances only within that cut, charging event and encoded-byte allowances. | The provider retains committed immutable events. A page allowance bounds one read, not total archival traversal. |
 | A cold lookup authenticates its result. | Operation, message-ID and message-sequence locators are published atomically with the canonical event and aggregate-tail condition. Reads verify the locator, event, authority, attestation and common atomic commit. | An unattested locator alone never authorizes an operation or message. Existing stores without these indexes require explicit handling; no migration fallback scans lifetime history. |
 | A cold logical-message head has constant read work. | Binding and every ordinary or merge-notice append publish a head locator in the existing atomic event commit. `latest_conversation_message` pins its tail and verifies the locator and original event through the shared atomic-proof checker. | Two protocol-bounded record reads, with a combined explicit byte allowance, independent of retained history. Concurrent later appends are excluded. Missing head state for a nonempty aggregate fails rather than reporting empty history. This observation is separate from an older archival cursor. |
-| Resident event eviction preserves retry identity. | `StreamAggregate` keeps a configurable event suffix and resolves evicted operations through the atomic locator. Its indexed planner follows that authenticated lookup. | Conversation messages and other reducer metadata are still lifetime-sized. This is a bounded event cache, not a constant-memory aggregate. |
+| Resident event eviction preserves retry identity. | `StreamAggregate` keeps a configurable event suffix and resolves evicted operations through the atomic locator. Its indexed planner follows that authenticated lookup. | The native canonical loop also retires closed checkpoint-covered conversation prefixes. Terminal reducer maps still retain lifetime state; this is not a constant-memory aggregate. |
+| Retiring a closed conversation prefix preserves its logical history. | The bound conversation keeps the checkpoint cut, exact checkpoint reference and chained prefix digest, then only the resident suffix. Logical revision, append sequencing and indexed retries use the original canonical identities. Snapshot format 6 authenticates this prefix representation with the complete projection. | An unresolved user or incomplete tool exchange prevents retirement. Older pages and hashes require explicit archival reads. Archived full-fork grant materialization and arbitrary archived replies/outcomes remain unfinished. |
+| A retired turn replays its original selection. | `HistoryReader::selected_conversation` verifies each selected ID through the original atomic locator and canonical event, charging all encoded records to one allowance. Native callers bind the selection to its original operation and reuse indexed assistant/tool outputs. | The selected view is read-only and grants no admission authority. Default cold aggregate construction uses an authenticated durable checkpoint and a bounded canonical suffix; the decoded projection can still contain lifetime-sized terminal maps. |
+| Default cold restoration has finite input work. | Every 64th canonical event atomically publishes a checkpoint pointer with the original event and indexes. The snapshot retains its canonical head and original issuer MAC. Opening charges pointer, chunks, canonical anchor and suffix to one byte allowance, and the anchor and suffix to one event allowance. Caller-supplied snapshots charge their bytes and cached events before provider IO. | Defaults allow 64 decoded events and 32 MiB total encoded input. Missing checkpoints for established histories fail explicitly; no lifetime replay fallback. Larger caller inputs require explicit limits. This bounds restoration input, not whole reducer residency. |
+| Checkpoints reuse unchanged stored payloads. | Bounded content-defined chunks use immutable content-addressed Stream paths. Each chunk digest and length, the complete payload digest, original snapshot MAC and atomic canonical binding are verified on restore. | Chunks are at most one Stream record and interior chunks at least 16 KiB. The manifest fits one record. Payloads above the configured implementation ceiling fail explicitly. Snapshot construction still serializes the current projection; growing active or terminal state is not constant work. |
+| Retired successful/failed effects keep their original identity and result. | Explicit finite terminal caches retire only effects with original atomic operation/effect indexes. Snapshot format 6 authenticates retirement eligibility and archived-state flags. `StreamAggregate::effect` and the owned effect host read retired state through the original bounded effect reader. Cold suffix replay charges both retirement-proof records to its cumulative input allowance. | Planned, dispatched and indeterminate effects remain resident. Legacy terminal state without original retirement proof stays protected. The rollout default retains terminal state until the native receipt consumer adopts the archive API on qualified main; finite cache tests do not establish default activation or bounded whole-aggregate memory. |
 | A snapshot cannot manufacture state. | The original issuer authenticates the snapshot's complete projection, cut and digest. Restore checks the original authority and schema registry before applying a canonical suffix. | Trust rests on the existing issuer key and provider integrity. Snapshot size remains proportional to its projection. |
 | A selected context has explicit bounds. | Selection, rendering, whole-tool-batch checks and each stage validate the admitted limits. Sources and stage inputs use separate allowances. | Oversized mandatory content fails explicitly. Selection must not retain a tool result without its call or split a completed tool batch. |
 | Immutable context imports preserve metadata and authority. | `PinnedContextStage::capture` validates the exact canonical context file, its descriptor, bounds and all referenced content through the supplied reader. Its contract binds the file reference. New admissions verify access again. | The reader must already carry the receiving authority. Construction grants no access and performs no model operation. |
 | An admitted summary remains tied to its source. | Summary and response purposes share the existing execution journal while retaining distinct attempt identities. Summary source and prepared request are pinned before dispatch; retry reconciles the original attempt. | The model provider owns reconciliation and immutable staging. An uncertain attempt is not regenerated as a fresh request. |
 | Mandatory native data retains its complete exchange. | Compaction uses the shared typed `ModelContent::contains_native_media` traversal, including native data inside tool results, then closes the ordered call/result graph. | Explicit native byte/work/intent limits remain separate from token accounting. A consumer may explicitly replace the retention policy. |
-| Default compaction uses actual model accounting. | `ThresholdCompaction` defaults to a 16,384-token response reserve and 20,000 recent tokens. The selected provider supplies capacity and request-bound additive token upper bounds. Consumers may replace the policy or disable it. | There is no model-name capacity catalog or SDK tokenizer. Missing accounting, impossible capacities and mandatory-budget overflow fail explicitly. |
+| Default compaction uses actual model accounting. | `ThresholdCompaction` defaults to a 16,384-token response reserve and 20,000 recent tokens. The selected provider supplies capacity and request-bound additive token upper bounds. Consumers may replace the policy or disable it. | Canonical continuation also compacts before exhausting its declared message count, reserving two positions for the response and next user. The count allowance caps recent-token retention; mandatory roles/media and complete exchanges remain verbatim. Fixed custom contexts use their full declared allowance. Missing accounting, impossible capacities and mandatory-budget overflow fail explicitly; no model-name catalog or SDK tokenizer is used. |
 | Compaction cannot substitute a retained projection. | The canonical checkpoint envelope binds original source, retained context, compaction proof, operation and covered logical history. Publication verifies the admitted settled summary before exposing the checkpoint. | Full canonical history is retained. Checkpoint imports verify original-owner publication, scope grants, event cut and bounded tail before model admission. |
 | Checkpoint continuation does not rerun settled work. | Native canonical conversation execution reuses the committed retained projection and admitted response artifacts. Subsequent stages receive a fresh delta; a covered historical current-input marker is cleared. | The continuation must bind the exact original operation and checkpoint. Reconciliation and lost-ack recovery remain in existing owner journals. |
 | Full, fresh and Summary forks select explicit history semantics. | `ForkHistoryPolicy` pins the original logical history cut, starts fresh, or binds a verified checkpoint projection. The Filesystem preparer copies private execution payloads into child-owned immutable files and binds the complete capture to its seed. `HistoryReader::summary_fork_stage` checks parent publication, the original causal child binding, signed receiving scope and exact reads before using the ordinary pinned stage. | Cold import uses two authenticated event lookups (four bounded records) within one explicit history byte allowance, without restoring either aggregate. Content has separate admitted limits. Full-prefix grant capture still scans parent history; explicit stage capture does not implement automatic receiving-task setup or browser qualification. |
+
+## Original-cut effect archive
+
+Every canonical publication appends a mandatory certificate to one fixed cut
+stream under the original aggregate-tail condition, with the canonical event
+and operation/effect indexes in the same atomic commit. The existing issuer
+MAC binds the complete effect-index root, original authority, canonical path,
+revision and raw canonical digest. The private proof purpose is
+`harness/v1/effect-history-root`; paths derive the current authority domain.
+The certificate supplies observations, never scope or effect admission.
+
+The immutable compressed binary radix index selects the exact last dense
+effect ordinal at the requested canonical cut, including genuine absence.
+Only the update path changes; non-effect publications retain the preceding
+root. Content hashes bind nodes, and a read requires exactly one original
+record at each node path. Missing nodes, changed bytes, invalid branch order,
+wrong authority/cut, non-atomic certificates and missing original transitions
+reject. A missing mandatory certificate requires explicit handling. No later
+index tail or speculative future event determines a historical result.
+
+| Mechanism considered | Cost and correctness at an arbitrary old cut |
+| --- | --- |
+| Original dense effect index alone | Authenticates existing transitions but cannot prove the terminal transition was not omitted. The actual admitted negative control returned older Dispatched state; that candidate was removed. |
+| A current per-effect locator | Does not identify its value at arbitrary older cuts or unrelated-event gaps. Updating all retained locators at every canonical cut costs work proportional to retained effects. |
+| A complete copied map per cut | Provides completeness but serializes and reads the lifetime map, exceeding finite default publication/read work. |
+| Authenticated compressed radix root | Preserves complete original-cut membership and absence with at most 128 ordered branch bits plus one leaf. Updates and reads follow only that bounded path; original typed effect transitions still use the shared core reducer. |
+
+The caller's single byte allowance includes the certificate, raw canonical
+anchor, all traversed nodes and every original index/canonical transition
+record, charged before decoding. Only selected original effect events consume
+the decoded-event allowance. For three transitions, pinning and reading a
+maximum-depth path require 137 record reads and 131 tail reads. Exact proof
+bytes succeed and one byte less rejects, including after a later append.
+Publication's private proof input also has a finite allowance; its path is
+bounded by the same 128-bit key space.
+
+The actual Stream observer measures read, tail, write, record, idempotency,
+commit-read and other provider calls; incoming record payloads, attempted write
+payloads and received commit payloads; and unique committed certificate/node
+records. At 1, 100 and 1,000 terminal effects with three fixed active effects,
+the original effect takes 11 record reads and five tail reads. The three new
+effect commands at the 1,000 sample take 39 reads, 31 tails and 27 writes,
+reading 15,977 payload bytes and sending/receiving 13,809 payload bytes.
+An admitted 129-key adversarial archive exercises all 128 branches: its original
+three-transition read takes 42,880 payload bytes and the stated maximum reads.
+Every sampled and adversarial three-command publication stays within 512 calls per observed method category
+or records and 1 MiB of payload in each measured direction.
+
+Retention remains proportional to history. The 1,000-terminal sample retains
+24,284 immutable nodes (6,117,494 payload bytes) and 13,010 certificates
+(6,436,108 payload bytes); the latter include 10,000 unrelated canonical events.
+These are complete Stream-provider measurements for this fixture, excluding
+wire control-envelope overhead, Filesystem backend IO and whole-process RSS.
+The finite terminal cache remains explicit until the qualified native receipt
+consumer lands; these measurements do not activate the default or qualify
+10,000 model turns.
 
 ## Verification surfaces
 
@@ -38,6 +99,47 @@ tail verification, source and summary fabrication rejection, original-scope read
 admission, pinned whole-context metadata, and read-only Summary preparation.
 The other affected integrations cover journal replay and recursive full/fresh
 fork behavior.
+
+The real native Summary fixture directly observes logical revision four,
+archived cut three and one resident message after admitted compaction. A second
+fixture runs twenty small-input turns under an eight-message bound, checks the
+resident conversation after every turn and replays the first retired turn
+without another model request. The count planner preserves pinned instructions,
+selects a complete tool-exchange boundary and rejects an impossible mandatory
+allowance. A fixed two-message custom pipeline consumes its entire allowance
+and replays without an unnecessary summary. These cases qualify those paths;
+the same native fixture reconstructs its actual Filesystem journal and bundle after
+eighteen turns, then continues and replays through default cold opening. Fixed
+active extension state at 69, 1,029 and 10,245 retained events restores in four
+record reads with six resident events. These are protocol-work and serialized
+state checks, not RSS or retained-10,000-model-turn qualification.
+
+The real Filesystem effect fixture keeps three planned/dispatched/indeterminate
+effects active while terminal history grows through 1, 100 and 1,000 effects.
+An explicit two-terminal cache survives cold reopen and preserves original
+archived results, retries, attempt identities and lifetime ID fences. Five
+publication-fault controls cover pre-commit failure, visible/hidden lost
+acknowledgements and malformed receipts. A nine-event control exercises the
+pure-planner guard before event eviction and admits cold retirement at the
+exact combined snapshot, canonical and derived-proof byte allowance; one byte
+less fails, and an insufficient event allowance fails before record IO. These
+controls qualify explicit retirement, not the pending default rollout.
+
+Fresh dispatch and resolution commands for retired terminal effects read the
+original effect projection at the current committed cut under the configured
+history allowance. The original planner borrows that one verified projection
+for provider authorization and transition validation. It does not clone the
+reducer, mutate the cache or duplicate terminal transition rules. The real
+Filesystem fixture rejects fresh dispatch/resolution as conflicts, rejects a
+missing provider grant, and rejects an allowance below the original three
+transitions without changing the aggregate revision or resident cache.
+
+Simplification audit for this boundary removed whole-reducer planning clones
+and three repeated effect lookups. One private lookup serves authorization and
+transition validation; canonical replay supplies no archival override. The
+private admission entry checks the exact command target and settled status
+before borrowing authenticated state. The store owns bounded IO and the core
+retains scope, revision, attestation, causal and transition checks.
 
 Browser consumers exercise the Rust/WASM history reader, aggregate snapshot,
 compaction accounting, fork-policy wire and generated declarations. Native
@@ -58,9 +160,10 @@ do not establish that default. Browser default compaction must use admitted
 summary operations and a portable owner journal, with reload and uncertainty
 verification; a facade-only truncation or unjournaled summarizer is insufficient.
 
-The broader slice still requires bounded lifetime conversation/reducer metadata
-and bounded default cold hydration. The event cache and independent archival
-reader do not establish either property. No unrestricted memory, throughput or
+The broader slice still requires bounded terminal reducer metadata, archived
+full-fork/reply/outcome hydration and complete affected platform qualification. Native
+checkpoint-covered warm conversation retirement does not establish whole
+aggregate residency or those archived paths. No unrestricted memory, throughput or
 10,000-agent claim follows from bounded regression fixtures.
 
 Summary-fork capture and explicit child-stage admission are exercised by

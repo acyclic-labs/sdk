@@ -663,6 +663,33 @@ impl MemoryHarnessStorage {
         let existing_selection = aggregate
             .context_selection_for_operation(operation_id)
             .await?;
+        let retry_view = if let Some(selection) = &existing_selection {
+            if selection
+                .message_ids
+                .iter()
+                .any(|id| state.message(*id).is_none())
+            {
+                let reader = aggregate.history_reader()?;
+                let cursor = crate::store::HistoryCursor {
+                    authority: aggregate.reducer().authority().clone(),
+                    after_revision: 0,
+                    through_revision: aggregate.reducer().revision(),
+                };
+                Some(
+                    reader
+                        .selected_conversation(
+                            &cursor,
+                            selection,
+                            self.journal.context_history_limits(limits)?,
+                        )
+                        .await?,
+                )
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let checkpoint_reference = aggregate.reducer().latest_context_checkpoint().cloned();
         let checkpoint = if existing_selection.is_none() {
             match &checkpoint_reference {
@@ -681,7 +708,7 @@ impl MemoryHarnessStorage {
             None
         };
         let preparation = crate::turn::prepare_turn_with_checkpoint(
-            state,
+            retry_view.as_ref().unwrap_or(state),
             operation_id,
             content,
             referenced,
@@ -719,9 +746,8 @@ impl MemoryHarnessStorage {
             .reducer()
             .conversation()
             .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
-        let selected_revision = usize::try_from(selection.conversation_revision)
-            .map_err(|_| Error::Storage("selection revision exceeds platform size".into()))?;
-        if selected_revision > historical.messages.len() {
+        let historical = retry_view.as_ref().unwrap_or(historical);
+        if selection.conversation_revision > historical.logical_revision() {
             return Err(Error::Storage(
                 "selection revision exceeds conversation history".into(),
             ));
@@ -755,6 +781,9 @@ impl MemoryHarnessStorage {
             .await?;
         self.append_assistant(operation_id, user_id, &output, limits)
             .await?;
+        self.open_conversation(limits)
+            .await?
+            .compact_conversation_projection()?;
         Ok(output)
     }
 
@@ -863,6 +892,44 @@ impl MemoryHarnessStorage {
         Ok(())
     }
 
+    async fn indexed_conversation_message(
+        &self,
+        aggregate: &StreamAggregate<MemoryStream>,
+        id: Uuid,
+        limits: Limits,
+    ) -> Result<Option<ConversationMessage>> {
+        let state = aggregate
+            .reducer()
+            .conversation()
+            .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
+        if let Some(message) = state.message(id) {
+            return Ok(Some(message.clone()));
+        }
+        let cursor = crate::store::HistoryCursor {
+            authority: aggregate.reducer().authority().clone(),
+            after_revision: 0,
+            through_revision: aggregate.reducer().revision(),
+        };
+        aggregate
+            .history_reader()?
+            .conversation_message(
+                &cursor,
+                id,
+                self.journal.context_history_limits(limits)?.maximum_bytes,
+            )
+            .await
+    }
+
+    fn next_conversation_sequence(aggregate: &StreamAggregate<MemoryStream>) -> Result<u64> {
+        aggregate
+            .reducer()
+            .conversation()
+            .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?
+            .logical_revision()
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("conversation sequence exhausted".into()))
+    }
+
     async fn append_assistant(
         &self,
         operation_id: OperationId,
@@ -920,19 +987,14 @@ impl MemoryHarnessStorage {
                 .await?
         };
         let mut aggregate = self.open_conversation(limits).await?;
-        self.append_tool_history(&mut aggregate, operation_id, user_id)
+        self.append_tool_history(&mut aggregate, operation_id, user_id, limits)
             .await?;
-        let state = aggregate
-            .reducer()
-            .conversation()
-            .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
         let mut extensions = BTreeMap::new();
         extensions.insert("acyclic.model.metadata".to_owned(), metadata);
-        if let Some(existing) = state
-            .messages
-            .iter()
-            .find(|message| message.id == assistant_id)
-        {
+        let existing = self
+            .indexed_conversation_message(&aggregate, assistant_id, limits)
+            .await?;
+        if let Some(existing) = existing {
             if existing.content != content
                 || existing.attachments != attachments
                 || existing.extensions != extensions
@@ -947,7 +1009,7 @@ impl MemoryHarnessStorage {
         }
         let message = ConversationMessage {
             id: assistant_id,
-            sequence: state.messages.len() as u64 + 1,
+            sequence: Self::next_conversation_sequence(&aggregate)?,
             kind: MessageKind::Assistant,
             content,
             attachments,
@@ -971,6 +1033,7 @@ impl MemoryHarnessStorage {
         aggregate: &mut StreamAggregate<MemoryStream>,
         operation_id: OperationId,
         user_id: Uuid,
+        limits: Limits,
     ) -> Result<()> {
         let mut calls = BTreeMap::new();
         let mut replay = crate::executor::ExecutionReplay::new(operation_id);
@@ -1030,11 +1093,10 @@ impl MemoryHarnessStorage {
                         "duplicate durable tool call identity".into(),
                     ));
                 }
-                let state = aggregate
-                    .reducer()
-                    .conversation()
-                    .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
-                if let Some(existing) = state.messages.iter().find(|message| message.id == id) {
+                let existing = self
+                    .indexed_conversation_message(aggregate, id, limits)
+                    .await?;
+                if let Some(existing) = existing {
                     if existing.kind != kind
                         || existing.content != content
                         || existing.attachments != attachments
@@ -1049,7 +1111,7 @@ impl MemoryHarnessStorage {
                 }
                 let message = ConversationMessage {
                     id,
-                    sequence: state.messages.len() as u64 + 1,
+                    sequence: Self::next_conversation_sequence(aggregate)?,
                     kind,
                     content,
                     attachments,

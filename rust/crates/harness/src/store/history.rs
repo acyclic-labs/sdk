@@ -43,6 +43,12 @@ pub struct HistoryPage {
     pub cursor: HistoryCursor,
 }
 
+pub(super) struct CountedHistoryPage {
+    pub(super) page: HistoryPage,
+    pub(super) records: Vec<acyclic_stream::Record>,
+    pub(super) bytes: u64,
+}
+
 /// An owner-bound Stream handle, with no reducer, history cache or replay on open.
 pub struct HistoryReader<P> {
     client: StreamClient<P>,
@@ -305,6 +311,64 @@ impl<P: StreamProvider> HistoryReader<P> {
         .await
     }
 
+    /// Resolves only the declared selection through authenticated atomic indexes.
+    /// Each identity costs at most two single-record reads; all identities share
+    /// the supplied byte allowance. This read-only view grants no admission or
+    /// authority, and the caller must bind the selection to its original operation.
+    pub async fn selected_conversation(
+        &self,
+        cursor: &HistoryCursor,
+        selection: &crate::conversation::ModelContextSelection,
+        limits: HistoryReadLimits,
+    ) -> Result<crate::conversation::ConversationState> {
+        self.verifier.verify_audience(&cursor.authority)?;
+        if limits.maximum_events == 0
+            || limits.maximum_bytes == 0
+            || selection.message_ids.len() as u64 > u64::from(limits.maximum_events)
+            || cursor.after_revision > cursor.through_revision
+        {
+            return Err(Error::Invalid(
+                "selected history bounds or cursor are invalid".into(),
+            ));
+        }
+        if cursor.through_revision > self.committed_tail().await? {
+            return Err(Error::Invalid(
+                "selected history exceeds committed cutoff".into(),
+            ));
+        }
+        let mut consumed = 0_u64;
+        let mut messages = Vec::with_capacity(selection.message_ids.len());
+        for id in &selection.message_ids {
+            let remaining = limits
+                .maximum_bytes
+                .checked_sub(consumed)
+                .filter(|remaining| *remaining > 0)
+                .ok_or_else(|| Error::Invalid("selected history exceeds byte bound".into()))?;
+            let (message, bytes) = super::operations::find_message_counted(
+                &self.client,
+                &cursor.authority,
+                &self.verifier,
+                *id,
+                cursor.through_revision,
+                remaining,
+            )
+            .await?;
+            consumed = consumed
+                .checked_add(bytes)
+                .ok_or_else(|| Error::Invalid("selected history byte count overflows".into()))?;
+            messages.push(message.ok_or_else(|| {
+                Error::Storage("selected history message is missing at its pinned cutoff".into())
+            })?);
+        }
+        let view = crate::conversation::ConversationState::selected_view(messages)?;
+        crate::projection::validate_model_context_selection_at_revision(
+            &view,
+            selection,
+            selection.conversation_revision,
+        )?;
+        Ok(view)
+    }
+
     /// Reads an exact contiguous canonical message range at one event cutoff.
     /// All message kinds count toward the explicit work bound. The byte bound
     /// includes every locator and canonical record, checked before decoding.
@@ -362,6 +426,29 @@ impl<P: StreamProvider> HistoryReader<P> {
         Ok(messages)
     }
 
+    /// Reconstructs one exact effect at the pinned canonical cut. Only that
+    /// effect's atomically indexed transitions are read; all locator and event
+    /// bytes share the declared allowance. This read grants no execution authority.
+    pub async fn effect(
+        &self,
+        cursor: &HistoryCursor,
+        effect: crate::EffectId,
+        limits: HistoryReadLimits,
+    ) -> Result<Option<crate::core::EffectState>> {
+        let events =
+            super::effects::read(&self.client, &self.verifier, cursor, effect, limits).await?;
+        if events.is_empty() {
+            return Ok(None);
+        }
+        crate::core::Reducer::project_effect(
+            cursor.authority.clone(),
+            self.verifier.clone(),
+            effect,
+            &events,
+        )
+        .map(Some)
+    }
+
     /// Captures a committed boundary once for explicit archival traversal.
     pub async fn pin(&self, after_revision: u64) -> Result<HistoryCursor> {
         let through_revision = self.committed_tail().await?;
@@ -383,6 +470,16 @@ impl<P: StreamProvider> HistoryReader<P> {
         cursor: &HistoryCursor,
         limits: HistoryReadLimits,
     ) -> Result<HistoryPage> {
+        self.read_page_counted(cursor, limits)
+            .await
+            .map(|read| read.page)
+    }
+
+    pub(super) async fn read_page_counted(
+        &self,
+        cursor: &HistoryCursor,
+        limits: HistoryReadLimits,
+    ) -> Result<CountedHistoryPage> {
         self.verifier.verify_audience(&cursor.authority)?;
         if limits.maximum_events == 0
             || limits.maximum_bytes == 0
@@ -404,12 +501,17 @@ impl<P: StreamProvider> HistoryReader<P> {
         .map_err(|_| Error::Invalid("history page count exceeds platform bounds".into()))?;
         let mut events = Vec::new();
         if count == 0 {
-            return Ok(HistoryPage {
-                events,
-                cursor: next,
+            return Ok(CountedHistoryPage {
+                page: HistoryPage {
+                    events,
+                    cursor: next,
+                },
+                records: Vec::new(),
+                bytes: 0,
             });
         }
         let mut records = self.stream.read(cursor.after_revision, count).await?;
+        let mut retained_records = Vec::new();
         let mut bytes = 0_u64;
         while let Some(record) = records.try_next().await? {
             if events.len() >= count as usize || record.sequence != next.after_revision {
@@ -429,15 +531,20 @@ impl<P: StreamProvider> HistoryReader<P> {
             )?;
             next.after_revision = event.revision;
             events.push(event);
+            retained_records.push(record);
         }
         if events.is_empty() {
             return Err(Error::Storage(
                 "history page stopped before its pinned boundary".into(),
             ));
         }
-        Ok(HistoryPage {
-            events,
-            cursor: next,
+        Ok(CountedHistoryPage {
+            page: HistoryPage {
+                events,
+                cursor: next,
+            },
+            records: retained_records,
+            bytes,
         })
     }
 

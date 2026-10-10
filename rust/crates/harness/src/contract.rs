@@ -74,6 +74,11 @@ pub(crate) fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
 /// Value tree. Key ordering does not change the size of ordinary typed records.
 /// Canonical encoding and identity checks still use `canonical_json_bytes`.
 pub(crate) fn validate_json_byte_bound<T: Serialize>(value: &T, maximum: u64) -> Result<()> {
+    json_byte_length(value, maximum).map(|_| ())
+}
+
+/// Counts compact JSON input using a bounded writer, without allocating its bytes.
+pub(crate) fn json_byte_length<T: Serialize>(value: &T, maximum: u64) -> Result<u64> {
     struct Budget(u64);
 
     impl std::io::Write for Budget {
@@ -90,7 +95,9 @@ pub(crate) fn validate_json_byte_bound<T: Serialize>(value: &T, maximum: u64) ->
         }
     }
 
-    serde_json::to_writer(Budget(maximum), value).map_err(|error| Error::Invalid(error.to_string()))
+    let mut budget = Budget(maximum);
+    serde_json::to_writer(&mut budget, value).map_err(|error| Error::Invalid(error.to_string()))?;
+    Ok(maximum - budget.0)
 }
 
 /// Decodes a complete JSON value without an unrelated nesting policy ceiling.
