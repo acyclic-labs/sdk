@@ -5,6 +5,7 @@ members = [
   "rust/crates/actors",
   "rust/crates/actors-napi",
   "rust/crates/actors-wasm",
+  "rust/crates/client",
   "rust/crates/conformance",
   "rust/crates/contract-derive",
   "rust/crates/filesystem",

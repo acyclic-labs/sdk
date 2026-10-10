@@ -11,5 +11,6 @@
   "acyclic-stream",
   "acyclic-fs",
   "acyclic-harness",
+  "acyclic-client",
   "acyclic-plugin"
 ]
