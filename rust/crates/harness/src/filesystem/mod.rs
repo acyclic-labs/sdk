@@ -63,6 +63,8 @@ mod memory;
 pub use memory::{LocalHarness, MemoryHarnessStorage};
 mod text_tools;
 pub use text_tools::ExactTextReplacement;
+mod root_source;
+pub use root_source::FsRootProjectSourceProvider;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod native_execution;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
@@ -82,6 +84,7 @@ mod task_runtime;
 pub use native_execution::{
     BorrowedNativeVolumeBinding, NativePreparationReceipt, NativePreparationRoot,
     NativeProcessView, NativePublicationFailure, NativeViewOwner, NativeVolumeView,
+    NativePublicationCleanup, NativePublicationReservation, NativePublicationReservationFailure,
 };
 pub use task_commands::{
     EFFECT_TASK_COMMAND_KIND, FilesystemTaskCommands, MAIL_RECEIVE_TASK_COMMAND_KIND,
@@ -446,7 +449,7 @@ pub struct FilesystemForkVerifier<A, O> {
 
 struct FilesystemForkPublicationGuard<A, O> {
     workspace: Workspace<A, O>,
-    reservation: PublicationReservation,
+    reservation: Option<PublicationReservation>,
 }
 
 impl<A, O> ForkPublicationGuard for FilesystemForkPublicationGuard<A, O>
@@ -456,10 +459,35 @@ where
 {
     fn release<'a>(&'a self) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            self.release_measured(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
+        })
+    }
+
+    fn release_measured<'a>(
+        &'a self,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>> {
+        Box::pin(async move {
             self.workspace
-                .release_publication(self.reservation)
+                .release_publication_measured(
+                    self.reservation.ok_or_else(|| acyclic_fs::OperationFailure::before_work(
+                        Error::Invalid("fork publication guard has no reservation".into()),
+                    ))?,
+                    budget,
+                    cancellation,
+                )
                 .await
-                .map_err(map_error)
+                .map_err(|failure| failure.map_with_prior_work(
+                    acyclic_fs::WorkCounters::default(),
+                    map_error,
+                ))
         })
     }
 }
@@ -509,59 +537,145 @@ where
         seed: &'a ForkSeed,
     ) -> BoxFuture<'a, Result<Box<dyn ForkPublicationGuard>>> {
         Box::pin(async move {
-            if seed.child_private_volume.provider() != &self.host.provider {
-                return Err(Error::Unauthorized(
-                    "fork private volume belongs to another provider".into(),
-                ));
-            }
-            let workspace = self
-                .host
-                .open(&workspace_ref(
-                    self.host.provider.clone(),
-                    &seed.child_private_volume.storage_name()?,
-                )?)
-                .await?;
-            let reservation = workspace
-                .reserve_publication(acyclic_fs::OperationId::from_bytes(
-                    seed.operation_id.into_bytes(),
-                ))
-                .await
-                .map_err(map_error)?;
-            Ok(Box::new(FilesystemForkPublicationGuard {
-                workspace,
-                reservation,
-            }) as Box<dyn ForkPublicationGuard>)
+            self.acquire_private_fence_measured(
+                seed,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+        })
+    }
+
+    fn acquire_private_fence_measured<'a>(
+        &'a self,
+        seed: &'a ForkSeed,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Box<dyn ForkPublicationGuard>>, Error>> {
+        Box::pin(async move {
+            use crate::store::history::HistoryIo as _;
+            let mut work = crate::store::history::HistoryWork::new(budget, cancellation);
+            let result = async {
+                work.preflight()?;
+                if seed.child_private_volume.provider() != &self.host.provider {
+                    return Err(Error::Unauthorized(
+                        "fork private volume belongs to another provider".into(),
+                    ));
+                }
+                let guard_bytes = std::mem::size_of::<FilesystemForkPublicationGuard<A, O>>() as u64;
+                work.admit_owned(guard_bytes)?;
+                // Allocate before the durable reserve: allocation failure must
+                // never strand a reservation that has no release handle.
+                let opened = self.host.open_measured(
+                    &workspace_ref(
+                        self.host.provider.clone(),
+                        &seed.child_private_volume.storage_name()?,
+                    )?,
+                    work.remaining()?,
+                    cancellation,
+                ).await;
+                let workspace = match opened {
+                    Ok(receipt) => {
+                        work.receive_work(receipt.work)?;
+                        receipt.value
+                    }
+                    Err(failure) => {
+                        work.receive_work(*failure.work)?;
+                        return Err(failure.error);
+                    }
+                };
+                work.retain_owned(guard_bytes)?;
+                let mut guard = Box::new(FilesystemForkPublicationGuard { workspace, reservation: None });
+                let reserved = guard.workspace.reserve_publication_measured(
+                    acyclic_fs::OperationId::from_bytes(seed.operation_id.into_bytes()),
+                    work.remaining()?,
+                    cancellation,
+                ).await;
+                let reservation = match reserved {
+                    Ok(receipt) => {
+                        work.receive_work(receipt.work)?;
+                        receipt.value
+                    }
+                    Err(failure) => {
+                        work.receive_work(*failure.work)?;
+                        return Err(map_error(failure.error));
+                    }
+                };
+                guard.reservation = Some(reservation);
+                Ok(guard as Box<dyn ForkPublicationGuard>)
+            }.await;
+            work.finish(result)
         })
     }
 
     fn read_manifest<'a>(&'a self, manifest: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
         Box::pin(async move {
-            if manifest.volume().provider() != &self.host.provider {
-                return Err(Error::Unauthorized(
-                    "fork manifest belongs to another provider".into(),
-                ));
+            self.read_manifest_measured(manifest, acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new()).await
+                .map(|receipt| receipt.value).map_err(|failure| failure.error)
+        })
+    }
+
+    fn read_manifest_measured<'a>(
+        &'a self, manifest: &'a FileRef, budget: acyclic_fs::WorkBudget,
+        cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<u8>>, Error>> {
+        Box::pin(async move {
+            let io = if budget == acyclic_fs::WorkBudget::UNBOUNDED {
+                PreparationIo::for_unmeasured(cancellation)
+            } else {
+                PreparationIo::from_budget(budget, cancellation)
+            }.map_err(acyclic_fs::OperationFailure::before_work)?;
+            let result = async {
+                if manifest.volume().provider() != &self.host.provider {
+                    return Err(Error::Unauthorized("fork manifest belongs to another provider".into()));
+                }
+                let bytes = self.host.read_pinned_io(manifest, self.maximum_inherited_bytes, Some(&io)).await?;
+                io.claim(bytes.len() as u64)?;
+                io.allocation_attempt(bytes.len() as u64)?;
+                let copied = acyclic_fs::WorkCounters { bytes_copied: bytes.len() as u64, ..Default::default() };
+                io.preflight(copied)?;
+                io.charge(copied)?;
+                let output = bytes.to_vec();
+                io.release(bytes.len() as u64)?;
+                Ok(output)
+            }.await;
+            match result {
+                Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
+                Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
             }
-            let bytes = self
-                .host
-                .read_pinned(manifest, self.maximum_inherited_bytes)
-                .await?;
-            self.host.retain_file_generation(manifest).await?;
-            Ok(bytes.to_vec())
         })
     }
 
     fn verify_file<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            if file.volume().provider() != &self.host.provider {
-                return Err(Error::Unauthorized(
-                    "fork file belongs to another provider".into(),
-                ));
+            self.verify_file_measured(file, acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new()).await
+                .map(|receipt| receipt.value).map_err(|failure| failure.error)
+        })
+    }
+
+    fn verify_file_measured<'a>(
+        &'a self, file: &'a FileRef, budget: acyclic_fs::WorkBudget,
+        cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>> {
+        Box::pin(async move {
+            let io = if budget == acyclic_fs::WorkBudget::UNBOUNDED {
+                PreparationIo::for_unmeasured(cancellation)
+            } else {
+                PreparationIo::from_budget(budget, cancellation)
+            }.map_err(acyclic_fs::OperationFailure::before_work)?;
+            let result = async {
+                if file.volume().provider() != &self.host.provider {
+                    return Err(Error::Unauthorized("fork file belongs to another provider".into()));
+                }
+                let bytes = self.host.read_pinned_io(file, self.maximum_inherited_bytes, Some(&io)).await?;
+                io.release(bytes.len() as u64)?;
+                Ok(())
+            }.await;
+            match result {
+                Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
+                Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
             }
-            self.host
-                .read_pinned(file, self.maximum_inherited_bytes)
-                .await?;
-            self.host.retain_file_generation(file).await?;
-            Ok(())
         })
     }
 
@@ -2659,7 +2773,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .map_err(map_error)
     }
 
-    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
     async fn open_measured(
         &self,
         reference: &WorkspaceRef,
@@ -2698,7 +2811,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .map_err(map_error)
     }
 
-    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
     async fn generation_measured(
         &self,
         workspace: &Workspace<A, O>,

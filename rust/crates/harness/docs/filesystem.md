@@ -37,6 +37,19 @@ Use `put_content` to stage message text and attachments before appending a conve
 
 The raw Filesystem host and the `AuthorityIssuer`/verifier pair are trusted provider wiring, not reader inputs. Resolve an attached agent's signed scope against the owner's retained verifier; accepting a reader-supplied verifier would let that reader invent its own grants. The ref and its volume identity remain non-bearer even when the owner makes a directory lazily discoverable.
 
+`FsRootProjectSourceProvider::new(host, actual_service_owner, graph_root)` is an
+explicit creator-only same-graph policy, not a permissive source default. It
+authenticates the original source's project read grant and actual immutable
+Filesystem generation within the callback's finite work/byte limits, using its
+original invocation cancellation token. `with_native_source(project, lazy)`
+additionally binds a genuine lazy namespace: its original snapshot must match
+the same workspace and authored generation and resolve its retained overlay and
+shadow records. A bound lazy project cannot omit that snapshot. Uncreated root
+bootstrap seeds fail closed without a protected successful allocation proof;
+a directory witness, task identity, or serialized policy scope supplies none.
+The coordinator rechecks the original caller before sealing operation-specific
+project read authority; the provider's success alone grants no capability.
+
 `FilesystemExecutionJournal` keeps model observations and tool inputs/results in pinned agent-private files. `FilesystemInteractionHost` stages interaction prompts, answers, and optional approval explanations there, then commits ref-only records to the owning conversation Stream aggregate. The executor journal delegates interactions to that same aggregate; it has no second interaction history. Resolution requires an authenticated grant for the exact interaction plus `interaction:resolve`, validates staged bytes against the original request, and reconciles identical retries.
 
 Execution replay uses `replay(operation_id, after, maximum)`: `after` is the exclusive one-based record sequence, zero starts at the first record, and `maximum` is a caller-selected positive `u32` allowance. Providers can return shorter internal batches. Empty pages end replay. `ExecutionReplay` supplies shared sequence and identity validation across pages without retaining pages. The stock executor uses it and keeps only the current step or tool call; custom executors can use the same cursor when resuming. Staged execution payload identities include their exact content digest, so an unpublished file cannot block reconciliation with different bytes at the same logical event position; the journal append remains authoritative.
