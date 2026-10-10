@@ -591,7 +591,7 @@ pub struct WasmTaskRuntime {
     scope: Scope,
     verifier: crate::core::AuthorityVerifier,
     maximum_payload_bytes: u64,
-    model: Option<(Model, Arc<HostModel>)>,
+    model: Option<(Model, Arc<HostModel>, crate::context::CompactionPolicy)>,
 }
 
 #[wasm_bindgen]
@@ -713,9 +713,11 @@ impl WasmTaskRuntime {
             unchecked_param_type = "((request: Uint8Array, request_digest: number[]) => ModelTokenCount) | undefined"
         )]
         count_tokens: Option<Function>,
+        #[wasm_bindgen(unchecked_param_type = "CompactionPolicy")] compaction: JsValue,
     ) -> std::result::Result<(), JsValue> {
         let model: Model = from_js(model)?;
         model.validate().map_err(js_error)?;
+        let compaction = from_js(compaction)?;
         self.model = Some((
             model,
             Arc::new(HostModel {
@@ -724,6 +726,7 @@ impl WasmTaskRuntime {
                 capacity,
                 count_tokens,
             }),
+            compaction,
         ));
         Ok(())
     }
@@ -1018,9 +1021,12 @@ impl WasmTaskRuntime {
     > {
         let commands = self.runtime.commands();
         match &self.model {
-            Some((model, provider)) => {
-                commands.with_model(model.clone(), provider.clone(), ContextPipeline::new([]))
-            }
+            Some((model, provider, compaction)) => commands.with_model(
+                model.clone(),
+                provider.clone(),
+                ContextPipeline::new([]),
+                compaction.clone(),
+            ),
             None => commands,
         }
     }
