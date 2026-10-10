@@ -590,7 +590,7 @@ impl CreationFixture {
         let request = ResourcePreparationRequest {
             provider: self.filesystem_provider.clone(), child,
             resources: preparer.creation_resources(&fork)?, creation_grant: "fork:publish".into(),
-            maximum_resources: 2, maximum_work: 512, maximum_bytes: 16 * 1_024 * 1_024,
+            maximum_resources: 2, maximum_work: 16_384, maximum_bytes: 16 * 1_024 * 1_024,
             payload: serde_json::to_value(&fork).map_err(|e| Error::Invalid(e.to_string()))?,
         };
         let (preparation, _) = self.prepare(&request).await?;
