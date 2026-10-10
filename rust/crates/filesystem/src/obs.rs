@@ -107,13 +107,16 @@ fn dispatch_for(span: &tracing::Span) -> tracing::Dispatch {
 
 /// Captures ancestry at a boundary with no operation span of its own.
 /// This context is for worker attribution, never for recording completion.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub(crate) fn caller_context() -> OperationSpan {
     OperationSpan::new(tracing::Span::current())
 }
 
 /// Carries an explicitly selected operation/ancestry context through actual work.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    any(feature = "local", feature = "native-watch"),
+    not(target_arch = "wasm32")
+))]
 pub(crate) fn in_context<T>(
     span: OperationSpan,
     job: impl FnOnce() -> T + Send + 'static,

@@ -2419,9 +2419,15 @@ mod restore_recovery_tests {
         waiter.abort();
         let cancelled = waiter.await;
         let competing = acquire_restore_lock(relative, &destination, false);
+        let competing_error = match &competing {
+            Err(MaterializeError::Io(error)) => Some((error.raw_os_error(), error.kind())),
+            _ => None,
+        };
+        eprintln!("competing restore lock error: {competing_error:?}");
         let fenced = matches!(
             &competing,
-            Err(MaterializeError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock
+            Err(MaterializeError::Io(error))
+                if error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
         );
         drop(competing);
         // Release before assertions: even the broken-lock mutation must finish.
@@ -2432,7 +2438,7 @@ mod restore_recovery_tests {
         assert!(cancelled.is_err_and(|error| error.is_cancelled()));
         assert!(
             fenced,
-            "cancelled waiter released a still-running restore's lock"
+            "cancelled waiter released a still-running restore's lock: {competing_error:?}"
         );
         Ok(())
     }
