@@ -30,9 +30,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const COORDINATOR_PATH: &str = "harness/v2/coordinator/events";
-const COORDINATOR_WIRE_VERSION: &str = "2";
-const COORDINATOR_WIRE_CONTRACT: &[u8] = b"acyclic.harness.coordinator.scheduler-event-envelope.v2";
+const COORDINATOR_PATH: &str = "harness/v3/coordinator/events";
+const COORDINATOR_WIRE_VERSION: &str = "3";
+const COORDINATOR_WIRE_CONTRACT: &[u8] = b"acyclic.harness.coordinator.scheduler-event-envelope.v3";
 const READ_PAGE_SIZE: u32 = 1_024;
 const MAX_CACHED_INTENTS: usize = 64;
 
@@ -51,7 +51,7 @@ struct IntentLocation {
 
 fn intent_location_path(key: &str) -> String {
     format!(
-        "harness/v2/coordinator/intent-locations/{}",
+        "harness/v3/coordinator/intent-locations/{}",
         blake3::hash(key.as_bytes()).to_hex()
     )
 }
@@ -472,7 +472,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         })
     }
 
-    /// Opens and replays the public coordinator implementation.
+    /// Opens and replays the owner-proof coordinator history (version 3).
+    /// Legacy version-2 histories remain separate; their missing original
+    /// owner grants are never synthesized or adopted into this history.
     pub async fn open(
         client: &StreamClient<P>,
         content_verifier: Arc<dyn ContentResidencyVerifier>,
@@ -2135,7 +2137,7 @@ async fn append_if_execution_idle<P: StreamProvider>(
 
 fn stream_key(key: &str) -> Result<StreamIdempotencyKey> {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"acyclic-harness-coordinator-v2");
+    hasher.update(b"acyclic-harness-coordinator-v3");
     hasher.update(key.as_bytes());
     StreamIdempotencyKey::new(Bytes::copy_from_slice(hasher.finalize().as_bytes()))
         .map_err(|error| Error::Invalid(error.to_string()))
@@ -3175,6 +3177,22 @@ mod tests {
             .ok_or_else(|| Error::Invalid("spec object".into()))?
             .remove("owner_scope");
         assert!(serde_json::from_value::<OperationSpec>(json).is_err());
+        let legacy_protocol = wire::ProtocolIdentity {
+            version: "2".into(),
+            descriptor_digest: blake3::hash(
+                b"acyclic.harness.coordinator.scheduler-event-envelope.v2",
+            )
+            .to_hex()
+            .to_string(),
+        };
+        assert!(
+            validate_protocol(
+                Some(&legacy_protocol),
+                &coordinator_protocol_identity(),
+                Error::Storage,
+            )
+            .is_err()
+        );
         let mut json =
             serde_json::to_value(&original).map_err(|error| Error::Invalid(error.to_string()))?;
         json["owner_scope"]["id"] = serde_json::json!("tampered-original-grant");

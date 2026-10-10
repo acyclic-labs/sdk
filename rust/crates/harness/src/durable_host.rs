@@ -3142,7 +3142,7 @@ mod tests {
             )?);
             drop(fixture.binding);
             drop(host);
-            let journal = stream.stream("harness/v2/coordinator/events")?;
+            let journal = stream.stream("harness/v3/coordinator/events")?;
             let tail = journal.tail().await?;
             provider.forbid_writes.store(true, Ordering::SeqCst);
             let recovered = reopened.recover_work(task).await?;

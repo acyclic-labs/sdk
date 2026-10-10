@@ -1358,7 +1358,7 @@ async fn worker_restart_with_options(
         let lease = boxed_restart_phase(|| async {
             let lease = if !reopened && with_command {
                 let before = stream
-                    .stream("harness/v2/coordinator/events")?
+                    .stream("harness/v3/coordinator/events")?
                     .tail()
                     .await?;
                 assert!(matches!(
@@ -1367,7 +1367,7 @@ async fn worker_restart_with_options(
                 ));
                 assert_eq!(
                     stream
-                        .stream("harness/v2/coordinator/events")?
+                        .stream("harness/v3/coordinator/events")?
                         .tail()
                         .await?,
                     before
