@@ -1,6 +1,8 @@
 //! Canonical volume-creation facts and deterministic authority ownership.
 
 use super::codec::{CanonicalDecodeError, Decoder, Encoder};
+use super::allocation::AllocationLedger;
+use crate::{CancellationToken, MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
 use crate::foundation::{AuthorityId, Digest, VolumeId};
 use crate::model::{
     CaseSensitivity, ConcurrencyMode, FilesystemProfile, Lifecycle, UnicodePolicy, VolumeConfig,
@@ -12,6 +14,9 @@ use thiserror::Error;
 const DOMAIN: &[u8] = b"acyclic-fs-volume-created-v1\0";
 const VERSION: u16 = 1;
 
+
+/// Fixed width of the canonical immutable configuration schema.
+pub(crate) const CONFIG_ENCODED_BYTES: usize = 80;
 /// Immutable creation fact at sequence one of a volume authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VolumeCreated {
@@ -32,6 +37,12 @@ pub enum VolumeCreatedError {
     /// The canonical payload is malformed or unsupported.
     #[error(transparent)]
     Decode(#[from] CanonicalDecodeError),
+    /// Finite preparation permit was exhausted.
+    #[error(transparent)]
+    Work(#[from] crate::WorkError),
+    /// Preparation was cancelled.
+    #[error(transparent)]
+    Cancelled(#[from] crate::CancellationError),
 }
 
 /// Returns the sole authority identity for a volume.
@@ -49,16 +60,65 @@ pub const fn volume_authority_id(volume_id: VolumeId) -> AuthorityId {
 ///
 /// Rejects invalid configuration or a non-generation initial root.
 pub fn encode_volume_created(value: VolumeCreated) -> Result<Vec<u8>, VolumeCreatedError> {
-    value.config.validate()?;
-    if value.initial_generation_root.kind != ObjectKind::GenerationRoot {
-        return Err(invariant("initial volume object is not a generation root").into());
-    }
-    let mut encoder = Encoder::new(DOMAIN, VERSION);
-    encoder.fixed(&value.volume_id.into_bytes());
-    encode_config(&mut encoder, value.config);
-    encoder.u8(value.initial_generation_root.kind.canonical_tag());
-    encoder.fixed(value.initial_generation_root.digest.as_bytes());
-    Ok(encoder.finish())
+    encode_volume_created_with_permit(value, WorkBudget::UNBOUNDED, None, 0)
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
+}
+
+/// Encodes the identical creation fact with admission before allocation and writes.
+///
+/// # Errors
+/// Preserves actual completed work on validation, budget, allocation or cancellation failure.
+pub fn encode_volume_created_measured(
+    value: VolumeCreated,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    live_owned_bytes: u64,
+) -> MeasuredResult<OperationReceipt<Vec<u8>>, VolumeCreatedError> {
+    encode_volume_created_with_permit(value, budget, Some(cancellation), live_owned_bytes)
+}
+
+fn encode_volume_created_with_permit(
+    value: VolumeCreated,
+    budget: WorkBudget,
+    cancellation: Option<&CancellationToken>,
+    live_owned_bytes: u64,
+) -> MeasuredResult<OperationReceipt<Vec<u8>>, VolumeCreatedError> {
+    let mut work = WorkCounters::default();
+    let mut allocations = AllocationLedger::default();
+    let result = (|| {
+        if let Some(token) = cancellation { token.check()?; }
+        value.config.validate()?;
+        if value.initial_generation_root.kind != ObjectKind::GenerationRoot {
+            return Err(invariant("initial volume object is not a generation root").into());
+        }
+        allocations.claim_bytes(live_owned_bytes, 0, &mut work, budget)
+            .map_err(|error| error.into_work_or(VolumeCreatedError::Decode(CanonicalDecodeError::AllocationFailed)))?;
+        work.charge_items(1, &budget)?;
+        let length = DOMAIN.len() + 2 + 16 + CONFIG_ENCODED_BYTES + 1 + 32;
+        let writes = WorkCounters { bytes_encoded: length as u64, bytes_copied: 48, ..WorkCounters::default() };
+        work.admit(&writes, &budget)?;
+        if let Some(token) = cancellation { token.check()?; }
+        let admitted = allocations.claim_elements::<u8>(length, &mut work, budget)
+            .map_err(|error| error.into_work_or(VolumeCreatedError::Decode(CanonicalDecodeError::AllocationFailed)))?;
+        let mut encoder = Encoder::with_exact_capacity(DOMAIN, VERSION, length)?;
+        let header = (DOMAIN.len() + 2) as u64;
+        work.charge(&WorkCounters { bytes_encoded: header, ..WorkCounters::default() }, &budget)?;
+        let actual = encoder.capacity() as u64;
+        if actual > admitted {
+            allocations.claim_bytes(actual - admitted, 0, &mut work, WorkBudget::UNBOUNDED)
+                .map_err(|error| error.into_work_or(VolumeCreatedError::Decode(CanonicalDecodeError::AllocationFailed)))?;
+            work.verify(budget)?;
+        }
+        encoder.fixed(&value.volume_id.into_bytes());
+        encode_config(&mut encoder, value.config);
+        encoder.u8(value.initial_generation_root.kind.canonical_tag());
+        encoder.fixed(value.initial_generation_root.digest.as_bytes());
+        work.charge(&WorkCounters { bytes_encoded: length as u64 - header, bytes_copied: 48, ..WorkCounters::default() }, &budget)?;
+        Ok(encoder.finish())
+    })();
+    result.map(|value| OperationReceipt { value, work })
+        .map_err(|error| OperationFailure::new(error, work))
 }
 
 /// Decodes one bounded canonical immutable volume-creation authority fact.

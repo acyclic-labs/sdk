@@ -17,10 +17,12 @@ selected environment after `env_clear`, output/control allowances and ordered
 volume manifest. The host must maintain the selected executable path's integrity;
 the request does not attest executable binary contents. The manifest pins generations, authority revision digests,
 paths and per-volume work allowances. Host credentials and publication permits
-are capabilities supplied separately. `NativeVolumeView` materializes ordinary
-directories; it does not start an OS mount driver. Source generations cannot
-publish, and source integrity is checked before destination publication. Each
-destination retains its original authority and generation conflict checks.
+are capabilities supplied separately. Each volume carries
+`NativeVolumeNamespace::MaterializedDirectory` or its actual
+`LazyMount { snapshot: LazySnapshotRef }` commitment. `NativeVolumeView`
+materializes only directory bindings; the shared lazy provider owns real mounts.
+Neither representation grants task authority. Source generations cannot publish,
+and each destination retains its original grant, permit and generation checks.
 Publication across destinations is independent and may partially succeed.
 The result publisher binds one separately authorized output volume. That volume
 must be outside the materialized view: staging the durable result otherwise
@@ -51,6 +53,75 @@ process-group cleanup assume cooperative ordinary host processes. They are not
 a confinement boundary; Unix signal delivery does not prove every descendant
 has been reaped. Capture allowance, durable-intent observation and platform
 cleanup have separate bounds rather than one hard wall-clock deadline.
+OS cooperation is an explicit liveness assumption, not a simulated hard deadline.
+`NativeProcessReceipt` retains queryable publication diagnostics, destination and
+completed observations, and measured work even when publication or cleanup fails.
+The original effect remains the recovery identity; no PID adoption, sandboxing or
+cross-volume atomicity is implied.
+
+The cwd prefix is a locator grammar, not proof of physical ownership. Before
+capture, the prepared view observes its original held root identity and opens
+each relative directory without following aliases under one cumulative finite
+validation allowance. These physical checks follow the original durable launch
+receipt, so their failures retain actual work and diagnostics in that same
+launch/observation journal. Recovery does not redispatch after the host path is
+repaired. `Command::current_dir` still performs an ambient OS reopen: cooperative
+directory stability through launch is an explicit assumption, not a held-cwd
+launch guarantee or a sandbox.
+
+The installed execution future is admitted before its factory constructs the
+heap frame, using the prepared view's original cancellation token. Child work
+retains the live-frame overlap and all failure prefixes. Launch serialization
+borrows the original fence and selections; reopening owns the decoded evidence,
+without cloning another caller's lease as a source of authority. These source
+changes are not evidence that the reported stack-overflow or heap failure is fixed.
+
+`NativePreparationRoot` binds explicit host-preallocated witnessed root, operation
+directory, target and backup identities. Preparation, inspection and cleanup use
+the same materialization journal with typed root/preparation observations and the
+actual qualified source selection plus original full manifest/fence bytes.
+Preparation is not a synthetic generation transition. Original creation authority,
+fresh caller grants and generation checks remain independent; replacement of the
+witnessed root is rejected and unrelated user data is preserved. Bounded measured
+helpers account actual work through the canonical allocation ledger, including
+failure work. Vector-slot collections and sorted native-health registries are
+bounded centralization in existing owners, not duplicate engines or journals.
+Native Harness preparation requires fully finite resource allowances; low-level SDK
+materialization retains intentional unbounded allowances in the same engine. Host
+root/directory witnesses preserve raw allocation identities through held mutations;
+unsupported operations are typed failures and cleanup checks original identities.
+Lazy checkpoint acknowledgement can fail after durable CAS. Reconciliation then
+retains measured work and the same WAL instead of implying that no effect occurred.
+Authenticated selected history queries require
+`HistoryReader.effect(cursor, effect, HistoryReadLimits)`; a cursor or effect
+identity alone does not grant access to another owner's content.
+
+The admission ledger bounds declared logical payload and work, not allocator
+metadata, opaque BTree/hash-table storage or process RSS. Audited typed-serde
+decoding reserves its maximum logical quota before decoding and substitutes
+known retained fields atomically; the receipt peak includes that real reservation,
+not an observed heap or fabricated allocation-attempt count. Constructor control
+bytes remain a partial known-control measure; newly retained proof path/name DATA
+is separately aggregated across volumes. Shared runtime file-health control is
+borrowed after actual registration transfer, not re-adopted by every file alias.
+SDK record reads preflight the protocol maximum before fetching and report actual
+received bytes.
+
+Original-root publication compares supported represented metadata and touched
+content/membership before mutation, and checks the original owner before each
+journaled physical action. An unavailable rich-metadata reader is not proof of
+absence: represented ACL/security/attribute facets fail closed with an actionable
+unsupported diagnostic. Private scratch disposal additionally requires the
+original creator allocation, original prepared destination, drained effects and
+current task write authority; process cleanup or a root observation alone grants none.
+
+Frozen lazy snapshots retain their original source epoch, overlay, shadows and
+authored generation. Originally captured immutable content remains readable;
+unobserved historical native content cannot be reconstructed from a changed live
+source or a snapshot digest. Bounded continuation codecs reconstruct names and
+paths under the actual workspace profile and limits, without a second cursor ledger.
+
+These descriptions do not claim producer readiness or passing verification.
 
 The `native_process_tests` fixtures execute real children and explicitly selected
 Bash, verify multi-volume publication, approval mutation/denial, cancellation

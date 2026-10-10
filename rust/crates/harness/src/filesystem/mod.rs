@@ -68,18 +68,21 @@ mod native_execution;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod native_process;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub use native_process::{NativeProcessAuthority, NativeProcessProvider};
+pub use native_process::{NativeProcessAuthority, NativeProcessProvider, NativeProcessReceipt};
 mod native_capture_bounds;
 mod native_contract;
 pub use native_contract::{
-    NATIVE_PROCESS_EFFECT_KIND, NativeNamespaceKind, NativeProcessRequest, NativeProcessResult,
+    NATIVE_PROCESS_EFFECT_KIND, NativeVolumeNamespace, NativeProcessRequest, NativeProcessResult,
     NativeProcessStop, NativeProcessStopKind, NativeViewManifest, NativeViewOptions,
     NativeVolumeMapping,
 };
 mod task_commands;
 mod task_runtime;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub use native_execution::{NativeVolumeBinding, NativeVolumeView};
+pub use native_execution::{
+    BorrowedNativeVolumeBinding, NativePreparationReceipt, NativePreparationRoot,
+    NativeProcessView, NativePublicationFailure, NativeViewOwner, NativeVolumeView,
+};
 pub use task_commands::{
     EFFECT_TASK_COMMAND_KIND, FilesystemTaskCommands, MAIL_RECEIVE_TASK_COMMAND_KIND,
     MAIL_SEND_TASK_COMMAND_KIND, MODEL_TASK_COMMAND_KIND, MailReceiveTaskCommand,
@@ -2656,6 +2659,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .map_err(map_error)
     }
 
+    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+    async fn open_measured(
+        &self,
+        reference: &WorkspaceRef,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Workspace<A, O>>, Error> {
+        reference.validate().map_err(acyclic_fs::OperationFailure::before_work)?;
+        self.validate_provider(reference.as_resource().provider())
+            .map_err(acyclic_fs::OperationFailure::before_work)?;
+        let name = std::str::from_utf8(reference.as_resource().key()).map_err(|_| {
+            acyclic_fs::OperationFailure::before_work(Error::Invalid(
+                "workspace reference key must be UTF-8".into(),
+            ))
+        })?;
+        self.filesystem
+            .open_workspace_measured(name, budget, cancellation)
+            .await
+            .map_err(|failure| failure.map_with_prior_work(acyclic_fs::WorkCounters::default(), map_error))
+    }
+
     async fn generation(
         &self,
         workspace: &Workspace<A, O>,
@@ -2672,6 +2696,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .generation(GenerationId::new(Digest::from_bytes(bytes)))
             .await
             .map_err(map_error)
+    }
+
+    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+    async fn generation_measured(
+        &self,
+        workspace: &Workspace<A, O>,
+        reference: &GenerationRef,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Generation<A, O>>, Error> {
+        reference.validate().map_err(acyclic_fs::OperationFailure::before_work)?;
+        self.validate_provider(reference.as_resource().provider())
+            .map_err(acyclic_fs::OperationFailure::before_work)?;
+        let bytes: [u8; 32] = reference.as_resource().key().try_into().map_err(|_| {
+            acyclic_fs::OperationFailure::before_work(Error::Invalid(
+                "generation reference key must be 32 bytes".into(),
+            ))
+        })?;
+        workspace
+            .generation_measured(GenerationId::new(Digest::from_bytes(bytes)), budget, cancellation)
+            .await
+            .map_err(|failure| failure.map_with_prior_work(acyclic_fs::WorkCounters::default(), map_error))
     }
 
     async fn retain_generation(

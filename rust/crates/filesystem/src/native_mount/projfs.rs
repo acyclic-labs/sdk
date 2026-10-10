@@ -4,6 +4,11 @@
 //! files are streamed from final host state only after the corresponding file
 //! handle closes. Rename and hard-link notifications preserve stable identity,
 //! and every acknowledged authored notification seals the checkout generation.
+//!
+//! Bounded detach uses the caller's one work ledger at the actual SDK stop,
+//! capture, native probe, enumeration, and physical deletion boundaries.
+//! Unbounded stop is the same engine. Denial retains the live context or the
+//! stopped projection's authenticated cleanup custody, never another root.
 
 #![allow(
     unsafe_code,
@@ -20,6 +25,8 @@ use super::{
 use crate::FileId;
 use crate::kernel::{FileMetadata, MetadataField};
 use crate::native_host::HostRoot;
+use crate::demand::DemandWork;
+use crate::native_host::NativeHostWork as _;
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -104,6 +111,93 @@ struct ProjectedEntry {
     directory_link: bool,
 }
 
+/// A real heap owner, not a second allocation ledger. The original operation
+/// retains only the custody's weak physical-drop proof. Cloning that proof is
+/// free; only the actual buffer or payload constructor admits new storage.
+struct RetainedBuffer<T> {
+    value: Option<T>,
+    custody: super::NativeMountAllocationCustody,
+    bytes: u64,
+}
+
+impl<T> RetainedBuffer<T> {
+    fn transferred(
+        value: T, bytes: u64, custody: super::NativeMountAllocationCustody, work: &mut DemandWork,
+    ) -> Result<Self, NativeMountError> {
+        if let Err(error) = custody.retain_admitted(bytes, work) {
+            drop(value);
+            work.release(bytes).map_err(detach_work_error)?;
+            return Err(error);
+        }
+        Ok(Self { value: Some(value), custody, bytes })
+    }
+
+}
+
+impl<T> std::ops::Deref for RetainedBuffer<T> {
+    type Target = T;
+    fn deref(&self) -> &T { self.value.as_ref().expect("live retained buffer") }
+}
+
+impl<T> std::ops::DerefMut for RetainedBuffer<T> {
+    fn deref_mut(&mut self) -> &mut T { self.value.as_mut().expect("live retained buffer") }
+}
+
+impl<T> Drop for RetainedBuffer<T> {
+    fn drop(&mut self) {
+        drop(self.value.take());
+        self.custody.retire(self.bytes).expect("only actually freed buffer bytes retire");
+    }
+}
+
+/// Sized Arc payloads use their real Rust destructor as the lifetime boundary,
+/// not SDK/allocator/RSS estimates. Each last-strong-reference payload owns its
+/// own alias of the original operation's physical-drop proof.
+struct RetainedPayload<T> {
+    value: std::mem::ManuallyDrop<T>,
+    custody: super::NativeMountAllocationCustody,
+    bytes: u64,
+}
+
+impl<T> std::ops::Deref for RetainedPayload<T> {
+    type Target = T;
+    fn deref(&self) -> &T { &self.value }
+}
+
+impl<T> std::ops::DerefMut for RetainedPayload<T> {
+    fn deref_mut(&mut self) -> &mut T { &mut self.value }
+}
+
+impl<T> Drop for RetainedPayload<T> {
+    fn drop(&mut self) {
+        // SAFETY: this is the sole last-strong-reference payload destructor.
+        unsafe { std::mem::ManuallyDrop::drop(&mut self.value); }
+        self.custody.retire(self.bytes).expect("actual Arc payload dropped before retirement");
+    }
+}
+
+impl<T: ViewObserver> ViewObserver for RetainedPayload<T> {
+    fn view_changed(&self, position: ViewStamp, origin: ViewOrigin) {
+        self.value.view_changed(position, origin);
+    }
+}
+
+fn retained_arc<T>(
+    value: T, custody: &super::NativeMountAllocationCustody, work: &mut DemandWork,
+) -> Result<Arc<RetainedPayload<T>>, NativeMountError> {
+    let bytes = size_of::<RetainedPayload<T>>() as u64;
+    custody.claim(bytes, work)?;
+    Ok(Arc::new(RetainedPayload { value: std::mem::ManuallyDrop::new(value), custody: custody.clone(), bytes }))
+}
+
+fn retained_box<T>(
+    value: T, custody: &super::NativeMountAllocationCustody, work: &mut DemandWork,
+) -> Result<RetainedBuffer<Box<T>>, NativeMountError> {
+    let bytes = size_of::<T>() as u64;
+    custody.claim(bytes, work)?;
+    Ok(RetainedBuffer { value: Some(Box::new(value)), custody: custody.clone(), bytes })
+}
+
 struct Runtime {
     source: Arc<dyn MountFilesystem>,
     root: PathBuf,
@@ -115,6 +209,12 @@ struct Runtime {
     /// changes.
     projector: Arc<Projector>,
     metadata_probes: Arc<Mutex<HashMap<MountPath, usize>>>,
+    /// The admitted retry snapshot doubles as borrowed metadata suppression;
+    /// no second path clone or guessed hash-table allocation is needed.
+    capture_probes: std::sync::RwLock<Vec<(MountPath, u64, bool)>>,
+    flush_gate: Mutex<()>,
+    /// Present only while the sole SDK stop synchronously drains callbacks.
+    stop_meter: Mutex<Option<Arc<crate::demand::NativeDemandReadMeter>>>,
     /// Held for a file while one handle's metadata edits are read from the
     /// source and written back. `ProjFS` names each handle apart, so handles
     /// to one file close concurrently; each applies only what it changed, on
@@ -123,6 +223,14 @@ struct Runtime {
     metadata_edits: Arc<FileLocks>,
     post_operation_failure: Arc<Mutex<PostOperationFailures>>,
     callbacks: CallbackGate,
+}
+
+struct StopMeterScope<'a>(&'a Runtime);
+
+impl Drop for StopMeterScope<'_> {
+    fn drop(&mut self) {
+        let _ = lock_recover(&self.0.stop_meter).take();
+    }
 }
 
 struct CallbackGate {
@@ -148,6 +256,9 @@ struct PostOperationFailures {
     pending_captures: HashMap<MountPath, PendingCapture>,
     next_capture_serial: u64,
     unreplayable: Option<String>,
+    /// A callback whose provider controls could not be admitted never ran its
+    /// authored handler. Its exact failure permanently fences root deletion.
+    provider_control_failure: Option<provider_stack::ProviderFailure>,
 }
 
 #[derive(Clone)]
@@ -240,11 +351,21 @@ fn compare_projfs_name(left: &[u8], right: &[u8]) -> Option<i32> {
 
 impl CallbackGate {
     fn start() -> Result<Self, NativeMountError> {
+        Self::start_with_work(&mut DemandWork::new(
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ))
+    }
+
+    fn start_with_work(work: &mut DemandWork) -> Result<Self, NativeMountError> {
         const SHARDS: usize = 64;
+        let bytes = (SHARDS * size_of::<Mutex<()>>()) as u64;
+        work.allocate(bytes).map_err(detach_work_error)?;
         let mut shards = Vec::new();
-        shards
-            .try_reserve_exact(SHARDS)
-            .map_err(|error| NativeMountError::Driver(error.to_string()))?;
+        if let Err(error) = shards.try_reserve_exact(SHARDS) {
+            drop(shards);
+            work.release(bytes).map_err(detach_work_error)?;
+            return Err(NativeMountError::Io(std::io::Error::new(std::io::ErrorKind::OutOfMemory, error)));
+        }
         for _ in 0..SHARDS {
             shards.push(Mutex::new(()));
         }
@@ -255,20 +376,16 @@ impl CallbackGate {
         })
     }
 
-    fn call<T>(&self, operation: impl FnOnce() -> T) -> Option<T> {
-        self.drain()?;
-        Some(operation())
-    }
-
-    fn drain(&self) -> Option<()> {
+    /// Waits on the existing callback controls without assigning a guessed
+    /// cost to the foreign callbacks that the SDK happens to drain.
+    fn drain_measured(&self, work: &mut DemandWork) -> Result<(), NativeMountError> {
         let mut active = lock_recover(&self.active);
         while *active != 0 {
-            active = self
-                .idle
-                .wait(active)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            work.check().map_err(detach_work_error)?;
+            active = self.idle.wait_timeout(active, std::time::Duration::from_millis(10))
+                .unwrap_or_else(std::sync::PoisonError::into_inner).0;
         }
-        Some(())
+        work.check().map_err(detach_work_error)
     }
 
     fn call_observed<T>(
@@ -291,76 +408,153 @@ impl CallbackGate {
     }
 }
 
+#[cfg(test)]
 fn flush_callback_gate(
     callbacks: &CallbackGate,
     failure: Arc<Mutex<PostOperationFailures>>,
-    capture: impl Fn(&[(MountPath, bool)]) -> Result<(), MountSourceError>,
+    capture: impl Fn(&[(MountPath, u64, bool)]) -> Result<(), MountSourceError>,
 ) -> Result<(), NativeMountError> {
-    let pending_failure = Arc::clone(&failure);
-    let pending = callbacks
-        .call(move || {
-            lock_recover(pending_failure.as_ref())
-                .pending_captures
-                .iter()
-                .map(|(path, capture)| (path.clone(), capture.serial, capture.subtree))
-                .collect::<Vec<_>>()
-        })
-        .ok_or_else(|| NativeMountError::Driver("ProjFS callback worker stopped".to_owned()))?;
-    let mut pending = pending;
-    pending.sort_by(|(left, ..), (right, ..)| {
-        left.components()
-            .len()
-            .cmp(&right.components().len())
-            .then_with(|| left.components().cmp(right.components()))
-    });
-    // Host capture opens paths inside the virtualization root. Run one batch
-    // outside the callback gate so nested notifications can run.
-    let paths = pending
-        .iter()
-        .map(|(path, _, subtree)| (path.clone(), *subtree))
-        .collect::<Vec<_>>();
-    let result = capture(&paths);
-    {
-        let mut failure = lock_recover(failure.as_ref());
-        for (path, serial, _) in pending {
-            if failure
-                .pending_captures
-                .get(&path)
-                .map(|capture| capture.serial)
-                != Some(serial)
-            {
-                continue;
+    flush_callback_gate_measured(callbacks, failure.as_ref(), None, &mut DemandWork::new(
+        crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+    ), |paths, _work| capture(paths).map_err(detach_source_error))
+}
+
+/// Snapshots only replayable failures, retaining their serials until a
+/// successful capture proves exactly those writes were joined. Buffer claims
+/// live until the buffers actually drop, including every denied replay.
+fn flush_callback_gate_measured(
+    callbacks: &CallbackGate,
+    failure: &Mutex<PostOperationFailures>,
+    probes: Option<&std::sync::RwLock<Vec<(MountPath, u64, bool)>>>,
+    work: &mut DemandWork,
+    mut capture: impl FnMut(&[(MountPath, u64, bool)], &mut DemandWork) -> Result<(), NativeMountError>,
+) -> Result<(), NativeMountError> {
+    callbacks.drain_measured(work)?;
+    if let Some(error) = lock_recover(failure).provider_control_failure {
+        return Err(error.into_mount_error());
+    }
+    let mut pending = Vec::new();
+    let mut live = 0_u64;
+    let result = (|| {
+        {
+            let failure = lock_recover(failure);
+            let bytes = (failure.pending_captures.len() as u64)
+                .checked_mul(size_of::<(MountPath, u64, bool)>() as u64)
+                .ok_or(crate::WorkError::Overflow)?;
+            work.allocate(bytes).map_err(detach_work_error)?;
+            live = bytes;
+            pending.try_reserve_exact(failure.pending_captures.len())
+                .map_err(|error| NativeMountError::Io(std::io::Error::new(std::io::ErrorKind::OutOfMemory, error)))?;
+            for (path, capture) in &failure.pending_captures {
+                work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })
+                    .map_err(detach_work_error)?;
+                let (path, bytes) = clone_mount_path_measured(path, work).map_err(detach_work_error)?;
+                live = live.checked_add(bytes).ok_or(crate::WorkError::Overflow)?;
+                pending.push((path, capture.serial, capture.subtree));
             }
-            match &result {
-                Ok(()) => {
-                    failure.pending_captures.remove(&path);
-                }
-                Err(error) => {
-                    if let Some(capture) = failure.pending_captures.get_mut(&path) {
-                        capture.error = error.to_string();
-                    }
+        }
+        let mut sorting_failure = None;
+        // The unstable sort uses no temporary allocation. Each actual
+        // comparison is admitted before examining those two canonical paths.
+        pending.sort_unstable_by(|(left, ..), (right, ..)| {
+            if sorting_failure.is_some() {
+                return std::cmp::Ordering::Equal;
+            }
+            if let Err(error) = work.charge(crate::WorkCounters { items_examined: 2, ..crate::WorkCounters::UNCHARGED }) {
+                sorting_failure = Some(error);
+                return std::cmp::Ordering::Equal;
+            }
+            left.components().len().cmp(&right.components().len())
+                .then_with(|| left.components().cmp(right.components()))
+        });
+        if let Some(error) = sorting_failure {
+            return Err(detach_work_error(error));
+        }
+        // Host capture reads inside the virtualization root; release the
+        // failure lock so nested native notifications can finish.
+        if let Some(probes) = probes {
+            *probes.write().unwrap_or_else(std::sync::PoisonError::into_inner) = std::mem::take(&mut pending);
+            let held = probes.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let captured = capture(&held, work);
+            drop(held);
+            pending = std::mem::take(&mut *probes.write().unwrap_or_else(std::sync::PoisonError::into_inner));
+            captured?;
+        } else {
+            capture(&pending, work)?;
+        }
+        {
+            let mut failure = lock_recover(failure);
+            for (path, serial, _) in &pending {
+                work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })
+                    .map_err(detach_work_error)?;
+                if failure.pending_captures.get(path).map(|capture| capture.serial) == Some(*serial) {
+                    failure.pending_captures.remove(path);
                 }
             }
         }
-    }
-    let failure = callbacks
-        .call(move || {
-            let failure = lock_recover(failure.as_ref());
-            failure.unreplayable.clone().or_else(|| {
-                failure
-                    .pending_captures
-                    .iter()
-                    .next()
-                    .map(|(path, capture)| format!("{path:?}: {}", capture.error))
-            })
-        })
-        .ok_or_else(|| NativeMountError::Driver("ProjFS callback worker stopped".to_owned()))?;
-    if let Some(failure) = failure {
-        Err(NativeMountError::Driver(format!(
-            "ProjFS post-operation capture failed; mount cannot publish: {failure}"
-        )))
-    } else {
+        callbacks.drain_measured(work)?;
+        let failure = lock_recover(failure);
+        let error = failure.unreplayable.as_deref().or_else(|| {
+            failure.pending_captures.values().next().map(|capture| capture.error.as_str())
+        });
+        if let Some(error) = error {
+            const PREFIX: &str = "ProjFS post-operation capture failed; mount cannot publish: ";
+            let bytes = PREFIX.len().checked_add(error.len()).ok_or(crate::WorkError::Overflow)? as u64;
+            let copied = crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED };
+            work.admit(copied).map_err(detach_work_error)?;
+            work.allocate(bytes).map_err(detach_work_error)?;
+            let mut detail = String::new();
+            if let Err(error) = detail.try_reserve_exact(bytes as usize) {
+                work.release(bytes).map_err(detach_work_error)?;
+                return Err(NativeMountError::Io(std::io::Error::new(std::io::ErrorKind::OutOfMemory, error)));
+            }
+            detail.push_str(PREFIX);
+            detail.push_str(error);
+            work.record(copied).map_err(detach_work_error)?;
+            // The returned error now owns this diagnostic allocation.
+            return Err(NativeMountError::Driver(detail));
+        }
         Ok(())
+    })();
+    drop(pending);
+    work.release(live).map_err(detach_work_error)?;
+    result
+}
+
+fn clone_mount_path_measured(path: &MountPath, work: &mut DemandWork) -> Result<(MountPath, u64), crate::DemandError> {
+    clone_mount_components_measured(path.components(), work)
+}
+
+fn clone_mount_components_measured(source: &[Vec<u8>], work: &mut DemandWork) -> Result<(MountPath, u64), crate::DemandError> {
+    let bytes = (source.len() as u64).checked_mul(size_of::<Vec<u8>>() as u64)
+        .ok_or(crate::WorkError::Overflow)?;
+    work.allocate(bytes)?;
+    let mut components = Vec::new();
+    let mut live = bytes;
+    let result = (|| {
+        components.try_reserve_exact(source.len())
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::OutOfMemory, error))?;
+        for component in source {
+            let copied = crate::WorkCounters { bytes_copied: component.len() as u64, items_examined: 1, ..crate::WorkCounters::UNCHARGED };
+            work.admit(copied)?;
+            work.allocate(component.len() as u64)?;
+            live = live.checked_add(component.len() as u64).ok_or(crate::WorkError::Overflow)?;
+            let mut owned = Vec::new();
+            owned.try_reserve_exact(component.len())
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::OutOfMemory, error))?;
+            owned.extend_from_slice(component);
+            components.push(owned);
+            work.record(copied)?;
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => Ok((MountPath { components }, live)),
+        Err(error) => {
+            drop(components);
+            work.release(live)?;
+            Err(error)
+        }
     }
 }
 
@@ -1487,12 +1681,24 @@ impl Projector {
             .map_or(Ok(()), |failure| Err(NativeMountError::Driver(failure)))
     }
 
-    /// Stops the worker; nothing is kept current from here on.
-    fn finish(&self) {
+    /// Signals the existing worker and keeps its join handle in custody if
+    /// cancellation arrives before completion. Waiting allocates no envelope.
+    fn finish_measured(&self, work: &mut DemandWork) -> Result<(), NativeMountError> {
+        work.check().map_err(detach_work_error)?;
         lock_recover(&self.state).stopping = true;
         self.changed.notify_all();
-        if let Some(worker) = lock_recover(&self.worker).take() {
-            let _ = worker.join();
+        loop {
+            work.check().map_err(detach_work_error)?;
+            {
+                let mut worker = lock_recover(&self.worker);
+                if worker.as_ref().is_none_or(std::thread::JoinHandle::is_finished) {
+                    if let Some(worker) = worker.take() {
+                        let _ = worker.join();
+                    }
+                    return Ok(());
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
 }
@@ -2363,10 +2569,19 @@ fn has_pending_capture(failure: &Mutex<PostOperationFailures>, path: &MountPath)
         })
 }
 
+struct DetachedProjection {
+    root: PathBuf,
+    identity: crate::NativeRootIdentity,
+}
+
 /// One process-owned `ProjFS` virtualization context.
 pub(super) struct ProjFsSession {
     context: Option<PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT>,
     runtime: Option<Box<Runtime>>,
+    detached: Option<DetachedProjection>,
+    /// The authenticated projection was removed, but its empty replacement
+    /// has not yet been created. A denied replacement keeps this custody.
+    destination_removed: bool,
 }
 
 // SAFETY: ProjFS contexts are opaque handles. The provider synchronizes callback
@@ -2407,6 +2622,9 @@ impl ProjFsSession {
             projection: Arc::new(Mutex::new(ProjectionCache::default())),
             projector: Arc::new(Projector::new()),
             metadata_probes: Arc::new(Mutex::new(HashMap::new())),
+            capture_probes: std::sync::RwLock::new(Vec::new()),
+            flush_gate: Mutex::new(()),
+            stop_meter: Mutex::new(None),
             metadata_edits: Arc::new(FileLocks::default()),
             post_operation_failure: Arc::new(Mutex::new(PostOperationFailures::default())),
             callbacks: callback_gate,
@@ -2490,107 +2708,201 @@ impl ProjFsSession {
         Ok(Self {
             context: Some(context),
             runtime: Some(runtime),
+            detached: None,
+            destination_removed: false,
         })
     }
 
     pub(super) fn stop(&mut self) -> Result<(), NativeMountError> {
-        // A post-operation notification cannot veto an already completed host
-        // write. Preserve the live mount and its authored files if capturing
-        // one of those writes failed; removing the projection here would lose
-        // the only remaining copy.
-        if self.runtime.is_some() {
-            self.flush_callbacks()?;
+        if self.context.is_none() && self.runtime.is_none() && self.detached.is_none() {
+            return Ok(());
         }
-        if let Some(context) = self.context.take() {
+        self.stop_measured(&mut DemandWork::new(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        ))
+    }
+
+    /// Detaches this exact driver using the caller's admission and allocation
+    /// ledger. A denied boundary retains the context or cleanup custody; a
+    /// failed authored capture never permits removal of the projection.
+    pub(super) fn stop_measured(&mut self, work: &mut DemandWork) -> Result<(), NativeMountError> {
+        work.check().map_err(detach_work_error)?;
+        if self.runtime.is_none() && self.detached.is_none() {
+            return Ok(());
+        }
+        if let Some(context) = self.context {
+            self.flush_callbacks_measured(work)?;
+            let stop = crate::WorkCounters {
+                backend_write_operations: 1,
+                ..crate::WorkCounters::UNCHARGED
+            };
+            // Refuse before stopping the projection worker as well as before
+            // entering the real SDK detach boundary.
+            work.admit(stop).map_err(detach_work_error)?;
             if let Some(runtime) = self.runtime.as_ref() {
-                runtime.finish_workers();
+                runtime.finish_workers_measured(work)?;
             }
-            // SAFETY: this is the sole owner and sole stop call for the context.
-            unsafe { PrjStopVirtualizing(context) };
+            work.admit(stop).map_err(detach_work_error)?;
+            let runtime = self.runtime.as_ref().expect("live SDK callback runtime");
+            let context_state = &mut self.context;
+            super::adapter::BorrowedNativeDemandMeter::new(work).map_err(detach_source_error)?
+                .run(|meter| {
+                    // Withhold this actual SDK stop operation while concurrently
+                    // drained callbacks admit their own real provider controls.
+                    let reservation = {
+                        let mut work = meter.lock();
+                        work.reserve_cleanup_write().map_err(detach_work_error)?
+                    };
+                    *lock_recover(&runtime.stop_meter) = Some(Arc::clone(meter));
+                    let scope = StopMeterScope(runtime);
+                    let checked = { meter.lock().check() };
+                    if let Err(error) = checked {
+                        use acyclic_native_runtime::NativeReadMeter as _;
+                        meter.cancel_cleanup_write(reservation);
+                        return Err(detach_work_error(error));
+                    }
+                    // SAFETY: runtime and the original meter loan remain owned
+                    // through this sole synchronous SDK callback drain.
+                    unsafe { PrjStopVirtualizing(context) };
+                    *context_state = None;
+                    let recorded = {
+                        use acyclic_native_runtime::NativeReadMeter as _;
+                        meter.record_cleanup_write(reservation)
+                            .map_err(|error| detach_work_error(crate::demand::native_demand_error(error)))
+                    };
+                    // Remove the runtime alias before the loan restores the
+                    // original invocation; each scoped TLS fiber has retired.
+                    drop(scope);
+                    recorded
+                })?;
         }
-        // Stop may synchronously drain callbacks admitted after the first
-        // barrier. They must be captured (or reported) before the physical
-        // projection can be removed.
         if self.runtime.is_some() {
-            self.flush_callbacks()?;
+            // SDK stop can drain notifications admitted after the first barrier.
+            self.flush_callbacks_measured(work)?;
+            let mut runtime = self.runtime.take().expect("captured stopped runtime");
+            let identity = runtime.metadata_root.identity();
+            let root = std::mem::take(&mut runtime.root);
+            // No callback can use this runtime after the SDK drain and final
+            // capture. Release its old root handle before delete-on-close can
+            // finish; move the preexisting path into cleanup custody, no clone.
+            drop(runtime);
+            self.detached = Some(DetachedProjection { root, identity });
         }
-        finish_cleanup(&mut self.runtime, |runtime| {
-            let root = runtime.root.clone();
-            remove_authenticated_destination(&root, runtime.metadata_root.identity())?;
-            std::fs::create_dir(&root).map_err(|error| NativeMountError::Driver(error.to_string()))
-        })
+        let detached = self.detached.as_ref().expect("authenticated cleanup custody");
+        if !self.destination_removed {
+            if !remove_authenticated_destination_measured(&detached.root, detached.identity, work)? {
+                return Err(NativeMountError::Lifecycle("stopped ProjFS root no longer carries its projection tag; preserved"));
+            }
+            self.destination_removed = true;
+        }
+        recreate_destination_measured(&detached.root, work)?;
+        let _ = self.detached.take();
+        self.destination_removed = false;
+        Ok(())
+    }
+
+    /// Evidence that the sole `PrjStopVirtualizing` call completed, not that
+    /// the destination currently exists, is empty, or is no longer a reparse
+    /// point. Physical cleanup can still retain an authenticated root.
+    pub(super) fn namespace_detach_confirmed(&self) -> bool {
+        self.context.is_none()
+    }
+
+    /// The identity still held by live callbacks or stopped cleanup custody.
+    /// It authenticates only this driver's owned root, not a later path query.
+    pub(super) fn cleanup_root_identity(&self) -> Option<crate::NativeRootIdentity> {
+        self.detached.as_ref().map(|detached| detached.identity)
+            .or_else(|| self.runtime.as_ref().map(|runtime| runtime.metadata_root.identity()))
     }
 
     pub(super) fn flush_callbacks(&self) -> Result<(), NativeMountError> {
+        self.flush_callbacks_measured(&mut DemandWork::new(
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ))
+    }
+
+    pub(super) fn flush_callbacks_measured(&self, work: &mut DemandWork) -> Result<(), NativeMountError> {
         let runtime = self.runtime.as_ref().ok_or_else(|| {
-            NativeMountError::Driver("ProjFS callback runtime is stopped".to_owned())
+            NativeMountError::Lifecycle("ProjFS callback runtime is stopped")
         })?;
-        let source = Arc::clone(&runtime.source);
-        let root = runtime.root.clone();
-        let host_root = Arc::clone(&runtime.metadata_root);
-        let probes = Arc::clone(&runtime.metadata_probes);
-        runtime
-            .callbacks
-            .drain()
-            .ok_or_else(|| NativeMountError::Driver("ProjFS callback worker stopped".to_owned()))?;
-        flush_callback_gate(
+        work.check().map_err(detach_work_error)?;
+        let _flush = loop {
+            work.check().map_err(detach_work_error)?;
+            match runtime.flush_gate.try_lock() {
+                Ok(held) => break held,
+                Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        };
+        flush_callback_gate_measured(
             &runtime.callbacks,
-            Arc::clone(&runtime.post_operation_failure),
-            move |paths| {
+            runtime.post_operation_failure.as_ref(),
+            Some(&runtime.capture_probes),
+            work,
+            |paths, work| {
                 if paths.is_empty() {
                     return Ok(());
                 }
-                // Host capture reads through this projection. Suppress only
-                // those provider-owned metadata probes; external opens retain
-                // their per-handle baselines.
-                let _guards = paths
-                    .iter()
-                    .map(|(path, _)| MetadataProbeGuard::enter(probes.as_ref(), path))
-                    .collect::<Vec<_>>();
-                // Authenticate exact paths together so hard links share one
-                // identity and one checkout transaction.
+                let envelope = (paths.len() as u64).checked_mul(size_of::<MountPath>() as u64)
+                    .ok_or(crate::WorkError::Overflow)?;
+                work.allocate(envelope).map_err(detach_work_error)?;
                 let mut exact = Vec::new();
-                let mut subtrees = Vec::new();
-                for (path, subtree) in paths {
-                    let host_path = host_relative_path(path)?;
-                    // Only whether the name exists decides the capture's
-                    // scope; the capture itself observes it through the
-                    // held walk.
-                    match host_root.stat(&host_path) {
-                        Ok(_) => {
-                            capture_missing_host_ancestors(source.as_ref(), &root, path)?;
-                            if *subtree {
-                                subtrees.push(path.clone());
-                            } else {
-                                exact.push(path.clone());
+                let mut live = envelope;
+                let result = (|| {
+                    exact.try_reserve_exact(paths.len())
+                        .map_err(|error| NativeMountError::Io(std::io::Error::new(std::io::ErrorKind::OutOfMemory, error)))?;
+                    for (path, _, subtree) in paths {
+                        work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })
+                            .map_err(detach_work_error)?;
+                        let kind = match with_mount_wide_path_measured(path, work, |name, work| {
+                            runtime.metadata_root.stat_wide_measured(name, work)
+                        }) {
+                            Ok(_) => {
+                                capture_missing_host_ancestors_measured(
+                                    runtime.source.as_ref(), &runtime.root, path,
+                                    runtime.metadata_root.identity(), work,
+                                )?;
+                                Some(*subtree)
                             }
-                        }
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                            match source.lookup(path) {
-                                Err(MountSourceError::NotFound) | Ok(None) => {
-                                    // A host-created temporary that vanished
-                                    // before the boundary has no state to join.
+                            Err(crate::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                                let mut invocation = super::NativeMountWork { work };
+                                match runtime.source.lookup_with_work(path, &mut invocation) {
+                                    Err(MountSourceError::NotFound) | Ok(None) => None,
+                                    Ok(Some(lookup)) => Some(lookup.node.kind == MountNodeKind::Directory),
+                                    Err(error) => return Err(detach_source_error(error)),
                                 }
-                                Ok(Some(lookup))
-                                    if lookup.node.kind == MountNodeKind::Directory =>
-                                {
-                                    subtrees.push(path.clone());
-                                }
-                                Ok(Some(_)) => exact.push(path.clone()),
-                                Err(error) => return Err(error),
                             }
-                        }
-                        Err(error) => {
-                            return Err(MountSourceError::Engine(error.to_string()));
+                            Err(error) => return Err(detach_work_error(error)),
+                        };
+                        match kind {
+                            Some(true) => {
+                                runtime.source.capture_host_subtree_with_work(
+                                    &runtime.root, path, runtime.metadata_root.identity(),
+                                    &mut super::NativeMountWork { work },
+                                ).map_err(detach_source_error)?;
+                            }
+                            Some(false) => {
+                                let (path, bytes) = clone_mount_path_measured(path, work).map_err(detach_work_error)?;
+                                live = live.checked_add(bytes).ok_or(crate::WorkError::Overflow)?;
+                                exact.push(path);
+                            }
+                            None => {}
                         }
                     }
-                }
-                for subtree in subtrees {
-                    source.capture_host_subtree(&root, &subtree)?;
-                }
-                // A captured file stays as the host wrote it: its local bytes
-                // already are the source's, so nothing is re-projected.
-                source.capture_host_paths(&root, &exact)
+                    if !exact.is_empty() {
+                        runtime.source.capture_host_paths_with_work(
+                            &runtime.root, &exact, runtime.metadata_root.identity(),
+                            &mut super::NativeMountWork { work },
+                        ).map_err(detach_source_error)?;
+                    }
+                    Ok(())
+                })();
+                drop(exact);
+                work.release(live).map_err(detach_work_error)?;
+                result
             },
         )
     }
@@ -2678,11 +2990,20 @@ impl Runtime {
         )
     }
 
-    /// Stops the worker; nothing is kept current from here on.
+    /// Stops the preexisting worker and removes only its now-empty staging
+    /// directory. Joining borrows the worker; it does not invent SDK-internal
+    /// callback or operating-system costs.
     fn finish_workers(&self) {
-        self.projector.finish();
-        // Every staged file went with the handle that held it.
-        let _ = std::fs::remove_dir(staging_path(&self.root));
+        let _ = self.finish_workers_measured(&mut DemandWork::new(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        ));
+    }
+
+    fn finish_workers_measured(&self, work: &mut DemandWork) -> Result<(), NativeMountError> {
+        work.check().map_err(detach_work_error)?;
+        self.projector.finish_measured(work)?;
+        remove_staging_directory_measured(&self.root, work).map_err(detach_work_error)
     }
 }
 
@@ -2694,8 +3015,8 @@ fn source_hresult(error: &MountSourceError) -> HRESULT {
         MountSourceError::AlreadyExists => HR_ALREADY_EXISTS,
         MountSourceError::Invalid(_) => HR_INVALID_DATA,
         MountSourceError::Unsupported(_) => HR_NOT_SUPPORTED,
-        MountSourceError::Engine(_) => HR_IO_DEVICE,
-        MountSourceError::Stale => HR_FILE_INVALID,
+        MountSourceError::Engine(_) | MountSourceError::Work(_) => HR_IO_DEVICE,
+        MountSourceError::Stale | MountSourceError::Cancelled => HR_FILE_INVALID,
     }
 }
 
@@ -2725,47 +3046,100 @@ fn reject_stale_projection(destination: &std::path::Path) -> Result<(), NativeMo
     }
 }
 
-fn finish_cleanup<T, E>(
-    state: &mut Option<T>,
-    cleanup: impl FnOnce(&T) -> Result<(), E>,
-) -> Result<(), E> {
-    let Some(value) = state.as_ref() else {
-        return Ok(());
-    };
-    cleanup(value)?;
-    let _ = state.take();
-    Ok(())
+/// Recovery owns only a capability it actually opened, never an invented
+/// virtualization context from another process. A denied reparse probe keeps
+/// that capability and its learned identity for the same owner's next attempt.
+#[derive(Default)]
+pub(super) struct ProjFsRecoveryControl {
+    directory: Option<cap_std::fs::Dir>,
+    identity: Option<crate::NativeRootIdentity>,
 }
 
-/// Preserves a stale `ProjFS` root unless recovery can prove it is disposable.
-///
-/// A reparse tag or directory enumeration cannot prove that all authored files,
-/// metadata, and tombstones reached the SDK before a provider crash. Only a
-/// live session can flush its callbacks before removing the projection. A
-/// stale root is retained for explicit recovery rather than silently deleting
-/// changes that may exist only in the mount cache.
-pub(super) fn recover_cache_only_destination(
-    destination: &std::path::Path,
-) -> Result<(), NativeMountError> {
-    match std::fs::symlink_metadata(destination) {
-        Ok(metadata) if metadata.is_dir() => {}
-        Ok(_) => return Err(NativeMountError::InvalidDestination),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(NativeMountError::Driver(error.to_string())),
+impl ProjFsRecoveryControl {
+    /// Binds the constructor's actual root observation, independently of the
+    /// sibling fence file identity. No new capability or allocation is made.
+    pub(super) fn bind_root_identity(&mut self, actual: crate::NativeRootIdentity) {
+        debug_assert!(self.directory.is_none(), "bind before acquiring recovery controls");
+        self.identity = Some(actual);
     }
-    match reparse_tag(destination)?.0 {
-        Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS) => {
-            Err(NativeMountError::Driver(format!(
-                "stale ProjFS root at {} may contain unpublished authored state; preserved for recovery",
-                destination.display()
-            )))
+
+    /// Corroborates this owner's exact root using the original caller ledger.
+    /// Preserving recovery never deletes cache or calls an SDK detach. Cache-
+    /// only recovery retains the old fail-closed rule: a ProjFS reparse root
+    /// may contain unjoined authored files, metadata or tombstones even empty.
+    pub(super) fn recover_measured(
+        &mut self,
+        destination: &std::path::Path,
+        disposable: bool,
+        work: &mut DemandWork,
+    ) -> Result<(), NativeMountError> {
+        use windows::Win32::Storage::FileSystem::{FILE_READ_ATTRIBUTES, SYNCHRONIZE};
+        match physical_attributes_measured(destination, work).map_err(detach_work_error)? {
+            None => {
+                let _ = self.directory.take();
+                return Ok(());
+            }
+            Some(attributes) if attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0 => {}
+            Some(_) => return Err(NativeMountError::InvalidDestination),
         }
-        Some(tag) => Err(NativeMountError::Driver(format!(
-            "destination has non-ProjFS reparse tag 0x{tag:08x}"
-        ))),
-        None => Ok(()),
+        let retained = self.directory.is_some();
+        if !retained {
+            let parent = crate::native_host::open_root_directory_with_work(
+                destination_parent(destination).map_err(detach_work_error)?, work,
+            ).map_err(detach_work_error)?;
+            let leaf = destination.file_name().ok_or(NativeMountError::InvalidDestination)?;
+            let file = crate::native_host::with_wide_path_with_work(
+                std::path::Path::new(leaf), work, |name, work| {
+                    crate::native_host::open_windows_leaf_handle_with_work(
+                        &parent, name, FILE_READ_ATTRIBUTES | SYNCHRONIZE, Some(true), work,
+                    )
+                },
+            ).map_err(detach_work_error)?;
+            self.directory = Some(cap_std::fs::Dir::from_std_file(file));
+        }
+        let directory = self.directory.as_ref().expect("actual recovery root capability");
+        let identity = if !retained || self.identity.is_none() {
+            let observed = crate::native_host::directory_identity_with_work(directory, work)
+                .map_err(detach_work_error)?;
+            if self.identity.is_some_and(|identity| identity != observed) {
+                // This freshly observed replacement is not owned by recovery.
+                // Drop its probe capability rather than associating it with
+                // the retained proof for the original root.
+                let _ = self.directory.take();
+                return Err(NativeMountError::Demand(crate::DemandError::StaleSource));
+            }
+            self.identity = Some(observed);
+            observed
+        } else {
+            self.identity.expect("retained capability has its original identity")
+        };
+        if retained && crate::native_host::root_path_identity_measured(destination, work)
+            .map_err(detach_work_error)? != identity
+        {
+            return Err(NativeMountError::Demand(crate::DemandError::StaleSource));
+        }
+        if disposable {
+            if let Some(tag) = reparse_tag_held_measured(directory, work).map_err(detach_work_error)? {
+                return Err(NativeMountError::UnsafeRecoveryDestination { reparse_tag: Some(tag) });
+            }
+        }
+        let _ = self.directory.take();
+        Ok(())
+    }
+
+    /// Recovery did not call or observe an SDK stop. Neither a dead provider's
+    /// reparse tag nor this control's lack of an SDK handle proves that the
+    /// current public namespace is detached; callers inspect it separately.
+    pub(super) const fn namespace_detach_confirmed(&self) -> bool {
+        false
+    }
+
+    /// Reports actual retained native capability custody after a failed probe.
+    pub(super) fn controls_pending(&self) -> bool {
+        self.directory.is_some()
     }
 }
+
 
 pub(super) fn quarantine_crashed_destination(
     destination: &std::path::Path,
@@ -2845,180 +3219,377 @@ fn roll_back_start(
     }
 }
 
+fn detach_work_error(error: crate::DemandError) -> NativeMountError {
+    match error {
+        crate::DemandError::Work(error) => NativeMountError::Work(error),
+        crate::DemandError::Io(error) => NativeMountError::Io(error),
+        error => NativeMountError::Demand(error),
+    }
+}
+
+fn detach_source_error(error: MountSourceError) -> NativeMountError {
+    error.into()
+}
+
+/// Admits exactly one actual native call and records even its failed attempt.
+/// Cancellation after the call cannot erase that executed prefix.
+fn detach_attempt<T>(
+    work: &mut DemandWork,
+    write: bool,
+    operation: impl FnOnce() -> std::io::Result<T>,
+) -> Result<T, crate::DemandError> {
+    let delta = if write {
+        crate::WorkCounters { backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED }
+    } else {
+        crate::WorkCounters { backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED }
+    };
+    work.admit(delta)?;
+    let result = operation();
+    work.record(delta)?;
+    result.map_err(Into::into)
+}
+
+fn destination_parent(destination: &std::path::Path) -> Result<&std::path::Path, crate::DemandError> {
+    let parent = destination.parent().ok_or(crate::DemandError::InvalidRequest)?;
+    Ok(if parent.as_os_str().is_empty() { std::path::Path::new(".") } else { parent })
+}
+
+fn recreate_destination_measured(
+    destination: &std::path::Path, work: &mut DemandWork,
+) -> Result<(), NativeMountError> {
+    let parent = crate::native_host::open_root_directory_with_work(
+        destination_parent(destination).map_err(detach_work_error)?, work,
+    ).map_err(detach_work_error)?;
+    let leaf = destination.file_name().ok_or(NativeMountError::InvalidDestination)?;
+    // FILE_CREATE never adopts a directory that somebody else substituted.
+    crate::native_host::with_wide_path_with_work(std::path::Path::new(leaf), work, |name, work| {
+        crate::native_host::create_windows_new_directory_with_work(&parent, name, work)
+    }).map_err(detach_work_error)?;
+    Ok(())
+}
+
+fn remove_staging_directory_measured(
+    root: &std::path::Path, work: &mut DemandWork,
+) -> Result<(), crate::DemandError> {
+    // Reproduce staging_path's lossy spelling without unadmitted temporary
+    // strings or paths. Only this empty sibling is removed, never its contents.
+    let leaf = root.file_name().unwrap_or_default();
+    let mut units = 1_usize + ".acyclic-staging".len();
+    for scalar in char::decode_utf16(leaf.encode_wide()) {
+        work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
+        units = units.checked_add(scalar.unwrap_or(char::REPLACEMENT_CHARACTER).len_utf16())
+            .ok_or(crate::WorkError::Overflow)?;
+    }
+    let bytes = (units as u64).checked_mul(2).ok_or(crate::WorkError::Overflow)?;
+    let delta = crate::WorkCounters { bytes_encoded: bytes, ..crate::WorkCounters::UNCHARGED };
+    work.admit(delta)?;
+    work.allocate(bytes)?;
+    let mut name = Vec::new();
+    let result = (|| {
+        name.try_reserve_exact(units)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::OutOfMemory, error))?;
+        name.push(u16::from(b'.'));
+        for scalar in char::decode_utf16(leaf.encode_wide()) {
+            let mut encoded = [0; 2];
+            name.extend_from_slice(scalar.unwrap_or(char::REPLACEMENT_CHARACTER).encode_utf16(&mut encoded));
+        }
+        name.extend(".acyclic-staging".encode_utf16());
+        work.record(delta)?;
+        let parent = crate::native_host::open_root_directory_with_work(destination_parent(root)?, work)?;
+        match crate::native_host::remove_windows_leaf_with_work(&parent, &name, true, work) {
+            Err(crate::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        }
+    })();
+    drop(name);
+    work.release(bytes)?;
+    result
+}
+
 fn remove_authenticated_destination(
     destination: &std::path::Path,
     expected_identity: crate::NativeRootIdentity,
 ) -> Result<(), NativeMountError> {
-    let metadata = match std::fs::symlink_metadata(destination) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(NativeMountError::Driver(error.to_string())),
-    };
-    if !metadata.is_dir() {
-        return Err(NativeMountError::InvalidDestination);
-    }
-    let (tag, identity) = reparse_tag(destination).map_err(|error| {
-        NativeMountError::Driver(format!(
-            "ProjFS root authentication failed for {}: {error}",
-            destination.display()
-        ))
-    })?;
-    if identity != expected_identity {
-        return Err(NativeMountError::Driver(format!(
-            "ProjFS root identity changed at {}; refusing to remove a different directory",
-            destination.display()
-        )));
-    }
-    match tag {
-        Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS) => {}
-        Some(tag) => {
-            return Err(NativeMountError::Driver(format!(
-                "destination has non-ProjFS reparse tag 0x{tag:08x}"
-            )));
-        }
-        None => return Ok(()),
-    }
-    // The path can be replaced while the filter is draining, so every
-    // removal of the root itself reauthenticates it first.
-    let authenticate = || {
-        let (current_tag, current_identity) = reparse_tag(destination)?;
-        if current_tag != Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS)
-            || current_identity != expected_identity
-        {
-            return Err(NativeMountError::Driver(format!(
-                "ProjFS root changed while stopping at {}; preserving it",
-                destination.display()
-            )));
-        }
-        Ok(())
-    };
-    remove_projection_tree(destination, &authenticate).or_else(|error| {
-        // A refused delete can still complete: gone, the root is removed.
-        if matches!(
-            std::fs::symlink_metadata(destination),
-            Err(gone) if gone.kind() == std::io::ErrorKind::NotFound
-        ) {
-            return Ok(());
-        }
-        Err(match error {
-            TreeRemovalError::Io(error) => NativeMountError::Driver(format!(
-                "authenticated ProjFS root removal failed for {}: {error}",
-                destination.display()
-            )),
-            TreeRemovalError::Root(error) => error,
-        })
-    })
+    remove_authenticated_destination_measured(destination, expected_identity, &mut DemandWork::new(
+        crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+    )).map(|_| ())
 }
 
-enum TreeRemovalError {
-    Io(std::io::Error),
-    Root(NativeMountError),
-}
-
-impl From<std::io::Error> for TreeRemovalError {
-    fn from(error: std::io::Error) -> Self {
-        Self::Io(error)
+/// Observes the physical name without opening it through the stopped provider.
+/// The owned absolute, NUL-terminated native buffer stays admitted through the
+/// real metadata call and drops before its claim is released.
+fn physical_attributes_measured(
+    path: &std::path::Path, work: &mut DemandWork,
+) -> Result<Option<u32>, crate::DemandError> {
+    use windows::Win32::Storage::FileSystem::{GetFileAttributesW, INVALID_FILE_ATTRIBUTES};
+    let name = crate::native_host::normalize_root_wide_measured(path, work)?;
+    let bytes = name.len() as u64 * 2;
+    let result = detach_attempt(work, false, || {
+        // SAFETY: this exact native spelling includes its final NUL.
+        let attributes = unsafe { GetFileAttributesW(PCWSTR::from_raw(name.as_ptr())) };
+        if attributes == INVALID_FILE_ATTRIBUTES {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(attributes)
+        }
+    });
+    drop(name);
+    work.release(bytes)?;
+    match result {
+        Ok(attributes) => Ok(Some(attributes)),
+        Err(crate::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
     }
 }
 
-/// Removes `directory` and everything below it, visiting each entry once.
-///
-/// After `PrjStopVirtualizing`, `ProjFS` refuses the first delete of each
-/// emptied placeholder directory as temporarily unavailable and admits the
-/// next. A refused removal has already removed everything it visited before
-/// the refused directory, so only what remains is visited again: each child
-/// directory is removed the same way, and then the directory itself, retried
-/// in place while the filter keeps refusing it within a bounded patience.
-/// `before_removal` runs before every removal of `directory` itself.
-fn remove_projection_tree(
-    directory: &std::path::Path,
-    before_removal: &dyn Fn() -> Result<(), NativeMountError>,
-) -> Result<(), TreeRemovalError> {
-    // A scanner opening the root can keep the filter draining for a while,
-    // and a scanner, or a process that just ran a program from the tree,
-    // can hold a file there a moment longer.
-    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
-    let refused = refused_for_now;
-    let gone = || {
-        matches!(
-            std::fs::symlink_metadata(directory),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+/// Holds the authenticated root for the entire walk. Every child is opened
+/// relative to that capability with reparses not followed; replacement of the
+/// public path therefore cannot redirect cleanup into another tree.
+fn remove_authenticated_destination_measured(
+    destination: &std::path::Path,
+    expected_identity: crate::NativeRootIdentity,
+    work: &mut DemandWork,
+) -> Result<bool, NativeMountError> {
+    use windows::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE};
+    match physical_attributes_measured(destination, work).map_err(detach_work_error)? {
+        None => return Ok(true),
+        Some(attributes) if attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0 => {}
+        Some(_) => return Err(NativeMountError::InvalidDestination),
+    }
+    let parent = crate::native_host::open_root_directory_with_work(
+        destination_parent(destination).map_err(detach_work_error)?, work,
+    ).map_err(detach_work_error)?;
+    let leaf = destination.file_name().ok_or(NativeMountError::InvalidDestination)?;
+    let file = match crate::native_host::with_wide_path_with_work(std::path::Path::new(leaf), work, |name, work| {
+        crate::native_host::open_windows_leaf_handle_with_work(
+            &parent, name, DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE, Some(true), work,
         )
+    }) {
+        Ok(file) => file,
+        Err(error) => return Err(detach_work_error(error)),
     };
-    let deadline = std::time::Instant::now() + PATIENCE;
-    loop {
-        before_removal().map_err(TreeRemovalError::Root)?;
-        let error = match std::fs::remove_dir_all(directory) {
-            Ok(()) => return Ok(()),
-            Err(error) => error,
-        };
-        if gone() {
-            return Ok(());
-        }
-        if !refused(&error) {
-            return Err(error.into());
-        }
-        remove_directories_in(directory)?;
-        // Opened as the reparse point it is, the directory is deleted
-        // without the filter asking a provider that is gone.
-        before_removal().map_err(TreeRemovalError::Root)?;
-        match remove_directory_itself(directory) {
-            Ok(()) => return Ok(()),
-            Err(_) if gone() => return Ok(()),
-            Err(error) if refused(&error) && std::time::Instant::now() < deadline => {
-                // The filter admits a refused directory's next delete; only
-                // a filter still draining, or a holder, needs a moment.
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            Err(error) => return Err(error.into()),
-        }
+    let directory = cap_std::fs::Dir::from_std_file(file);
+    let identity = crate::native_host::directory_identity_with_work(&directory, work).map_err(detach_work_error)?;
+    if identity != expected_identity {
+        return Err(NativeMountError::Demand(crate::DemandError::StaleSource));
     }
+    match reparse_tag_held_measured(&directory, work).map_err(detach_work_error)? {
+        Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS) => {}
+        Some(tag) => return Err(NativeMountError::UnsafeRecoveryDestination { reparse_tag: Some(tag) }),
+        None => return Ok(false),
+    }
+    remove_projection_tree(&directory, Some(expected_identity), work).map_err(detach_work_error)?;
+    drop(directory);
+    // A successful disposition can still be delete-on-close. Do not claim the
+    // root is removed until its own handle dropped and this actual name probe
+    // confirms absence; another directory substituted meanwhile is preserved.
+    if physical_attributes_measured(destination, work).map_err(detach_work_error)?.is_some() {
+        return Err(NativeMountError::Lifecycle("authenticated ProjFS root deletion is still pending; namespace preserved"));
+    }
+    Ok(true)
 }
 
-/// Whether removing a projection tree was refused only for now: by a
-/// holder (access denied, sharing violation), a directory not yet empty, or
-/// the filter of a root whose provider is gone, which also answers "not
-/// found" for a root still there.
-fn refused_for_now(error: &std::io::Error) -> bool {
-    matches!(error.raw_os_error(), Some(2 | 3 | 5 | 32 | 145 | 369))
-}
-
-/// Removes each directory in `directory` as [`remove_projection_tree`]
-/// does. Unlisted for now, it is left to the delete of `directory` itself,
-/// which is refused while anything is left in it.
-fn remove_directories_in(directory: &std::path::Path) -> Result<(), TreeRemovalError> {
-    let entries = match std::fs::read_dir(directory) {
-        Ok(entries) => entries,
-        Err(error) if refused_for_now(&error) => return Ok(()),
-        Err(error) => return Err(error.into()),
-    };
-    for entry in entries {
-        let entry = entry?;
-        match entry.file_type() {
-            Ok(kind) if kind.is_dir() => remove_projection_tree(&entry.path(), &|| Ok(()))?,
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
+/// Removes only this owner's originally observed, currently empty physical
+/// root. NT disposition enforces emptiness atomically; no tree walker or path
+/// deletion can accidentally erase authored residue or a substituted root.
+pub(super) fn remove_empty_recovery_destination_measured(
+    destination: &std::path::Path,
+    expected: Option<crate::NativeRootIdentity>,
+    work: &mut DemandWork,
+) -> Result<(), NativeMountError> {
+    use windows::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE};
+    match physical_attributes_measured(destination, work).map_err(detach_work_error)? {
+        None => return Ok(()),
+        Some(attributes) if attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0 => {}
+        Some(_) => return Err(NativeMountError::InvalidDestination),
+    }
+    let expected = expected.ok_or(NativeMountError::Demand(crate::DemandError::StaleSource))?;
+    let parent = crate::native_host::open_root_directory_with_work(
+        destination_parent(destination).map_err(detach_work_error)?, work,
+    ).map_err(detach_work_error)?;
+    let leaf = destination.file_name().ok_or(NativeMountError::InvalidDestination)?;
+    let file = crate::native_host::with_wide_path_with_work(
+        std::path::Path::new(leaf), work, |name, work| {
+            crate::native_host::open_windows_leaf_handle_with_work(
+                &parent, name, DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE, Some(true), work,
+            )
+        },
+    ).map_err(detach_work_error)?;
+    let directory = cap_std::fs::Dir::from_std_file(file);
+    if crate::native_host::directory_identity_with_work(&directory, work)
+        .map_err(detach_work_error)? != expected
+    {
+        return Err(NativeMountError::Demand(crate::DemandError::StaleSource));
+    }
+    if let Some(tag) = reparse_tag_held_measured(&directory, work).map_err(detach_work_error)? {
+        return Err(NativeMountError::UnsafeRecoveryDestination { reparse_tag: Some(tag) });
+    }
+    // Both actual disposition attempts refuse a nonempty directory. Foreign
+    // children are never enumerated, opened, followed, or deleted here.
+    delete_through_measured(&directory, work).map_err(detach_work_error)?;
+    drop(directory);
+    if physical_attributes_measured(destination, work).map_err(detach_work_error)?.is_some() {
+        return Err(NativeMountError::Lifecycle("empty recovery root deletion is still pending; namespace preserved"));
     }
     Ok(())
 }
 
-/// Deletes the directory `directory` names, opened as itself rather than
-/// through any reparse point it carries; what is left in it keeps it.
-fn remove_directory_itself(directory: &std::path::Path) -> std::io::Result<()> {
-    use std::os::windows::fs::OpenOptionsExt as _;
-    use windows::Win32::Storage::FileSystem::{
-        DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    };
+/// Visits physical entries explicitly instead of hiding recursive traversal in
+/// remove_dir_all. Retry enumeration, authentication probes, and both possible
+/// disposition calls each receive their own admission at the real boundary.
+fn remove_projection_tree(
+    directory: &cap_std::fs::Dir,
+    expected_root: Option<crate::NativeRootIdentity>,
+    work: &mut DemandWork,
+) -> Result<(), crate::DemandError> {
+    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + PATIENCE;
+    loop {
+        work.check()?;
+        match remove_directories_in(directory, work) {
+            Err(crate::DemandError::Io(error)) if refused_for_now(&error) => {}
+            result => result?,
+        }
+        if let Some(expected) = expected_root {
+            if crate::native_host::directory_identity_with_work(directory, work)? != expected
+                || reparse_tag_held_measured(directory, work)?
+                    != Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS)
+            {
+                return Err(crate::DemandError::StaleSource);
+            }
+        }
+        match delete_through_measured(directory, work) {
+            Ok(()) => return Ok(()),
+            Err(crate::DemandError::Io(error)) if refused_for_now(&error) && std::time::Instant::now() < deadline => {
+                work.check()?;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
 
-    let handle = std::fs::OpenOptions::new()
-        .access_mode(DELETE.0 | FILE_READ_ATTRIBUTES.0)
-        .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
-        .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
-        .open(directory)?;
-    delete_through(&handle)
+/// Whether a real delete was refused by a transient holder or draining filter.
+fn refused_for_now(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(2 | 3 | 5 | 32 | 145 | 369))
+}
+
+fn remove_directories_in(
+    directory: &cap_std::fs::Dir, work: &mut DemandWork,
+) -> Result<(), crate::DemandError> {
+    use windows::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE};
+    let (mut entries, buffer) = crate::native_host::read_dir_held_with_work(directory, work)?;
+    let result = (|| {
+        while let Some((entry, allocation)) = entries.next_wide_with_work(work)? {
+            let result = (|| {
+                let file = match crate::native_host::open_windows_leaf_handle_with_work(
+                    directory, &entry.name, DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE, None, work,
+                ) {
+                    Ok(file) => file,
+                    Err(crate::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                    Err(error) => return Err(error),
+                };
+                let attributes = held_attributes_measured(&file, work)?;
+                // A directory link is a leaf, never a recursively followed tree.
+                if attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0
+                    && attributes & FILE_ATTRIBUTE_REPARSE_POINT.0 == 0
+                {
+                    remove_projection_tree(&cap_std::fs::Dir::from_std_file(file), None, work)
+                } else if attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0
+                    && reparse_tag_held_measured(&file, work)?
+                        == Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS)
+                {
+                    remove_projection_tree(&cap_std::fs::Dir::from_std_file(file), None, work)
+                } else {
+                    delete_through_measured(&file, work)
+                }
+            })();
+            drop(entry);
+            work.release(allocation)?;
+            result?;
+        }
+        Ok(())
+    })();
+    drop(entries);
+    work.release(buffer)?;
+    result
+}
+
+fn held_attributes_measured(
+    file: &impl std::os::windows::io::AsRawHandle, work: &mut DemandWork,
+) -> Result<u32, crate::DemandError> {
+    use windows::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
+    detach_attempt(work, false, || {
+        let mut information = BY_HANDLE_FILE_INFORMATION::default();
+        // SAFETY: this identity-bearing handle and output storage remain live.
+        unsafe { GetFileInformationByHandle(windows::Win32::Foundation::HANDLE(file.as_raw_handle()), &raw mut information) }?;
+        Ok(information.dwFileAttributes)
+    })
+}
+
+fn delete_through_measured(
+    file: &impl std::os::windows::io::AsRawHandle, work: &mut DemandWork,
+) -> Result<(), crate::DemandError> {
+    use windows::Win32::Storage::FileSystem::{
+        FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+        FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX,
+        FILE_DISPOSITION_INFO_EX_FLAGS, FileDispositionInfo, FileDispositionInfoEx, SetFileInformationByHandle,
+    };
+    let handle = windows::Win32::Foundation::HANDLE(file.as_raw_handle());
+    let posix = FILE_DISPOSITION_INFO_EX { Flags: FILE_DISPOSITION_INFO_EX_FLAGS(
+        FILE_DISPOSITION_FLAG_DELETE.0 | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS.0
+            | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE.0,
+    ) };
+    let result = detach_attempt(work, true, || {
+        // SAFETY: the DELETE handle and correctly sized disposition are live.
+        unsafe { SetFileInformationByHandle(handle, FileDispositionInfoEx, (&raw const posix).cast(), size_of::<FILE_DISPOSITION_INFO_EX>() as u32) }
+            .map_err(Into::into)
+    });
+    match result {
+        Err(crate::DemandError::Io(_)) => {
+            let on_close = FILE_DISPOSITION_INFO { DeleteFile: true };
+            detach_attempt(work, true, || {
+                // SAFETY: same held handle; this fallback is separately admitted.
+                unsafe { SetFileInformationByHandle(handle, FileDispositionInfo, (&raw const on_close).cast(), size_of::<FILE_DISPOSITION_INFO>() as u32) }
+                    .map_err(Into::into)
+            })
+        }
+        result => result,
+    }
+}
+
+fn reparse_tag_held_measured(
+    file: &impl std::os::windows::io::AsRawHandle, work: &mut DemandWork,
+) -> Result<Option<u32>, crate::DemandError> {
+    use windows::Win32::Foundation::{ERROR_NOT_A_REPARSE_POINT, ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE, HANDLE};
+    use windows::Win32::Storage::FileSystem::MAXIMUM_REPARSE_DATA_BUFFER_SIZE;
+    use windows::Win32::System::IO::DeviceIoControl;
+    use windows::Win32::System::Ioctl::FSCTL_GET_REPARSE_POINT;
+    let bytes = u64::from(MAXIMUM_REPARSE_DATA_BUFFER_SIZE);
+    work.allocate(bytes)?;
+    let mut output = Vec::new();
+    let result = (|| {
+        output.try_reserve_exact(bytes as usize)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::OutOfMemory, error))?;
+        output.resize(bytes as usize, 0_u8);
+        let mut returned = 0_u32;
+        match detach_attempt(work, false, || {
+            // SAFETY: the held handle and exact-sized mutable buffer stay live.
+            unsafe { DeviceIoControl(HANDLE(file.as_raw_handle()), FSCTL_GET_REPARSE_POINT, None, 0,
+                Some(output.as_mut_ptr().cast()), MAXIMUM_REPARSE_DATA_BUFFER_SIZE, Some(&raw mut returned), None) }
+                .map_err(Into::into)
+        }) {
+            Ok(()) if returned >= 4 => Ok(Some(u32::from_le_bytes(output[..4].try_into().expect("four tag bytes")))),
+            Ok(()) => Err(std::io::ErrorKind::InvalidData.into()),
+            Err(crate::DemandError::Io(error)) if error.raw_os_error() == Some(ERROR_NOT_A_REPARSE_POINT.0 as i32) => Ok(None),
+            Err(crate::DemandError::Io(error)) if error.raw_os_error() == Some(ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE.0 as i32) =>
+                Ok(Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS)),
+            Err(error) => Err(error),
+        }
+    })();
+    drop(output);
+    work.release(bytes)?;
+    result
 }
 
 fn reparse_tag(
@@ -3268,21 +3839,63 @@ fn host_relative_path(path: &MountPath) -> Result<PathBuf, MountSourceError> {
     Ok(host_path)
 }
 
-fn capture_missing_host_ancestors(
+/// Encodes only this invocation's owned relative native-name buffer.
+fn with_mount_wide_path_measured<T>(
+    path: &MountPath,
+    work: &mut DemandWork,
+    operation: impl FnOnce(&[u16], &mut DemandWork) -> Result<T, crate::DemandError>,
+) -> Result<T, crate::DemandError> {
+    let mut units = path.components().len().saturating_sub(1);
+    for component in path.components() {
+        work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
+        crate::kernel::types::utf16le_units(component).ok_or(crate::DemandError::InvalidRequest)?;
+        units = units.checked_add(component.len() / 2).ok_or(crate::WorkError::Overflow)?;
+    }
+    let bytes = (units as u64).checked_mul(2).ok_or(crate::WorkError::Overflow)?;
+    let encoded = crate::WorkCounters { bytes_encoded: bytes, ..crate::WorkCounters::UNCHARGED };
+    work.admit(encoded)?;
+    work.allocate(bytes)?;
+    let mut name = Vec::new();
+    let result = (|| {
+        name.try_reserve_exact(units)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::OutOfMemory, error))?;
+        for (index, component) in path.components().iter().enumerate() {
+            if index != 0 {
+                name.push(u16::from(b'\\'));
+            }
+            name.extend(crate::kernel::types::utf16le_units(component).expect("validated component"));
+        }
+        work.record(encoded)?;
+        operation(&name, work)
+    })();
+    drop(name);
+    work.release(bytes)?;
+    result
+}
+
+fn capture_missing_host_ancestors_measured(
     source: &dyn MountFilesystem,
     root: &std::path::Path,
     path: &MountPath,
-) -> Result<(), MountSourceError> {
-    let mut parent = MountPath::root();
-    for component in path
-        .components()
-        .iter()
-        .take(path.components().len().saturating_sub(1))
-    {
-        parent = parent.child(component.clone());
-        if source.lookup(&parent)?.is_none() {
-            source.capture_host_path(root, &parent)?;
-        }
+    identity: crate::NativeRootIdentity,
+    work: &mut DemandWork,
+) -> Result<(), NativeMountError> {
+    for count in 1..path.components().len() {
+        let (parent, bytes) = clone_mount_components_measured(&path.components()[..count], work)
+            .map_err(detach_work_error)?;
+        let result = (|| {
+            if source.lookup_with_work(&parent, &mut super::NativeMountWork { work })
+                .map_err(detach_source_error)?.is_none()
+            {
+                source.capture_host_paths_with_work(
+                    root, std::slice::from_ref(&parent), identity, &mut super::NativeMountWork { work },
+                ).map_err(detach_source_error)?;
+            }
+            Ok(())
+        })();
+        drop(parent);
+        work.release(bytes).map_err(detach_work_error)?;
+        result?;
     }
     Ok(())
 }
@@ -3804,7 +4417,9 @@ unsafe fn notification(
             notification,
             PRJ_NOTIFICATION_FILE_OPENED | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION
         )
-        && MetadataProbeGuard::is_active(runtime.metadata_probes.as_ref(), &path)
+        && (MetadataProbeGuard::is_active(runtime.metadata_probes.as_ref(), &path)
+            || runtime.capture_probes.read().unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter().any(|(active, ..)| matches!(projfs_path_suffix(active, &path), Some([]))))
     {
         return HR_OK;
     }
@@ -4172,13 +4787,33 @@ unsafe extern "system" fn cancel(_callback_data: *const PRJ_CALLBACK_DATA) {}
 /// The `ProjFS` entry point for `callback`: it runs the callback on the
 /// provider's stack, not on the stack of the thread `ProjFS` calls from.
 macro_rules! on_provider_stack {
-    ($level:ident, $callback:ident($($argument:ident: $type:ty),*)) => {{
-        unsafe extern "system" fn entry($($argument: $type),*) -> HRESULT {
+    ($level:ident, $callback:ident($data:ident: $data_type:ty $(, $argument:ident: $type:ty)*)) => {{
+        unsafe extern "system" fn entry($data: $data_type $(, $argument: $type)*) -> HRESULT {
             let span = callback_span!($level, $callback);
-            // SAFETY: `ProjFS` passes the arguments its callback contract
-            // promises, and they stay valid until this entry returns.
-            let result = provider_stack::run(|| unsafe { $callback($($argument),*) })
-                .unwrap_or_else(|error| error.code());
+            // SAFETY: the callback data and its heap-stable runtime remain
+            // owned until the SDK drain has returned every callback.
+            let callback_runtime = unsafe { runtime($data) }.map(|(_, runtime)| runtime);
+            let meter = callback_runtime.and_then(|runtime| {
+                lock_recover(&runtime.stop_meter).as_ref().map(Arc::clone)
+            });
+            // No finite-scope ordinary fallback: denial is retained as an
+            // unreplayable typed control failure before the handler can run.
+            let operation = || unsafe { $callback($data $(, $argument)*) };
+            let invoked = match meter.as_ref() {
+                Some(meter) => provider_stack::run_with_meter(Some(meter), operation),
+                None => provider_stack::run(operation)
+                    .map_err(|error| provider_stack::ProviderFailure::Native(error.code())),
+            };
+            let result = match invoked {
+                Ok(result) => result,
+                Err(error) => {
+                    if meter.is_some() && let Some(runtime) = callback_runtime {
+                        lock_recover(runtime.post_operation_failure.as_ref())
+                            .provider_control_failure.get_or_insert(error);
+                    }
+                    error.hresult()
+                }
+            };
             if result.is_err() {
                 span.record("errno", result.0);
             }
@@ -4229,8 +4864,8 @@ fn callbacks() -> PRJ_CALLBACKS {
 #[cfg(test)]
 mod tests {
     use super::{
-        CallbackGate, PostOperationFailures, ReadBasis, finish_cleanup, flush_callback_gate,
-        record_post_operation_failure, recover_cache_only_destination,
+        CallbackGate, PostOperationFailures, ReadBasis, flush_callback_gate,
+        record_post_operation_failure,
         remove_authenticated_destination, source_hresult,
     };
     use crate::kernel::FileMetadata;
@@ -4267,6 +4902,193 @@ mod tests {
         let elsewhere = tempfile::tempdir()?;
         std::os::windows::fs::symlink_dir(elsewhere.path(), super::staging_path(&root))?;
         assert!(super::staging_directory(&root).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_read_denial_does_not_probe_or_take_native_root_controls()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = tempfile::tempdir()?;
+        let authored = root.path().join("authored");
+        std::fs::write(&authored, b"preserve")?;
+        let token = crate::CancellationToken::new();
+        let mut work = crate::demand::DemandWork::new(
+            crate::WorkBudget { backend_read_operations: 0, ..crate::WorkBudget::UNBOUNDED },
+            &token,
+        );
+        let mut control = super::ProjFsRecoveryControl::default();
+        assert!(matches!(
+            control.recover_measured(root.path(), true, &mut work),
+            Err(super::NativeMountError::Work(_)),
+        ));
+        assert_eq!(work.work.backend_read_operations, 0);
+        assert_eq!(work.work.backend_write_operations, 0);
+        assert_eq!(work.live_allocation_bytes(), 0);
+        assert!(!control.controls_pending());
+        assert!(!control.namespace_detach_confirmed());
+        assert_eq!(std::fs::read(&authored)?, b"preserve");
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_reparse_buffer_denial_retains_real_capability_for_retry()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = tempfile::tempdir()?;
+        let authored = root.path().join("authored");
+        std::fs::write(&authored, b"preserve")?;
+        let token = crate::CancellationToken::new();
+        let mut control = super::ProjFsRecoveryControl::default();
+        let mut observation = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &token);
+        control.recover_measured(root.path(), false, &mut observation)?;
+        assert!(!control.controls_pending());
+        assert!(!control.namespace_detach_confirmed());
+        assert!(observation.work.backend_read_operations > 0);
+        assert_eq!(observation.work.backend_write_operations, 0);
+
+        // Preserve mode observed the same concrete path/open/identity prefix.
+        // This exact allocation quota permits that prefix but not the next
+        // actual DeviceIoControl reparse-data buffer in disposable mode.
+        let mut bounded = crate::demand::DemandWork::new(
+            crate::WorkBudget {
+                allocation_operations: observation.work.allocation_operations,
+                ..crate::WorkBudget::UNBOUNDED
+            },
+            &token,
+        );
+        assert!(matches!(
+            control.recover_measured(root.path(), true, &mut bounded),
+            Err(super::NativeMountError::Work(_)),
+        ));
+        assert!(control.controls_pending());
+        assert_eq!(bounded.work.allocation_operations, observation.work.allocation_operations);
+        assert_eq!(bounded.work.backend_read_operations, observation.work.backend_read_operations);
+        assert_eq!(bounded.work.backend_write_operations, 0);
+        assert_eq!(bounded.live_allocation_bytes(), 0);
+        assert_eq!(std::fs::read(&authored)?, b"preserve");
+
+        let mut retry = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &token);
+        control.recover_measured(root.path(), true, &mut retry)?;
+        assert!(!control.controls_pending());
+        assert!(!control.namespace_detach_confirmed());
+        assert_eq!(retry.work.backend_write_operations, 0);
+        assert_eq!(retry.live_allocation_bytes(), 0);
+        assert_eq!(std::fs::read(&authored)?, b"preserve");
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_retained_capability_never_adopts_a_replaced_root()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        let parent = tempfile::tempdir()?;
+        let root = parent.path().join("root");
+        let residue = parent.path().join("residue");
+        std::fs::create_dir(&root)?;
+        std::fs::write(root.join("original"), b"original")?;
+        let token = crate::CancellationToken::new();
+        let mut control = super::ProjFsRecoveryControl::default();
+        let mut observation = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &token);
+        control.recover_measured(&root, false, &mut observation)?;
+        let mut bounded = crate::demand::DemandWork::new(
+            crate::WorkBudget {
+                allocation_operations: observation.work.allocation_operations,
+                ..crate::WorkBudget::UNBOUNDED
+            },
+            &token,
+        );
+        assert!(matches!(
+            control.recover_measured(&root, true, &mut bounded),
+            Err(super::NativeMountError::Work(_)),
+        ));
+        assert!(control.controls_pending());
+        std::fs::rename(&root, &residue)?;
+        std::fs::create_dir(&root)?;
+        std::fs::write(root.join("replacement"), b"replacement")?;
+        let mut retry = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &token);
+        assert!(matches!(
+            control.recover_measured(&root, true, &mut retry),
+            Err(super::NativeMountError::Demand(crate::DemandError::StaleSource)),
+        ));
+        assert!(control.controls_pending());
+        assert_eq!(retry.work.backend_write_operations, 0);
+        assert_eq!(retry.live_allocation_bytes(), 0);
+        assert_eq!(std::fs::read(root.join("replacement"))?, b"replacement");
+        assert_eq!(std::fs::read(residue.join("original"))?, b"original");
+        Ok(())
+    }
+
+    #[test]
+    fn empty_recovery_cleanup_admits_actual_disposition_but_never_recurses()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        let parent = tempfile::tempdir()?;
+        let token = crate::CancellationToken::new();
+        let baseline = parent.path().join("baseline");
+        std::fs::create_dir(&baseline)?;
+        let baseline_identity = crate::capture_root_identity(&baseline)?;
+        let mut observed = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &token);
+        super::remove_empty_recovery_destination_measured(
+            &baseline, Some(baseline_identity), &mut observed,
+        )?;
+        assert!(!baseline.exists());
+        let actual_dispositions = observed.work.backend_write_operations;
+        assert!((1..=2).contains(&actual_dispositions), "one actual POSIX disposition and only its supported fallback");
+
+        let root = parent.path().join("root");
+        std::fs::create_dir(&root)?;
+        let identity = crate::capture_root_identity(&root)?;
+        let mut denied = crate::demand::DemandWork::new(
+            crate::WorkBudget { backend_write_operations: 0, ..crate::WorkBudget::UNBOUNDED },
+            &token,
+        );
+        assert!(matches!(
+            super::remove_empty_recovery_destination_measured(&root, Some(identity), &mut denied),
+            Err(super::NativeMountError::Work(_)),
+        ));
+        assert_eq!(denied.work.backend_write_operations, 0);
+        assert_eq!(denied.live_allocation_bytes(), 0);
+        assert!(root.is_dir());
+        let mut exact = crate::demand::DemandWork::new(
+            crate::WorkBudget {
+                backend_write_operations: actual_dispositions,
+                ..crate::WorkBudget::UNBOUNDED
+            },
+            &token,
+        );
+        super::remove_empty_recovery_destination_measured(&root, Some(identity), &mut exact)?;
+        assert_eq!(exact.work.backend_write_operations, actual_dispositions);
+        assert_eq!(exact.live_allocation_bytes(), 0);
+        assert!(!root.exists());
+
+        std::fs::create_dir(&root)?;
+        std::fs::write(root.join("authored"), b"must not be recursively removed")?;
+        let identity = crate::capture_root_identity(&root)?;
+        let mut nonempty = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &token);
+        assert!(matches!(
+            super::remove_empty_recovery_destination_measured(&root, Some(identity), &mut nonempty),
+            Err(super::NativeMountError::Io(_)),
+        ));
+        assert_eq!(nonempty.live_allocation_bytes(), 0);
+        assert_eq!(std::fs::read(root.join("authored"))?, b"must not be recursively removed");
+        Ok(())
+    }
+
+    #[test]
+    fn empty_recovery_cleanup_refuses_root_created_after_absent_constructor_observation()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = tempfile::tempdir()?;
+        let token = crate::CancellationToken::new();
+        let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &token);
+        assert!(matches!(
+            super::remove_empty_recovery_destination_measured(root.path(), None, &mut work),
+            Err(super::NativeMountError::Demand(crate::DemandError::StaleSource)),
+        ));
+        assert_eq!(work.work.backend_write_operations, 0);
+        assert_eq!(work.live_allocation_bytes(), 0);
+        assert!(root.path().is_dir());
         Ok(())
     }
 
@@ -4362,6 +5184,310 @@ mod tests {
         Ok((root, destination, session))
     }
 
+    fn mount_driver_source(
+        source: &Arc<MemorySource>,
+    ) -> Result<(tempfile::TempDir, std::path::PathBuf, super::ProjFsSession), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let destination = root.path().join("projection");
+        std::fs::create_dir(&destination)?;
+        let session = super::ProjFsSession::start(
+            &crate::NativeMountRequest {
+                mount_id: crate::MountId::new(),
+                volume_id: source.volume_id()?,
+                destination: destination.clone(),
+                writable: true,
+            },
+            Arc::clone(source) as Arc<dyn MountFilesystem>,
+        ).map_err(|failure| failure.error)?;
+        Ok((root, destination, session))
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn measured_stop_denies_the_actual_sdk_boundary_without_stopping_the_context()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = windows_checkout_source().await?;
+        let (_root, destination, mut session) = mount_driver_source(&source)?;
+        let mut work = crate::demand::DemandWork::new(
+            WorkBudget { backend_write_operations: 0, ..WorkBudget::UNBOUNDED },
+            &CancellationToken::new(),
+        );
+        let error = session.stop_measured(&mut work).expect_err("SDK detach must be admitted");
+        assert!(matches!(error, crate::NativeMountError::Work(crate::WorkError::BudgetExceeded {
+            counter: "backend_write_operations", ..
+        })));
+        assert_eq!(work.work.backend_write_operations, 0);
+        assert_eq!(work.live_allocation_bytes(), 0);
+        assert!(session.context.is_some());
+        assert!(session.runtime.is_some());
+        assert!(destination.is_dir());
+        let mut info = PRJ_VIRTUALIZATION_INSTANCE_INFO::default();
+        // SAFETY: denial retained the actual live SDK context.
+        unsafe { PrjGetVirtualizationInstanceInfo(session.context.expect("live context"), &raw mut info) }?;
+        session.stop()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn measured_stop_records_the_sdk_prefix_and_retains_cleanup_custody()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = windows_checkout_source().await?;
+        let (_root, destination, mut session) = mount_driver_source(&source)?;
+        // Force one real staging-directory disposition before the SDK stop.
+        drop(super::staging_directory(&destination).map_err(std::io::Error::other)?);
+        let mut work = crate::demand::DemandWork::new(
+            WorkBudget { backend_write_operations: 2, ..WorkBudget::UNBOUNDED },
+            &CancellationToken::new(),
+        );
+        let error = session.stop_measured(&mut work).expect_err("physical root delete has no remaining write");
+        assert!(matches!(error, crate::NativeMountError::Work(crate::WorkError::BudgetExceeded {
+            counter: "backend_write_operations", ..
+        })));
+        assert_eq!(work.work.backend_write_operations, 2, "staging disposition and SDK stop really ran");
+        assert!(work.work.backend_read_operations > 0, "actual root identity, reparse and enumeration probes ran");
+        assert_eq!(work.live_allocation_bytes(), 0);
+        assert!(session.context.is_none(), "SDK context is not stopped twice on retry");
+        assert!(session.runtime.is_none(), "drained callback state no longer pins the deleted root");
+        assert!(session.detached.is_some(), "authenticated root custody survives the denied deletion");
+        assert!(!session.destination_removed);
+        assert!(destination.is_dir());
+        assert!(!super::staging_path(&destination).exists());
+        session.stop()?;
+        assert!(destination.is_dir());
+        assert_eq!(std::fs::read_dir(&destination)?.count(), 0);
+        assert!(session.runtime.is_none());
+        assert!(session.detached.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn measured_stop_cancellation_preserves_the_actual_driver_and_namespace()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = windows_checkout_source().await?;
+        let seed = windows_path("seed.txt");
+        source.create_file(&seed, FileMetadata::default())?;
+        source.write_range(&seed, 0, Bytes::from_static(b"seed"))?;
+        let (_root, destination, mut session) = mount_driver_source(&source)?;
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        session.stop_measured(&mut work).expect_err("original cancellation must win");
+        assert_eq!(work.work, crate::WorkCounters::UNCHARGED);
+        assert!(session.context.is_some());
+        assert!(session.runtime.is_some());
+        assert_eq!(std::fs::read(destination.join("seed.txt"))?, b"seed");
+        session.stop()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn measured_capture_denial_preserves_the_authored_namespace_before_sdk_stop()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = windows_checkout_source().await?;
+        let (_root, destination, mut session) = mount_driver_source(&source)?;
+        let path = windows_path("authored.txt");
+        std::fs::write(destination.join("authored.txt"), b"only-host-copy")?;
+        let runtime = session.runtime.as_ref().expect("live callback runtime");
+        runtime.post_operation_failure.lock().expect("capture state")
+            .queue_capture(path.clone(), "authored close awaiting capture".to_owned());
+        let serial = runtime.post_operation_failure.lock().expect("capture state").pending_captures[&path].serial;
+        let mut work = crate::demand::DemandWork::new(
+            WorkBudget { source_bytes_read: 0, ..WorkBudget::UNBOUNDED },
+            &CancellationToken::new(),
+        );
+        let error = session.stop_measured(&mut work).expect_err("host capture must use the caller's exact byte allowance");
+        assert!(matches!(error, crate::NativeMountError::Work(_)));
+        assert_eq!(work.work.source_bytes_read, 0);
+        assert!(!session.namespace_detach_confirmed());
+        assert!(session.context.is_some());
+        let runtime = session.runtime.as_ref().expect("capture failure retains callbacks");
+        assert_eq!(runtime.post_operation_failure.lock().expect("capture state").pending_captures[&path].serial, serial);
+        assert_eq!(std::fs::read(destination.join("authored.txt"))?, b"only-host-copy");
+        assert!(source.lookup(&path)?.is_none(), "a failed capture has no partial checkout candidate");
+        session.stop()?;
+        assert!(session.namespace_detach_confirmed());
+        assert!(session.cleanup_root_identity().is_none());
+        assert_eq!(source.read_range(&path, 0, 14)?, b"only-host-copy"[..]);
+        assert_eq!(std::fs::read_dir(&destination)?.count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn measured_root_recreation_has_one_exact_create_boundary()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let parent = tempfile::tempdir()?;
+        let destination = parent.path().join("projection");
+        let mut denied = crate::demand::DemandWork::new(
+            WorkBudget { backend_write_operations: 0, ..WorkBudget::UNBOUNDED },
+            &CancellationToken::new(),
+        );
+        let error = super::recreate_destination_measured(&destination, &mut denied)
+            .expect_err("create-only boundary is denied");
+        assert!(matches!(error, crate::NativeMountError::Work(_)));
+        assert_eq!(denied.work.backend_write_operations, 0);
+        assert_eq!(denied.live_allocation_bytes(), 0);
+        assert!(!destination.exists());
+        let mut admitted = crate::demand::DemandWork::new(
+            WorkBudget { backend_write_operations: 1, ..WorkBudget::UNBOUNDED },
+            &CancellationToken::new(),
+        );
+        super::recreate_destination_measured(&destination, &mut admitted)?;
+        assert_eq!(admitted.work.backend_write_operations, 1);
+        assert_eq!(admitted.live_allocation_bytes(), 0);
+        assert!(destination.is_dir());
+        std::fs::write(destination.join("do-not-adopt"), b"authored")?;
+        let mut repeated = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
+        super::recreate_destination_measured(&destination, &mut repeated)
+            .expect_err("FILE_CREATE must not adopt another root");
+        assert_eq!(std::fs::read(destination.join("do-not-adopt"))?, b"authored");
+        assert_eq!(repeated.work.backend_write_operations, 1);
+        assert_eq!(repeated.live_allocation_bytes(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn measured_physical_walk_keeps_an_exact_deleted_prefix_when_the_root_write_is_denied()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows::Win32::Storage::FileSystem::{
+            DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ,
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        let parent = tempfile::tempdir()?;
+        let destination = parent.path().join("projection");
+        std::fs::create_dir(&destination)?;
+        std::fs::write(destination.join("child"), b"projected")?;
+        let file = std::fs::OpenOptions::new()
+            .access_mode(DELETE.0 | FILE_GENERIC_READ.0)
+            .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
+            .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
+            .open(&destination)?;
+        let directory = cap_std::fs::Dir::from_std_file(file);
+        let mut work = crate::demand::DemandWork::new(
+            WorkBudget { backend_write_operations: 1, ..WorkBudget::UNBOUNDED },
+            &CancellationToken::new(),
+        );
+        let error = super::remove_projection_tree(&directory, None, &mut work)
+            .expect_err("the actual root disposition is denied after its child was removed");
+        assert!(matches!(error, crate::DemandError::Work(_)));
+        assert_eq!(work.work.backend_write_operations, 1);
+        assert!(work.work.backend_read_operations > 0);
+        assert!(work.work.items_examined > 0);
+        assert!(work.work.peak_allocation_bytes >= 64 * 1024, "the real native enumeration buffer was admitted");
+        assert_eq!(work.live_allocation_bytes(), 0);
+        assert!(destination.is_dir());
+        assert!(!destination.join("child").exists(), "the receipt preserves actual completed prefix work");
+        super::remove_projection_tree(
+            &directory, None,
+            &mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()),
+        )?;
+        drop(directory);
+        assert!(!destination.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn measured_callback_snapshot_denial_preserves_the_original_capture_serial() {
+        let callbacks = CallbackGate::start().expect("callback gate");
+        let failures = Mutex::new(PostOperationFailures::default());
+        let path = windows_path("authored.txt");
+        failures.lock().expect("failure state").queue_capture(path.clone(), "unjoined write".to_owned());
+        let serial = failures.lock().expect("failure state").pending_captures[&path].serial;
+        let mut work = crate::demand::DemandWork::new(
+            WorkBudget { peak_allocation_bytes: 0, ..WorkBudget::UNBOUNDED },
+            &CancellationToken::new(),
+        );
+        let error = super::flush_callback_gate_measured(&callbacks, &failures, None, &mut work, |_, _| {
+            panic!("a denied snapshot must never enter source capture")
+        }).expect_err("snapshot envelope is admitted before allocation");
+        assert!(matches!(error, crate::NativeMountError::Work(_)));
+        assert_eq!(work.work.allocation_operations, 0);
+        assert_eq!(work.live_allocation_bytes(), 0);
+        assert_eq!(failures.lock().expect("failure state").pending_captures[&path].serial, serial);
+    }
+
+    #[test]
+    fn measured_callback_capture_failure_preserves_typed_work_and_releases_its_controls() {
+        let callbacks = CallbackGate::start().expect("callback gate");
+        let failures = Mutex::new(PostOperationFailures::default());
+        let path = windows_path("authored.txt");
+        failures.lock().expect("failure state").queue_capture(path.clone(), "unjoined write".to_owned());
+        let serial = failures.lock().expect("failure state").pending_captures[&path].serial;
+        let probes = std::sync::RwLock::new(Vec::new());
+        let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
+        let expected = crate::WorkError::BudgetExceeded {
+            counter: "object_bytes_read", observed: 7, maximum: 6,
+        };
+        let error = super::flush_callback_gate_measured(&callbacks, &failures, Some(&probes), &mut work, |paths, work| {
+            assert_eq!(paths[0].0, path);
+            assert_eq!(probes.read().expect("borrowed probes").len(), 1);
+            work.charge(crate::WorkCounters { backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED })
+                .map_err(super::detach_work_error)?;
+            Err(super::detach_source_error(MountSourceError::Work(expected)))
+        }).expect_err("typed source admission failure must fence cleanup");
+        assert!(matches!(error, crate::NativeMountError::Work(error) if error == expected));
+        assert_eq!(work.work.backend_read_operations, 1);
+        assert!(work.work.peak_allocation_bytes > 0);
+        assert_eq!(work.live_allocation_bytes(), 0);
+        assert!(probes.read().expect("retired controls").is_empty());
+        assert_eq!(failures.lock().expect("failure state").pending_captures[&path].serial, serial);
+    }
+
+    #[test]
+    fn measured_callback_drain_observes_original_cancellation_while_controls_stay_live() {
+        let callbacks = CallbackGate::start().expect("callback gate");
+        let entered = Barrier::new(2);
+        let release = Barrier::new(2);
+        let cancellation = CancellationToken::new();
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                callbacks.call_observed(0, || {
+                    entered.wait();
+                    release.wait();
+                }, |_| {}).expect("callback admitted");
+            });
+            entered.wait();
+            let cancel = scope.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                cancellation.cancel();
+            });
+            let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            callbacks.drain_measured(&mut work).expect_err("cancellation must interrupt the real gate wait");
+            assert_eq!(work.work, crate::WorkCounters::UNCHARGED, "borrowed controls have no invented cost");
+            assert_eq!(*callbacks.active.lock().expect("live callback count"), 1);
+            release.wait();
+            worker.join().expect("callback finishes");
+            cancel.join().expect("canceller finishes");
+            callbacks.drain_measured(&mut crate::demand::DemandWork::new(
+                WorkBudget::UNBOUNDED, &CancellationToken::new(),
+            )).expect("later invocation drains the same controls");
+        });
+    }
+
+    #[test]
+    fn rejected_provider_controls_keep_the_original_typed_failure_and_root_fence() {
+        let callbacks = CallbackGate::start().expect("callback gate");
+        let expected = crate::WorkError::BudgetExceeded {
+            counter: "peak_allocation_bytes", observed: 16, maximum: 0,
+        };
+        let failures = Mutex::new(PostOperationFailures {
+            provider_control_failure: Some(super::provider_stack::ProviderFailure::Work(expected)),
+            ..PostOperationFailures::default()
+        });
+        for _ in 0..2 {
+            let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
+            let error = super::flush_callback_gate_measured(&callbacks, &failures, None, &mut work, |_, _| {
+                panic!("an unexecuted authored handler cannot be forgotten by a later flush")
+            }).expect_err("unreplayable provider controls retain namespace custody");
+            assert!(matches!(error, crate::NativeMountError::Work(error) if error == expected));
+            assert_eq!(work.work, crate::WorkCounters::UNCHARGED, "retained failure is borrowed, not newly executed");
+            assert!(failures.lock().expect("retained control fault").provider_control_failure.is_some());
+        }
+    }
+
     fn sorted_names(directory: &std::path::Path) -> std::io::Result<Vec<String>> {
         let mut names = std::fs::read_dir(directory)?
             .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
@@ -4399,7 +5525,7 @@ mod tests {
             .stop()
             .expect_err("an open non-delete-sharing handle must fence cleanup");
         assert!(
-            stop.to_string().contains("removal failed"),
+            matches!(stop, crate::NativeMountError::Io(_)),
             "unexpected cleanup fence: {stop}"
         );
 
@@ -5941,9 +7067,25 @@ mod tests {
             )
         }
         .expect("mark projection root");
-        let error = recover_cache_only_destination(root.path()).expect_err("preserve stale root");
-        assert!(error.to_string().contains("preserved for recovery"));
-        assert!(root.path().exists());
+        std::fs::write(root.path().join("authored"), b"preserve").expect("authored crash residue");
+        let token = crate::CancellationToken::new();
+        let mut control = super::ProjFsRecoveryControl::default();
+        control.bind_root_identity(root_identity);
+        let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &token);
+        assert!(matches!(
+            control.recover_measured(root.path(), true, &mut work),
+            Err(super::NativeMountError::UnsafeRecoveryDestination { reparse_tag: Some(_) }),
+        ));
+        assert!(control.controls_pending(), "actual probe capability remains owned after refusal");
+        assert!(!control.namespace_detach_confirmed(), "no SDK stop was observed");
+        assert!(work.work.backend_read_operations > 0);
+        assert_eq!(work.work.backend_write_operations, 0);
+        assert_eq!(work.live_allocation_bytes(), 0);
+        control.recover_measured(root.path(), false, &mut crate::demand::DemandWork::new(
+            crate::WorkBudget::UNBOUNDED, &token,
+        )).expect("preserving recovery corroborates root without deleting authored residue");
+        assert!(!control.controls_pending());
+        assert_eq!(std::fs::read(root.path().join("authored")).expect("preserved residue"), b"preserve");
         remove_authenticated_destination(root.path(), root_identity).expect("test cleanup");
     }
 
@@ -5970,7 +7112,7 @@ mod tests {
         .expect("mark replacement projection root");
         let rejected = remove_authenticated_destination(replacement.path(), original_identity)
             .expect_err("different root must not be removed");
-        assert!(rejected.to_string().contains("identity changed"));
+        assert!(matches!(rejected, super::NativeMountError::Demand(crate::DemandError::StaleSource)));
         assert!(replacement.path().exists());
         remove_authenticated_destination(replacement.path(), replacement_identity)
             .expect("remove test-owned projection");
@@ -6093,7 +7235,7 @@ mod tests {
             observed
                 .lock()
                 .expect("captured paths")
-                .extend(paths.iter().map(|(path, _)| path.clone()));
+                .extend(paths.iter().map(|(path, _, _)| path.clone()));
             Ok(())
         })
         .expect("renamed captures recover");
@@ -6130,7 +7272,7 @@ mod tests {
             captures
                 .lock()
                 .expect("capture order")
-                .extend(paths.iter().cloned());
+                .extend(paths.iter().map(|(path, _, subtree)| (path.clone(), *subtree)));
             Ok(())
         })
         .expect("parent and child capture");
@@ -6185,14 +7327,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn stopped_runtime_is_retained_until_cleanup_succeeds() {
-        let mut state = Some("callback-runtime");
-        let first = finish_cleanup(&mut state, |_| Err::<(), _>("transient cleanup failure"));
-        assert_eq!(first, Err("transient cleanup failure"));
-        assert_eq!(state, Some("callback-runtime"));
-
-        assert_eq!(finish_cleanup(&mut state, |_| Ok::<(), &str>(())), Ok(()));
-        assert_eq!(state, None);
-    }
 }

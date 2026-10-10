@@ -19,11 +19,14 @@
 use crate::FileId;
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
-use unicode_normalization::UnicodeNormalization as _;
+
+fn unbounded_view_work() -> crate::demand::DemandWork {
+    static TOKEN: std::sync::LazyLock<crate::CancellationToken> = std::sync::LazyLock::new(crate::CancellationToken::new);
+    crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &TOKEN)
+}
 
 static VIEW_CHANGES: AtomicU64 = AtomicU64::new(0);
 // Only the Linux and macOS drivers attribute their changes.
@@ -142,13 +145,96 @@ pub trait ViewObserver: Send + Sync {
 
 /// The observers of one source of view changes.
 #[derive(Default)]
-pub(super) struct ViewObservers(Mutex<Vec<Weak<dyn ViewObserver>>>);
+pub(super) struct ViewObservers(Mutex<Vec<Weak<dyn ViewObserver>>>, AtomicU64);
 
 impl ViewObservers {
     pub(super) fn add(&self, observer: Weak<dyn ViewObserver>) {
+        let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+        let mut counters = crate::WorkCounters::UNCHARGED;
+        self.add_measured(
+            observer, &mut None, &mut allocations, &mut counters, crate::WorkBudget::UNBOUNDED,
+        ).expect("unbounded observer registration failed");
+    }
+
+    fn add_measured(
+        &self,
+        observer: Weak<dyn ViewObserver>,
+        registry: &mut Option<(u64, u64)>,
+        allocations: &mut crate::kernel::allocation::AllocationLedger,
+        work: &mut crate::WorkCounters,
+        budget: crate::WorkBudget,
+    ) -> Result<(), super::MountSourceError> {
         let mut observers = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        observers.retain(|observer| observer.strong_count() != 0);
+        let generation = self.1.load(Ordering::Acquire);
+        if let Some((owned_generation, bytes)) = *registry
+            && owned_generation != generation
+        {
+            allocations.release(bytes).map_err(observer_allocation_error)?;
+            *registry = None;
+        }
+        let width = std::mem::size_of::<Weak<dyn ViewObserver>>();
+        let old_bytes = observers.capacity().checked_mul(width)
+            .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))? as u64;
+        if registry.is_none() {
+            allocations.claim_bytes(old_bytes, 0, work, budget).map_err(observer_allocation_error)?;
+            *registry = Some((generation, old_bytes));
+        }
+        let sweep = crate::WorkCounters {
+            items_examined: observers.len() as u64,
+            bytes_copied: observers.len().checked_mul(width)
+                .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))? as u64,
+            ..crate::WorkCounters::UNCHARGED
+        };
+        work.admit(&sweep, &budget).map_err(super::MountSourceError::Work)?;
+        let mut moved = 0_usize;
+        let mut gap = false;
+        observers.retain(|entry| {
+            let alive = entry.strong_count() != 0;
+            if alive { moved += usize::from(gap); } else { gap = true; }
+            alive
+        });
+        // Strong owners can retire concurrently with the sweep. Charge only
+        // the live slots that Vec::retain physically moved, not a snapshot.
+        work.charge(&crate::WorkCounters {
+            bytes_copied: (moved * width) as u64, ..sweep
+        }, &budget).map_err(super::MountSourceError::Work)?;
+        let required = observers.len().checked_add(1)
+            .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))?;
+        let grows = required > observers.capacity();
+        if grows {
+            let copied = crate::WorkCounters {
+                items_examined: observers.len() as u64,
+                bytes_copied: observers.len().checked_mul(width)
+                    .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))? as u64,
+                ..crate::WorkCounters::UNCHARGED
+            };
+            work.admit(&copied, &budget).map_err(super::MountSourceError::Work)?;
+            let next_generation = generation.checked_add(1)
+                .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))?;
+            let capacity = observers.capacity().max(1).checked_mul(2)
+                .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))?.max(required);
+            let bytes = capacity.checked_mul(width)
+                .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))? as u64;
+            allocations.claim_bytes(bytes, 1, work, budget).map_err(observer_allocation_error)?;
+            let mut vector = Vec::new();
+            if vector.try_reserve_exact(capacity).is_err() {
+                allocations.release(bytes).map_err(observer_allocation_error)?;
+                return Err(super::MountSourceError::Engine("observer registry allocation failed".into()));
+            }
+            vector.append(&mut observers);
+            *observers = vector;
+            self.1.store(next_generation, Ordering::Release);
+            *registry = Some((next_generation, bytes));
+            allocations.release(old_bytes).map_err(observer_allocation_error)?;
+            work.charge(&copied, &budget).map_err(super::MountSourceError::Work)?;
+        }
+        let copied = crate::WorkCounters {
+            bytes_copied: width as u64, ..crate::WorkCounters::UNCHARGED
+        };
+        work.admit(&copied, &budget).map_err(super::MountSourceError::Work)?;
         observers.push(observer);
+        work.charge(&copied, &budget).map_err(super::MountSourceError::Work)?;
+        Ok(())
     }
 
     /// Every observer still alive.
@@ -174,6 +260,110 @@ impl ViewObservers {
         for observer in self.live() {
             observer.view_unconfirmed(position);
         }
+    }
+}
+
+fn observer_allocation_error(
+    error: crate::kernel::allocation::AllocationError,
+) -> super::MountSourceError {
+    super::lazy::mount_engine_error(crate::collection::handle_allocation_error(error))
+}
+
+struct ObserverRegistryAdmission {
+    ledger: Weak<ViewLedger>,
+    registry: Option<(u64, u64)>,
+}
+
+impl ObserverRegistryAdmission {
+    fn freed_bytes(&self) -> u64 {
+        self.registry.map_or(0, |(generation, bytes)| {
+            if self.ledger.upgrade().is_none_or(|ledger|
+                ledger.observers.1.load(Ordering::Acquire) != generation)
+            { bytes } else { 0 }
+        })
+    }
+}
+
+/// Original invocation custody of the canonical observer Vec backing.
+#[derive(Default)]
+pub(crate) struct ViewObserverAdmissions {
+    first: Option<ObserverRegistryAdmission>,
+    more: Vec<ObserverRegistryAdmission>,
+}
+
+impl ViewObserverAdmissions {
+    pub(crate) fn freed_bytes(&self) -> u64 {
+        self.first.iter().chain(self.more.iter()).try_fold(0_u64, |sum, entry|
+            sum.checked_add(entry.freed_bytes()))
+            .expect("observer registry custody cannot exceed original ledger ownership")
+    }
+
+    pub(crate) fn reconcile(
+        &mut self,
+        allocations: &mut crate::kernel::allocation::AllocationLedger,
+    ) -> Result<(), crate::WorkError> {
+        for entry in self.first.iter_mut().chain(self.more.iter_mut()) {
+            let bytes = entry.freed_bytes();
+            if bytes != 0 {
+                allocations.release(bytes)
+                    .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
+                entry.registry = None;
+            }
+        }
+        Ok(())
+    }
+
+    fn entry_mut(
+        &mut self,
+        ledger: &Arc<ViewLedger>,
+        allocations: &mut crate::kernel::allocation::AllocationLedger,
+        work: &mut crate::WorkCounters,
+        budget: crate::WorkBudget,
+    ) -> Result<&mut ObserverRegistryAdmission, super::MountSourceError> {
+        let identity = Arc::downgrade(ledger);
+        let mut found = None;
+        for (index, entry) in self.first.iter().chain(self.more.iter()).enumerate() {
+            work.charge(&crate::WorkCounters {
+                items_examined: 1, ..crate::WorkCounters::UNCHARGED
+            }, &budget).map_err(super::MountSourceError::Work)?;
+            if Weak::ptr_eq(&entry.ledger, &identity) { found = Some(index); break; }
+        }
+        if let Some(index) = found {
+            return Ok(if index == 0 {
+                self.first.as_mut().expect("first observer admission")
+            } else { &mut self.more[index - 1] });
+        }
+        if self.first.is_none() {
+            self.first = Some(ObserverRegistryAdmission { ledger: identity, registry: None });
+            return Ok(self.first.as_mut().expect("new first observer admission"));
+        }
+        if self.more.len() == self.more.capacity() {
+            let capacity = self.more.capacity().max(1).checked_mul(2)
+                .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))?;
+            let width = std::mem::size_of::<ObserverRegistryAdmission>();
+            let copied = crate::WorkCounters {
+                items_examined: self.more.len() as u64,
+                bytes_copied: self.more.len().checked_mul(width)
+                    .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))? as u64,
+                ..crate::WorkCounters::UNCHARGED
+            };
+            work.admit(&copied, &budget).map_err(super::MountSourceError::Work)?;
+            let bytes = capacity.checked_mul(width)
+                .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))? as u64;
+            allocations.claim_bytes(bytes, 1, work, budget).map_err(observer_allocation_error)?;
+            let mut vector = Vec::new();
+            if vector.try_reserve_exact(capacity).is_err() {
+                allocations.release(bytes).map_err(observer_allocation_error)?;
+                return Err(super::MountSourceError::Engine("observer admission allocation failed".into()));
+            }
+            let old_bytes = (self.more.capacity() * width) as u64;
+            vector.append(&mut self.more);
+            self.more = vector;
+            work.charge(&copied, &budget).map_err(super::MountSourceError::Work)?;
+            allocations.release(old_bytes).map_err(observer_allocation_error)?;
+        }
+        self.more.push(ObserverRegistryAdmission { ledger: identity, registry: None });
+        Ok(self.more.last_mut().expect("new observer admission"))
     }
 }
 
@@ -254,6 +444,27 @@ pub(super) struct ViewLedger {
     observers: ViewObservers,
 }
 
+/// Invocation-local ownership of backing buffers allocated by this ledger.
+/// The canonical allocation ledger remains in `DemandWork`.
+#[derive(Default)]
+pub(super) struct ViewLedgerAdmission {
+    bindings: Option<(u64, u64)>,
+    directories: Option<(u64, u64)>,
+    nodes: Option<(u64, u64)>,
+}
+
+impl ViewLedgerAdmission {
+    pub(super) fn reconcile(
+        &mut self,
+        ledger: &ViewLedger,
+        work: &mut crate::demand::DemandWork,
+    ) -> Result<(), super::MountSourceError> {
+        ledger.bindings.reconcile(&mut self.bindings, work)?;
+        ledger.directories.reconcile(&mut self.directories, work)?;
+        ledger.nodes.reconcile(&mut self.nodes, work)
+    }
+}
+
 impl ViewLedger {
     pub(super) fn new() -> Self {
         Self {
@@ -272,6 +483,20 @@ impl ViewLedger {
         self.observers.add(observer);
     }
 
+    pub(super) fn observe_measured(
+        self: &Arc<Self>,
+        observer: Weak<dyn ViewObserver>,
+        work: &mut crate::demand::DemandWork,
+    ) -> Result<(), super::MountSourceError> {
+        work.check().map_err(super::lazy::mount_demand_error)?;
+        let (admissions, allocations, counters, budget) =
+            work.view_observer_admission_parts().map_err(super::lazy::mount_demand_error)?;
+        let entry = admissions.entry_mut(self, allocations, counters, budget)?;
+        self.observers.add_measured(
+            observer, &mut entry.registry, allocations, counters, budget,
+        )
+    }
+
     /// A stamp at or after every change this ledger has recorded.
     pub(super) fn stamp(&self) -> ViewStamp {
         ViewStamp::of(&self.latest)
@@ -283,56 +508,90 @@ impl ViewLedger {
     /// lookup that overlaps it read the source either before it, and is
     /// invalidated here, or after it, and is already current.
     pub(super) fn record(&self, change: &ViewChange<'_>) {
+        let mut work = unbounded_view_work();
+        self.record_measured(change, &mut work, &mut ViewLedgerAdmission::default())
+            .expect("unbounded view-ledger recording failed");
+    }
+
+    pub(super) fn record_measured(
+        &self,
+        change: &ViewChange<'_>,
+        work: &mut crate::demand::DemandWork,
+        owned: &mut ViewLedgerAdmission,
+    ) -> Result<(), super::MountSourceError> {
+        use super::lazy::{mount_demand_error, mount_items, mount_vec};
+        owned.reconcile(self, work)?;
+        let observers = {
+            let entries = self.observers.0.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut live = 0_usize;
+            for observer in entries.iter() {
+                mount_items(work, 1)?;
+                if observer.strong_count() != 0 {
+                    live = live.checked_add(1).ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))?;
+                }
+            }
+            // A weak entry cannot revive after reaching zero, and registration
+            // is locked, so the second pass cannot exceed this admitted bound.
+            let mut observers = mount_vec::<Arc<dyn ViewObserver>>(live, work)?;
+            for observer in entries.iter() {
+                mount_items(work, 1)?;
+                if let Some(observer) = observer.upgrade() { observers.push(observer); }
+            }
+            // Notifications are cleanup for every recorded prefix. Admit them
+            // before changing any key, then deliver even if cancellation wins.
+            mount_items(work, observers.len())?;
+            observers
+        };
         let position = ViewStamp::next();
-        match change {
-            ViewChange::Node(file_id) => self.node_changed(*file_id, position),
-            ViewChange::Bound(path) => self.rebound(path, position),
-            ViewChange::Unbound(path, file_id) | ViewChange::Linked(path, file_id) => {
-                self.rebound(path, position);
-                self.node_changed(*file_id, position);
+        let result = (|| {
+            match change {
+                ViewChange::Node(id) => self.node_changed_measured(*id, position, work, owned)?,
+                ViewChange::Bound(path) => self.rebound_measured(path, position, work, owned)?,
+                ViewChange::Unbound(path, id) | ViewChange::Linked(path, id) => {
+                    self.rebound_measured(path, position, work, owned)?;
+                    self.node_changed_measured(*id, position, work, owned)?;
+                }
+                ViewChange::Moved { from, to, moved, replaced } => {
+                    self.rebound_measured(from, position, work, owned)?;
+                    self.rebound_measured(to, position, work, owned)?;
+                    self.node_changed_measured(*moved, position, work, owned)?;
+                    if let Some(id) = replaced { self.node_changed_measured(*id, position, work, owned)?; }
+                }
+                ViewChange::Effect(effect) => {
+                    for id in &effect.nodes { self.node_changed_measured(*id, position, work, owned)?; }
+                    for (directory, name) in &effect.names {
+                        let directory = path_key_measured(directory, work)?;
+                        let child = child_key_measured(directory, name, work)?;
+                        self.bindings.record_measured(child, position, work, &mut owned.bindings)?;
+                        self.directories.record_measured(directory, position, work, &mut owned.directories)?;
+                    }
+                    for subtree in &effect.subtrees { self.rebound_measured(subtree, position, work, owned)?; }
+                    for directory in &effect.listings {
+                        let key = path_key_measured(directory, work)?;
+                        self.directories.record_measured(key, position, work, &mut owned.directories)?;
+                    }
+                    if effect.everything { position.record_in(&self.everything); }
+                }
+                ViewChange::Everything => position.record_in(&self.everything),
+                ViewChange::Unconfirmed => position.record_in(&self.unconfirmed),
             }
-            ViewChange::Moved {
-                from,
-                to,
-                moved,
-                replaced,
-            } => {
-                self.rebound(from, position);
-                self.rebound(to, position);
-                self.node_changed(*moved, position);
-                if let Some(replaced) = replaced {
-                    self.node_changed(*replaced, position);
-                }
-            }
-            ViewChange::Effect(effect) => {
-                for file_id in &effect.nodes {
-                    self.node_changed(*file_id, position);
-                }
-                for (directory, name) in &effect.names {
-                    let directory = path_key(directory);
-                    self.bindings.record(child_key(directory, name), position);
-                    self.directories.record(directory, position);
-                }
-                for subtree in &effect.subtrees {
-                    self.rebound(subtree, position);
-                }
-                for directory in &effect.listings {
-                    self.directories.record(path_key(directory), position);
-                }
-                if effect.everything {
-                    position.record_in(&self.everything);
-                }
-            }
-            ViewChange::Everything => position.record_in(&self.everything),
-            ViewChange::Unconfirmed => {
-                position.record_in(&self.unconfirmed);
-                position.record_in(&self.latest);
-                self.observers.notify_unconfirmed(position);
-                return;
+            Ok(())
+        })();
+        // A failed prefix only invalidates more; it never hides an installed
+        // change. The observer sees the same position and origin as its keys.
+        position.record_in(&self.latest);
+        let origin = ViewOrigin::current();
+        for observer in &observers {
+            if matches!(change, ViewChange::Unconfirmed) {
+                observer.view_unconfirmed(position);
+            } else {
+                observer.view_changed(position, origin);
             }
         }
-        position.record_in(&self.latest);
-        self.observers.notify(position);
+        let bytes = (observers.capacity() * std::mem::size_of::<Arc<dyn ViewObserver>>()) as u64;
+        drop(observers);
+        work.release(bytes).map_err(mount_demand_error)?;
+        result
     }
 
     /// Whether a lookup of `path` that resolved to `file_id` (or to nothing)
@@ -347,6 +606,37 @@ impl ViewLedger {
     ) -> bool {
         stamp.precedes_none_of(&self.unconfirmed)
             && self.reported_unchanged_since(path, file_id, stamp)
+    }
+
+    pub(super) fn unchanged_since_measured(
+        &self, path: &NamespacePath, file_id: Option<FileId>, stamp: ViewStamp,
+        work: &mut crate::demand::DemandWork,
+    ) -> Result<bool, super::MountSourceError> {
+        work.check().map_err(super::lazy::mount_demand_error)?;
+        if !stamp.precedes_none_of(&self.unconfirmed) { return Ok(false); }
+        self.reported_unchanged_since_measured(path, file_id, stamp, work)
+    }
+
+    pub(super) fn reported_unchanged_since_measured(
+        &self, path: &NamespacePath, file_id: Option<FileId>, stamp: ViewStamp,
+        work: &mut crate::demand::DemandWork,
+    ) -> Result<bool, super::MountSourceError> {
+        work.check().map_err(super::lazy::mount_demand_error)?;
+        if !stamp.precedes_none_of(&self.everything) { return Ok(false); }
+        let mut terminal = key_of(&());
+        // One read of bindings covers every prefix, as in the ordinary query.
+        let bindings = self.bindings.0.read().unwrap_or_else(PoisonError::into_inner);
+        if !bindings.unchanged_key_measured(terminal, stamp, work)? { return Ok(false); }
+        for name in path.components() {
+            terminal = child_key_measured(terminal, name, work)?;
+            if !bindings.unchanged_key_measured(terminal, stamp, work)? { return Ok(false); }
+        }
+        drop(bindings);
+        if !self.directories.unchanged_key_measured(terminal, stamp, work)? { return Ok(false); }
+        if let Some(file_id) = file_id {
+            if !self.nodes.unchanged_key_measured(key_of(&file_id), stamp, work)? { return Ok(false); }
+        }
+        Ok(true)
     }
 
     /// [`Self::unchanged_since`], counting only reported changes: facts read
@@ -415,22 +705,35 @@ impl ViewLedger {
 
     /// A name's binding changed: every lookup through it, and the listing
     /// and attributes of the directory holding it, are stale.
-    fn rebound(&self, path: &NamespacePath, position: ViewStamp) {
+    fn rebound_measured(
+        &self,
+        path: &NamespacePath,
+        position: ViewStamp,
+        work: &mut crate::demand::DemandWork,
+        owned: &mut ViewLedgerAdmission,
+    ) -> Result<(), super::MountSourceError> {
         let mut parent = None;
-        let mut name = None;
-        for key in PathKeys::new(path) {
-            parent = name.replace(key);
+        let mut terminal = key_of(&());
+        for name in path.components() {
+            parent = Some(terminal);
+            terminal = child_key_measured(terminal, name, work)?;
         }
-        if let Some(name) = name {
-            self.bindings.record(name, position);
-        }
+        self.bindings.record_measured(terminal, position, work, &mut owned.bindings)?;
         if let Some(parent) = parent {
-            self.directories.record(parent, position);
+            self.directories.record_measured(parent, position, work, &mut owned.directories)?;
         }
+        Ok(())
     }
 
-    fn node_changed(&self, file_id: FileId, position: ViewStamp) {
-        self.nodes.record(key_of(&file_id), position);
+    fn node_changed_measured(
+        &self,
+        id: FileId,
+        position: ViewStamp,
+        work: &mut crate::demand::DemandWork,
+        owned: &mut ViewLedgerAdmission,
+    ) -> Result<(), super::MountSourceError> {
+        super::lazy::mount_items(work, 1)?;
+        self.nodes.record_measured(key_of(&id), position, work, &mut owned.nodes)
     }
 }
 
@@ -442,23 +745,148 @@ struct ChangeMap(RwLock<ChangePositions>);
 #[derive(Default)]
 struct ChangePositions {
     floor: u64,
-    latest: HashMap<u64, u64>,
+    slots: Vec<Option<(u64, u64)>>,
+    length: usize,
+    allocation_generation: u64,
+}
+
+impl ChangePositions {
+    fn get(&self, key: u64) -> Option<u64> {
+        self.get_visiting(key, || Ok::<(), std::convert::Infallible>(()))
+            .expect("ordinary view probe is infallible")
+    }
+
+    fn get_visiting<E>(
+        &self, key: u64, mut visit: impl FnMut() -> Result<(), E>,
+    ) -> Result<Option<u64>, E> {
+        if self.slots.is_empty() { return Ok(None); }
+        let mask = self.slots.len() - 1;
+        let mut index = key as usize & mask;
+        loop {
+            visit()?;
+            match self.slots.get(index).copied().flatten() {
+                None => return Ok(None),
+                Some((stored, at)) if stored == key => return Ok(Some(at)),
+                Some(_) => index = (index + 1) & mask,
+            }
+        }
+    }
+
+    fn unchanged_key_measured(
+        &self, key: u64, stamp: ViewStamp, work: &mut crate::demand::DemandWork,
+    ) -> Result<bool, super::MountSourceError> {
+        Ok(self.get_visiting(key, || super::lazy::mount_items(work, 1))?
+            .map_or(self.floor, |at| at.max(self.floor)) <= stamp.0)
+    }
 }
 
 impl ChangeMap {
-    fn record(&self, key: u64, position: ViewStamp) {
-        let mut positions = self.0.write().unwrap_or_else(PoisonError::into_inner);
-        if positions.latest.len() >= MAXIMUM_TRACKED_KEYS && !positions.latest.contains_key(&key) {
-            // Every folded key reads as the floor, which is no earlier than
-            // anything it recorded: folding only invalidates more.
-            let positions = &mut *positions;
-            positions.floor = positions
-                .latest
-                .drain()
-                .fold(positions.floor, |floor, (_, at)| floor.max(at));
+    fn reconcile(
+        &self,
+        owned: &mut Option<(u64, u64)>,
+        work: &mut crate::demand::DemandWork,
+    ) -> Result<(), super::MountSourceError> {
+        use super::lazy::mount_demand_error;
+        if let Some((generation, bytes)) = *owned {
+            if generation != self.0.read().unwrap_or_else(PoisonError::into_inner).allocation_generation {
+                work.release(bytes).map_err(mount_demand_error)?;
+                *owned = None;
+            }
         }
-        let latest = positions.latest.entry(key).or_insert(0);
-        *latest = (*latest).max(position.0);
+        Ok(())
+    }
+
+    fn record_measured(
+        &self,
+        key: u64,
+        position: ViewStamp,
+        work: &mut crate::demand::DemandWork,
+        owned: &mut Option<(u64, u64)>,
+    ) -> Result<(), super::MountSourceError> {
+        use super::lazy::{mount_demand_error, mount_items, mount_vec};
+        let mut positions = self.0.write().unwrap_or_else(PoisonError::into_inner);
+        if let Some((generation, bytes)) = *owned {
+            if generation != positions.allocation_generation {
+                work.release(bytes).map_err(mount_demand_error)?;
+                *owned = None;
+            }
+        }
+        loop {
+            if !positions.slots.is_empty() {
+                let mask = positions.slots.len() - 1;
+                let mut index = key as usize & mask;
+                loop {
+                    mount_items(work, 1)?;
+                    match positions.slots.get(index).copied().flatten() {
+                        Some((stored, at)) if stored == key => {
+                            *positions.slots.get_mut(index).ok_or(super::MountSourceError::Stale)? = Some((key, at.max(position.0)));
+                            return Ok(());
+                        }
+                        Some(_) => index = (index + 1) & mask,
+                        None => {
+                            if positions.length < MAXIMUM_TRACKED_KEYS
+                                && (positions.length + 1) * 2 <= positions.slots.len() {
+                                *positions.slots.get_mut(index).ok_or(super::MountSourceError::Stale)? = Some((key, position.0));
+                                positions.length += 1;
+                                return Ok(());
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            if positions.length == MAXIMUM_TRACKED_KEYS {
+                mount_items(work, positions.slots.len())?;
+                positions.floor = positions.slots.iter().flatten().fold(positions.floor, |floor, (_, at)| floor.max(*at));
+                positions.slots.fill(None);
+                positions.length = 0;
+                continue;
+            }
+            let old_bytes = (positions.slots.capacity() * std::mem::size_of::<Option<(u64, u64)>>()) as u64;
+            let borrowed_old = owned.is_none();
+            if borrowed_old { work.adopt(old_bytes).map_err(mount_demand_error)?; }
+            let count = positions.slots.len().max(4).saturating_mul(2).min(MAXIMUM_TRACKED_KEYS * 2);
+            let new_bytes = (count * std::mem::size_of::<Option<(u64, u64)>>()) as u64;
+            let mut replacement = match mount_vec(count, work) {
+                Ok(replacement) => replacement,
+                Err(error) => {
+                    if borrowed_old { work.release(old_bytes).map_err(mount_demand_error)?; }
+                    return Err(error);
+                }
+            };
+            replacement.resize(count, None);
+            let rehashed = (|| -> Result<(), super::MountSourceError> {
+            for entry in &positions.slots {
+                mount_items(work, 1)?;
+                if let Some((stored, at)) = entry {
+                    let mut index = *stored as usize & (count - 1);
+                    loop {
+                        mount_items(work, 1)?;
+                        let slot = replacement.get_mut(index).ok_or(super::MountSourceError::Stale)?;
+                        if slot.is_none() {
+                            work.charge(crate::WorkCounters {
+                                bytes_copied: std::mem::size_of::<Option<(u64, u64)>>() as u64,
+                                ..crate::WorkCounters::default()
+                            }).map_err(mount_demand_error)?;
+                            *slot = Some((*stored, *at));
+                            break;
+                        }
+                        index = (index + 1) & (count - 1);
+                    }
+                }
+            }
+                Ok(())
+            })();
+            if let Err(error) = rehashed {
+                work.release(new_bytes).map_err(mount_demand_error)?;
+                if borrowed_old { work.release(old_bytes).map_err(mount_demand_error)?; }
+                return Err(error);
+            }
+            positions.slots = replacement;
+            positions.allocation_generation += 1;
+            work.release(old_bytes).map_err(mount_demand_error)?;
+            *owned = Some((positions.allocation_generation, new_bytes));
+        }
     }
 
     /// Runs `check` with a test of whether one key recorded nothing after
@@ -470,12 +898,16 @@ impl ChangeMap {
     ) -> bool {
         let positions = self.0.read().unwrap_or_else(PoisonError::into_inner);
         check(&|key| {
-            positions
-                .latest
-                .get(&key)
-                .map_or(positions.floor, |at| (*at).max(positions.floor))
+            positions.get(key).map_or(positions.floor, |at| at.max(positions.floor))
                 <= stamp.0
         })
+    }
+
+    fn unchanged_key_measured(
+        &self, key: u64, stamp: ViewStamp, work: &mut crate::demand::DemandWork,
+    ) -> Result<bool, super::MountSourceError> {
+        self.0.read().unwrap_or_else(PoisonError::into_inner)
+            .unchanged_key_measured(key, stamp, work)
     }
 }
 
@@ -509,9 +941,6 @@ impl Iterator for PathKeys<'_> {
     }
 }
 
-fn path_key(path: &NamespacePath) -> u64 {
-    PathKeys::new(path).last().unwrap_or_else(|| key_of(&()))
-}
 
 /// Keys `name` beneath `parent` by its spelling fold: the name's Unicode
 /// text, canonically composed and case-folded, whatever its encoding, or
@@ -520,55 +949,144 @@ fn path_key(path: &NamespacePath) -> u64 {
 /// distinct names that share it only share positions, which can only
 /// invalidate more.
 fn child_key(parent: u64, name: &LogicalName) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    hasher.write_u64(parent);
-    hash_spelling_fold(name, &mut hasher);
-    hasher.finish()
+    let mut work = unbounded_view_work();
+    child_key_measured(parent, name, &mut work).expect("unbounded view key failed")
 }
 
-fn hash_spelling_fold(name: &LogicalName, hasher: &mut DefaultHasher) {
-    /// Separates folded text from raw bytes that happen to equal it.
+fn path_key_measured(
+    path: &NamespacePath,
+    work: &mut crate::demand::DemandWork,
+) -> Result<u64, super::MountSourceError> {
+    let mut key = key_of(&());
+    for name in path.components() { key = child_key_measured(key, name, work)?; }
+    Ok(key)
+}
+
+fn child_key_measured(
+    parent: u64,
+    name: &LogicalName,
+    work: &mut crate::demand::DemandWork,
+) -> Result<u64, super::MountSourceError> {
+    use super::lazy::mount_items;
     const TEXT: u8 = 1;
     const RAW: u8 = 2;
+    mount_items(work, 1)?;
+    let mut hasher = DefaultHasher::new();
+    hasher.write_u64(parent);
     let bytes = name.as_bytes();
-    let text = match name.encoding() {
+    match name.encoding() {
         NameEncoding::Utf8 | NameEncoding::PosixBytes => {
             if bytes.is_ascii() {
+                mount_items(work, bytes.len())?;
                 hasher.write_u8(TEXT);
-                hash_ascii_fold(bytes.iter().copied(), hasher);
-                return;
+                hash_ascii_fold(bytes.iter().copied(), &mut hasher);
+            } else if let Ok(text) = std::str::from_utf8(bytes) {
+                hasher.write_u8(TEXT);
+                hash_unicode_fold(text.chars(), &mut hasher, work)?;
+            } else {
+                mount_items(work, bytes.len())?;
+                hasher.write_u8(RAW);
+                hasher.write(bytes);
             }
-            std::str::from_utf8(bytes)
-                .ok()
-                .map(std::borrow::Cow::Borrowed)
         }
-        NameEncoding::WindowsUtf16Le => match crate::kernel::types::utf16le_units(bytes) {
-            Some(units) if units.clone().all(|unit| unit < 0x80) => {
+        NameEncoding::WindowsUtf16Le => {
+            let units = crate::kernel::types::utf16le_units(bytes).ok_or(super::MountSourceError::Stale)?;
+            mount_items(work, bytes.len() / 2)?;
+            if units.clone().all(|unit| unit < 0x80) {
                 hasher.write_u8(TEXT);
-                hash_ascii_fold(units.map(|unit| unit.to_le_bytes()[0]), hasher);
-                return;
+                hash_ascii_fold(units.map(|unit| unit.to_le_bytes()[0]), &mut hasher);
+            } else {
+                let mut valid = true;
+                for decoded in char::decode_utf16(units.clone()) {
+                    mount_items(work, 1)?;
+                    if decoded.is_err() { valid = false; break; }
+                }
+                if valid {
+                    hasher.write_u8(TEXT);
+                    hash_unicode_fold(char::decode_utf16(units).filter_map(Result::ok), &mut hasher, work)?;
+                } else {
+                    mount_items(work, bytes.len())?;
+                    hasher.write_u8(RAW);
+                    hasher.write(bytes);
+                }
             }
-            Some(units) => char::decode_utf16(units)
-                .collect::<Result<String, _>>()
-                .ok()
-                .map(std::borrow::Cow::Owned),
-            None => None,
-        },
-    };
-    let Some(text) = text else {
-        hasher.write_u8(RAW);
-        hasher.write(bytes);
-        return;
-    };
-    hasher.write_u8(TEXT);
-    let mut encoded = [0_u8; 4];
-    for folded in text
-        .nfc()
-        .flat_map(char::to_uppercase)
-        .flat_map(char::to_lowercase)
-    {
-        hasher.write(folded.encode_utf8(&mut encoded).as_bytes());
+        }
     }
+    Ok(hasher.finish())
+}
+
+/// The same NFC spelling fold, with a single explicitly owned buffer instead
+/// of normalization iterators whose internal spill allocations are opaque.
+fn hash_unicode_fold<I: Iterator<Item = char> + Clone>(
+    text: I,
+    hasher: &mut DefaultHasher,
+    work: &mut crate::demand::DemandWork,
+) -> Result<(), super::MountSourceError> {
+    use super::lazy::{mount_demand_error, mount_items, mount_vec};
+    use unicode_normalization::char::{canonical_combining_class, compose, decompose_canonical};
+    let mut count = 0_usize;
+    for scalar in text.clone() {
+        mount_items(work, 1)?;
+        decompose_canonical(scalar, |_| count += 1);
+    }
+    let mut decomposed = mount_vec::<(u8, char)>(count, work)?;
+    for scalar in text {
+        let mut emitted = 0;
+        decompose_canonical(scalar, |_| emitted += 1);
+        mount_items(work, emitted)?;
+        decompose_canonical(scalar, |scalar| decomposed.push((canonical_combining_class(scalar), scalar)));
+    }
+    // Canonical ordering is stable within each combining sequence. In-place
+    // insertion makes every comparison/move interruptible and uses no scratch.
+    for index in 1..decomposed.len() {
+        let value = *decomposed.get(index).ok_or(super::MountSourceError::Stale)?;
+        if value.0 == 0 { continue; }
+        let mut position = index;
+        while position > 0 {
+            mount_items(work, 1)?;
+            let prior = *decomposed.get(position - 1).ok_or(super::MountSourceError::Stale)?;
+            if prior.0 <= value.0 { break; }
+            work.charge(crate::WorkCounters {
+                bytes_copied: std::mem::size_of::<(u8, char)>() as u64,
+                ..crate::WorkCounters::default()
+            }).map_err(mount_demand_error)?;
+            *decomposed.get_mut(position).ok_or(super::MountSourceError::Stale)? = prior;
+            position -= 1;
+        }
+        if position != index {
+            *decomposed.get_mut(position).ok_or(super::MountSourceError::Stale)? = value;
+        }
+    }
+    let mut written = 0;
+    let mut starter: Option<usize> = None;
+    let mut last_class = 0;
+    for read in 0..decomposed.len() {
+        mount_items(work, 1)?;
+        let value = *decomposed.get(read).ok_or(super::MountSourceError::Stale)?;
+        if let Some(starter) = starter {
+            if last_class == 0 || last_class < value.0 {
+                let prior = decomposed.get(starter).ok_or(super::MountSourceError::Stale)?.1;
+                if let Some(composed) = compose(prior, value.1) {
+                    decomposed.get_mut(starter).ok_or(super::MountSourceError::Stale)?.1 = composed;
+                    continue;
+                }
+            }
+        }
+        if value.0 == 0 { starter = Some(written); }
+        last_class = value.0;
+        *decomposed.get_mut(written).ok_or(super::MountSourceError::Stale)? = value;
+        written += 1;
+    }
+    let mut encoded = [0_u8; 4];
+    for (_, scalar) in decomposed.get(..written).ok_or(super::MountSourceError::Stale)? {
+        for folded in scalar.to_uppercase().flat_map(char::to_lowercase) {
+            mount_items(work, 1)?;
+            hasher.write(folded.encode_utf8(&mut encoded).as_bytes());
+        }
+    }
+    drop(decomposed);
+    work.release((count * std::mem::size_of::<(u8, char)>()) as u64).map_err(mount_demand_error)?;
+    Ok(())
 }
 
 /// Hashes ASCII text lowercased, exactly as the Unicode fold hashes it.
@@ -596,7 +1114,7 @@ fn key_of(value: &impl Hash) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAXIMUM_TRACKED_KEYS, ViewChange, ViewLedger, ViewOrigin, ViewStamp};
+    use super::{MAXIMUM_TRACKED_KEYS, ViewChange, ViewEffect, ViewLedger, ViewLedgerAdmission, ViewObserver, ViewOrigin, ViewStamp};
     use crate::FileId;
     use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
     use crate::model::VolumeLimits;
@@ -615,6 +1133,125 @@ mod tests {
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(NamespacePath::new(components, limits)?)
+    }
+
+    #[test]
+    fn bounded_ledger_denial_retains_only_recorded_effect_prefix()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = crate::CancellationToken::new();
+        let first = FileId::from_bytes([1; 16]);
+        let second = FileId::from_bytes([2; 16]);
+        let probe = ViewLedger::new();
+        let mut admitted = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+        probe.record_measured(&ViewChange::Node(first), &mut admitted, &mut ViewLedgerAdmission::default())?;
+        let ledger = ViewLedger::new();
+        let before = ledger.stamp();
+        let mut work = crate::demand::DemandWork::new(crate::WorkBudget {
+            items_examined: admitted.work.items_examined,
+            ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation);
+        let effect = ViewEffect { nodes: vec![first, second], ..ViewEffect::default() };
+        let failure = ledger.record_measured(&ViewChange::Effect(&effect), &mut work, &mut ViewLedgerAdmission::default())
+            .expect_err("the second key must not pass the first-key allowance");
+        assert!(matches!(failure, super::super::MountSourceError::Work(_)));
+        assert!(!ledger.node_unchanged_since(first, before));
+        assert!(ledger.node_unchanged_since(second, before));
+        assert_eq!(work.work, admitted.work);
+        let untouched = ViewLedger::new();
+        let mut denied = crate::demand::DemandWork::new(crate::WorkBudget {
+            allocation_operations: 0, ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation);
+        assert!(untouched.record_measured(&ViewChange::Node(first), &mut denied, &mut ViewLedgerAdmission::default()).is_err());
+        assert_eq!(denied.work.allocation_operations, 0);
+        assert_eq!(denied.work.peak_allocation_bytes, 0);
+        assert!(untouched.node_unchanged_since(first, before));
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_ledger_reconciles_external_backing_replacement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = crate::CancellationToken::new();
+        let ledger = ViewLedger::new();
+        let first = FileId::from_bytes([1; 16]);
+        let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+        let mut ownership = ViewLedgerAdmission::default();
+        ledger.record_measured(&ViewChange::Node(first), &mut work, &mut ownership)?;
+        let generation = ownership.nodes.expect("owned initial backing").0;
+        assert!(work.live_allocation_bytes() > 0);
+        for byte in 2..=8 {
+            ledger.record(&ViewChange::Node(FileId::from_bytes([byte; 16])));
+        }
+        assert!(ledger.nodes.0.read().expect("change map").allocation_generation > generation);
+        ledger.record_measured(&ViewChange::Node(first), &mut work, &mut ownership)?;
+        assert!(ownership.nodes.is_none());
+        assert_eq!(work.live_allocation_bytes(), 0);
+        assert_eq!(work.work.allocation_operations, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_ledger_releases_external_replacement_before_observer_snapshot()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct Count(std::sync::atomic::AtomicUsize);
+        impl ViewObserver for Count {
+            fn view_changed(&self, _: ViewStamp, _: ViewOrigin) {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let cancellation = crate::CancellationToken::new();
+        let ledger = ViewLedger::new();
+        let first = FileId::from_bytes([1; 16]);
+        let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+        let mut ownership = ViewLedgerAdmission::default();
+        ledger.record_measured(&ViewChange::Node(first), &mut work, &mut ownership)?;
+        let peak = work.work.peak_allocation_bytes;
+        for byte in 2..=8 {
+            ledger.record(&ViewChange::Node(FileId::from_bytes([byte; 16])));
+        }
+        let counted = Arc::new(Count(Default::default()));
+        let observer: Arc<dyn ViewObserver> = counted.clone();
+        ledger.observe(Arc::downgrade(&observer));
+        work.budget.peak_allocation_bytes = peak;
+        ledger.record_measured(&ViewChange::Node(first), &mut work, &mut ownership)?;
+        assert_eq!(counted.0.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(ownership.nodes.is_none());
+        assert_eq!(work.live_allocation_bytes(), 0);
+        assert_eq!(work.work.allocation_operations, 2);
+        assert_eq!(work.work.peak_allocation_bytes, peak);
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_unicode_fold_matches_canonical_nfc_model()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use unicode_normalization::UnicodeNormalization as _;
+        let cases = [
+            "Résumé", "RE\u{301}SUME\u{301}", "\u{1100}\u{1161}\u{11a8}",
+            "\u{301}\u{327}A", "a\u{315}\u{300}", "\u{344}\u{315}\u{300}",
+            "Straße", "\u{212b}\u{301}", "\u{1e9b}\u{323}", "\u{1d160}\u{1d165}",
+        ];
+        for text in cases {
+            let mut expected = DefaultHasher::new();
+            expected.write_u64(37);
+            expected.write_u8(1);
+            let mut encoded = [0; 4];
+            for scalar in text.nfc().flat_map(char::to_uppercase).flat_map(char::to_lowercase) {
+                expected.write(scalar.encode_utf8(&mut encoded).as_bytes());
+            }
+            for encoding in [NameEncoding::Utf8, NameEncoding::PosixBytes, NameEncoding::WindowsUtf16Le] {
+                let bytes = if encoding == NameEncoding::WindowsUtf16Le {
+                    text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+                } else { text.as_bytes().to_vec() };
+                let name = LogicalName::new(encoding, bytes, 510)?;
+                let cancellation = crate::CancellationToken::new();
+                let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+                assert_eq!(child_key_measured(37, &name, &mut work)?, expected.finish(), "{text:?} {encoding:?}");
+                assert!(work.work.items_examined > 0);
+                assert_eq!(work.work.allocation_operations, 1);
+            }
+        }
+        Ok(())
     }
 
     #[test]

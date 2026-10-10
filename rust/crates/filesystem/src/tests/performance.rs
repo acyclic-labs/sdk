@@ -21,6 +21,32 @@ fn finite_admission_checks_every_declared_work_allowance() -> Result<(), serde_j
     Ok(())
 }
 
+#[test]
+fn budget_intersection_preserves_every_declared_allowance() -> Result<(), serde_json::Error> {
+    let fields = serde_json::to_value(WorkBudget::default())?;
+    let names = fields.as_object()
+        .ok_or_else(|| serde::de::Error::custom("work counters must be an object"))?;
+    let mut left = fields.clone();
+    let mut right = fields.clone();
+    let mut expected = fields.clone();
+    for (index, name) in names.keys().enumerate() {
+        let low = (index + 1) as u64;
+        let high = low + 24;
+        let (a, b) = if index % 2 == 0 { (low, high) } else { (high, low) };
+        left[name] = serde_json::json!(a);
+        right[name] = serde_json::json!(b);
+        expected[name] = serde_json::json!(low);
+    }
+    let left: WorkBudget = serde_json::from_value(left)?;
+    let right: WorkBudget = serde_json::from_value(right)?;
+    let expected: WorkBudget = serde_json::from_value(expected)?;
+    assert_eq!(left.intersect_budget(right), expected);
+    assert_eq!(right.intersect_budget(left), expected);
+    assert_eq!(left.intersect_budget(WorkBudget::UNBOUNDED), left);
+    assert_eq!(left.intersect_budget(WorkBudget::default()), WorkBudget::default());
+    Ok(())
+}
+
 #[derive(Debug, Error, PartialEq)]
 enum OuterError {
     #[error("inner")]

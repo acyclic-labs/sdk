@@ -5000,10 +5000,10 @@ where
 {
     let diff = from
         .diff_to_bounded(to, maximum_changes, WorkBudget::UNBOUNDED, cancellation)
-        .await?;
+        .await.map_err(|failure| failure.error)?;
     let paths = diff
         .changed_paths_bounded(maximum_changes, WorkBudget::UNBOUNDED, cancellation)
-        .await?
+        .await.map_err(|failure| failure.error)?
         .value;
     let mut before_policies = BTreeMap::new();
     let mut after_policies = BTreeMap::new();

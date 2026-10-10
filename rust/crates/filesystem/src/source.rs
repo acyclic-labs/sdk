@@ -626,10 +626,7 @@ fn reconcile_outcome_from_fact<A, O>(
 ) -> Result<ReconcileOutcome<A, O>, SourceError> {
     match fact.state {
         DurableSourceState::Clean | DurableSourceState::Sealed => {
-            Ok(ReconcileOutcome::Clean(Generation {
-                workspace: session.workspace.clone(),
-                id: fact.generation_id,
-            }))
+            Ok(ReconcileOutcome::Clean(Generation { workspace: session.workspace.clone(), id: fact.generation_id, publication_closure: None }))
         }
         DurableSourceState::NeedsRescan(reason) => {
             Ok(ReconcileOutcome::NeedsRescan(watch_invalidation(reason)))
@@ -917,10 +914,7 @@ async fn replay_reconcile_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>
         .await?
     };
     let outcome = match fact.state {
-        DurableSourceState::Clean => ReconcileOutcome::Clean(Generation {
-            workspace: session.workspace.clone(),
-            id: fact.generation_id,
-        }),
+        DurableSourceState::Clean => ReconcileOutcome::Clean(Generation { workspace: session.workspace.clone(), id: fact.generation_id, publication_closure: None }),
         DurableSourceState::NeedsRescan(reason) => {
             ReconcileOutcome::NeedsRescan(watch_invalidation(reason))
         }
@@ -982,10 +976,7 @@ async fn replay_seal_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .await?
     };
     match fact.state {
-        DurableSourceState::Sealed => Ok(Some(Generation {
-            workspace: session.workspace.clone(),
-            id: fact.generation_id,
-        })),
+        DurableSourceState::Sealed => Ok(Some(Generation { workspace: session.workspace.clone(), id: fact.generation_id, publication_closure: None })),
         DurableSourceState::Conflict => Err(SourceError::Conflict),
         DurableSourceState::NeedsRescan(_) => Err(SourceError::Engine(
             "source could not reach a clean sealed state".to_owned(),

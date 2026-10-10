@@ -340,12 +340,25 @@ pub struct BlobBuild {
     pub work: WorkCounters,
 }
 
+/// An owned source chunk together with its actual logical backing capacity.
+///
+/// A slice may retain more bytes than it exposes. Static storage owns no
+/// allocation; allocator/refcount bookkeeping headers are not logical payload.
+#[derive(Debug)]
+pub struct OwnedSourceChunk {
+    /// Exact bytes supplied by this read.
+    pub bytes: Bytes,
+    /// Payload capacity retained by these bytes, not their visible length.
+    pub logical_owned_bytes: u64,
+}
+
 /// Nonblocking bounded byte source for browser, network, and native streams.
 pub trait AsyncBlobSource {
     /// Fills some prefix of `destination`, returning zero only at end of stream.
     fn read<'a>(
         &'a mut self,
         destination: &'a mut [u8],
+        budget: WorkBudget,
         cancellation: &'a CancellationToken,
     ) -> impl Future<Output = std::io::Result<usize>>;
 
@@ -353,8 +366,9 @@ pub trait AsyncBlobSource {
     fn read_owned(
         &mut self,
         _maximum: usize,
+        _budget: WorkBudget,
         _cancellation: &CancellationToken,
-    ) -> impl Future<Output = std::io::Result<Option<Bytes>>> {
+    ) -> impl Future<Output = std::io::Result<Option<OwnedSourceChunk>>> {
         async { Ok(None) }
     }
 
@@ -370,6 +384,7 @@ impl<T: Read> AsyncBlobSource for T {
     async fn read<'a>(
         &'a mut self,
         destination: &'a mut [u8],
+        budget: WorkBudget,
         cancellation: &'a CancellationToken,
     ) -> std::io::Result<usize> {
         if cancellation.is_cancelled() {
@@ -378,7 +393,12 @@ impl<T: Read> AsyncBlobSource for T {
                 "blob source read cancelled",
             ));
         }
-        Read::read(self, destination)
+        let maximum = destination.len().min(usize::try_from(budget.source_bytes_read).unwrap_or(usize::MAX));
+        if maximum == 0 && !destination.is_empty() {
+            return Err(std::io::Error::other("blob source byte budget exhausted"));
+        }
+        Read::read(self, destination.get_mut(..maximum)
+            .ok_or_else(|| std::io::Error::other("invalid bounded source buffer"))?)
     }
 }
 
@@ -430,7 +450,11 @@ pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
             .saturating_add(1);
         let allocation = chunk_capacity.min(usize::try_from(detection_bytes).unwrap_or(usize::MAX));
         let retained = batching.retained_bytes();
-        let owned = source.read_owned(allocation, cancellation).await;
+        let owned = source.read_owned(
+            allocation,
+            source_read_budget(work, budget, retained.saturating_add(index.live_allocation_bytes))?,
+            cancellation,
+        ).await;
         let source_work = source.take_work();
         if let Some(measured) = source_work {
             work = charge_source_work(
@@ -442,10 +466,10 @@ pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
         }
         let owned = owned.map_err(|error| build_failed(BlobBuildError::Source(error), work))?;
         if let Some(chunk) = owned {
-            if chunk.is_empty() {
+            if chunk.bytes.is_empty() {
                 break;
             }
-            let filled = chunk.len();
+            let filled = chunk.bytes.len();
             (logical_bytes, work) = accept_owned_blob_chunk(
                 &mut batching,
                 &mut index,
@@ -518,6 +542,18 @@ pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
     })
 }
 
+fn source_read_budget(
+    work: WorkCounters,
+    budget: WorkBudget,
+    live_bytes: u64,
+) -> Result<WorkBudget, BlobBuildFailure> {
+    let mut remaining = work.remaining(budget)
+        .map_err(|error| build_failed(BlobBuildError::Work(error), work))?;
+    remaining.peak_allocation_bytes = remaining.peak_allocation_bytes.checked_sub(live_bytes)
+        .ok_or_else(|| build_failed(BlobBuildError::Work(WorkError::Overflow), work))?;
+    Ok(remaining)
+}
+
 async fn read_blob_chunk<R: AsyncBlobSource>(
     source: &mut R,
     allocation: usize,
@@ -536,7 +572,10 @@ async fn read_blob_chunk<R: AsyncBlobSource>(
             return Err(build_failed(BlobBuildError::Cancelled, work));
         }
         #[allow(clippy::indexing_slicing, reason = "bounded by while loop above")]
-        let read = AsyncBlobSource::read(source, &mut bytes[filled..], cancellation).await;
+        let read = AsyncBlobSource::read(
+            source, &mut bytes[filled..], source_read_budget(work, budget, simultaneous)?,
+            cancellation,
+        ).await;
         let measured = source.take_work();
         if let Some(measured) = measured {
             work = charge_source_work(work, measured, simultaneous, budget)?;
@@ -588,7 +627,7 @@ fn charge_source_work(
 async fn accept_owned_blob_chunk<S: AsyncObjectStore>(
     batching: &mut BlobBatchStore<'_, S>,
     index: &mut BlobIndexBuilder,
-    chunk: Bytes,
+    chunk: OwnedSourceChunk,
     allocation: usize,
     retained: u64,
     owned_source: bool,
@@ -599,14 +638,15 @@ async fn accept_owned_blob_chunk<S: AsyncObjectStore>(
     cancellation: &CancellationToken,
 ) -> Result<(u64, WorkCounters), BlobBuildFailure> {
     in_heap(move || async move {
+        let OwnedSourceChunk { bytes: chunk, logical_owned_bytes: retained_capacity } = chunk;
         if chunk.len() > allocation {
             return Err(build_failed(BlobBuildError::TooLarge, work));
         }
-        let retained_capacity = usize_to_u64(chunk.len());
+        let chunk_bytes = usize_to_u64(chunk.len());
         let prospective = build_add(
             work,
             WorkCounters {
-                source_bytes_read: if owned_source { retained_capacity } else { 0 },
+                source_bytes_read: if owned_source { chunk_bytes } else { 0 },
                 peak_allocation_bytes: index
                     .live_allocation_bytes
                     .saturating_add(retained)
@@ -616,12 +656,12 @@ async fn accept_owned_blob_chunk<S: AsyncObjectStore>(
         )?;
         build_verify(prospective, budget)?;
         let logical_bytes = logical_bytes
-            .checked_add(retained_capacity)
+            .checked_add(chunk_bytes)
             .ok_or_else(|| build_failed(BlobBuildError::TooLarge, prospective))?;
         if logical_bytes > maximum_blob_bytes {
             return Err(build_failed(BlobBuildError::TooLarge, prospective));
         }
-        let first_offset = logical_bytes - retained_capacity;
+        let first_offset = logical_bytes - chunk_bytes;
         let chunk = HashedObject::new(ObjectKind::BlobChunk, chunk);
         let chunk_id = chunk.object_id();
         let mut work = build_put(
@@ -1317,10 +1357,17 @@ fn build_failed(error: BlobBuildError, work: WorkCounters) -> BlobBuildFailure {
 pub struct BlobRead {
     /// Requested bytes.
     pub bytes: Bytes,
+    /// Actual controlled output-vector capacity retained by `bytes`.
+    pub logical_owned_bytes: u64,
     /// Exact kernel and backend work.
     pub work: WorkCounters,
     /// Exact authenticated forward page or chunk exposed by this traversal.
     pub next_residency: Option<ResidencyHint>,
+}
+
+impl BlobRead {
+    /// Exact logical payload capacity measured before the buffer becomes Bytes.
+    pub fn logical_owned_bytes(&self) -> u64 { self.logical_owned_bytes }
 }
 
 /// Reads only blob-index pages and chunks intersecting one exact range.
@@ -1503,6 +1550,10 @@ impl BlobRangeMachine {
         if output.try_reserve_exact(allocation).is_err() {
             return Err(failed(BlobReadError::AllocationFailed, work));
         }
+        let excess = usize_to_u64(output.capacity()).checked_sub(range.length)
+            .ok_or_else(|| failed(BlobReadError::Work(WorkError::Overflow), work))?;
+        allocations.claim_bytes(excess, 0, &mut work, budget)
+            .map_err(|error| failed(error.into(), work))?;
         Ok(Self {
             range,
             range_end,
@@ -1526,6 +1577,7 @@ impl BlobRangeMachine {
             return Err(failed(BlobReadError::IncompleteCoverage, self.work));
         }
         Ok(BlobRead {
+            logical_owned_bytes: usize_to_u64(self.output.capacity()),
             bytes: Bytes::from(std::mem::take(&mut self.output)),
             work: self.work,
             next_residency: self.successor.map(|(_, hint)| hint),

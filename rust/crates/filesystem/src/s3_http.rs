@@ -2003,6 +2003,7 @@ impl AsyncBlobSource for StreamingBodySource {
     async fn read<'a>(
         &'a mut self,
         destination: &'a mut [u8],
+        _budget: WorkBudget,
         cancellation: &'a CancellationToken,
     ) -> std::io::Result<usize> {
         if cancellation.is_cancelled() {

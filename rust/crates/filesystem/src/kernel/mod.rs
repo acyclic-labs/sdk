@@ -1,6 +1,6 @@
 //! Canonical authenticated filesystem page formats and sparse algorithms.
 
-mod allocation;
+pub(crate) mod allocation;
 mod attribute;
 mod attribute_access;
 mod attribute_list;
@@ -53,8 +53,9 @@ pub(crate) mod types;
 mod volume;
 
 pub use attribute::{
-    AttributeChild, AttributeClass, AttributeEntry, AttributeError, AttributeName, AttributePage,
-    attribute_page_id, decode_attribute_page, encode_attribute_page,
+    AttributeChild, AttributeClass, AttributeEncodeError, AttributeEntry, AttributeError,
+    AttributeName, AttributePage, attribute_page_id, decode_attribute_page, encode_attribute_page,
+    encode_attribute_page_measured,
 };
 pub use attribute_access::{
     AttributeBatchLookup, AttributeLookup, AttributeLookupError, AttributeLookupFailure,
@@ -69,7 +70,7 @@ pub use attribute_mutation::{
     AttributeSemanticError, apply_attribute_mutations, apply_attribute_mutations_async,
 };
 pub use blob::{
-    AsyncBlobSource, BlobBuild, BlobBuildError, BlobBuildFailure, BlobBuildOptions, BlobChild,
+    AsyncBlobSource, OwnedSourceChunk, BlobBuild, BlobBuildError, BlobBuildFailure, BlobBuildOptions, BlobChild,
     BlobChunkRef, BlobNode, BlobPage, BlobRead, BlobReadError, BlobReadFailure, blob_page_id,
     build_blob, build_blob_async, decode_blob_page, encode_blob_page, read_blob_range,
     read_blob_range_async,
@@ -114,20 +115,24 @@ pub use file_read::{
 };
 pub use file_table::{
     FilePayload, FilePayloadKind, FileRecord, FileRecordBatchLookup, FileRecordLookup,
-    FileRecordReadError, FileRecordReadFailure, FileTableChild, FileTableError, FileTablePage,
-    InlineFileData, InlineFileDataError, MAXIMUM_INLINE_FILE_BYTES, decode_file_table_page,
-    encode_file_table_page, file_table_page_id, lookup_file_record, lookup_file_record_async,
+    FileRecordReadError, FileRecordReadFailure, FileTableChild, FileTableEncodeError, FileTableError,
+    FileTablePage, InlineFileData, InlineFileDataError, MAXIMUM_INLINE_FILE_BYTES,
+    decode_file_table_page, encode_file_table_page, encode_file_table_page_measured,
+    file_table_page_id, lookup_file_record, lookup_file_record_async,
     lookup_file_records, lookup_file_records_async,
 };
-pub(crate) use file_table::{decode_file_record, encode_file_record};
+pub(crate) use file_table::{
+    decode_file_record, encode_file_record, encode_file_record_measured,
+    encode_file_table_leaf_records_measured,
+};
 pub use file_table_mutation::{
     FileTableMutation, FileTableMutationError, FileTableMutationFailure, FileTableMutationReceipt,
     FileTableSemanticError, apply_file_table_mutations, apply_file_table_mutations_async,
 };
 pub(crate) use generation::generation_root_parent_count;
 pub use generation::{
-    GenerationRoot, MAXIMUM_GENERATION_ROOT_BYTES, decode_generation_root, encode_generation_root,
-    generation_root_id,
+    GenerationRoot, GenerationRootEncodeError, MAXIMUM_GENERATION_ROOT_BYTES,
+    decode_generation_root, encode_generation_root, encode_generation_root_measured, generation_root_id,
 };
 pub(crate) use generation_mutation::apply_generation_mutations_retaining_async;
 pub use generation_mutation::{
@@ -157,11 +162,15 @@ pub(crate) use merge::{
     tree_mutation,
 };
 pub use metadata::{
-    FileMetadata, MetadataField, decode_file_metadata, encode_file_metadata, file_metadata_id,
+    FileMetadata, FileMetadataEncodeError, MetadataField, decode_file_metadata, encode_file_metadata,
+    encode_file_metadata_measured, file_metadata_id,
 };
 pub use mutation::{FileMutation, Mutation, MutationPlan, MutationPlanError, MutationPlanFailure};
 pub use namespace_path::{NamespacePath, NamespacePathError};
-pub(crate) use path_access::observe_path_edges_async;
+pub(crate) use path_access::{
+    observe_path_edges_async, observe_path_refs_async, observe_path_with_data_async,
+    observe_paths_with_data_async,
+};
 pub use path_access::{
     ObservedPathBatch, ObservedPathLookup, PathBatchEntry, PathBatchLookup, PathLookup,
     PathLookupError, PathLookupFailure, lookup_path, lookup_path_async, lookup_path_refs,
@@ -182,7 +191,7 @@ pub use publication::{
     PublishedGeneration, decode_published_generation, publish_generation, publish_generation_async,
 };
 pub(crate) use publication::{
-    PublicationIntent, publish_generation_async_with_context, publish_generation_async_with_permit,
+    PublicationIntent, publish_generation_async_guarded, publish_generation_async_with_permit,
 };
 pub use range::{
     ExtentPlan, ExtentRangeRequest, ExtentReadError, ExtentReadFailure, ExtentSeekRequest,
@@ -193,6 +202,7 @@ pub use read::{
     TreeBatchLookup, TreeLookup, TreeReadError, TreeReadFailure, lookup_tree_entries,
     lookup_tree_entries_async, lookup_tree_entry, lookup_tree_entry_async,
 };
+pub(crate) use rebase::{ProofDataClaim, ProofDataCustody};
 pub use rebase::{
     AsyncRebaseProbe, CheckoutDependencies, Dependency, DependencyError, DependencyRegion,
     DependencyState, DependencyUse, ProbeReceipt, RebaseConflict, RebaseDecision, RebaseError,
@@ -205,6 +215,7 @@ pub use retention::{
     decode_workspace_deleted, encode_retention_created, encode_workspace_deleted,
     retention_authority_id,
 };
+pub(crate) use retention::encode_retention_created_measured;
 #[cfg(all(
     feature = "local",
     feature = "native-watch",
@@ -223,7 +234,9 @@ pub use transfer::{
     authenticate_generation_export_manifest_async, build_generation_export_manifest_async,
     export_generation_batch_async, import_generation_batch_async,
 };
-pub use tree::{decode_tree_page, encode_tree_page, tree_page_id};
+pub use tree::{
+    TreePageEncodeError, decode_tree_page, encode_tree_page, encode_tree_page_measured, tree_page_id,
+};
 pub use tree_mutation::{
     TreeMutation, TreeMutationError, TreeMutationFailure, TreeMutationReceipt,
     apply_tree_mutations, apply_tree_mutations_async,
@@ -236,3 +249,4 @@ pub use volume::{
     VolumeCreated, VolumeCreatedError, decode_volume_created, encode_volume_created,
     volume_authority_id,
 };
+pub(crate) use volume::encode_volume_created_measured;

@@ -14,6 +14,202 @@ use crate::storage::{
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[tokio::test]
+async fn measured_private_candidate_admits_only_independent_proof_and_root_storage()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("measured-private-candidate").await?;
+    workspace.write_text("/file", "body").await?;
+    let cancellation = CancellationToken::new();
+    let checkout = workspace.checkout_measured(
+        GenerationSelector::Head, CheckoutMode::read_only_pinned(),
+        WorkBudget::UNBOUNDED, &cancellation,
+    ).await?;
+    assert!(checkout.work.allocation_operations >= 3, "initial proof owns three admitted Arc payloads");
+    assert!(checkout.work.peak_allocation_bytes >= checkout.value.logical_owned_bytes());
+    let checkout = checkout.value;
+    let failed = match checkout.private_candidate_measured(WorkBudget::default(), &cancellation) {
+        Err(failure) => failure,
+        Ok(_) => return Err("zero allocation budget unexpectedly accepted a candidate".into()),
+    };
+    assert!(matches!(failed.error, FsError::Work(_)));
+    assert_eq!(*failed.work, WorkCounters::default());
+    let candidate = checkout.private_candidate_measured(WorkBudget::UNBOUNDED, &cancellation)?;
+    assert!(candidate.work.allocation_operations > 0);
+    assert!(candidate.work.peak_allocation_bytes >= candidate.value.logical_owned_bytes());
+    assert!(!Arc::ptr_eq(&candidate.value.dependencies.proof, &checkout.dependencies.proof));
+    assert!(Arc::ptr_eq(
+        &candidate.value.dependencies.proof().observed_paths,
+        &checkout.dependencies.proof().observed_paths,
+    ));
+    assert!(candidate.value.root == checkout.root);
+    assert_eq!(candidate.value.base_root, checkout.base_root);
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let failed = match checkout.private_candidate_measured(WorkBudget::UNBOUNDED, &cancelled) {
+        Err(failure) => failure,
+        Ok(_) => return Err("cancelled candidate unexpectedly succeeded".into()),
+    };
+    assert!(matches!(failed.error, FsError::Cancelled(_)));
+    assert_eq!(*failed.work, WorkCounters::default());
+    Ok(())
+}
+
+#[cfg(feature = "native-mount")]
+#[tokio::test]
+async fn concurrent_observers_attribute_only_their_completed_name_and_path_data()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("observer-local-proof-data").await?;
+    let cancellation = CancellationToken::new();
+    let checkout = workspace.checkout_measured(
+        GenerationSelector::Head, tracking(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let mut first = checkout.observer_measured(WorkBudget::UNBOUNDED, &cancellation)?.value;
+    let mut second = checkout.observer_measured(WorkBudget::UNBOUNDED, &cancellation)?.value;
+    assert!(Arc::ptr_eq(&first.dependencies.proof, &second.dependencies.proof));
+    let first_path = path("short")?;
+    let second_path = path("a-much-longer-independent-name")?;
+    let expected_first = path_clone_data(&first_path).0 + first_path.components()[0].as_bytes().len() as u64;
+    let expected_second = path_clone_data(&second_path).0 + second_path.components()[0].as_bytes().len() as u64;
+    let barrier = std::sync::Barrier::new(2);
+    let (first_result, second_result) = std::thread::scope(|scope| {
+        let first_thread = scope.spawn(|| {
+            barrier.wait();
+            let result = poll_ready(first.lookup_no_follow(&first_path, WorkBudget::UNBOUNDED, &cancellation))
+                .expect("memory observation completes");
+            (result, first.proof_data_completed())
+        });
+        let second_thread = scope.spawn(|| {
+            barrier.wait();
+            let result = poll_ready(second.lookup_no_follow(&second_path, WorkBudget::UNBOUNDED, &cancellation))
+                .expect("memory observation completes");
+            (result, second.proof_data_completed())
+        });
+        (first_thread.join().expect("first observer completes"), second_thread.join().expect("second observer completes"))
+    });
+    assert!(first_result.0?.value.record.is_none());
+    assert!(second_result.0?.value.record.is_none());
+    assert_eq!(first_result.1.retained_bytes, expected_first);
+    assert_eq!(second_result.1.retained_bytes, expected_second);
+    assert_eq!(first_result.1.work.bytes_copied, expected_first);
+    assert_eq!(second_result.1.work.bytes_copied, expected_second);
+    assert_eq!(first_result.1.work.allocation_operations, 3);
+    assert_eq!(second_result.1.work.allocation_operations, 3);
+    assert_eq!(checkout.proof_data_snapshot_completed().total_bytes()?, expected_first + expected_second);
+    cancellation.cancel();
+    let failed = first.lookup_no_follow(&first_path, WorkBudget::UNBOUNDED, &cancellation).await;
+    assert!(failed.is_err());
+    assert_eq!(first.proof_data_completed().retained_bytes, expected_first);
+    assert_eq!(first.proof_data_completed().work, first_result.1.work);
+    let custody = first.proof_data_custody();
+    drop(first);
+    assert_eq!(custody.retained_bytes(), expected_first, "shared proof outlives the callback");
+    drop(second);
+    drop(checkout);
+    assert_eq!(custody.retained_bytes(), 0, "actual key destruction retires DATA");
+    Ok(())
+}
+
+#[test]
+fn proof_data_failure_keeps_only_the_completed_moved_name_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ledger = DependencyLedger::new(CheckoutDependencies::new([], [], 8)?);
+    let observed = path("bounded-name")?;
+    let name = observed.components()[0].clone();
+    let name_bytes = name.retained_bytes() as u64;
+    let dependencies = vec![Dependency {
+        region: DependencyRegion::DirectoryName { directory_id: FileId::from_bytes([41; 16]), name },
+        expected: DependencyState::Absent,
+    }];
+    let budget = WorkBudget { bytes_copied: path_clone_data(&observed).0 - 1, ..WorkBudget::UNBOUNDED };
+    let cancellation = CancellationToken::new();
+    let mut work = WorkCounters::default();
+    let error = ledger.observe_paths(
+        ObjectId { kind: ObjectKind::FileTablePage, digest: Digest::from_bytes([42; 32]) },
+        [&observed], true, dependencies, 8, &mut work, budget, &cancellation,
+    ).expect_err("path DATA copy is denied before construction");
+    assert!(matches!(error, FsError::Work(_)));
+    assert_eq!(ledger.proof().dependencies.len(), 1);
+    assert!(ledger.proof().observed_paths.is_empty());
+    let completed = ledger.proof_data_completed();
+    assert_eq!(completed.retained_bytes, name_bytes);
+    assert_eq!(completed.work.bytes_copied, 0);
+    assert_eq!(completed.work.allocation_operations, 0, "name was moved, not allocated");
+    cancellation.cancel();
+    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _held = ledger.proof();
+        panic!("exercise cancellation-independent poisoned proof inspection");
+    }));
+    assert!(poisoned.is_err());
+    assert_eq!(ledger.proof_data_completed().retained_bytes, name_bytes);
+    assert_eq!(ledger.proof_data_completed().work, completed.work);
+    ledger.proof().clear();
+    assert_eq!(ledger.proof_data_completed().retained_bytes, 0);
+    Ok(())
+}
+
+#[test]
+fn proof_snapshot_allocation_generation_distinguishes_reused_addresses() {
+    let prior = ProofDataSnapshot { dependencies: (7, 3, 19), paths: (9, 4, 23) };
+    let reused = ProofDataSnapshot { dependencies: (7, 4, 11), paths: (9, 5, 13) };
+    assert_eq!(reused.newly_retained_since(prior), Ok(24));
+    let unchanged = ProofDataSnapshot { dependencies: (7, 3, 22), paths: (9, 4, 25) };
+    assert_eq!(unchanged.newly_retained_since(prior), Ok(5));
+}
+
+#[test]
+fn delivered_proof_data_is_not_recharged_and_unreported_peak_is_segment_local()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ledger = DependencyLedger::new(CheckoutDependencies::new([], [], 8)?);
+    let base = ObjectId { kind: ObjectKind::FileTablePage, digest: Digest::from_bytes([43; 32]) };
+    let cancellation = CancellationToken::new();
+    let first = path("a-longer-name-retained-by-the-first-query")?;
+    let second = path("x")?;
+    let dependency = |path: &NamespacePath| Dependency {
+        region: DependencyRegion::DirectoryName {
+            directory_id: FileId::from_bytes([44; 16]), name: path.components()[0].clone(),
+        },
+        expected: DependencyState::Absent,
+    };
+    let mut first_work = WorkCounters::default();
+    ledger.observe_paths(
+        base, [&first], true, vec![dependency(&first)], 8,
+        &mut first_work, WorkBudget::UNBOUNDED, &cancellation,
+    )?;
+    let first_owned = ledger.data_custody.retained_bytes();
+    let first_report = ledger.data_custody.take_completed_data_work();
+    assert_eq!(first_report.peak_allocation_bytes, first_owned);
+    assert_eq!(ledger.data_custody.live_data_counts(), (first_owned, first_owned));
+    assert_eq!(ledger.accounting.lock().allocations.live_bytes(), first_owned);
+    let second_owned = path_clone_data(&second).0 + second.components()[0].retained_bytes() as u64;
+    let mut second_work = WorkCounters::default();
+    ledger.observe_paths(
+        base, [&second], true, vec![dependency(&second)], 8, &mut second_work,
+        WorkBudget { peak_allocation_bytes: second_owned, ..WorkBudget::UNBOUNDED },
+        &cancellation,
+    )?;
+    assert_eq!(second_work.peak_allocation_bytes, second_owned);
+    let second_report = ledger.data_custody.take_completed_data_work();
+    assert_eq!(second_report.peak_allocation_bytes, second_owned);
+    assert!(second_report.peak_allocation_bytes < first_report.peak_allocation_bytes);
+    assert_eq!(ledger.proof_data_completed().retained_bytes, first_owned + second_owned);
+    ledger.proof().clear();
+    assert_eq!(ledger.data_custody.live_data_counts(), (0, 0));
+    let mut next_work = WorkCounters::default();
+    ledger.observe_paths(
+        base, [&second], true, vec![dependency(&second)], 8, &mut next_work,
+        WorkBudget { peak_allocation_bytes: second_owned, ..WorkBudget::UNBOUNDED },
+        &cancellation,
+    )?;
+    assert_eq!(ledger.data_custody.live_data_counts(), (second_owned, 0), "new DATA is not standing retired DATA");
+    assert_eq!(next_work.peak_allocation_bytes, second_owned);
+    assert_eq!(ledger.data_custody.take_completed_data_work().peak_allocation_bytes, second_owned);
+    assert_eq!(ledger.data_custody.take_completed_data_work(), WorkCounters::default());
+    assert!(ledger.proof_data_completed().work.bytes_copied > first_report.bytes_copied);
+    Ok(())
+}
+
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 mod heterogeneous_mount {
     use super::*;
@@ -291,10 +487,14 @@ async fn identical_live_retention_is_not_reproven_but_new_retention_fails_closed
         EmbeddedCapabilities::MEMORY,
     );
     let workspace = fs.create_workspace("retention-proof").await?;
-    workspace
+    let crate::TransactionCommit::Committed(generation) = workspace
         .write("/payload", Bytes::from(vec![7_u8; 128 * 1_024]))
-        .await?;
-    let generation = workspace.head().await?;
+        .await?
+    else {
+        return Err("retention fixture did not commit".into());
+    };
+    let cloned = generation.clone();
+    let cold = workspace.head().await?;
     *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
         kind: ObjectKind::GenerationRoot,
         digest: generation.id().digest(),
@@ -302,35 +502,38 @@ async fn identical_live_retention_is_not_reproven_but_new_retention_fails_closed
 
     reads.store(0, Ordering::Relaxed);
     generation.pin("first").await?;
+    cloned.pin("first").await?;
     assert_eq!(
         reads.load(Ordering::Relaxed),
-        1,
-        "a new pin proves its closure"
+        0,
+        "the original committed generation and its clone share publication custody"
     );
     generation.pin("first").await?;
+    assert_eq!(reads.load(Ordering::Relaxed), 0, "an identical live retention does not reprove");
     generation.pin("second").await?;
-    assert_eq!(reads.load(Ordering::Relaxed), 2, "only the new pin proves");
+    assert_eq!(reads.load(Ordering::Relaxed), 1, "a different label proves its closure");
     generation.pin("first").await?;
-    generation.pin("second").await?;
-    assert_eq!(
-        reads.load(Ordering::Relaxed),
-        2,
-        "an identical live retention is answered without another proof"
-    );
+    cloned.pin("second").await?;
+    assert_eq!(reads.load(Ordering::Relaxed), 1, "repeat retentions do not reprove");
+
+    cold.pin("cold").await?;
+    assert_eq!(reads.load(Ordering::Relaxed), 2, "a cold head proves once without publication custody");
+    cold.pin("cold").await?;
+    assert_eq!(reads.load(Ordering::Relaxed), 2);
 
     // Negative control: once every content chunk is unreadable, recorded
     // retentions stay exact, but a retention not yet recorded still walks
     // the whole closure and fails closed on the missing chunk, every time.
     *unreadable.lock().map_err(|_| "unreadable lock poisoned")? = Some(ObjectKind::BlobChunk);
     generation.pin("first").await?;
-    for _ in 0..2 {
+    for expected_reads in [3, 4] {
         assert!(matches!(
             generation.pin("third").await,
             Err(crate::workspace::WorkspaceError::Engine(message))
                 if message.contains("object is missing")
         ));
+        assert_eq!(reads.load(Ordering::Relaxed), expected_reads);
     }
-    assert_eq!(reads.load(Ordering::Relaxed), 4);
     Ok(())
 }
 
@@ -5353,6 +5556,121 @@ fn authored_bulk_transaction_is_bounded_and_atomic() -> Result<(), Box<dyn std::
         .record
         .is_none()
     );
+    Ok(())
+}
+
+#[test]
+fn encoded_metadata_denials_preserve_the_actual_producer_receipt()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let encoded = crate::kernel::encode_file_metadata_measured(
+        empty_metadata(), WorkBudget::UNBOUNDED, &cancellation,
+    )?;
+    let producer_work = encoded.work;
+    assert_eq!(producer_work.allocation_operations, 1);
+    assert_eq!(producer_work.bytes_encoded, encoded.value.len() as u64);
+    let failure = poll_ready(fs.put_encoded(
+        ObjectKind::Metadata, encoded, WorkCounters::UNCHARGED,
+        WorkBudget { bytes_hashed: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+    )).ok_or("bounded metadata put blocked")?
+        .err().ok_or("metadata hashing unexpectedly admitted")?;
+    assert!(matches!(failure.error, FsError::Work(_)));
+    assert_eq!(*failure.work, producer_work);
+
+    let mut encoded = crate::kernel::encode_file_metadata_measured(
+        empty_metadata(), WorkBudget::UNBOUNDED, &cancellation,
+    )?;
+    let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+    allocations.claim_bytes(
+        encoded.value.capacity() as u64, 0, &mut encoded.work, WorkBudget::UNBOUNDED,
+    ).map_err(crate::collection::handle_allocation_error)?;
+    let spare_capacity = encoded.value.capacity() + 1;
+    admit_pending_vec(
+        &mut encoded.value, spare_capacity, &mut allocations, &mut encoded.work,
+        WorkBudget::UNBOUNDED, &cancellation,
+    )?;
+    assert!(encoded.value.capacity() > encoded.value.len());
+    let producer_work = encoded.work;
+    let failure = poll_ready(fs.put_encoded(
+        ObjectKind::Metadata, encoded, WorkCounters::UNCHARGED,
+        WorkBudget {
+            allocation_operations: producer_work.allocation_operations,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    )).ok_or("bounded bytes owner allocation blocked")?
+        .err().ok_or("bytes owner allocation unexpectedly admitted")?;
+    assert!(matches!(failure.error, FsError::Work(_)));
+    assert_eq!(*failure.work, producer_work);
+
+    let encoded = crate::kernel::encode_file_metadata_measured(
+        empty_metadata(), WorkBudget::UNBOUNDED, &cancellation,
+    )?;
+    let producer_work = encoded.work;
+    cancellation.cancel();
+    let failure = poll_ready(fs.put_encoded(
+        ObjectKind::Metadata, encoded, WorkCounters::UNCHARGED,
+        WorkBudget::UNBOUNDED, &cancellation,
+    )).ok_or("cancelled metadata put blocked")?
+        .err().ok_or("cancelled metadata put unexpectedly succeeded")?;
+    assert!(matches!(failure.error, FsError::Cancelled(_)));
+    assert_eq!(*failure.work, producer_work);
+    Ok(())
+}
+
+#[test]
+fn authored_buffer_failures_retain_admitted_capacity_and_leave_checkout_unchanged()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let volume = poll_ready(fs.create_volume_with_id(
+        VolumeId::from_bytes([243; 16]), config(), WorkBudget::UNBOUNDED, &cancellation,
+    )).ok_or("volume creation blocked")??.value;
+    let mut checkout = poll_ready(volume.checkout(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
+    )).ok_or("checkout blocked")??.value;
+    let original_root = checkout.root.clone();
+    let mutation = || -> Result<AuthoredMutation, Box<dyn std::error::Error>> {
+        Ok(AuthoredMutation::CreateFile {
+            path: path("not-created")?,
+            bytes: Bytes::from_static(b"payload"),
+            metadata: empty_metadata(),
+        })
+    };
+    let one_allocation = WorkBudget {
+        allocation_operations: 1,
+        ..WorkBudget::UNBOUNDED
+    };
+    let failed = poll_ready(checkout.apply_authored_transaction(
+        vec![mutation()?], one_allocation, &cancellation,
+    )).ok_or("bounded transaction blocked")?
+        .err().ok_or("second buffer allocation unexpectedly admitted")?;
+    assert!(matches!(failed.error, FsError::Work(_)));
+    assert_eq!(failed.work.allocation_operations, 1);
+    assert!(failed.work.peak_allocation_bytes >= size_of::<Mutation>() as u64);
+    assert_eq!(failed.work.bytes_copied, 0);
+    assert!(checkout.root == original_root);
+
+    // A real released candidate provides a vacant registration slot, so the
+    // next candidate does not need to copy a growing global root table.
+    let spare = checkout.private_candidate_measured(WorkBudget::UNBOUNDED, &cancellation)?;
+    drop(spare);
+    let candidate_copy_only = WorkBudget {
+        bytes_copied: size_of::<Proof>() as u64,
+        ..WorkBudget::UNBOUNDED
+    };
+    let failed = poll_ready(checkout.apply_authored_bulk_transaction(
+        vec![mutation()?], candidate_copy_only, &cancellation,
+    )).ok_or("bounded bulk transaction blocked")?
+        .err().ok_or("authored batch copy unexpectedly admitted")?;
+    assert!(matches!(failed.error, FsError::Work(_)));
+    assert!(failed.work.allocation_operations >= 2);
+    assert_eq!(failed.work.bytes_copied, size_of::<Proof>() as u64);
+    assert!(checkout.root == original_root);
+    assert!(poll_ready(checkout.lookup_no_follow(
+        &path("not-created")?, WorkBudget::UNBOUNDED, &cancellation,
+    )).ok_or("unchanged checkout lookup blocked")??.value.record.is_none());
     Ok(())
 }
 

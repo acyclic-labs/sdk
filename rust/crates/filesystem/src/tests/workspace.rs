@@ -408,6 +408,46 @@ fn names_are_canonical_bounded_and_path_independent() -> Result<(), Box<dyn Erro
 }
 
 #[test]
+fn measured_workspace_names_preserve_nfc_and_actual_scratch_failure_work()
+-> Result<(), Box<dyn Error>> {
+    use unicode_normalization::UnicodeNormalization;
+    let cancellation = CancellationToken::new();
+    for spelling in [
+        "cafe\u{301}", "\u{344}", "\u{1100}\u{1161}\u{11a8}",
+        "\u{9c7}\u{9be}", "\u{315}\u{300}A", "A\u{30a}\u{301}",
+        "a\u{315}\u{300}", "a\u{301}\u{300}",
+    ] {
+        let expected: String = spelling.nfc().collect();
+        let normalized = WorkspaceName::new_measured(
+            spelling, WorkBudget::UNBOUNDED, &cancellation,
+        )?;
+        assert_eq!(normalized.value.as_str(), expected);
+        assert_eq!(WorkspaceName::new(spelling)?, normalized.value);
+        assert!(normalized.work.peak_allocation_bytes >= normalized.value.retained_bytes());
+    }
+    let failure = match WorkspaceName::new_measured(
+        "a\u{315}\u{300}",
+        WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED },
+        &cancellation,
+    ) {
+        Err(failure) => failure,
+        Ok(_) => return Err("normalization scratch growth unexpectedly admitted".into()),
+    };
+    assert!(matches!(failure.error, WorkspaceError::Work(_)));
+    assert_eq!(failure.work.allocation_operations, 1);
+    assert!(failure.work.bytes_copied >= std::mem::size_of::<(u8, char)>() as u64);
+    assert!(failure.work.items_examined > 0);
+    assert!(failure.work.peak_allocation_bytes >= std::mem::size_of::<(u8, char)>() as u64);
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let failure = WorkspaceName::new_measured("name", WorkBudget::UNBOUNDED, &cancelled)
+        .err().ok_or("cancelled canonical name unexpectedly admitted")?;
+    assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
+    assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
+    Ok(())
+}
+
+#[test]
 fn identity_is_deterministic_and_namespace_scoped() -> Result<(), Box<dyn Error>> {
     let name = WorkspaceName::new("repo")?;
     let first = WorkspaceId::derive([1; 16], &name);
@@ -880,9 +920,7 @@ async fn generation_materialization_records_own_receipts_with_native_children_fi
                 std::fs::read(directory.join(path.trim_start_matches('/')))?,
                 body.as_bytes()
             );
-            work.push(receipt.work);
-            // A non-empty destination fails after checkout work, whose totals
-            // this public error type does not retain and must not invent.
+            // A non-empty destination retains checkout and attempted host-read work.
             let failed = match selection {
                 0 => {
                     generation
@@ -905,7 +943,11 @@ async fn generation_materialization_records_own_receipts_with_native_children_fi
                         .await
                 }
             };
-            assert!(failed.is_err());
+            let failed = failed
+                .err()
+                .ok_or("non-empty destination unexpectedly succeeded")?;
+            assert!(failed.work.backend_read_operations > 0);
+            work.push((receipt.work, *failed.work));
         }
         Ok::<_, Box<dyn Error>>(work)
     }
@@ -922,6 +964,7 @@ async fn generation_materialization_records_own_receipts_with_native_children_fi
     .into_iter()
     .zip(work)
     {
+        let (work, failed_work) = work;
         let spans = captured
             .iter()
             .filter(|(_, found, _)| *found == name)
@@ -949,10 +992,22 @@ async fn generation_materialization_records_own_receipts_with_native_children_fi
         let failure = &spans.last().ok_or("failure span missing")?.2;
         assert_eq!(failure.get("outcome").map(String::as_str), Some("err"));
         assert!(failure.contains_key("error.kind"));
-        assert!(
-            !failure.keys().any(|field| field.starts_with("work.")),
-            "{name}: {failure:?}"
-        );
+        for (field, expected) in [
+            ("work.items", failed_work.items_examined),
+            (
+                "work.bytes",
+                failed_work.object_bytes_read
+                    .saturating_add(failed_work.object_bytes_written)
+                    .saturating_add(failed_work.authority_bytes_written),
+            ),
+            ("work.durability", failed_work.durability_operations),
+        ] {
+            assert_eq!(
+                failure.get(field),
+                Some(&expected.to_string()),
+                "{name}: {field}"
+            );
+        }
     }
     let caller = &captured
         .iter()
@@ -1015,6 +1070,7 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
             "/output/nested/status",
             &crate::MaterializeOptions {
                 destination: destination.path().to_path_buf(),
+                expected_root_identity: None,
                 maximum_directory_entries: 32,
                 maximum_extent_spans: 32,
                 transfer_bytes: 4096,
@@ -1034,6 +1090,7 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
             "/output/nested",
             &crate::MaterializeOptions {
                 destination: directory_destination.path().to_path_buf(),
+                expected_root_identity: None,
                 maximum_directory_entries: 32,
                 maximum_extent_spans: 32,
                 transfer_bytes: 4096,
@@ -1117,6 +1174,7 @@ async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_pa
     std::fs::write(destination.path().join("sibling"), b"untouched")?;
     let options = crate::MaterializeOptions {
         destination: destination.path().to_path_buf(),
+        expected_root_identity: None,
         maximum_directory_entries: 32,
         maximum_extent_spans: 32,
         transfer_bytes: 4096,
@@ -1185,6 +1243,7 @@ async fn public_generation_restore_host_path_rejects_symlinked_parent() -> Resul
             crate::HostPathReplacement::Atomic,
             &crate::MaterializeOptions {
                 destination: destination.path().to_path_buf(),
+                expected_root_identity: None,
                 maximum_directory_entries: 32,
                 maximum_extent_spans: 32,
                 transfer_bytes: 4096,
@@ -1223,6 +1282,7 @@ async fn public_generation_restore_host_path_rejects_reparse_parent_when_availab
             crate::HostPathReplacement::Atomic,
             &crate::MaterializeOptions {
                 destination: destination.path().to_path_buf(),
+                expected_root_identity: None,
                 maximum_directory_entries: 32,
                 maximum_extent_spans: 32,
                 transfer_bytes: 4096,
@@ -2347,6 +2407,92 @@ async fn changed_path_queries_reuse_the_sdk_generation_index() -> Result<(), Box
 }
 
 #[tokio::test]
+async fn measured_workspace_helpers_retain_lookup_and_planning_failure_work()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("measured-helper-failures").await?;
+    let before = workspace.head().await?;
+    workspace.write_text("/file", "body").await?;
+    let generation = workspace.head().await?;
+    let cancellation = CancellationToken::new();
+    let budget = WorkBudget::UNBOUNDED;
+
+    let stat = match generation.stat_measured("/missing", budget, &cancellation).await {
+        Err(failure) => failure,
+        Ok(_) => return Err("missing stat unexpectedly succeeded".into()),
+    };
+    assert!(matches!(stat.error, WorkspaceError::NotFound));
+    assert!(stat.work.backend_read_operations > 0);
+    let read = match generation.read_measured("/file", 1, budget, &cancellation).await {
+        Err(failure) => failure,
+        Ok(_) => return Err("limited read unexpectedly succeeded".into()),
+    };
+    assert!(matches!(read.error, WorkspaceError::ReadLimitExceeded));
+    assert!(read.work.backend_read_operations > 0);
+    let listed = generation.list_directory_measured("/file", None, 16, budget, &cancellation).await;
+    let listed = match listed {
+        Err(failure) => failure,
+        Ok(_) => return Err("regular file unexpectedly listed".into()),
+    };
+    assert!(listed.work.backend_read_operations > 0);
+
+    let changes = before.diff_to_bounded(&generation, 64, budget, &cancellation).await?;
+    let diff_work = changes.work();
+    let failed_paths = match changes.changed_paths_bounded(0, budget, &cancellation).await {
+        Err(failure) => failure,
+        Ok(_) => return Err("zero path bound unexpectedly succeeded".into()),
+    };
+    assert!(matches!(failed_paths.error, WorkspaceError::ChangedPathLimit));
+    assert_eq!(*failed_paths.work, diff_work);
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let failed_paths = match changes.changed_paths_bounded(64, budget, &cancelled).await {
+        Err(failure) => failure,
+        Ok(_) => return Err("cancelled planning unexpectedly succeeded".into()),
+    };
+    assert!(matches!(failed_paths.error, WorkspaceError::Cancelled(_)));
+    assert_eq!(*failed_paths.work, diff_work);
+
+    let no_more_allocations = WorkBudget {
+        allocation_operations: diff_work.allocation_operations,
+        ..WorkBudget::UNBOUNDED
+    };
+    let failed_paths = match changes.changed_paths_bounded(
+        64, no_more_allocations, &cancellation,
+    ).await {
+        Err(failure) => failure,
+        Ok(_) => return Err("changed-path vector allocation unexpectedly admitted".into()),
+    };
+    assert!(matches!(failed_paths.error, WorkspaceError::Work(_)));
+    assert_eq!(failed_paths.work.allocation_operations, diff_work.allocation_operations);
+    assert!(failed_paths.work.items_examined > diff_work.items_examined);
+    assert!(failed_paths.work.peak_allocation_bytes >= changes.retained_bytes());
+    let resolved = changes.changed_paths_bounded(64, budget, &cancellation).await?;
+    assert_eq!(resolved.value.len(), 1);
+    assert_eq!(super::namespace_path_text(&resolved.value[0].path)?, "/file");
+    let output_bytes = (resolved.value.capacity() * std::mem::size_of::<ChangedPath>()) as u64
+        + resolved.value.iter().map(|changed| changed.path.retained_bytes()).sum::<u64>();
+    assert!(resolved.work.peak_allocation_bytes >= changes.retained_bytes() + output_bytes);
+
+    let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    let authored = transaction
+        .create_file_measured("/missing/child", Bytes::new(), budget, &cancellation).await;
+    let authored = match authored {
+        Err(failure) => failure,
+        Ok(_) => return Err("absent parent unexpectedly accepted".into()),
+    };
+    assert_ne!(*authored.work, crate::WorkCounters::default());
+    let directories = transaction.create_dir_all_measured("/file/child", budget, &cancellation).await;
+    let directories = match directories {
+        Err(failure) => failure,
+        Ok(_) => return Err("regular parent unexpectedly accepted".into()),
+    };
+    assert!(matches!(directories.error, WorkspaceError::NotDirectory));
+    assert_ne!(*directories.work, crate::WorkCounters::default());
+    Ok(())
+}
+
+#[tokio::test]
 async fn generation_lookup_paths_preserves_order_absence_and_duplicates()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
@@ -3172,12 +3318,17 @@ async fn collections_run_alongside_publications() -> Result<(), Box<dyn Error>> 
         async move {
             let main = fs.open_workspace("repo").await?;
             for round in 0..24_u32 {
-                main.write_text("/churn.txt", &round.to_string().repeat(20_000))
-                    .await?;
+                let TransactionCommit::Committed(generation) = main
+                    .write_text("/churn.txt", &round.to_string().repeat(20_000))
+                    .await?
+                else {
+                    return Err(WorkspaceError::engine("churn fixture did not commit"));
+                };
+                generation.pin(format!("churn-{round}")).await?;
                 let agent = main
                     .fork(
                         &format!("agent-{round}"),
-                        ForkOptions::from_generation(main.head().await?, IdempotencyKey::new()),
+                        ForkOptions::from_generation(generation, IdempotencyKey::new()),
                     )
                     .await?;
                 agent
@@ -3644,5 +3795,480 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
     let described = plan.describe_conflicts(&conflicts, truncated).await?;
     assert_eq!(described.conflicts.len(), 1);
     assert_eq!(described.conflicts[0].kind, crate::ConflictKind::Metadata);
+    Ok(())
+}
+
+#[test]
+fn finite_customer_path_reuses_caller_live_ledger() -> Result<(), Box<dyn Error>> {
+    let config = VolumeConfig::portable(Lifecycle::Ephemeral);
+    let cancellation = CancellationToken::new();
+    let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+    let mut work = crate::WorkCounters::default();
+    allocations.claim_bytes(37, 0, &mut work, WorkBudget::UNBOUNDED)?;
+    let first = customer_path_measured(
+        "/one", config, &mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation,
+    )?;
+    assert_eq!(allocations.live_bytes(), 37 + first.retained_bytes());
+    assert_eq!(work.peak_allocation_bytes, allocations.live_bytes());
+    let before = work;
+    let live = allocations.live_bytes();
+    let denied = customer_path_measured(
+        "/two", config, &mut allocations, &mut work,
+        WorkBudget { peak_allocation_bytes: live, ..WorkBudget::UNBOUNDED }, &cancellation,
+    );
+    assert!(matches!(denied, Err(WorkspaceError::Work(_))));
+    assert_eq!(allocations.live_bytes(), live);
+    assert_eq!(work.allocation_operations, before.allocation_operations);
+    assert_eq!(work.bytes_copied, before.bytes_copied);
+    allocations.release(first.retained_bytes())?;
+    let reused = customer_path_measured(
+        "/two", config, &mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation,
+    )?;
+    assert_eq!(allocations.live_bytes(), 37 + reused.retained_bytes());
+    Ok(())
+}
+
+#[tokio::test]
+async fn bounded_alias_reverse_query_keeps_cold_and_warm_actual_work()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("bounded-alias-cache").await?;
+    let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    transaction.write_text("/a", "shared").await?;
+    transaction.hard_link("/a", "/b").await?;
+    let TransactionCommit::Committed(generation) = transaction.commit().await? else {
+        return Err("alias fixture did not commit".into());
+    };
+    let file_id = generation.stat("/a").await?.file_id;
+    let cancellation = CancellationToken::new();
+    let cold = generation.paths_for_file_id_measured(
+        file_id, 128, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?;
+    let warm = generation.paths_for_file_id_measured(
+        file_id, 128, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?;
+    assert_eq!(cold.value, vec!["/a", "/b"]);
+    assert_eq!(warm.value, cold.value);
+    assert!(cold.work.allocation_operations > 0);
+    assert!(warm.work.allocation_operations > 0);
+    assert!(cold.work.peak_allocation_bytes > 0);
+    assert!(warm.work.peak_allocation_bytes > 0);
+    assert!(warm.work.bytes_encoded >= 4);
+    let denied = generation.paths_for_file_id_measured(
+        file_id, 128, WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).await.expect_err("query ID vector must be admitted before allocation");
+    assert!(matches!(denied.error, WorkspaceError::Work(_)));
+    assert_eq!(denied.work.allocation_operations, 0);
+    assert_eq!(denied.work.backend_read_operations, 0);
+    cancellation.cancel();
+    let cancelled = generation.paths_for_file_id_measured(
+        file_id, 128, WorkBudget::UNBOUNDED, &cancellation,
+    ).await.expect_err("cancelled reverse query must not allocate");
+    assert_eq!(*cancelled.work, crate::WorkCounters::default());
+    Ok(())
+}
+
+#[tokio::test]
+async fn measured_workspace_range_includes_canonical_path_copy_prefix()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("bounded-range-path").await?;
+    workspace.write_text("/range", "contents").await?;
+    let generation = workspace.head().await?;
+    let cancellation = CancellationToken::new();
+    let receipt = generation.read_range_measured(
+        "/range", 1, 3, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?;
+    assert_eq!(receipt.value.as_ref(), b"ont");
+    assert!(receipt.work.bytes_copied >= 5);
+    assert!(receipt.work.source_path_components >= 1);
+    let failure = generation.read_range_measured(
+        "/range", 1, 3, WorkBudget { bytes_copied: 4, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).await.expect_err("canonical name copy exceeds this bound");
+    assert!(matches!(failure.error, WorkspaceError::Work(_)));
+    assert!(failure.work.bytes_copied <= 4);
+    assert!(failure.work.allocation_operations > 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn measured_authored_input_vector_is_denied_before_engine_mutation()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("bounded-authored-input").await?;
+    let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    let cancellation = CancellationToken::new();
+    let failure = transaction.create_directory_measured(
+        "/denied",
+        WorkBudget { allocation_operations: 2, ..WorkBudget::UNBOUNDED },
+        &cancellation,
+    ).await.expect_err("one authored input slot must be admitted after the path");
+    assert!(matches!(failure.error, WorkspaceError::Work(_)));
+    assert_eq!(failure.work.allocation_operations, 2);
+    assert_eq!(failure.work.bytes_copied, 6);
+    let path = customer_path("/denied", transaction.checkout.volume_config())?;
+    let lookup = transaction.checkout.lookup_no_follow(
+        &path, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?;
+    assert!(lookup.value.record.is_none());
+    let completed = transaction.create_directory_measured(
+        "/admitted", WorkBudget::UNBOUNDED, &cancellation,
+    ).await?;
+    assert!(completed.allocation_operations >= 3);
+    Ok(())
+}
+
+#[test]
+fn measured_unicode_projection_keeps_shared_live_and_denies_before_output_allocation()
+-> Result<(), Box<dyn Error>> {
+    let cancellation = CancellationToken::new();
+    let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+    let mut work = crate::WorkCounters::default();
+    let path = NamespacePath::parse_in_profile_with_ledger(
+        "/a/é/𝄞", crate::model::FilesystemProfile::Windows, VolumeConfig::portable(Lifecycle::Ephemeral).limits,
+        &mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation,
+    )?;
+    let before = work;
+    let live = allocations.live_bytes();
+    let expected = "/a/é/𝄞";
+    let failure = namespace_path_text_measured(
+        &path, &mut allocations, &mut work,
+        WorkBudget { output_bytes: expected.len() as u64 - 1, ..WorkBudget::UNBOUNDED },
+        &cancellation,
+    );
+    assert!(matches!(failure, Err(WorkspaceError::Work(_))));
+    assert_eq!(allocations.live_bytes(), live);
+    assert_eq!(work.allocation_operations, before.allocation_operations);
+    assert_eq!(work.bytes_encoded, before.bytes_encoded);
+    let output = namespace_path_text_measured(
+        &path, &mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation,
+    )?;
+    assert_eq!(output, expected);
+    assert_eq!(allocations.live_bytes(), live + output.capacity() as u64);
+    assert_eq!(work.peak_allocation_bytes, allocations.live_bytes());
+    assert_eq!(work.output_bytes, expected.len() as u64);
+    Ok(())
+}
+
+#[tokio::test]
+async fn measured_selected_transaction_composes_one_finite_pinned_import()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("finite-selected-import").await?;
+    workspace.write_text("/removed", "old").await?;
+    let pinned = workspace.head().await?;
+    let cancellation = CancellationToken::new();
+    let budget = selected_transaction_budget();
+    assert!(budget.has_finite_allowances());
+    let opened = workspace.begin_pinned_transaction_measured(
+        &pinned, IdempotencyKey::new(), budget, &cancellation,
+    ).await?;
+    let mut work = opened.work;
+    let mut transaction = opened.value;
+    let parents = transaction.create_dir_all_measured(
+        "/nested", work.remaining(budget)?, &cancellation,
+    ).await?;
+    work = work.checked_add(parents)?;
+    let written = transaction.write_measured(
+        "/nested/file", Bytes::from_static(b"original owned input"),
+        work.remaining(budget)?, &cancellation,
+    ).await?;
+    work = work.checked_add(written)?;
+    let replaced = transaction.write_measured(
+        "/nested/file", Bytes::from_static(b"replacement"),
+        work.remaining(budget)?, &cancellation,
+    ).await?;
+    work = work.checked_add(replaced)?;
+    let removed = transaction.remove_measured(
+        "/removed", work.remaining(budget)?, &cancellation,
+    ).await?;
+    work = work.checked_add(removed)?;
+    assert_eq!(workspace.head().await?.id(), pinned.id());
+    let committed = transaction.commit_with_permit_measured(
+        crate::PublicationPermit::Unrestricted, work.remaining(budget)?, &cancellation,
+    ).await?;
+    work = work.checked_add(committed.work)?;
+    work.verify(budget)?;
+    assert!(matches!(committed.value, TransactionCommit::Committed(_)));
+    assert_eq!(workspace.read("/nested/file", 64).await?.as_ref(), b"replacement");
+    assert!(matches!(workspace.read("/removed", 64).await, Err(WorkspaceError::NotFound)));
+    assert!(pinned.read("/nested/file", 64).await.is_err());
+    assert_eq!(pinned.read("/removed", 64).await?.as_ref(), b"old");
+    Ok(())
+}
+
+#[tokio::test]
+async fn measured_selected_transaction_failure_preserves_work_and_pending_candidate()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("retained-selected-import").await?;
+    let original = workspace.head().await?;
+    let cancellation = CancellationToken::new();
+    let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    transaction.create_dir_all("/dir").await?;
+    transaction.write("/dir/child", Bytes::from_static(b"pending")).await?;
+    let failed_write = transaction.write_measured(
+        "/dir/child", Bytes::from_static(b"must not replace"),
+        WorkBudget { bytes_copied: 2, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).await.expect_err("canonical path copying is bounded before mutation");
+    assert!(matches!(failed_write.error, WorkspaceError::Work(_)));
+    assert!(failed_write.work.allocation_operations > 0);
+    assert!(failed_write.work.bytes_copied <= 2);
+    let failed_remove = transaction.remove_measured(
+        "/dir", WorkBudget::UNBOUNDED, &cancellation,
+    ).await.expect_err("nonempty directory removal is atomic");
+    assert!(failed_remove.work.bytes_copied >= 3);
+    assert!(failed_remove.work.allocation_operations > 0);
+    let missing = transaction.remove_measured(
+        "/missing", WorkBudget::UNBOUNDED, &cancellation,
+    ).await.expect_err("missing binding retains the lookup receipt");
+    assert!(matches!(missing.error, WorkspaceError::NotFound));
+    assert!(missing.work.bytes_copied >= 7);
+    let denied_commit = transaction.commit_with_permit_measured(
+        crate::PublicationPermit::Unrestricted,
+        WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED },
+        &cancellation,
+    ).await;
+    let Err(denied_commit) = denied_commit else {
+        panic!("commit future must be admitted before publication");
+    };
+    assert!(matches!(denied_commit.error, WorkspaceError::Work(_)));
+    assert_eq!(*denied_commit.work, crate::WorkCounters::UNCHARGED);
+    assert_eq!(workspace.head().await?.id(), original.id());
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let denied_write = transaction.write_measured(
+        "/dir/child", Bytes::from_static(b"cancelled"), WorkBudget::UNBOUNDED, &cancelled,
+    ).await.expect_err("cold cancellation");
+    let denied_remove = transaction.remove_measured(
+        "/dir/child", WorkBudget::UNBOUNDED, &cancelled,
+    ).await.expect_err("cold cancellation");
+    assert!(matches!(denied_write.error, WorkspaceError::Cancelled(_)));
+    assert!(matches!(denied_remove.error, WorkspaceError::Cancelled(_)));
+    assert_eq!(*denied_write.work, crate::WorkCounters::UNCHARGED);
+    assert_eq!(*denied_remove.work, crate::WorkCounters::UNCHARGED);
+    let result = transaction.commit_with_permit_measured(
+        crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?;
+    assert!(matches!(result.value, TransactionCommit::Committed(_)));
+    assert_eq!(workspace.read("/dir/child", 32).await?.as_ref(), b"pending");
+    Ok(())
+}
+
+fn selected_transaction_budget() -> WorkBudget {
+    WorkBudget {
+        authority_records_read: 1_000_000,
+        authority_records_appended: 1_000_000,
+        authority_bytes_read: 1_000_000,
+        authority_bytes_written: 1_000_000,
+        object_probes: 1_000_000,
+        backend_read_operations: 1_000_000,
+        backend_write_operations: 1_000_000,
+        durability_operations: 1_000_000,
+        page_reads: 1_000_000,
+        page_writes: 1_000_000,
+        object_bytes_read: 1_000_000,
+        object_bytes_written: 1_000_000,
+        bytes_hashed: 1_000_000,
+        bytes_copied: 1_000_000,
+        bytes_encoded: 1_000_000,
+        source_bytes_read: 1_000_000,
+        source_path_components: 1_000_000,
+        source_entries_visited: 1_000_000,
+        output_bytes: 1_000_000,
+        items_examined: 1_000_000,
+        items_returned: 1_000_000,
+        allocation_operations: 1_000_000,
+        peak_allocation_bytes: 64 * 1024 * 1024,
+        materializations: 1_000_000,
+    }
+}
+
+#[tokio::test]
+async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_state()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("guarded-selected-restore").await?;
+    let mut seed = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    seed.create_dir_all("/tree").await?;
+    seed.write("/tree/file", Bytes::from_static(b"source")).await?;
+    seed.hard_link("/tree/file", "/tree/alias").await?;
+    seed.set_metadata("/tree/file", FileMetadata {
+        posix_mode: MetadataField::Value(0o640), ..FileMetadata::default()
+    }).await?;
+    seed.write("/outside", Bytes::from_static(b"base")).await?;
+    seed.commit().await?;
+    let source = workspace.head().await?;
+    let source_metadata = source.stat("/tree/file").await?.metadata;
+    let mut live = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    live.write("/tree/file", Bytes::from_static(b"dirty")).await?;
+    live.write("/removed", Bytes::from_static(b"remove me")).await?;
+    live.write("/outside", Bytes::from_static(b"user")).await?;
+    live.commit().await?;
+    let dirty = workspace.head().await?;
+    let selected = vec!["tree/file".to_owned(), "removed".to_owned()];
+    let budget = selected_transaction_budget();
+    let key = IdempotencyKey::new();
+    let cancelled = CancellationToken::new();
+    let volume = workspace.volume.clone();
+    let source_id = source.id();
+    let guard_cancellation = cancelled.clone();
+    let failed = workspace.restore_paths_from_with_permit_measured_guarded(
+        &source, &selected, dirty.id(), key, crate::PublicationPermit::Unrestricted,
+        budget, &cancelled, move |allowance| {
+            let volume = volume.clone();
+            let cancellation = guard_cancellation.clone();
+            async move {
+                let checked = volume.checkout(
+                    GenerationSelector::Exact(source_id), CheckoutMode::read_only_pinned(),
+                    allowance, &cancellation,
+                ).await?;
+                drop(checked.value);
+                cancellation.cancel();
+                Err(crate::OperationFailure::new(
+                    FsError::Cancelled(crate::CancellationError), checked.work,
+                ))
+            }
+        },
+    ).await;
+    let Err(failed) = failed else { panic!("original seal guard must reject"); };
+    assert!(matches!(failed.error, WorkspaceError::Cancelled(_)));
+    assert!(failed.work.allocation_operations > 0);
+    assert!(failed.work.bytes_copied > 0);
+    failed.work.verify(budget)?;
+    assert_eq!(workspace.head().await?.id(), dirty.id());
+    assert_eq!(workspace.read("/tree/file", 32).await?.as_ref(), b"dirty");
+    assert_eq!(workspace.read("/removed", 32).await?.as_ref(), b"remove me");
+    assert_eq!(workspace.read("/outside", 32).await?.as_ref(), b"user");
+
+    let cancellation = CancellationToken::new();
+    let conflicted = workspace.restore_paths_from_with_permit_measured(
+        &source, &selected, source.id(), IdempotencyKey::new(),
+        crate::PublicationPermit::Unrestricted, budget, &cancellation,
+    ).await?;
+    conflicted.work.verify(budget)?;
+    assert!(matches!(&conflicted.value, TransactionCommit::Conflict { actual } if actual.id() == dirty.id()));
+    assert_eq!(workspace.head().await?.id(), dirty.id());
+    let volume = workspace.volume.clone();
+    let guard_cancellation = cancellation.clone();
+    let restored = workspace.restore_paths_from_with_permit_measured_guarded(
+        &source, &selected, dirty.id(), key, crate::PublicationPermit::Unrestricted,
+        budget, &cancellation, move |allowance| {
+            let volume = volume.clone();
+            let cancellation = guard_cancellation.clone();
+            async move {
+                let checked = volume.checkout(
+                    GenerationSelector::Exact(source_id), CheckoutMode::read_only_pinned(),
+                    allowance, &cancellation,
+                ).await?;
+                drop(checked.value);
+                Ok(crate::OperationReceipt { value: (), work: checked.work })
+            }
+        },
+    ).await?;
+    restored.work.verify(budget)?;
+    assert!(matches!(restored.value, TransactionCommit::Committed(_)));
+    assert_eq!(workspace.read("/tree/file", 32).await?.as_ref(), b"source");
+    assert_eq!(workspace.read("/tree/alias", 32).await?.as_ref(), b"source");
+    assert_eq!(workspace.stat("/tree/file").await?.metadata, source_metadata);
+    assert_eq!(workspace.stat("/tree/file").await?.file_id, workspace.stat("/tree/alias").await?.file_id);
+    assert!(matches!(workspace.read("/removed", 32).await, Err(WorkspaceError::NotFound)));
+    assert_eq!(workspace.read("/outside", 32).await?.as_ref(), b"user");
+    assert_eq!(source.read("/tree/file", 32).await?.as_ref(), b"source");
+    Ok(())
+}
+
+#[tokio::test]
+async fn guarded_stale_exact_retry_resolves_committed_without_owner_reseal()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("resolved-owner-seal").await?;
+    let base = workspace.head().await?;
+    let key = IdempotencyKey::new();
+    let mut first = workspace.begin_transaction(key).await?;
+    first.write("/file", Bytes::from_static(b"same input")).await?;
+    let TransactionCommit::Committed(committed) = first.commit().await? else {
+        return Err("initial original commit did not publish".into());
+    };
+    let mut retry = workspace.begin_transaction_at(&base, key).await?;
+    retry.write("/file", Bytes::from_static(b"same input")).await?;
+    let cancellation = CancellationToken::new();
+    let budget = selected_transaction_budget();
+    let resolved = retry.commit_with_permit_measured_guarded(
+        crate::PublicationPermit::Unrestricted, budget, &cancellation,
+        |_| async {
+            Err(crate::OperationFailure::before_work(FsError::MutationNotAllowed))
+        },
+    ).await?;
+    resolved.work.verify(budget)?;
+    assert!(matches!(&resolved.value, TransactionCommit::AlreadyCommitted(generation) if generation.id() == committed.id()));
+    assert_eq!(workspace.head().await?.id(), committed.id());
+    Ok(())
+}
+
+#[test]
+fn selected_restore_prefix_copy_admits_before_body_and_releases_denied_storage()
+-> Result<(), Box<dyn Error>> {
+    let cancellation = CancellationToken::new();
+    let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+    let mut work = crate::WorkCounters::UNCHARGED;
+    let failure = Workspace::<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>::restore_absolute_path_measured(
+        "tree/file", &mut allocations, &mut work,
+        WorkBudget { bytes_copied: 0, ..selected_transaction_budget() }, &cancellation,
+    ).expect_err("formatting body must not copy before admission");
+    assert!(matches!(failure, WorkspaceError::Work(_)));
+    assert_eq!(work.allocation_operations, 1);
+    assert_eq!(work.bytes_copied, 0);
+    assert_eq!(allocations.live_bytes(), 0);
+    let absolute = Workspace::<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>::restore_absolute_path_measured(
+        "tree/file", &mut allocations, &mut work, selected_transaction_budget(), &cancellation,
+    )?;
+    assert_eq!(absolute, "/tree/file");
+    assert_eq!(work.bytes_copied, absolute.len() as u64);
+    let prefix_bytes = absolute.capacity() as u64;
+    let path = customer_path_measured(
+        &absolute, VolumeConfig::portable(Lifecycle::Ephemeral),
+        &mut allocations, &mut work, selected_transaction_budget(), &cancellation,
+    )?;
+    assert_eq!(allocations.live_bytes(), prefix_bytes + path.retained_bytes());
+    assert!(work.peak_allocation_bytes >= prefix_bytes + path.retained_bytes());
+    drop(absolute);
+    allocations.release(prefix_bytes)?;
+    assert_eq!(allocations.live_bytes(), path.retained_bytes());
+    Ok(())
+}
+
+#[tokio::test]
+async fn measured_directory_record_restore_preserves_original_ignored_descendants()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("record-not-subtree-restore").await?;
+    let mut seed = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    seed.create_dir_all("/tree").await?;
+    seed.set_metadata("/tree", FileMetadata {
+        posix_mode: MetadataField::Value(0o700), ..FileMetadata::default()
+    }).await?;
+    seed.write("/tree/tracked", Bytes::from_static(b"base")).await?;
+    seed.commit().await?;
+    let source = workspace.head().await?;
+    let mut live = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    live.set_metadata("/tree", FileMetadata {
+        posix_mode: MetadataField::Value(0o755), ..FileMetadata::default()
+    }).await?;
+    live.write("/tree/tracked", Bytes::from_static(b"dirty")).await?;
+    live.write("/tree/ignored", Bytes::from_static(b"live ignored")).await?;
+    live.commit().await?;
+    let current = workspace.head().await?;
+    let cancellation = CancellationToken::new();
+    let budget = selected_transaction_budget();
+    let restored = workspace.restore_paths_from_with_permit_measured(
+        &source, &["tree".to_owned()], current.id(), IdempotencyKey::new(),
+        crate::PublicationPermit::Unrestricted, budget, &cancellation,
+    ).await?;
+    restored.work.verify(budget)?;
+    assert!(matches!(restored.value, TransactionCommit::Committed(_)));
+    assert_eq!(workspace.stat("/tree").await?.metadata.posix_mode, Some(0o700));
+    assert_eq!(workspace.read("/tree/tracked", 32).await?.as_ref(), b"dirty");
+    assert_eq!(workspace.read("/tree/ignored", 32).await?.as_ref(), b"live ignored");
     Ok(())
 }

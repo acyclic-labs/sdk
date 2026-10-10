@@ -163,3 +163,81 @@ fn too_many_parent_root() -> GenerationRoot {
     ]);
     value
 }
+
+#[test]
+fn measured_root_encoding_preserves_canonical_bytes_and_real_capacity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let mut value = root();
+    for parent_count in 0..=2 {
+        value.parents = [4, 5].into_iter().take(parent_count)
+            .map(|seed| GenerationId::new(Digest::from_bytes([seed; 32]))).collect();
+        let baseline = encode_generation_root(&value)?;
+        let receipt = encode_generation_root_measured(&value, WorkBudget::UNBOUNDED, &cancellation, 37)?;
+        assert_eq!(receipt.value, baseline);
+        assert_eq!(receipt.work.items_examined, 1);
+        assert_eq!(receipt.work.bytes_encoded, receipt.value.len() as u64);
+        assert_eq!(receipt.work.bytes_copied, 64 + parent_count as u64 * 32);
+        assert_eq!(receipt.work.allocation_operations, 1);
+        assert_eq!(receipt.work.peak_allocation_bytes, 37 + receipt.value.capacity() as u64);
+        let permit = WorkBudget {
+            items_examined: receipt.work.items_examined,
+            bytes_encoded: receipt.work.bytes_encoded,
+            bytes_copied: receipt.work.bytes_copied,
+            allocation_operations: receipt.work.allocation_operations,
+            peak_allocation_bytes: receipt.work.peak_allocation_bytes,
+            ..WorkBudget::UNBOUNDED
+        };
+        let finite = encode_generation_root_measured(&value, permit, &cancellation, 37)?;
+        assert_eq!(finite, receipt);
+        assert_eq!(object_digest(ObjectKind::GenerationRoot, &finite.value), generation_root_id(&value)?.0.digest);
+    }
+    Ok(())
+}
+
+#[test]
+fn measured_root_encoding_refuses_before_allocation_and_retains_invalid_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    let value = root();
+    let cancellation = CancellationToken::new();
+    for permit in [
+        WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED },
+        WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED },
+        WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED },
+        WorkBudget { peak_allocation_bytes: 117, ..WorkBudget::UNBOUNDED },
+    ] {
+        let failure = encode_generation_root_measured(&value, permit, &cancellation, 0).expect_err("finite encoder must refuse");
+        assert!(matches!(failure.error, GenerationRootEncodeError::Work(_)));
+        assert_eq!(failure.work.items_examined, 1);
+        assert_eq!(failure.work.allocation_operations, 0);
+        assert_eq!(failure.work.bytes_encoded, 0);
+        assert_eq!(failure.work.bytes_copied, 0);
+    }
+    let mut invalid = value;
+    invalid.parents.push(invalid.parents[0]);
+    let failure = encode_generation_root_measured(&invalid, WorkBudget::UNBOUNDED, &cancellation, 41).expect_err("duplicate parents");
+    assert!(matches!(failure.error, GenerationRootEncodeError::Canonical(CanonicalDecodeError::Invariant(_))));
+    assert_eq!(failure.work.items_examined, 1);
+    assert_eq!(failure.work.allocation_operations, 0);
+    assert_eq!(failure.work.bytes_encoded, 0);
+    assert_eq!(failure.work.peak_allocation_bytes, 41);
+    let mut wrong_kind = root();
+    wrong_kind.file_table.kind = ObjectKind::Blob;
+    let mut unsupported = root();
+    unsupported.required_features = 2;
+    let mut filtered_without_parent = root();
+    filtered_without_parent.required_features = GenerationRoot::FILTERED_FORK;
+    filtered_without_parent.parents.clear();
+    for invalid in [wrong_kind, unsupported, filtered_without_parent, too_many_parent_root()] {
+        let failure = encode_generation_root_measured(&invalid, WorkBudget::UNBOUNDED, &cancellation, 0).expect_err("invalid canonical root");
+        assert!(matches!(failure.error, GenerationRootEncodeError::Canonical(CanonicalDecodeError::Invariant(_))));
+        assert_eq!(failure.work.items_examined, 1);
+        assert_eq!(failure.work.allocation_operations, 0);
+        assert_eq!(failure.work.bytes_encoded, 0);
+    }
+    cancellation.cancel();
+    let failure = encode_generation_root_measured(&invalid, WorkBudget::UNBOUNDED, &cancellation, 91).expect_err("cancelled before validation");
+    assert!(matches!(failure.error, GenerationRootEncodeError::Cancelled(_)));
+    assert_eq!(*failure.work, WorkCounters::default());
+    Ok(())
+}

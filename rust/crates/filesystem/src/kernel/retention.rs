@@ -1,7 +1,9 @@
 //! Canonical independently addressable generation-retention facts.
 
 use super::codec::{CanonicalDecodeError, Decoder, Encoder};
-use super::volume::{decode_config, encode_config};
+use super::allocation::AllocationLedger;
+use crate::{CancellationToken, MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
+use super::volume::{CONFIG_ENCODED_BYTES, decode_config, encode_config};
 use crate::foundation::{AuthorityId, Digest, VolumeId, usize_to_u64};
 use crate::model::{VolumeConfig, VolumeConfigError};
 use crate::storage::{ObjectId, ObjectKind};
@@ -73,6 +75,12 @@ pub enum RetentionCreatedError {
     /// Canonical payload is malformed or unsupported.
     #[error(transparent)]
     Decode(#[from] CanonicalDecodeError),
+    /// Finite preparation permit was exhausted.
+    #[error(transparent)]
+    Work(#[from] crate::WorkError),
+    /// Preparation was cancelled.
+    #[error(transparent)]
+    Cancelled(#[from] crate::CancellationError),
 }
 
 /// Derives the one authority owning a workspace retention name.
@@ -101,15 +109,65 @@ pub fn retention_authority_id(
 pub fn encode_retention_created(
     value: &RetentionCreated,
 ) -> Result<Vec<u8>, RetentionCreatedError> {
-    validate(value)?;
-    let mut encoder = Encoder::new(DOMAIN, VERSION);
-    encoder.fixed(&value.volume_id.into_bytes());
-    encoder.u8(value.kind.tag());
-    encoder.bounded_bytes(value.label.as_bytes())?;
-    encoder.u8(value.generation_root.kind.canonical_tag());
-    encoder.fixed(value.generation_root.digest.as_bytes());
-    encode_config(&mut encoder, value.config);
-    Ok(encoder.finish())
+    encode_retention_created_with_permit(value, WorkBudget::UNBOUNDED, None, 0)
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
+}
+
+/// Encodes the same retention fact after finite allocation and write admission.
+/// The caller's owned label is adopted through `live_owned_bytes`, never copied as input.
+///
+/// # Errors
+/// Retains the actual completed prefix on every failure.
+pub fn encode_retention_created_measured(
+    value: &RetentionCreated,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    live_owned_bytes: u64,
+) -> MeasuredResult<OperationReceipt<Vec<u8>>, RetentionCreatedError> {
+    encode_retention_created_with_permit(value, budget, Some(cancellation), live_owned_bytes)
+}
+
+fn encode_retention_created_with_permit(
+    value: &RetentionCreated,
+    budget: WorkBudget,
+    cancellation: Option<&CancellationToken>,
+    live_owned_bytes: u64,
+) -> MeasuredResult<OperationReceipt<Vec<u8>>, RetentionCreatedError> {
+    let mut work = WorkCounters::default();
+    let mut allocations = AllocationLedger::default();
+    let result = (|| {
+        if let Some(token) = cancellation { token.check()?; }
+        validate(value)?;
+        allocations.claim_bytes(live_owned_bytes, 0, &mut work, budget)
+            .map_err(|error| error.into_work_or(RetentionCreatedError::Decode(CanonicalDecodeError::AllocationFailed)))?;
+        work.charge_items(1, &budget)?;
+        let length = DOMAIN.len() + 2 + 16 + 1 + 4 + value.label.len() + 1 + 32 + CONFIG_ENCODED_BYTES;
+        let copied = (48 + value.label.len()) as u64;
+        work.admit(&WorkCounters { bytes_encoded: length as u64, bytes_copied: copied, ..WorkCounters::default() }, &budget)?;
+        if let Some(token) = cancellation { token.check()?; }
+        let admitted = allocations.claim_elements::<u8>(length, &mut work, budget)
+            .map_err(|error| error.into_work_or(RetentionCreatedError::Decode(CanonicalDecodeError::AllocationFailed)))?;
+        let mut encoder = Encoder::with_exact_capacity(DOMAIN, VERSION, length)?;
+        let header = (DOMAIN.len() + 2) as u64;
+        work.charge(&WorkCounters { bytes_encoded: header, ..WorkCounters::default() }, &budget)?;
+        let actual = encoder.capacity() as u64;
+        if actual > admitted {
+            allocations.claim_bytes(actual - admitted, 0, &mut work, WorkBudget::UNBOUNDED)
+                .map_err(|error| error.into_work_or(RetentionCreatedError::Decode(CanonicalDecodeError::AllocationFailed)))?;
+            work.verify(budget)?;
+        }
+        encoder.fixed(&value.volume_id.into_bytes());
+        encoder.u8(value.kind.tag());
+        encoder.bounded_bytes(value.label.as_bytes())?;
+        encoder.u8(value.generation_root.kind.canonical_tag());
+        encoder.fixed(value.generation_root.digest.as_bytes());
+        encode_config(&mut encoder, value.config);
+        work.charge(&WorkCounters { bytes_encoded: length as u64 - header, bytes_copied: copied, ..WorkCounters::default() }, &budget)?;
+        Ok(encoder.finish())
+    })();
+    result.map(|value| OperationReceipt { value, work })
+        .map_err(|error| OperationFailure::new(error, work))
 }
 
 /// Decodes one exact bounded immutable retention fact.

@@ -110,6 +110,48 @@ fn transfer_in_place(
     offset: u64,
     issue: impl FnOnce(HANDLE, *mut OVERLAPPED) -> i32,
 ) -> io::Result<usize> {
+    transfer_in_place_observed(file, offset, issue, None)
+}
+
+#[derive(Clone, Copy)]
+struct NativeTransferMeter<'a> {
+    meter: &'a dyn crate::NativeReadMeter,
+    maximum: usize,
+    admit: fn(&dyn crate::NativeReadMeter, usize) -> io::Result<()>,
+    admit_operations: fn(&dyn crate::NativeReadMeter, u64) -> io::Result<()>,
+    record_operations: fn(&dyn crate::NativeReadMeter, u64) -> io::Result<()>,
+    record_bytes: Option<fn(&dyn crate::NativeReadMeter, usize) -> io::Result<()>>,
+}
+
+impl<'a> NativeTransferMeter<'a> {
+    fn read(meter: &'a dyn crate::NativeReadMeter, maximum: usize) -> Self {
+        Self {
+            meter, maximum,
+            admit: |meter, maximum| meter.admit_read(maximum),
+            admit_operations: |meter, operations| meter.admit_operations(operations),
+            record_operations: |meter, operations| meter.record_operations(operations),
+            record_bytes: Some(|meter, bytes| meter.record_read(bytes)),
+        }
+    }
+
+    fn mutation_control(meter: &'a dyn crate::NativeReadMeter) -> Self {
+        Self {
+            meter, maximum: 0,
+            admit: |meter, maximum| meter.admit_write(maximum),
+            admit_operations: |meter, operations| meter.admit_write_operations(operations),
+            record_operations: |meter, operations| meter.record_write_operations(operations),
+            record_bytes: None,
+        }
+    }
+}
+
+fn transfer_in_place_observed(
+    file: &impl AsRawHandle,
+    offset: u64,
+    issue: impl FnOnce(HANDLE, *mut OVERLAPPED) -> i32,
+    meter: Option<NativeTransferMeter<'_>>,
+) -> io::Result<usize> {
+    if let Some(observer) = meter { (observer.admit_operations)(observer.meter, 2)?; }
     IN_PLACE_EVENT.with(|event| {
         let event = event
             .as_ref()
@@ -122,6 +164,7 @@ fn transfer_in_place(
         overlapped.Anonymous.Anonymous.OffsetHigh = high;
         overlapped.hEvent = event.0.map_addr(|address| address | 1);
         let mut transferred = 0_u32;
+        if let Some(observer) = meter { (observer.admit)(observer.meter, observer.maximum)?; }
         // The request and its wait both complete before `overlapped` and the
         // caller's buffer leave this frame.
         if issue(handle, &raw mut overlapped) == 0 {
@@ -133,17 +176,25 @@ fn transfer_in_place(
                 _ => return Err(io::Error::last_os_error()),
             }
         }
-        // SAFETY: the request above was issued with this OVERLAPPED, which
-        // stays live and unmoved until the wait returns.
-        if unsafe { GetOverlappedResult(handle, &raw const overlapped, &raw mut transferred, 1) }
-            == 0
-        {
-            // SAFETY: reads this thread's last error, which the failed wait
-            // just set.
-            if unsafe { GetLastError() } == ERROR_HANDLE_EOF {
-                return Ok(0);
+        // Once issued, completion must settle even if cancellation arrives.
+        // Its allowance was admitted before the request, and recorded only
+        // on the branch which really invokes GetOverlappedResult.
+        let completion_charge = meter.map_or(Ok(()), |observer| {
+            (observer.record_operations)(observer.meter, 1)
+        });
+        let completed = unsafe {
+            GetOverlappedResult(handle, &raw const overlapped, &raw mut transferred, 1)
+        };
+        let error = (completed == 0).then(io::Error::last_os_error);
+        if let Some(observer) = meter {
+            if let Some(record) = observer.record_bytes { record(observer.meter, transferred as usize)?; }
+        }
+        completion_charge?;
+        if let Some(error) = error {
+            if error.raw_os_error() == Some(ERROR_HANDLE_EOF as i32) {
+                return Ok(transferred as usize);
             }
-            return Err(io::Error::last_os_error());
+            return Err(error);
         }
         Ok(transferred as usize)
     })
@@ -158,10 +209,43 @@ pub(super) fn control_in_place(
     input: &[u8],
     output: &mut [u8],
 ) -> io::Result<usize> {
+    control_in_place_observed(file, code, input, output, None)
+}
+
+pub(super) fn control_in_place_measured(
+    file: &impl AsRawHandle,
+    code: u32,
+    input: &[u8],
+    output: &mut [u8],
+    meter: &dyn crate::NativeReadMeter,
+) -> io::Result<usize> {
+    let maximum = output.len();
+    control_in_place_observed(file, code, input, output,
+        Some(NativeTransferMeter::read(meter, maximum)))
+}
+
+pub(super) fn control_in_place_measured_mutation(
+    file: &impl AsRawHandle,
+    code: u32,
+    input: &[u8],
+    output: &mut [u8],
+    meter: &dyn crate::NativeReadMeter,
+) -> io::Result<usize> {
+    control_in_place_observed(file, code, input, output,
+        Some(NativeTransferMeter::mutation_control(meter)))
+}
+
+fn control_in_place_observed(
+    file: &impl AsRawHandle,
+    code: u32,
+    input: &[u8],
+    output: &mut [u8],
+    meter: Option<NativeTransferMeter<'_>>,
+) -> io::Result<usize> {
     let too_large = || io::Error::new(io::ErrorKind::InvalidInput, "control buffer too large");
     let input_length = u32::try_from(input.len()).map_err(|_| too_large())?;
     let output_length = u32::try_from(output.len()).map_err(|_| too_large())?;
-    transfer_in_place(file, 0, |handle, overlapped| {
+    transfer_in_place_observed(file, 0, |handle, overlapped| {
         // SAFETY: both buffers stay borrowed for the whole request, which
         // completes before return.
         unsafe {
@@ -176,7 +260,7 @@ pub(super) fn control_in_place(
                 overlapped,
             )
         }
-    })
+    }, meter)
 }
 
 /// Reads each range with one positional request on the calling thread,
@@ -293,9 +377,37 @@ fn with_overlapped<T>(
     access: u32,
     transfer: impl FnOnce(&File) -> io::Result<T>,
 ) -> io::Result<T> {
+    with_overlapped_observed(file, access, false, None, transfer)
+}
+
+/// Prepares the same positional handle used by the ordinary transfer engine.
+/// A known-overlapped capability needs no mode query or reopen; otherwise each
+/// actual preparation call is admitted before it touches the native handle.
+pub(super) fn with_overlapped_measured<T>(
+    file: &File,
+    access: u32,
+    known_overlapped: bool,
+    meter: &dyn crate::NativeReadMeter,
+    transfer: impl FnOnce(&File) -> io::Result<T>,
+) -> io::Result<T> {
+    with_overlapped_observed(file, access, known_overlapped, Some(meter), transfer)
+}
+
+fn with_overlapped_observed<T>(
+    file: &File,
+    access: u32,
+    known_overlapped: bool,
+    meter: Option<&dyn crate::NativeReadMeter>,
+    transfer: impl FnOnce(&File) -> io::Result<T>,
+) -> io::Result<T> {
+    if known_overlapped {
+        return transfer(file);
+    }
+    if let Some(meter) = meter { meter.admit_read(0)?; }
     if is_overlapped(file) {
         transfer(file)
     } else {
+        if let Some(meter) = meter { meter.admit_read(0)?; }
         transfer(&reopen_overlapped(file, access)?)
     }
 }
@@ -327,6 +439,71 @@ pub(super) fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::R
         return Err(io::Error::other("read completion exceeded buffer"));
     }
     Ok(count)
+}
+
+/// Reads a handle already admitted as overlapped, without probing its mode or
+/// reopening it. The existing in-place completion machinery owns the request
+/// until it settles; failed completion reports any transferred prefix.
+pub(super) fn read_at_known_overlapped(
+    file: &File,
+    offset: u64,
+    destination: &mut [u8],
+    meter: &dyn crate::NativeReadMeter,
+) -> io::Result<usize> {
+    let length = overlapped_range(offset, destination.len())?;
+    if length == 0 {
+        return Ok(0);
+    }
+    meter.admit_bytes(destination.len())?;
+    transfer_in_place_observed(file, offset, |handle, overlapped| {
+        // SAFETY: the writable destination and stack OVERLAPPED remain live
+        // until the common completion routine has settled the request.
+        unsafe {
+            ReadFile(handle, destination.as_mut_ptr(), length, std::ptr::null_mut(), overlapped)
+        }
+    }, Some(NativeTransferMeter::read(meter, length as usize)))
+}
+
+/// Writes one admitted request through the same in-place OVERLAPPED machinery.
+/// A completion's physically transferred prefix is recorded even on failure.
+pub(super) fn write_at_known_overlapped(
+    file: &File, offset: u64, bytes: &[u8], meter: &dyn crate::NativeReadMeter,
+) -> io::Result<usize> {
+    let length = overlapped_range(offset, bytes.len())?;
+    if length == 0 { return Ok(0); }
+    meter.admit_write_operations(2)?;
+    transfer_in_place_observed(file, offset, |handle, overlapped| {
+        // SAFETY: payload and stack OVERLAPPED remain live until completion settles.
+        unsafe { WriteFile(handle, bytes.as_ptr(), length, std::ptr::null_mut(), overlapped) }
+    }, Some(NativeTransferMeter {
+        meter,
+        maximum: bytes.len(),
+        admit: |meter, maximum| meter.admit_write(maximum),
+        admit_operations: |meter, count| meter.admit_write_operations(count),
+        record_operations: |meter, count| meter.record_write_operations(count),
+        record_bytes: Some(|meter, count| meter.record_write(count)),
+    }))
+}
+
+pub(super) fn set_len_once(file: &File, size: u64) -> io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_END_OF_FILE_INFO, FileEndOfFileInfo, SetFileInformationByHandle,
+    };
+    let size = i64::try_from(size)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file length exceeds native range"))?;
+    let info = FILE_END_OF_FILE_INFO { EndOfFile: size };
+    // SAFETY: the held handle and initialized fixed-size buffer live through the syscall.
+    if unsafe { SetFileInformationByHandle(
+        file.as_raw_handle(), FileEndOfFileInfo,
+        (&raw const info).cast(), std::mem::size_of::<FILE_END_OF_FILE_INFO>() as u32,
+    ) } != 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+pub(super) fn sync_once(file: &File) -> io::Result<()> {
+    // SAFETY: FlushFileBuffers acts only on the live held handle.
+    if unsafe { windows_sys::Win32::Storage::FileSystem::FlushFileBuffers(file.as_raw_handle()) } != 0 {
+        Ok(())
+    } else { Err(io::Error::last_os_error()) }
 }
 
 /// Writes every byte on the calling thread, exactly as [`read_at`] reads.
@@ -394,7 +571,7 @@ fn poll_proactor(proactor: &mut Proactor, timeout: Option<std::time::Duration>) 
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(super) struct FileIdentity {
     volume: u64,
     id: [u8; 16],

@@ -20,8 +20,8 @@ use acyclic_harness::{
         FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal,
         FilesystemHost, FilesystemTaskRuntime, NATIVE_PROCESS_EFFECT_KIND, NativeProcessAuthority,
         NativeProcessProvider, NativeProcessRequest, NativeProcessResult, NativeProcessStopKind,
-        NativeViewManifest, NativeViewOptions, NativeVolumeBinding, NativeVolumeView,
-        workspace_ref,
+        NativePreparationRoot, NativeViewManifest, NativeViewOptions, BorrowedNativeVolumeBinding,
+        NativeVolumeNamespace, NativeVolumeView, workspace_ref,
     },
     interaction::{Interaction, InteractionResponse},
     mcp::{
@@ -171,6 +171,7 @@ struct Restart {
 struct Evidence<A, O> {
     restart: Restart,
     directory: tempfile::TempDir,
+    _preparation_directory: tempfile::TempDir,
     files: std::sync::Weak<Files<A, O>>,
 }
 
@@ -210,7 +211,7 @@ async fn run_on<P: StreamProvider>(
     if evidence.files.upgrade().is_some() {
         return Err("initial filesystem host remained live during recovery".into());
     }
-    if std::fs::canonicalize(evidence.directory.path())? != evidence.restart.request.cwd {
+    if evidence.directory.path() != evidence.restart.request.cwd {
         return Err("restart metadata changed the owned native directory".into());
     }
     recover_on(
@@ -363,7 +364,17 @@ where
             *value = json!(1_000_000);
         }
     }
-    let mut bindings = Vec::new();
+    let work_per_volume = serde_json::from_value(allowances)?;
+    let preparation_directory = tempfile::tempdir_in(
+        directory.path().parent().ok_or("native root has no parent")?,
+    )?;
+    std::fs::create_dir(preparation_directory.path().join("target"))?;
+    std::fs::create_dir(preparation_directory.path().join("backup"))?;
+    let allocation = NativePreparationRoot::witness(
+        directory.path().to_path_buf(), preparation_directory.path().to_path_buf(),
+        work_per_volume, &acyclic_fs::CancellationToken::new(),
+    ).await.map_err(|failure| Error::Storage(failure.to_string()))?.value;
+    let mut selections = Vec::new();
     for (volume, path, writable) in [
         (&source, "source", false),
         (&destination, "destination", true),
@@ -375,28 +386,29 @@ where
             )?)
             .await?
             .generation;
-        bindings.push(NativeVolumeBinding {
-            host: files.clone(),
-            volume: volume.clone(),
-            generation,
-            path: path.into(),
-            writable,
-            verifier: issuer.verifier(),
-            scope: scope.clone(),
-            publication: PublicationPermit::Unrestricted,
-        });
+        selections.push((volume, generation, path, writable));
     }
+    let verifier = issuer.verifier();
+    let bindings = selections.iter().map(|(volume, generation, path, writable)| BorrowedNativeVolumeBinding {
+        host: &files, volume, generation, path, writable: *writable,
+        namespace: &NativeVolumeNamespace::MaterializedDirectory,
+        verifier: &verifier, scope: &scope, publication: PublicationPermit::Unrestricted,
+    }).collect();
     let view = Arc::new(
         NativeVolumeView::prepare(
             &owner,
+            allocation,
             NativeViewOptions {
                 root: directory.path().to_path_buf(),
                 maximum_volumes: 2,
-                work_per_volume: serde_json::from_value(allowances)?,
+                work_per_volume,
             },
             bindings,
+            &acyclic_fs::CancellationToken::new(),
         )
-        .await?,
+        .await
+        .map_err(|failure| Error::Storage(failure.to_string()))?
+        .value,
     );
     let mut request = native_request(mcp, lost_response, view.manifest().clone())?;
     if restart_path.is_some() {
@@ -467,13 +479,9 @@ where
             &scope,
         )
         .await?;
-    let authority = || NativeProcessAuthority {
-        verifier: issuer.verifier(),
-        schemas: SchemaRegistry::new(),
-        content: content.clone(),
-        results: results.clone(),
-        approvals: approvals.clone(),
-    };
+    let authority = || NativeProcessAuthority { verifier: issuer.verifier(), history_limits: acyclic_harness::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 }, content: content.clone(),
+    results: results.clone(),
+    approvals: approvals.clone(), };
     let process = Arc::new(
         NativeProcessProvider::new(
             owner.clone(),
@@ -565,6 +573,7 @@ where
     Ok(Evidence {
         restart,
         directory,
+        _preparation_directory: preparation_directory,
         files: Arc::downgrade(&files),
     })
 }
@@ -698,7 +707,7 @@ where
     )?;
     let content = authority.content.clone();
     let recovered = Arc::new(
-        NativeProcessProvider::<P, A, O>::recover(
+        NativeProcessProvider::<P>::recover(
             owner.clone(),
             seed.command,
             seed.plan.clone(),
@@ -759,24 +768,20 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    Ok(NativeProcessAuthority {
-        verifier: issuer.verifier(),
-        schemas: SchemaRegistry::new(),
-        content: Arc::new(FilesystemContentVerifier::new(
-            files.clone(),
-            issuer.verifier(),
-            scope.clone(),
-            1_000_000,
-        )?),
-        results: Arc::new(FilesystemContentPublisher::new(
-            files.clone(),
-            volume.clone(),
-            &issuer.verifier(),
-            scope,
-            1_000_000,
-        )?),
-        approvals: execution_journal(stream, files, volume, issuer, scope)?,
-    })
+    Ok(NativeProcessAuthority { verifier: issuer.verifier(), history_limits: acyclic_harness::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 }, content: Arc::new(FilesystemContentVerifier::new(
+        files.clone(),
+        issuer.verifier(),
+        scope.clone(),
+        1_000_000,
+    )?),
+    results: Arc::new(FilesystemContentPublisher::new(
+        files.clone(),
+        volume.clone(),
+        &issuer.verifier(),
+        scope,
+        1_000_000,
+    )?),
+    approvals: execution_journal(stream, files, volume, issuer, scope)?, })
 }
 
 async fn verify_publication<A, O>(

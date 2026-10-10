@@ -26,7 +26,7 @@ const MAX_IO_BYTES: usize = 1024 * 1024;
 
 const MAX_TRACKED_FILE_IDENTITIES: usize = 4_096;
 
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(super) struct FileIdentity {
     device: u64,
     inode: u64,
@@ -118,6 +118,41 @@ pub(super) fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::R
 pub(super) fn write_all_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
     validate_io_range(offset, bytes.len(), "write")?;
     file.write_all_at(bytes, offset)
+}
+
+#[allow(unsafe_code, reason = "one admitted positional write on a live held descriptor")]
+pub(super) fn write_at_measured(
+    file: &File, offset: u64, bytes: &[u8], meter: &dyn crate::NativeReadMeter,
+) -> io::Result<usize> {
+    use std::os::fd::AsRawFd as _;
+    validate_io_range(offset, bytes.len(), "write")?;
+    meter.admit_write(bytes.len())?;
+    // SAFETY: the descriptor and borrowed payload live through this one syscall.
+    let result = unsafe {
+        libc::pwrite(file.as_raw_fd(), bytes.as_ptr().cast(), bytes.len(), offset as libc::off_t)
+    };
+    if result < 0 { return Err(io::Error::last_os_error()); }
+    let count = result as usize;
+    meter.record_write(count)?;
+    Ok(count)
+}
+
+#[allow(unsafe_code, reason = "one admitted resize on a live held descriptor")]
+pub(super) fn set_len_once(file: &File, size: u64) -> io::Result<()> {
+    use std::os::fd::AsRawFd as _;
+    let size = libc::off_t::try_from(size)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file length exceeds native range"))?;
+    // SAFETY: ftruncate only acts on the live descriptor.
+    if unsafe { libc::ftruncate(file.as_raw_fd(), size) } == 0 { Ok(()) }
+    else { Err(io::Error::last_os_error()) }
+}
+
+#[allow(unsafe_code, reason = "one admitted flush on a live held descriptor")]
+pub(super) fn sync_once(file: &File) -> io::Result<()> {
+    use std::os::fd::AsRawFd as _;
+    // SAFETY: fsync only acts on the live descriptor.
+    if unsafe { libc::fsync(file.as_raw_fd()) } == 0 { Ok(()) }
+    else { Err(io::Error::last_os_error()) }
 }
 
 fn chunk_owned_writes(writes: Vec<OwnedWrite>) -> impl Iterator<Item = io::Result<OwnedWrite>> {

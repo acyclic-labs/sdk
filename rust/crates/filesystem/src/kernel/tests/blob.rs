@@ -83,6 +83,7 @@ impl AsyncBlobSource for ScriptedSource {
     async fn read<'a>(
         &'a mut self,
         destination: &'a mut [u8],
+        _budget: WorkBudget,
         cancellation: &'a CancellationToken,
     ) -> std::io::Result<usize> {
         if self.fail_after.is_some_and(|limit| self.position >= limit) {
@@ -395,6 +396,10 @@ fn owned_blob_pages_and_chunks_preserve_exact_range_results()
     ))
     .ok_or("owned blob range read blocked")??;
     assert_eq!(&read.bytes[..], b"wned-");
+    assert_eq!(read.logical_owned_bytes(), 5);
+    let shared = read.bytes.slice(1..2);
+    assert_eq!(shared.as_ref(), b"n");
+    assert_eq!(read.logical_owned_bytes(), 5, "shared slices retain the controlled output buffer");
     assert_eq!(read.work.backend_read_operations, 2);
     assert!(read.work.bytes_copied >= 5);
     Ok(())
@@ -1113,6 +1118,7 @@ fn measured_async_source_work_replaces_inferred_bytes_and_obeys_budget()
         async fn read<'a>(
             &'a mut self,
             _destination: &'a mut [u8],
+            _budget: WorkBudget,
             _cancellation: &'a CancellationToken,
         ) -> std::io::Result<usize> {
             Err(std::io::Error::other("owned source should not be copied"))
@@ -1121,11 +1127,12 @@ fn measured_async_source_work_replaces_inferred_bytes_and_obeys_budget()
         async fn read_owned(
             &mut self,
             _maximum: usize,
+            _budget: WorkBudget,
             _cancellation: &CancellationToken,
-        ) -> std::io::Result<Option<Bytes>> {
+        ) -> std::io::Result<Option<OwnedSourceChunk>> {
             if self.returned {
                 self.work = Some(WorkCounters::default());
-                return Ok(Some(Bytes::new()));
+                return Ok(Some(OwnedSourceChunk { bytes: Bytes::new(), logical_owned_bytes: 0 }));
             }
             self.returned = true;
             self.work = Some(WorkCounters {
@@ -1133,7 +1140,7 @@ fn measured_async_source_work_replaces_inferred_bytes_and_obeys_budget()
                 source_path_components: 7,
                 ..WorkCounters::default()
             });
-            Ok(Some(Bytes::from_static(b"abc")))
+            Ok(Some(OwnedSourceChunk { bytes: Bytes::from_static(b"abc"), logical_owned_bytes: 0 }))
         }
 
         fn take_work(&mut self) -> Option<WorkCounters> {
@@ -1180,6 +1187,75 @@ fn measured_async_source_work_replaces_inferred_bytes_and_obeys_budget()
     .ok_or("underbudgeted measured source unexpectedly built")?;
     assert!(matches!(failed.error, BlobBuildError::Work(_)));
     assert_eq!(failed.work.backend_write_operations, 0);
+    Ok(())
+}
+
+#[test]
+fn owned_chunk_retains_actual_backing_capacity_not_visible_length()
+-> Result<(), Box<dyn std::error::Error>> {
+    struct RetainedSource(Option<OwnedSourceChunk>);
+    impl AsyncBlobSource for RetainedSource {
+        async fn read<'a>(
+            &'a mut self,
+            _destination: &'a mut [u8],
+            _budget: WorkBudget,
+            _cancellation: &'a CancellationToken,
+        ) -> std::io::Result<usize> {
+            panic!("the owned source must not be copied");
+        }
+
+        async fn read_owned(
+            &mut self,
+            _maximum: usize,
+            _budget: WorkBudget,
+            _cancellation: &CancellationToken,
+        ) -> std::io::Result<Option<OwnedSourceChunk>> {
+            Ok(Some(self.0.take().unwrap_or(OwnedSourceChunk {
+                bytes: Bytes::new(),
+                logical_owned_bytes: 0,
+            })))
+        }
+    }
+
+    // The producer transfers an existing allocation, including spare capacity.
+    // Constructing it outside the callback is intentional: this is an input
+    // ownership/retention control, not a claim of newly allocated source work.
+    let make_source = || {
+        let mut bytes = Vec::with_capacity(65_536);
+        bytes.extend_from_slice(b"abc");
+        let capacity = usize_to_u64(bytes.capacity());
+        (RetainedSource(Some(OwnedSourceChunk {
+            bytes: Bytes::from(bytes),
+            logical_owned_bytes: capacity,
+        })), capacity)
+    };
+    let options = BlobBuildOptions {
+        chunk_bytes: 3,
+        page_items: 2,
+        page_bytes: 127,
+        maximum_blob_bytes: 3,
+    };
+    let (mut source, capacity) = make_source();
+    let built = crate::async_storage::poll_ready(build_blob_async(
+        &MemoryObjectStore::default(), &mut source, options,
+        WorkBudget::UNBOUNDED, &CancellationToken::new(),
+    )).ok_or("owned capacity build blocked")??;
+    assert_eq!(built.logical_bytes, 3);
+    assert_eq!(built.work.source_bytes_read, 3);
+    assert!(built.work.peak_allocation_bytes >= capacity);
+
+    let (mut source, capacity) = make_source();
+    let mut budget = WorkBudget::UNBOUNDED;
+    budget.peak_allocation_bytes = capacity - 1;
+    let failed = crate::async_storage::poll_ready(build_blob_async(
+        &MemoryObjectStore::default(), &mut source, options,
+        budget, &CancellationToken::new(),
+    )).ok_or("owned capacity refusal blocked")?
+        .err().ok_or("spare-capacity input escaped its hard bound")?;
+    assert!(matches!(failed.error, BlobBuildError::Work(_)));
+    assert_eq!(failed.work.source_bytes_read, 3);
+    assert_eq!(failed.work.backend_write_operations, 0);
+    assert!(failed.work.peak_allocation_bytes >= capacity);
     Ok(())
 }
 
@@ -1573,6 +1649,7 @@ fn decoded_blob_shape_and_sync_source_cancellation_fail_before_hidden_work()
     let failure = crate::async_storage::poll_ready(AsyncBlobSource::read(
         &mut source,
         &mut destination,
+        WorkBudget::UNBOUNDED,
         &cancellation,
     ))
     .ok_or("cancelled synchronous blob source suspended")?

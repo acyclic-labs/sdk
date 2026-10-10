@@ -118,3 +118,44 @@ fn every_volume_semantic_variant_roundtrips_and_unknown_tags_fail_closed()
     ));
     Ok(())
 }
+
+#[test]
+fn measured_creation_preserves_canonical_bytes_and_refused_prefix() -> Result<(), Box<dyn std::error::Error>> {
+    let value = VolumeCreated {
+        volume_id: VolumeId::from_bytes([11; 16]),
+        config: config(),
+        initial_generation_root: ObjectId { kind: ObjectKind::GenerationRoot, digest: Digest::from_bytes([12; 32]) },
+    };
+    let cancellation = CancellationToken::new();
+    let canonical = encode_volume_created(value)?;
+    let mut legacy = Encoder::new(DOMAIN, VERSION);
+    legacy.fixed(&value.volume_id.into_bytes());
+    encode_config(&mut legacy, value.config);
+    legacy.u8(value.initial_generation_root.kind.canonical_tag());
+    legacy.fixed(value.initial_generation_root.digest.as_bytes());
+    assert_eq!(canonical, legacy.finish());
+    let receipt = encode_volume_created_measured(value, WorkBudget::UNBOUNDED, &cancellation, 73)?;
+    assert_eq!(receipt.value, canonical);
+    assert_eq!(receipt.work.bytes_encoded, canonical.len() as u64);
+    assert_eq!(receipt.work.bytes_copied, 48);
+    assert_eq!(receipt.work.allocation_operations, 1);
+    assert_eq!(receipt.work.peak_allocation_bytes, 73 + receipt.value.capacity() as u64);
+    for budget in [
+        WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED },
+        WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED },
+        WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED },
+        WorkBudget { peak_allocation_bytes: 73, ..WorkBudget::UNBOUNDED },
+    ] {
+        let failure = encode_volume_created_measured(value, budget, &cancellation, 73).expect_err("finite permit refused");
+        assert!(matches!(failure.error, VolumeCreatedError::Work(_)));
+        assert_eq!(failure.work.allocation_operations, 0);
+        assert_eq!(failure.work.bytes_encoded, 0);
+        assert_eq!(failure.work.bytes_copied, 0);
+        assert_eq!(failure.work.peak_allocation_bytes, 73);
+    }
+    cancellation.cancel();
+    let failure = encode_volume_created_measured(value, WorkBudget::UNBOUNDED, &cancellation, 73).expect_err("cancelled");
+    assert!(matches!(failure.error, VolumeCreatedError::Cancelled(_)));
+    assert_eq!(*failure.work, WorkCounters::default());
+    Ok(())
+}

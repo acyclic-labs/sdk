@@ -12,10 +12,20 @@ use std::time::{Duration, Instant};
 ///
 /// Windows uses a Job object. Unix uses a process group, which cannot contain
 /// a descendant that deliberately creates a new process group or session.
+///
+/// Choosing a measured Unix control transfers cleanup responsibility to the
+/// caller: a failed bounded attempt retains custody, and Drop never hides an
+/// unmetered retry. Ordinary command owners keep their existing Drop cleanup.
 pub struct ProcessTree {
     child: Option<Child>,
     guard: platform::Guard,
     output_taken: bool,
+    #[cfg(unix)]
+    native_child: Option<libc::pid_t>,
+    #[cfg(unix)]
+    cleanup_on_drop: bool,
+    #[cfg(unix)]
+    spawn_resources: platform::SpawnResources,
 }
 
 /// A stopped capture, retaining its bounded output and observed cleanup state.
@@ -165,8 +175,33 @@ impl ProcessTree {
                 child: Some(child),
                 guard,
                 output_taken: false,
+                #[cfg(unix)]
+                native_child: None,
+                #[cfg(unix)]
+                cleanup_on_drop: true,
+                #[cfg(unix)]
+                spawn_resources: platform::SpawnResources::default(),
             }))
         })
+    }
+
+    /// Starts a closed-stream Unix child using borrowed, terminated arguments,
+    /// and retains it in this same process-tree owner before spawn cleanup.
+    /// `args` excludes argv[0]. The only Rust-owned spawn buffer is the admitted
+    /// pointer vector; opaque SDK/kernel storage is not guessed heap or RSS.
+    ///
+    /// # Errors
+    ///
+    /// Any denied leaf or native failure retains the exact spent prefix. If
+    /// spawn succeeded before a later cleanup error, `custody` still owns its
+    /// unreaped leader and guard. The caller must retain or explicitly clean it.
+    #[cfg(unix)]
+    pub fn spawn_closed_measured(
+        program: &std::ffi::CStr, args: &[&std::ffi::CStr],
+        meter: &dyn crate::NativeReadMeter, custody: &mut Option<Self>,
+    ) -> io::Result<()> {
+        if custody.is_some() { return Err(io::ErrorKind::AlreadyExists.into()); }
+        platform::spawn_closed(program, args, meter, custody)
     }
 
     /// Transfers the input pipe to a host-owned streaming protocol.
@@ -227,14 +262,37 @@ impl ProcessTree {
 
     /// Polls the direct child without releasing ownership of its descendants.
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
-        let child = self
-            .child
-            .as_mut()
-            .ok_or_else(|| io::Error::other("process output was already collected"))?;
         #[cfg(unix)]
-        return platform::observe_exit(child);
+        return self.try_wait_with_meter(None);
         #[cfg(windows)]
-        child.try_wait()
+        self.child.as_mut()
+            .ok_or_else(|| io::Error::other("process output was already collected"))?.try_wait()
+    }
+
+    /// Observes the same unreaped owned leader, admitting every actual waitid
+    /// attempt (including EINTR retries). No meter is retained after this call.
+    /// The caller now owns explicit cleanup; Drop cannot substitute unbounded
+    /// termination after this measured observation.
+    #[cfg(unix)]
+    pub fn try_wait_measured(
+        &mut self, meter: &dyn crate::NativeReadMeter,
+    ) -> io::Result<Option<ExitStatus>> {
+        self.cleanup_on_drop = false;
+        self.try_wait_with_meter(Some(meter))
+    }
+
+    #[cfg(unix)]
+    fn owned_child_id(&self) -> io::Result<libc::id_t> {
+        self.native_child.map(|pid| pid as libc::id_t)
+            .or_else(|| self.child.as_ref().map(Child::id))
+            .ok_or_else(|| io::Error::other("process output was already collected"))
+    }
+
+    #[cfg(unix)]
+    fn try_wait_with_meter(
+        &mut self, meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<Option<ExitStatus>> {
+        platform::observe_exit_id(self.owned_child_id()?, meter)
     }
 
     /// Observes direct-child exit within `timeout`, retaining descendant ownership.
@@ -253,11 +311,10 @@ impl ProcessTree {
         let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "process deadline overflow")
         })?;
-        let child = self
-            .child
-            .as_mut()
-            .ok_or_else(|| io::Error::other("process output was already collected"))?;
-        drop(child.stdin.take());
+        if self.is_reaped() {
+            return Err(io::Error::other("process output was already collected"));
+        }
+        self.close_stdin();
         loop {
             if let Some(status) = self.try_wait()? {
                 return Ok(status);
@@ -457,6 +514,10 @@ impl ProcessTree {
     }
 
     fn terminate_unobserved(&mut self) -> io::Result<()> {
+        #[cfg(unix)]
+        return self.terminate_with_meter(None);
+        #[cfg(windows)]
+        {
         self.terminate_descendants()?;
         if self.child.is_some() {
             self.wait(Duration::from_secs(5))?;
@@ -472,13 +533,64 @@ impl ProcessTree {
             self.child.take();
         }
         Ok(())
+        }
+    }
+
+    /// Cleans up through the same containment/observation/reap engine, with
+    /// admission at each signal, membership probe and wait attempt. An error
+    /// retains identity and never launches an unmeasured cleanup retry in Drop.
+    #[cfg(unix)]
+    pub fn terminate_measured(&mut self, meter: &dyn crate::NativeReadMeter) -> io::Result<()> {
+        self.cleanup_on_drop = false;
+        self.terminate_with_meter(Some(meter))
+    }
+
+    #[cfg(unix)]
+    fn terminate_with_meter(&mut self, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<()> {
+        self.spawn_resources.cleanup(meter)?;
+        self.guard.terminate_with_meter(meter)?;
+        if self.child.as_ref().is_some_and(|child| child.stdin.is_some()) {
+            process_control_attempt(meter, true, || { self.close_stdin(); Ok(()) })?;
+        }
+        if self.child.is_some() || self.native_child.is_some() {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while self.try_wait_with_meter(meter)?.is_none() {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(io::ErrorKind::TimedOut,
+                        "process exit deadline exceeded; termination may be unresolved"));
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            // Only actually retained standard pipes require a release call.
+            // Denial keeps the observed leader unreaped and its remaining
+            // streams owned by this same tree, rather than hiding their drops
+            // in the final Child release.
+            if let Some(child) = self.child.as_mut() {
+                if child.stdout.is_some() {
+                    process_control_attempt(meter, true, || { drop(child.stdout.take()); Ok(()) })?;
+                }
+                if child.stderr.is_some() {
+                    process_control_attempt(meter, true, || { drop(child.stderr.take()); Ok(()) })?;
+                }
+            }
+            if platform::reap_exit_id(self.owned_child_id()? as libc::pid_t, meter)?.is_none() {
+                return Err(io::Error::other("observed child exit is now unresolved"));
+            }
+            self.child.take();
+            self.native_child.take();
+        }
+        Ok(())
     }
 
     /// Whether containment cleanup succeeded and the direct child was reaped.
     /// Unix confirms group signal delivery, not reaping of every descendant;
     /// descendants that deliberately leave containment remain outside this claim.
+    /// Any retained native spawn-configuration custody must also be released.
     #[must_use]
     pub const fn is_reaped(&self) -> bool {
+        #[cfg(unix)]
+        return self.child.is_none() && self.native_child.is_none() && !self.spawn_resources.pending();
+        #[cfg(windows)]
         self.child.is_none()
     }
 
@@ -565,8 +677,28 @@ fn drain_pipe<T: Read + platform::Pipe>(
 
 impl Drop for ProcessTree {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        if !self.cleanup_on_drop { return; }
         let _ = self.terminate();
     }
+}
+
+/// One actual SDK/kernel attempt, not a prediction of its hidden internals.
+#[cfg(unix)]
+fn process_control_attempt<T>(
+    meter: Option<&dyn crate::NativeReadMeter>, write: bool, call: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    if let Some(meter) = meter {
+        meter.check()?;
+        if write {
+            meter.admit_write_operations(1)?;
+            meter.record_write_operations(1)?;
+        } else {
+            meter.admit_operations(1)?;
+            meter.record_operations(1)?;
+        }
+    }
+    call()
 }
 
 #[cfg(unix)]
@@ -579,10 +711,12 @@ mod platform {
     use std::process::{Child, Command, ExitStatus};
 
     pub(super) fn observe_exit(child: &Child) -> io::Result<Option<ExitStatus>> {
-        observe_exit_id(child.id())
+        observe_exit_id(child.id(), None)
     }
 
-    fn observe_exit_id(id: libc::id_t) -> io::Result<Option<ExitStatus>> {
+    pub(super) fn observe_exit_id(
+        id: libc::id_t, meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<Option<ExitStatus>> {
         let flags = libc::WEXITED | libc::WNOWAIT | libc::WNOHANG;
         loop {
             // SAFETY: initialized OS output storage and the exclusively owned
@@ -591,8 +725,11 @@ mod platform {
             let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
             // SAFETY: `info` is writable storage owned by this frame and `id`
             // names the exclusively owned child.
-            if unsafe { libc::waitid(libc::P_PID, id, &raw mut info, flags) } != 0 {
-                let error = io::Error::last_os_error();
+            let waited = super::process_control_attempt(meter, false, || {
+                if unsafe { libc::waitid(libc::P_PID, id, &raw mut info, flags) } == 0 { Ok(()) }
+                else { Err(io::Error::last_os_error()) }
+            });
+            if let Err(error) = waited {
                 if error.kind() == io::ErrorKind::Interrupted {
                     continue;
                 }
@@ -611,6 +748,24 @@ mod platform {
                 _ => return Err(io::Error::other("unexpected child exit observation")),
             };
             return Ok(Some(ExitStatus::from_raw(raw)));
+        }
+    }
+
+    pub(super) fn reap_exit_id(
+        pid: libc::pid_t, meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<Option<ExitStatus>> {
+        loop {
+            let mut status = 0;
+            let result = super::process_control_attempt(meter, false, || {
+                let waited = unsafe { libc::waitpid(pid, &raw mut status, libc::WNOHANG) };
+                if waited < 0 { Err(io::Error::last_os_error()) } else { Ok(waited) }
+            });
+            match result {
+                Ok(0) => return Ok(None),
+                Ok(_) => return Ok(Some(ExitStatus::from_raw(status))),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error),
+            }
         }
     }
 
@@ -675,6 +830,47 @@ mod platform {
         active: bool,
     }
 
+    /// Native spawn objects that a failed SDK destroy did not release.
+    /// Inline custody retains their actual handles without an emergency heap
+    /// allocation after a bounded failure.
+    #[derive(Default)]
+    pub(super) struct SpawnResources {
+        actions: Option<libc::posix_spawn_file_actions_t>,
+        attributes: Option<libc::posix_spawnattr_t>,
+    }
+
+    // SAFETY: these initialized SDK objects are exclusively owned values.
+    // Native mutation requires &mut custody; shared access inspects only the
+    // inline presence flags and never dereferences or mutates a native handle.
+    unsafe impl Send for SpawnResources {}
+    // SAFETY: shared access observes presence only; all SDK calls require an
+    // exclusive mutable owner, as for Send above.
+    unsafe impl Sync for SpawnResources {}
+
+    impl SpawnResources {
+        pub(super) const fn pending(&self) -> bool {
+            self.actions.is_some() || self.attributes.is_some()
+        }
+
+        pub(super) fn cleanup(&mut self, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<()> {
+            if let Some(actions) = &mut self.actions {
+                super::process_control_attempt(meter, true, || {
+                    let status = unsafe { libc::posix_spawn_file_actions_destroy(actions) };
+                    if status == 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(status)) }
+                })?;
+                self.actions.take();
+            }
+            if let Some(attributes) = &mut self.attributes {
+                super::process_control_attempt(meter, true, || {
+                    let status = unsafe { libc::posix_spawnattr_destroy(attributes) };
+                    if status == 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(status)) }
+                })?;
+                self.attributes.take();
+            }
+            Ok(())
+        }
+    }
+
     pub(super) fn spawn(command: &mut Command) -> io::Result<(Child, Guard)> {
         command.process_group(0);
         let child = command.spawn()?;
@@ -689,14 +885,132 @@ mod platform {
         ))
     }
 
+    #[cfg(target_vendor = "apple")]
+    unsafe extern "C" {
+        fn _NSGetEnviron() -> *mut *mut *mut libc::c_char;
+    }
+
+    #[cfg(not(target_vendor = "apple"))]
+    unsafe extern "C" {
+        static mut environ: *mut *mut libc::c_char;
+    }
+
+    pub(super) fn spawn_closed(
+        program: &std::ffi::CStr, args: &[&std::ffi::CStr],
+        meter: &dyn crate::NativeReadMeter, custody: &mut Option<super::ProcessTree>,
+    ) -> io::Result<()> {
+        let count = args.len().checked_add(2).ok_or(io::ErrorKind::InvalidInput)?;
+        let bytes = count.checked_mul(std::mem::size_of::<*mut libc::c_char>())
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        let copied = bytes - std::mem::size_of::<*mut libc::c_char>();
+        meter.admit_examination((count - 1) as u64, copied as u64)?;
+        meter.allocate(bytes as u64)?;
+        let mut arguments = Vec::new();
+        if arguments.try_reserve_exact(count).is_err() {
+            meter.release(bytes as u64);
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
+        arguments.push(program.as_ptr().cast_mut());
+        arguments.extend(args.iter().map(|argument| argument.as_ptr().cast_mut()));
+        arguments.push(std::ptr::null_mut());
+        let result = (|| {
+            meter.record_examination((count - 1) as u64, copied as u64)?;
+            let attr_cleanup = meter.reserve_cleanup_write()?;
+            let actions_cleanup = match meter.reserve_cleanup_write() {
+                Ok(cleanup) => cleanup,
+                Err(error) => { meter.cancel_cleanup_write(attr_cleanup); return Err(error); }
+            };
+            let mut attributes = std::mem::MaybeUninit::<libc::posix_spawnattr_t>::uninit();
+            let mut actions = std::mem::MaybeUninit::<libc::posix_spawn_file_actions_t>::uninit();
+            let mut attr_initialized = false;
+            let mut actions_initialized = false;
+            let spawned = (|| {
+                let native = |call: &mut dyn FnMut() -> libc::c_int| {
+                    super::process_control_attempt(Some(meter), true, || {
+                        let status = call();
+                        if status == 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(status)) }
+                    })
+                };
+                // Each SDK call below uses this frame's exclusive native
+                // storage. Initialization precedes setters and destruction;
+                // terminated argv strings and inherited environment remain
+                // borrowed and valid throughout synchronous posix_spawn.
+                native(&mut || unsafe { libc::posix_spawnattr_init(attributes.as_mut_ptr()) })?;
+                attr_initialized = true;
+                native(&mut || unsafe { libc::posix_spawn_file_actions_init(actions.as_mut_ptr()) })?;
+                actions_initialized = true;
+                native(&mut || unsafe { libc::posix_spawnattr_setpgroup(attributes.as_mut_ptr(), 0) })?;
+                native(&mut || unsafe { libc::posix_spawnattr_setflags(attributes.as_mut_ptr(), libc::POSIX_SPAWN_SETPGROUP as libc::c_short) })?;
+                for descriptor in [0, 1, 2] {
+                    native(&mut || unsafe {
+                        libc::posix_spawn_file_actions_addopen(actions.as_mut_ptr(), descriptor,
+                            c"/dev/null".as_ptr(), if descriptor == 0 { libc::O_RDONLY } else { libc::O_WRONLY }, 0)
+                    })?;
+                }
+                let mut pid = 0;
+                loop {
+                    let result = native(&mut || unsafe {
+                        #[cfg(target_vendor = "apple")]
+                        let environment = *_NSGetEnviron();
+                        #[cfg(not(target_vendor = "apple"))]
+                        let environment = environ;
+                        libc::posix_spawn(&raw mut pid, program.as_ptr(), actions.as_ptr(), attributes.as_ptr(),
+                            arguments.as_ptr(), environment)
+                    });
+                    match result {
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                        result => { result?; break; }
+                    }
+                }
+                *custody = Some(super::ProcessTree {
+                    child: None,
+                    native_child: Some(pid),
+                    guard: Guard { process_group: pid, active: true },
+                    output_taken: false,
+                    cleanup_on_drop: false,
+                    spawn_resources: SpawnResources::default(),
+                });
+                Ok(())
+            })();
+            // Retire objects in reverse construction order. Both actual
+            // destroys run even after cancellation or another cleanup failure.
+            let mut retained = SpawnResources::default();
+            let actions_result = if actions_initialized {
+                let recorded = meter.record_cleanup_write(actions_cleanup);
+                let status = unsafe { libc::posix_spawn_file_actions_destroy(actions.as_mut_ptr()) };
+                if status != 0 { retained.actions = Some(unsafe { actions.assume_init() }); }
+                recorded.and_then(|()| if status == 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(status)) })
+            } else { meter.cancel_cleanup_write(actions_cleanup); Ok(()) };
+            let attr_result = if attr_initialized {
+                let recorded = meter.record_cleanup_write(attr_cleanup);
+                let status = unsafe { libc::posix_spawnattr_destroy(attributes.as_mut_ptr()) };
+                if status != 0 { retained.attributes = Some(unsafe { attributes.assume_init() }); }
+                recorded.and_then(|()| if status == 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(status)) })
+            } else { meter.cancel_cleanup_write(attr_cleanup); Ok(()) };
+            if retained.pending() {
+                let owner = custody.get_or_insert_with(|| super::ProcessTree {
+                    child: None, native_child: None,
+                    guard: Guard { process_group: 0, active: false },
+                    output_taken: false, cleanup_on_drop: false,
+                    spawn_resources: SpawnResources::default(),
+                });
+                owner.spawn_resources = retained;
+            }
+            spawned.and(actions_result).and(attr_result)
+        })();
+        drop(arguments);
+        meter.release(bytes as u64);
+        result
+    }
+
     impl Guard {
-        fn group_gone(&self, error: &io::Error) -> io::Result<bool> {
+        fn group_gone(&self, error: &io::Error, _meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<bool> {
             if error.raw_os_error() == Some(libc::ESRCH) {
                 return Ok(true);
             }
             #[cfg(target_vendor = "apple")]
             if error.raw_os_error() == Some(libc::EPERM) {
-                return group_has_no_live_members(self.process_group);
+                return group_has_no_live_members(self.process_group, _meter);
             }
             Ok(false)
         }
@@ -710,7 +1024,7 @@ mod platform {
                 return Ok(());
             }
             let error = io::Error::last_os_error();
-            if self.group_gone(&error)? {
+            if self.group_gone(&error, None)? {
                 Ok(())
             } else {
                 Err(error)
@@ -718,17 +1032,27 @@ mod platform {
         }
 
         pub(super) fn terminate(&mut self) -> io::Result<()> {
+            self.terminate_with_meter(None)
+        }
+
+        pub(super) fn terminate_with_meter(
+            &mut self, meter: Option<&dyn crate::NativeReadMeter>,
+        ) -> io::Result<()> {
             if !self.active {
                 return Ok(());
             }
             // SAFETY: a negative, nonzero pid addresses exactly this owned
             // process group; SIGKILL requires no shared memory or signal data.
-            if unsafe { libc::kill(-self.process_group, libc::SIGKILL) } == 0 {
+            let signal = super::process_control_attempt(meter, true, || {
+                if unsafe { libc::kill(-self.process_group, libc::SIGKILL) } == 0 { Ok(()) }
+                else { Err(io::Error::last_os_error()) }
+            });
+            if signal.is_ok() {
                 self.active = false;
                 return Ok(());
             }
-            let error = io::Error::last_os_error();
-            if self.group_gone(&error)? {
+            let error = signal.expect_err("failed group signal");
+            if self.group_gone(&error, meter)? {
                 self.active = false;
                 Ok(())
             } else {
@@ -738,7 +1062,7 @@ mod platform {
     }
 
     #[cfg(target_vendor = "apple")]
-    fn group_has_no_live_members(group: libc::pid_t) -> io::Result<bool> {
+    fn group_has_no_live_members(group: libc::pid_t, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<bool> {
         // Terminated descendants can remain visible until the OS reaps them.
         // Wait only for the same conservative membership proof; EPERM itself
         // never establishes that any member has exited. Denial stays an error
@@ -746,7 +1070,7 @@ mod platform {
         // exactly the independently observed exited owned leader.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
-            if group_snapshot_has_no_live_members(group)? {
+            if group_snapshot_has_no_live_members(group, meter)? {
                 return Ok(true);
             }
             if std::time::Instant::now() >= deadline {
@@ -757,7 +1081,7 @@ mod platform {
     }
 
     #[cfg(target_vendor = "apple")]
-    fn group_snapshot_has_no_live_members(group: libc::pid_t) -> io::Result<bool> {
+    fn group_snapshot_has_no_live_members(group: libc::pid_t, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<bool> {
         // XNU skips zombies in killpg1 and reports EPERM when none are signalled.
         // Accept only an empty group or a snapshot containing exactly the owned,
         // independently observed exited leader. Other members (even zombies)
@@ -770,10 +1094,12 @@ mod platform {
         let id = u32::try_from(group).map_err(io::Error::other)?;
         // SAFETY: thread-local errno and a writable, correctly sized PID array.
         // libproc returns zero both for an empty list and for an errno failure.
-        let read = unsafe {
-            *libc::__error() = 0;
-            libc::proc_listpids(2, id, members.as_mut_ptr().cast(), bytes)
-        };
+        let read = super::process_control_attempt(meter, false, || {
+            Ok(unsafe {
+                *libc::__error() = 0;
+                libc::proc_listpids(2, id, members.as_mut_ptr().cast(), bytes)
+            })
+        })?;
         if read <= 0 {
             let error = io::Error::last_os_error();
             return if read == 0 && error.raw_os_error() == Some(0) {
@@ -785,7 +1111,7 @@ mod platform {
         if read == i32::try_from(std::mem::size_of::<libc::pid_t>()).map_err(io::Error::other)?
             && members.first() == Some(&group)
         {
-            return Ok(observe_exit_id(id)?.is_some());
+            return Ok(observe_exit_id(id, meter)?.is_some());
         }
         Ok(false)
     }
@@ -794,6 +1120,197 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::ProcessTree;
+
+    #[cfg(unix)]
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    #[cfg(unix)]
+    #[derive(Default)]
+    struct ControlCounts {
+        reads: AtomicU64, writes: AtomicU64, allocations: AtomicU64, live: AtomicU64, peak: AtomicU64,
+        items: AtomicU64, copied: AtomicU64, write_limit: AtomicU64,
+    }
+
+    #[cfg(unix)]
+    struct ControlMeter {
+        counts: ControlCounts,
+        read_limit: u64,
+        allocation_limit: u64,
+        memory_limit: u64,
+        cancelled: std::sync::atomic::AtomicBool,
+    }
+
+    #[cfg(unix)]
+    impl ControlMeter {
+        fn new(reads: u64, writes: u64, allocations: u64, memory: u64) -> Self {
+            Self {
+                counts: ControlCounts { write_limit: AtomicU64::new(writes), ..ControlCounts::default() },
+                read_limit: reads, allocation_limit: allocations, memory_limit: memory,
+                cancelled: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl crate::NativeReadMeter for ControlMeter {
+        fn check(&self) -> std::io::Result<()> {
+            if self.cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                Err(std::io::ErrorKind::Interrupted.into())
+            } else { Ok(()) }
+        }
+        fn allocate(&self, bytes: u64) -> std::io::Result<()> {
+            self.check()?;
+            let counts = &self.counts;
+            if counts.allocations.load(Relaxed) == self.allocation_limit || counts.live.load(Relaxed) + bytes > self.memory_limit {
+                return Err(std::io::ErrorKind::OutOfMemory.into());
+            }
+            counts.allocations.fetch_add(1, Relaxed);
+            let live = counts.live.fetch_add(bytes, Relaxed) + bytes;
+            counts.peak.fetch_max(live, Relaxed);
+            Ok(())
+        }
+        fn allocate_refcount_header(&self) -> std::io::Result<()> { self.allocate(0) }
+        fn adopt(&self, bytes: u64) -> std::io::Result<()> {
+            self.check()?;
+            let counts = &self.counts;
+            if counts.live.load(Relaxed) + bytes > self.memory_limit { return Err(std::io::ErrorKind::OutOfMemory.into()); }
+            let live = counts.live.fetch_add(bytes, Relaxed) + bytes;
+            counts.peak.fetch_max(live, Relaxed);
+            Ok(())
+        }
+        fn release(&self, bytes: u64) { self.counts.live.fetch_sub(bytes, Relaxed); }
+        fn admit_examination(&self, _: u64, _: u64) -> std::io::Result<()> { self.check() }
+        fn record_examination(&self, items: u64, copied: u64) -> std::io::Result<()> {
+            self.counts.items.fetch_add(items, Relaxed);
+            self.counts.copied.fetch_add(copied, Relaxed);
+            Ok(())
+        }
+        fn examine(&self, items: u64, copied: u64) -> std::io::Result<()> {
+            self.admit_examination(items, copied)?; self.record_examination(items, copied)
+        }
+        fn admit_bytes(&self, _: usize) -> std::io::Result<()> { self.check() }
+        fn admit_read(&self, _: usize) -> std::io::Result<()> { self.admit_operations(1)?; self.record_operations(1) }
+        fn admit_operations(&self, additional: u64) -> std::io::Result<()> {
+            self.check()?;
+            if self.counts.reads.load(Relaxed) + additional > self.read_limit {
+                Err(std::io::ErrorKind::Other.into())
+            } else { Ok(()) }
+        }
+        fn record_operations(&self, completed: u64) -> std::io::Result<()> {
+            self.counts.reads.fetch_add(completed, Relaxed); Ok(())
+        }
+        fn record_read(&self, _: usize) -> std::io::Result<()> { Ok(()) }
+        fn admit_write(&self, _: usize) -> std::io::Result<()> { self.admit_write_operations(1)?; self.record_write_operations(1) }
+        fn record_write(&self, _: usize) -> std::io::Result<()> { Ok(()) }
+        fn admit_write_operations(&self, additional: u64) -> std::io::Result<()> {
+            self.check()?;
+            let counts = &self.counts;
+            if counts.writes.load(Relaxed) + additional > counts.write_limit.load(Relaxed) {
+                Err(std::io::ErrorKind::Other.into())
+            } else { Ok(()) }
+        }
+        fn record_write_operations(&self, completed: u64) -> std::io::Result<()> {
+            self.counts.writes.fetch_add(completed, Relaxed); Ok(())
+        }
+        fn admit_durability(&self) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
+        fn reserve_cleanup_write(&self) -> std::io::Result<u64> {
+            self.admit_write_operations(1)?;
+            self.counts.write_limit.fetch_sub(1, Relaxed);
+            Ok(1)
+        }
+        fn cancel_cleanup_write(&self, reservation: u64) { self.counts.write_limit.fetch_add(reservation, Relaxed); }
+        fn record_cleanup_write(&self, reservation: u64) -> std::io::Result<()> {
+            let counts = &self.counts;
+            counts.write_limit.fetch_add(reservation, Relaxed);
+            let writes = counts.writes.fetch_add(1, Relaxed) + 1;
+            assert!(writes <= counts.write_limit.load(Relaxed), "reserved cleanup never exceeds its exact budget");
+            Ok(())
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn closed_spawn_exact_native_prefix_retains_one_same_engine_leader() -> std::io::Result<()> {
+        use crate::NativeReadMeter as _;
+        let bytes = (4 * std::mem::size_of::<*mut libc::c_char>()) as u64;
+        let mut custody = None;
+        let denied = ControlMeter::new(0, 9, 1, bytes);
+        assert!(ProcessTree::spawn_closed_measured(c"/bin/sh", &[c"-c", c"exit 7"], &denied, &mut custody).is_err());
+        assert!(custody.is_none(), "denied real spawn cannot publish a PID");
+        assert_eq!(denied.counts.writes.load(Relaxed), 9, "seven setup leaves and two real destroys");
+        assert_eq!(denied.counts.live.load(Relaxed), 0);
+        let exact = ControlMeter::new(1, 10, 1, bytes);
+        ProcessTree::spawn_closed_measured(c"/bin/sh", &[c"-c", c"exit 7"], &exact, &mut custody)?;
+        assert_eq!(exact.counts.writes.load(Relaxed), 10);
+        assert_eq!(exact.counts.allocations.load(Relaxed), 1);
+        assert_eq!(exact.counts.peak.load(Relaxed), bytes);
+        assert_eq!(exact.counts.live.load(Relaxed), 0);
+        assert_eq!(exact.counts.items.load(Relaxed), 3);
+        assert_eq!(exact.counts.copied.load(Relaxed), bytes - std::mem::size_of::<*mut libc::c_char>() as u64);
+        let mut tree = custody.take().expect("actual owned leader");
+        assert_eq!(tree.wait(std::time::Duration::from_secs(5))?.code(), Some(7));
+        assert_eq!(tree.try_wait_measured(&exact)?.expect("same unreaped leader").code(), Some(7));
+        assert_eq!(exact.counts.reads.load(Relaxed), 1);
+        assert!(!tree.is_reaped());
+        tree.terminate()?;
+        assert!(tree.is_reaped());
+        let cancelled = ControlMeter::new(u64::MAX, u64::MAX, u64::MAX, u64::MAX);
+        cancelled.cancelled.store(true, std::sync::atomic::Ordering::Release);
+        assert!(ProcessTree::spawn_closed_measured(c"/bin/sh", &[c"-c", c"exit 0"], &cancelled, &mut custody).is_err());
+        assert!(custody.is_none());
+        assert_eq!(cancelled.counts.allocations.load(Relaxed), 0);
+        assert!(cancelled.check().is_err());
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn measured_termination_denied_observation_keeps_killed_unreaped_identity() -> std::io::Result<()> {
+        let spawn = ControlMeter::new(u64::MAX, 10, 1, u64::MAX);
+        let mut custody = None;
+        ProcessTree::spawn_closed_measured(c"/bin/sh", &[c"-c", c"sleep 30"], &spawn, &mut custody)?;
+        let mut tree = custody.take().expect("actual child");
+        let cancelled = ControlMeter::new(0, 1, 0, 0);
+        cancelled.cancelled.store(true, std::sync::atomic::Ordering::Release);
+        assert!(tree.terminate_measured(&cancelled).is_err());
+        assert!(tree.try_wait()?.is_none(), "cancelled control leaves the real child alive");
+        assert_eq!(cancelled.counts.writes.load(Relaxed), 0);
+        let prefix = ControlMeter::new(0, 1, 0, 0);
+        assert!(tree.terminate_measured(&prefix).is_err());
+        assert_eq!(prefix.counts.writes.load(Relaxed), 1, "the real group signal was sent");
+        assert_eq!(prefix.counts.reads.load(Relaxed), 0, "denied waitid did not run");
+        assert!(tree.native_child.is_some(), "no premature reap releases the group identity");
+        assert!(!tree.cleanup_on_drop, "failed measured cleanup cannot secretly spend unbounded work");
+        tree.wait(std::time::Duration::from_secs(5))?;
+        let exact = ControlMeter::new(2, 0, 0, 0);
+        tree.terminate_measured(&exact)?;
+        assert_eq!(exact.counts.reads.load(Relaxed), 2, "one observation and one physical reap");
+        assert_eq!(exact.counts.writes.load(Relaxed), 0, "already-delivered signal is not repeated");
+        assert!(tree.is_reaped());
+        Ok(())
+    }
+    #[test]
+    #[cfg(unix)]
+    fn measured_termination_releases_only_actual_retained_standard_pipes() -> std::io::Result<()> {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 30"]).stdin(Stdio::piped())
+            .stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut tree = ProcessTree::spawn(&mut command)?;
+        let prefix = ControlMeter::new(0, 1, 0, 0);
+        assert!(tree.terminate_measured(&prefix).is_err());
+        assert_eq!(prefix.counts.writes.load(Relaxed), 1, "group signal is the actual prefix");
+        let child = tree.child.as_ref().expect("unreaped leader");
+        assert!(child.stdin.is_some() && child.stdout.is_some() && child.stderr.is_some());
+        tree.wait(std::time::Duration::from_secs(5))?;
+        // Ordinary wait closed stdin while observing the actual leader exit.
+        let exact = ControlMeter::new(2, 2, 0, 0);
+        tree.terminate_measured(&exact)?;
+        assert_eq!(exact.counts.writes.load(Relaxed), 2, "only the two still-owned output pipes close");
+        assert_eq!(exact.counts.reads.load(Relaxed), 2, "one retained-leader observation and one reap");
+        assert!(tree.is_reaped());
+        Ok(())
+    }
+
     use std::fs;
     use std::io::{Read as _, Write as _};
     use std::process::{Command, Stdio};

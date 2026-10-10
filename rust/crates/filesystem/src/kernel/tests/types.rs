@@ -6,9 +6,14 @@ fn windows_names_validate_utf16_without_lossy_normalization()
     let emoji: Vec<u8> = "😀.rs".encode_utf16().flat_map(u16::to_le_bytes).collect();
     let name = LogicalName::new(NameEncoding::WindowsUtf16Le, emoji.clone(), 255)?;
     assert_eq!(name.as_bytes(), emoji);
+    // Native Windows names are code units, not necessarily Unicode scalars.
+    for opaque in [vec![0x00, 0xd8], vec![0x00, 0xdc], vec![0x00, 0xd8, b'x', 0]] {
+        let name = LogicalName::new(NameEncoding::WindowsUtf16Le, opaque.clone(), 255)?;
+        assert_eq!(name.as_bytes(), opaque);
+        assert!(name.unicode_text().is_none(), "opaque names must not be normalized into Unicode");
+    }
 
     for invalid in [
-        vec![0x00, 0xd8],
         vec![b'/', 0],
         vec![b'\\', 0],
         vec![b'.', 0],
@@ -247,4 +252,28 @@ fn extent_page_validation_rejects_every_malformed_shape() {
         ExtentPage::Leaf(vec![extent(0, 1, ExtentKind::Hole)]).validate(0),
         Err(ExtentPageError::TooManyItems)
     );
+}
+
+#[test]
+fn borrowed_unicode_name_validation_matches_owned_native_validation()
+-> Result<(), Box<dyn std::error::Error>> {
+    for encoding in [NameEncoding::Utf8, NameEncoding::PosixBytes, NameEncoding::WindowsUtf16Le] {
+        for value in ["", ".", "..", "a/b", "a\\b", "nul\0", "é𝄞", "ordinary"] {
+            let bytes = if encoding == NameEncoding::WindowsUtf16Le {
+                value.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>()
+            } else { value.as_bytes().to_vec() };
+            let expected = LogicalName::new(encoding, bytes.clone(), 12).map(|_| bytes.len());
+            assert_eq!(LogicalName::validate_unicode(encoding, value, 12), expected);
+        }
+    }
+    let unicode = LogicalName::new(
+        NameEncoding::WindowsUtf16Le, "é𝄞".encode_utf16().flat_map(u16::to_le_bytes).collect(), 12,
+    )?;
+    assert_eq!(unicode.unicode_utf8_bytes(), Some("é𝄞".len()));
+    let mut output = String::new();
+    unicode.append_unicode(&mut output)?;
+    assert_eq!(output, "é𝄞");
+    let opaque = LogicalName::new(NameEncoding::WindowsUtf16Le, vec![0, 0xd8], 12)?;
+    assert_eq!(opaque.unicode_utf8_bytes(), None);
+    Ok(())
 }

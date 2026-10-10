@@ -777,7 +777,7 @@ async fn report_linux_lazy_mount_read_costs() -> Result<(), Box<dyn std::error::
         )?;
         let path = NamespacePath::from_portable(&path, VolumeLimits::default())?;
         let node = profile_source
-            .lookup(source_reference, &path, &CancellationToken::new())
+            .lookup(source_reference, &path, WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await?
             .value
             .ok_or("native source lookup missed a fixture file")?;
@@ -794,6 +794,7 @@ async fn report_linux_lazy_mount_read_costs() -> Result<(), Box<dyn std::error::
                 *version,
                 0,
                 128,
+                WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
             )
             .await?
@@ -904,7 +905,7 @@ async fn report_linux_working_set_costs() -> Result<(), Box<dyn std::error::Erro
             &CancellationToken::new(),
             PublicationPermit::Unrestricted,
         )
-        .await?;
+        .await?.value;
     let prepare_us = started.elapsed().as_micros();
     let started = Instant::now();
     working_set.validate_for_presentation().await?;

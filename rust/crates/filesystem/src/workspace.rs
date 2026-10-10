@@ -17,6 +17,7 @@ use crate::{
     MergeDriverRegistry, MergePlan, MergePlanResolutionError, MergeResolution,
     MergeResolutionCache, UnpublishedMergeCandidate, Volume, resolve_merge_plan,
 };
+use crate::performance::{MeasuredResult, OperationReceipt, WorkBudget};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -35,6 +36,65 @@ const MAXIMUM_WORKSPACE_NAME_BYTES: usize = 255;
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct WorkspaceName(Arc<str>);
 
+fn workspace_name_scratch_witness(
+    name: &str,
+    work: &mut crate::WorkCounters,
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
+) -> Result<crate::WorkCounters, WorkspaceError> {
+    let mut pending = 0_u64;
+    let mut maximum_pending = 0_u64;
+    let mut maximum_chunk = 0_u64;
+    for character in name.chars() {
+        cancellation.check()?;
+        work.charge_items(1, &budget)?;
+        let mut chunk = 0_u64;
+        let mut failure = None;
+        unicode_normalization::char::decompose_canonical(character, |scalar| {
+            if failure.is_some() { return; }
+            let result = (|| -> Result<(), WorkspaceError> {
+                cancellation.check()?;
+                work.charge_items(1, &budget)?;
+                chunk = chunk.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+                if unicode_normalization::char::canonical_combining_class(scalar) == 0 {
+                    pending = 0;
+                } else {
+                    pending = pending.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+                    maximum_pending = maximum_pending.max(pending);
+                }
+                Ok(())
+            })();
+            failure = result.err();
+        });
+        if let Some(error) = failure { return Err(error); }
+        maximum_chunk = maximum_chunk.max(chunk);
+    }
+    // unicode-normalization 0.1.25 uses two four-element TinyVecs. NFD
+    // temporarily retains one complete decomposition beside its pending run;
+    // NFC retains only uncomposed marks. Power-of-two growth plus old/new
+    // overlap bounds their opaque buffers; stable ordering may need one run.
+    // This is admission evidence, never fabricated actual-allocation counters.
+    let buffer = |elements: u64, element_bytes: u64| -> Result<u64, WorkspaceError> {
+        if elements <= 4 { return Ok(0); }
+        elements.checked_next_power_of_two()
+            .and_then(|capacity| capacity.checked_mul(2))
+            .and_then(|capacity| capacity.checked_mul(element_bytes))
+            .ok_or(crate::WorkError::Overflow.into())
+    };
+    let nfd_bytes = buffer(
+        maximum_pending.checked_add(maximum_chunk).ok_or(crate::WorkError::Overflow)?,
+        std::mem::size_of::<(u8, char)>() as u64,
+    )?;
+    let nfc_bytes = buffer(maximum_pending, std::mem::size_of::<char>() as u64)?;
+    let sort_bytes = maximum_pending.checked_mul(std::mem::size_of::<(u8, char)>() as u64)
+        .ok_or(crate::WorkError::Overflow)?;
+    Ok(crate::WorkCounters {
+        peak_allocation_bytes: nfd_bytes.checked_add(nfc_bytes).and_then(|n| n.checked_add(sort_bytes))
+            .ok_or(crate::WorkError::Overflow)?,
+        ..crate::WorkCounters::UNCHARGED
+    })
+}
+
 impl WorkspaceName {
     /// Canonicalizes and validates one friendly workspace name.
     ///
@@ -43,23 +103,77 @@ impl WorkspaceName {
     /// Rejects empty, reserved, path-like, control-containing, or oversized
     /// names before deriving any durable identity.
     pub fn new(name: impl AsRef<str>) -> Result<Self, WorkspaceNameError> {
-        let canonical: String = name.as_ref().nfc().collect();
-        if canonical.is_empty() {
-            return Err(WorkspaceNameError::Empty);
-        }
-        if canonical == "." || canonical == ".." {
-            return Err(WorkspaceNameError::Reserved);
-        }
-        if canonical.len() > MAXIMUM_WORKSPACE_NAME_BYTES {
-            return Err(WorkspaceNameError::TooLong);
-        }
-        if canonical
-            .chars()
-            .any(|character| character.is_control() || matches!(character, '/' | '\\'))
-        {
-            return Err(WorkspaceNameError::InvalidCharacter);
-        }
-        Ok(Self(Arc::from(canonical)))
+        static UNBOUNDED_CANCELLATION: std::sync::LazyLock<crate::CancellationToken>
+            = std::sync::LazyLock::new(crate::CancellationToken::new);
+        Self::new_measured(
+            name, crate::WorkBudget::UNBOUNDED,
+            &UNBOUNDED_CANCELLATION,
+        )
+            .map(|receipt| receipt.value)
+            .map_err(|failure| match failure.error {
+                WorkspaceError::Name(error) => error,
+                _ => WorkspaceNameError::Allocation,
+            })
+    }
+
+    pub(crate) fn new_measured(
+        name: impl AsRef<str>,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Self>, WorkspaceError> {
+        let mut work = crate::WorkCounters::UNCHARGED;
+        let result = (|| {
+            cancellation.check()?;
+            let witness = workspace_name_scratch_witness(name.as_ref(), &mut work, budget, cancellation)?;
+            work.admit(&witness, &budget)?;
+            let mut producing_budget = budget;
+            producing_budget.peak_allocation_bytes = producing_budget.peak_allocation_bytes
+                .checked_sub(witness.peak_allocation_bytes).ok_or(crate::WorkError::Overflow)?;
+            let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+            let mut output = Vec::new();
+            {
+                let mut normalized = name.as_ref().nfc();
+                loop {
+                    cancellation.check()?;
+                    work.charge_items(1, &producing_budget)?;
+                    let Some(character) = normalized.next() else { break };
+                    let mut encoded = [0; 4];
+                    for byte in character.encode_utf8(&mut encoded).as_bytes() {
+                        grow_workspace_vec(&mut output, &mut allocations, &mut work, producing_budget, cancellation)?;
+                        work.charge(&crate::WorkCounters {
+                            bytes_copied: 1, ..crate::WorkCounters::UNCHARGED
+                        }, &producing_budget)?;
+                        output.push(*byte);
+                    }
+                }
+            }
+            cancellation.check()?;
+            work.charge_items(output.len() as u64, &budget)?;
+            let canonical = std::str::from_utf8(&output).map_err(WorkspaceError::engine)?;
+            if canonical.is_empty() { return Err(WorkspaceNameError::Empty.into()); }
+            if canonical == "." || canonical == ".." { return Err(WorkspaceNameError::Reserved.into()); }
+            if canonical.len() > MAXIMUM_WORKSPACE_NAME_BYTES { return Err(WorkspaceNameError::TooLong.into()); }
+            for character in canonical.chars() {
+                cancellation.check()?;
+                work.charge_items(1, &budget)?;
+                if character.is_control() || matches!(character, '/' | '\\') {
+                    return Err(WorkspaceNameError::InvalidCharacter.into());
+                }
+            }
+            let copied = crate::WorkCounters { bytes_copied: canonical.len() as u64, ..crate::WorkCounters::UNCHARGED };
+            work.admit(&copied, &budget)?;
+            allocations.claim_bytes(canonical.len() as u64, 1, &mut work, budget)
+                .map_err(workspace_allocation_error)?;
+            work.charge(&copied, &budget)?;
+            Ok(Self(Arc::from(canonical)))
+        })();
+        result
+            .map(|value| crate::OperationReceipt { value, work })
+            .map_err(|error| crate::OperationFailure::new(error, work))
+    }
+
+    pub(crate) fn retained_bytes(&self) -> u64 {
+        self.as_str().len() as u64
     }
 
     /// Returns the canonical customer spelling.
@@ -117,6 +231,28 @@ impl WorkspaceId {
         let mut bytes = [0_u8; 16];
         bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
         Self(bytes)
+    }
+
+    pub(crate) fn derive_measured(
+        namespace: [u8; 16],
+        name: &WorkspaceName,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Self>, WorkspaceError> {
+        let mut work = crate::WorkCounters::UNCHARGED;
+        let result = (|| {
+            cancellation.check()?;
+            work.charge(&crate::WorkCounters {
+                bytes_hashed: (WORKSPACE_ID_DOMAIN.len() + namespace.len()
+                    + std::mem::size_of::<u64>() + name.as_str().len()) as u64,
+                bytes_copied: 16,
+                ..crate::WorkCounters::UNCHARGED
+            }, &budget)?;
+            Ok(Self::derive(namespace, name))
+        })();
+        result
+            .map(|value| crate::OperationReceipt { value, work })
+            .map_err(|error| crate::OperationFailure::new(error, work))
     }
 
     /// Returns the stable opaque bytes for persistence or transport.
@@ -298,16 +434,43 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         &self,
         idempotency_key: IdempotencyKey,
     ) -> Result<Option<Generation<A, O>>, WorkspaceError> {
-        self.volume
+        self.operation_generation_measured(
+            idempotency_key,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
+    }
+
+    /// Resolves an original committed generation without adopting the mutable
+    /// head, under explicit work bounds and the original cancellation token.
+    ///
+    /// # Errors
+    /// Retains actual lookup and authentication work on storage, malformed
+    /// record, cancellation and budget failures. Absence grants no authority.
+    pub async fn operation_generation_measured(
+        &self,
+        idempotency_key: IdempotencyKey,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Option<Generation<A, O>>>, WorkspaceError>
+    {
+        let receipt = self
+            .volume
             .fs
-            .workspace_operation_generation(&self.volume, idempotency_key.operation_id())
-            .await
-            .map(|generation| {
-                generation.map(|id| Generation {
-                    workspace: self.clone(),
-                    id,
-                })
-            })
+            .workspace_operation_generation_measured(
+                &self.volume,
+                idempotency_key.operation_id(),
+                budget,
+                cancellation,
+            )
+            .await?;
+        Ok(crate::OperationReceipt {
+            value: receipt.value.map(|id| Generation { workspace: self.clone(), id, publication_closure: None }),
+            work: receipt.work,
+        })
     }
 
     /// Proves an immutable result was committed by this workspace's exact
@@ -334,6 +497,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         mode: CheckoutMode,
     ) -> Result<Checkout<A, O>, WorkspaceError> {
         self.engine_checkout(selector, mode).await
+    }
+
+    /// Opens the same canonical checkout with exact success and failure work.
+    pub async fn checkout_measured(
+        &self,
+        selector: GenerationSelector,
+        mode: CheckoutMode,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Checkout<A, O>>, WorkspaceError> {
+        self.volume.checkout(selector, mode, budget, cancellation).await
+            .map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::default(), WorkspaceError::from))
     }
 
     /// Returns the attached native source, when this handle was created by
@@ -372,13 +547,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         )
         .await
         .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
     }
 
-    pub(crate) async fn head_measured(
+    /// Pins the authenticated head under explicit work and cancellation limits.
+    /// Failed admission retains the work already spent by the checkout engine.
+    ///
+    /// # Errors
+    /// Returns a measured storage, authentication, cancellation or work failure.
+    pub async fn head_measured(
         &self,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<Generation<A, O>>, WorkspaceError> {
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Generation<A, O>>, WorkspaceError> {
         in_heap(move || async move {
             let receipt = self
                 .volume
@@ -389,12 +570,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                     cancellation,
                 )
                 .await
-                .map_err(|failure| WorkspaceError::from(failure.error))?;
+                .map_err(|failure| {
+                    crate::OperationFailure::new(WorkspaceError::from(failure.error), *failure.work)
+                })?;
             Ok(crate::OperationReceipt {
-                value: Generation {
-                    workspace: self.clone(),
-                    id: receipt.value.generation_id(),
-                },
+                value: Generation { workspace: self.clone(), id: receipt.value.generation_id(), publication_closure: None },
                 work: receipt.work,
             })
         })
@@ -410,7 +590,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         file_id: FileId,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<(Generation<A, O>, bool)>, WorkspaceError> {
+    ) -> crate::MeasuredResult<crate::OperationReceipt<(Generation<A, O>, bool)>, WorkspaceError> {
         let reader = self.head_reader_measured(budget, cancellation).await?;
         let records = reader
             .value
@@ -419,21 +599,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                 reader
                     .work
                     .remaining(budget)
-                    .map_err(WorkspaceError::engine)?,
+                    .map_err(|error| crate::OperationFailure::new(WorkspaceError::engine(error), reader.work))?,
                 cancellation,
             )
             .await
-            .map_err(|failure| WorkspaceError::from(failure.error))?;
+            .map_err(|failure| failure.map_with_prior_work(reader.work, WorkspaceError::from))?;
         let work = reader
             .work
             .checked_add(records.work)
-            .map_err(WorkspaceError::engine)?;
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::engine(error), reader.work))?;
         Ok(crate::OperationReceipt {
             value: (
-                Generation {
-                    workspace: self.clone(),
-                    id: reader.value.generation_id(),
-                },
+                Generation { workspace: self.clone(), id: reader.value.generation_id(), publication_closure: None },
                 records.value.first().is_some_and(Option::is_some),
             ),
             work,
@@ -447,7 +624,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         &self,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<crate::PinnedReader<A, O>>, WorkspaceError> {
+    ) -> crate::MeasuredResult<crate::OperationReceipt<crate::PinnedReader<A, O>>, WorkspaceError> {
         let checkout = self
             .engine_checkout_measured(
                 GenerationSelector::Head,
@@ -460,7 +637,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             value: checkout
                 .value
                 .pinned_reader()
-                .map_err(WorkspaceError::engine)?,
+                .map_err(|error| crate::OperationFailure::new(WorkspaceError::engine(error), checkout.work))?,
             work: checkout.work,
         })
     }
@@ -483,27 +660,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         )
         .await
         .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
     }
 
-    pub(crate) async fn generation_measured(
+    /// Authenticates one exact generation under explicit work and cancellation
+    /// limits, retaining failure work without substituting the mutable head.
+    ///
+    /// # Errors
+    /// Returns a measured storage, authentication, cancellation or work failure.
+    pub async fn generation_measured(
         &self,
         generation_id: GenerationId,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<Generation<A, O>>, WorkspaceError> {
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Generation<A, O>>, WorkspaceError> {
         let checkout = self
-            .engine_checkout_measured(
+            .volume
+            .checkout(
                 GenerationSelector::Exact(generation_id),
                 CheckoutMode::read_only_pinned(),
                 budget,
                 cancellation,
             )
-            .await?;
+            .await
+            .map_err(|failure| {
+                crate::OperationFailure::new(WorkspaceError::from(failure.error), *failure.work)
+            })?;
         Ok(crate::OperationReceipt {
-            value: Generation {
-                workspace: self.clone(),
-                id: checkout.value.generation_id(),
-            },
+            value: Generation { workspace: self.clone(), id: checkout.value.generation_id(), publication_closure: None },
             work: checkout.work,
         })
     }
@@ -552,10 +736,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                 permit,
             )
             .await?;
-        let restored = |id| Generation {
-            workspace: self.clone(),
-            id,
-        };
+        let restored = |id| Generation { workspace: self.clone(), id, publication_closure: None };
         Ok(match outcome {
             WorkspaceRestoreOutcome::Restored(id) => WorkspaceRestore::Restored(restored(id)),
             WorkspaceRestoreOutcome::AlreadyRestored(id) => {
@@ -601,94 +782,262 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         idempotency_key: IdempotencyKey,
         permit: crate::PublicationPermit,
     ) -> Result<TransactionCommit<A, O>, WorkspaceError> {
-        if !self.volume.fs.same_deployment(&source.workspace.volume.fs) {
-            return Err(WorkspaceError::ForeignGeneration);
-        }
-        let current = self.head().await?;
-        if current.id != if_current {
-            return Ok(TransactionCommit::Conflict { actual: current });
-        }
-        let mut source_checkout = source
-            .workspace
-            .engine_checkout(
-                GenerationSelector::Exact(source.id),
-                CheckoutMode::read_only_pinned(),
-            )
-            .await?;
-        let mut transaction = self.begin_transaction(idempotency_key).await?;
-        let config = self.volume.config;
-        let cancellation = crate::CancellationToken::new();
-        let parsed = paths
-            .iter()
-            .map(|path| {
-                let relative = path.trim_start_matches('/');
-                let absolute = format!("/{relative}");
-                customer_path(&absolute, config).map(|path| (relative, path))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let lookup_paths = parsed
-            .iter()
-            .map(|(_, path)| path.clone())
-            .collect::<Vec<_>>();
-        let source_records = source_checkout
-            .lookup_batch_no_follow(&lookup_paths, crate::WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map_err(WorkspaceError::engine)?
-            .value
-            .entries
-            .into_iter()
-            .map(|entry| entry.record)
-            .collect::<Vec<_>>();
-        let missing_paths = parsed
-            .iter()
-            .zip(&source_records)
-            .filter(|(_, record)| record.is_none())
-            .map(|((_, path), _)| path.clone())
-            .collect::<Vec<_>>();
-        let current_records = if missing_paths.is_empty() {
-            Vec::new()
-        } else {
-            transaction
-                .checkout
-                .lookup_batch_no_follow(&missing_paths, crate::WorkBudget::UNBOUNDED, &cancellation)
-                .await
-                .map_err(WorkspaceError::engine)?
-                .value
-                .entries
-                .into_iter()
-                .map(|entry| entry.record)
-                .collect()
-        };
-        let mut current_records = current_records.into_iter();
-        let mut operations = Vec::with_capacity(paths.len());
-        for ((relative, path), source_record) in parsed.into_iter().zip(source_records) {
-            if let Some(record) = source_record {
-                if record.kind != FileKind::Directory
-                    && let Some((parent, _)) = relative.rsplit_once('/')
-                {
-                    transaction.create_dir_all(&format!("/{parent}")).await?;
+        self.restore_paths_from_with_permit_measured(
+            source, paths, if_current, idempotency_key, permit,
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+    }
+
+    /// Restores the same selected records and tombstones with finite work receipts.
+    pub async fn restore_paths_from_with_permit_measured(
+        &self,
+        source: &Generation<A, O>,
+        paths: &[String],
+        if_current: GenerationId,
+        idempotency_key: IdempotencyKey,
+        permit: crate::PublicationPermit,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<TransactionCommit<A, O>>, WorkspaceError> {
+        self.restore_paths_from_with_permit_measured_guarded(
+            source, paths, if_current, idempotency_key, permit, budget, cancellation,
+            |_| async { Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) },
+        ).await
+    }
+
+    /// Restores selected records through the original publication engine with
+    /// the caller's measured owner check at the actual authority seal.
+    /// Paths select exact namespace records. Existing destination directories
+    /// retain their child set while restoring metadata. Subtree callers supply
+    /// expanded record paths in restore/removal dependency order.
+    pub async fn restore_paths_from_with_permit_measured_guarded<F, Fut>(
+        &self,
+        source: &Generation<A, O>,
+        paths: &[String],
+        if_current: GenerationId,
+        idempotency_key: IdempotencyKey,
+        permit: crate::PublicationPermit,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+        mut before_publication: F,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<TransactionCommit<A, O>>, WorkspaceError>
+    where
+        F: FnMut(crate::WorkBudget) -> Fut,
+        Fut: Future<Output = crate::FsResult<()>> + Send,
+    {
+        crate::heap_future::in_heap_measured(move |budget| async move {
+            let mut work = crate::WorkCounters::UNCHARGED;
+            let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+            let result = async {
+                if !self.volume.fs.same_deployment(&source.workspace.volume.fs) {
+                    return Err(WorkspaceError::ForeignGeneration);
                 }
-                operations.push(crate::kernel::Mutation::Restore { path, record });
-            } else {
-                let current_record = current_records
-                    .next()
-                    .ok_or_else(|| WorkspaceError::engine("missing batch lookup result"))?;
-                if let Some(record) = current_record {
-                    operations.push(crate::kernel::Mutation::Remove {
-                        path,
-                        expected_file_id: MetadataField::Value(record.file_id),
-                    });
+                let current = merge_workspace_backend(
+                    self.head_measured(budget, cancellation).await, &mut work, 0,
+                )?.value;
+                if current.id != if_current {
+                    return Ok(TransactionCommit::Conflict { actual: current });
                 }
-            }
+                let allowance = workspace_remaining(work, budget, allocations.live_bytes())?;
+                let mut source_checkout = merge_workspace_backend(
+                    source.workspace.engine_checkout_measured(
+                        GenerationSelector::Exact(source.id), CheckoutMode::read_only_pinned(),
+                        allowance, cancellation,
+                    ).await, &mut work, allocations.live_bytes(),
+                )?.value;
+                let source_checkout_bytes = source_checkout.logical_owned_bytes();
+                allocations.claim_bytes(source_checkout_bytes, 0, &mut work, budget)
+                    .map_err(workspace_allocation_error)?;
+                let allowance = workspace_remaining(work, budget, allocations.live_bytes())?;
+                let mut transaction = merge_workspace_backend(
+                    self.begin_pinned_transaction_measured(
+                        &current, idempotency_key, allowance, cancellation,
+                    ).await, &mut work, allocations.live_bytes(),
+                )?.value;
+                allocations.claim_bytes(transaction.checkout.logical_owned_bytes(), 0, &mut work, budget)
+                    .map_err(workspace_allocation_error)?;
+                let mut parsed = new_workspace_vec(
+                    paths.len(), &mut allocations, &mut work, budget, cancellation,
+                )?;
+                for path in paths {
+                    cancellation.check()?;
+                    work.charge_items(1, &budget)?;
+                    let relative = path.trim_start_matches('/');
+                    let absolute = Self::restore_absolute_path_measured(
+                        relative, &mut allocations, &mut work, budget, cancellation,
+                    )?;
+                    let path = customer_path_measured(
+                        &absolute, self.volume.config, &mut allocations, &mut work, budget, cancellation,
+                    )?;
+                    let absolute_bytes = absolute.capacity() as u64;
+                    drop(absolute);
+                    allocations.release(absolute_bytes).map_err(workspace_allocation_error)?;
+                    parsed.push((relative, path));
+                }
+                let parsed_bytes = workspace_vec_bytes(&parsed);
+                let mut lookup_paths = new_workspace_vec(
+                    parsed.len(), &mut allocations, &mut work, budget, cancellation,
+                )?;
+                for (_, path) in &parsed {
+                    cancellation.check()?;
+                    work.charge_items(1, &budget)?;
+                    lookup_paths.push(path.clone_with_ledger(
+                        &mut allocations, &mut work, budget, cancellation,
+                    ).map_err(namespace_path_error)?);
+                }
+                let lookup_bytes = workspace_vec_bytes(&lookup_paths)
+                    + lookup_paths.iter().map(NamespacePath::retained_bytes).sum::<u64>();
+                let allowance = workspace_remaining(work, budget, allocations.live_bytes())?;
+                let source_records = merge_workspace_backend(
+                    source_checkout.lookup_batch_no_follow(&lookup_paths, allowance, cancellation).await,
+                    &mut work, allocations.live_bytes(),
+                )?.value;
+                allocations.claim_bytes(source_records.retained_allocation_bytes, 0, &mut work, budget)
+                    .map_err(workspace_allocation_error)?;
+                let source_records_bytes = source_records.retained_allocation_bytes;
+                let source_records = source_records.entries;
+                drop(lookup_paths);
+                allocations.release(lookup_bytes).map_err(workspace_allocation_error)?;
+                let mut missing_count = 0;
+                for entry in &source_records {
+                    cancellation.check()?;
+                    work.charge_items(1, &budget)?;
+                    missing_count += usize::from(entry.record.is_none());
+                }
+                let mut missing_paths = new_workspace_vec(
+                    missing_count, &mut allocations, &mut work, budget, cancellation,
+                )?;
+                for ((_, path), entry) in parsed.iter().zip(&source_records) {
+                    cancellation.check()?;
+                    work.charge_items(1, &budget)?;
+                    if entry.record.is_none() {
+                        missing_paths.push(path.clone_with_ledger(
+                            &mut allocations, &mut work, budget, cancellation,
+                        ).map_err(namespace_path_error)?);
+                    }
+                }
+                let missing_bytes = workspace_vec_bytes(&missing_paths)
+                    + missing_paths.iter().map(NamespacePath::retained_bytes).sum::<u64>();
+                let (current_records, current_records_bytes) = if missing_paths.is_empty() {
+                    (Vec::new(), 0)
+                } else {
+                    let allowance = workspace_remaining(work, budget, allocations.live_bytes())?;
+                    let records = merge_workspace_backend(
+                        transaction.checkout.lookup_batch_no_follow(
+                            &missing_paths, allowance, cancellation,
+                        ).await, &mut work, allocations.live_bytes(),
+                    )?.value;
+                    allocations.claim_bytes(records.retained_allocation_bytes, 0, &mut work, budget)
+                        .map_err(workspace_allocation_error)?;
+                    (records.entries, records.retained_allocation_bytes)
+                };
+                drop(missing_paths);
+                allocations.release(missing_bytes).map_err(workspace_allocation_error)?;
+                drop(source_checkout);
+                allocations.release(source_checkout_bytes).map_err(workspace_allocation_error)?;
+                let mut current_records = current_records.into_iter();
+                let mut operations = new_workspace_vec(
+                    paths.len(), &mut allocations, &mut work, budget, cancellation,
+                )?;
+                let mut operation_path_bytes = 0_u64;
+                for ((relative, path), entry) in parsed.into_iter().zip(source_records) {
+                    cancellation.check()?;
+                    work.charge_items(1, &budget)?;
+                    if let Some(record) = entry.record {
+                        if record.kind != FileKind::Directory
+                            && let Some((parent, _)) = relative.rsplit_once('/')
+                        {
+                            let absolute = Self::restore_absolute_path_measured(
+                                parent, &mut allocations, &mut work, budget, cancellation,
+                            )?;
+                            let allowance = workspace_remaining(work, budget, allocations.live_bytes())?;
+                            let live = allocations.live_bytes();
+                            let parents = match transaction.create_dir_all_measured(
+                                &absolute, allowance, cancellation,
+                            ).await {
+                                Ok(parents) => parents,
+                                Err(failure) => {
+                                    work = work.with_backend(*failure.work, live)?;
+                                    return Err(failure.error);
+                                }
+                            };
+                            work = work.with_backend(parents, live)?;
+                            work.verify(budget)?;
+                            let absolute_bytes = absolute.capacity() as u64;
+                            drop(absolute);
+                            allocations.release(absolute_bytes).map_err(workspace_allocation_error)?;
+                        }
+                        operation_path_bytes += path.retained_bytes();
+                        operations.push(crate::kernel::Mutation::Restore { path, record });
+                    } else {
+                        let current_record = current_records.next()
+                            .ok_or_else(|| WorkspaceError::engine("missing batch lookup result"))?;
+                        if let Some(record) = current_record.record {
+                            operation_path_bytes += path.retained_bytes();
+                            operations.push(crate::kernel::Mutation::Remove {
+                                path, expected_file_id: MetadataField::Value(record.file_id),
+                            });
+                        } else {
+                            let path_bytes = path.retained_bytes();
+                            drop(path);
+                            allocations.release(path_bytes).map_err(workspace_allocation_error)?;
+                        }
+                    }
+                }
+                drop(current_records);
+                allocations.release(parsed_bytes + source_records_bytes + current_records_bytes)
+                    .map_err(workspace_allocation_error)?;
+                if !operations.is_empty() {
+                    let transferred = workspace_vec_bytes(&operations) + operation_path_bytes;
+                    allocations.release(transferred).map_err(workspace_allocation_error)?;
+                    let allowance = workspace_remaining(work, budget, allocations.live_bytes())?;
+                    merge_workspace_backend(
+                        transaction.checkout.mutate(operations, allowance, cancellation).await,
+                        &mut work, allocations.live_bytes(),
+                    )?;
+                } else {
+                    let operation_bytes = workspace_vec_bytes(&operations);
+                    drop(operations);
+                    allocations.release(operation_bytes).map_err(workspace_allocation_error)?;
+                }
+                let allowance = workspace_remaining(work, budget, allocations.live_bytes())?;
+                let committed = merge_workspace_backend(
+                    transaction.commit_with_permit_measured_guarded(
+                        permit, allowance, cancellation, &mut before_publication,
+                    ).await, &mut work, allocations.live_bytes(),
+                )?;
+                Ok(committed.value)
+            }.await;
+            work.verify(budget)
+                .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
+            result.map(|value| crate::OperationReceipt { value, work })
+                .map_err(|error| crate::OperationFailure::new(error, work))
+        }, budget, cancellation, WorkspaceError::Cancelled(crate::CancellationError)).await
+    }
+
+    fn restore_absolute_path_measured(
+        relative: &str,
+        allocations: &mut crate::kernel::allocation::AllocationLedger,
+        work: &mut crate::WorkCounters,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<String, WorkspaceError> {
+        let length = relative.len().checked_add(1).ok_or(crate::WorkError::Overflow)?;
+        let mut bytes = new_workspace_vec::<u8>(length, allocations, work, budget, cancellation)?;
+        let admitted = cancellation.check().map_err(WorkspaceError::from).and_then(|()| {
+            work.charge(&crate::WorkCounters {
+                bytes_copied: length as u64, ..crate::WorkCounters::UNCHARGED
+            }, &budget).map_err(WorkspaceError::from)
+        });
+        if let Err(error) = admitted {
+            let claimed = workspace_vec_bytes(&bytes);
+            drop(bytes);
+            allocations.release(claimed).map_err(workspace_allocation_error)?;
+            return Err(error);
         }
-        if !operations.is_empty() {
-            transaction
-                .checkout
-                .mutate(operations, crate::WorkBudget::UNBOUNDED, &cancellation)
-                .await
-                .map_err(WorkspaceError::engine)?;
-        }
-        transaction.commit_with_permit(permit).await
+        bytes.push(b'/');
+        bytes.extend_from_slice(relative.as_bytes());
+        String::from_utf8(bytes).map_err(WorkspaceError::engine)
     }
 
     /// Applies only the paths changed between `base` and `source`, rejecting
@@ -962,10 +1311,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         )
         .await
         .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
     }
 
     /// Forks one exact generation under caller-supplied work and cancellation
-    /// limits, returning the existing engine's successful work receipt.
+    /// limits, returning exact work on success and on every partial failure.
     /// Reuse the same destination, pinned generation, selection and idempotency
     /// key to reconcile an uncertain publication. A failed call can leave staged
     /// objects, or a committed workspace if cancellation follows publication.
@@ -980,7 +1330,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         options: ForkOptions<A, O>,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<Self>, WorkspaceError> {
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Self>, WorkspaceError> {
+        self.fork_measured_inner::<
+            fn(crate::WorkBudget) -> std::future::Ready<crate::facade::FsResult<()>>,
+            std::future::Ready<crate::facade::FsResult<()>>,
+        >(destination, options, crate::PublicationPermit::Unrestricted, budget, cancellation, None).await
+    }
+
+    /// Forks the supplied exact generation with the original owner guard at each destination seal.
+    /// The guard is awaited after actual preparation, never merely before planning.
+    pub async fn fork_measured_guarded<F, Fut>(
+        &self, destination: impl AsRef<str>, options: ForkOptions<A, O>,
+        permit: crate::PublicationPermit, budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken, mut guard: F,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Self>, WorkspaceError>
+    where
+        F: FnMut(crate::WorkBudget) -> Fut + Send,
+        Fut: Future<Output = crate::facade::FsResult<()>> + Send,
+    {
+        self.fork_measured_inner(destination, options, permit, budget, cancellation, Some(&mut guard)).await
+    }
+
+    async fn fork_measured_inner<F, Fut>(
+        &self, destination: impl AsRef<str>, options: ForkOptions<A, O>,
+        permit: crate::PublicationPermit, budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken, guard: Option<&mut F>,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Self>, WorkspaceError>
+    where
+        F: FnMut(crate::WorkBudget) -> Fut + Send,
+        Fut: Future<Output = crate::facade::FsResult<()>> + Send,
+    {
         let span = crate::obs::span!(
             INFO,
             "acyclic.fs.workspace.fork",
@@ -988,26 +1367,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             error.kind = crate::obs::Empty,
             workspace_id = crate::obs::hex(&self.id.0),
         );
-        crate::obs::outcome_on(
+        crate::obs::measured_on(
             &span,
             crate::obs::in_span(&span, async move {
                 if options.generation.workspace.id != self.id {
-                    return Err(WorkspaceError::ForeignGeneration);
+                    return Err(crate::OperationFailure::before_work(WorkspaceError::ForeignGeneration));
                 }
-                let destination = WorkspaceName::new(destination)?;
-                in_heap(|| {
+                let named = WorkspaceName::new_measured(destination, budget, cancellation)?;
+                let prior = named.work;
+                let remaining = prior.remaining(budget)
+                    .map_err(|error| crate::OperationFailure::new(WorkspaceError::Work(error), prior))?;
+                let forked = if let Some(guard) = guard {
+                    self.volume.fs.fork_workspace_measured_guarded(
+                        named.value, &options.generation, options.idempotency_key, options.paths,
+                        permit, remaining, cancellation, guard,
+                    ).await
+                } else {
                     self.volume.fs.fork_workspace_measured(
-                        destination,
-                        &options.generation,
-                        options.idempotency_key,
-                        options.paths,
-                        budget,
-                        cancellation,
-                    )
-                })
-                .await
+                        named.value, &options.generation, options.idempotency_key, options.paths,
+                        remaining, cancellation,
+                    ).await
+                }.map_err(|failure| failure.map_with_prior_work(prior, |error| error))?;
+                let work = prior.checked_add(forked.work)
+                    .map_err(|error| crate::OperationFailure::new(WorkspaceError::Work(error), prior))?;
+                work.verify(budget)
+                    .map_err(|error| crate::OperationFailure::new(WorkspaceError::Work(error), work))?;
+                Ok(crate::OperationReceipt { value: forked.value, work })
             })
             .await,
+            |receipt| &receipt.work,
         )
     }
 
@@ -1039,17 +1427,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                 ),
             )
             .await
-            .map(|receipt| receipt.value),
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error),
         )
     }
 
-    pub(crate) async fn begin_transaction_measured(
+    /// Opens a head transaction under exact work and cancellation bounds.
+    pub async fn begin_transaction_measured(
         &self,
         idempotency_key: IdempotencyKey,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<Transaction<A, O>>, WorkspaceError> {
-        let head = self.head_measured(budget, cancellation).await?;
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Transaction<A, O>>, WorkspaceError> {
+        let head = self
+            .head_measured(budget, cancellation)
+            .await?;
         let transaction = self
             .open_transaction_at_measured(
                 &head.value,
@@ -1057,16 +1449,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                 false,
                 head.work
                     .remaining(budget)
-                    .map_err(WorkspaceError::engine)?,
+                    .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), head.work))?,
                 cancellation,
             )
-            .await?;
+            .await
+            .map_err(|failure| failure.map_with_prior_work(head.work, |error| error))?;
         Ok(crate::OperationReceipt {
             value: transaction.value,
             work: head
                 .work
                 .checked_add(transaction.work)
-                .map_err(WorkspaceError::engine)?,
+                .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), head.work))?,
         })
     }
 
@@ -1094,15 +1487,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             .await
     }
 
-    pub(crate) async fn begin_pinned_transaction_measured(
+    /// Opens a transaction at the original exact generation without reading a mutable head.
+    pub async fn begin_pinned_transaction_measured(
         &self,
         generation: &Generation<A, O>,
         idempotency_key: IdempotencyKey,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<Transaction<A, O>>, WorkspaceError> {
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Transaction<A, O>>, WorkspaceError> {
         if generation.workspace.id != self.id {
-            return Err(WorkspaceError::ForeignGeneration);
+            return Err(crate::OperationFailure::before_work(WorkspaceError::ForeignGeneration));
         }
         self.open_transaction_at_measured(generation, idempotency_key, false, budget, cancellation)
             .await
@@ -1123,6 +1517,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         )
         .await
         .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
     }
 
     async fn open_transaction_at_measured(
@@ -1132,9 +1527,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         requires_rebase: bool,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<Transaction<A, O>>, WorkspaceError> {
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Transaction<A, O>>, WorkspaceError> {
         let receipt = self
-            .engine_checkout_measured(
+            .checkout_measured(
                 GenerationSelector::Exact(generation.id),
                 CheckoutMode::tracking_transaction(),
                 budget,
@@ -1330,10 +1725,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                         maximum_conflicts,
                     })
                     .await?;
-                let generation = |id| Generation {
-                    workspace: self.clone(),
-                    id,
-                };
+                let generation = |id| Generation { workspace: self.clone(), id, publication_closure: None };
                 Ok(match outcome {
                     crate::facade::WorkspaceJoinOutcome::Applied(id) => {
                         WorkspaceRebase::Rebased(generation(id))
@@ -1390,6 +1782,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         read_generation(self, GenerationSelector::Head, path, maximum_bytes).await
     }
 
+    /// Reads the head through the canonical engine with exact failure work.
+    pub async fn read_measured(
+        &self,
+        path: &str,
+        maximum_bytes: u64,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Bytes>, WorkspaceError> {
+        self.read_selected_measured(GenerationSelector::Head, path, maximum_bytes, budget, cancellation).await
+    }
+
     /// Reads one exact regular-file range without materializing unrelated bytes.
     ///
     /// # Errors
@@ -1405,6 +1808,33 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         read_generation_range(self, GenerationSelector::Head, path, offset, length).await
     }
 
+    /// Reads one head range with actual checkout, allocation, and failed-work receipts.
+    pub async fn read_range_measured(
+        &self,
+        path: &str,
+        offset: u64,
+        length: u64,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Bytes>, WorkspaceError> {
+        read_generation_range_measured(
+            self, GenerationSelector::Head, path, offset, length, budget, cancellation,
+        ).await
+    }
+
+    pub(crate) async fn read_range_owned_measured(
+        &self,
+        path: &str,
+        offset: u64,
+        length: u64,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<crate::kernel::OwnedSourceChunk>, WorkspaceError> {
+        read_generation_range_owned_measured(
+            self, GenerationSelector::Head, path, offset, length, budget, cancellation,
+        ).await
+    }
+
     /// Returns complete path identity, kind, size, link count, and metadata.
     ///
     /// # Errors
@@ -1414,12 +1844,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         stat_generation(self, GenerationSelector::Head, path).await
     }
 
+    /// Resolves the canonical no-follow head identity under exact work bounds.
+    pub async fn stat_measured(
+        &self,
+        path: &str,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<WorkspaceStat>, WorkspaceError> {
+        stat_generation_measured(self, GenerationSelector::Head, path, budget, cancellation).await
+    }
+
     pub(crate) async fn stat_optional_measured(
         &self,
         path: &str,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<Option<WorkspaceStat>>, WorkspaceError> {
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Option<WorkspaceStat>>, WorkspaceError> {
         stat_generation_optional_measured(
             self,
             GenerationSelector::Head,
@@ -1454,15 +1894,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         &self,
         records: &[crate::kernel::FileRecord],
     ) -> Result<crate::PublicationHold, WorkspaceError> {
-        self.volume
-            .fs
-            .make_records_durable(
-                self.volume.config,
-                records,
-                &crate::CancellationToken::new(),
-            )
-            .await
-            .map_err(WorkspaceError::engine)
+        self.make_records_durable_measured(
+            records, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+    }
+
+    pub(crate) async fn make_records_durable_measured(
+        &self,
+        records: &[crate::kernel::FileRecord],
+        budget: WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> MeasuredResult<OperationReceipt<crate::PublicationHold>, WorkspaceError> {
+        self.volume.fs.make_records_durable_measured(
+            self.volume.config, records, budget, cancellation,
+        ).await.map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::default(), WorkspaceError::engine))
     }
 
     pub(crate) fn detached_record(
@@ -1470,6 +1915,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         record: crate::kernel::FileRecord,
     ) -> crate::DetachedFile<A, O> {
         crate::DetachedFile::from_record(self.volume.clone(), record)
+    }
+
+    pub(crate) fn detached_record_measured(
+        &self,
+        record: crate::kernel::FileRecord,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<crate::DetachedFile<A, O>>, WorkspaceError> {
+        crate::DetachedFile::from_record_measured(self.volume.clone(), record, budget, cancellation)
+            .map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::default(), WorkspaceError::from))
     }
 
     /// Returns one authenticated bounded directory page.
@@ -1488,16 +1943,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             .await
     }
 
-    // Lazy workspace composition still needs a bounded authenticated page
-    // internally, even though the public eager-directory API is removed.
-    pub(crate) async fn list_directory_measured(
+    /// Returns an authenticated directory page with exact success and failure work.
+    pub async fn list_directory_measured(
         &self,
         path: &str,
         after: Option<&LogicalName>,
         maximum_entries: u32,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<WorkspaceDirectoryPage>, WorkspaceError> {
+    ) -> crate::MeasuredResult<crate::OperationReceipt<WorkspaceDirectoryPage>, WorkspaceError> {
         in_heap(move || async move {
             list_generation_directory_measured(
                 self,
@@ -1521,6 +1975,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     /// failures.
     pub async fn read_symbolic_link(&self, path: &str) -> Result<Bytes, WorkspaceError> {
         read_generation_symbolic_link(self, GenerationSelector::Head, path).await
+    }
+
+    /// Reads a symbolic-link target with the original finite work span.
+    ///
+    /// # Errors
+    ///
+    /// Preserves actual checkout, lookup and target-read work on every failure.
+    pub async fn read_symbolic_link_measured(
+        &self, path: &str, budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Bytes>, WorkspaceError> {
+        read_generation_symbolic_link_measured(
+            self, GenerationSelector::Head, path, budget, cancellation,
+        ).await
+    }
+
+    pub(crate) async fn read_symbolic_link_owned_measured(
+        &self,
+        path: &str,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<crate::kernel::OwnedSourceChunk>, WorkspaceError> {
+        read_generation_symbolic_link_owned_measured(
+            self, GenerationSelector::Head, path, budget, cancellation,
+        ).await
     }
 
     /// Plans sparse logical spans without reading content bodies.
@@ -1613,41 +2092,64 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         path: &str,
         maximum_bytes: u64,
     ) -> Result<Bytes, WorkspaceError> {
-        let mut checkout = self
-            .engine_checkout(selector, CheckoutMode::read_only_pinned())
-            .await?;
-        let path = customer_path(path, checkout.volume_config())?;
-        let lookup = checkout
-            .lookup_no_follow(
-                &path,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+        self.read_selected_measured(selector, path, maximum_bytes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await
-            .map_err(WorkspaceError::engine)?
-            .value
-            .record
-            .ok_or(WorkspaceError::NotFound)?;
-        if lookup.kind != FileKind::Regular {
-            return Err(WorkspaceError::NotRegularFile);
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
+    }
+
+    async fn read_selected_measured(
+        &self,
+        selector: GenerationSelector,
+        path: &str,
+        maximum_bytes: u64,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Bytes>, WorkspaceError> {
+        let opened = self.checkout_measured(selector, CheckoutMode::read_only_pinned(), budget, cancellation).await?;
+        let mut work = opened.work;
+        let mut checkout = opened.value;
+        let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+        allocations.claim_bytes(checkout.logical_owned_bytes(), 0, &mut work, budget)
+            .map_err(|error| crate::OperationFailure::new(workspace_allocation_error(error), work))?;
+        let path = customer_path_measured(path, checkout.volume_config(), &mut allocations, &mut work, budget, cancellation)
+            .map_err(|error| crate::OperationFailure::new(error, work))?;
+        let lookup = checkout.lookup_no_follow(
+            &path,
+            workspace_remaining(work, budget, allocations.live_bytes()).map_err(|error| crate::OperationFailure::new(error, work))?,
+            cancellation,
+        ).await.map_err(|failure| {
+            match work.with_backend(*failure.work, allocations.live_bytes()) {
+                Ok(failed) => crate::OperationFailure::new(WorkspaceError::from(failure.error), failed),
+                Err(error) => crate::OperationFailure::new(WorkspaceError::from(error), work),
+            }
+        })?;
+        work = work.with_backend(lookup.work, allocations.live_bytes())
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
+        let record = lookup.value.record
+            .ok_or_else(|| crate::OperationFailure::new(WorkspaceError::NotFound, work))?;
+        if record.kind != FileKind::Regular {
+            return Err(crate::OperationFailure::new(WorkspaceError::NotRegularFile, work));
         }
-        let logical_bytes = regular_file_bytes(lookup)?;
+        let logical_bytes = regular_file_bytes(record)
+            .map_err(|error| crate::OperationFailure::new(error, work))?;
         if logical_bytes > maximum_bytes {
-            return Err(WorkspaceError::ReadLimitExceeded);
+            return Err(crate::OperationFailure::new(WorkspaceError::ReadLimitExceeded, work));
         }
-        checkout
-            .read_file_range(
-                &path,
-                crate::ByteRange {
-                    offset: 0,
-                    length: logical_bytes,
-                },
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value.bytes)
-            .map_err(WorkspaceError::engine)
+        let read = checkout.read_file_range(
+            &path,
+            crate::ByteRange { offset: 0, length: logical_bytes },
+            workspace_remaining(work, budget, allocations.live_bytes()).map_err(|error| crate::OperationFailure::new(error, work))?,
+            cancellation,
+        ).await.map_err(|failure| {
+            match work.with_backend(*failure.work, allocations.live_bytes()) {
+                Ok(failed) => crate::OperationFailure::new(WorkspaceError::from(failure.error), failed),
+                Err(error) => crate::OperationFailure::new(WorkspaceError::from(error), work),
+            }
+        })?;
+        let work = work.with_backend(read.work, allocations.live_bytes())
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
+        Ok(crate::OperationReceipt { value: read.value.bytes, work })
     }
 
     pub(crate) async fn engine_checkout(
@@ -1663,6 +2165,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         )
         .await
         .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
     }
 
     pub(crate) async fn engine_checkout_measured(
@@ -1671,11 +2174,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         mode: CheckoutMode,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<Checkout<A, O>>, WorkspaceError> {
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Checkout<A, O>>, WorkspaceError> {
         self.volume
             .checkout(selector, mode, budget, cancellation)
             .await
-            .map_err(|failure| WorkspaceError::from(failure.error))
+            .map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::default(), WorkspaceError::from))
     }
 }
 
@@ -1695,20 +2198,64 @@ async fn read_generation_range<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     offset: u64,
     length: u64,
 ) -> Result<Bytes, WorkspaceError> {
-    let mut checkout = workspace
-        .engine_checkout(selector, CheckoutMode::read_only_pinned())
+    read_generation_range_measured(
+        workspace, selector, path, offset, length,
+        crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+    ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+}
+
+async fn read_generation_range_measured<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    workspace: &Workspace<A, O>,
+    selector: GenerationSelector,
+    path: &str,
+    offset: u64,
+    length: u64,
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
+) -> crate::MeasuredResult<crate::OperationReceipt<Bytes>, WorkspaceError> {
+    let receipt = read_generation_range_owned_measured(
+        workspace, selector, path, offset, length, budget, cancellation,
+    ).await?;
+    Ok(crate::OperationReceipt { value: receipt.value.bytes, work: receipt.work })
+}
+
+async fn read_generation_range_owned_measured<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    workspace: &Workspace<A, O>,
+    selector: GenerationSelector,
+    path: &str,
+    offset: u64,
+    length: u64,
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
+) -> crate::MeasuredResult<crate::OperationReceipt<crate::kernel::OwnedSourceChunk>, WorkspaceError> {
+    let opened = workspace
+        .engine_checkout_measured(selector, CheckoutMode::read_only_pinned(), budget, cancellation)
         .await?;
-    let path = customer_path(path, checkout.volume_config())?;
-    checkout
-        .read_file_range(
-            &path,
-            crate::ByteRange { offset, length },
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value.bytes)
-        .map_err(|failure| WorkspaceError::from(failure.error))
+    let mut work = opened.work;
+    let mut checkout = opened.value;
+    let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+    allocations.claim_bytes(checkout.logical_owned_bytes(), 0, &mut work, budget)
+        .map_err(|error| crate::OperationFailure::new(workspace_allocation_error(error), work))?;
+    let path = customer_path_measured(path, checkout.volume_config(), &mut allocations, &mut work, budget, cancellation)
+        .map_err(|error| crate::OperationFailure::new(error, work))?;
+    let read = checkout.read_file_range(
+        &path,
+        crate::ByteRange { offset, length },
+        workspace_remaining(work, budget, allocations.live_bytes())
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?,
+        cancellation,
+    ).await.map_err(|failure| {
+        match work.with_backend(*failure.work, allocations.live_bytes()) {
+            Ok(failed) => crate::OperationFailure::new(WorkspaceError::from(failure.error), failed),
+            Err(error) => crate::OperationFailure::new(WorkspaceError::from(error), work),
+        }
+    })?;
+    let work = work.with_backend(read.work, allocations.live_bytes())
+        .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
+    let logical_owned_bytes = read.value.logical_owned_bytes();
+    Ok(crate::OperationReceipt {
+        value: crate::kernel::OwnedSourceChunk { bytes: read.value.bytes, logical_owned_bytes }, work,
+    })
 }
 
 async fn stat_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -1725,6 +2272,7 @@ async fn stat_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     )
     .await
     .map(|receipt| receipt.value)
+    .map_err(|failure| failure.error)
 }
 
 async fn stat_generation_measured<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -1733,11 +2281,11 @@ async fn stat_generation_measured<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     path: &str,
     budget: crate::WorkBudget,
     cancellation: &crate::CancellationToken,
-) -> Result<crate::OperationReceipt<WorkspaceStat>, WorkspaceError> {
+) -> crate::MeasuredResult<crate::OperationReceipt<WorkspaceStat>, WorkspaceError> {
     let receipt =
         stat_generation_optional_measured(workspace, selector, path, budget, cancellation).await?;
     Ok(crate::OperationReceipt {
-        value: receipt.value.ok_or(WorkspaceError::NotFound)?,
+        value: receipt.value.ok_or_else(|| crate::OperationFailure::new(WorkspaceError::NotFound, receipt.work))?,
         work: receipt.work,
     })
 }
@@ -1748,7 +2296,7 @@ async fn stat_generation_optional_measured<A: AsyncAuthorityStore, O: AsyncObjec
     path: &str,
     budget: crate::WorkBudget,
     cancellation: &crate::CancellationToken,
-) -> Result<crate::OperationReceipt<Option<WorkspaceStat>>, WorkspaceError> {
+) -> crate::MeasuredResult<crate::OperationReceipt<Option<WorkspaceStat>>, WorkspaceError> {
     let checkout = workspace
         .engine_checkout_measured(
             selector,
@@ -1759,24 +2307,33 @@ async fn stat_generation_optional_measured<A: AsyncAuthorityStore, O: AsyncObjec
         .await?;
     let mut work = checkout.work;
     let mut checkout = checkout.value;
-    let path = customer_path(path, checkout.volume_config())?;
+    let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+    allocations.claim_bytes(checkout.logical_owned_bytes(), 0, &mut work, budget)
+        .map_err(|error| crate::OperationFailure::new(workspace_allocation_error(error), work))?;
+    let path = customer_path_measured(path, checkout.volume_config(), &mut allocations, &mut work, budget, cancellation)
+        .map_err(|error| crate::OperationFailure::new(error, work))?;
     let lookup = checkout
         .lookup_no_follow_with_metadata(
             &path,
-            work.remaining(budget).map_err(WorkspaceError::from)?,
+            workspace_remaining(work, budget, allocations.live_bytes()).map_err(|error| crate::OperationFailure::new(error, work))?,
             cancellation,
         )
         .await
-        .map_err(|failure| WorkspaceError::from(failure.error))?;
-    work = work
-        .checked_add(lookup.work)
-        .map_err(WorkspaceError::from)?;
+        .map_err(|failure| {
+            match work.with_backend(*failure.work, allocations.live_bytes()) {
+                Ok(failed) => crate::OperationFailure::new(WorkspaceError::from(failure.error), failed),
+                Err(error) => crate::OperationFailure::new(WorkspaceError::from(error), work),
+            }
+        })?;
+    work = work.with_backend(lookup.work, allocations.live_bytes())
+        .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
     let Some(lookup) = lookup.value else {
         return Ok(crate::OperationReceipt { value: None, work });
     };
     let logical_bytes = match &lookup.record.payload {
         FilePayload::InlineRegular(bytes) => {
-            Some(u64::try_from(bytes.as_bytes().len()).map_err(WorkspaceError::engine)?)
+            Some(u64::try_from(bytes.as_bytes().len())
+                .map_err(|error| crate::OperationFailure::new(WorkspaceError::engine(error), work))?)
         }
         FilePayload::Regular { logical_bytes, .. }
         | FilePayload::SymbolicLink {
@@ -1819,6 +2376,7 @@ async fn list_generation_directory<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     )
     .await
     .map(|receipt| receipt.value)
+    .map_err(|failure| failure.error)
 }
 
 async fn list_generation_directory_measured<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -1829,7 +2387,7 @@ async fn list_generation_directory_measured<A: AsyncAuthorityStore, O: AsyncObje
     maximum_entries: u32,
     budget: crate::WorkBudget,
     cancellation: &crate::CancellationToken,
-) -> Result<crate::OperationReceipt<WorkspaceDirectoryPage>, WorkspaceError> {
+) -> crate::MeasuredResult<crate::OperationReceipt<WorkspaceDirectoryPage>, WorkspaceError> {
     let checkout = workspace
         .engine_checkout_measured(
             selector,
@@ -1838,32 +2396,52 @@ async fn list_generation_directory_measured<A: AsyncAuthorityStore, O: AsyncObje
             cancellation,
         )
         .await?;
-    let prior = checkout.work;
+    let mut prior = checkout.work;
     let mut checkout = checkout.value;
-    let path = customer_path(path, checkout.volume_config())?;
+    let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+    allocations.claim_bytes(checkout.logical_owned_bytes(), 0, &mut prior, budget)
+        .map_err(|error| crate::OperationFailure::new(workspace_allocation_error(error), prior))?;
+    let path = customer_path_measured(path, checkout.volume_config(), &mut allocations, &mut prior, budget, cancellation)
+        .map_err(|error| crate::OperationFailure::new(error, prior))?;
     let page = checkout
         .list_directory(
             &path,
             after,
             maximum_entries,
-            prior.remaining(budget).map_err(WorkspaceError::from)?,
+            workspace_remaining(prior, budget, allocations.live_bytes()).map_err(|error| crate::OperationFailure::new(error, prior))?,
             cancellation,
         )
         .await
-        .map_err(|failure| WorkspaceError::from(failure.error))?;
-    let work = prior.checked_add(page.work).map_err(WorkspaceError::from)?;
+        .map_err(|failure| {
+            match prior.with_backend(*failure.work, allocations.live_bytes()) {
+                Ok(failed) => crate::OperationFailure::new(WorkspaceError::from(failure.error), failed),
+                Err(error) => crate::OperationFailure::new(WorkspaceError::from(error), prior),
+            }
+        })?;
+    let mut work = prior.with_backend(page.work, allocations.live_bytes())
+        .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), prior))?;
+    let source_entries = page.value.entries;
+    let source_bytes = workspace_vec_bytes(&source_entries)
+        + source_entries.iter().map(|entry| entry.name.retained_bytes() as u64).sum::<u64>();
+    allocations.claim_bytes(source_bytes, 0, &mut work, budget)
+        .map_err(|error| crate::OperationFailure::new(workspace_allocation_error(error), work))?;
+    cancellation.check().map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
+    allocations.claim_elements::<WorkspaceDirectoryEntry>(source_entries.len(), &mut work, budget)
+        .map_err(|error| crate::OperationFailure::new(workspace_allocation_error(error), work))?;
+    let mut entries = Vec::new();
+    entries.try_reserve_exact(source_entries.len())
+        .map_err(|error| crate::OperationFailure::new(WorkspaceError::engine(error), work))?;
+    for entry in source_entries {
+        cancellation.check().map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
+        work.charge_items(1, &budget)
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
+        entries.push(WorkspaceDirectoryEntry {
+            name: entry.name, file_id: entry.file_id, kind: entry.kind,
+        });
+    }
     Ok(crate::OperationReceipt {
         value: WorkspaceDirectoryPage {
-            entries: page
-                .value
-                .entries
-                .into_iter()
-                .map(|entry| WorkspaceDirectoryEntry {
-                    name: entry.name,
-                    file_id: entry.file_id,
-                    kind: entry.kind,
-                })
-                .collect(),
+            entries,
             has_more: page.value.has_more,
         },
         work,
@@ -1875,19 +2453,54 @@ async fn read_generation_symbolic_link<A: AsyncAuthorityStore, O: AsyncObjectSto
     selector: GenerationSelector,
     path: &str,
 ) -> Result<Bytes, WorkspaceError> {
-    let mut checkout = workspace
-        .engine_checkout(selector, CheckoutMode::read_only_pinned())
-        .await?;
-    let path = customer_path(path, checkout.volume_config())?;
-    checkout
-        .read_symbolic_link(
-            &path,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(WorkspaceError::engine)
+    read_generation_symbolic_link_measured(
+        workspace, selector, path, crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+}
+
+async fn read_generation_symbolic_link_measured<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    workspace: &Workspace<A, O>,
+    selector: GenerationSelector,
+    path: &str,
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
+) -> crate::MeasuredResult<crate::OperationReceipt<Bytes>, WorkspaceError> {
+    let receipt = read_generation_symbolic_link_owned_measured(
+        workspace, selector, path, budget, cancellation,
+    ).await?;
+    Ok(crate::OperationReceipt { value: receipt.value.bytes, work: receipt.work })
+}
+
+async fn read_generation_symbolic_link_owned_measured<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    workspace: &Workspace<A, O>,
+    selector: GenerationSelector,
+    path: &str,
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
+) -> crate::MeasuredResult<crate::OperationReceipt<crate::kernel::OwnedSourceChunk>, WorkspaceError> {
+    let opened = workspace.engine_checkout_measured(
+        selector, CheckoutMode::read_only_pinned(), budget, cancellation,
+    ).await?;
+    let mut work = opened.work;
+    let mut checkout = opened.value;
+    let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+    allocations.claim_bytes(checkout.logical_owned_bytes(), 0, &mut work, budget)
+        .map_err(|error| crate::OperationFailure::new(workspace_allocation_error(error), work))?;
+    let path = customer_path_measured(
+        path, checkout.volume_config(), &mut allocations, &mut work, budget, cancellation,
+    ).map_err(|error| crate::OperationFailure::new(error, work))?;
+    let allowance = workspace_remaining(work, budget, allocations.live_bytes())
+        .map_err(|error| crate::OperationFailure::new(error, work))?;
+    let read = checkout.read_symbolic_link_owned(&path, allowance, cancellation).await
+        .map_err(|failure| match work.with_backend(*failure.work, allocations.live_bytes()) {
+            Ok(failed) => crate::OperationFailure::new(WorkspaceError::from(failure.error), failed),
+            Err(error) => crate::OperationFailure::new(WorkspaceError::Work(error), work),
+        })?;
+    work = work.with_backend(read.work, allocations.live_bytes())
+        .map_err(|error| crate::OperationFailure::new(WorkspaceError::Work(error), work))?;
+    work.verify(budget).map_err(|error| crate::OperationFailure::new(WorkspaceError::Work(error), work))?;
+    Ok(crate::OperationReceipt { value: read.value, work })
 }
 
 async fn plan_generation_extents<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -1980,62 +2593,89 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         record: crate::kernel::FileRecord,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::WorkCounters, WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config())?;
+    ) -> crate::MeasuredResult<crate::WorkCounters, WorkspaceError> {
+        let mut work = crate::WorkCounters::default();
+        let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+        let path = customer_path_measured(path, self.checkout.volume_config(),
+            &mut allocations, &mut work, budget, cancellation)
+            .map_err(|error| crate::OperationFailure::new(error, work))?;
+        let mut operations = new_workspace_vec(1, &mut allocations, &mut work, budget, cancellation)
+            .map_err(|error| crate::OperationFailure::new(error, work))?;
+        operations.push(crate::kernel::Mutation::Restore { path, record });
+        allocations.release(allocations.live_bytes())
+            .map_err(|error| crate::OperationFailure::new(workspace_allocation_error(error), work))?;
         self.apply_engine_measured(
-            vec![crate::kernel::Mutation::Restore { path, record }],
-            budget,
+            operations,
+            work.remaining(budget).map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?,
             cancellation,
         )
-        .await
+        .await.map_err(|failure| failure.map_with_prior_work(work, |error| error))
+            .and_then(|applied| work.checked_add(applied).map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work)))
     }
 
-    pub(crate) async fn create_dir_all_measured(
+    /// Creates the same parent directories under cumulative engine bounds.
+    pub async fn create_dir_all_measured(
         &mut self,
         path: &str,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::WorkCounters, WorkspaceError> {
-        let portable = PortablePath::parse(path, self.checkout.volume_config().limits)
-            .map_err(WorkspaceError::path)?;
-        let mut current = String::new();
+    ) -> crate::MeasuredResult<crate::WorkCounters, WorkspaceError> {
         let mut work = crate::WorkCounters::default();
-        for component in portable.components() {
-            cancellation.check().map_err(WorkspaceError::from)?;
-            current.push('/');
-            current.push_str(component);
-            let path = customer_path(&current, self.checkout.volume_config())?;
+        let result = async {
+        cancellation.check().map_err(WorkspaceError::from)?;
+        let depth = PortablePath::validate(path, self.checkout.volume_config().limits)
+            .map_err(WorkspaceError::path)?;
+        if depth == 0 { return Ok(work); }
+        let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+        for end in path.match_indices('/').skip(1).map(|(index, _)| index)
+            .chain(std::iter::once(path.len())) {
+            let path = customer_path_measured(&path[..end], self.checkout.volume_config(),
+                &mut allocations, &mut work, budget, cancellation)?;
+            let retained = path.retained_bytes();
             let lookup = self
                 .checkout
                 .lookup_no_follow(
                     &path,
-                    work.remaining(budget).map_err(WorkspaceError::from)?,
+                    path_remaining(work, budget, &path).map_err(WorkspaceError::from)?,
                     cancellation,
                 )
                 .await
-                .map_err(|failure| WorkspaceError::from(failure.error))?;
-            work = work
-                .checked_add(lookup.work)
-                .map_err(WorkspaceError::from)?;
+                .map_err(|failure| {
+                    match work.with_backend(*failure.work, retained) {
+                        Ok(failed) => { work = failed; WorkspaceError::from(failure.error) }
+                        Err(error) => WorkspaceError::from(error),
+                    }
+                })?;
+            work = work.with_backend(lookup.work, retained).map_err(WorkspaceError::from)?;
+            let mut transferred = false;
             match lookup.value.record {
                 Some(value) if value.kind == FileKind::Directory => {}
                 Some(_) => return Err(WorkspaceError::NotDirectory),
                 None => {
-                    let applied = self
-                        .apply_measured(
-                            vec![AuthoredMutation::CreateDirectory {
-                                path,
-                                metadata: FileMetadata::default(),
-                            }],
+                    let mut operations = new_workspace_vec(1, &mut allocations, &mut work, budget, cancellation)?;
+                    operations.push(AuthoredMutation::CreateDirectory {
+                        path, metadata: FileMetadata::default(),
+                    });
+                    allocations.release(retained + workspace_vec_bytes(&operations))
+                        .map_err(workspace_allocation_error)?;
+                    transferred = true;
+                    let applied = self.checkout.apply_authored_transaction(
+                            operations,
                             work.remaining(budget).map_err(WorkspaceError::from)?,
                             cancellation,
                         )
-                        .await?;
-                    work = work.checked_add(applied).map_err(WorkspaceError::from)?;
+                        .await
+                        .map_err(|failure| accumulate_workspace_failure(failure, &mut work, WorkspaceError::from))?;
+                    work = work.checked_add(applied.work).map_err(WorkspaceError::from)?;
                 }
+            }
+            if !transferred {
+                allocations.release(retained).map_err(workspace_allocation_error)?;
             }
         }
         Ok(work)
+        }.await;
+        result.map_err(|error| crate::OperationFailure::new(error, work))
     }
 
     pub(crate) async fn apply_authored_measured(
@@ -2043,9 +2683,41 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         operation: AuthoredMutation,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::WorkCounters, WorkspaceError> {
-        self.apply_measured(vec![operation], budget, cancellation)
-            .await
+    ) -> crate::MeasuredResult<crate::WorkCounters, WorkspaceError> {
+        let mut work = crate::WorkCounters::default();
+        let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+        cancellation.check().map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
+        allocations.claim_bytes(operation.logical_owned_bytes(), 0, &mut work, budget)
+            .map_err(|error| crate::OperationFailure::new(workspace_allocation_error(error), work))?;
+        let mut operations = new_workspace_vec(1, &mut allocations, &mut work, budget, cancellation)
+            .map_err(|error| crate::OperationFailure::new(error, work))?;
+        operations.push(operation);
+        allocations.release(allocations.live_bytes())
+            .map_err(|error| crate::OperationFailure::new(workspace_allocation_error(error), work))?;
+        let remaining = work.remaining(budget)
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
+        let applied = self.apply_measured(operations, remaining, cancellation).await
+            .map_err(|failure| failure.map_with_prior_work(work, |error| error))?;
+        work.checked_add(applied)
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))
+    }
+
+    // The mutation owns the freshly constructed paths. Transfer their live
+    // storage into the engine's input scope: keep the remaining peak limit
+    // intact and merge receipts without adding a borrowed-path offset.
+    async fn apply_authored_after_path_measured(
+        &mut self,
+        operation: AuthoredMutation,
+        prior: crate::WorkCounters,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::WorkCounters, WorkspaceError> {
+        let remaining = prior.remaining(budget)
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), prior))?;
+        let applied = self.apply_authored_measured(operation, remaining, cancellation).await
+            .map_err(|failure| failure.map_with_prior_work(prior, |error| error))?;
+        prior.checked_add(applied)
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), prior))
     }
 
     /// Admits a bounded ordered capture as one unpublished candidate update.
@@ -2054,12 +2726,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         operations: Vec<AuthoredMutation>,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::WorkCounters, WorkspaceError> {
+    ) -> crate::MeasuredResult<crate::WorkCounters, WorkspaceError> {
         self.checkout
             .apply_authored_bulk_transaction(operations, budget, cancellation)
             .await
             .map(|receipt| receipt.work)
-            .map_err(|failure| WorkspaceError::from(failure.error))
+            .map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::default(), WorkspaceError::from))
     }
 
     pub(crate) async fn create_directory_measured(
@@ -2067,13 +2739,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         path: &str,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::WorkCounters, WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config())?;
-        self.apply_authored_measured(
+    ) -> crate::MeasuredResult<crate::WorkCounters, WorkspaceError> {
+        let mut work = crate::WorkCounters::default();
+        let path = customer_path_measured(path, self.checkout.volume_config(),
+            &mut crate::kernel::allocation::AllocationLedger::default(), &mut work, budget, cancellation)
+            .map_err(|error| crate::OperationFailure::new(error, work))?;
+        self.apply_authored_after_path_measured(
             AuthoredMutation::CreateDirectory {
                 path,
                 metadata: FileMetadata::default(),
             },
+            work,
             budget,
             cancellation,
         )
@@ -2086,14 +2762,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         bytes: Bytes,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::WorkCounters, WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config())?;
-        self.apply_authored_measured(
+    ) -> crate::MeasuredResult<crate::WorkCounters, WorkspaceError> {
+        let mut work = crate::WorkCounters::default();
+        let path = customer_path_measured(path, self.checkout.volume_config(),
+            &mut crate::kernel::allocation::AllocationLedger::default(), &mut work, budget, cancellation)
+            .map_err(|error| crate::OperationFailure::new(error, work))?;
+        self.apply_authored_after_path_measured(
             AuthoredMutation::CreateFile {
                 path,
                 bytes,
                 metadata: FileMetadata::default(),
             },
+            work,
             budget,
             cancellation,
         )
@@ -2107,14 +2787,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         bytes: Bytes,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::WorkCounters, WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config())?;
-        self.apply_authored_measured(
+    ) -> crate::MeasuredResult<crate::WorkCounters, WorkspaceError> {
+        let mut work = crate::WorkCounters::default();
+        let path = customer_path_measured(path, self.checkout.volume_config(),
+            &mut crate::kernel::allocation::AllocationLedger::default(), &mut work, budget, cancellation)
+            .map_err(|error| crate::OperationFailure::new(error, work))?;
+        self.apply_authored_after_path_measured(
             AuthoredMutation::Write {
                 path,
                 offset,
                 bytes,
             },
+            work,
             budget,
             cancellation,
         )
@@ -2127,14 +2811,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         target: Bytes,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::WorkCounters, WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config())?;
-        self.apply_authored_measured(
+    ) -> crate::MeasuredResult<crate::WorkCounters, WorkspaceError> {
+        let mut work = crate::WorkCounters::default();
+        let path = customer_path_measured(path, self.checkout.volume_config(),
+            &mut crate::kernel::allocation::AllocationLedger::default(), &mut work, budget, cancellation)
+            .map_err(|error| crate::OperationFailure::new(error, work))?;
+        self.apply_authored_after_path_measured(
             AuthoredMutation::CreateSymbolicLink {
                 path,
                 target,
                 metadata: FileMetadata::default(),
             },
+            work,
             budget,
             cancellation,
         )
@@ -2148,8 +2836,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         device: Option<(u32, u32)>,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::WorkCounters, WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config())?;
+    ) -> crate::MeasuredResult<crate::WorkCounters, WorkspaceError> {
+        if !matches!((kind, device),
+            (FileKind::Fifo | FileKind::Socket, None) |
+            (FileKind::CharacterDevice | FileKind::BlockDevice, Some(_))) {
+            return Err(crate::OperationFailure::before_work(WorkspaceError::IncompatibleWorkspace));
+        }
+        let mut work = crate::WorkCounters::default();
+        let path = customer_path_measured(path, self.checkout.volume_config(),
+            &mut crate::kernel::allocation::AllocationLedger::default(), &mut work, budget, cancellation)
+            .map_err(|error| crate::OperationFailure::new(error, work))?;
         let operation = match (kind, device) {
             (FileKind::Fifo | FileKind::Socket, None) => AuthoredMutation::CreateEmptySpecial {
                 path,
@@ -2165,9 +2861,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
                     metadata: FileMetadata::default(),
                 }
             }
-            _ => return Err(WorkspaceError::IncompatibleWorkspace),
+            _ => return Err(crate::OperationFailure::new(WorkspaceError::IncompatibleWorkspace, work)),
         };
-        self.apply_authored_measured(operation, budget, cancellation)
+        self.apply_authored_after_path_measured(operation, work, budget, cancellation)
             .await
     }
 
@@ -2177,10 +2873,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         metadata: FileMetadata,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::WorkCounters, WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config())?;
-        self.apply_authored_measured(
+    ) -> crate::MeasuredResult<crate::WorkCounters, WorkspaceError> {
+        let mut work = crate::WorkCounters::default();
+        let path = customer_path_measured(path, self.checkout.volume_config(),
+            &mut crate::kernel::allocation::AllocationLedger::default(), &mut work, budget, cancellation)
+            .map_err(|error| crate::OperationFailure::new(error, work))?;
+        self.apply_authored_after_path_measured(
             AuthoredMutation::SetMetadata { path, metadata },
+            work,
             budget,
             cancellation,
         )
@@ -2193,10 +2893,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         file_id: FileId,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::WorkCounters, WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config())?;
-        self.apply_authored_measured(
+    ) -> crate::MeasuredResult<crate::WorkCounters, WorkspaceError> {
+        let mut work = crate::WorkCounters::default();
+        let path = customer_path_measured(path, self.checkout.volume_config(),
+            &mut crate::kernel::allocation::AllocationLedger::default(), &mut work, budget, cancellation)
+            .map_err(|error| crate::OperationFailure::new(error, work))?;
+        self.apply_authored_after_path_measured(
             AuthoredMutation::Reidentify { path, file_id },
+            work,
             budget,
             cancellation,
         )
@@ -2209,13 +2913,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         destination: &str,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::WorkCounters, WorkspaceError> {
+    ) -> crate::MeasuredResult<crate::WorkCounters, WorkspaceError> {
         let config = self.checkout.volume_config();
-        self.apply_authored_measured(
-            AuthoredMutation::HardLink {
-                source: customer_path(source, config)?,
-                destination: customer_path(destination, config)?,
-            },
+        let mut work = crate::WorkCounters::default();
+        let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+        let source = customer_path_measured(source, config, &mut allocations, &mut work, budget, cancellation)
+            .map_err(|error| crate::OperationFailure::new(error, work))?;
+        let destination = customer_path_measured(destination, config, &mut allocations, &mut work, budget, cancellation)
+            .map_err(|error| crate::OperationFailure::new(error, work))?;
+        self.apply_authored_after_path_measured(
+            AuthoredMutation::HardLink { source, destination },
+            work,
             budget,
             cancellation,
         )
@@ -2227,12 +2935,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         operations: Vec<crate::kernel::Mutation>,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::WorkCounters, WorkspaceError> {
+    ) -> crate::MeasuredResult<crate::WorkCounters, WorkspaceError> {
         self.checkout
             .mutate(operations, budget, cancellation)
             .await
             .map(|receipt| receipt.work)
-            .map_err(|failure| WorkspaceError::from(failure.error))
+            .map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::default(), WorkspaceError::from))
     }
 
     /// Preserves a stable source identity for an existing non-directory object.
@@ -2291,22 +2999,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         .map(|receipt| receipt.value)
     }
 
-    pub(crate) async fn stage_content_measured<R: crate::kernel::AsyncBlobSource>(
-        &self,
-        source: &mut R,
-        maximum_source_bytes: u64,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<crate::StagedContent>, WorkspaceError> {
-        self.checkout
-            .stage_content(source, maximum_source_bytes, budget, cancellation)
-            .await
-            .map(|receipt| crate::OperationReceipt {
-                value: receipt.value,
-                work: receipt.work,
-            })
-            .map_err(WorkspaceError::engine)
-    }
+    pub(crate) async fn stage_content_measured<R: crate::kernel::AsyncBlobSource>(&self,
+    source: &mut R,
+    maximum_source_bytes: u64,
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,) -> crate::MeasuredResult<crate::OperationReceipt<crate::StagedContent>, WorkspaceError> { self.checkout.stage_content(source, maximum_source_bytes, budget, cancellation).await.map(|receipt| crate::OperationReceipt { value: receipt.value, work: receipt.work }).map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::default(), WorkspaceError::from)) }
 
     /// Creates every missing directory on one canonical absolute path.
     ///
@@ -2314,37 +3011,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ///
     /// Rejects invalid paths, a non-directory prefix, or a bounded engine failure.
     pub async fn create_dir_all(&mut self, path: &str) -> Result<(), WorkspaceError> {
-        let portable = PortablePath::parse(path, self.checkout.volume_config().limits)
-            .map_err(WorkspaceError::path)?;
-        let mut current = String::new();
-        for component in portable.components() {
-            current.push('/');
-            current.push_str(component);
-            let path = customer_path(&current, self.checkout.volume_config())?;
-            let existing = self
-                .checkout
-                .lookup_no_follow(
-                    &path,
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
-                .await
-                .map_err(WorkspaceError::engine)?
-                .value
-                .record;
-            match existing {
-                Some(value) if value.kind == FileKind::Directory => {}
-                Some(_) => return Err(WorkspaceError::NotDirectory),
-                None => {
-                    self.apply(vec![AuthoredMutation::CreateDirectory {
-                        path,
-                        metadata: FileMetadata::default(),
-                    }])
-                    .await?;
-                }
-            }
-        }
-        Ok(())
+        self.create_dir_all_measured(
+            path, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).await.map(|_| ()).map_err(|failure| failure.error)
     }
 
     /// Creates exactly one empty directory with canonical metadata.
@@ -2426,38 +3095,71 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     /// Rejects invalid paths, non-regular destinations, size limits, and
     /// authenticated engine failures.
     pub async fn write(&mut self, path: &str, bytes: Bytes) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config())?;
-        let existing = self
-            .checkout
-            .lookup_no_follow(
-                &path,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+        self.write_measured(path, bytes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await
-            .map_err(WorkspaceError::engine)?
-            .value
-            .record;
+            .map(|_| ())
+            .map_err(|failure| failure.error)
+    }
+
+    /// Creates or replaces the same complete file under exact operation bounds.
+    /// Parent directories must already exist, as for [`Self::write`].
+    /// Transfers the original immutable byte buffer without copying its body.
+    /// Counters include path construction, lookup, and atomic mutation work;
+    /// failures retain that prefix and leave the pending candidate unpublished.
+    pub async fn write_measured(
+        &mut self,
+        path: &str,
+        bytes: Bytes,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::WorkCounters, WorkspaceError> {
+        let mut work = crate::WorkCounters::UNCHARGED;
+        let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+        let path = customer_path_measured(path, self.checkout.volume_config(),
+            &mut allocations, &mut work, budget, cancellation)
+            .map_err(|error| crate::OperationFailure::new(error, work))?;
+        let remaining = path_remaining(work, budget, &path)
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
+        let lookup = self.checkout.lookup_no_follow(&path, remaining, cancellation).await
+            .map_err(|failure| {
+                match work.with_backend(*failure.work, path.retained_bytes()) {
+                    Ok(failed) => crate::OperationFailure::new(WorkspaceError::from(failure.error), failed),
+                    Err(error) => crate::OperationFailure::new(WorkspaceError::from(error), work),
+                }
+            })?;
+        work = work.with_backend(lookup.work, path.retained_bytes())
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
+        let existing = lookup.value.record;
         let operations = match existing {
-            None => vec![AuthoredMutation::CreateFile {
-                path,
-                bytes,
-                metadata: FileMetadata::default(),
-            }],
-            Some(value) if value.kind == FileKind::Regular => vec![
-                AuthoredMutation::Resize {
-                    path: path.clone(),
-                    logical_bytes: 0,
-                },
-                AuthoredMutation::Write {
-                    path,
-                    offset: 0,
-                    bytes,
-                },
-            ],
-            Some(_) => return Err(WorkspaceError::NotRegularFile),
+            None => {
+                let mut operations = new_workspace_vec(1, &mut allocations, &mut work, budget, cancellation)
+                    .map_err(|error| crate::OperationFailure::new(error, work))?;
+                operations.push(AuthoredMutation::CreateFile {
+                    path, bytes, metadata: FileMetadata::default(),
+                });
+                operations
+            },
+            Some(value) if value.kind == FileKind::Regular => {
+                let copied = path.clone_with_ledger(
+                    &mut allocations, &mut work, budget, cancellation,
+                ).map_err(|error| crate::OperationFailure::new(namespace_path_error(error), work))?;
+                let mut operations = new_workspace_vec(2, &mut allocations, &mut work, budget, cancellation)
+                    .map_err(|error| crate::OperationFailure::new(error, work))?;
+                operations.push(AuthoredMutation::Resize { path: copied, logical_bytes: 0 });
+                operations.push(AuthoredMutation::Write { path, offset: 0, bytes });
+                operations
+            },
+            Some(_) => return Err(crate::OperationFailure::new(WorkspaceError::NotRegularFile, work)),
         };
-        self.apply(operations).await
+        allocations.release(allocations.live_bytes())
+            .map_err(|error| crate::OperationFailure::new(workspace_allocation_error(error), work))?;
+        let applied = self.checkout.apply_authored_transaction(
+            operations,
+            work.remaining(budget).map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?,
+            cancellation,
+        ).await.map_err(|failure| failure.map_with_prior_work(work, WorkspaceError::from))?;
+        work.checked_add(applied.work)
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))
     }
 
     /// Creates or replaces one complete file by concatenating already staged
@@ -2520,24 +3222,54 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ///
     /// Rejects invalid or absent paths and authenticated engine failures.
     pub async fn remove(&mut self, path: &str) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config())?;
-        let existing = self
-            .checkout
-            .lookup_no_follow(
-                &path,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+        self.remove_measured(path, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await
-            .map_err(WorkspaceError::engine)?
-            .value
-            .record
-            .ok_or(WorkspaceError::NotFound)?;
-        self.apply(vec![AuthoredMutation::Remove {
+            .map(|_| ())
+            .map_err(|failure| failure.error)
+    }
+
+    /// Removes the same authenticated binding under cumulative operation bounds.
+    /// A failed mutation retains the transaction's original pending candidate.
+    /// Counters include canonical path construction, identity lookup, and the
+    /// atomic removal, including completed work when a later stage fails.
+    pub async fn remove_measured(
+        &mut self,
+        path: &str,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::WorkCounters, WorkspaceError> {
+        let mut work = crate::WorkCounters::UNCHARGED;
+        let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+        let path = customer_path_measured(path, self.checkout.volume_config(),
+            &mut allocations, &mut work, budget, cancellation)
+            .map_err(|error| crate::OperationFailure::new(error, work))?;
+        let remaining = path_remaining(work, budget, &path)
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
+        let lookup = self.checkout.lookup_no_follow(&path, remaining, cancellation).await
+            .map_err(|failure| {
+                match work.with_backend(*failure.work, path.retained_bytes()) {
+                    Ok(failed) => crate::OperationFailure::new(WorkspaceError::from(failure.error), failed),
+                    Err(error) => crate::OperationFailure::new(WorkspaceError::from(error), work),
+                }
+            })?;
+        work = work.with_backend(lookup.work, path.retained_bytes())
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
+        let existing = lookup.value.record
+            .ok_or_else(|| crate::OperationFailure::new(WorkspaceError::NotFound, work))?;
+        let mut operations = new_workspace_vec(1, &mut allocations, &mut work, budget, cancellation)
+            .map_err(|error| crate::OperationFailure::new(error, work))?;
+        operations.push(AuthoredMutation::Remove {
             path,
             expected_file_id: Some(existing.file_id),
-        }])
-        .await
+        });
+        allocations.release(allocations.live_bytes())
+            .map_err(|error| crate::OperationFailure::new(workspace_allocation_error(error), work))?;
+        let remaining = work.remaining(budget)
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
+        let applied = self.apply_measured(operations, remaining, cancellation).await
+            .map_err(|failure| failure.map_with_prior_work(work, |error| error))?;
+        work.checked_add(applied)
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))
     }
 
     /// Removes one binding only when its authenticated identity still matches.
@@ -2797,83 +3529,112 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         &mut self,
         permit: crate::PublicationPermit,
     ) -> Result<TransactionCommit<A, O>, WorkspaceError> {
-        let span = crate::obs::span!(
-            INFO,
-            "acyclic.fs.transaction.commit",
-            outcome = crate::obs::Empty,
-            error.kind = crate::obs::Empty
-        );
-        crate::obs::outcome_on(
-            &span,
-            crate::obs::in_span(
-                &span,
-                in_heap(move || async move {
-                    self.commit_with_permit_measured(
-                        permit,
-                        crate::WorkBudget::UNBOUNDED,
-                        &crate::CancellationToken::new(),
-                    )
-                    .await
-                    .map(|receipt| receipt.value)
-                }),
-            )
-            .await,
+        self.commit_with_permit_measured(
+            permit,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
         )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
     }
 
     /// Publishes this transaction under an exact work budget and cancellation token.
-    pub(crate) async fn commit_with_permit_measured(
+    pub async fn commit_with_permit_measured(
         &mut self,
         permit: crate::PublicationPermit,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<TransactionCommit<A, O>>, WorkspaceError> {
-        cancellation.check().map_err(WorkspaceError::from)?;
-        if self.requires_rebase {
-            let receipt = self
-                .checkout
-                .retry_stale_commit(
-                    self.idempotency_key.operation_id(),
-                    permit,
-                    budget,
-                    cancellation,
-                )
-                .await
-                .map_err(|failure| WorkspaceError::from(failure.error))?;
-            let work = receipt.work;
-            let Some(outcome) = receipt.value else {
-                let actual = self
-                    .workspace
-                    .head_measured(
-                        work.remaining(budget).map_err(WorkspaceError::from)?,
-                        cancellation,
-                    )
-                    .await?;
-                return Ok(crate::OperationReceipt {
-                    value: TransactionCommit::Conflict {
-                        actual: actual.value,
-                    },
-                    work: work
-                        .checked_add(actual.work)
-                        .map_err(WorkspaceError::from)?,
-                });
-            };
-            return self
-                .commit_outcome_measured(outcome, work, budget, cancellation)
-                .await;
-        }
-        let receipt = self
-            .checkout
-            .commit_with_permit(
-                self.idempotency_key.operation_id(),
-                permit,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<TransactionCommit<A, O>>, WorkspaceError> {
+        self.commit_with_permit_measured_guarded(
+            permit, budget, cancellation,
+            |_| async { Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) },
+        ).await
+    }
+
+    /// Publishes through the original seal with the caller's asynchronous owner
+    /// check after closure preparation and before authoritative publication.
+    /// The check receives the current allowance and contributes its complete
+    /// receipt, including failed work, to this same transaction operation.
+    pub async fn commit_with_permit_measured_guarded<F, Fut>(
+        &mut self,
+        permit: crate::PublicationPermit,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+        mut before_publication: F,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<TransactionCommit<A, O>>, WorkspaceError>
+    where
+        F: FnMut(crate::WorkBudget) -> Fut,
+        Fut: Future<Output = crate::FsResult<()>> + Send,
+    {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.transaction.commit",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty
+        );
+        let result = crate::obs::in_span(
+            &span,
+            crate::heap_future::in_heap_measured(
+                move |budget| async move {
+                    if self.requires_rebase {
+                        let receipt = self
+                            .checkout
+                            .retry_stale_commit_guarded(
+                                self.idempotency_key.operation_id(),
+                                permit,
+                                budget,
+                                cancellation,
+                                &mut before_publication,
+                            )
+                            .await
+                            .map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::UNCHARGED, WorkspaceError::from))?;
+                        let work = receipt.work;
+                        let Some(outcome) = receipt.value else {
+                            let actual = self
+                                .workspace
+                                .head_measured(
+                                    work.remaining(budget).map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?,
+                                    cancellation,
+                                )
+                                .await
+                                .map_err(|failure| failure.map_with_prior_work(work, |error| error))?;
+                            return Ok(crate::OperationReceipt {
+                                value: TransactionCommit::Conflict {
+                                    actual: actual.value,
+                                },
+                                work: work
+                                    .checked_add(actual.work)
+                                    .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?,
+                            });
+                        };
+                        return self
+                            .commit_outcome_measured(outcome, work, budget, cancellation)
+                            .await;
+                    }
+                    let receipt = self
+                        .checkout
+                        .commit_with_permit_guarded(
+                            self.idempotency_key.operation_id(),
+                            permit,
+                            budget,
+                            cancellation,
+                            &mut before_publication,
+                        )
+                        .await
+                        .map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::UNCHARGED, WorkspaceError::from))?;
+                    self.commit_outcome_measured(receipt.value, receipt.work, budget, cancellation)
+                        .await
+                },
                 budget,
                 cancellation,
-            )
-            .await
-            .map_err(|failure| WorkspaceError::from(failure.error))?;
-        self.commit_outcome_measured(receipt.value, receipt.work, budget, cancellation)
-            .await
+                WorkspaceError::Cancelled(crate::CancellationError),
+            ),
+        ).await;
+        crate::obs::measured_on(&span, result, |receipt| &receipt.work)
     }
 
     async fn commit_outcome_measured(
@@ -2882,46 +3643,48 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         work: crate::WorkCounters,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<TransactionCommit<A, O>>, WorkspaceError> {
-        in_heap(move || async move {
-            let value = match outcome {
-                CheckoutCommitOutcome::Committed { generation_id, .. } => {
-                    TransactionCommit::Committed(Generation {
-                        workspace: self.workspace.clone(),
-                        id: generation_id,
-                    })
-                }
-                CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => {
-                    TransactionCommit::AlreadyCommitted(Generation {
-                        workspace: self.workspace.clone(),
-                        id: generation_id,
-                    })
-                }
-                CheckoutCommitOutcome::Conflict { .. } => {
-                    let actual = self
-                        .workspace
-                        .head_measured(
-                            work.remaining(budget).map_err(WorkspaceError::from)?,
-                            cancellation,
-                        )
-                        .await?;
-                    return Ok(crate::OperationReceipt {
-                        value: TransactionCommit::Conflict {
-                            actual: actual.value,
-                        },
-                        work: work
-                            .checked_add(actual.work)
-                            .map_err(WorkspaceError::from)?,
-                    });
-                }
-                CheckoutCommitOutcome::Fenced { .. } => TransactionCommit::Fenced,
-                CheckoutCommitOutcome::IdempotencyConflict { .. } => {
-                    TransactionCommit::IdempotencyConflict
-                }
-            };
-            Ok(crate::OperationReceipt { value, work })
-        })
-        .await
+    ) -> crate::MeasuredResult<crate::OperationReceipt<TransactionCommit<A, O>>, WorkspaceError> {
+        // This outcome is part of the already-admitted commit future. Do not
+        // allocate another unbounded future after authority publication.
+        let value = match outcome {
+            CheckoutCommitOutcome::Committed { generation_id, .. } => {
+                TransactionCommit::Committed(Generation {
+                    workspace: self.workspace.clone(),
+                    id: generation_id,
+                    publication_closure: self.checkout.publication_closure(generation_id),
+                })
+            }
+            CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => {
+                TransactionCommit::AlreadyCommitted(Generation {
+                    workspace: self.workspace.clone(),
+                    id: generation_id,
+                    publication_closure: self.checkout.publication_closure(generation_id),
+                })
+            }
+            CheckoutCommitOutcome::Conflict { .. } => {
+                let actual = self
+                    .workspace
+                    .head_measured(
+                        work.remaining(budget).map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(|failure| failure.map_with_prior_work(work, |error| error))?;
+                return Ok(crate::OperationReceipt {
+                    value: TransactionCommit::Conflict {
+                        actual: actual.value,
+                    },
+                    work: work
+                        .checked_add(actual.work)
+                        .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?,
+                });
+            }
+            CheckoutCommitOutcome::Fenced { .. } => TransactionCommit::Fenced,
+            CheckoutCommitOutcome::IdempotencyConflict { .. } => {
+                TransactionCommit::IdempotencyConflict
+            }
+        };
+        Ok(crate::OperationReceipt { value, work })
     }
 
     /// Safely advances this retained sparse candidate to the current workspace
@@ -2958,10 +3721,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
                 Ok(match decision {
                     crate::kernel::RebaseDecision::Safe { generation } => {
                         self.requires_rebase = false;
-                        TransactionRebase::Rebased(Generation {
-                            workspace: self.workspace.clone(),
-                            id: generation,
-                        })
+                        TransactionRebase::Rebased(Generation { workspace: self.workspace.clone(), id: generation, publication_closure: None })
                     }
                     crate::kernel::RebaseDecision::Conflicted {
                         conflicts,
@@ -2987,6 +3747,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         )
         .await
         .map(|_| ())
+        .map_err(|failure| failure.error)
     }
 
     async fn apply_measured(
@@ -2994,12 +3755,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         operations: Vec<AuthoredMutation>,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::WorkCounters, WorkspaceError> {
+    ) -> crate::MeasuredResult<crate::WorkCounters, WorkspaceError> {
         self.checkout
             .apply_authored_transaction(operations, budget, cancellation)
             .await
             .map(|receipt| receipt.work)
-            .map_err(|failure| WorkspaceError::from(failure.error))
+            .map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::default(), WorkspaceError::from))
     }
 }
 
@@ -3198,6 +3959,7 @@ impl TransactionConflict {
 pub struct Generation<A, O> {
     pub(crate) workspace: Workspace<A, O>,
     pub(crate) id: GenerationId,
+    pub(crate) publication_closure: Option<crate::facade::PublicationClosure<A, O>>,
 }
 
 /// Exact synchronization result for one workspace head observation.
@@ -3415,46 +4177,296 @@ impl<A, O> ChangeSet<A, O> {
     pub const fn work(&self) -> crate::WorkCounters {
         self.work
     }
+
+    /// Actual retained diff buffers, excluding shared immutable endpoints.
+    pub(crate) fn retained_bytes(&self) -> u64 {
+        workspace_vec_bytes(&self.changes.files)
+            + workspace_vec_bytes(&self.changes.bindings)
+            + self.changes.bindings.iter().map(|binding| {
+                crate::foundation::usize_to_u64(binding.name.retained_bytes())
+                    + binding.before.as_ref().map_or(0, |entry| {
+                        crate::foundation::usize_to_u64(entry.name.retained_bytes())
+                    })
+                    + binding.after.as_ref().map_or(0, |entry| {
+                        crate::foundation::usize_to_u64(entry.name.retained_bytes())
+                    })
+            }).sum::<u64>()
+    }
 }
 
+fn sorted_changed_file_ids(
+    file_ids: impl IntoIterator<Item = FileId>,
+    allocations: &mut crate::kernel::allocation::AllocationLedger,
+    work: &mut crate::WorkCounters,
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
+) -> Result<Vec<FileId>, WorkspaceError> {
+    let mut ids: Vec<FileId> = Vec::new();
+    for file_id in file_ids {
+        cancellation.check()?;
+        work.charge_items(1, &budget)?;
+        let mut low = 0;
+        let mut high = ids.len();
+        let mut present = false;
+        while low < high {
+            cancellation.check()?;
+            work.charge_items(1, &budget)?;
+            let middle = low + (high - low) / 2;
+            match ids[middle].cmp(&file_id) {
+                std::cmp::Ordering::Less => low = middle + 1,
+                std::cmp::Ordering::Greater => high = middle,
+                std::cmp::Ordering::Equal => { present = true; break; }
+            }
+        }
+        if present { continue; }
+        grow_workspace_vec(&mut ids, allocations, work, budget, cancellation)?;
+        work.charge(&crate::WorkCounters {
+            bytes_copied: ((ids.len() - low + 1) * std::mem::size_of::<FileId>()) as u64,
+            ..crate::WorkCounters::default()
+        }, &budget)?;
+        ids.insert(low, file_id);
+    }
+    Ok(ids)
+}
+
+fn changed_path_position<'a>(
+    paths: &[ChangedPath],
+    components: impl Iterator<Item = &'a LogicalName> + Clone,
+    work: &mut crate::WorkCounters,
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
+) -> Result<(usize, bool), WorkspaceError> {
+    let mut low = 0;
+    let mut high = paths.len();
+    while low < high {
+        cancellation.check()?;
+        work.charge_items(1, &budget)?;
+        let middle = low + (high - low) / 2;
+        let mut left = paths[middle].path.components().iter();
+        let mut right = components.clone();
+        let ordering = loop {
+            cancellation.check()?;
+            work.charge_items(1, &budget)?;
+            match (left.next(), right.next()) {
+                (Some(left), Some(right)) => match left.cmp(right) {
+                    std::cmp::Ordering::Equal => {}
+                    ordering => break ordering,
+                },
+                (Some(_), None) => break std::cmp::Ordering::Greater,
+                (None, Some(_)) => break std::cmp::Ordering::Less,
+                (None, None) => break std::cmp::Ordering::Equal,
+            }
+        };
+        match ordering {
+            std::cmp::Ordering::Less => low = middle + 1,
+            std::cmp::Ordering::Greater => high = middle,
+            std::cmp::Ordering::Equal => return Ok((middle, true)),
+        }
+    }
+    Ok((low, false))
+}
+
+#[allow(clippy::too_many_arguments, reason = "one record merge shares the canonical planner's work and live allocation scope")]
+fn merge_changed_record(
+    paths: &mut Vec<ChangedPath>,
+    path: &NamespacePath,
+    record: Option<crate::kernel::FileRecord>,
+    before: bool,
+    allocations: &mut crate::kernel::allocation::AllocationLedger,
+    work: &mut crate::WorkCounters,
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
+) -> Result<(), WorkspaceError> {
+    let (index, present) = changed_path_position(
+        paths, path.components().iter(), work, budget, cancellation,
+    )?;
+    if present {
+        work.charge(&crate::WorkCounters {
+            bytes_copied: std::mem::size_of::<Option<crate::kernel::FileRecord>>() as u64,
+            ..crate::WorkCounters::default()
+        }, &budget)?;
+        if before { paths[index].before = record; } else { paths[index].after = record; }
+        return Ok(());
+    }
+    grow_workspace_vec(paths, allocations, work, budget, cancellation)?;
+    let path = path.clone_with_ledger(allocations, work, budget, cancellation)
+        .map_err(namespace_path_error)?;
+    work.charge(&crate::WorkCounters {
+        bytes_copied: ((paths.len() - index + 1) * std::mem::size_of::<ChangedPath>()) as u64,
+        ..crate::WorkCounters::default()
+    }, &budget)?;
+    paths.insert(index, ChangedPath {
+        path, before: if before { record } else { None },
+        after: if before { None } else { record },
+    });
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments, reason = "one bounded endpoint merge shares the canonical path planner and allocation scope")]
 fn merge_binding_endpoint(
-    paths: &mut BTreeMap<
-        NamespacePath,
-        (
-            Option<crate::kernel::FileRecord>,
-            Option<crate::kernel::FileRecord>,
-        ),
-    >,
-    directories: &BTreeMap<FileId, Vec<(NamespacePath, crate::kernel::FileRecord)>>,
-    records: &BTreeMap<FileId, crate::kernel::FileRecord>,
+    paths: &mut Vec<ChangedPath>,
+    directories: &NamespaceRecords,
     change: &crate::DirectoryBindingChange,
     limits: crate::model::VolumeLimits,
     before: bool,
+    allocations: &mut crate::kernel::allocation::AllocationLedger,
+    work: &mut crate::WorkCounters,
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
 ) -> Result<(), WorkspaceError> {
-    let Some(directories) = directories.get(&change.directory_id) else {
-        return Ok(());
+    let Some(parents) = directories.get_measured(
+        &change.directory_id, work, budget, cancellation,
+    )? else { return Ok(()); };
+    let binding = if before { change.before.as_ref() } else { change.after.as_ref() };
+    let record = match binding {
+        Some(entry) => directories.get_measured(
+            &entry.file_id, work, budget, cancellation,
+        )?.and_then(|records| records.first().map(|(_, record)| *record)),
+        None => None,
     };
-    let binding = if before {
-        change.before.as_ref()
-    } else {
-        change.after.as_ref()
-    };
-    let record = binding.and_then(|entry| records.get(&entry.file_id).copied());
-    for (directory, _) in directories {
-        let path = child_namespace_path(directory, change.name.clone(), limits)?;
-        let endpoints = paths.entry(path).or_default();
-        if before {
-            endpoints.0 = record;
+    for (directory, _) in parents {
+        cancellation.check()?;
+        work.charge_items(1, &budget)?;
+        let components = directory.components().iter().chain(std::iter::once(&change.name));
+        let (index, present) = changed_path_position(
+            paths, components, work, budget, cancellation,
+        )?;
+        if present {
+            work.charge(&crate::WorkCounters {
+                bytes_copied: std::mem::size_of::<Option<crate::kernel::FileRecord>>() as u64,
+                ..crate::WorkCounters::default()
+            }, &budget)?;
+            if before { paths[index].before = record; } else { paths[index].after = record; }
         } else {
-            endpoints.1 = record;
+            grow_workspace_vec(paths, allocations, work, budget, cancellation)?;
+            let path = directory.child_with_ledger(
+                &change.name, limits, allocations, work, budget, cancellation,
+            ).map_err(namespace_path_error)?;
+            work.charge(&crate::WorkCounters {
+                bytes_copied: ((paths.len() - index + 1) * std::mem::size_of::<ChangedPath>()) as u64,
+                ..crate::WorkCounters::default()
+            }, &budget)?;
+            paths.insert(index, ChangedPath {
+                path, before: if before { record } else { None },
+                after: if before { None } else { record },
+            });
         }
     }
     Ok(())
 }
 
 struct NamespaceRecordSearch {
-    records: BTreeMap<FileId, Vec<(NamespacePath, crate::kernel::FileRecord)>>,
+    records: NamespaceRecords,
     complete: bool,
+}
+
+#[derive(Default)]
+struct NamespaceRecords {
+    entries: Vec<(FileId, Vec<(NamespacePath, crate::kernel::FileRecord)>)>,
+}
+
+impl NamespaceRecords {
+    fn get_measured(
+        &self,
+        file_id: &FileId,
+        work: &mut crate::WorkCounters,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<Option<&Vec<(NamespacePath, crate::kernel::FileRecord)>>, WorkspaceError> {
+        let mut low = 0;
+        let mut high = self.entries.len();
+        while low < high {
+            cancellation.check()?;
+            work.charge_items(1, &budget)?;
+            let middle = low + (high - low) / 2;
+            match self.entries[middle].0.cmp(file_id) {
+                std::cmp::Ordering::Less => low = middle + 1,
+                std::cmp::Ordering::Greater => high = middle,
+                std::cmp::Ordering::Equal => return Ok(Some(&self.entries[middle].1)),
+            }
+        }
+        Ok(None)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&FileId, &Vec<(NamespacePath, crate::kernel::FileRecord)>)> {
+        self.entries.iter().map(|(file_id, records)| (file_id, records))
+    }
+
+    fn values(&self) -> impl Iterator<Item = &Vec<(NamespacePath, crate::kernel::FileRecord)>> {
+        self.entries.iter().map(|(_, records)| records)
+    }
+
+    fn retained_bytes(&self) -> u64 {
+        workspace_vec_bytes(&self.entries) + self.entries.iter().map(|(_, records)|
+            workspace_vec_bytes(records) + records.iter().map(|(path, _)| path.retained_bytes()).sum::<u64>()
+        ).sum::<u64>()
+    }
+
+    fn insert_measured(
+        &mut self,
+        path: NamespacePath,
+        record: crate::kernel::FileRecord,
+        allocations: &mut crate::kernel::allocation::AllocationLedger,
+        work: &mut crate::WorkCounters,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<(), WorkspaceError> {
+        let mut index = 0;
+        while let Some((file_id, _)) = self.entries.get(index) {
+            cancellation.check()?;
+            work.charge_items(1, &budget)?;
+            if *file_id >= record.file_id { break; }
+            index += 1;
+        }
+        if self.entries.get(index).is_none_or(|(id, _)| *id != record.file_id) {
+            grow_workspace_vec(&mut self.entries, allocations, work, budget, cancellation)?;
+            let copied = (self.entries.len() - index) * std::mem::size_of::<(FileId, Vec<(NamespacePath, crate::kernel::FileRecord)>)>();
+            work.charge(&crate::WorkCounters { bytes_copied: copied as u64,
+                ..crate::WorkCounters::default() }, &budget)?;
+            self.entries.insert(index, (record.file_id, Vec::new()));
+        }
+        let records = self.entries.get_mut(index).map(|(_, records)| records)
+            .ok_or(WorkspaceError::IncompatibleWorkspace)?;
+        grow_workspace_vec(records, allocations, work, budget, cancellation)?;
+        records.push((path, record));
+        Ok(())
+    }
+
+    fn sort_measured(
+        &mut self,
+        work: &mut crate::WorkCounters,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<(), WorkspaceError> {
+        for (_, records) in &mut self.entries {
+            for index in 1..records.len() {
+                let mut current = index;
+                while current != 0 {
+                    cancellation.check()?;
+                    work.charge_items(1, &budget)?;
+                    let right = records.get(current).ok_or(WorkspaceError::IncompatibleWorkspace)?;
+                    let left = records.get(current - 1).ok_or(WorkspaceError::IncompatibleWorkspace)?;
+                    if left.0 <= right.0 { break; }
+                    work.charge(&crate::WorkCounters {
+                        bytes_copied: (2 * std::mem::size_of::<(NamespacePath, crate::kernel::FileRecord)>()) as u64,
+                        ..crate::WorkCounters::default()
+                    }, &budget)?;
+                    records.swap(current - 1, current);
+                    current -= 1;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl IntoIterator for NamespaceRecords {
+    type Item = (FileId, Vec<(NamespacePath, crate::kernel::FileRecord)>);
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.into_iter()
+    }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
@@ -3476,6 +4488,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
         )
         .await
         .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
     }
 
     /// Resolves changed paths with one cumulative work budget and explicit
@@ -3489,119 +4502,131 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
         maximum_entries: u32,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<Vec<ChangedPath>>, WorkspaceError> {
-        if self.changes.truncated {
-            return Err(WorkspaceError::ChangedPathLimit);
-        }
-        let file_ids: BTreeSet<_> = self
-            .changes
-            .files
-            .iter()
-            .map(|change| change.file_id)
-            .chain(
-                self.changes
-                    .bindings
-                    .iter()
-                    .map(|change| change.directory_id),
-            )
-            .chain(self.changes.bindings.iter().flat_map(|change| {
-                change
-                    .before
-                    .iter()
-                    .chain(change.after.iter())
-                    .map(|entry| entry.file_id)
-            }))
-            .collect();
-        self.work.verify(budget).map_err(WorkspaceError::engine)?;
-        let before_receipt = self
-            .from
-            .namespace_records_for_file_ids_bounded(
-                file_ids.iter().copied(),
-                maximum_entries,
-                self.work
-                    .remaining(budget)
-                    .map_err(WorkspaceError::engine)?,
-                cancellation,
-            )
-            .await?;
-        let mut work = self
-            .work
-            .checked_add(before_receipt.work)
-            .map_err(WorkspaceError::engine)?;
-        let after_receipt = self
-            .to
-            .namespace_records_for_file_ids_bounded(
-                file_ids.iter().copied(),
-                maximum_entries,
-                work.remaining(budget).map_err(WorkspaceError::engine)?,
-                cancellation,
-            )
-            .await?;
-        work = work
-            .checked_add(after_receipt.work)
-            .map_err(WorkspaceError::engine)?;
-        let before = before_receipt.value;
-        let after = after_receipt.value;
-        if !before.complete || !after.complete {
-            return Err(WorkspaceError::ChangedPathLimit);
-        }
-        let before = before.records;
-        let after = after.records;
-        let mut paths = BTreeMap::<NamespacePath, (Option<_>, Option<_>)>::new();
-        let before_records: BTreeMap<_, _> = before
-            .iter()
-            .filter_map(|(&file_id, records)| records.first().map(|(_, record)| (file_id, *record)))
-            .collect();
-        let after_records: BTreeMap<_, _> = after
-            .iter()
-            .filter_map(|(&file_id, records)| records.first().map(|(_, record)| (file_id, *record)))
-            .collect();
-        for records in before.values() {
-            for (path, record) in records {
-                paths.entry(path.clone()).or_default().0 = Some(*record);
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Vec<ChangedPath>>, WorkspaceError> {
+        let mut work = self.work;
+        let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+        let result = async {
+            if self.changes.truncated {
+                return Err(WorkspaceError::ChangedPathLimit);
             }
-        }
-        for records in after.values() {
-            for (path, record) in records {
-                paths.entry(path.clone()).or_default().1 = Some(*record);
+            cancellation.check()?;
+            work.verify(budget)?;
+            if maximum_entries == 0
+                && (!self.changes.files.is_empty() || !self.changes.bindings.is_empty())
+            {
+                return Err(WorkspaceError::ChangedPathLimit);
             }
-        }
-        for change in &self.changes.bindings {
-            merge_binding_endpoint(
-                &mut paths,
-                &before,
-                &before_records,
-                change,
-                self.from.workspace.volume.config.limits,
-                true,
+            // Resolution continues the original diff span, including its
+            // still-live buffers, rather than charging its receipt twice.
+            allocations.claim_bytes(self.retained_bytes(), 0, &mut work, budget)
+                .map_err(workspace_allocation_error)?;
+            let file_ids = sorted_changed_file_ids(
+                self.changes.files.iter().map(|change| change.file_id)
+                    .chain(self.changes.bindings.iter().map(|change| change.directory_id))
+                    .chain(self.changes.bindings.iter().flat_map(|change| {
+                        change.before.iter().chain(change.after.iter()).map(|entry| entry.file_id)
+                    })),
+                &mut allocations, &mut work, budget, cancellation,
             )?;
-            merge_binding_endpoint(
-                &mut paths,
-                &after,
-                &after_records,
-                change,
-                self.to.workspace.volume.config.limits,
-                false,
+            let live = allocations.live_bytes();
+            let remaining = workspace_remaining(work, budget, live)?;
+            let before_receipt = merge_workspace_backend(
+                self.from.namespace_records_for_file_ids_bounded(
+                    &file_ids, maximum_entries, remaining, cancellation,
+                ).await,
+                &mut work, live,
             )?;
-        }
-        let paths = paths
-            .into_iter()
-            .filter(|(_, (before, after))| match (before, after) {
-                (Some(before), Some(after)) => {
-                    before.kind != after.kind
-                        || before.metadata != after.metadata
-                        || (before.kind != FileKind::Directory && before.payload != after.payload)
+            allocations.claim_bytes(before_receipt.value.records.retained_bytes(), 0, &mut work, budget)
+                .map_err(workspace_allocation_error)?;
+            let live = allocations.live_bytes();
+            let remaining = workspace_remaining(work, budget, live)?;
+            let after_receipt = merge_workspace_backend(
+                self.to.namespace_records_for_file_ids_bounded(
+                    &file_ids, maximum_entries, remaining, cancellation,
+                ).await,
+                &mut work, live,
+            )?;
+            allocations.claim_bytes(after_receipt.value.records.retained_bytes(), 0, &mut work, budget)
+                .map_err(workspace_allocation_error)?;
+            let before = before_receipt.value;
+            let after = after_receipt.value;
+            if !before.complete || !after.complete {
+                return Err(WorkspaceError::ChangedPathLimit);
+            }
+            let before = before.records;
+            let after = after.records;
+            let mut paths = Vec::new();
+            for records in before.values() {
+                for (path, record) in records {
+                    cancellation.check()?;
+                    work.charge_items(1, &budget)?;
+                    merge_changed_record(
+                        &mut paths, path, Some(*record), true,
+                        &mut allocations, &mut work, budget, cancellation,
+                    )?;
                 }
-                (None, None) => false,
-                _ => true,
-            })
-            .map(|(path, (before, after))| ChangedPath {
-                path,
-                before,
-                after,
-            })
-            .collect();
-        Ok(crate::OperationReceipt { value: paths, work })
+            }
+            for records in after.values() {
+                for (path, record) in records {
+                    cancellation.check()?;
+                    work.charge_items(1, &budget)?;
+                    merge_changed_record(
+                        &mut paths, path, Some(*record), false,
+                        &mut allocations, &mut work, budget, cancellation,
+                    )?;
+                }
+            }
+            for change in &self.changes.bindings {
+                cancellation.check()?;
+                work.charge_items(1, &budget)?;
+                merge_binding_endpoint(
+                    &mut paths, &before, change, self.from.workspace.volume.config.limits, true,
+                    &mut allocations, &mut work, budget, cancellation,
+                )?;
+                merge_binding_endpoint(
+                    &mut paths, &after, change, self.to.workspace.volume.config.limits, false,
+                    &mut allocations, &mut work, budget, cancellation,
+                )?;
+            }
+            let retired = before.retained_bytes() + after.retained_bytes() + workspace_vec_bytes(&file_ids);
+            drop(before);
+            drop(after);
+            drop(file_ids);
+            allocations.release(retired).map_err(workspace_allocation_error)?;
+            let mut retained = 0;
+            let mut retired_paths = 0_u64;
+            for index in 0..paths.len() {
+                cancellation.check()?;
+                work.charge_items(1, &budget)?;
+                let changed = match (&paths[index].before, &paths[index].after) {
+                    (Some(before), Some(after)) => {
+                        before.kind != after.kind
+                            || before.metadata != after.metadata
+                            || (before.kind != FileKind::Directory && before.payload != after.payload)
+                    }
+                    (None, None) => false,
+                    _ => true,
+                };
+                if changed {
+                    if retained != index {
+                        work.charge(&crate::WorkCounters {
+                            bytes_copied: (2 * std::mem::size_of::<ChangedPath>()) as u64,
+                            ..crate::WorkCounters::default()
+                        }, &budget)?;
+                        paths.swap(retained, index);
+                    }
+                    retained += 1;
+                } else {
+                    retired_paths = retired_paths.checked_add(paths[index].path.retained_bytes())
+                        .ok_or(crate::WorkError::Overflow)?;
+                }
+            }
+            paths.truncate(retained);
+            allocations.release(retired_paths).map_err(workspace_allocation_error)?;
+            work.verify(budget)?;
+            Ok(crate::OperationReceipt { value: paths, work })
+        }.await;
+        result.map_err(|error| crate::OperationFailure::new(error, work))
     }
 
     /// Composes contiguous immutable deltas into their exact net semantic
@@ -4509,10 +5534,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 resolutions,
             })
             .await?;
-        let generation = |id| Generation {
-            workspace: self.target.clone(),
-            id,
-        };
+        let generation = |id| Generation { workspace: self.target.clone(), id, publication_closure: None };
         Ok(match outcome {
             crate::facade::WorkspaceJoinOutcome::Joined(id, resolutions_digest) => {
                 JoinOutcome::Applied(JoinApplication {
@@ -4632,15 +5654,70 @@ fn logical_name_text(name: &LogicalName) -> Result<std::borrow::Cow<'_, str>, Wo
 }
 
 fn namespace_path_text(path: &NamespacePath) -> Result<String, WorkspaceError> {
-    if path.is_root() {
-        return Ok("/".to_owned());
+    namespace_path_text_measured(
+        path, &mut crate::kernel::allocation::AllocationLedger::default(),
+        &mut crate::WorkCounters::default(), crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )
+}
+
+fn namespace_path_text_measured(
+    path: &NamespacePath,
+    allocations: &mut crate::kernel::allocation::AllocationLedger,
+    work: &mut crate::WorkCounters,
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
+) -> Result<String, WorkspaceError> {
+    let initial_live = allocations.live_bytes();
+    let result = (|| {
+    cancellation.check()?;
+    let mut length = usize::from(path.is_root());
+    for name in path.components() {
+        cancellation.check()?;
+        work.charge_items(1, &budget)?;
+        let bytes = name.unicode_utf8_bytes().ok_or_else(||
+            WorkspaceError::path("non-Unicode path cannot be projected as a portable string"))?;
+        length = length.checked_add(1).and_then(|value| value.checked_add(bytes))
+            .ok_or(crate::WorkError::Overflow)?;
     }
-    let components = path
-        .components()
-        .iter()
-        .map(logical_name_text)
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(format!("/{}", components.join("/")))
+    let delta = crate::WorkCounters { bytes_encoded: length as u64,
+        output_bytes: length as u64, ..crate::WorkCounters::default() };
+    work.admit(&delta, &budget)?;
+    let claimed = allocations.claim_elements::<u8>(length, work, budget)
+        .map_err(workspace_allocation_error)?;
+    let mut output = String::new();
+    if let Err(error) = output.try_reserve_exact(length) {
+        allocations.release(claimed).map_err(workspace_allocation_error)?;
+        return Err(WorkspaceError::engine(error));
+    }
+    if output.capacity() as u64 > claimed {
+        allocations.claim_bytes(output.capacity() as u64 - claimed, 0, work, crate::WorkBudget::UNBOUNDED)
+            .map_err(workspace_allocation_error)?;
+        work.verify_ref(&budget)?;
+    }
+    if path.is_root() {
+        output.push('/');
+        work.charge(&crate::WorkCounters {
+            bytes_encoded: 1, output_bytes: 1, ..crate::WorkCounters::default()
+        }, &budget)?;
+    }
+    for name in path.components() {
+        cancellation.check()?;
+        let before = output.len();
+        output.push('/');
+        name.append_unicode(&mut output).map_err(WorkspaceError::path)?;
+        let encoded = (output.len() - before) as u64;
+        work.charge(&crate::WorkCounters {
+            bytes_encoded: encoded, output_bytes: encoded, ..crate::WorkCounters::default()
+        }, &budget)?;
+    }
+    Ok(output)
+    })();
+    if result.is_err() {
+        allocations.release(allocations.live_bytes() - initial_live)
+            .map_err(workspace_allocation_error)?;
+    }
+    result
 }
 
 fn child_namespace_path(
@@ -4648,9 +5725,9 @@ fn child_namespace_path(
     name: LogicalName,
     limits: crate::model::VolumeLimits,
 ) -> Result<NamespacePath, WorkspaceError> {
-    let mut components = directory.components().to_vec();
-    components.push(name);
-    NamespacePath::new(components, limits).map_err(WorkspaceError::path)
+    directory.child_measured(
+        &name, limits, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), 0,
+    ).map(|receipt| receipt.value).map_err(|failure| namespace_path_error(failure.error))
 }
 
 fn kernel_conflict(
@@ -4775,6 +5852,7 @@ impl<A, O> Clone for Generation<A, O> {
         Self {
             workspace: self.workspace.clone(),
             id: self.id,
+            publication_closure: self.publication_closure.clone(),
         }
     }
 }
@@ -4867,6 +5945,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             &crate::CancellationToken::new(),
         )
         .await
+        .map_err(|failure| failure.error)
     }
 
     /// Computes one semantic delta with explicit cumulative work and
@@ -4877,7 +5956,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         maximum_changes: u32,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<ChangeSet<A, O>, WorkspaceError> {
+    ) -> crate::MeasuredResult<ChangeSet<A, O>, WorkspaceError> {
         let receipt = self
             .workspace
             .volume
@@ -4902,7 +5981,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         options: &crate::MaterializeOptions,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError> {
+    ) -> crate::MeasuredResult<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError>
+    {
         let span = crate::obs::span!(
             INFO,
             "acyclic.fs.generation.materialize",
@@ -4912,7 +5992,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             work.bytes = crate::obs::Empty,
             work.durability = crate::obs::Empty
         );
-        crate::obs::receipt_on(
+        crate::obs::measured_on(
             &span,
             crate::obs::in_span(
                 &span,
@@ -4924,6 +6004,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
                 ),
             )
             .await,
+            |receipt| &receipt.work,
         )
     }
 
@@ -4934,30 +6015,42 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
         mode: crate::native_mount::MaterializeMode,
-    ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError> {
+    ) -> crate::MeasuredResult<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError>
+    {
         let checkout = self
             .workspace
-            .engine_checkout_measured(
+            .volume
+            .checkout(
                 GenerationSelector::Exact(self.id),
                 CheckoutMode::read_only_pinned(),
                 budget,
                 cancellation,
             )
-            .await?;
+            .await
+            .map_err(|failure| {
+                failure.map_with_prior_work(crate::WorkCounters::default(), WorkspaceError::from)
+            })?;
         let mut value = checkout.value;
         let receipt = crate::native_mount::materialize_checkout_with_mode(
             &mut value,
             options,
-            checkout
-                .work
-                .remaining(budget)
-                .map_err(WorkspaceError::from)?,
+            checkout.work.remaining(budget).map_err(|error| {
+                crate::OperationFailure::new(WorkspaceError::from(error), checkout.work)
+            })?,
             cancellation,
             mode,
         )
         .await
-        .map_err(|failure| WorkspaceError::engine(failure.error))?;
-        merge_workspace_work(checkout.work, receipt, budget)
+        .map_err(|failure| failure.map_with_prior_work(checkout.work, WorkspaceError::from))?;
+        let work = checkout.work.checked_add(receipt.work).map_err(|error| {
+            crate::OperationFailure::new(WorkspaceError::from(error), checkout.work)
+        })?;
+        work.verify(budget)
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
+        Ok(crate::OperationReceipt {
+            value: receipt.value,
+            work,
+        })
     }
 
     /// Materializes one path from this generation below an existing empty
@@ -4970,7 +6063,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         options: &crate::MaterializeOptions,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError> {
+    ) -> crate::MeasuredResult<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError>
+    {
         let span = crate::obs::span!(
             INFO,
             "acyclic.fs.generation.materialize_path",
@@ -4980,7 +6074,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             work.bytes = crate::obs::Empty,
             work.durability = crate::obs::Empty
         );
-        crate::obs::receipt_on(
+        crate::obs::measured_on(
             &span,
             crate::obs::in_span(
                 &span,
@@ -4993,6 +6087,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
                 ),
             )
             .await,
+            |receipt| &receipt.work,
         )
     }
 
@@ -5004,32 +6099,56 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
         mode: crate::native_mount::MaterializeMode,
-    ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError> {
+    ) -> crate::MeasuredResult<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError>
+    {
         let checkout = self
             .workspace
-            .engine_checkout_measured(
+            .volume
+            .checkout(
                 GenerationSelector::Exact(self.id),
                 CheckoutMode::read_only_pinned(),
                 budget,
                 cancellation,
             )
-            .await?;
+            .await
+            .map_err(|failure| {
+                failure.map_with_prior_work(crate::WorkCounters::default(), WorkspaceError::from)
+            })?;
         let mut value = checkout.value;
-        let path = customer_path(path, value.volume_config())?;
+        let mut prior = checkout.work;
+        let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+        allocations.claim_bytes(value.logical_owned_bytes(), 0, &mut prior, budget)
+            .map_err(|error| crate::OperationFailure::new(workspace_allocation_error(error), prior))?;
+        let path = customer_path_measured(path, value.volume_config(),
+            &mut allocations, &mut prior, budget, cancellation)
+            .map_err(|error| crate::OperationFailure::new(error, prior))?;
+        let retained = allocations.live_bytes();
+        let remaining = workspace_remaining(prior, budget, retained)
+            .map_err(|error| crate::OperationFailure::new(error, prior))?;
         let receipt = crate::native_mount::materialize_checkout_paths_with_mode(
             &mut value,
             &[path],
             options,
-            checkout
-                .work
-                .remaining(budget)
-                .map_err(WorkspaceError::from)?,
+            remaining,
             cancellation,
             mode,
         )
         .await
-        .map_err(|failure| WorkspaceError::engine(failure.error))?;
-        merge_workspace_work(checkout.work, receipt, budget)
+        .map_err(|failure| {
+            match prior.with_backend(*failure.work, retained) {
+                Ok(failed) => crate::OperationFailure::new(WorkspaceError::from(failure.error), failed),
+                Err(error) => crate::OperationFailure::new(WorkspaceError::from(error), prior),
+            }
+        })?;
+        let work = prior.with_backend(receipt.work, retained).map_err(|error| {
+            crate::OperationFailure::new(WorkspaceError::from(error), prior)
+        })?;
+        work.verify(budget)
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
+        Ok(crate::OperationReceipt {
+            value: receipt.value,
+            work,
+        })
     }
 
     /// Materializes multiple paths with one pinned checkout and shared
@@ -5041,7 +6160,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         options: &crate::MaterializeOptions,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError> {
+    ) -> crate::MeasuredResult<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError>
+    {
         let span = crate::obs::span!(
             INFO,
             "acyclic.fs.generation.materialize_paths",
@@ -5051,38 +6171,73 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             work.bytes = crate::obs::Empty,
             work.durability = crate::obs::Empty
         );
-        crate::obs::receipt_on(
+        crate::obs::measured_on(
             &span,
             crate::obs::in_span(&span, async move {
                 let checkout = self
                     .workspace
-                    .engine_checkout_measured(
+                    .volume
+                    .checkout(
                         GenerationSelector::Exact(self.id),
                         CheckoutMode::read_only_pinned(),
                         budget,
                         cancellation,
                     )
-                    .await?;
+                    .await
+                    .map_err(|failure| {
+                        failure.map_with_prior_work(
+                            crate::WorkCounters::default(),
+                            WorkspaceError::from,
+                        )
+                    })?;
                 let mut value = checkout.value;
-                let paths = paths
-                    .iter()
-                    .map(|path| customer_path(path, value.volume_config()))
-                    .collect::<Result<Vec<_>, _>>()?;
+                let mut prior = checkout.work;
+                let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+                allocations.claim_bytes(value.logical_owned_bytes(), 0, &mut prior, budget)
+                    .map_err(|error| crate::OperationFailure::new(workspace_allocation_error(error), prior))?;
+                cancellation.check().map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), prior))?;
+                allocations.claim_elements::<NamespacePath>(paths.len(), &mut prior, budget)
+                    .map_err(|error| crate::OperationFailure::new(crate::collection::handle_allocation_error(error).into(), prior))?;
+                let mut parsed_paths = Vec::new();
+                parsed_paths.try_reserve_exact(paths.len())
+                    .map_err(|error| crate::OperationFailure::new(WorkspaceError::engine(error), prior))?;
+                for path in paths {
+                    parsed_paths.push(customer_path_measured(path, value.volume_config(),
+                        &mut allocations, &mut prior, budget, cancellation)
+                        .map_err(|error| crate::OperationFailure::new(error, prior))?);
+                }
+                let retained = allocations.live_bytes();
+                let mut remaining = prior.remaining(budget)
+                    .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), prior))?;
+                remaining.peak_allocation_bytes = remaining.peak_allocation_bytes.checked_sub(retained)
+                    .ok_or_else(|| crate::OperationFailure::new(WorkspaceError::Work(crate::WorkError::Overflow), prior))?;
                 let receipt = crate::materialize_checkout_paths(
                     &mut value,
-                    &paths,
+                    &parsed_paths,
                     options,
-                    checkout
-                        .work
-                        .remaining(budget)
-                        .map_err(WorkspaceError::from)?,
+                    remaining,
                     cancellation,
                 )
                 .await
-                .map_err(|failure| WorkspaceError::engine(failure.error))?;
-                merge_workspace_work(checkout.work, receipt, budget)
+                .map_err(|failure| {
+                    match prior.with_backend(*failure.work, retained) {
+                        Ok(failed) => crate::OperationFailure::new(WorkspaceError::from(failure.error), failed),
+                        Err(error) => crate::OperationFailure::new(WorkspaceError::from(error), prior),
+                    }
+                })?;
+                let work = prior.with_backend(receipt.work, retained).map_err(|error| {
+                    crate::OperationFailure::new(WorkspaceError::from(error), prior)
+                })?;
+                work.verify(budget).map_err(|error| {
+                    crate::OperationFailure::new(WorkspaceError::from(error), work)
+                })?;
+                Ok(crate::OperationReceipt {
+                    value: receipt.value,
+                    work,
+                })
             })
             .await,
+            |receipt| &receipt.work,
         )
     }
 
@@ -5098,7 +6253,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         options: &crate::MaterializeOptions,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<crate::HostPathRestore>, WorkspaceError> {
+    ) -> crate::MeasuredResult<crate::OperationReceipt<crate::HostPathRestore>, WorkspaceError> {
         let checkout = self
             .workspace
             .engine_checkout_measured(
@@ -5117,11 +6272,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             checkout
                 .work
                 .remaining(budget)
-                .map_err(WorkspaceError::from)?,
+                .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), checkout.work))?,
             cancellation,
         )
         .await
-        .map_err(|failure| WorkspaceError::engine(failure.error))?;
+        .map_err(|failure| failure.map_with_prior_work(checkout.work, WorkspaceError::engine))?;
         merge_workspace_work(checkout.work, receipt, budget)
     }
 
@@ -5134,36 +6289,39 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         options: &crate::MaterializeOptions,
         cancellation: &crate::CancellationToken,
     ) -> Result<Vec<crate::HostPathRestore>, WorkspaceError> {
-        let mut checkout = self
-            .workspace
-            .engine_checkout_measured(
-                GenerationSelector::Exact(self.id),
-                CheckoutMode::read_only_pinned(),
-                crate::WorkBudget::UNBOUNDED,
-                cancellation,
-            )
-            .await?
-            .value;
+        self.restore_host_paths_measured(paths, replacement, options, crate::WorkBudget::UNBOUNDED, cancellation)
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+    }
+
+    /// Restores a sequence through one exact checkout with cumulative failure work.
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub async fn restore_host_paths_measured(
+        &self,
+        paths: &[std::path::PathBuf],
+        replacement: crate::HostPathReplacement,
+        options: &crate::MaterializeOptions,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Vec<crate::HostPathRestore>>, WorkspaceError> {
+        let checkout = self.workspace.engine_checkout_measured(
+            GenerationSelector::Exact(self.id), CheckoutMode::read_only_pinned(), budget, cancellation,
+        ).await?;
+        let mut work = checkout.work;
+        let mut checkout = checkout.value;
         let mut restored = Vec::new();
-        restored
-            .try_reserve_exact(paths.len())
-            .map_err(|_| WorkspaceError::engine("restore path result allocation failed"))?;
+        restored.try_reserve_exact(paths.len())
+            .map_err(|_| crate::OperationFailure::new(WorkspaceError::engine("restore path result allocation failed"), work))?;
         for path in paths {
-            restored.push(
-                crate::restore_checkout_host_path(
-                    &mut checkout,
-                    path,
-                    replacement,
-                    options,
-                    crate::WorkBudget::UNBOUNDED,
-                    cancellation,
-                )
-                .await
-                .map_err(|failure| WorkspaceError::engine(failure.error))?
-                .value,
-            );
+            let receipt = crate::restore_checkout_host_path(
+                &mut checkout, path, replacement, options,
+                work.remaining(budget).map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?,
+                cancellation,
+            ).await.map_err(|failure| failure.map_with_prior_work(work, WorkspaceError::engine))?;
+            work = work.checked_add(receipt.work)
+                .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
+            restored.push(receipt.value);
         }
-        Ok(restored)
+        Ok(crate::OperationReceipt { value: restored, work })
     }
 
     /// Returns the exact immutable parent generation identities.
@@ -5195,6 +6353,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         .await
     }
 
+    /// Reads this exact immutable generation under complete operation bounds.
+    pub async fn read_measured(
+        &self,
+        path: &str,
+        maximum_bytes: u64,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Bytes>, WorkspaceError> {
+        self.workspace.read_selected_measured(
+            GenerationSelector::Exact(self.id), path, maximum_bytes, budget, cancellation,
+        ).await
+    }
+
     /// Reads one exact range from this immutable generation.
     ///
     /// # Errors
@@ -5217,6 +6388,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         .await
     }
 
+    /// Reads this immutable generation's exact range with all failed-work receipts.
+    pub async fn read_range_measured(
+        &self,
+        path: &str,
+        offset: u64,
+        length: u64,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Bytes>, WorkspaceError> {
+        read_generation_range_measured(
+            &self.workspace, GenerationSelector::Exact(self.id), path, offset, length,
+            budget, cancellation,
+        ).await
+    }
+
+    pub(crate) async fn read_range_owned_measured(
+        &self,
+        path: &str,
+        offset: u64,
+        length: u64,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<crate::kernel::OwnedSourceChunk>, WorkspaceError> {
+        read_generation_range_owned_measured(
+            &self.workspace, GenerationSelector::Exact(self.id), path, offset, length,
+            budget, cancellation,
+        ).await
+    }
+
     /// Returns complete metadata for one path in this immutable generation.
     ///
     /// # Errors
@@ -5224,6 +6424,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     /// Rejects invalid or absent paths and authenticated backend failures.
     pub async fn stat(&self, path: &str) -> Result<WorkspaceStat, WorkspaceError> {
         stat_generation(&self.workspace, GenerationSelector::Exact(self.id), path).await
+    }
+
+    /// Resolves the canonical no-follow identity in this exact generation.
+    pub async fn stat_measured(
+        &self,
+        path: &str,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<WorkspaceStat>, WorkspaceError> {
+        stat_generation_measured(&self.workspace, GenerationSelector::Exact(self.id), path, budget, cancellation).await
     }
 
     /// Resolves an ordered exact path batch while sharing authenticated directory and file-table
@@ -5251,27 +6461,39 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
                     cancellation,
                 )
                 .await?;
-            let checkout_work = checkout.work;
-            let remaining = checkout_work
-                .remaining(budget)
-                .map_err(|error| crate::OperationFailure::new(error.into(), checkout_work))?;
+            let mut work = checkout.work;
             let mut checkout = checkout.value;
-            let lookup = checkout
-                .lookup_batch_no_follow(paths, remaining, cancellation)
-                .await
-                .map_err(|failure| failure.map_with_prior_work(checkout_work, |error| error))?;
-            let work = checkout_work
-                .checked_add(lookup.work)
-                .map_err(|error| crate::OperationFailure::new(error.into(), checkout_work))?;
-            Ok(crate::FsReceipt {
-                value: lookup
-                    .value
-                    .entries
-                    .into_iter()
-                    .map(|entry| entry.record)
-                    .collect(),
-                work,
-            })
+            let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+            allocations.claim_bytes(checkout.logical_owned_bytes(), 0, &mut work, budget)
+                .map_err(|error| crate::OperationFailure::new(crate::collection::handle_allocation_error(error), work))?;
+            let mut remaining = work.remaining(budget)
+                .map_err(|error| crate::OperationFailure::new(error.into(), work))?;
+            remaining.peak_allocation_bytes = remaining.peak_allocation_bytes.checked_sub(allocations.live_bytes())
+                .ok_or_else(|| crate::OperationFailure::new(crate::WorkError::Overflow.into(), work))?;
+            let live = allocations.live_bytes();
+            let lookup = checkout.lookup_batch_no_follow(paths, remaining, cancellation).await
+                .map_err(|failure| match work.with_backend(*failure.work, live) {
+                    Ok(failed) => crate::OperationFailure::new(failure.error, failed),
+                    Err(error) => crate::OperationFailure::new(error.into(), work),
+                })?;
+            work = work.with_backend(lookup.work, live)
+                .map_err(|error| crate::OperationFailure::new(error.into(), work))?;
+            let entries = lookup.value.entries;
+            allocations.claim_bytes(workspace_vec_bytes(&entries), 0, &mut work, budget)
+                .map_err(|error| crate::OperationFailure::new(crate::collection::handle_allocation_error(error), work))?;
+            cancellation.check().map_err(|error| crate::OperationFailure::new(error.into(), work))?;
+            allocations.claim_elements::<Option<crate::kernel::FileRecord>>(entries.len(), &mut work, budget)
+                .map_err(|error| crate::OperationFailure::new(crate::collection::handle_allocation_error(error), work))?;
+            let mut records = Vec::new();
+            records.try_reserve_exact(entries.len())
+                .map_err(|_| crate::OperationFailure::new(crate::FsError::HandleAllocationFailed, work))?;
+            for entry in entries {
+                cancellation.check().map_err(|error| crate::OperationFailure::new(error.into(), work))?;
+                work.charge_items(1, &budget)
+                    .map_err(|error| crate::OperationFailure::new(error.into(), work))?;
+                records.push(entry.record);
+            }
+            Ok(crate::FsReceipt { value: records, work })
         })
         .await
     }
@@ -5298,6 +6520,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         .await
     }
 
+    /// Lists this exact generation with authenticated bounded work.
+    pub async fn list_directory_measured(
+        &self,
+        path: &str,
+        after: Option<&LogicalName>,
+        maximum_entries: u32,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<WorkspaceDirectoryPage>, WorkspaceError> {
+        list_generation_directory_measured(
+            &self.workspace, GenerationSelector::Exact(self.id), path, after,
+            maximum_entries, budget, cancellation,
+        ).await
+    }
+
     /// Finds portable paths bound to one stable file identity in this generation.
     ///
     /// The traversal is bounded by `maximum_entries`; results are sorted and
@@ -5320,27 +6557,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         maximum_entries: u32,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<Vec<String>>, WorkspaceError> {
-        let receipt = self
-            .namespace_records_for_file_ids_bounded(
-                [file_id],
-                maximum_entries,
-                budget,
-                cancellation,
-            )
-            .await?;
-        let paths = receipt
-            .value
-            .records
-            .get(&file_id)
-            .into_iter()
-            .flatten()
-            .map(|(path, _)| namespace_path_text(path))
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(crate::OperationReceipt {
-            value: paths,
-            work: receipt.work,
-        })
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Vec<String>>, WorkspaceError> {
+        let receipt = self.namespace_records_for_file_ids_bounded(
+            &[file_id], maximum_entries, budget, cancellation,
+        ).await?;
+        let mut work = receipt.work;
+        let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+        let result = (|| {
+            cancellation.check()?;
+            allocations.claim_bytes(receipt.value.records.retained_bytes(), 0, &mut work, budget)
+                .map_err(workspace_allocation_error)?;
+            let mut paths = Vec::new();
+            if let Some(records) = receipt.value.records.get(&file_id) {
+                for (path, _) in records {
+                    grow_workspace_vec(&mut paths, &mut allocations, &mut work, budget, cancellation)?;
+                    paths.push(namespace_path_text_measured(
+                        path, &mut allocations, &mut work, budget, cancellation,
+                    )?);
+                }
+            }
+            Ok(paths)
+        })();
+        result.map(|value| crate::OperationReceipt { value, work })
+            .map_err(|error| crate::OperationFailure::new(error, work))
     }
 
     /// Finds portable paths for multiple stable file identities in one namespace traversal.
@@ -5389,14 +6628,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         file_ids: impl IntoIterator<Item = FileId>,
         maximum_entries: u32,
     ) -> Result<NamespaceRecordSearch, WorkspaceError> {
+        let cancellation = crate::CancellationToken::new();
+        let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+        let mut work = crate::WorkCounters::default();
+        let ids = sorted_changed_file_ids(
+            file_ids, &mut allocations, &mut work, crate::WorkBudget::UNBOUNDED, &cancellation,
+        )?;
         self.namespace_records_for_file_ids_bounded(
-            file_ids,
+            &ids,
             maximum_entries,
             crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            &cancellation,
         )
         .await
         .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
     }
 
     #[allow(
@@ -5405,213 +6651,195 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     )]
     async fn namespace_records_for_file_ids_bounded(
         &self,
-        file_ids: impl IntoIterator<Item = FileId>,
+        ids: &[FileId],
         maximum_entries: u32,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<NamespaceRecordSearch>, WorkspaceError> {
-        let file_ids: BTreeSet<_> = file_ids.into_iter().collect();
-        if file_ids.is_empty() {
-            return Ok(crate::OperationReceipt {
-                value: NamespaceRecordSearch {
-                    records: BTreeMap::new(),
-                    complete: true,
-                },
-                work: crate::WorkCounters::default(),
-            });
-        }
-        if maximum_entries == 0 {
-            return Ok(crate::OperationReceipt {
-                value: NamespaceRecordSearch {
-                    records: BTreeMap::new(),
-                    complete: false,
-                },
-                work: crate::WorkCounters::default(),
-            });
-        }
-        let maximum = usize::try_from(maximum_entries).unwrap_or(usize::MAX);
-        let limits = self.workspace.volume.config.limits;
-        let cache_key = crate::path_index::cache_key(self.id, file_ids.iter().copied());
-        if let Some(bytes) = self.workspace.volume.fs.path_index().load(cache_key)
-            && let Some(cached) = crate::path_index::GenerationPathQuery::decode(
-                &bytes,
-                self.id,
-                file_ids.iter().copied(),
-            )
-        {
-            let cached_paths = cached
-                .into_iter()
-                .flat_map(|(file_id, paths)| paths.into_iter().map(move |path| (file_id, path)))
-                .map(|(file_id, path)| path.into_namespace(limits).map(|path| (file_id, path)))
-                .collect::<Option<Vec<_>>>();
-            if let Some(cached_paths) = cached_paths {
-                if cached_paths.is_empty() {
-                    return Ok(crate::OperationReceipt {
-                        value: NamespaceRecordSearch {
-                            records: BTreeMap::new(),
-                            complete: true,
-                        },
-                        work: crate::WorkCounters::default(),
-                    });
+    ) -> crate::MeasuredResult<crate::OperationReceipt<NamespaceRecordSearch>, WorkspaceError> {
+        let mut work = crate::WorkCounters::default();
+        let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+        let result = async {
+            cancellation.check()?;
+            if ids.is_empty() || maximum_entries == 0 {
+                return Ok(NamespaceRecordSearch { records: NamespaceRecords::default(), complete: ids.is_empty() });
+            }
+            let limits = self.workspace.volume.config.limits;
+            let cache_key = crate::path_index::cache_key_measured(
+                self.id, ids, &mut work, budget, cancellation,
+            ).map_err(path_index_error)?;
+            let before_cache = allocations.live_bytes();
+            let cached_result = async {
+                let Some(bytes) = self.workspace.volume.fs.path_index()
+                    .load_measured(cache_key, &mut allocations, &mut work, budget, cancellation)
+                    .map_err(path_index_error)? else { return Ok(None); };
+                let cached = crate::path_index::GenerationPathQuery::decode_measured(
+                    &bytes, self.id, ids, limits, &mut allocations, &mut work, budget, cancellation,
+                ).map_err(path_index_error)?;
+                let byte_capacity = workspace_vec_bytes(&bytes);
+                drop(bytes);
+                allocations.release(byte_capacity).map_err(workspace_allocation_error)?;
+                let Some(cached) = cached else { return Ok(None); };
+                if cached.len() > maximum_entries as usize { return Ok(None); }
+                if cached.is_empty() { return Ok(Some(NamespaceRecords::default())); }
+                let mut paths = Vec::new();
+                for (_, path) in &cached {
+                    grow_workspace_vec(&mut paths, &mut allocations, &mut work, budget, cancellation)?;
+                    let copied = path.clone_with_ledger(
+                        &mut allocations, &mut work, budget, cancellation,
+                    ).map_err(namespace_path_error)?;
+                    paths.push(copied);
                 }
-                // A complete cached answer larger than the caller's bound
-                // cannot be truncated without changing which namespace paths
-                // a cold bounded traversal would have encountered. Fall back
-                // to that traversal instead of returning a false empty result.
-                if cached_paths.len() <= maximum {
-                    let paths = cached_paths
-                        .iter()
-                        .map(|(_, path)| path.clone())
-                        .collect::<Vec<_>>();
-                    let lookup = self
-                        .lookup_paths(&paths, budget, cancellation)
-                        .await
-                        .map_err(WorkspaceError::engine)?;
-                    let mut records = BTreeMap::<_, Vec<_>>::new();
-                    let mut valid = true;
-                    for ((expected, path), record) in cached_paths.into_iter().zip(lookup.value) {
-                        let Some(record) = record else {
-                            valid = false;
-                            break;
-                        };
-                        if record.file_id != expected {
-                            valid = false;
-                            break;
-                        }
-                        records.entry(expected).or_default().push((path, record));
+                let live = allocations.live_bytes();
+                let remaining = workspace_remaining(work, budget, live)?;
+                let lookup = merge_workspace_backend(
+                    self.lookup_paths(&paths, remaining, cancellation).await, &mut work, live,
+                )?;
+                let path_capacity = workspace_vec_bytes(&paths)
+                    + paths.iter().map(NamespacePath::retained_bytes).sum::<u64>();
+                drop(paths);
+                allocations.release(path_capacity).map_err(workspace_allocation_error)?;
+                allocations.claim_bytes(workspace_vec_bytes(&lookup.value), 0, &mut work, budget)
+                    .map_err(workspace_allocation_error)?;
+                if cached.len() != lookup.value.len() { return Ok(None); }
+                for ((expected, _), record) in cached.iter().zip(&lookup.value) {
+                    cancellation.check()?;
+                    work.charge_items(1, &budget)?;
+                    if record.is_none_or(|record| record.file_id != *expected) {
+                        return Ok(None);
                     }
-                    if valid {
-                        return Ok(crate::OperationReceipt {
-                            value: NamespaceRecordSearch {
-                                records,
-                                complete: true,
-                            },
-                            work: lookup.work,
-                        });
-                    }
+                }
+                let mut records = NamespaceRecords::default();
+                let cached_capacity = workspace_vec_bytes(&cached);
+                let lookup_capacity = workspace_vec_bytes(&lookup.value);
+                for ((_, path), record) in cached.into_iter().zip(lookup.value) {
+                    let record = record.ok_or(WorkspaceError::NotFound)?;
+                    records.insert_measured(path, record, &mut allocations, &mut work, budget, cancellation)?;
+                }
+                allocations.release(cached_capacity).map_err(workspace_allocation_error)?;
+                allocations.release(lookup_capacity).map_err(workspace_allocation_error)?;
+                Ok::<_, WorkspaceError>(Some(records))
+            }.await?;
+            if let Some(records) = cached_result {
+                return Ok(NamespaceRecordSearch { records, complete: true });
+            }
+            allocations.release(allocations.live_bytes() - before_cache).map_err(workspace_allocation_error)?;
+            let live = allocations.live_bytes();
+            let remaining = workspace_remaining(work, budget, live)?;
+            let opened = merge_workspace_backend(
+                self.workspace.engine_checkout_measured(
+                    GenerationSelector::Exact(self.id), CheckoutMode::read_only_pinned(),
+                    remaining, cancellation,
+                ).await, &mut work, live,
+            )?;
+            let mut checkout = opened.value;
+            allocations.claim_bytes(checkout.logical_owned_bytes(), 0, &mut work, budget)
+                .map_err(workspace_allocation_error)?;
+            let root = NamespacePath::new(Vec::new(), limits).map_err(namespace_path_error)?;
+            let live = allocations.live_bytes();
+            let remaining = workspace_remaining(work, budget, live)?;
+            let root_lookup = merge_workspace_backend(
+                checkout.lookup_no_follow(&root, remaining, cancellation).await, &mut work, live,
+            )?;
+            let mut matches = NamespaceRecords::default();
+            if let Some(record) = root_lookup.value.record {
+                let mut found = false;
+                for file_id in ids {
+                    cancellation.check()?;
+                    work.charge_items(1, &budget)?;
+                    if *file_id == record.file_id { found = true; break; }
+                    if *file_id > record.file_id { break; }
+                }
+                if found {
+                    matches.insert_measured(
+                        NamespacePath::new(Vec::new(), limits).map_err(namespace_path_error)?,
+                        record, &mut allocations, &mut work, budget, cancellation,
+                    )?;
                 }
             }
-        }
-        let mut matches: BTreeMap<_, Vec<(NamespacePath, crate::kernel::FileRecord)>> =
-            BTreeMap::new();
-        let checkout = self
-            .workspace
-            .engine_checkout_measured(
-                GenerationSelector::Exact(self.id),
-                CheckoutMode::read_only_pinned(),
-                budget,
-                cancellation,
-            )
-            .await?;
-        let mut work = checkout.work;
-        let mut checkout = checkout.value;
-        let root = NamespacePath::new(Vec::new(), limits).map_err(WorkspaceError::path)?;
-        let root_lookup = checkout
-            .lookup_no_follow(
-                &root,
-                work.remaining(budget).map_err(WorkspaceError::engine)?,
-                cancellation,
-            )
-            .await
-            .map_err(WorkspaceError::engine)?;
-        work = work
-            .checked_add(root_lookup.work)
-            .map_err(WorkspaceError::engine)?;
-        if let Some(record) = root_lookup.value.record
-            && file_ids.contains(&record.file_id)
-        {
-            matches
-                .entry(record.file_id)
-                .or_default()
-                .push((root.clone(), record));
-        }
-        let mut pending = vec![root];
-        let mut examined = 0_usize;
-        while let Some(directory) = pending.pop() {
-            let mut after = None;
-            loop {
-                let page_receipt = checkout
-                    .list_directory_records(
-                        &directory,
-                        after.as_ref(),
-                        1_024,
-                        work.remaining(budget).map_err(WorkspaceError::engine)?,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(WorkspaceError::engine)?;
-                work = work
-                    .checked_add(page_receipt.work)
-                    .map_err(WorkspaceError::engine)?;
-                let page = page_receipt.value;
-                for entry in &page.entries {
-                    examined = examined.saturating_add(1);
-                    if examined > maximum {
-                        for records in matches.values_mut() {
-                            records.sort_by(|left, right| left.0.cmp(&right.0));
+            let mut pending = Vec::new();
+            grow_workspace_vec(&mut pending, &mut allocations, &mut work, budget, cancellation)?;
+            pending.push(root);
+            let mut examined = 0_u32;
+            while let Some(directory) = pending.pop() {
+                let directory_bytes = directory.retained_bytes();
+                let mut after: Option<LogicalName> = None;
+                loop {
+                    let live = allocations.live_bytes();
+                    let remaining = workspace_remaining(work, budget, live)?;
+                    let page_receipt = merge_workspace_backend(
+                        checkout.list_directory_records(
+                            &directory, after.as_ref(),
+                            maximum_entries.saturating_sub(examined).saturating_add(1).min(1_024),
+                            remaining, cancellation,
+                        ).await, &mut work, live,
+                    )?;
+                    let mut page = page_receipt.value;
+                    let page_bytes = workspace_vec_bytes(&page.entries)
+                        + page.entries.iter().map(|entry| entry.name.retained_bytes() as u64).sum::<u64>();
+                    allocations.claim_bytes(page_bytes, 0, &mut work, budget)
+                        .map_err(workspace_allocation_error)?;
+                    for entry in &page.entries {
+                        cancellation.check()?;
+                        work.charge_items(1, &budget)?;
+                        if examined == maximum_entries {
+                            matches.sort_measured(&mut work, budget, cancellation)?;
+                            return Ok(NamespaceRecordSearch { records: matches, complete: false });
                         }
-                        return Ok(crate::OperationReceipt {
-                            value: NamespaceRecordSearch {
-                                records: matches,
-                                complete: false,
-                            },
-                            work,
-                        });
-                    }
-                    let mut components = directory.components().to_vec();
-                    components.push(entry.name.clone());
-                    let path =
-                        NamespacePath::new(components, limits).map_err(WorkspaceError::path)?;
-                    if file_ids.contains(&entry.record.file_id) {
-                        matches
-                            .entry(entry.record.file_id)
-                            .or_default()
-                            .push((path.clone(), entry.record));
-                    }
-                    if entry.record.kind == FileKind::Directory {
+                        examined += 1;
+                        let mut found = false;
+                        for file_id in ids {
+                            work.charge_items(1, &budget)?;
+                            if *file_id == entry.record.file_id { found = true; break; }
+                            if *file_id > entry.record.file_id { break; }
+                        }
+                        let is_directory = entry.record.kind == FileKind::Directory;
+                        if !found && !is_directory { continue; }
+                        let path = directory.child_with_ledger(
+                            &entry.name, limits, &mut allocations, &mut work, budget, cancellation,
+                        ).map_err(namespace_path_error)?;
+                        if found && is_directory {
+                            let copied = path.clone_with_ledger(
+                                &mut allocations, &mut work, budget, cancellation,
+                            ).map_err(namespace_path_error)?;
+                            matches.insert_measured(copied, entry.record,
+                                &mut allocations, &mut work, budget, cancellation)?;
+                        } else if found {
+                            matches.insert_measured(path, entry.record,
+                                &mut allocations, &mut work, budget, cancellation)?;
+                            continue;
+                        }
+                        grow_workspace_vec(&mut pending, &mut allocations, &mut work, budget, cancellation)?;
                         pending.push(path);
                     }
+                    let has_more = page.has_more;
+                    let next = if has_more { page.entries.pop().map(|entry| entry.name) } else { None };
+                    let next_bytes = next.as_ref().map_or(0, |name| name.retained_bytes() as u64);
+                    drop(page);
+                    allocations.release(page_bytes - next_bytes).map_err(workspace_allocation_error)?;
+                    let old_bytes = after.as_ref().map_or(0, |name| name.retained_bytes() as u64);
+                    drop(after);
+                    allocations.release(old_bytes).map_err(workspace_allocation_error)?;
+                    after = next;
+                    if !has_more { break; }
                 }
-                if !page.has_more {
-                    break;
-                }
-                after = page.entries.last().map(|entry| entry.name.clone());
+                let after_bytes = after.as_ref().map_or(0, |name| name.retained_bytes() as u64);
+                drop(after);
+                allocations.release(after_bytes).map_err(workspace_allocation_error)?;
+                drop(directory);
+                allocations.release(directory_bytes).map_err(workspace_allocation_error)?;
             }
-        }
-        for records in matches.values_mut() {
-            records.sort_by(|left, right| left.0.cmp(&right.0));
-        }
-        let cached_paths = matches
-            .iter()
-            .map(|(&file_id, records)| {
-                (
-                    file_id,
-                    records
-                        .iter()
-                        .map(|(path, _)| crate::path_index::CachedPath::from_namespace(path))
-                        .collect(),
-                )
-            })
-            .collect();
-        let cached = crate::path_index::GenerationPathQuery::new(
-            self.id,
-            file_ids.iter().copied(),
-            &cached_paths,
-        );
-        if let Some(bytes) = cached.encode() {
-            self.workspace
-                .volume
-                .fs
-                .path_index()
-                .store(cache_key, &bytes);
-        }
-        Ok(crate::OperationReceipt {
-            value: NamespaceRecordSearch {
-                records: matches,
-                complete: true,
-            },
-            work,
-        })
+            matches.sort_measured(&mut work, budget, cancellation)?;
+            if let Some(bytes) = crate::path_index::GenerationPathQuery::encode_records_measured(
+                self.id, ids, &matches.entries, &mut allocations, &mut work, budget, cancellation,
+            ).map_err(path_index_error)? {
+                self.workspace.volume.fs.path_index()
+                    .store_measured(cache_key, &bytes, &mut allocations, &mut work, budget, cancellation)
+                    .map_err(path_index_error)?;
+            }
+            Ok(NamespaceRecordSearch { records: matches, complete: true })
+        }.await;
+        result.map(|value| crate::OperationReceipt { value, work })
+            .map_err(|error| crate::OperationFailure::new(error, work))
     }
 
     /// Reads one opaque symbolic-link target from this generation.
@@ -5623,6 +6851,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     pub async fn read_symbolic_link(&self, path: &str) -> Result<Bytes, WorkspaceError> {
         read_generation_symbolic_link(&self.workspace, GenerationSelector::Exact(self.id), path)
             .await
+    }
+
+    /// Reads this exact generation's target under one measured work budget.
+    ///
+    /// # Errors
+    ///
+    /// Preserves actual authentication, lookup and target-read work on failure.
+    pub async fn read_symbolic_link_measured(
+        &self, path: &str, budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<Bytes>, WorkspaceError> {
+        read_generation_symbolic_link_measured(
+            &self.workspace, GenerationSelector::Exact(self.id), path, budget, cancellation,
+        ).await
+    }
+
+    pub(crate) async fn read_symbolic_link_owned_measured(
+        &self,
+        path: &str,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<crate::kernel::OwnedSourceChunk>, WorkspaceError> {
+        read_generation_symbolic_link_owned_measured(
+            &self.workspace, GenerationSelector::Exact(self.id), path, budget, cancellation,
+        ).await
     }
 
     /// Plans sparse logical spans without reading content bodies.
@@ -5659,20 +6912,97 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         &self,
         identity: impl AsRef<str>,
     ) -> Result<GenerationPin<A, O>, WorkspaceError> {
-        let identity = WorkspaceName::new(identity)?;
-        self.workspace
+        self.pin_measured(identity, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+    }
+
+    /// Actual original publication payload still retained by this generation's shared slot.
+    /// Observes custody without consuming it or repinning the generation.
+    pub(crate) fn publication_retained_bytes(&self) -> u64 {
+        self.publication_closure.as_ref().map_or(0, |slot| {
+            let publication = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::size_of::<std::sync::Mutex<Option<crate::facade::VerifiedPublication<A, O>>>>() as u64
+                + publication.as_ref().map_or(0, crate::facade::VerifiedPublication::retained_bytes)
+        })
+    }
+
+    /// Retains the original generation through the canonical retention engine.
+    pub async fn pin_measured(
+        &self,
+        identity: impl AsRef<str>,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::MeasuredResult<crate::OperationReceipt<GenerationPin<A, O>>, WorkspaceError> {
+        let named = WorkspaceName::new_measured(identity, budget, cancellation)?;
+        let identity = named.value;
+        let mut work = named.work;
+        let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+        let prepared = (|| {
+            cancellation.check()?;
+            allocations.claim_bytes(identity.retained_bytes(), 0, &mut work, budget)
+                .map_err(workspace_allocation_error)?;
+            let copied = crate::WorkCounters { bytes_copied: identity.retained_bytes(), ..crate::WorkCounters::UNCHARGED };
+            work.admit(&copied, &budget)?;
+            let claimed = allocations.claim_elements::<u8>(identity.as_str().len(), &mut work, budget)
+                .map_err(workspace_allocation_error)?;
+            let mut label = String::new();
+            if let Err(error) = label.try_reserve_exact(identity.as_str().len()) {
+                allocations.release(claimed).map_err(workspace_allocation_error)?;
+                return Err(WorkspaceError::engine(error));
+            }
+            let actual = label.capacity() as u64;
+            if actual > claimed {
+                allocations.claim_bytes(actual - claimed, 0, &mut work, crate::WorkBudget::UNBOUNDED)
+                    .map_err(workspace_allocation_error)?;
+                work.verify(budget)?;
+            }
+            cancellation.check()?;
+            work.charge(&copied, &budget)?;
+            label.push_str(identity.as_str());
+            // The retainer owns this String; the pin keeps only its canonical identity.
+            allocations.release(actual).map_err(workspace_allocation_error)?;
+            Ok(label)
+        })();
+        let label = prepared.map_err(|error| crate::OperationFailure::new(error, work))?;
+        let live = allocations.live_bytes();
+        let mut allowance = work;
+        allowance.peak_allocation_bytes = 0;
+        let mut allowance = allowance.remaining(budget)
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::Work(error), work))?;
+        allowance.peak_allocation_bytes = budget.peak_allocation_bytes.checked_sub(live)
+            .ok_or_else(|| crate::OperationFailure::new(WorkspaceError::Work(crate::WorkError::Overflow), work))?;
+        // Clones share one slot; consume before awaiting, releasing the
+        // historical closure after this pin attempt.
+        let publication = self.publication_closure.as_ref().and_then(|slot| {
+            slot.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+        });
+        let retained = self.workspace
             .volume
             .fs
-            .retain_workspace_generation(
+            .retain_workspace_generation_proven(
                 &self.workspace.volume,
                 self.id,
                 crate::kernel::RetentionKind::Pin,
-                identity.as_str().to_owned(),
+                label,
+                publication,
+                allowance,
+                cancellation,
             )
-            .await?;
-        Ok(GenerationPin {
-            identity,
-            generation: self.clone(),
+            .await.map_err(|failure| {
+                match work.with_backend(*failure.work, live) {
+                    Ok(spent) => crate::OperationFailure::new(failure.error, spent),
+                    Err(error) => crate::OperationFailure::new(WorkspaceError::Work(error), work),
+                }
+            })?;
+        work = work.with_backend(retained.work, live)
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::Work(error), work))?;
+        work.verify(budget)
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::Work(error), work))?;
+        Ok(crate::OperationReceipt {
+            value: GenerationPin { identity, generation: self.clone() },
+            work,
         })
     }
 }
@@ -5728,6 +7058,9 @@ pub enum WorkspaceNameError {
     /// Names cannot contain separators or control characters.
     #[error("workspace name contains a path separator or control character")]
     InvalidCharacter,
+    /// Canonical name buffers could not be allocated or represented.
+    #[error("workspace name allocation failed")]
+    Allocation,
 }
 
 /// Customer workspace operation failure.
@@ -5751,6 +7084,9 @@ pub enum WorkspaceError {
     /// A caller-pinned target generation is no longer current.
     #[error("workspace generation is stale")]
     StaleGeneration,
+    /// A frozen source identity or epoch changed before canonical publication.
+    #[error("workspace source snapshot is stale")]
+    StaleSource,
     /// A conditional mutation targeted a different filesystem identity.
     #[error("workspace file identity is stale")]
     StaleIdentity,
@@ -5817,11 +7153,30 @@ impl WorkspaceError {
     }
 }
 
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+impl From<crate::MaterializeError> for WorkspaceError {
+    fn from(error: crate::MaterializeError) -> Self {
+        match error {
+            crate::MaterializeError::Work(error) => Self::Work(error),
+            crate::MaterializeError::Cancelled(error) => Self::Cancelled(error),
+            crate::MaterializeError::MissingPath => Self::NotFound,
+            error => Self::Engine(error.to_string()),
+        }
+    }
+}
+
 impl From<FsError> for WorkspaceError {
     fn from(error: FsError) -> Self {
         match error {
             FsError::Cancelled(error) => Self::Cancelled(error),
-            FsError::Work(error) => Self::Work(error),
+            FsError::SourceSnapshotStale => Self::StaleSource,
+            FsError::Authority(crate::AuthorityStoreError::Cancelled)
+            | FsError::Object(crate::ObjectStoreError::Cancelled) => {
+                Self::Cancelled(crate::CancellationError)
+            }
+            FsError::Work(error)
+            | FsError::Authority(crate::AuthorityStoreError::Work(error))
+            | FsError::Object(crate::ObjectStoreError::Work(error)) => Self::Work(error),
             FsError::NotFound => Self::NotFound,
             FsError::NotDirectory => Self::NotDirectory,
             FsError::FileRead(crate::kernel::FileRangeReadError::NotRegular) => {
@@ -5835,13 +7190,152 @@ impl From<FsError> for WorkspaceError {
     }
 }
 
+fn workspace_vec_bytes<T>(values: &Vec<T>) -> u64 {
+    (values.capacity() * std::mem::size_of::<T>()) as u64
+}
+
+fn workspace_allocation_error(error: crate::kernel::allocation::AllocationError) -> WorkspaceError {
+    crate::collection::handle_allocation_error(error).into()
+}
+
+fn path_index_error(error: crate::path_index::PathIndexError) -> WorkspaceError {
+    match error {
+        crate::path_index::PathIndexError::Work(error) => WorkspaceError::Work(error),
+        crate::path_index::PathIndexError::Cancelled => WorkspaceError::Cancelled(crate::CancellationError),
+        error => WorkspaceError::engine(error),
+    }
+}
+
+fn new_workspace_vec<T>(
+    capacity: usize,
+    allocations: &mut crate::kernel::allocation::AllocationLedger,
+    work: &mut crate::WorkCounters,
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
+) -> Result<Vec<T>, WorkspaceError> {
+    cancellation.check()?;
+    let claimed = allocations.claim_elements::<T>(capacity, work, budget)
+        .map_err(workspace_allocation_error)?;
+    let mut values = Vec::new();
+    if let Err(error) = values.try_reserve_exact(capacity) {
+        allocations.release(claimed).map_err(workspace_allocation_error)?;
+        return Err(WorkspaceError::engine(error));
+    }
+    let actual = workspace_vec_bytes(&values);
+    if actual > claimed {
+        if let Err(error) = allocations.claim_bytes(actual - claimed, 0, work, crate::WorkBudget::UNBOUNDED) {
+            allocations.release(claimed).map_err(workspace_allocation_error)?;
+            return Err(workspace_allocation_error(error));
+        }
+        if let Err(error) = work.verify_ref(&budget) {
+            allocations.release(actual).map_err(workspace_allocation_error)?;
+            return Err(WorkspaceError::Work(error));
+        }
+    }
+    Ok(values)
+}
+
+fn grow_workspace_vec<T>(
+    values: &mut Vec<T>,
+    allocations: &mut crate::kernel::allocation::AllocationLedger,
+    work: &mut crate::WorkCounters,
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
+) -> Result<(), WorkspaceError> {
+    if values.len() < values.capacity() { return Ok(()); }
+    cancellation.check()?;
+    let capacity = values.capacity().checked_mul(2).map(|value| value.max(1))
+        .ok_or(crate::WorkError::Overflow)?;
+    let copied = values.len().checked_mul(std::mem::size_of::<T>())
+        .ok_or(crate::WorkError::Overflow)? as u64;
+    let delta = crate::WorkCounters { bytes_copied: copied, ..crate::WorkCounters::default() };
+    work.admit(&delta, &budget)?;
+    let mut replacement = new_workspace_vec(capacity, allocations, work, budget, cancellation)?;
+    work.charge(&delta, &budget)?;
+    let old_bytes = workspace_vec_bytes(values);
+    replacement.append(values);
+    *values = replacement;
+    allocations.release(old_bytes).map_err(workspace_allocation_error)?;
+    Ok(())
+}
+
+fn workspace_remaining(
+    work: crate::WorkCounters,
+    budget: crate::WorkBudget,
+    live_bytes: u64,
+) -> Result<crate::WorkBudget, WorkspaceError> {
+    let mut remaining = work.remaining(budget)?;
+    remaining.peak_allocation_bytes = remaining.peak_allocation_bytes.checked_sub(live_bytes)
+        .ok_or(crate::WorkError::BudgetExceeded {
+            counter: "peak_allocation_bytes", observed: live_bytes,
+            maximum: remaining.peak_allocation_bytes,
+        })?;
+    Ok(remaining)
+}
+
+fn merge_workspace_backend<T, E: Into<WorkspaceError>>(
+    result: crate::MeasuredResult<crate::OperationReceipt<T>, E>,
+    work: &mut crate::WorkCounters,
+    live_bytes: u64,
+) -> Result<crate::OperationReceipt<T>, WorkspaceError> {
+    match result {
+        Ok(receipt) => {
+            *work = work.with_backend(receipt.work, live_bytes)?;
+            Ok(receipt)
+        }
+        Err(failure) => {
+            *work = work.with_backend(*failure.work, live_bytes)?;
+            Err(failure.error.into())
+        }
+    }
+}
+
 pub(crate) fn customer_path(
     path: &str,
     config: crate::model::VolumeConfig,
 ) -> Result<NamespacePath, WorkspaceError> {
-    let portable = PortablePath::parse(path, config.limits).map_err(WorkspaceError::path)?;
-    NamespacePath::from_portable_in_profile(&portable, config.profile, config.limits)
-        .map_err(WorkspaceError::path)
+    customer_path_measured(
+        path, config, &mut crate::kernel::allocation::AllocationLedger::default(),
+        &mut crate::WorkCounters::default(), crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )
+}
+
+/// Uses the caller's cumulative full budget and shared live ledger.
+/// Borrowed, already-retained checkout storage belongs to the containing
+/// operation; freshly opened checkouts must first be adopted into this ledger.
+pub(crate) fn customer_path_measured(
+    path: &str,
+    config: crate::model::VolumeConfig,
+    allocations: &mut crate::kernel::allocation::AllocationLedger,
+    work: &mut crate::WorkCounters,
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
+) -> Result<NamespacePath, WorkspaceError> {
+    NamespacePath::parse_in_profile_with_ledger(
+        path, config.profile, config.limits, allocations, work, budget, cancellation,
+    ).map_err(namespace_path_error)
+}
+
+fn namespace_path_error(error: crate::kernel::NamespacePathError) -> WorkspaceError {
+    match error {
+        crate::kernel::NamespacePathError::Work(error) => WorkspaceError::Work(error),
+        crate::kernel::NamespacePathError::Cancelled => WorkspaceError::Cancelled(crate::CancellationError),
+        error => WorkspaceError::path(error),
+    }
+}
+
+fn path_remaining(
+    work: crate::WorkCounters,
+    budget: crate::WorkBudget,
+    path: &NamespacePath,
+) -> Result<crate::WorkBudget, crate::WorkError> {
+    let mut remaining = work.remaining(budget)?;
+    remaining.peak_allocation_bytes = remaining.peak_allocation_bytes
+        .checked_sub(path.retained_bytes())
+        .ok_or(crate::WorkError::BudgetExceeded { counter: "peak_allocation_bytes",
+            observed: path.retained_bytes(), maximum: remaining.peak_allocation_bytes })?;
+    Ok(remaining)
 }
 
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
@@ -5849,11 +7343,11 @@ fn merge_workspace_work<T>(
     prior: crate::WorkCounters,
     receipt: crate::OperationReceipt<T>,
     budget: crate::WorkBudget,
-) -> Result<crate::OperationReceipt<T>, WorkspaceError> {
+) -> crate::MeasuredResult<crate::OperationReceipt<T>, WorkspaceError> {
     let work = prior
         .checked_add(receipt.work)
-        .map_err(WorkspaceError::from)?;
-    work.verify(budget).map_err(WorkspaceError::from)?;
+        .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), prior))?;
+    work.verify(budget).map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
     Ok(crate::OperationReceipt {
         value: receipt.value,
         work,
@@ -5907,3 +7401,13 @@ fn regular_file_bytes(record: crate::kernel::FileRecord) -> Result<u64, Workspac
 #[cfg(test)]
 #[path = "tests/workspace.rs"]
 mod tests;
+
+fn accumulate_workspace_failure<E>(
+    failure: crate::OperationFailure<E>,
+    work: &mut crate::WorkCounters,
+    map: impl FnOnce(E) -> WorkspaceError,
+) -> WorkspaceError {
+    let failure = failure.map_with_prior_work(*work, map);
+    *work = *failure.work;
+    failure.error
+}

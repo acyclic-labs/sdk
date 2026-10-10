@@ -5,6 +5,10 @@ use crate::model::FilesystemProfile;
 use crate::storage::{ObjectId, ObjectKind};
 use std::borrow::Cow;
 use thiserror::Error;
+use super::allocation::AllocationLedger;
+use super::codec::{CanonicalDecodeError, Decoder, Encoder};
+use super::namespace_path::{NamespacePathError, path_vec};
+use crate::{CancellationToken, WorkBudget, WorkCounters};
 
 /// Canonical host-name representation.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -34,6 +38,13 @@ impl NameEncoding {
             value => Err(TreePageError::UnknownNameEncoding(value)),
         }
     }
+
+    pub(crate) const fn is_admitted_in_profile(self, profile: FilesystemProfile) -> bool {
+        matches!((profile, self),
+            (FilesystemProfile::Portable | FilesystemProfile::Browser, Self::Utf8)
+            | (FilesystemProfile::Posix, Self::Utf8 | Self::PosixBytes)
+            | (FilesystemProfile::Windows, Self::Utf8 | Self::WindowsUtf16Le))
+    }
 }
 
 /// One separator-free canonical logical name.
@@ -54,6 +65,15 @@ impl LogicalName {
         bytes: Vec<u8>,
         maximum_bytes: u32,
     ) -> Result<Self, TreePageError> {
+        Self::validate_bytes(encoding, &bytes, maximum_bytes)?;
+        Ok(Self { encoding, bytes })
+    }
+
+    fn validate_bytes(
+        encoding: NameEncoding,
+        bytes: &[u8],
+        maximum_bytes: u32,
+    ) -> Result<(), TreePageError> {
         if bytes.is_empty() {
             return Err(TreePageError::EmptyName);
         }
@@ -62,7 +82,7 @@ impl LogicalName {
         }
         match encoding {
             NameEncoding::Utf8 => {
-                let value = std::str::from_utf8(&bytes).map_err(|_| TreePageError::InvalidName)?;
+                let value = std::str::from_utf8(bytes).map_err(|_| TreePageError::InvalidName)?;
                 if value == "." || value == ".." || value.contains('/') || value.contains('\0') {
                     return Err(TreePageError::InvalidName);
                 }
@@ -73,21 +93,146 @@ impl LogicalName {
                 }
             }
             NameEncoding::WindowsUtf16Le => {
-                let Some(units) = utf16le_units(&bytes) else {
+                let Some(mut units) = utf16le_units(bytes) else {
                     return Err(TreePageError::InvalidName);
                 };
                 if bytes == [b'.', 0]
                     || bytes == [b'.', 0, b'.', 0]
-                    || units.clone().any(|unit| {
-                        unit == 0 || unit == u16::from(b'/') || unit == u16::from(b'\\')
-                    })
-                    || char::decode_utf16(units).any(|decoded| decoded.is_err())
+                    || units.any(invalid_windows_name_unit)
                 {
                     return Err(TreePageError::InvalidName);
                 }
             }
         }
-        Ok(Self { encoding, bytes })
+        Ok(())
+    }
+
+    /// Validates the Unicode subset using the same native-name predicates.
+    /// Returns its exact encoded size without allocating the native bytes.
+    pub(crate) fn validate_unicode(
+        encoding: NameEncoding,
+        value: &str,
+        maximum_bytes: u32,
+    ) -> Result<usize, TreePageError> {
+        if encoding != NameEncoding::WindowsUtf16Le {
+            Self::validate_bytes(encoding, value.as_bytes(), maximum_bytes)?;
+            return Ok(value.len());
+        }
+        if value.is_empty() { return Err(TreePageError::EmptyName); }
+        let length = value.encode_utf16().count().checked_mul(2)
+            .ok_or(TreePageError::NameTooLarge)?;
+        if u32::try_from(length).unwrap_or(u32::MAX) > maximum_bytes {
+            return Err(TreePageError::NameTooLarge);
+        }
+        if value == "." || value == ".." || value.encode_utf16().any(invalid_windows_name_unit) {
+            return Err(TreePageError::InvalidName);
+        }
+        Ok(length)
+    }
+
+    pub(crate) fn unicode_utf8_bytes(&self) -> Option<usize> {
+        match self.encoding {
+            NameEncoding::Utf8 | NameEncoding::PosixBytes =>
+                std::str::from_utf8(&self.bytes).ok().map(str::len),
+            NameEncoding::WindowsUtf16Le => char::decode_utf16(utf16le_units(&self.bytes)?)
+                .try_fold(0_usize, |length, value| length.checked_add(value.ok()?.len_utf8())),
+        }
+    }
+
+    pub(crate) fn append_unicode(&self, output: &mut String) -> Result<(), TreePageError> {
+        match self.encoding {
+            NameEncoding::Utf8 | NameEncoding::PosixBytes => output.push_str(
+                std::str::from_utf8(&self.bytes).map_err(|_| TreePageError::InvalidName)?),
+            NameEncoding::WindowsUtf16Le => {
+                for value in char::decode_utf16(utf16le_units(&self.bytes).ok_or(TreePageError::InvalidName)?) {
+                    output.push(value.map_err(|_| TreePageError::InvalidName)?);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn cursor_encoded_len(&self) -> Result<usize, NamespacePathError> {
+        u32::try_from(self.bytes.len()).map_err(|_| NamespacePathError::ComponentTooLong)?;
+        self.bytes.len().checked_add(5)
+            .ok_or(NamespacePathError::Codec(CanonicalDecodeError::LengthOverflow))
+    }
+
+    /// Appends into the containing codec's already-admitted output capacity.
+    pub(crate) fn encode_cursor_into(
+        &self,
+        encoder: &mut Encoder,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<(), NamespacePathError> {
+        cancellation.check().map_err(|_| NamespacePathError::Cancelled)?;
+        let length = self.cursor_encoded_len()?;
+        if encoder.remaining_capacity() < length {
+            return Err(NamespacePathError::AllocationFailed);
+        }
+        let delta = WorkCounters { bytes_encoded: length as u64,
+            bytes_copied: self.bytes.len() as u64, items_examined: 1,
+            ..WorkCounters::default() };
+        work.charge(&delta, &budget).map_err(NamespacePathError::Work)?;
+        encoder.u8(self.encoding.tag());
+        encoder.bounded_bytes(&self.bytes).map_err(NamespacePathError::Codec)
+    }
+
+    pub(crate) fn read_cursor_borrowed<'a>(
+        decoder: &mut Decoder<'a>,
+        profile: FilesystemProfile,
+        maximum_bytes: u32,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<(NameEncoding, &'a [u8]), NamespacePathError> {
+        cancellation.check().map_err(|_| NamespacePathError::Cancelled)?;
+        work.charge_items(1, &budget).map_err(NamespacePathError::Work)?;
+        let encoding = NameEncoding::from_tag(decoder.u8().map_err(NamespacePathError::Codec)?)
+            .map_err(NamespacePathError::Name)?;
+        if !encoding.is_admitted_in_profile(profile) {
+            return Err(NamespacePathError::Name(TreePageError::InvalidName));
+        }
+        let length = decoder.u32().map_err(NamespacePathError::Codec)?;
+        if length > maximum_bytes {
+            return Err(NamespacePathError::Name(TreePageError::NameTooLarge));
+        }
+        let bytes = decoder.take_exact(length as usize).map_err(NamespacePathError::Codec)?;
+        Self::validate_bytes(encoding, bytes, maximum_bytes).map_err(NamespacePathError::Name)?;
+        Ok((encoding, bytes))
+    }
+
+    pub(crate) fn decode_cursor_with_ledger(
+        decoder: &mut Decoder<'_>,
+        profile: FilesystemProfile,
+        maximum_bytes: u32,
+        ledger: &mut AllocationLedger,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<Self, NamespacePathError> {
+        let (encoding, source) = Self::read_cursor_borrowed(
+            decoder, profile, maximum_bytes, work, budget, cancellation,
+        )?;
+        let delta = WorkCounters { bytes_copied: source.len() as u64,
+            ..WorkCounters::default() };
+        work.admit(&delta, &budget).map_err(NamespacePathError::Work)?;
+        let initial_live = ledger.live_bytes();
+        let result = (|| {
+            let mut bytes = path_vec(source.len(), ledger, work, budget)?;
+            bytes.extend_from_slice(source);
+            work.charge(&delta, &budget).map_err(NamespacePathError::Work)?;
+            Self::new(encoding, bytes, maximum_bytes).map_err(NamespacePathError::Name)
+        })();
+        if result.is_err() {
+            ledger.release(ledger.live_bytes() - initial_live)
+                .map_err(|error| match error {
+                    super::allocation::AllocationError::Work(error) => NamespacePathError::Work(error),
+                    _ => NamespacePathError::AllocationFailed,
+                })?;
+        }
+        result
     }
 
     /// Returns the canonical representation kind.
@@ -144,6 +289,10 @@ impl LogicalName {
             NameEncoding::PosixBytes | NameEncoding::WindowsUtf16Le => self.bytes.clone(),
         }
     }
+}
+
+fn invalid_windows_name_unit(unit: u16) -> bool {
+    unit == 0 || unit == u16::from(b'/') || unit == u16::from(b'\\')
 }
 
 /// Complete namespace entry kind.

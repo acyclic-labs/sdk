@@ -28,7 +28,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
             )
-            .await?;
+            .await
+            .map_err(|failure| failure.error)?;
         Ok(expected.generation_root.digest == initial.id.digest())
     }
 
@@ -43,7 +44,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         paths: Vec<String>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> Result<(ObjectId, WorkCounters), WorkspaceError> {
+    ) -> MeasuredResult<(ObjectId, WorkCounters), WorkspaceError> {
+        let mut work = WorkCounters::default();
+        let result = async {
         let config = source.workspace.volume.config;
         let maximum = config.limits.maximum_mutations_per_batch;
         if paths.len() > maximum as usize {
@@ -86,8 +89,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 cancellation,
             )
             .await
-            .map_err(WorkspaceError::engine)?;
-        let mut work = checkout.work;
+            .map_err(|failure| fork_failure(failure, &mut work, WorkspaceError::from))?;
+        work = checkout.work;
         let mut checkout = checkout.value;
         let mut overrides = BTreeMap::<FileId, FileRecord>::new();
         for (directory, names) in directories {
@@ -98,7 +101,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     cancellation,
                 )
                 .await
-                .map_err(WorkspaceError::engine)?;
+                .map_err(|failure| fork_failure(failure, &mut work, WorkspaceError::from))?;
             work = add(work, lookup.work).map_err(WorkspaceError::engine)?;
             let original = lookup.value.record.ok_or(WorkspaceError::NotFound)?;
             if original.kind != FileKind::Directory {
@@ -117,7 +120,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         cancellation,
                     )
                     .await
-                    .map_err(WorkspaceError::engine)?;
+                    .map_err(|failure| fork_failure(failure, &mut work, WorkspaceError::from))?;
                 work = add(work, lookup.work).map_err(WorkspaceError::engine)?;
                 let record = lookup.value.record.ok_or(WorkspaceError::NotFound)?;
                 entries.push(TreeMutation::Insert(TreeEntry {
@@ -139,7 +142,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     cancellation,
                 )
                 .await
-                .map_err(WorkspaceError::engine)?;
+                .map_err(|failure| fork_failure(failure, &mut work, WorkspaceError::from))?;
             work = add(work, spent).map_err(WorkspaceError::engine)?;
             let tree_root = if entries.is_empty() {
                 empty
@@ -154,7 +157,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     cancellation,
                 )
                 .await
-                .map_err(WorkspaceError::engine)?;
+                .map_err(|failure| fork_failure(failure, &mut work, WorkspaceError::engine))?;
                 work = add(work, tree.work).map_err(WorkspaceError::engine)?;
                 tree.root
             };
@@ -190,7 +193,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     cancellation,
                 )
                 .await
-                .map_err(WorkspaceError::engine)?;
+                .map_err(|failure| fork_failure(failure, &mut work, WorkspaceError::engine))?;
                 work = add(work, lookup.work).map_err(WorkspaceError::engine)?;
                 lookup.record.ok_or(WorkspaceError::NotFound)?
             };
@@ -208,7 +211,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         cancellation,
                     )
                     .await
-                    .map_err(WorkspaceError::engine)?;
+                    .map_err(|failure| fork_failure(failure, &mut work, WorkspaceError::engine))?;
                     work = add(work, page.work).map_err(WorkspaceError::engine)?;
                     cursor = page.entries.last().map(|entry| entry.name.clone());
                     for entry in page.entries {
@@ -247,7 +250,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 cancellation,
             )
             .await
-            .map_err(WorkspaceError::engine)?;
+            .map_err(|failure| fork_failure(failure, &mut work, WorkspaceError::from))?;
         work = add(work, spent).map_err(WorkspaceError::engine)?;
         let table = apply_file_table_mutations_async(
             &self.inner.objects,
@@ -259,8 +262,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             cancellation,
         )
         .await
-        .map_err(WorkspaceError::engine)?;
+        .map_err(|failure| fork_failure(failure, &mut work, WorkspaceError::engine))?;
         work = add(work, table.work).map_err(WorkspaceError::engine)?;
         Ok((table.root, work))
+        }.await;
+        result.map_err(|error| OperationFailure::new(error, work))
     }
 }

@@ -123,10 +123,28 @@ pub(crate) trait HostChangeSink: Send + Sync {
     fn host_changed(&self, changes: &[HostChange]);
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) trait NativeEventSink: Send + Sync {
+    fn event(&self, event: notify::Event);
+    fn event_measured(
+        &self,
+        relative: &std::path::Path,
+        mask: u32,
+        cookie: usize,
+        work: &mut crate::demand::DemandWork,
+    ) -> Result<(), crate::demand::DemandError>;
+    fn invalidate_measured(
+        &self,
+        work: &mut crate::demand::DemandWork,
+    ) -> Result<(), crate::demand::DemandError>;
+}
+
 /// Where a watch delivers and whether it still covers every change.
 pub(crate) struct Delivery {
     sink: Arc<dyn HostChangeSink>,
     exact: AtomicBool,
+    #[cfg(target_os = "linux")]
+    events: Option<Arc<dyn NativeEventSink>>,
 }
 
 impl Delivery {
@@ -134,6 +152,8 @@ impl Delivery {
         Self {
             sink,
             exact: AtomicBool::new(true),
+            #[cfg(target_os = "linux")]
+            events: None,
         }
     }
 
@@ -173,9 +193,92 @@ impl NativeSourceWatch {
         directory: &crate::native_host::HostRoot,
         sink: Arc<dyn HostChangeSink>,
     ) -> std::io::Result<Self> {
-        Ok(Self {
-            platform: PlatformWatch::start(directory, Arc::new(Delivery::new(sink)))?,
+        let cancellation = crate::cancellation::CancellationToken::new();
+        Self::start_measured(directory, sink, &mut crate::demand::DemandWork::new(
+            crate::performance::WorkBudget::UNBOUNDED, &cancellation,
+        )).map_err(|error| match error {
+            crate::demand::DemandError::Io(error) => error,
+            error => std::io::Error::other(error),
         })
+    }
+
+    pub(crate) fn start_measured(
+        directory: &crate::native_host::HostRoot,
+        sink: Arc<dyn HostChangeSink>,
+        work: &mut crate::demand::DemandWork,
+    ) -> Result<Self, crate::demand::DemandError> {
+        let bytes = std::mem::size_of::<Delivery>() as u64;
+        work.allocate(bytes)?;
+        let result = PlatformWatch::start_measured(directory, Arc::new(Delivery::new(sink)), work)
+            .map(|platform| Self { platform });
+        work.release(bytes)?;
+        result
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn start_with_events(
+        directory: &crate::native_host::HostRoot,
+        sink: Arc<dyn HostChangeSink>,
+        events: Arc<dyn NativeEventSink>,
+    ) -> std::io::Result<Self> {
+        let mut delivery = Delivery::new(sink);
+        delivery.events = Some(events);
+        Ok(Self { platform: PlatformWatch::start(directory, Arc::new(delivery))? })
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn unadmit_measured(
+        &self, directory: &std::path::Path, work: &mut crate::demand::DemandWork,
+    ) -> Result<(), crate::demand::DemandError> {
+        self.platform.unadmit_measured(directory, work)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn fence_events_measured(
+        &self, timeout: std::time::Duration, work: &mut crate::demand::DemandWork,
+    ) -> Result<bool, crate::demand::DemandError> {
+        self.platform.fence_events_measured(timeout, work)
+    }
+
+    /// Starts the existing Windows driver over one already validated held
+    /// directory. No Path/OsString conversion or startup queue-drain loop is
+    /// hidden behind this measured registration boundary.
+    #[cfg(windows)]
+    pub(crate) fn start_directory_measured(
+        directory: &cap_std::fs::Dir,
+        sink: Arc<dyn HostChangeSink>,
+        complete: bool,
+        work: &mut crate::demand::DemandWork,
+    ) -> Result<Self, crate::demand::DemandError> {
+        let bytes = std::mem::size_of::<Delivery>() as u64;
+        work.allocate(bytes)?;
+        let delivery = Arc::new(Delivery::new(sink));
+        match PlatformWatch::start_directory_measured(directory, delivery, complete, work) {
+            Ok(platform) => Ok(Self { platform }),
+            Err(error) => {
+                work.release(bytes)?;
+                Err(error)
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn owned_bytes(&self) -> u64 {
+        self.platform.owned_bytes()
+            + std::mem::size_of::<Delivery>() as u64
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn stop_measured(
+        &mut self,
+        work: &mut crate::demand::DemandWork,
+    ) -> Result<(), crate::demand::DemandError> {
+        self.platform.stop_measured(work)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn fence_for(&self, timeout: std::time::Duration) -> std::io::Result<()> {
+        self.platform.fence_for(timeout)
     }
 
     /// Watches the root-relative directory `directory`, and every directory
@@ -188,6 +291,23 @@ impl NativeSourceWatch {
     #[cfg(target_os = "linux")]
     pub(crate) fn admit(&self, directory: &std::path::Path) -> bool {
         self.platform.admit(directory)
+    }
+
+    /// Admits each Linux prefix with cancellation, native-call and allocation
+    /// admission before the corresponding work. Other hosts already cover the
+    /// whole root and perform no directory admission work.
+    pub(crate) fn admit_measured(
+        &self,
+        directory: &std::path::Path,
+        work: &mut crate::demand::DemandWork,
+    ) -> Result<bool, crate::demand::DemandError> {
+        #[cfg(target_os = "linux")]
+        return self.platform.admit_measured(directory, work);
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (directory, work);
+            Ok(false)
+        }
     }
 
     /// Returns once every change that completed before the call has been
@@ -208,3 +328,23 @@ impl NativeSourceWatch {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, not(target_os = "linux")))]
+#[test]
+fn measured_admission_on_recursive_hosts_does_not_spend_work() -> Result<(), Box<dyn std::error::Error>> {
+    struct Ignored;
+    impl HostChangeSink for Ignored {
+        fn host_changed(&self, _: &[HostChange]) {}
+    }
+    let root = tempfile::tempdir()?;
+    let watch = NativeSourceWatch::start(
+        &crate::native_host::HostRoot::open(root.path())?,
+        Arc::new(Ignored),
+    )?;
+    let cancellation = crate::cancellation::CancellationToken::new();
+    cancellation.cancel();
+    let mut work = crate::demand::DemandWork::new(crate::WorkBudget::default(), &cancellation);
+    assert!(!watch.admit_measured(std::path::Path::new("not/read"), &mut work)?);
+    assert_eq!(work.work, crate::WorkCounters::default());
+    Ok(())
+}

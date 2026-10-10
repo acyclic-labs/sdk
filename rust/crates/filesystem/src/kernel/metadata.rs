@@ -3,6 +3,8 @@
 use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder};
 use super::types::digest_object;
 use crate::storage::{ObjectId, ObjectKind, object_digest};
+use crate::{CancellationToken, MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
+use thiserror::Error;
 
 const DOMAIN: &[u8; 8] = b"ACYFSMET";
 const VERSION: u16 = 1;
@@ -116,21 +118,99 @@ impl FileMetadata {
 ///
 /// Rejects references whose typed object class does not match the field.
 pub fn encode_file_metadata(metadata: FileMetadata) -> Result<Vec<u8>, CanonicalDecodeError> {
-    metadata.validate()?;
-    let mut encoder = Encoder::new(DOMAIN, VERSION);
-    encode_u32(&mut encoder, metadata.posix_mode);
-    encode_u32(&mut encoder, metadata.posix_uid);
-    encode_u32(&mut encoder, metadata.posix_gid);
-    encode_u64(&mut encoder, metadata.posix_flags);
-    encode_u32(&mut encoder, metadata.windows_attributes);
-    encode_i64(&mut encoder, metadata.created_ns);
-    encode_i64(&mut encoder, metadata.modified_ns);
-    encode_i64(&mut encoder, metadata.accessed_ns);
-    encode_i64(&mut encoder, metadata.changed_ns);
-    encode_object(&mut encoder, metadata.named_attributes);
-    encode_object(&mut encoder, metadata.acl);
-    encode_object(&mut encoder, metadata.security_descriptor);
+    let length = file_metadata_encoded_len(metadata)?;
+    let mut encoder = Encoder::with_exact_capacity(DOMAIN, VERSION, length)?;
+    encode_metadata_fields(metadata, &mut encoder);
     Ok(encoder.finish())
+}
+
+/// Canonical metadata encoding with admission before the one owned buffer.
+///
+/// # Errors
+/// Returns validation, cancellation, allocation, or work-budget failures
+/// together with the actual completed encoding prefix.
+pub fn encode_file_metadata_measured(
+    metadata: FileMetadata,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> MeasuredResult<OperationReceipt<Vec<u8>>, FileMetadataEncodeError> {
+    let mut work = WorkCounters::default();
+    let mut allocations = super::allocation::AllocationLedger::default();
+    let result = (|| {
+        cancellation.check()?;
+        let length = file_metadata_encoded_len(metadata)?;
+        let encoded = WorkCounters { bytes_encoded: length as u64, ..WorkCounters::default() };
+        work.admit(&encoded, &budget)?;
+        let admitted = allocations.claim_elements::<u8>(length, &mut work, budget)
+            .map_err(|error| error.into_work_or(FileMetadataEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
+        let mut encoder = Encoder::with_exact_capacity(DOMAIN, VERSION, length)?;
+        encode_metadata_fields(metadata, &mut encoder);
+        work.charge(&encoded, &budget)?;
+        let bytes = encoder.finish();
+        if bytes.capacity() as u64 > admitted {
+            allocations.claim_bytes(bytes.capacity() as u64 - admitted, 0, &mut work, WorkBudget::UNBOUNDED)
+                .map_err(|error| error.into_work_or(FileMetadataEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
+            work.verify(budget)?;
+        }
+        Ok(bytes)
+    })();
+    result.map(|value| OperationReceipt { value, work })
+        .map_err(|error| OperationFailure::new(error, work))
+}
+
+/// A measured canonical metadata encoding failure.
+#[derive(Debug, Error)]
+pub enum FileMetadataEncodeError {
+    /// Metadata fields or the canonical allocation are invalid.
+    #[error(transparent)]
+    Canonical(#[from] CanonicalDecodeError),
+    /// An actual encoding boundary exceeded its permit.
+    #[error(transparent)]
+    Work(#[from] crate::WorkError),
+    /// Encoding was cancelled before work began.
+    #[error(transparent)]
+    Cancelled(#[from] crate::CancellationError),
+}
+
+fn file_metadata_encoded_len(metadata: FileMetadata) -> Result<usize, CanonicalDecodeError> {
+    metadata.validate()?;
+    fn field<T>(value: MetadataField<T>, payload: usize) -> usize {
+        match value { MetadataField::Unavailable => 1, MetadataField::Value(_) => 1 + payload }
+    }
+    fn object(value: MetadataField<ObjectId>) -> usize {
+        match value { MetadataField::Unavailable => 1, MetadataField::Value(value) => 1 + value.digest.as_bytes().len() }
+    }
+    [
+        field(metadata.posix_mode, std::mem::size_of::<u32>()),
+        field(metadata.posix_uid, std::mem::size_of::<u32>()),
+        field(metadata.posix_gid, std::mem::size_of::<u32>()),
+        field(metadata.posix_flags, std::mem::size_of::<u64>()),
+        field(metadata.windows_attributes, std::mem::size_of::<u32>()),
+        field(metadata.created_ns, std::mem::size_of::<i64>()),
+        field(metadata.modified_ns, std::mem::size_of::<i64>()),
+        field(metadata.accessed_ns, std::mem::size_of::<i64>()),
+        field(metadata.changed_ns, std::mem::size_of::<i64>()),
+        object(metadata.named_attributes),
+        object(metadata.acl),
+        object(metadata.security_descriptor),
+    ].into_iter().try_fold(DOMAIN.len() + std::mem::size_of::<u16>(), |bytes, field| {
+        bytes.checked_add(field).ok_or(CanonicalDecodeError::LengthOverflow)
+    })
+}
+
+fn encode_metadata_fields(metadata: FileMetadata, encoder: &mut Encoder) {
+    encode_u32(encoder, metadata.posix_mode);
+    encode_u32(encoder, metadata.posix_uid);
+    encode_u32(encoder, metadata.posix_gid);
+    encode_u64(encoder, metadata.posix_flags);
+    encode_u32(encoder, metadata.windows_attributes);
+    encode_i64(encoder, metadata.created_ns);
+    encode_i64(encoder, metadata.modified_ns);
+    encode_i64(encoder, metadata.accessed_ns);
+    encode_i64(encoder, metadata.changed_ns);
+    encode_object(encoder, metadata.named_attributes);
+    encode_object(encoder, metadata.acl);
+    encode_object(encoder, metadata.security_descriptor);
 }
 
 /// Decodes one bounded canonical metadata record.

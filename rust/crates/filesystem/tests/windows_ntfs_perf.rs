@@ -59,7 +59,7 @@ async fn ntfs_demand_identifies_hard_links_by_file_identity()
             VolumeLimits::default(),
         )?;
         let node = demand
-            .lookup(demand.reference(), &path, &CancellationToken::new())
+            .lookup(demand.reference(), &path, WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await?
             .value
             .ok_or("source node was absent")?;
@@ -361,7 +361,7 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
             &CancellationToken::new(),
             PublicationPermit::Unrestricted,
         )
-        .await?;
+        .await?.value;
     let preparation_us = started.elapsed().as_micros();
 
     let warm_view = tempfile::tempdir()?;
@@ -374,7 +374,7 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
             &CancellationToken::new(),
             PublicationPermit::Unrestricted,
         )
-        .await?;
+        .await?.value;
     let warm_preparation_us = started.elapsed().as_micros();
     warm_working_set.validate_for_presentation().await?;
 

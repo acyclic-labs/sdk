@@ -684,9 +684,9 @@ async fn filesystem_demand(root: std::path::PathBuf) -> Result<(), String> {
     let wanted = acyclic_fs::kernel::NamespacePath::from_portable(&wanted, VolumeLimits::default())
         .map_err(|error| error.to_string())?;
     let cancellation = CancellationToken::new();
-    let provider: &dyn DemandSource = &source;
+    let provider = &source;
     let looked_up = provider
-        .lookup(provider.reference(), &wanted, &cancellation)
+        .lookup(provider.reference(), &wanted, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
         .await
         .map_err(|error| error.to_string())?;
     if looked_up.work.source_path_components != 1
@@ -697,7 +697,7 @@ async fn filesystem_demand(root: std::path::PathBuf) -> Result<(), String> {
     }
     let version = looked_up.value.ok_or("wanted path is absent")?.version;
     let range = provider
-        .read_range(provider.reference(), &wanted, version, 3, 4, &cancellation)
+        .read_range(provider.reference(), &wanted, version, 3, 4, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
         .await
         .map_err(|error| error.to_string())?;
     if range.value.as_ref() != b"3456"

@@ -185,3 +185,19 @@ scope and captured exact-reference byte map to invoke the same Rust constructor.
 Ancestor files require explicit owner approvals; a parent cannot delegate an
 unrelated owner's private file. See the [contract and verification map](docs/model-request-properties.md)
 for assumptions, negative controls and the boundary with agent composition.
+
+Native preparation requires a host-preallocated `NativePreparationRoot` with explicit
+witnessed root, operation directory, target and backup identities. Prepare, inspect
+and cleanup reuse the materializer journal and its exact qualified source intent;
+recovery does not adopt a PID or fabricate source authority. Caller grants must still
+be fresh when used. Root replacement is rejected and unrelated user data is preserved.
+Authenticated history effect queries use
+`HistoryReader.effect(cursor, effect, HistoryReadLimits)`, with qualified identities
+and finite read limits. Native process receipts expose queryable publication
+diagnostics, destination/completed state and measured work; a stopped invocation
+retains cleanup outcome and its original effect identity rather than launching again.
+These adapters are not a sandbox and do not promise cross-volume atomic publication.
+OS cooperation is a liveness assumption: capture, observation and cleanup bounds are
+not a hard wall-clock guarantee for an unresponsive operating system.
+Bounded vector-slot collections and sorted native-health registries centralize
+bounded state in the canonical owners, not a second execution engine.

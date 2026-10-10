@@ -15,7 +15,7 @@ use acyclic_fs::model::{Lifecycle, VolumeConfig};
 use acyclic_fs::recover_native_mount_destination_preserving_residue;
 use acyclic_fs::{
     Fs, LocalOptions, MountOptions, NativeMountKind, TransactionCommit, probe_native_mount,
-    recover_native_mount_destination,
+    native_mount::NativeMountRecoveryOwner,
 };
 use acyclic_native_runtime::{ProcessTree, spawn_process_tree};
 use bytes::Bytes;
@@ -1684,9 +1684,13 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
     {
         // Generic disposable recovery must still reject a stale writable
         // ProjFS cache. The explicit preserving operation moves it aside.
-        if recover_native_mount_destination(mount).is_ok() {
+        let mut recovery = NativeMountRecoveryOwner::acquire(mount)?;
+        if recovery.recover().is_ok() {
             return Err("generic recovery discarded a stale ProjFS root".into());
         }
+        // The same owner first detaches without deleting the authored cache,
+        // then releases its actual fence for the explicit preserving operation.
+        recovery.detach()?;
         let preserved = recover_native_mount_destination_preserving_residue(mount)?
             .ok_or("crash recovery failed to preserve the stale ProjFS root")?;
         if !preserved.is_dir() || mount.exists() {
@@ -1739,10 +1743,11 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
 
 #[cfg(not(windows))]
 fn recover_with_retry(mount: &Path) -> Result<(), Failure> {
+    let mut recovery = NativeMountRecoveryOwner::acquire(mount)?;
     let mut recovery_error = None;
     for attempt in 0..2 {
-        match recover_native_mount_destination(mount) {
-            Ok(()) => return Ok(()),
+        match recovery.recover() {
+            Ok(_) => return Ok(()),
             Err(error) => {
                 recovery_error = Some(error);
                 if attempt == 0 {
@@ -1751,7 +1756,10 @@ fn recover_with_retry(mount: &Path) -> Result<(), Failure> {
             }
         }
     }
-    Err(recovery_error.map_or_else(|| "native mount recovery failed".into(), Failure::from))
+    Err(acyclic_fs::NativeMountError::RecoveryFailed {
+        error: Box::new(recovery_error.unwrap_or_else(|| acyclic_fs::NativeMountError::Lifecycle("native mount recovery failed"))),
+        owner: recovery,
+    }.into())
 }
 
 fn crash_child(root: PathBuf, mount: PathBuf, ready: PathBuf) -> Result<(), Failure> {
