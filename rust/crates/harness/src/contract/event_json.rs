@@ -192,6 +192,17 @@ pub(crate) fn event_payload_json_admission<F: FnMut(JsonCodecCharge) -> Result<(
         }
         charge(event)
     })?;
+    let admission = event_payload_ownership(input_bytes, lexical_items, bounds.maximum_depth)?;
+    charge(JsonCodecCharge::Admission { maximum_owned_bytes: admission.maximum_owned_bytes })?;
+    Ok(admission)
+}
+
+// The Snapshot schema contains these same concrete payloads, potentially many
+// times. Reuse their audited tagged buffers/Value/string/error overlap without
+// rerunning the lexer or issuing a second quota reservation.
+pub(super) fn event_payload_ownership(
+    input_bytes: u64, lexical_items: u64, maximum_depth: u32,
+) -> Result<EventPayloadJsonAdmission> {
     // Across each concrete collection pass, total element count <= tokens and
     // nonempty collection count <= tokens. Standard Vec capacity is bounded by
     // two times its elements plus at most eight initial slots per collection.
@@ -219,11 +230,9 @@ pub(crate) fn event_payload_json_admission<F: FnMut(JsonCodecCharge) -> Result<(
     let diagnostic_bytes = audited_serde_diagnostic_bytes(input_bytes, DIAGNOSTIC_LABEL_BYTES)?;
     let maximum_owned_bytes = sum(&[serde_content_bytes, typed_collection_bytes, value_overlap_bytes,
         boxed_payload_bytes, string_payload_bytes, scratch_bytes, diagnostic_bytes])?;
-    let admission = EventPayloadJsonAdmission { input_bytes, lexical_items, maximum_depth: bounds.maximum_depth,
+    Ok(EventPayloadJsonAdmission { input_bytes, lexical_items, maximum_depth,
         maximum_owned_bytes, serde_content_bytes, typed_collection_bytes, value_overlap_bytes,
-        boxed_payload_bytes, string_payload_bytes, scratch_bytes, diagnostic_bytes };
-    charge(JsonCodecCharge::Admission { maximum_owned_bytes })?;
-    Ok(admission)
+        boxed_payload_bytes, string_payload_bytes, scratch_bytes, diagnostic_bytes })
 }
 
 #[cfg(test)]
