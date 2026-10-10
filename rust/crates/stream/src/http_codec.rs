@@ -209,6 +209,17 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
         return Err("limit_exceeded");
     }
     match route {
+        "delivery/acknowledge" => {
+            let request =
+                wire::AcknowledgeDeliveryRequest::decode(input).map_err(|_| "invalid_argument")?;
+            if request.delivery_token.len() != 32 {
+                return Err("invalid_argument");
+            }
+            Ok(json_object(vec![(
+                "deliveryToken",
+                json_bytes(&request.delivery_token),
+            )]))
+        }
         "idempotency/inspect" => {
             let request =
                 wire::InspectIdempotencyRequest::decode(input).map_err(|_| "invalid_argument")?;
@@ -286,6 +297,28 @@ pub(crate) fn encode(route: &str, input: &[u8]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delivery_ack_projection_requires_exact_token_width()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let route = "delivery/acknowledge";
+        let request = wire::AcknowledgeDeliveryRequest {
+            delivery_token: bytes::Bytes::from_static(&[0; 32]),
+        };
+        let projected: Value = serde_json::from_str(&encode(route, &request.encode_to_vec())?)?;
+        assert_eq!(
+            projected,
+            serde_json::json!({"deliveryToken": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
+        );
+        for length in [0, 1, 31, 33, 64] {
+            let invalid = wire::AcknowledgeDeliveryRequest {
+                delivery_token: bytes::Bytes::from(vec![0; length]),
+            };
+            assert_eq!(encode(route, &invalid.encode_to_vec()), Err("invalid_argument"));
+        }
+        assert_eq!(encode(route, &[0xff]), Err("invalid_argument"));
+        Ok(())
+    }
 
     #[test]
     fn commit_projection_preserves_deadline_without_losing_uint64_precision()

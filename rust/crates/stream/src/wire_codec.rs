@@ -728,6 +728,7 @@ pub fn read_response_wire(records: Vec<wire::Record>) -> wire::ReadResponse {
         codec: wire::Codec::None as i32,
         decoded_length: data.len() as u64,
         data: data.into(),
+        delivery_token: None,
     }
 }
 
@@ -736,6 +737,9 @@ pub fn read_response_wire(records: Vec<wire::Record>) -> wire::ReadResponse {
 /// The declared length is checked against [`crate::MAX_COMMAND_BYTES`] before any
 /// allocation or decompression, and the decoded length must match it exactly.
 pub fn read_response_batch(value: wire::ReadResponse) -> Result<Bytes, StreamError> {
+    if value.delivery_token.as_ref().is_some_and(|token| token.len() != 32) {
+        return Err(StreamError::Unavailable);
+    }
     let length = usize::try_from(value.decoded_length)
         .ok()
         .filter(|length| *length <= crate::MAX_COMMAND_BYTES)
@@ -788,6 +792,7 @@ pub(crate) fn zstd_read_response(records: Vec<wire::Record>) -> wire::ReadRespon
             ruzstd::encoding::CompressionLevel::Fastest,
         )
         .into(),
+        delivery_token: None,
     }
 }
 
@@ -804,6 +809,23 @@ mod read_response_tests {
                 committed_at_micros: sequence,
             })
             .collect()
+    }
+
+    #[test]
+    fn local_frames_never_issue_tokens_and_malformed_hosted_tokens_fail_closed() {
+        for compressed in [false, true] {
+            let frame = if compressed {
+                zstd_read_response(records(0, 2))
+            } else {
+                read_response_wire(records(0, 2))
+            };
+            assert!(frame.delivery_token.is_none());
+            for length in [0, 1, 31, 32, 33, 64] {
+                let mut hosted = frame.clone();
+                hosted.delivery_token = Some(vec![7; length].into());
+                assert_eq!(read_response_records(hosted).is_ok(), length == 32);
+            }
+        }
     }
 
     #[test]
@@ -828,6 +850,7 @@ mod read_response_tests {
             codec: wire::Codec::Zstd as i32,
             data: Default::default(),
             decoded_length: 0,
+            delivery_token: None,
         };
         assert!(read_response_records(empty).is_err());
         assert_eq!(
@@ -866,6 +889,7 @@ mod read_response_tests {
                     codec: codec as i32,
                     data: vec![0xff; 16].into(),
                     decoded_length: length,
+                    delivery_token: None,
                 };
                 assert!(read_response_records(frame).is_err());
             }

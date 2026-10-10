@@ -123,6 +123,12 @@ async fn request(socket: &mut TcpStream) -> (String, Value) {
         assert!(bytes.len() <= 65536, "oversized fixture request headers");
     };
     let headers = std::str::from_utf8(&bytes[..header_end]).unwrap();
+    assert_eq!(headers.lines().next().unwrap().split_whitespace().next(), Some("POST"));
+    assert!(headers.lines().any(|line| {
+        line.split_once(':').is_some_and(|(key, value)| {
+            key.eq_ignore_ascii_case("authorization") && value.trim() == "Bearer fixture-token"
+        })
+    }));
     let route = headers
         .lines()
         .next()
@@ -148,6 +154,75 @@ async fn request(socket: &mut TcpStream) -> (String, Value) {
     }
     let body = serde_json::from_slice(&bytes[header_end..header_end + length]).unwrap();
     (route, body)
+}
+
+#[tokio::test]
+async fn explicit_delivery_ack_uses_the_canonical_loopback_projection() {
+    let response = crate::http_response::encode(
+        "delivery/acknowledge",
+        &wire::AcknowledgeDeliveryResponse {}.encode_to_vec(),
+        1024,
+    )
+    .unwrap();
+    let server = Server::new(vec![Reply::ok(serde_json::from_slice(&response).unwrap())]).await;
+    assert_eq!(
+        server.client.acknowledge_delivery(Bytes::from_static(&[0; 32])).await,
+        Ok(())
+    );
+    assert_eq!(
+        server.requests(),
+        vec![(
+            "/v1/stream/delivery/acknowledge".to_owned(),
+            json!({"deliveryToken": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}),
+        )]
+    );
+}
+
+#[tokio::test]
+async fn explicit_delivery_ack_rejects_bad_tokens_without_a_request() {
+    let server = Server::new(vec![]).await;
+    for length in [0, 1, 31, 33, 64] {
+        assert_eq!(
+            server.client.acknowledge_delivery(Bytes::from(vec![0; length])).await,
+            Err(StreamError::InvalidArgument)
+        );
+    }
+    assert!(server.requests().is_empty());
+}
+
+#[tokio::test]
+async fn explicit_delivery_ack_validates_success_and_never_retries_failures() {
+    for reply in [
+        Reply::ok(Value::Null),
+        Reply::ok(json!([])),
+        Reply::ok(json!(true)),
+        Reply(503, json!({"code": "unavailable"})),
+    ] {
+        let server = Server::new(vec![reply]).await;
+        assert_eq!(
+            server.client.acknowledge_delivery(Bytes::from_static(&[0; 32])).await,
+            Err(StreamError::Unavailable)
+        );
+        assert_eq!(server.requests().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn http_read_never_projects_or_automatically_acknowledges_metadata() {
+    let server = Server::new(vec![Reply::ok(json!("0")), Reply::ok(json!([]))]).await;
+    let mut records = server.client.read(ReadRequest {
+        path: StreamPath::new("events").unwrap(),
+        from: 0,
+        limit: 1,
+    }).await.unwrap();
+    assert!(records.next().await.is_none());
+    assert_eq!(
+        server.requests(),
+        vec![
+            ("/v1/stream/tail".to_owned(), json!({"path": "events"})),
+            ("/v1/stream/read".to_owned(), json!({"path": "events", "from": "0", "limit": 1})),
+        ]
+    );
 }
 
 type Gate = (Duration, oneshot::Sender<()>);

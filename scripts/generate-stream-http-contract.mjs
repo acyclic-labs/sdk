@@ -1,5 +1,5 @@
 const KINDS = new Set([
-  "observation", "sequence", "append", "fork",
+  "empty", "observation", "sequence", "append", "fork",
   "records", "children", "children_page", "commit", "envelope", "token",
 ]);
 
@@ -32,6 +32,7 @@ ${routes}
 export type HttpRoute = keyof typeof HTTP_RESPONSE_CONTRACT;
 
 type HttpResponseByKind = {
+  empty: undefined;
   observation: IdempotencyObservation | undefined;
   sequence: Sequence;
   append: AppendResult;

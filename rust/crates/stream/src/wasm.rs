@@ -180,6 +180,14 @@ impl WasmStream {
     pub async fn dispatch(&self, operation: &str, input: &[u8]) -> Result<Vec<u8>, JsValue> {
         check_command_size(input)?;
         let output = match operation {
+            "acknowledge_delivery" => {
+                let request = decode::<wire::AcknowledgeDeliveryRequest>(input)?;
+                if request.delivery_token.len() != 32 {
+                    return Err(js_error(StreamError::InvalidArgument));
+                }
+                // Memory and IndexedDB are not hosted delivery authorities.
+                return Err(js_error(StreamError::Unsupported));
+            }
             "inspect_idempotency" => {
                 let request = decode::<wire::InspectIdempotencyRequest>(input)?;
                 let key = crate::IdempotencyKey::new(request.idempotency_key).map_err(js_error)?;
@@ -918,6 +926,7 @@ mod http {
             .iter()
             .find_map(|(candidate, kind)| (*candidate == route).then_some(*kind))
         {
+            Some("empty") => Ok(JsValue::UNDEFINED),
             Some("sequence") => bigint_js(value),
             Some("append") => append_result_js(value),
             Some("fork") => fork_receipt_js(value),
@@ -1169,6 +1178,7 @@ pub fn decode_read_response(
         codec,
         data: data.into(),
         decoded_length,
+        delivery_token: None,
     };
     wire_codec::read_response_batch(response)
         .map(|batch| batch.to_vec())

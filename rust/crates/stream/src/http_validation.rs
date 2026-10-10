@@ -305,6 +305,10 @@ pub fn validate(route: &str, value: &Value) -> Result {
         .iter()
         .find_map(|(candidate, kind)| (*candidate == route).then_some(*kind))
     {
+        Some("empty") => {
+            object(value)?;
+            Ok(())
+        }
         Some("sequence") => {
             u64_string(value)?;
             Ok(())
@@ -346,6 +350,19 @@ pub fn validate(route: &str, value: &Value) -> Result {
 #[cfg(test)]
 mod tests {
     use serde_json::Value;
+
+    #[test]
+    fn hosted_delivery_ack_requires_an_object_response() {
+        assert!(super::validate("delivery/acknowledge", &serde_json::json!({})).is_ok());
+        for invalid in [
+            Value::Null,
+            serde_json::json!([]),
+            serde_json::json!(true),
+            serde_json::json!(""),
+        ] {
+            assert!(super::validate("delivery/acknowledge", &invalid).is_err());
+        }
+    }
 
     #[test]
     fn base64_padding_only_terminates_the_last_quartet() {

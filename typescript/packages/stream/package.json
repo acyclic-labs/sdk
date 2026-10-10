@@ -47,6 +47,8 @@
     "stage:native": "node ../../../scripts/build-stream-native.mjs stage",
     "check:native": "node ../../../scripts/build-stream-native.mjs check",
     "test": "bun run build && bun test test",
+    "test:grpc:node": "node test/grpc-provider-conformance.mjs --node-only",
+    "test:grpc:bun": "node test/grpc-provider-conformance.mjs --bun-only",
     "example": "bun run build && tsc --ignoreConfig --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --pretty false examples/quickstart.ts && bun examples/quickstart.ts"
   },
   "napi": {

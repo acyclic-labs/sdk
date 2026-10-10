@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { create, toBinary } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import fc from "fast-check";
 import { zstdCompressSync } from "node:zlib";
-import { AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema, ChildrenRequestSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, Codec, ReadCommitRequestSchema, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, RecordSchema, StreamLimit, TailConditionSchema, TailRequestSchema } from "../generated/proto/stream/v1/stream_pb.js";
+import { AcknowledgeDeliveryRequestSchema, AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema, ChildrenRequestSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, Codec, ReadCommitRequestSchema, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, RecordSchema, StreamLimit, TailConditionSchema, TailRequestSchema } from "../generated/proto/stream/v1/stream_pb.js";
 import { is_stream_error_code, WasmStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest, validateRequest } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm, readResponseRecords, wireAppendRequest, wireRequest } from "../src/contract.js";
 import { DefaultStreamProvider } from "../src/default.js";
@@ -1036,6 +1036,32 @@ describe("website Stream contract", () => {
     expect(routes).toEqual(["tail"]);
   });
 
+  test("HTTP delivery receipts are explicit, validated and Rust-encoded", async () => {
+    const routes: string[] = [];
+    const token = new Uint8Array(32).fill(17);
+    const encoded = btoa(String.fromCharCode(...token));
+    const provider = new HttpStreamProvider({ endpoint: "https://example.test/base/", token: "secret", fetcher: async (input, init) => {
+      const route = new URL(String(input)).pathname;
+      routes.push(route);
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer secret");
+      if (route.endsWith("/delivery/acknowledge")) {
+        expect(JSON.parse(String(init?.body))).toEqual({ deliveryToken: encoded });
+        return new Response("{}");
+      }
+      return route.endsWith("/tail") ? new Response('"0"') : new Response("[]", { headers: { "delivery-token": encoded } });
+    } });
+    for (const length of [0, 31, 33]) await expect(provider.acknowledgeDelivery(new Uint8Array(length))).rejects.toMatchObject({ code: "invalid_argument" });
+    expect(routes).toEqual([]);
+    for await (const _ of provider.read("events", { from: 0n, limit: 1 })) { /* empty HTTP page */ }
+    expect(routes).toEqual(["/base/v1/stream/tail", "/base/v1/stream/read"]);
+    await expect(provider.acknowledgeDelivery(token)).resolves.toBeUndefined();
+    expect(routes[2]).toBe("/base/v1/stream/delivery/acknowledge");
+    const malformed = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response("null") });
+    await expect(malformed.acknowledgeDelivery(token)).rejects.toMatchObject({ code: "invalid_response" });
+    const denied = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response('{"code":"access_denied"}', { status: 403 }) });
+    await expect(denied.acknowledgeDelivery(token)).rejects.toMatchObject({ code: "access_denied" });
+  });
+
   test("HTTP provider rejects invalid paths and commit shapes before fetching", async () => {
     let calls = 0;
     const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => { calls += 1; return new Response("null"); } });
@@ -1164,6 +1190,20 @@ describe("website Stream contract", () => {
     expect(token.expiresAt).toBeInstanceOf(Date);
     expect(token.expiresAt.toISOString()).toBe("2030-01-02T03:04:05.000Z");
     expect(() => decodeHttpResponse("tokens/create", JSON.stringify({ token: "secret", expiresAt: "not-a-date" }))).toThrow();
+  });
+
+  test("real local WASM ACK dispatch is unsupported and local frames omit tokens", async () => {
+    await ensureStreamWasm();
+    const wasm = new WasmStream();
+    try {
+      const request = (length: number) => toBinary(AcknowledgeDeliveryRequestSchema, create(AcknowledgeDeliveryRequestSchema, { deliveryToken: new Uint8Array(length) }));
+      for (const length of [0, 31, 33]) await expect(wasm.dispatch("acknowledge_delivery", request(length))).rejects.toMatchObject({ code: "invalid_argument" });
+      await expect(wasm.dispatch("acknowledge_delivery", request(32))).rejects.toMatchObject({ code: "unsupported" });
+      await wasm.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: "local", records: [new Uint8Array([1])] })));
+      for (const bytes of await wasm.read(toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: "local", from: 0n, limit: 1 })))) {
+        expect(fromBinary(ReadResponseSchema, bytes).deliveryToken).toBeUndefined();
+      }
+    } finally { wasm.free(); }
   });
 });
 

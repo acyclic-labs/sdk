@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
-const require = createRequire(import.meta.url);
+const require = createRequire(join(process.cwd(), "package.json"));
 const parent = resolve(dirname(require.resolve("@acyclic-labs/stream/native")), "..");
 const dependencies = JSON.parse(await readFile(join(parent, "package.json"), "utf8")).optionalDependencies;
 const names = Object.keys(dependencies).filter(name => { try { require.resolve(name); return true; } catch { return false; } });
@@ -43,9 +43,13 @@ try {
   check("await assert.rejects(nativeStreamAvailable(),/generated Rust N-API binding/)");
   await writeFile(fake, "module.exports = {NativeStreamClient:class {},NativeStreamCancellation:class {}};");
   check("await assert.rejects(nativeStreamAvailable(),/generated Rust N-API binding/)");
+  await writeFile(fake, "module.exports = {NativeStreamClient:class {static connectResult(){} static connectWithCaResult(){} withoutDeliveryAcknowledgements(){}},NativeStreamCancellation:class {}};");
+  check("await assert.rejects(nativeStreamAvailable(),/generated Rust N-API binding/)");
+  await writeFile(fake, "module.exports = {NativeStreamClient:class {static connectResult(){} static connectWithCaResult(){} acknowledgeDeliveryResult(){}},NativeStreamCancellation:class {}};");
+  check("await assert.rejects(nativeStreamAvailable(),/generated Rust N-API binding/)");
   await writeFile(fake, "require('missing-internal-native-dependency');");
   check("await assert.rejects(nativeStreamAvailable())");
   await writeFile(fake, "require('@acyclic-labs/stream-missing-transitive');");
   check("await assert.rejects(nativeStreamAvailable())");
 } finally { await writeFile(manifestPath, manifest); await rm(fake); }
-console.log(JSON.stringify({ status: "passed", nativeAvailable: true, missingCompanionFallsBack: true, missingAddonRejected: true, corruptAddonRejected: true, wrongBindingRejected: true, nonCallableBindingRejected: true, missingConnectAbiRejected: true, missingInternalDependencyRejected: true, missingNamespacedDependencyRejected: true }));
+console.log(JSON.stringify({ status: "passed", nativeAvailable: true, missingCompanionFallsBack: true, missingAddonRejected: true, corruptAddonRejected: true, wrongBindingRejected: true, nonCallableBindingRejected: true, missingConnectAbiRejected: true, missingAcknowledgeAbiRejected: true, missingOptOutAbiRejected: true, missingInternalDependencyRejected: true, missingNamespacedDependencyRejected: true }));

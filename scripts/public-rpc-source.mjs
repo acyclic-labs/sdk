@@ -49,6 +49,7 @@ export function createSourceInspector(root, read = path => {
     const [, family, version, serviceName] = service.typeName.split(".");
     const objects = family === "objects";
     const stream = family === "stream";
+    const deliveryAck = stream && rpc.name === "AcknowledgeDelivery";
     if ((objects || stream) && version !== "v1") throw new Error("unsupported current contract");
     const unified = family === "actors" || family === "workers";
     const rustBase = `rust/crates/${family}/src/`;
@@ -86,11 +87,11 @@ export function createSourceInspector(root, read = path => {
         new RegExp(`\\("${rpc.name}",\\s*${rustName},`).test(workersClient) &&
         workersClient.includes("client.$method(request(")
       : objects || stream
-      ? rustMethod(rustImpl(grpc, objects ? "impl ObjectsProvider for GrpcObjects" : "impl StreamProvider for Client"), rustName)
+      ? rustMethod(rustImpl(grpc, objects ? "impl ObjectsProvider for GrpcObjects" : deliveryAck ? "impl Client" : "impl StreamProvider for Client"), rustName)
       : grpc.includes(`pub type Client = wire::${family}_service_client::${serviceName}Client<`) &&
         rustMethod(source(`${rustBase}generated/acyclic.${family}.${version}.tonic.rs`).split(`pub mod ${family}_service_server`)[0], rustName));
     const rustHttp = module("http") && rustMethod(objects || stream
-      ? rustImpl(http, objects ? "impl ObjectsProvider for HttpObjects" : "impl StreamProvider for HttpStream") : http, rustName);
+      ? rustImpl(http, objects ? "impl ObjectsProvider for HttpObjects" : deliveryAck ? "impl HttpStream" : "impl StreamProvider for HttpStream") : http, rustName);
     const grpcPath = `${tsBase}${objects ? "v1-grpc" : "grpc"}.ts`;
     const typescriptGrpcNodeBun = family === "actors"
       ? semanticOperation &&

@@ -101,6 +101,7 @@ pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
     ("commit", "commit"),
     ("commits/read", "envelope"),
     ("tokens/create", "token"),
+    ("delivery/acknowledge", "empty"),
 ];
 
 /// Canonical operation vocabulary accepted by Stream access-token grants.
@@ -727,6 +728,24 @@ impl<P: StreamProvider> StreamClient<P> {
 
 #[cfg(feature = "grpc")]
 impl StreamClient<grpc::Client> {
+    /// Disables automatic hosted transport receipts without changing records.
+    #[must_use]
+    pub fn without_delivery_acknowledgements(self) -> Self {
+        Self::new(Arc::new(
+            self.provider.as_ref().clone().without_delivery_acknowledgements(),
+        ))
+    }
+
+    /// Explicitly acknowledges a hosted frame at its issuing endpoint index.
+    /// This receipt is not application consumption, billing, or a checkpoint.
+    pub async fn acknowledge_delivery(
+        &self,
+        endpoint: usize,
+        delivery_token: impl AsRef<[u8]>,
+    ) -> Result<(), StreamError> {
+        self.provider.acknowledge_delivery(endpoint, delivery_token).await
+    }
+
     /// Connects the high-level API to an authenticated managed or customer-hosted endpoint.
     pub async fn connect(
         endpoint: impl AsRef<str>,
@@ -748,7 +767,7 @@ impl StreamClient<grpc::Client> {
         )))
     }
 
-    /// Connects the high-level API through ambient roots plus one caller-supplied private CA.
+    /// Connects the high-level API trusting exclusively the caller-supplied private CA.
     pub async fn connect_with_ca_certificate(
         endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
@@ -760,7 +779,7 @@ impl StreamClient<grpc::Client> {
         )))
     }
 
-    /// Eagerly connects through ambient roots plus one caller-pinned private CA.
+    /// Eagerly connects trusting exclusively the caller-pinned private CA.
     pub async fn connect_eager_with_ca_certificate(
         endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,

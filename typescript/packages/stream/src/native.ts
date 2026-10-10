@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { fromBinary } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import type * as GeneratedNative from "../generated/native/binding.js";
@@ -25,7 +25,9 @@ async function loadNativeModule(): Promise<NativeModule> {
     const namespace = requireNative(nativeBindingPath) as NativeModule & { readonly default?: NativeModule };
     const binding = namespace.NativeStreamClient === undefined ? namespace.default : namespace;
     if (typeof binding?.NativeStreamClient !== "function" || typeof binding.NativeStreamCancellation !== "function"
-      || typeof binding.NativeStreamClient.connectResult !== "function" || typeof binding.NativeStreamClient.connectWithCaResult !== "function") {
+      || typeof binding.NativeStreamClient.connectResult !== "function" || typeof binding.NativeStreamClient.connectWithCaResult !== "function"
+      || typeof binding.NativeStreamClient.prototype?.acknowledgeDeliveryResult !== "function"
+      || typeof binding.NativeStreamClient.prototype?.withoutDeliveryAcknowledgements !== "function") {
       throw new Error("Stream native companion did not export the generated Rust N-API binding");
     }
     return binding;
@@ -101,21 +103,38 @@ export async function nativeStreamAvailable(): Promise<boolean> {
   catch (error) { if (expectedNativeAbsence(error)) return false; throw error; }
 }
 
+export interface NativeStreamProviderOptions {
+  readonly autoAcknowledge?: boolean;
+}
 /** Thin provider over the Rust-owned Stream N-API bridge. */
 export class NativeStreamProvider implements StreamProvider {
   private constructor(private readonly client: NativeClient, private readonly module: NativeModule) {}
 
-  static async connect(endpoint: string, token: string, caCertificate?: Uint8Array, cancellation?: NativeCancellation): Promise<NativeStreamProvider> {
+  static async connect(endpoint: string, token: string, caCertificate?: Uint8Array, cancellation?: NativeCancellation, options?: NativeStreamProviderOptions): Promise<NativeStreamProvider> {
     const module = await loadNativeModule();
     const result: NativeConnectResult = caCertificate === undefined
       ? await module.NativeStreamClient.connectResult(endpoint, token, cancellation)
       : await module.NativeStreamClient.connectWithCaResult(endpoint, token, Buffer.from(caCertificate), cancellation);
     if (result.error !== undefined) throw nativeError(result.error, "connect");
     if (result.client === undefined) throw new StreamError("transport", "Stream native companion returned no client");
-    return new NativeStreamProvider(result.client, module);
+    const client = options?.autoAcknowledge === false ? result.client.withoutDeliveryAcknowledgements() : result.client;
+    return new NativeStreamProvider(client, module);
   }
 
   get transport(): string { return this.client.transport(); }
+
+  /** Uses the Rust-owned worker for automatic receipts; this clone disables it. */
+  withoutDeliveryAcknowledgements(): NativeStreamProvider {
+    return new NativeStreamProvider(this.client.withoutDeliveryAcknowledgements(), this.module);
+  }
+
+  async acknowledgeDelivery(deliveryToken: Uint8Array, cancellation?: NativeCancellation): Promise<void> {
+    if (!(deliveryToken instanceof Uint8Array) || deliveryToken.byteLength !== 32) throw new StreamError("invalid_argument", "delivery token must contain exactly 32 bytes");
+    const request = toBinary(wire.AcknowledgeDeliveryRequestSchema, create(wire.AcknowledgeDeliveryRequestSchema, { deliveryToken }));
+    const value = await this.operation("acknowledge_delivery", this.client.acknowledgeDeliveryResult(Buffer.from(request), cancellation));
+    try { fromBinary(wire.AcknowledgeDeliveryResponseSchema, value); }
+    catch (error) { throw invalidResponse("acknowledge_delivery", error); }
+  }
 
   async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
     const value = await this.operation("inspect_idempotency", this.client.inspectIdempotencyResult(Buffer.from(wireInspectIdempotencyRequest(key))));

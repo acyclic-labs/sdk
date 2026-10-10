@@ -45,6 +45,8 @@ const OPERATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(1
 const OPERATION_ENDPOINT_ATTEMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 const FOLLOW_ENDPOINT_ATTEMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
+const DELIVERY_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+const DELIVERY_ACK_QUEUE: usize = 16;
 /// Maximum independently reachable endpoints in one operation or follow pool.
 pub const MAX_ENDPOINTS: usize = 16;
 /// Maximum canonical URI bytes accepted for one endpoint.
@@ -84,6 +86,7 @@ pub struct Client {
     channels: Arc<[Channel]>,
     authorization: MetadataValue<Ascii>,
     preferred: Arc<AtomicUsize>,
+    acknowledge_deliveries: bool,
 }
 
 /// Thin server adapter from the canonical wire service to one provider.
@@ -116,6 +119,52 @@ fn check_command_size<T: Message>(request: &T) -> Result<(), Status> {
 }
 
 impl Client {
+    /// Disables automatic transport receipts for translating clients.
+    #[must_use]
+    pub fn without_delivery_acknowledgements(mut self) -> Self {
+        self.acknowledge_deliveries = false;
+        self
+    }
+
+    /// Reports a hosted transport receipt to its issuing endpoint (in configured
+    /// endpoint order). This never fails over: tokens are endpoint-bound.
+    /// It does not represent application consumption, billing, or a checkpoint.
+    pub async fn acknowledge_delivery(
+        &self,
+        endpoint: usize,
+        delivery_token: impl AsRef<[u8]>,
+    ) -> Result<(), StreamError> {
+        let delivery_token = delivery_token.as_ref();
+        if delivery_token.len() != 32 || endpoint >= self.channels.len() {
+            return Err(StreamError::InvalidArgument);
+        }
+        self.acknowledge_delivery_bytes(endpoint, Bytes::copy_from_slice(delivery_token)).await
+    }
+
+    async fn acknowledge_delivery_bytes(
+        &self,
+        endpoint: usize,
+        delivery_token: Bytes,
+    ) -> Result<(), StreamError> {
+        let request = self.request(wire::AcknowledgeDeliveryRequest {
+            delivery_token,
+        });
+        tokio::time::timeout(
+            DELIVERY_ACK_TIMEOUT,
+            Self::service(&self.channels, endpoint).acknowledge_delivery(request),
+        )
+        .await
+        .map_err(|_| StreamError::Unavailable)?
+        .map_err(|error| {
+            if error.code() == Code::Unimplemented {
+                StreamError::Unsupported
+            } else {
+                status(&error)
+            }
+        })?;
+        Ok(())
+    }
+
     /// Connects trusting the platform's roots with an account-bound bearer credential.
     /// On Linux, `SSL_CERT_FILE` and `SSL_CERT_DIR` select native roots.
     pub async fn connect(
@@ -321,6 +370,7 @@ impl Client {
             channels,
             authorization,
             preferred: Arc::new(AtomicUsize::new(0)),
+            acknowledge_deliveries: true,
         }
     }
 
@@ -359,7 +409,7 @@ impl Client {
             &mut call,
         )
         .await
-        .map(|(body, _, completion)| RpcResponse { body, completion })
+        .map(|(body, endpoint, completion)| RpcResponse { body, endpoint, completion })
     }
 
     async fn follow_unary<T, U, F>(
@@ -488,6 +538,7 @@ impl Client {
                     active: None,
                     buffered: VecDeque::new(),
                     completion,
+                    acknowledgements: None,
                 },
                 |mut cursor| async move {
                     loop {
@@ -532,12 +583,30 @@ impl Client {
                             _ => {}
                         }
                         match response {
-                            Some(Ok(response)) => match read_response(response) {
-                                Ok(records) => cursor.buffered = records,
+                            Some(Ok(mut response)) => {
+                                let token = response.delivery_token.take();
+                                match read_response(response, cursor.next, cursor.remaining) {
+                                Ok(records) => {
+                                    if let Some(token) = token {
+                                        if token.len() != 32 {
+                                            active.completion.invalid_response();
+                                            cursor.completion.invalid_response();
+                                            return cursor.failure(StreamError::Unavailable);
+                                        }
+                                        if cursor.client.acknowledge_deliveries && !records.is_empty() {
+                                            let worker = cursor.acknowledgements.get_or_insert_with(|| {
+                                                DeliveryAcknowledgements::new(cursor.client.clone())
+                                            });
+                                            worker.enqueue(active_endpoint, token);
+                                        }
+                                    }
+                                    cursor.buffered = records;
+                                },
                                 Err(error) => {
                                     active.completion.invalid_response();
                                     cursor.completion.invalid_response();
                                     return cursor.failure(error);
+                                }
                                 }
                             },
                             Some(Err(error)) if !retryable(&error) => {
@@ -577,12 +646,42 @@ struct RecordCursor {
     /// Decoded records from the latest frame that the caller has not yet taken.
     buffered: VecDeque<Record>,
     completion: Completion,
+    acknowledgements: Option<DeliveryAcknowledgements>,
 }
 
 struct ActiveRecords {
     records: obs::Scoped<tonic::Streaming<wire::ReadResponse>>,
     endpoint: usize,
     completion: Completion,
+}
+
+/// One bounded worker belongs to the logical reader, including reconnects.
+/// Overflow discards best-effort receipts, never delays record delivery.
+struct DeliveryAcknowledgements {
+    queue: tokio::sync::mpsc::Sender<(usize, Bytes)>,
+    worker: tokio::task::JoinHandle<()>,
+}
+
+impl DeliveryAcknowledgements {
+    fn new(client: Client) -> Self {
+        let (queue, mut pending) = tokio::sync::mpsc::channel::<(usize, Bytes)>(DELIVERY_ACK_QUEUE);
+        let worker = tokio::spawn(async move {
+            while let Some((endpoint, token)) = pending.recv().await {
+                let _ = client.acknowledge_delivery_bytes(endpoint, token).await;
+            }
+        });
+        Self { queue, worker }
+    }
+
+    fn enqueue(&self, endpoint: usize, token: Bytes) {
+        let _ = self.queue.try_send((endpoint, token));
+    }
+}
+
+impl Drop for DeliveryAcknowledgements {
+    fn drop(&mut self) {
+        self.worker.abort();
+    }
 }
 
 impl RecordCursor {
@@ -592,6 +691,7 @@ impl RecordCursor {
         self.completion.finish(Some(error.code()), None);
         self.active = None;
         self.buffered.clear();
+        self.acknowledgements = None;
         self.remaining = Some(0);
         Some((Err(error), self))
     }
@@ -622,12 +722,12 @@ impl RecordCursor {
                 )
                 .await
                 .map(|response| {
-                    let RpcResponse { body, completion } = response;
+                    let RpcResponse { body, endpoint, completion } = response;
                     let records = completion.span.scope(body);
                     ActiveRecords {
                         records,
                         completion,
-                        endpoint: 0,
+                        endpoint,
                     }
                 })
         } else {
@@ -825,6 +925,7 @@ impl StreamProvider for Client {
             let RpcResponse {
                 body: response,
                 mut completion,
+                ..
             } = response;
             let mut response = completion.span.scope(response);
             let result = async {
@@ -947,6 +1048,18 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
     type FollowStream = futures::stream::BoxStream<'static, Result<wire::ReadResponse, Status>>;
     type ChildrenStream =
         futures::stream::BoxStream<'static, Result<wire::ChildrenResponse, Status>>;
+
+    async fn acknowledge_delivery(
+        &self,
+        request: Request<wire::AcknowledgeDeliveryRequest>,
+    ) -> Result<Response<wire::AcknowledgeDeliveryResponse>, Status> {
+        check_command_size(request.get_ref())?;
+        if request.get_ref().delivery_token.len() != 32 {
+            return Err(error_status(&StreamError::InvalidArgument));
+        }
+        // Provider-independent adapters have no hosted receipt authority.
+        Err(error_status(&StreamError::Unsupported))
+    }
 
     async fn inspect_idempotency(
         &self,
@@ -1404,6 +1517,7 @@ impl Drop for Completion {
 /// Keeps successful response headers pending until the unary response is decoded.
 struct RpcResponse<T> {
     body: T,
+    endpoint: usize,
     completion: Completion,
 }
 impl<T> RpcResponse<T> {
@@ -1501,11 +1615,33 @@ fn status(error: &tonic::Status) -> StreamError {
     }
 }
 
-fn read_response(value: wire::ReadResponse) -> Result<VecDeque<Record>, StreamError> {
-    read_response_records(value)?
+fn read_response(
+    value: wire::ReadResponse,
+    next: u64,
+    remaining: Option<u32>,
+) -> Result<VecDeque<Record>, StreamError> {
+    let records: VecDeque<Record> = read_response_records(value)?
         .into_iter()
         .map(record)
-        .collect()
+        .collect::<Result<_, _>>()?;
+    let mut expected = records.front().map_or(next, |record| record.sequence);
+    if expected > next {
+        return Err(StreamError::Unavailable);
+    }
+    let mut new_records = 0_u64;
+    for record in &records {
+        if record.sequence != expected {
+            return Err(StreamError::Unavailable);
+        }
+        expected = expected.checked_add(1).ok_or(StreamError::Unavailable)?;
+        if record.sequence >= next {
+            new_records += 1;
+        }
+    }
+    if remaining.is_some_and(|remaining| new_records > u64::from(remaining)) {
+        return Err(StreamError::Unavailable);
+    }
+    Ok(records)
 }
 
 #[cfg(test)]
@@ -2028,7 +2164,7 @@ mod tests {
     /// Regroups every Read frame into batches of three records that alternate
     /// between Zstandard and uncompressed frames.
     #[derive(Clone)]
-    struct MixedFrames(Service<MemoryStream>, Option<&'static str>);
+    struct MixedFrames(Service<MemoryStream>, Option<&'static str>, Option<Arc<AckFixture>>);
 
     #[async_trait]
     impl StreamService for MixedFrames {
@@ -2036,6 +2172,24 @@ mod tests {
         type FollowStream = futures::stream::BoxStream<'static, Result<wire::ReadResponse, Status>>;
         type ChildrenStream =
             futures::stream::BoxStream<'static, Result<wire::ChildrenResponse, Status>>;
+
+        async fn acknowledge_delivery(
+            &self,
+            request: Request<wire::AcknowledgeDeliveryRequest>,
+        ) -> Result<Response<wire::AcknowledgeDeliveryResponse>, Status> {
+            let Some(fixture) = &self.2 else {
+                return self.0.acknowledge_delivery(request).await;
+            };
+            assert_eq!(request.get_ref().delivery_token.as_ref(), &[7; 32]);
+            fixture.entered.fetch_add(1, Ordering::SeqCst);
+            fixture.changed.notify_one();
+            if fixture.fail {
+                return Err(Status::unavailable("receipt service unavailable"));
+            }
+            let _guard = AckGuard(Arc::clone(fixture));
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            Ok(Response::new(wire::AcknowledgeDeliveryResponse {}))
+        }
 
         async fn inspect_idempotency(
             &self,
@@ -2065,6 +2219,30 @@ mod tests {
             &self,
             request: Request<wire::ReadRequest>,
         ) -> Result<Response<Self::ReadStream>, Status> {
+            if self.1 == Some("unavailable_read") {
+                return Err(Status::unavailable("read on another endpoint"));
+            }
+            if let Some(fixture) = &self.2 {
+                let records = (request.get_ref().from..request.get_ref().from + 2)
+                    .map(|sequence| wire::Record {
+                        sequence,
+                        value: Bytes::from_static(b"received"),
+                        commit_id: Bytes::from(vec![1; 32]),
+                        committed_at_micros: 123,
+                    }).collect();
+                let mut frame = crate::wire_codec::zstd_read_response(records);
+                frame.delivery_token = fixture.token_length.map(|length| vec![7; length].into());
+                if self.1 == Some("bad_cursor") {
+                    frame = read_response_wire(vec![
+                        wire::Record { commit_id: vec![1; 32].into(), ..Default::default() },
+                        wire::Record { sequence: 4, commit_id: vec![1; 32].into(), ..Default::default() },
+                    ]);
+                    frame.delivery_token = Some(vec![7; 32].into());
+                }
+                return Ok(Response::new(
+                    stream::once(async move { Ok(frame) }).chain(stream::pending()).boxed(),
+                ));
+            }
             if let Some(fault) = self.1 {
                 let valid = read_response_wire(vec![wire::Record {
                     commit_id: Bytes::from(vec![0; 32]),
@@ -2114,6 +2292,12 @@ mod tests {
             &self,
             request: Request<wire::FollowRequest>,
         ) -> Result<Response<Self::FollowStream>, Status> {
+            if self.2.is_some() {
+                let request = request.into_inner();
+                return self.read(Request::new(wire::ReadRequest {
+                    path: request.path, from: request.from, limit: wire::StreamLimit::MaxItems as u32,
+                })).await;
+            }
             self.0.follow(request).await
         }
         async fn children(
@@ -2147,6 +2331,157 @@ mod tests {
         }
     }
 
+    struct AckFixture {
+        token_length: Option<usize>,
+        fail: bool,
+        entered: AtomicUsize,
+        cancelled: AtomicUsize,
+        changed: tokio::sync::Notify,
+    }
+
+    impl AckFixture {
+        fn new(token_length: Option<usize>, fail: bool) -> Arc<Self> {
+            Arc::new(Self {
+                token_length, fail,
+                entered: AtomicUsize::new(0),
+                cancelled: AtomicUsize::new(0),
+                changed: tokio::sync::Notify::new(),
+            })
+        }
+    }
+
+    struct AckGuard(Arc<AckFixture>);
+
+    impl Drop for AckGuard {
+        fn drop(&mut self) {
+            self.0.cancelled.fetch_add(1, Ordering::SeqCst);
+            self.0.changed.notify_one();
+        }
+    }
+
+    async fn ack_loopback(
+        fixture: Arc<AckFixture>,
+        fault: Option<&'static str>,
+    ) -> Result<(Channel, tokio::task::JoinHandle<()>), Box<dyn std::error::Error + Send + Sync>> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let service = MixedFrames(Service::new(Arc::new(MemoryStream::default())), fault, Some(fixture));
+        let server = tokio::spawn(async move {
+            let _ = Server::builder().add_service(StreamServiceServer::new(service))
+                .serve_with_incoming(TcpListenerStream::new(listener)).await;
+        });
+        let channel = Endpoint::from_shared(endpoint)?.connect().await?;
+        Ok((channel, server))
+    }
+
+    async fn wait_for_ack_count(
+        fixture: &AckFixture,
+        counter: &AtomicUsize,
+    ) -> Result<(), tokio::time::error::Elapsed> {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while counter.load(Ordering::SeqCst) == 0 {
+                fixture.changed.notified().await;
+            }
+        }).await
+    }
+
+    #[tokio::test]
+    async fn receipts_do_not_gate_delivery_and_drop_cancels_at_issuing_endpoint()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        for (fail, follow) in [false, true].into_iter().flat_map(|fail| [false, true].map(|follow| (fail, follow))) {
+            let other = AckFixture::new(Some(32), fail);
+            let issuer = AckFixture::new(Some(32), fail);
+            let (first, first_server) = ack_loopback(Arc::clone(&other), Some("unavailable_read")).await?;
+            let (second, second_server) = ack_loopback(Arc::clone(&issuer), None).await?;
+            let client = Client::from_channels(Arc::from([first, second]), "fixture")?;
+            let mut records = if follow {
+                client.follow(StreamPath::new("events")?, 0).await?
+            } else {
+                client.read(ReadRequest {
+                    path: StreamPath::new("events")?, from: 0, limit: 10,
+                }).await?
+            };
+            let received = tokio::time::timeout(std::time::Duration::from_millis(200), records.next()).await?;
+            assert_eq!(received.transpose()?.map(|record| record.sequence), Some(0));
+            wait_for_ack_count(&issuer, &issuer.entered).await?;
+            let received = tokio::time::timeout(std::time::Duration::from_millis(100), records.next()).await?;
+            assert_eq!(received.transpose()?.map(|record| record.sequence), Some(1));
+            assert_eq!(other.entered.load(Ordering::SeqCst), 0);
+            drop(records);
+            if !fail {
+                wait_for_ack_count(&issuer, &issuer.cancelled).await?;
+            }
+            first_server.abort();
+            second_server.abort();
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn receipts_reject_malformed_frames_and_respect_opt_out_and_absent_tokens()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        for (length, disabled, fault) in [
+            (Some(32), true, None), (None, false, None),
+            (Some(31), false, None), (Some(32), false, Some("bad_cursor")),
+        ] {
+            let fixture = AckFixture::new(length, true);
+            let (channel, server) = ack_loopback(Arc::clone(&fixture), fault).await?;
+            let mut client = Client::from_channels(Arc::from([channel]), "fixture")?;
+            if disabled { client = client.without_delivery_acknowledgements(); }
+            let mut records = client.read(ReadRequest {
+                path: StreamPath::new("events")?, from: 0, limit: 10,
+            }).await?;
+            let first = records.next().await.transpose();
+            if length == Some(31) || fault.is_some() {
+                assert_eq!(first.unwrap_err(), StreamError::Unavailable);
+            } else {
+                assert_eq!(first?.map(|record| record.sequence), Some(0));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            assert_eq!(fixture.entered.load(Ordering::SeqCst), 0);
+            assert_eq!(client.acknowledge_delivery(0, &[7; 31]).await, Err(StreamError::InvalidArgument));
+            if disabled {
+                assert_eq!(client.acknowledge_delivery(0, &[7; 32]).await, Err(StreamError::Unavailable));
+                assert_eq!(fixture.entered.load(Ordering::SeqCst), 1);
+            }
+            drop(records);
+            server.abort();
+        }
+        let client = Client::from_channels(
+            Arc::from([in_memory_channel(Arc::new(MemoryStream::default()))]), "fixture",
+        )?;
+        assert_eq!(client.acknowledge_delivery(0, &[7; 32]).await, Err(StreamError::Unsupported));
+        #[cfg(feature = "local")]
+        {
+            let directory = tempfile::tempdir()?;
+            let provider = crate::LocalStream::open(directory.path(), crate::LocalStreamLimits::default()).await?;
+            let service = Service::new(Arc::new(provider));
+            let error = service.acknowledge_delivery(Request::new(wire::AcknowledgeDeliveryRequest {
+                delivery_token: vec![7; 32].into(),
+            })).await.err().ok_or("local adapter acknowledged a hosted token")?;
+            assert_eq!(error.code(), Code::Unimplemented);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn receipt_worker_queue_is_bounded_and_owned_by_reader()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let fixture = AckFixture::new(Some(32), false);
+        let (channel, server) = ack_loopback(Arc::clone(&fixture), None).await?;
+        let client = Client::from_channels(Arc::from([channel]), "fixture")?;
+        let worker = DeliveryAcknowledgements::new(client);
+        worker.enqueue(0, vec![7; 32].into());
+        wait_for_ack_count(&fixture, &fixture.entered).await?;
+        for _ in 0..1_000 { worker.enqueue(0, vec![7; 32].into()); }
+        assert_eq!(worker.queue.capacity(), 0);
+        assert_eq!(fixture.entered.load(Ordering::SeqCst), 1);
+        drop(worker);
+        wait_for_ack_count(&fixture, &fixture.cancelled).await?;
+        server.abort();
+        Ok(())
+    }
+
     #[tokio::test]
     #[expect(
         clippy::too_many_lines,
@@ -2174,6 +2509,7 @@ mod tests {
                     "partial" | "limit" => "pending",
                     _ => scenario,
                 }),
+                None,
             );
             let client = Client::from_channels(Arc::from([provider_channel(source)]), "fixture")?;
             let body = client
@@ -2295,6 +2631,7 @@ mod tests {
         let service = MixedFrames(
             Service::new(Arc::new(MemoryStream::default())),
             Some("malformed_children"),
+            None,
         );
         let client = Client::from_channels(Arc::from([provider_channel(service)]), "fixture")?;
         assert!(matches!(
@@ -2470,7 +2807,7 @@ mod tests {
     #[tokio::test]
     async fn client_reassembles_mixed_compressed_and_plain_read_frames()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let service = MixedFrames(Service::new(Arc::new(MemoryStream::default())), None);
+        let service = MixedFrames(Service::new(Arc::new(MemoryStream::default())), None, None);
         let channel = Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
             tower::service_fn(move |_| {
                 let service = service.clone();

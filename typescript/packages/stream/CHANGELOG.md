@@ -6,6 +6,7 @@
 
 ## Unreleased
 
+- Add optional hosted Stream v1 frame receipts, bounded nonblocking Rust/Node/Bun gRPC acknowledgements with opt-out and reader-owned cancellation, and explicit gRPC/native/HTTP ACK APIs. Local/WASM providers issue no tokens and reject hosted acknowledgements; actual issuance, expiry, endpoint/caller binding and durable replay require the Data service.
 - Check monotonic tail before direct HTTP reads so concurrent appends cannot hide invalid empty-read cursors. Share native and WASM HTTP response projection, including atomic Commit envelopes.
 - Bind the default browser fetch receiver and qualify HTTPS, follow and multi-path Commit in real Chrome.
 - Project an absent retry observation as `undefined` consistently in memory and HTTP.

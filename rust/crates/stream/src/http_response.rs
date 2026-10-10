@@ -75,6 +75,10 @@ pub fn encode(route: &str, input: &[u8], maximum_bytes: usize) -> Result<Vec<u8>
 }
 pub(crate) fn value(route: &str, input: &[u8]) -> Result<Option<Value>> {
     let value = match route {
+        "delivery/acknowledge" => {
+            wire::AcknowledgeDeliveryResponse::decode(input).map_err(|_| "invalid_response")?;
+            json_object(vec![])
+        }
         "append" => {
             append_value(wire::AppendResponse::decode(input).map_err(|_| "invalid_response")?)?
         }
@@ -302,4 +306,26 @@ fn observation_value(value: wire::InspectIdempotencyResponse) -> Result<Option<V
         ),
         ("outcome", outcome),
     ])))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delivery_ack_response_projects_empty_protobuf_to_validated_object() {
+        let response = wire::AcknowledgeDeliveryResponse {}.encode_to_vec();
+        assert_eq!(
+            encode("delivery/acknowledge", &response, 2),
+            Ok(b"{}".to_vec())
+        );
+        assert_eq!(
+            encode("delivery/acknowledge", &[0xff], 1024),
+            Err("invalid_response")
+        );
+        assert_eq!(
+            encode("delivery/acknowledge", &response, 1),
+            Err("limit_exceeded")
+        );
+    }
 }

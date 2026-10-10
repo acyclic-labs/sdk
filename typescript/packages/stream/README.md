@@ -57,6 +57,46 @@ is **the only trust** for the connection. HTTP and browser trust is unchanged.
 Token creation uses the HTTP provider because the Stream gRPC service
 does not publish a token RPC. Browsers use the HTTP provider.
 
+`GrpcStreamProvider` automatically sends best-effort `AcknowledgeDelivery`
+receipts for optional 32-byte tokens, only after validating the complete frame
+(including compressed records, identities, counts and cursors). Set
+`autoAcknowledge: false` to opt out. Each reader has one worker with at most
+16 queued tokens and a 500 ms RPC deadline; pressure drops receipts, and
+iterator cleanup or follow cancellation aborts pending work. Slow, failed or
+unsupported ACKs never delay records or change read results.
+
+For explicit receipts, call `provider.acknowledgeDelivery(deliveryToken)` on
+the same authenticated issuing endpoint. The low-level gRPC client exposes
+`acknowledgeDelivery({ deliveryToken })` and validates the token length; its
+raw read/follow RPCs do not automatically acknowledge. `HttpStreamProvider`
+offers the explicit method only, posting to `/v1/stream/delivery/acknowledge`;
+HTTP headers never trigger automatic ACKs. `NativeStreamProvider` delegates
+automatic ACKs to Rust, accepts `{ autoAcknowledge: false }` as the fifth
+`connect` argument, and exposes `withoutDeliveryAcknowledgements()` plus the
+explicit method. Local, memory and WASM readers do not invent tokens.
+Issuance, expiry, caller/endpoint binding and durable idempotent receipts
+belong to the service. A delivery receipt is not consumption, billing or a
+persisted cursor.
+
+After regenerating the Rust-owned sources and building the package, run
+`bun run test:grpc:node` and `bun run test:grpc:bun` for the TLS loopback
+fixture, including compressed frames, delayed/failed receipts, opt-out,
+malformed frames, endpoint binding, bounded pressure and cleanup.
+
+For packed-consumer qualification, install the freshly packed parent and
+runtime-selected native companion in a fresh project, then run from that
+project (the fixture resolves package exports relative to the caller):
+
+```sh
+node /path/to/sdk/typescript/packages/stream/test/grpc-provider-conformance.mjs --installed --native
+node /path/to/sdk/typescript/packages/stream/test/native-companion-installed.mjs
+bun /path/to/sdk/typescript/packages/stream/test/native-companion-installed.mjs
+```
+
+The first command runs real installed Node and Bun adapters against the TLS
+fixture, including native explicit ACK, opt-out forwarding and cleanup.
+Use `--node-only` or `--bun-only` to select one client runtime.
+
 For a service, use `new StreamClient(new HttpStreamProvider({ endpoint, token }))` or `Stream.fromEnv()` with `ACYCLIC_STREAM_ENDPOINT` and `ACYCLIC_API_KEY`. Service endpoints must be HTTPS. Sequence numbers are `bigint`; persist the last consumed cursor and resume reads or `follow` from the appropriate position. Use `ifTail` for optimistic append concurrency and an idempotency key when retrying mutations.
 
 `MemoryStreamProvider` runs the Rust memory provider through package-local WebAssembly and is process-local. In a browser tab or worker, `new BrowserStreamProvider(databaseName)` uses the same Rust operations with strict IndexedDB publication and bounded restart recovery. Optional `maximumCommands` and `maximumJournalBytes` set the durable retention ceilings; all openers of one database must use identical limits. Atomicity covers one named database. Origin quotas and browser storage eviction remain platform limits. Exact retries retain their original outcomes, including conflicts, at capacity and across reloads. Follow polls durable state while consumed and supports `AbortSignal` cancellation. See the [full quickstart](https://github.com/acyclic-labs/sdk/blob/main/typescript/packages/stream/examples/quickstart.ts), [API source](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages/stream/src), and [protocol](https://github.com/acyclic-labs/sdk/tree/main/rust/crates/stream/proto/stream).

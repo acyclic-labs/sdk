@@ -484,6 +484,32 @@ async fn connect_native(
 
 #[napi]
 impl NativeStreamClient {
+    /// Returns a translating client that does not automatically report receipts.
+    #[napi(js_name = "withoutDeliveryAcknowledgements")]
+    pub fn without_delivery_acknowledgements(&self) -> Self {
+        Self::from_client(self.inner.as_ref().clone().without_delivery_acknowledgements())
+    }
+
+    /// Reports one hosted receipt to this client's sole issuing endpoint.
+    #[napi(js_name = "acknowledgeDeliveryResult")]
+    pub async fn acknowledge_delivery_result(
+        &self,
+        request: Buffer,
+        cancellation: Option<&NativeStreamCancellation>,
+    ) -> Result<NativeStreamOperationResult> {
+        operation_result(async {
+            let request = decode::<wire::AcknowledgeDeliveryRequest>(&request, "acknowledge_delivery")?;
+            run_with_cancellation(
+                async {
+                    self.inner.acknowledge_delivery(0, request.delivery_token)
+                        .await.map_err(|error| stream_error(&error))
+                },
+                cancellation_state(cancellation),
+            ).await?;
+            encode(&wire::AcknowledgeDeliveryResponse {}, "acknowledge_delivery")
+        }).await
+    }
+
     /// Connects using the canonical Rust native gRPC transport.
     #[napi(factory)]
     pub async fn connect(

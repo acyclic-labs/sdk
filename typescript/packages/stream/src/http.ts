@@ -1,5 +1,6 @@
 import { pathValue, validateAppend } from "./client.js";
-import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
+import { create, toBinary } from "@bufbuild/protobuf";
+import { AcknowledgeDeliveryRequestSchema, StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import { is_stream_error_code, publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommittedEnvelope, CommitId, CommitOptions, CommitResult, CreateTokenRequest, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
 import { StreamError, type StreamFailureCode } from "./types.js";
@@ -29,6 +30,12 @@ export class HttpStreamProvider implements StreamProvider {
     if (!Number.isSafeInteger(this.#maximum) || this.#maximum < 1) throw new RangeError("maximumResponseBytes must be a positive safe integer");
   }
   async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> { const input = wireInspectIdempotencyRequest(key); return this.#request("idempotency/inspect", await encodeHttpRequest("idempotency/inspect", input)); }
+  /** Explicit receipt only: HTTP reads never manufacture delivery tokens or enqueue ACKs. */
+  async acknowledgeDelivery(deliveryToken: Uint8Array): Promise<void> {
+    if (!(deliveryToken instanceof Uint8Array) || deliveryToken.byteLength !== 32) throw new StreamError("invalid_argument", "delivery token must contain exactly 32 bytes");
+    const input = toBinary(AcknowledgeDeliveryRequestSchema, create(AcknowledgeDeliveryRequestSchema, { deliveryToken }));
+    await this.#request("delivery/acknowledge", await encodeHttpRequest("delivery/acknowledge", input));
+  }
   async tail(path: string): Promise<Sequence> { return this.#tail(path); }
   async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> { const records = values.map(value => value.slice()); const authored = options === undefined ? undefined : structuredClone(options); await validateAppend(path, records, authored); const input = wireAppendRequest(path, records, authored); return this.#request("append", await encodeHttpRequest("append", input)); }
   async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> { const authored = options === undefined ? undefined : structuredClone(options); await validateWireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); const input = wireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); return this.#request("fork", await encodeHttpRequest("fork", input)); }

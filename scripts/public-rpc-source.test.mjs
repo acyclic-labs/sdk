@@ -33,6 +33,8 @@ missing("missing package gRPC export", WorkersService, "InvokeVersion", "typescr
 missing("missing entire HTTP transport", WorkersService, "InvokeVersion", "rust/crates/workers/src/http.rs", () => "", "rustHttp");
 missing("server implementation cannot substitute for Rust client", StreamService, "Read", "rust/crates/stream/src/grpc.rs", s => s.replace("async fn read(", "async fn removed_read("), "rustGrpc");
 missing("missing inherited Objects HTTP operation", ObjectsService, "PutObject", "typescript/packages/objects/src/v1.ts", s => s.replace("put(", "async removed_put("), "typescriptHttp");
+missing("missing explicit Rust HTTP delivery acknowledgement", StreamService, "AcknowledgeDelivery", "rust/crates/stream/src/http.rs", s => s.replace("pub async fn acknowledge_delivery(", "pub async fn removed_ack("), "rustHttp");
+missing("server ACK cannot substitute for Rust client ACK", StreamService, "AcknowledgeDelivery", "rust/crates/stream/src/grpc.rs", s => s.replace("pub async fn acknowledge_delivery(", "pub async fn removed_ack("), "rustGrpc");
 
 test("missing generated Actors operation removes both TypeScript capability flags", () => {
   const method = ActorsService.methods[0];
