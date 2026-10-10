@@ -586,6 +586,10 @@ impl Scan {
 /// Bounds lexical tokens, including duplicate keys. Complete grammar, UTF-8 and
 /// numeric validation follows in the typed serde decoder.
 pub(crate) fn admit_json<F: FnMut(JsonCodecCharge) -> Result<()>>(bytes: &[u8], bounds: JsonBounds, charge: &mut F) -> Result<()> {
+    admit_json_trusted(bytes, JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds }, charge)
+}
+
+pub(super) fn admit_json_trusted<F: FnMut(JsonCodecCharge) -> Result<()>>(bytes: &[u8], bounds: JsonBounds, charge: &mut F) -> Result<()> {
     if bytes.len() as u64 > bounds.maximum_bytes { return Err(Error::Invalid("JSON input exceeds declared byte bound".into())); }
     let mut scan = Scan::default();
     scan.push(bytes, bounds, charge)?;

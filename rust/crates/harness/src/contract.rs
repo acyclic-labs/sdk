@@ -65,6 +65,7 @@ pub use json::{
     JsonBounds, JsonCodecCharge, canonical_json_bytes_bounded, json_bytes_bounded_trusted,
     json_from_slice_bounded_trusted,
 };
+pub(crate) use json::admit_json;
 
 /// One sorted-key JSON encoding for durable identities and Rust/WASM output.
 /// The canonical bounded serializer preserves Value integer/float and duplicate
@@ -109,7 +110,7 @@ pub(crate) fn json_byte_length<T: Serialize>(value: &T, maximum: u64) -> Result<
 pub(crate) fn json_from_slice<T: serde::de::DeserializeOwned>(
     bytes: &[u8],
 ) -> serde_json::Result<T> {
-    json::admit_json(bytes, JsonBounds::IDENTITY, &mut |_| Ok(()))
+    json::admit_json_trusted(bytes, JsonBounds::IDENTITY, &mut |_| Ok(()))
         .map_err(serde::de::Error::custom)?;
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
     decoder.disable_recursion_limit();
