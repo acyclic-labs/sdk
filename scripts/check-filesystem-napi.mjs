@@ -121,7 +121,7 @@ async function qualifyAdapter(bindingPath, engineRoot) {
   const companionRoot = join(packageRoot, "node_modules", companionName);
   await mkdir(companionRoot, { recursive: true });
   await cp(new URL("../typescript/packages/filesystem/dist", import.meta.url), join(packageRoot, "dist"), { recursive: true });
-  await cp(new URL("../typescript/packages/filesystem/generated/wasm", import.meta.url), join(packageRoot, "generated", "wasm"), { recursive: true });
+  await cp(new URL("../typescript/packages/filesystem/generated", import.meta.url), join(packageRoot, "generated"), { recursive: true });
   await copyFile(new URL("../typescript/packages/filesystem/package.json", import.meta.url), join(packageRoot, "package.json"));
   await copyFile(bindingPath, join(companionRoot, "binding.node"));
   await writeFile(join(companionRoot, "package.json"), JSON.stringify({
