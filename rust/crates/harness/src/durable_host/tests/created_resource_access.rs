@@ -863,6 +863,22 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
     ).map_err(|failure| Error::Storage(failure.error.to_string()))?;
     assert!(original_owner.outcome_with_native_work(&native_work).await?.is_none());
     let context = fixture.harness.durable_context(task, created.request.child.operation_id).await?;
+    let live_before = native_work.live_allocation_bytes();
+    let staged = context.stage_file_once_with_native_work(
+        OperationId::from_bytes([117;16]),"native/control.txt",b"owned",
+        "text/plain","control.txt",&native_work,
+    ).await?;
+    assert_eq!(staged.0.volume(),&created.private);
+    assert!(staged.1.bytes() > 0);
+    assert_eq!(native_work.live_allocation_bytes(),live_before+staged.1.bytes());
+    let read = context.read_file_with_native_work(&staged.0,&native_work).await?;
+    assert_eq!(read.0,b"owned");
+    assert_eq!(native_work.live_allocation_bytes(),live_before+staged.1.bytes()+read.1.bytes());
+    // Tuple fields drop in value-then-guard order, including error paths.
+    drop(read);
+    assert_eq!(native_work.live_allocation_bytes(),live_before+staged.1.bytes());
+    drop(staged);
+    assert_eq!(native_work.live_allocation_bytes(),live_before);
     let command_payload = context.stage_file_once(
         OperationId::from_bytes([102; 16]), "ordinary/command.json",
         &crate::contract::canonical_json_bytes(&serde_json::json!({"text":"real created-volume command"}))?,

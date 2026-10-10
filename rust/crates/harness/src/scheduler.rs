@@ -724,6 +724,34 @@ impl Scheduler {
         crate::obs::outcome(self.apply_event(event))
     }
 
+    /// Preflights the original release/suspension validators without cloning
+    /// the whole resident scheduler under a finite caller ledger.
+    pub(crate) fn project_event_with_work(
+        &self, event: &SchedulerEvent,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        let Some(io) = work.as_deref_mut() else {
+            let mut projected = self.clone();
+            return projected.apply(event.clone());
+        };
+        io.check_cancellation()?;
+        match event {
+            SchedulerEvent::LeaseReleased { .. } | SchedulerEvent::WorkflowSuspended { .. } => {},
+            _ => return Err(Error::Unsupported("finite scheduler projection requires a release or suspension".into())),
+        }
+        io.codec_charge(crate::contract::JsonCodecCharge::Work {bytes:0,items:1})?;
+        let operation = self.operation(event.operation_id())
+            .ok_or_else(|| Error::NotFound("owned release operation".into()))?;
+        next_revision(operation.revision)?;
+        match event {
+            SchedulerEvent::LeaseReleased {fence,..} => require_lease_release(operation,fence),
+            SchedulerEvent::WorkflowSuspended {fence,workflow_revision,..} => {
+                require_workflow_suspension(operation,fence,*workflow_revision)
+            },
+            _ => unreachable!("release family was checked before observation"),
+        }
+    }
+
     #[allow(
         clippy::cognitive_complexity,
         reason = "one arm per scheduler event variant; splitting would obscure the dispatch, \
@@ -1029,17 +1057,7 @@ impl Scheduler {
                 waiting_command,
             } => {
                 let operation = self.mutable(operation_id)?;
-                require_execution_owner(operation, &fence, false)?;
-                if workflow_revision == 0
-                    || operation.workflow.as_ref().is_some_and(|previous| {
-                        workflow_revision < previous.revision
-                            || (workflow_revision == previous.revision && previous.input.is_none())
-                    })
-                {
-                    return Err(Error::Conflict(
-                        "workflow suspension revision did not advance".into(),
-                    ));
-                }
+                require_workflow_suspension(operation,&fence,workflow_revision)?;
                 operation.workflow = Some(WorkflowSuspension {
                     revision: workflow_revision,
                     waiting_command,
@@ -1091,17 +1109,7 @@ impl Scheduler {
                 fence,
             } => {
                 let operation = self.mutable(operation_id)?;
-                if !matches!(
-                    operation.phase,
-                    OperationPhase::WaitingForCapacity
-                        | OperationPhase::Admitted
-                        | OperationPhase::Running
-                ) {
-                    return Err(Error::Conflict(
-                        "only an active lease can be released".into(),
-                    ));
-                }
-                require_fence(operation, &fence)?;
+                require_lease_release(operation,&fence)?;
                 operation.reservation = None;
                 if operation.cancellation_requested {
                     operation.phase = OperationPhase::Terminal;
@@ -1755,6 +1763,28 @@ fn complete_ordered(
     }
 }
 
+fn require_lease_release(operation: &OperationState, fence: &LeaseFence) -> Result<()> {
+    if !matches!(operation.phase, OperationPhase::WaitingForCapacity
+        | OperationPhase::Admitted | OperationPhase::Running)
+    {
+        return Err(Error::Conflict("only an active lease can be released".into()));
+    }
+    require_fence(operation,fence)
+}
+
+fn require_workflow_suspension(
+    operation: &OperationState, fence: &LeaseFence, workflow_revision: u64,
+) -> Result<()> {
+    require_execution_owner(operation,fence,false)?;
+    if workflow_revision == 0 || operation.workflow.as_ref().is_some_and(|previous| {
+        workflow_revision < previous.revision
+            || (workflow_revision == previous.revision && previous.input.is_none())
+    }) {
+        return Err(Error::Conflict("workflow suspension revision did not advance".into()));
+    }
+    Ok(())
+}
+
 fn require_phase(operation: &OperationState, expected: OperationPhase) -> Result<()> {
     if operation.phase == expected {
         Ok(())
@@ -1799,7 +1829,7 @@ fn require_fence(operation: &OperationState, fence: &LeaseFence) -> Result<()> {
         .reservation
         .as_ref()
         .ok_or_else(|| Error::Conflict("operation has no active lease".into()))?;
-    if LeaseFence::from(reservation) != *fence {
+    if reservation.id != fence.reservation_id || reservation.placement != fence.placement {
         return Err(Error::Unauthorized("stale or foreign lease fence".into()));
     }
     Ok(())
@@ -2698,6 +2728,43 @@ mod tests {
         let mut oversized = spec(id(2), Orchestration::Leaf)?;
         oversized.placement.insert("region".into(), "x".repeat(256));
         assert!(scheduler.declare(oversized).is_ok());
+        Ok(())
+    }
+
+    #[cfg(feature = "filesystem")]
+    #[test]
+    fn finite_release_preflight_reuses_original_validators_without_projection_copy() -> Result<()> {
+        let mut scheduler = Scheduler::new();
+        scheduler.apply(scheduler.declare(spec(id(93),Orchestration::Leaf)?)?)?;
+        scheduler.apply(SchedulerEvent::Admitted {
+            operation_id:id(93),reservation:reservation(3,0),
+        })?;
+        scheduler.apply(SchedulerEvent::Started {operation_id:id(93),fence:fence(3)})?;
+        for event in [
+            SchedulerEvent::LeaseReleased {operation_id:id(93),fence:fence(3)},
+            SchedulerEvent::LeaseReleased {operation_id:id(93),fence:fence(4)},
+            SchedulerEvent::WorkflowSuspended {operation_id:id(93),fence:fence(3),
+                workflow_revision:0,waiting_command:None},
+            SchedulerEvent::WorkflowSuspended {operation_id:id(93),fence:fence(3),
+                workflow_revision:1,waiting_command:Some(id(94))},
+        ] {
+            let original = scheduler.clone();
+            let expected = scheduler.clone().apply(event.clone()).is_ok();
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let mut work = crate::store::history::HistoryWork::new(
+                acyclic_fs::WorkBudget {items_examined:1,..Default::default()},&cancellation,
+            );
+            let result = scheduler.project_event_with_work(&event,&mut Some(&mut work));
+            assert_eq!(result.is_ok(),expected);
+            assert_eq!(scheduler,original);
+            let receipt = work.finish(result);
+            let counters = match receipt {
+                Ok(receipt) => receipt.work,
+                Err(failure) => *failure.work,
+            };
+            assert_eq!(counters.allocation_operations,0);
+            assert_eq!(counters.peak_allocation_bytes,0);
+        }
         Ok(())
     }
 
