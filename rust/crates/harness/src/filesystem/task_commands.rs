@@ -196,9 +196,9 @@ where
                     "command scope differs from retained task".into(),
                 ));
             }
-            if admission.execution.is_some() || admission.run_limits.deadline_epoch_ms.is_some() {
+            if admission.execution.is_some() {
                 return Err(Error::Unsupported(
-                    "stock command route or deadline runner is not composed".into(),
+                    "stock routed execution provider is not composed".into(),
                 ));
             }
             self.runtime
@@ -207,7 +207,7 @@ where
                 .await?;
             let progress = match command.kind.as_str() {
                 MODEL_TASK_COMMAND_KIND => {
-                    Box::pin(self.model_command(task, fence.clone(), command.operation_id, payload))
+                    Box::pin(self.model_command(task, fence.clone(), command.operation_id, payload, false))
                         .await
                 }
                 TOOL_TASK_COMMAND_KIND => {
@@ -256,6 +256,71 @@ where
                 .task_host()
                 .verify_dispatch_owner(task, fence)
                 .await?;
+            progress
+        })
+    }
+
+    fn reconcile<'a>(
+        &'a self,
+        context: TaskContext,
+        fence: LeaseFence,
+        command: WorkflowCommand,
+        payload: Value,
+    ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
+        Box::pin(async move {
+            let task = context
+                .durable_task_id()
+                .ok_or_else(|| Error::Unauthorized("command has no admitted task".into()))?;
+            let admission = self.runtime.task_host().observe_admission(task).await?;
+            if context.scope().grants() != &admission.grants
+                || context.scope().limits() != admission.limits
+                || context.scope().run_limits() != admission.run_limits
+            {
+                return Err(Error::Unauthorized(
+                    "command scope differs from retained task".into(),
+                ));
+            }
+            if admission.execution.is_some() {
+                return Err(Error::Unsupported(
+                    "stock routed execution provider is not composed".into(),
+                ));
+            }
+            self.runtime.task_host().verify_execution_owner(task, fence.clone()).await?;
+            let progress = match command.kind.as_str() {
+                TOOL_TASK_COMMAND_KIND => {
+                    let operation = super::task_runtime::execution_operation(task, command.operation_id);
+                    let journal = self.runtime.execution_journal(task, fence.clone(), command.operation_id).await?;
+                    if !journal.replay(operation, 0, 4).await?.iter().any(|record| {
+                        matches!(record.event, crate::executor::ExecutionEvent::ToolStarted { .. })
+                    }) {
+                        return Ok(TaskCommandProgress::Indeterminate);
+                    }
+                    self.tool_command(task, context, fence.clone(), command.operation_id, payload).await
+                }
+                MODEL_TASK_COMMAND_KIND => {
+                    self.model_command(task, fence.clone(), command.operation_id, payload, true).await
+                }
+                EFFECT_TASK_COMMAND_KIND => {
+                    let plan: crate::effect_host::TaskEffectPlan = serde_json::from_value(payload)
+                        .map_err(|error| Error::Invalid(format!("invalid effect command: {error}")))?;
+                    let effects = self.effects.as_ref().ok_or_else(|| {
+                        Error::Unsupported("effect command provider registry is not selected".into())
+                    })?;
+                    let owner = self.runtime.task_host().journal_owner(task, fence.clone()).await?;
+                    match effects.reconcile_task_effect(&owner, command.operation_id, &plan).await? {
+                        crate::core::EffectStatus::Succeeded { result } => ready(Outcome::Succeeded(result)),
+                        crate::core::EffectStatus::Failed { message } => ready(Outcome::<Value>::Failed { message }),
+                        crate::core::EffectStatus::Planned
+                        | crate::core::EffectStatus::Dispatched
+                        | crate::core::EffectStatus::Indeterminate => Ok(TaskCommandProgress::Indeterminate),
+                    }
+                }
+                _ => Err(Error::Unsupported(format!(
+                    "stock command kind {} has no effect reconciliation",
+                    command.kind
+                ))),
+            };
+            self.runtime.task_host().verify_execution_owner(task, fence).await?;
             progress
         })
     }
@@ -467,9 +532,27 @@ where
         fence: LeaseFence,
         turn: OperationId,
         payload: Value,
+        reconciliation_only: bool,
     ) -> Result<TaskCommandProgress> {
         let input: ModelTaskCommand = serde_json::from_value(payload)
             .map_err(|error| Error::Invalid(format!("invalid model command: {error}")))?;
+        let journal = if reconciliation_only {
+            let journal = self.runtime.execution_journal(task, fence.clone(), turn).await?;
+            let operation = super::task_runtime::execution_operation(task, turn);
+            let mut replay = crate::executor::ExecutionReplay::new(operation);
+            let mut dispatched = false;
+            while let Some(page) = replay.next_page(journal.as_ref()).await? {
+                dispatched |= page.iter().any(|record| {
+                    matches!(record.event, crate::executor::ExecutionEvent::ModelStarted { .. })
+                });
+            }
+            if !dispatched {
+                return Ok(TaskCommandProgress::Indeterminate);
+            }
+            Some(journal)
+        } else {
+            None
+        };
         let binding = self
             .model
             .as_ref()
@@ -490,14 +573,27 @@ where
             Some(maximum) => execution.with_max_output_tokens(maximum)?,
             None => execution,
         };
-        let progress = execution
-            .execute_progress(TurnInput {
-                operation_id: execution.operation_id(),
-                input: input.input,
-                selected_context: input.selected_context,
-                max_steps: input.max_steps,
-            })
-            .await?;
+        let turn = TurnInput {
+            operation_id: execution.operation_id(),
+            input: input.input,
+            selected_context: input.selected_context,
+            max_steps: input.max_steps,
+        };
+        if let Some(journal) = journal {
+            match execution.reconcile_progress(turn).await {
+                Ok(_) | Err(Error::Indeterminate(_)) => {}
+                Err(error) => return Err(error),
+            }
+            // A reconciled turn may stop before an unstarted next step. The
+            // existing verified journal, not a successful loop return, proves
+            // that every original dispatched effect is now known.
+            return Ok(if journal.is_quiescent().await? {
+                TaskCommandProgress::Ready(Value::Null)
+            } else {
+                TaskCommandProgress::Indeterminate
+            });
+        }
+        let progress = execution.execute_progress(turn).await?;
         match progress {
             StockTurnProgress::Ready(output) => ready(Outcome::Succeeded(output)),
             StockTurnProgress::Pending(_) => Ok(TaskCommandProgress::Pending),

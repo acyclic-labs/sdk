@@ -1,4 +1,9 @@
 //! Optional persistent task composition using the existing runtime authorities.
+//!
+//! Admitted absolute deadlines use the original owner's injected clock on both
+//! native and browser workers. Expiry cancels publication authority, not unknown
+//! provider effects: the exact lease and started intents survive for explicit,
+//! bounded `reconcile_task` observation through the ordinary command executors.
 
 use super::{
     FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
@@ -28,6 +33,11 @@ use acyclic_stream::{StreamClient, StreamProvider, SystemUnixMillisClock, UnixMi
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+mod deadline;
+mod reconciliation;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
+
 /// Trusted command adapter. Implementations must dispatch/reconcile each stable
 /// command identity through the existing journaled provider APIs. A ready result
 /// certifies that no uncertain dispatch remains; pending retains durable wait
@@ -41,6 +51,21 @@ pub trait TaskCommandHost: acyclic_stream::ProviderPlatform {
         command: WorkflowCommand,
         payload: Value,
     ) -> BoxFuture<'a, Result<TaskCommandProgress>>;
+
+    /// Observes only a retained dispatch. Missing intent must never execute.
+    fn reconcile<'a>(
+        &'a self,
+        _context: TaskContext,
+        _fence: LeaseFence,
+        _command: WorkflowCommand,
+        _payload: Value,
+    ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "task command reconciliation is not bound".into(),
+            ))
+        })
+    }
 }
 
 /// Explicit dispatch ownership returned by a trusted command adapter.
@@ -828,22 +853,30 @@ where
         }
         // Verify the original admission before touching this task's passive wake.
         let admission = self.host.observe_admission(task).await?;
-        self.poll_task_wake(task).await?;
-        Ok(
-            match self
-                .host
-                .pull_operation(worker, admission.operation_id)
-                .await?
-            {
-                crate::distributed::WorkPull::Idle => None,
-                crate::distributed::WorkPull::Claimed(lease) => {
-                    Some(self.resume_task(lease, commands, maximum_transitions).await)
-                }
-                crate::distributed::WorkPull::Unresolved { lease, error } => {
-                    Some(TaskWorkerAttempt::Unresolved { lease, error })
-                }
+        if self.host.observe_task(task).await?.outcome.is_some_and(|outcome| outcome.is_terminal()) {
+            return Ok(None);
+        }
+        let work = deadline::run(
+            &self.host,
+            task,
+            None,
+            admission.run_limits.deadline_epoch_ms,
+            admission.operation_id,
+            async {
+                self.poll_task_wake(task).await?;
+                self.host.pull_operation(worker, admission.operation_id).await
             },
         )
+        .await?;
+        Ok(match work {
+            crate::distributed::WorkPull::Idle => None,
+            crate::distributed::WorkPull::Claimed(lease) => {
+                Some(self.resume_task(lease, commands, maximum_transitions).await)
+            }
+            crate::distributed::WorkPull::Unresolved { lease, error } => {
+                Some(TaskWorkerAttempt::Unresolved { lease, error })
+            }
+        })
     }
 
     /// Resumes an explicit lease; every error returns the original attempt
@@ -1009,12 +1042,28 @@ where
         let operation_id = lease.operation.operation_id;
         let task = TaskId::from_bytes(operation_id.into_bytes());
         let fence = LeaseFence::from(&lease.reservation);
+        let admission = self.host.observe_admission(task).await?;
+        deadline::run(
+            &self.host,
+            task,
+            Some(&fence),
+            admission.run_limits.deadline_epoch_ms,
+            operation_id,
+            self.run_task_owned(lease, commands, maximum_transitions),
+        )
+        .await
+    }
+
+    async fn run_task_owned(
+        &self,
+        lease: crate::distributed::WorkLease,
+        commands: &dyn TaskCommandHost,
+        maximum_transitions: u32,
+    ) -> Result<TaskWorkerOutcome> {
+        let operation_id = lease.operation.operation_id;
+        let task = TaskId::from_bytes(operation_id.into_bytes());
+        let fence = LeaseFence::from(&lease.reservation);
         let context = self.harness.durable_context(task, operation_id).await?;
-        if context.scope().run_limits().deadline_epoch_ms.is_some() {
-            return Err(Error::Unsupported(
-                "persistent worker deadline runner is not composed".into(),
-            ));
-        }
         self.host.start_task(&lease).await?;
         let mut session = self.open_task(task, fence.clone()).await?;
         let wake = self.host.workflow_input(task, &fence).await?;
@@ -1193,14 +1242,7 @@ where
             .await?;
         let scope = task_context.scope().clone();
         let limits = scope.limits();
-        // Deadline enforcement belongs to the existing task runner; until that
-        // runner is composed, never silently ignore an admitted deadline.
         let run_limits = scope.run_limits();
-        if run_limits.deadline_epoch_ms.is_some() {
-            return Err(Error::Unsupported(
-                "persistent stock task deadline runner is not composed".into(),
-            ));
-        }
         let operation_id = execution_operation(task, turn);
         let journal = self
             .open_execution_journal(task, fence.clone(), turn, &admission)
@@ -1208,13 +1250,16 @@ where
         let executor = StockExecutor::new(model, provider, context, self.tools.clone())
             .with_limits(limits)
             .with_tool_authority(scope, self.policy.clone())?
-            .with_durable_task(self.host.clone(), task, fence)
+            .with_durable_task(self.host.clone(), task, fence.clone())
             .with_task_context(&task_context, operation_id)?;
         Ok(FilesystemTaskExecution {
             operation_id,
             executor,
             journal,
             run_limits,
+            host: self.host.clone(),
+            task,
+            fence,
         })
     }
 }
@@ -1236,6 +1281,9 @@ pub struct FilesystemTaskExecution<P, A, O> {
     executor: StockExecutor,
     journal: FilesystemExecutionJournal<P, A, O>,
     run_limits: TaskRunLimits,
+    host: Arc<CoordinatorTaskHost<P>>,
+    task: TaskId,
+    fence: LeaseFence,
 }
 
 impl<P, A, O> FilesystemTaskExecution<P, A, O>
@@ -1269,6 +1317,51 @@ where
     }
 
     pub(crate) async fn execute_progress(&self, input: TurnInput) -> Result<StockTurnProgress> {
+        self.validate_input(&input)?;
+        deadline::run(
+            &self.host,
+            self.task,
+            Some(&self.fence),
+            self.run_limits.deadline_epoch_ms,
+            self.operation_id,
+            self.executor.execute_progress(input, &self.journal),
+        )
+        .await
+    }
+
+    /// Observes retained model/tool attempts without starting another step.
+    /// Consumes this composition so the existing executor changes mode in place.
+    /// `None` means the observation allowance elapsed; effects remain uncertain.
+    pub async fn reconcile(
+        self,
+        input: TurnInput,
+        maximum_wait_millis: u32,
+    ) -> Result<Option<TurnOutput>> {
+        if maximum_wait_millis == 0 {
+            return Err(Error::Invalid("invalid reconciliation allowance".into()));
+        }
+        deadline::observe(maximum_wait_millis, async {
+            self.reconcile_progress(input).await?.into_output()
+        })
+        .await
+    }
+
+    pub(crate) async fn reconcile_progress(
+        mut self,
+        input: TurnInput,
+    ) -> Result<StockTurnProgress> {
+        self.validate_input(&input)?;
+        self.host.verify_execution_owner(self.task, self.fence.clone()).await?;
+        if self.run_limits.deadline_epoch_ms.is_some_and(|deadline| {
+            self.host.now_unix_millis() >= deadline
+        }) {
+            self.host.expire_task_deadline(self.task, Some(self.fence.clone())).await?;
+        }
+        self.executor = self.executor.into_reconciliation();
+        self.executor.execute_progress(input, &self.journal).await
+    }
+
+    fn validate_input(&self, input: &TurnInput) -> Result<()> {
         if input.operation_id != self.operation_id {
             return Err(Error::Unauthorized(
                 "turn belongs to another task execution".into(),
@@ -1283,6 +1376,6 @@ where
                 "turn exceeds admitted task step ceiling".into(),
             ));
         }
-        self.executor.execute_progress(input, &self.journal).await
+        Ok(())
     }
 }

@@ -327,6 +327,27 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         }
     }
 
+    /// Observes the same validated dispatch summary used by passive suspension.
+    /// This grants no dispatch or release authority, including after cancellation.
+    pub(crate) async fn is_quiescent(&self) -> Result<bool>
+    where
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    {
+        let (owner, operation) = self.owner.as_ref().ok_or_else(|| {
+            Error::Unsupported("quiescence requires a task-owned execution journal".into())
+        })?;
+        owner.verify(true).await?;
+        let quiescent = {
+            let mut summary = self.verified.lock().await;
+            Box::pin(self.refresh_summary(*operation, &mut summary)).await?;
+            summary.quiescent()
+        };
+        owner.verify(true).await?;
+        Ok(quiescent)
+    }
+
     /// Releases a passive workflow command only after this task-bound journal
     /// proves every started model and tool dispatch settled. Publication compares
     /// the same journal tail and current task lease atomically.
