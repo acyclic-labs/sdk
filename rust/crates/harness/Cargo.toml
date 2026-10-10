@@ -103,6 +103,7 @@ tonic-prost-build = { workspace = true, optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optional = true }
 reqwest = { workspace = true, optional = true }
 tracing.workspace = true
+tokio = { version = "1.48.0", default-features = false, features = ["signal"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tracing-subscriber.workspace = true

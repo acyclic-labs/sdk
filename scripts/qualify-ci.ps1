@@ -178,6 +178,7 @@ Push-Location $PiHosts
 try {
     npm ci --ignore-scripts --no-audit --no-fund
     npm run test:pi-context
+    npm run test:pi-context-mail
     npm run test:pi-bootstrap
     npm run test:pi-session
     npm run test:pi-installation

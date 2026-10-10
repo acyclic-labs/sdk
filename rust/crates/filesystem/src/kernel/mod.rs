@@ -18,6 +18,7 @@ mod file_table;
 mod file_table_mutation;
 mod frontier;
 mod generation;
+mod historical_evidence;
 mod generation_mutation;
 mod list;
 mod live;
@@ -36,6 +37,7 @@ mod persistent_pagination;
 mod persistent_point;
 mod probe;
 mod publication;
+mod publication_evidence;
 mod range;
 mod read;
 mod rebase;
@@ -85,6 +87,14 @@ pub use closure::{
 };
 pub use codec::{CanonicalDecodeError, DecodeLimits};
 pub(crate) use codec::{Decoder, Encoder};
+pub use historical_evidence::{
+    HistoricalGenerationEvidence, HistoricalGenerationProjection,
+    decode_historical_generation_evidence, encode_original_generation_evidence,
+};
+pub use publication_evidence::{
+    GenerationPublicationEvidence, GenerationPublicationProjection, PublicationEvidenceError,
+    decode_generation_publication_evidence, encode_generation_publication_evidence,
+};
 pub use export::{
     GenerationExportManifest, GenerationExportManifestError, decode_generation_export_manifest,
     encode_generation_export_manifest, validate_generation_export_manifest,

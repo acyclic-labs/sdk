@@ -3267,6 +3267,7 @@ mod tests {
             active: None,
             buffered: VecDeque::new(),
             completion: Completion::new(tracing::Span::none()),
+            acknowledgements: None,
         };
         stale.client.preferred.store(1, Ordering::Relaxed);
         stale.advance_follow(0);

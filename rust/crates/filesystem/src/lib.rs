@@ -71,6 +71,10 @@ mod public_contract_tests {
     }
 }
 
+pub mod accounting;
+#[cfg(all(test, feature = "memory", feature = "distributed"))]
+#[path = "tests/accounting.rs"]
+mod accounting_tests;
 pub mod async_storage;
 mod collection;
 pub use collection::{Collection, PublicationHold};
