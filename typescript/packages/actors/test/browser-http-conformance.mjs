@@ -233,7 +233,7 @@ try {
   await until("server-observed Actors cancellation", () => cancellationClosed ? true : undefined);
   assert.equal(cancellationDispatched, true);
   console.log("Chrome Actors gRPC-Web: authenticated request decoded before abort; pending response closed without completion");
-  assert.equal(seen.size, 38, `expected 13 Objects, 15 Actor/Worker and 10 Stream HTTP routes: ${[...seen]}`);
+  assert.equal(seen.size, 39, `expected 13 Objects, 16 Actor/Worker and 10 Stream HTTP routes: ${[...seen]}`);
   console.log(`Chrome HTTPS: ${result.detail}; ${seen.size} fixture routes observed`);
   await send("Page.navigate", { url: `https://localhost:${server.address().port}/typescript/packages/objects/test/browser-wasm.html` }, sessionId);
   const memory = await until("browser Objects v1 memory", async () => {
