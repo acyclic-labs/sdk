@@ -410,39 +410,6 @@ pub(crate) fn reject_original_root_references(
     }
 }
 
-pub(crate) async fn open_lazy_source(
-    root: &Path,
-    reference: Option<SourceReference>,
-    observer: Arc<dyn DemandDirectoryObserver>,
-) -> Result<Arc<LocalLazySource>, String> {
-    let limits = VolumeLimits::default();
-    let source = match reference {
-        Some(reference) => {
-            NativeDemandSource::open_with_reference_and_observer(
-                root,
-                native_filesystem_profile(),
-                limits,
-                reference,
-                observer,
-            )
-            .await
-        }
-        None => {
-            NativeDemandSource::open_with_observer(
-                root,
-                native_filesystem_profile(),
-                limits,
-                observer,
-            )
-            .await
-        }
-    }
-    .map_err(display)?;
-    Ok(Arc::new(FilteredDemandSource::new(
-        source,
-        reserved_root_paths()?,
-    )))
-}
 
 /// Host subtrees owned by version control or SDK state, never workspace
 /// content. The order is the watcher fence placement preference: an existing
@@ -471,25 +438,6 @@ pub(crate) fn reserved_ignore_rules() -> String {
         .collect()
 }
 
-pub(crate) fn open_native_watcher(root: &Path) -> Result<Arc<Mutex<NativeWatch>>, String> {
-    let mut watcher = NativeWatch::open_with_profile(
-        root,
-        native_filesystem_profile(),
-        NativeWatchOptions {
-            limits: VolumeLimits::default(),
-            maximum_queued_changes: 65_536,
-            // Linux inotify has no constant-size recursive subscription.
-            // NativeDemandSource registers only demanded directories instead.
-            recursive: !cfg!(target_os = "linux"),
-        },
-    )
-    .map_err(display)?;
-    watcher
-        .exclude_subtrees(&reserved_root_paths()?)
-        .map_err(display)?;
-    watcher.accept_lazy_baseline().map_err(display)?;
-    Ok(Arc::new(Mutex::new(watcher)))
-}
 
 pub(crate) const fn native_filesystem_profile() -> FilesystemProfile {
     if cfg!(windows) {

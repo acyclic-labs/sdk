@@ -9,6 +9,8 @@ use acyclic_fs::kernel::NameEncoding;
 
 fn root_repository_workspace_id(control: &ControlPlane) -> [u8; 16] {
     control.state.roots[&root_key(WorkspaceRootId::from_bytes(control.state.root_id))]
+        .created()
+        .expect("created physical root")
         .repository_workspace_id
 }
 
@@ -605,12 +607,13 @@ async fn shared_root_singleflight_case() {
     let root = temporary.path().join("root");
     fs::create_dir(&root).expect("root");
     let registry = SharedRootRegistry::default();
+    let cancellation = CancellationToken::new();
     let (left, right) = tokio::join!(
-        registry.acquire(&root, SharedRootAdmission::Fresh),
-        registry.acquire(&root, SharedRootAdmission::Fresh)
+        registry.acquire(&root, SharedRootAdmission::Fresh, native_root_source::budget(), &cancellation),
+        registry.acquire(&root, SharedRootAdmission::Fresh, native_root_source::budget(), &cancellation)
     );
-    let left = left.expect("first acquire");
-    let right = right.expect("second acquire");
+    let left = left.expect("first acquire").value;
+    let right = right.expect("second acquire").value;
     assert!(Arc::ptr_eq(&left, &right));
     assert_eq!(registry.live_roots().await, 1);
 }
@@ -628,9 +631,9 @@ async fn shared_root_observations_case() {
     let root = temporary.path().join("root");
     fs::create_dir(&root).expect("root");
     let shared = SharedRootRegistry::default()
-        .acquire(&root, SharedRootAdmission::Fresh)
+        .acquire(&root, SharedRootAdmission::Fresh, native_root_source::budget(), &CancellationToken::new())
         .await
-        .expect("shared physical root");
+        .expect("shared physical root").value;
     let (first_entered_tx, first_entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let first_root = Arc::clone(&shared);
@@ -706,24 +709,24 @@ async fn shared_root_replacement_case() {
     fs::create_dir(&root).expect("root");
     let registry = SharedRootRegistry::default();
     let held = registry
-        .acquire(&root, SharedRootAdmission::Fresh)
+        .acquire(&root, SharedRootAdmission::Fresh, native_root_source::budget(), &CancellationToken::new())
         .await
-        .expect("initial acquire");
+        .expect("initial acquire").value;
     fs::rename(&root, &detached).expect("detach admitted root");
     fs::create_dir(&root).expect("replacement root");
-    let Err(error) = registry.acquire(&root, SharedRootAdmission::Fresh).await else {
+    let Err(error) = registry.acquire(&root, SharedRootAdmission::Fresh, native_root_source::budget(), &CancellationToken::new()).await else {
         panic!("replacement must fail closed");
     };
     assert!(
-        error.contains("identity") && error.contains("changed"),
+        error.error.contains("identity") && error.error.contains("changed"),
         "{error}"
     );
     drop(held);
     registry.prune().await;
     let replacement = registry
-        .acquire(&root, SharedRootAdmission::Fresh)
+        .acquire(&root, SharedRootAdmission::Fresh, native_root_source::budget(), &CancellationToken::new())
         .await
-        .expect("released registration must not pin the old root identity");
+        .expect("released registration must not pin the old root identity").value;
     assert_eq!(registry.live_roots().await, 1);
     drop(replacement);
 }
@@ -1051,7 +1054,10 @@ async fn sequential_same_root_case() {
         .await
         .expect("first session");
     let first_state = &service.sessions["first"].state;
-    let first_identity = first_state.roots[&hex::encode(first_state.root_id)].source_identity;
+    let first_identity = first_state.roots[&hex::encode(first_state.root_id)]
+        .created()
+        .expect("created physical root")
+        .source_identity;
     service
         .dispatch_native_hook("codex", "SessionEnd", json!({"session_id":"first"}), &root)
         .await
@@ -1070,6 +1076,8 @@ async fn sequential_same_root_case() {
     assert_eq!(
         service.sessions["second"].state.roots
             [&hex::encode(service.sessions["second"].state.root_id)]
+            .created()
+            .expect("created physical root")
             .source_identity,
         first_identity
     );
@@ -1120,7 +1128,10 @@ async fn conflicting_same_root_case() {
     let mut conflicting = load_saved_state(&older).expect("older state");
     conflicting.active = true;
     for binding in conflicting.roots.values_mut() {
-        binding.source_identity = [9; 16];
+        binding
+            .created_mut()
+            .expect("created physical root")
+            .source_identity = [9; 16];
     }
     save_state(&older, &conflicting, Survives::PowerLoss).expect("conflicting state");
     std::thread::sleep(std::time::Duration::from_millis(20));
@@ -5672,6 +5683,8 @@ async fn core_root_recovery_case() {
         .values()
         .next()
         .expect("root intent")
+        .created()
+        .expect("created physical root")
         .repository_workspace_id;
     drop(initial);
     // Only the root's attach reached the core log, unflushed: a power loss
@@ -5697,6 +5710,8 @@ async fn core_root_recovery_case() {
             .values()
             .next()
             .expect("recovered root")
+            .created()
+            .expect("created physical root")
             .repository_workspace_id,
         expected_workspace
     );
@@ -5754,6 +5769,8 @@ async fn core_root_recovery_case() {
         .roots
         .get(&second_key)
         .expect("durable root intent")
+        .created()
+        .expect("created physical root")
         .repository_workspace_id;
     drop(control);
 
@@ -5763,7 +5780,10 @@ async fn core_root_recovery_case() {
     assert_eq!(resumed.state.roots.len(), 2);
     assert!(resumed.state.pending_root_adoptions.is_empty());
     assert_eq!(
-        resumed.state.roots[&second_key].repository_workspace_id,
+        resumed.state.roots[&second_key]
+            .created()
+            .expect("created physical root")
+            .repository_workspace_id,
         expected_workspace
     );
     resumed.shutdown().await.expect("shutdown");
@@ -5792,6 +5812,8 @@ async fn core_root_recovery_case() {
         .roots
         .get_mut(&pending)
         .expect("pending fenced binding")
+        .created_mut()
+        .expect("created physical root")
         .native_root_identity = [u8::MAX; 16];
     fenced.persist().expect("persist replacement identity");
     drop(fenced);
@@ -6423,10 +6445,12 @@ fn adapter_state_loading_is_byte_and_structure_bounded() {
         RootBinding {
             root_id: [1; 16],
             path: temporary.path().to_path_buf(),
-            repository_workspace_id: [2; 16],
-            source_identity: [3; 16],
-            source_epoch: 0,
-            native_root_identity: [4; 16],
+            allocation: RootAllocation::Created(RootCreation {
+                repository_workspace_id: [2; 16],
+                source_identity: [3; 16],
+                source_epoch: 0,
+                native_root_identity: [4; 16],
+            }),
         },
     );
     assert!(

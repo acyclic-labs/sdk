@@ -80,6 +80,8 @@ test("public Pi installer pins a loadable extension and restores owned settings"
       assert.deepEqual(loaded.errors, []);
       assert.equal(loaded.extensions.length, 1);
       assert.ok(loaded.extensions[0].commands.has("acyclic-doctor"));
+      assert.deepEqual([...loaded.extensions[0].tools.keys()].sort(), ["acyclic_agents", "acyclic_cancel"]);
+      assert.ok(loaded.extensions[0].handlers.has("session_start"));
       await command(...args);
       assert.deepEqual(settingsAt(settings), installed);
     }

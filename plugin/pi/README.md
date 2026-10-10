@@ -13,32 +13,27 @@ The official repository's `v1.1.0` tag resolves to source commit
 in `target/pi-source-receipts/pi-tag.*`. Registry metadata provides no `gitHead`,
 so the package integrity and official source reference are recorded separately.
 
-Current source slice installs an executable-pinned diagnostics extension through
-the existing Acyclic configuration ownership helper. Reinstallation is idempotent,
-foreign settings are retained, and modified owned settings refuse replacement or
-uninstall. Immutable extension assets remain cached after uninstall. No resource
-starts during extension registration. The diagnostics command bounds process
-time and output and invokes the selected binary without a shell.
+## Installed control path
 
-This slice does **not** implement or qualify recursive agents. Pi continues owning
-context, compaction and model retries. No Harness context/accounting parity or
-process confinement claim follows from installation or diagnostics.
+The existing configuration owner installs an immutable extension pinned to the
+selected `acyclic` executable. Reinstall is idempotent; foreign settings and
+modified owned settings are preserved. Registration starts no resources.
 
-## Existing mechanism gaps on SDK 6aaed7e
+Pi's native `session_start` invokes `acyclic __pi SessionStart` directly, with
+bounded stdin/output and no shell or extension retry. The existing service
+catalog reserves the session before original-owner registration. Admission
+persists the selected root command, task/agent/volume binding and `AdapterState`
+before selected native allocation. Repeated startup reuses that admission;
+changing the selected root for the same session is rejected.
 
-- `pre_tool` prepares the existing durable spawn handshake but returns no exact
-  prepared scope to a process adapter. Startup must consume that handshake after
-  publication, without inferring authority from a mount path or FIFO position.
-- `authorize_inspection` enforces ancestry. Destination-authorized sibling and
-  descendant imports need explicit source read/destination write authority.
-- Plugin adapter state has no explicit lineage-preserving scratch binding,
-  durable Pi session handoff, child process ownership or message/wait contract.
-  These need owning existing-mechanism seams before recursive tools are exposed.
-- Native hook host validation excludes Pi. Adding its name alone cannot establish
-  tool routing, scoped child identities or process admission.
+`acyclic_agents` invokes `TaskStatus`, observing retained coordinator outcomes
+without pulling a lease. `acyclic_cancel` invokes `TaskCancel`; only the original
+root and authenticated retained routes are targets. Durable cancellation intent
+precedes service shutdown. `/acyclic-doctor` remains a separate qualification
+diagnostic. A missing acknowledgement is not permission to repeat an effect.
 
-Coordinate shared service changes before implementing these seams. Do not add an
-extension-side authoritative registry, merge implementation or effect journal.
+Pi owns model selection, native history, compaction and model retries. No Harness
+context/accounting parity or process confinement follows from these controls.
 
 ### Native recursive tools
 
@@ -171,24 +166,21 @@ must run `npm run test:pi-context` in `plugin/tests/hosts`, then the installed
 recursive native fixture against the final source-built binary. Earlier receipt
 hashes below describe their recorded source revision, not this edited extension.
 
-
 ## Durable authority and resource state
 
-This is a source proposal; none of these additional paths is implemented or
-qualified. Keep the Pi model loop outside Harness stock execution.
+There is one service catalog and one `AdapterState`/route graph. `PiTaskRuntime`
+uses the existing Filesystem task runtime, coordinator, effect history and
+checkpoint machinery. Protected original owner credentials are loaded before
+Stream history; reopening never creates replacement credentials. Private journal
+write authority is not inherited by tasks; original allocation inputs are
+published in their dedicated read-only directory.
 
-| Datum | Existing authoritative object | Pi adapter responsibility |
-| --- | --- | --- |
-| Session and agent identity | `AdapterState.root_session_id`, `Route.agent_id` | Persist the exact admitted `TaskId` binding alongside its route, with no second agent registry. |
-| Task admission and execution owner | `CoordinatorTaskHost`, `TaskAdmissionRecord`, scheduler `WorkLease`/`LeaseFence` | Reopen the original admission; reject forged, stale or conflicting bindings. A stored fence is a reference requiring fresh verification. |
-| Parent/child workspace publication | `PendingSpawn`, Filesystem workspace contexts and publication recovery | Bind exact parent, child and prepare operation; retain serialized preparation initially. Return prepared scope only after durable publication and state save. |
-| Pinned Pi context | Pi `SessionManager` session file and selected leaf | Record the exact host-native parent session/leaf boundary. Use Pi's fork mechanism; qualify incomplete tool exchanges and later parent changes. No Harness context conversion. |
-| Messages and consumption | Existing Stream mailbox through `CoordinatorTaskHost`/ordinary durable task commands | Publish immutable bounded `FileRef` payloads under verified sender/recipient grants; retain consumption in the existing task workflow checkpoint. No route-local mailbox. |
-| Payload and private storage | `FilesystemHost`, `FilesystemSchedulerPayloadStore`, `ContentGrant` | Bind owner-held journal storage separately from child-visible volumes. Do not inherit root-private grants. |
-| Process dispatch and uncertainty | Existing task effect journal and `NativeProcessProvider` launch/observation receipts | Prefer one-shot `pi --print --session ...` workers. Reuse exact approved process request and at-most-once dispatch; no Pi launch journal. |
-| Process tree lifetime | `acyclic_native_runtime::ProcessTree` used by the native provider | Native provider owns launch/capture/drain. Adapter shutdown must not treat dropping a task reference as proof that process cleanup finished. |
-| Cancellation and reopening | Existing coordinator intent, task checkpoints and effect reconciliation | Publish cancellation intent first; retain the original reservation through uncertain capture/cleanup. Reopen storage and validate admission/bindings before reconciliation; never auto-relaunch uncertain work. |
-| Scratch and workspace imports | Existing Filesystem filtered fork/lineage and publication permits | Use real parent scratch lineage with empty selected content; source reads and destination writes require separate exact grants and pinned generations. |
+Root and scratch allocation use required `Preparing`/`Created` discriminators.
+Preparing retains exact intent and identities, not usable resource authority.
+Created requires real immutable workspace/source/native identities and the
+original creation generation; a source epoch of zero is valid. Paths, current
+workspace heads and adapter flags are not allocation or process-success evidence.
+An uncertain original allocation cannot be replaced with a fresh one.
 
 `pi_root_provider.rs` implements that allocation as the first-party at-most-once
 effect: lazy native project attachments use the original volume storage names,
@@ -239,94 +231,56 @@ admits its separate output buffer on that same ledger before growth; the
 transport retains its custody until the actual response write completes.
 Legacy replies carry no native allocation claim. These are SDK-owned-buffer
 bounds, not a measurement of Pi, Node, transport-library or total OS memory.
-
 Shared physical roots retain the existing single-flight registry, watcher and
 lazy source. Acquisition requires an explicit finite work budget/cancellation
 token; failed nested acquisition preserves spent counters. These counters bound
 logical backend requests, not all OS or notification-library allocations.
 
-Main's native provider accepts no interactive stdin and captures a one-shot
-process. Avoid expanding that shared provider for Pi RPC unless a demonstrated
-acceptance requirement cannot be met by one-shot workers and extension message
-delivery at safe Pi boundaries. Active steering, session reopening, provider
-environment, session file publication and cleanup correspondence need actual
-installed tests before this choice is accepted. An explicit later resume is a
-new admitted process effect; it cannot retry an uncertain earlier launch.
+Native context helpers capture the selected leaf and immutable native branch,
+revalidate before admission and create a separate child manager. They do not
+mutate the live parent's manager or replace a native branch with a raw file copy.
+Native `agent_settled`, rather than `agent_end`, is the stable host completion
+boundary after automatic continuations.
 
-Canonical Rust request/result contracts must generate the extension's consumed
-types/schemas through repository generation mechanisms. No independently
-maintained TypeScript authority schema. Pi host-native transcript access,
-workspace reads/imports, messaging and lifecycle control remain separate grants.
+## Source-bound controls and qualification
 
-### Native volume binding proposal (not implemented)
+No checks for this source change have been run. Parent integration must execute
+these commands against the resulting source-built binary:
 
-The plugin and `NativeVolumeView` currently name workspaces differently. The
-native view opens the canonical `VolumeRef::storage_name()`; a plugin route's
-mount path or workspace ID cannot substitute for that typed identity.
+```sh
+cargo build -p acyclic-plugin --bin acyclic
+cargo test -p acyclic-plugin --bin acyclic
+cargo clippy -p acyclic-plugin --all-targets -- -D warnings
+```
 
-For new Pi sessions, evaluate creating the existing root and child workspaces
-under canonical volume names from the outset. Persist the exact typed reference
-on the existing root/prepared-child bindings, before creation can be retried.
-The provider, owner, role, physical workspace ID and canonical name must agree
-when reopening. Keep project and scratch roles separate from owner identity.
-Do not rename existing workspaces, copy their contents, or add an alias registry.
+In `plugin/tests/hosts`, with absolute `ACYCLIC_BINARY` selecting that binary:
 
-The bounded source audit found these consumers that must change together:
+```sh
+npm ci --ignore-scripts --no-audit --no-fund
+npm run test:pi-context
+npm run test:pi-bootstrap
+npm run test:pi-session
+npm run test:pi-installation
+npm run test:pi-service
+```
 
-- Initial root attach and later root adoption select the workspace name.
-- Pending root registration recovery currently derives that name from session
-  and physical path; it must instead recover the original typed binding.
-- Child fork and pending-child discard currently derive names from fork/root
-  identities. Both must resolve the same prepared typed child, including recovery
-  before the fork has published a workspace ID.
-- Normal root reopen already resolves the core context's workspace ID. Retain
-  that identity check and verify its typed name rather than attaching a new root.
-- `SharedRootRegistry` is keyed by canonical physical path and checks native
-  identity/source identity. Preserve its shared watcher and epoch semantics.
+The service case loads the installed extension through pinned Pi 1.1.0, uses
+native model/tool execution, switches models, kills/restarts the owned service
+and cancels the retained original task. It verifies original identity and native
+context preservation. It deliberately does not count a Preparing root as child
+execution or provider allocation.
 
-`NativeVolumeView` prepares and owns its own working set below an empty native
-directory. Pi preparation must have one native view owner; it cannot also mount
-the same destination through the plugin's `LocalMount`. Retain the existing
-Filesystem context, lineage, publication and cleanup authority throughout.
-Existing Codex/Claude consumers retain their current paths. There is no legacy
-Pi data to migrate. Shared host-binding changes require owning-seam review;
-source inspection does not establish installed or recovery correctness.
+The Rust bounded explorer replays actual Pi machine checkpoints under a fresh
+registry, including malformed/foreign/repeated results, cancellation and
+indeterminate outcomes. Negative controls remove reference preservation or
+repeat the allocation command. Its bounds do not establish storage/process or
+platform correctness.
 
-Admit the typed task/agent identities before preparing their volumes, retaining
-their exact association with the existing native route and context identities.
-A fork key, agent identity and task identity have different roles; matching byte
-representations do not establish an admitted association.
-
-Scratch must not become a fabricated physical root or watcher registration.
-Existing plugin lazy mounts require a physical source for each root; the landed
-`FilesystemHost::fork_volume` already forks an exact source generation with
-separate source-read/destination-write grants and `Some(vec![])` for an empty
-selection. Use that path for scratch and retain its original creation generation
-separately from the later mutable head. Retries resolve the original operation
-generation. The prepared/route task binding can reference that volume without
-adding it to the physical project-root index or converting Pi context into a
-Harness conversation. Native view preparation and publication remain shared.
-
-Pinned Pi source checks expose two important constraints: `agent_settled` is the
-notification that excludes further automatic retry/compaction/continuation;
-`agent_end` is insufficient. `SessionManager.createBranchedSession` replaces the
-manager's current session, so it must never be invoked on the live parent manager
-to create a child. `forkFrom` copies all source entries and does not itself select
-the admitted leaf. Child preparation needs a separate manager over a verified
-immutable parent cut, with the actual child cwd and service-owned session storage.
-No implementation may substitute a raw current-file copy for that pinned cut.
-Capture retains the native parent session ID, file location and cwd alongside
-the exact branch boundary. Pre-admission revalidation rejects any changed source
-binding or history. These are untrusted host references until the service checks
-them against its owned session/route association; a file path grants no access.
-
-Shared cancellation dependency: planning reports an I-owned bounded-model
-counterexample where separate task cancellation and Filesystem lease finish do
-not fence a later fresh permit. Pi must not assume cross-store atomicity or fix
-this with an adapter ledger. Consume the owning qualified authority transition
-that prevents both future permit creation/renewal and stale publication, while
-preserving reconciliation of the original admitted effect. Recursive writer and
-cancellation claims remain gated until that mechanism lands and is qualified.
+Recursive launch, mail/wait/steering, scoped destination imports and approved
+root writeback require the authenticated created-resource admission producer,
+bounded immutable output staging, the real native process provider and consuming
+workflow. Their installed acceptance gates below remain open; diagnostic/task
+controls and machine exploration do not qualify those behaviors.
 
 ## Open qualification gates
 
@@ -344,6 +298,12 @@ cancellation claims remain gated until that mechanism lands and is qualified.
 | Reopen never repeats an uncertain effect | Existing task/effect receipts, publication recovery and process-tree owner | Close/reopen; faults at admission, launch, acknowledgement, observation, publication and cleanup | Pi integration pending |
 | Cancellation fences writers without losing reconciliation | Owning qualified task/Filesystem authority transition | Late fresh permits, stale owners, cancellation races and bounded transition checks with negative controls | Shared dependency and Pi qualification pending |
 | Installed behavior matches each supported host | Exact package/tool hashes and public installed entrypoints | Windows, Linux, WSL, macOS and applicable PTY runs; affected Codex/Claude regressions | All Pi platform runs pending |
+
+## Historical receipts
+
+The following retained observations bind older source/tool hashes only. They are
+not current service/recursive qualification and must not be reused as passing
+evidence for the task-control changes above.
 
 The first Windows installer test build reached its 15-minute deadline before
 producing a test result. Its owned process tree was terminated; exact inputs,

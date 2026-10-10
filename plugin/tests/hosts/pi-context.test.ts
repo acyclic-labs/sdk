@@ -17,7 +17,6 @@ const {
   visibleControlResult, observePiTaskUntilTerminal, persistedPiInboxCursor, consumePiInbox, approvePiWriteback,
 } = await loadPiContextHelpers();
 
-
 function spawnMessage(id: string) {
   return {
     role: "assistant" as const,

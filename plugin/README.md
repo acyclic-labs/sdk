@@ -48,7 +48,7 @@ configuration. Pass `--project` explicitly before Acyclic may create project
 configuration. No `init` command or repository marker exists.
 
 Supported target names are `codex`, `claude-code`, `cursor`, `copilot`,
-`opencode`, `vscode`, `claude-desktop`, `copilot-cloud`, and `pydantic-ai`.
+`opencode`, `vscode`, `claude-desktop`, `copilot-cloud`, `pydantic-ai`, and `pi`.
 `acyclic install --detected` installs detected local targets. Process
 confinement is certified only after that host/platform's escape suite passes;
 native-mount qualification alone does not make that claim. MCP-only and
@@ -69,12 +69,16 @@ acyclic uninstall <host> [--purge]
 acyclic doctor [--json]
 ```
 
-`acyclic install pi [--project]` installs the initial Pi diagnostics extension.
-Pi owns its context, compaction and model retries. This source slice exposes
-`/acyclic-doctor`; recursive workspace execution and host qualification remain
-pending. `acyclic uninstall pi` restores the owned settings and retains cached,
-pinned extension assets. Modified settings are preserved and reported for manual
-resolution. The current API target is Pi 1.1.0; see [Pi qualification](pi/README.md).
+`acyclic install pi [--project]` installs the executable-pinned Pi extension.
+Pi owns its context, compaction and model retries. Native session startup admits
+one durable root before selected workspace allocation. `acyclic_agents` observes
+the original task outcomes and `acyclic_cancel` orders cancellation through the
+existing coordinator; `/acyclic-doctor` reports qualification separately.
+Preparing roots are not usable workspace routes. Recursive workspace execution
+and platform qualification are not established by these controls.
+`acyclic uninstall pi` restores the owned settings and retains pinned assets;
+modified settings are preserved. The API target is Pi 1.1.0; see
+[Pi qualification](pi/README.md).
 
 `acyclic doctor` reports the packaged binary identity, plugin/cache version,
 marketplace and hook assets, service and durable recovery state, native mount

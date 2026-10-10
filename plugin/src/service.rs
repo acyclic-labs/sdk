@@ -15,7 +15,7 @@ pub(crate) struct ServiceResources {
 impl ServiceResources {
     pub(crate) async fn open(
         data: PathBuf,
-    ) -> Result<(Self, BTreeMap<String, ControlPlane>), String> {
+    ) -> Result<(Self, BTreeMap<String, SessionController>), String> {
         fs::create_dir_all(data.join("sessions")).map_err(display)?;
         // A binary that has not been identified since it changed is hashed in
         // full; that runs alongside opening the filesystem.
@@ -61,20 +61,29 @@ impl ServiceResources {
             if !state.active {
                 continue;
             }
+            if matches!(state.task_binding, PluginTaskBinding::Pi(_)) {
+                let control = SessionController::open(entry, &resources).await?;
+                sessions.insert(state.root_session_id.clone(), control);
+                continue;
+            }
             let mut roots = Vec::with_capacity(state.roots.len());
             let mut stale = false;
             for root in state.roots.values() {
+                let creation = root.created()?;
                 let canonical = root.path.canonicalize().map_err(display)?;
                 if retained_sources.get(&canonical).is_some_and(
                     |(source_identity, native_identity)| {
-                        *native_identity == root.native_root_identity
-                            && *source_identity != root.source_identity
+                        *native_identity == creation.native_root_identity
+                            && *source_identity != creation.source_identity
                     },
                 ) {
                     stale = true;
                     break;
                 }
-                roots.push((canonical, (root.source_identity, root.native_root_identity)));
+                roots.push((
+                    canonical,
+                    (creation.source_identity, creation.native_root_identity),
+                ));
             }
             if stale {
                 fs::remove_dir_all(&entry).map_err(display)?;
@@ -83,7 +92,7 @@ impl ServiceResources {
             let control = resources.open_session_directory(entry).await?;
             if !control.state.root_session_id.is_empty() {
                 retained_sources.extend(roots);
-                sessions.insert(control.state.root_session_id.clone(), control);
+                sessions.insert(control.state.root_session_id.clone(), control.into());
             }
         }
         Ok((resources, sessions))
@@ -134,6 +143,15 @@ impl std::ops::Deref for ServiceControl {
 impl ServiceControl {
     pub(crate) async fn open(data: PathBuf) -> Result<Self, String> {
         let (resources, sessions) = ServiceResources::open(data).await?;
+        let sessions = sessions
+            .into_iter()
+            .map(|(id, controller)| match controller {
+                SessionController::HostManaged(control) => Ok((id, *control)),
+                SessionController::Pi(_) => {
+                    Err("Pi sessions must recover through their owning task runtime".to_owned())
+                }
+            })
+            .collect::<Result<_, _>>()?;
         Ok(Self {
             resources,
             sessions,
@@ -157,6 +175,7 @@ impl ServiceControl {
         let cwd = cwd.canonicalize().map_err(display)?;
         let mut matches = Vec::new();
         for (session_id, control) in &self.sessions {
+            control.state.require_created_roots()?;
             let mut score = control
                 .state
                 .roots
@@ -844,8 +863,13 @@ pub(crate) enum SessionCommand {
 }
 
 impl SessionHandle {
-    pub(crate) fn new(key: SessionKey, control: ControlPlane, resources: ServiceResources) -> Self {
-        let snapshot = Arc::new(std::sync::RwLock::new(Some(control.state.clone())));
+    pub(crate) fn new(
+        key: SessionKey,
+        control: impl Into<SessionController>,
+        resources: ServiceResources,
+    ) -> Self {
+        let control = control.into();
+        let snapshot = Arc::new(std::sync::RwLock::new(Some(control.state().clone())));
         let actor_snapshot = Arc::clone(&snapshot);
         let state = Arc::new(std::sync::atomic::AtomicU8::new(SESSION_ACTIVE));
         let actor_state = Arc::clone(&state);
@@ -863,13 +887,13 @@ impl SessionHandle {
                         _permit,
                     } => {
                         let result = match control.as_mut() {
-                            Some(control) => dispatch_session_request(control, request).await,
+                            Some(control) => control.dispatch(request).await,
                             None => Err("Acyclic session actor has no workspace".to_owned()),
                         };
                         // Other sessions see only durable state: an unflushed
                         // save is published once flushed, after the reply.
                         let mut pending = Some((response, result));
-                        if control.as_ref().is_some_and(|control| control.unflushed)
+                        if control.as_ref().is_some_and(SessionController::unflushed)
                             && let Some((response, result)) = pending.take()
                         {
                             let _ = response.send(result);
@@ -879,7 +903,7 @@ impl SessionHandle {
                             None => true,
                         };
                         if durable {
-                            let next = control.as_ref().map(|control| control.state.clone());
+                            let next = control.as_ref().map(|control| control.state().clone());
                             if let Ok(mut snapshot) = actor_snapshot.write() {
                                 *snapshot = next;
                             }
@@ -898,8 +922,8 @@ impl SessionHandle {
                         let result = match current {
                             Err(error) => Err(error),
                             Ok(current) => {
-                                let mut terminal_state = current.state.clone();
-                                let directory = current.data.clone();
+                                let mut terminal_state = current.state().clone();
+                                let directory = current.directory().to_path_buf();
                                 match current.close(deactivate).await {
                                     Ok(mut slots) => {
                                         if deactivate {
@@ -914,15 +938,7 @@ impl SessionHandle {
                                         }
                                     }
                                     Err(shutdown_error) => {
-                                        match ControlPlane::open_with(
-                                            directory,
-                                            resources.data.clone(),
-                                            resources.fs.clone(),
-                                            resources.store.clone(),
-                                            resources.shared_roots.clone(),
-                                        )
-                                        .await
-                                        {
+                                        match SessionController::open(directory, &resources).await {
                                             Ok(recovered) => {
                                                 control = Some(recovered);
                                                 Err(format!(
@@ -948,7 +964,7 @@ impl SessionHandle {
                         }
                         actor_state
                             .store(SESSION_CLOSE_FAILED, std::sync::atomic::Ordering::Release);
-                        let next = control.as_ref().map(|control| control.state.clone());
+                        let next = control.as_ref().map(|control| control.state().clone());
                         if let Ok(mut snapshot) = actor_snapshot.write() {
                             *snapshot = next;
                         }
@@ -1130,7 +1146,7 @@ impl ConcurrentServiceControl {
 
     pub(crate) fn from_parts(
         resources: ServiceResources,
-        sessions: BTreeMap<String, ControlPlane>,
+        sessions: BTreeMap<String, SessionController>,
     ) -> Self {
         let mut catalog = SessionCatalog::default();
         for (session_id, control) in sessions {
@@ -1234,10 +1250,34 @@ impl ConcurrentServiceControl {
                 continue;
             }
 
-            let mut control = self.resources.open_session(session_id).await?;
-            let opened = control
-                .session_start(json!({"session_id": session_id, "cwd": root, "host": host}))
-                .await;
+            let opening_result = async {
+                if host == "pi" {
+                    let mut control = pi_registration::register(&self.resources, session_id, root.clone()).await?;
+                    let opened = control.dispatch(ControlRequest {
+                        version: 1, command: ControlCommand::Hook, cwd: root.clone(),
+                        argv: Vec::new(), name: "pi:SessionStart".to_owned(),
+                        arguments: json!({"session_id": session_id, "cwd": root}),
+                    }).await;
+                    Ok::<_, String>((control, opened))
+                } else {
+                    let mut control = self.resources.open_session(session_id).await?;
+                    let opened = control.session_start(json!({"session_id": session_id, "cwd": root, "host": host})).await;
+                    Ok((control.into(), opened))
+                }
+            }.await;
+            let (control, opened) = match opening_result {
+                Ok(opened) => opened,
+                Err(error) => {
+                    let mut catalog = self.catalog.lock().await;
+                    let opening = catalog.opening.remove(session_id)
+                        .ok_or_else(|| "Acyclic session opening reservation disappeared".to_owned())?;
+                    if opening.key != key {
+                        return Err("Acyclic session opening epoch changed".to_owned());
+                    }
+                    opening.complete.send_replace(true);
+                    return Err(error);
+                }
+            };
             let handle = Some(Arc::new(SessionHandle::new(
                 key.clone(),
                 control,
@@ -1388,6 +1428,10 @@ impl ConcurrentServiceControl {
             let Some(snapshot) = handle.snapshot()? else {
                 continue;
             };
+            if matches!(snapshot.task_binding, PluginTaskBinding::Pi(_)) {
+                continue;
+            }
+            snapshot.require_created_roots()?;
             let mut score = snapshot
                 .roots
                 .values()
@@ -1811,22 +1855,29 @@ pub(crate) fn control_response_for(
 
 pub(crate) struct BoundedJsonBuffer {
     pub(crate) bytes: Vec<u8>,
+    maximum: usize,
 }
 
 impl BoundedJsonBuffer {
     pub(crate) fn new() -> Self {
+        // Control frames retain one byte for their trailing newline.
+        Self::with_limit(MAXIMUM_CONTROL_MESSAGE_BYTES - 1)
+    }
+
+    pub(crate) fn with_limit(maximum: usize) -> Self {
         Self {
-            bytes: Vec::with_capacity(8 * 1024),
+            bytes: Vec::with_capacity(maximum.min(8 * 1024)),
+            maximum,
         }
     }
 }
 
 impl Write for BoundedJsonBuffer {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        if self.bytes.len().saturating_add(buffer.len()) >= MAXIMUM_CONTROL_MESSAGE_BYTES {
+        if buffer.len() > self.maximum.saturating_sub(self.bytes.len()) {
             return Err(io::Error::new(
                 io::ErrorKind::FileTooLarge,
-                "Acyclic control response exceeds the 4 MiB bound",
+                "JSON exceeds its configured byte bound",
             ));
         }
         self.bytes.extend_from_slice(buffer);
