@@ -95,6 +95,9 @@ and reading returns `(Vec<u8>, NativeAllocation)`. Keep the allocation guard
 through the last use, then drop the value before its guard. Metadata custody
 counts retained string/key capacities, including spare capacity; it does not
 count opaque allocator headers or global provider-cache residency.
+The scheduler payload store's `stage_with_native_work` follows the same rule
+and preserves its original operation/key-derived result path and retry key.
+Task admission must keep the returned metadata guard through declaration.
 
 `release_if_quiescent_with_native_work(work, workflow)` borrows the already
 configured original workflow journal. It authenticates the same task, lease,

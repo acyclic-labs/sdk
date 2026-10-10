@@ -176,25 +176,74 @@ where
         idempotency_key: &'a str,
         bytes: &'a [u8],
     ) -> BoxFuture<'a, Result<FileRef>> {
+        Box::pin(self.stage_with_io(operation_id, idempotency_key, bytes, None))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stage_with_native_work<'a>(
+        &'a self, operation_id: crate::OperationId, idempotency_key: &'a str,
+        bytes: &'a [u8], work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> BoxFuture<'a, std::result::Result<(FileRef, acyclic_fs::NativeAllocation), crate::NativeRootVerificationError>> {
         Box::pin(async move {
-            let key = blake3::hash(idempotency_key.as_bytes())
-                .to_hex()
-                .to_string();
-            let path = format!("scheduler/results/{operation_id}/{key}.json");
-            let retry = IdempotencyKey::new(format!("scheduler-result:{operation_id}:{key}"))?;
-            self.host
-                .put_content(
-                    &self.volume,
-                    &self.grant,
-                    &path,
-                    bytes,
-                    "application/json",
-                    "result.json",
-                    self.maximum_bytes,
-                    &retry,
-                )
-                .await
+            let io = PreparationIo::from_native_work(work)?;
+            let file = io.native_result(self.stage_with_io(
+                operation_id, idempotency_key, bytes, Some(&io)).await)?;
+            let retained = file.logical_owned_bytes()?;
+            let custody = io.into_native_custody(retained)?;
+            Ok((file, custody))
         })
+    }
+}
+
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
+    FilesystemSchedulerPayloadStore<A, O>
+{
+    async fn stage_with_io(
+        &self, operation_id: crate::OperationId, idempotency_key: &str,
+        bytes: &[u8], io: Option<&PreparationIo>,
+    ) -> Result<FileRef> {
+        use std::fmt::Write as _;
+        let hashed = acyclic_fs::WorkCounters {
+            bytes_hashed: idempotency_key.len() as u64, items_examined: 1,
+            ..Default::default()
+        };
+        if let Some(io) = io { io.preflight(hashed)?; }
+        let key = blake3::hash(idempotency_key.as_bytes()).to_hex();
+        if let Some(io) = io { io.charge(hashed)?; }
+        let path_bytes = "scheduler/results/".len() + 36 + 1 + key.len() + ".json".len();
+        let retry_bytes = "scheduler-result:".len() + 36 + 1 + key.len();
+        let scratch_hold;
+        if let Some(io) = io {
+            io.preflight(acyclic_fs::WorkCounters {
+                bytes_copied: (path_bytes + retry_bytes) as u64, ..Default::default()
+            })?;
+            io.claim((path_bytes + retry_bytes) as u64)?;
+            scratch_hold = Some(io.guard_owned((path_bytes + retry_bytes) as u64)?);
+            io.allocation_attempt(path_bytes as u64)?;
+        } else { scratch_hold = None; }
+        let mut path = String::with_capacity(path_bytes);
+        write!(&mut path, "scheduler/results/{operation_id}/{key}.json")
+            .map_err(|_| Error::Invalid("scheduler result path formatting failed".into()))?;
+        if let Some(io) = io {
+            io.charge(acyclic_fs::WorkCounters { bytes_copied: path.len() as u64, ..Default::default() })?;
+        }
+        if let Some(io) = io { io.allocation_attempt(retry_bytes as u64)?; }
+        let mut retry = String::with_capacity(retry_bytes);
+        write!(&mut retry, "scheduler-result:{operation_id}:{key}")
+            .map_err(|_| Error::Invalid("scheduler retry formatting failed".into()))?;
+        if let Some(io) = io {
+            io.charge(acyclic_fs::WorkCounters {
+                bytes_copied: retry.len() as u64, ..Default::default()
+            })?;
+        }
+        let retry = IdempotencyKey::new(retry)?;
+        let file = self.host.put_content_impl(&self.volume, &self.grant, &path, bytes,
+            "application/json", "result.json", self.maximum_bytes, &retry,
+            None, None, io).await?;
+        drop(retry);
+        drop(path);
+        drop(scratch_hold);
+        Ok(file)
     }
 }
 

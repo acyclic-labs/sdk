@@ -1062,6 +1062,46 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn scheduler_native_stage_preserves_original_key_receipt_and_finite_hash_guard()
+        -> std::result::Result<(), crate::NativeRootVerificationError>
+    {
+        use crate::distributed::SchedulerPayloadStore as _;
+        let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
+        let scheduler = super::super::FilesystemSchedulerPayloadStore::new(
+            storage.host.clone(), storage.volume.clone(), &storage.issuer.verifier(),
+            &storage.scope, 1024)?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            finite_content_budget(), &cancellation).map_err(|failure| failure.error)?;
+        let operation = OperationId::new();
+        let (file, hold) = scheduler.stage_with_native_work(
+            operation, "canonical-original-key", br#"{"input":1}"#, &work).await?;
+        assert_eq!(hold.bytes(), file.logical_owned_bytes()?);
+        let (retry, retry_hold) = scheduler.stage_with_native_work(
+            operation, "canonical-original-key", br#"{"input":1}"#, &work).await?;
+        assert_eq!(retry, file);
+        assert_eq!(scheduler.stage(operation, "canonical-original-key", br#"{"input":1}"#).await?, file);
+        assert!(scheduler.stage_with_native_work(
+            operation, "canonical-original-key", br#"{"input":2}"#, &work).await.is_err());
+        drop(retry);
+        drop(retry_hold);
+        drop(file);
+        drop(hold);
+        let mut denied = finite_content_budget();
+        denied.bytes_hashed = "canonical-original-key".len() as u64 - 1;
+        let denied_work = acyclic_fs::NativeMaterializationWork::new(
+            denied, &cancellation).map_err(|failure| failure.error)?;
+        assert!(matches!(scheduler.stage_with_native_work(
+            OperationId::new(), "canonical-original-key", b"never", &denied_work).await,
+            Err(crate::NativeRootVerificationError::Native(
+                acyclic_fs::NativeTreeMaterializationError::Work(_)))));
+        assert_eq!(denied_work.receipt().bytes_hashed, 0);
+        assert_eq!(denied_work.receipt().backend_write_operations, 0);
+        Ok(())
+    }
+
     struct TextModel(Arc<Mutex<Vec<ModelRequest>>>);
 
     fn synthetic_token_count(
