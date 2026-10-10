@@ -154,6 +154,28 @@ installed_graphcoder() {
     --full "$scenario_parent/scenario"
 }
 
+# Keep external-host inputs pinned and exercise the source-built CLI, including
+# native lost-ack recovery and cancellation against the real installed Pi host.
+pinned_pi() {
+  local hosts="$PWD/plugin/tests/hosts" binary="$target_dir-release/dist/acyclic"
+  export ACYCLIC_BINARY="$binary"
+  export ACYCLIC_PI_TEST_NODE="$(command -v node)"
+  export ACYCLIC_PI_TEST_CLI="$hosts/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"
+  export ACYCLIC_PI_TEST_PROVIDER_DIR="$hosts"
+  (
+    cd "$hosts"
+    npm ci --ignore-scripts --no-audit --no-fund
+    npm run test:pi-context
+    npm run test:pi-bootstrap
+    npm run test:pi-session
+    npm run test:pi-installation
+    npm run test:pi-service
+    node --experimental-strip-types --test pi-native-recursive.test.ts
+  )
+  cargo test -p acyclic-plugin --bin acyclic --all-features --locked \
+    required_pinned_pi_native -- --ignored --test-threads=1
+}
+
 case "$lane" in
   gate)
     # These crates have independent workspaces and are absent from the root.
@@ -297,6 +319,7 @@ case "$lane" in
     bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"
     finish napi
     installed_graphcoder
+    pinned_pi
     stream_binding
     client_bindings
     bun run test
@@ -451,11 +474,14 @@ case "$lane" in
     fi
     source scripts/ensure-bun.sh
     cargo fetch --locked
+    background release release_plugin
     background napi native_binding
     nextest --workspace --all-features --locked
     cargo test --workspace --all-features --locked --doc
-    finish napi
+    finish napi release
     native_mount_tests
+    installed_graphcoder
+    pinned_pi
     ;;
   macos)
     bash scripts/test-ensure-rust-target.sh
@@ -470,6 +496,7 @@ case "$lane" in
     cargo test --workspace --all-features --locked --doc
     finish napi x86_64
     installed_graphcoder
+    pinned_pi
     stream_binding
     client_bindings
     native_mount_tests

@@ -167,3 +167,24 @@ cargo install --path rust/crates/harness --locked `
     --root $GraphcoderInstall --target-dir "$CargoTargetDir-release"
 node scripts/test-graphcoder.mjs (Join-Path $GraphcoderInstall 'bin/graphcoder.exe') `
     --full $GraphcoderScenario
+
+# Exact external-host lockfile inputs; every test uses this source-built CLI.
+$PiHosts = (Resolve-Path 'plugin/tests/hosts').Path
+$env:ACYCLIC_BINARY = Join-Path $ReleaseTargetDir 'dist/acyclic.exe'
+$env:ACYCLIC_PI_TEST_NODE = (Get-Command node).Source
+$env:ACYCLIC_PI_TEST_CLI = Join-Path $PiHosts 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'
+$env:ACYCLIC_PI_TEST_PROVIDER_DIR = $PiHosts
+Push-Location $PiHosts
+try {
+    npm ci --ignore-scripts --no-audit --no-fund
+    npm run test:pi-context
+    npm run test:pi-bootstrap
+    npm run test:pi-session
+    npm run test:pi-installation
+    npm run test:pi-service
+    node --experimental-strip-types --test pi-native-recursive.test.ts
+} finally {
+    Pop-Location
+}
+cargo test -p acyclic-plugin --bin acyclic --all-features --locked `
+    required_pinned_pi_native -- --ignored --test-threads=1
