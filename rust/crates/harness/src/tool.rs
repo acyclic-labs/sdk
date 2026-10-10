@@ -177,6 +177,13 @@ pub struct ToolResult {
 
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
+    /// Identifies an adapter that always executes through this exact resumable
+    /// machine's admitted journal and committed outbox. This is not a fallback
+    /// flag: registries require full definition and machine identity equality.
+    fn resumable_machine_identity(&self) -> Option<crate::workflow::MachineIdentity> {
+        None
+    }
+
     /// Checks invocation-specific resource grants before a result is replayed,
     /// dispatched, or reconciled. A scoped adapter must reject a missing scope.
     fn authorize(

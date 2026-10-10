@@ -59,6 +59,7 @@ pub mod resource_preparation;
 pub mod resources;
 pub mod runtime;
 pub mod scheduler;
+pub mod source_authorization;
 pub mod store;
 pub mod tool;
 pub mod turn;
