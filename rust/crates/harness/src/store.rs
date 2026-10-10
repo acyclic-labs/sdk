@@ -2801,6 +2801,8 @@ mod tests {
         assert_eq!(provider.observation_maximum.load(Ordering::SeqCst), 2);
         assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
         assert_eq!(cursor.after_revision, 9_997);
+        #[cfg(feature = "filesystem")]
+        assert_measured_history_receipts(&provider, &reader, &cursor, limits, &first).await?;
         let encoded =
             serde_json::to_vec(&first.cursor).map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(
@@ -2847,6 +2849,153 @@ mod tests {
             Err(Error::Unauthorized(_))
         ));
         assert_cold_operation_lookup(&provider, &reader, last).await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "filesystem")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "same production history cut with raw-byte, budget, cancellation and fault receipt controls"
+    )]
+    async fn assert_measured_history_receipts(
+        provider: &crate::test_stream::LostSessionAck<MemoryStream>,
+        reader: &HistoryReader<crate::test_stream::LostSessionAck<MemoryStream>>,
+        cursor: &HistoryCursor,
+        limits: HistoryReadLimits,
+        expected: &HistoryPage,
+    ) -> Result<()> {
+        use acyclic_fs::{CancellationToken, WorkBudget, WorkCounters};
+        use std::sync::atomic::Ordering;
+        use std::mem::size_of;
+        let bytes = acyclic_stream::MAX_RECORD_BYTES as u64 * 4;
+        let budget = WorkBudget {
+            authority_records_read: 8, authority_bytes_read: bytes,
+            backend_read_operations: 8, source_bytes_read: bytes,
+            bytes_copied: bytes, output_bytes: bytes,
+            items_examined: 8, items_returned: 8,
+            allocation_operations: 8, peak_allocation_bytes: bytes,
+            ..WorkBudget::default()
+        };
+        let cancellation = CancellationToken::new();
+        let original = reader.read_page_counted(cursor, limits).await?;
+        let first_bytes = original.records[0].value.len() as u64;
+        let last_bytes = original.records[1].value.len() as u64;
+        provider.reset_io();
+        let pin = reader.pin_measured(cursor.after_revision, budget, &cancellation).await
+            .map_err(|failure| failure.error)?;
+        assert_eq!(pin.value.through_revision, cursor.through_revision + 1);
+        assert_eq!(pin.work.backend_read_operations, 1);
+        assert_eq!(pin.work.authority_records_read, 0);
+        assert_eq!(pin.work.authority_bytes_read, 0);
+        assert_eq!(provider.io_snapshot().tails, 1);
+        assert_eq!(provider.io_snapshot().reads, 0);
+        provider.reset_io();
+        let page = reader.read_page_measured(cursor, limits, budget, &cancellation).await
+            .map_err(|failure| failure.error)?;
+        assert_eq!(&page.value, expected);
+        let io = provider.io_snapshot();
+        assert_eq!(page.work.backend_read_operations, io.reads + io.tails);
+        assert_eq!(page.work.backend_read_operations, 2);
+        assert_eq!(page.work.authority_records_read, 2);
+        assert_eq!(page.work.authority_bytes_read, io.read_bytes);
+        assert_eq!(page.work.source_bytes_read, original.bytes);
+        assert_eq!(page.work.output_bytes, original.bytes);
+        assert_eq!(page.work.items_returned, 2);
+        assert!(page.work.peak_allocation_bytes >=
+            cursor.authority.id.len() as u64 + first_bytes + size_of::<crate::core::Event>() as u64 * 2);
+        let exact = page.work;
+        provider.reset_io();
+        let repeated = reader.read_page_measured(cursor, limits, exact, &cancellation).await
+            .map_err(|failure| failure.error)?;
+        assert_eq!(repeated, page);
+        let remaining = pin.work.remaining(budget)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let subsequent = reader.read_page_measured(cursor, limits, remaining, &cancellation).await
+            .map_err(|failure| failure.error)?;
+        pin.work.checked_add(subsequent.work)
+            .and_then(|work| work.verify(budget))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        for (fault, records, received_bytes) in [
+            (1, 1, first_bytes),
+            (2, 3, first_bytes + last_bytes * 2),
+            (3, 0, 0),
+            (4, 1, 7),
+            (5, 1, acyclic_stream::MAX_RECORD_BYTES as u64 + 1),
+            (6, 1, first_bytes),
+        ] {
+            provider.reset_io();
+            provider.history_read_fault.store(fault, Ordering::SeqCst);
+            let failure = reader.read_page_measured(
+                cursor,
+                HistoryReadLimits { maximum_bytes: bytes, ..limits },
+                budget,
+                &cancellation,
+            ).await.expect_err("mutated source must reject");
+            assert_eq!(failure.work.backend_read_operations, 2);
+            assert_eq!(failure.work.authority_records_read, records);
+            assert_eq!(failure.work.authority_bytes_read, received_bytes);
+            assert_eq!(failure.work.source_bytes_read, received_bytes);
+            assert_eq!(failure.work.output_bytes, 0);
+            assert_eq!(failure.work.items_returned, 0);
+            assert_eq!(reader.read_page_measured(cursor, limits, budget, &cancellation).await
+                .map_err(|failure| failure.error)?.value, *expected);
+        }
+        for (narrow, calls, records) in [
+            (WorkBudget { backend_read_operations: 0, ..budget }, 0, Some(0)),
+            (WorkBudget { backend_read_operations: 1, ..budget }, 1, Some(0)),
+            (WorkBudget { authority_bytes_read: first_bytes - 1, ..budget }, 2, Some(1)),
+            (WorkBudget { output_bytes: first_bytes - 1, ..budget }, 2, Some(1)),
+            (WorkBudget { peak_allocation_bytes: exact.peak_allocation_bytes - 1, ..budget }, 2, None),
+        ] {
+            provider.reset_io();
+            let failure = reader.read_page_measured(cursor, limits, narrow, &cancellation).await
+                .expect_err("one narrow budget must reject without losing its spent prefix");
+            assert_eq!(failure.work.backend_read_operations, calls);
+            if let Some(records) = records {
+                assert_eq!(failure.work.authority_records_read, records);
+            } else {
+                assert!((1..=2).contains(&failure.work.authority_records_read));
+            }
+            let io = provider.io_snapshot();
+            assert_eq!(failure.work.backend_read_operations, io.reads + io.tails);
+            assert_eq!(failure.work.authority_bytes_read, io.read_bytes);
+            assert_eq!(failure.work.output_bytes, 0);
+        }
+        provider.reset_io();
+        let invalid = HistoryCursor { authority: Authority { id: "other".into(), ..cursor.authority.clone() }, ..cursor.clone() };
+        let failure = reader.read_page_measured(&invalid, limits, budget, &cancellation).await
+            .expect_err("wrong audience must reject before SDK IO");
+        assert!(matches!(failure.error, Error::Unauthorized(_)));
+        assert_eq!(*failure.work, WorkCounters::default());
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        for failure in [
+            reader.pin_measured(0, budget, &cancelled).await.expect_err("cancelled pin"),
+            reader.read_page_measured(cursor, limits, budget, &cancelled).await.expect_err("cancelled read"),
+        ] {
+            assert_eq!(*failure.work, WorkCounters::default());
+        }
+        assert_eq!(provider.io_snapshot().reads + provider.io_snapshot().tails, 0);
+        let unbounded = reader.pin_measured(0, WorkBudget::UNBOUNDED, &cancellation).await
+            .expect_err("measured history cannot silently accept unbounded work");
+        assert_eq!(*unbounded.work, WorkCounters::default());
+        let terminal = HistoryCursor { after_revision: cursor.through_revision, ..cursor.clone() };
+        let empty = reader.read_page_measured(&terminal, limits, budget, &cancellation).await
+            .map_err(|failure| failure.error)?;
+        assert!(empty.value.events.is_empty());
+        assert_eq!(empty.work.backend_read_operations, 1);
+        assert_eq!(empty.work.authority_records_read, 0);
+        provider.reset_io();
+        let during_tail = CancellationToken::new();
+        *provider.history_cancel_after_tail.lock()
+            .map_err(|_| Error::Storage("history cancellation fixture poisoned".into()))? =
+            Some(during_tail.clone());
+        let failure = reader.read_page_measured(cursor, limits, budget, &during_tail).await
+            .expect_err("cancellation during tail must prevent the next SDK read");
+        assert_eq!(failure.work.backend_read_operations, 1);
+        assert_eq!(failure.work.authority_records_read, 0);
+        assert_eq!(provider.io_snapshot().tails, 1);
+        assert_eq!(provider.io_snapshot().reads, 0);
         Ok(())
     }
 

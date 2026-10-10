@@ -61,6 +61,8 @@ pub struct LostSessionAck<P = MemoryStream> {
     pub hide_effect_node_read: std::sync::atomic::AtomicBool,
     pub hide_effect_transition_position: std::sync::atomic::AtomicU64,
     pub history_read_fault: std::sync::atomic::AtomicU8,
+    #[cfg(feature = "filesystem")]
+    pub history_cancel_after_tail: std::sync::Mutex<Option<acyclic_fs::CancellationToken>>,
     pub message_head_race: std::sync::Mutex<Option<acyclic_stream::CommitRequest>>,
     pub aggregate_commit_fault: std::sync::atomic::AtomicU8,
     pub aggregate_commits: std::sync::atomic::AtomicUsize,
@@ -189,6 +191,8 @@ impl<P> LostSessionAck<P> {
             hide_effect_node_read: Default::default(),
             hide_effect_transition_position: Default::default(),
             history_read_fault: Default::default(),
+            #[cfg(feature = "filesystem")]
+            history_cancel_after_tail: Default::default(),
             message_head_race: Default::default(),
             aggregate_commit_fault: Default::default(),
             aggregate_commits: Default::default(),
@@ -246,7 +250,14 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
                 return Ok(stale - 1);
             }
         }
-        self.inner.tail(path).await
+        let result = self.inner.tail(path).await;
+        #[cfg(feature = "filesystem")]
+        if let Some(cancellation) = self.history_cancel_after_tail
+            .lock().map_err(|_| StreamError::Unavailable)?.take()
+        {
+            cancellation.cancel();
+        }
+        result
     }
     async fn bounds(
         &self,
@@ -436,6 +447,17 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
                 if let Some(record) = records.first_mut() {
                     record.value = Bytes::from_static(b"corrupt");
                 }
+            }
+            5 => {
+                if let Some(record) = records.first_mut() {
+                    record.value = Bytes::from(vec![0; acyclic_stream::MAX_RECORD_BYTES + 1]);
+                }
+            }
+            6 => {
+                return Ok(Box::pin(futures::stream::iter(
+                    records.into_iter().take(1).map(Ok)
+                        .chain(std::iter::once(Err(StreamError::Unavailable))),
+                )));
             }
             _ => {}
         }

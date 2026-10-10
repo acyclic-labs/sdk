@@ -9,6 +9,22 @@ use acyclic_stream::{Stream, StreamClient, StreamProvider};
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "filesystem")]
+mod measured;
+
+// The portable reader remains independent of the optional Filesystem SDK.
+// A receipt observer instruments this same engine, never another reader.
+trait HistoryIo: Send {
+    fn check_cancellation(&self) -> Result<()>;
+    fn begin_call(&mut self) -> Result<()>;
+    fn receive_record(&mut self, bytes: u64) -> Result<()>;
+    fn release_record(&mut self, bytes: u64) -> Result<()>;
+    fn clone_authority(&mut self, authority: &Authority) -> Result<Authority>;
+    fn reserve_events(&mut self, events: &mut Vec<Event>, maximum: usize) -> Result<()>;
+    fn admit_output(&self, bytes: u64, count: u64) -> Result<()>;
+    fn return_output(&mut self, bytes: u64, count: u64) -> Result<()>;
+}
+
 /// Explicit archival position. Revisions are inclusive; later appends are excluded.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -493,14 +509,27 @@ impl<P: StreamProvider> HistoryReader<P> {
 
     /// Captures a committed boundary once for explicit archival traversal.
     pub async fn pin(&self, after_revision: u64) -> Result<HistoryCursor> {
-        let through_revision = self.committed_tail().await?;
+        self.pin_with_work(after_revision, None).await
+    }
+
+    async fn pin_with_work(
+        &self,
+        after_revision: u64,
+        mut work: Option<&mut dyn HistoryIo>,
+    ) -> Result<HistoryCursor> {
+        let through_revision = self.committed_tail_with_work(&mut work).await?;
         if after_revision > through_revision {
             return Err(Error::Invalid(
                 "history cursor exceeds committed tail".into(),
             ));
         }
+        let authority = match work.as_deref_mut() {
+            Some(work) => work.clone_authority(self.verifier.audience())?,
+            None => self.verifier.audience().clone(),
+        };
+        if let Some(work) = work.as_deref_mut() { work.check_cancellation()?; }
         Ok(HistoryCursor {
-            authority: self.verifier.audience().clone(),
+            authority,
             after_revision,
             through_revision,
         })
@@ -512,7 +541,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         cursor: &HistoryCursor,
         limits: HistoryReadLimits,
     ) -> Result<HistoryPage> {
-        self.read_page_counted(cursor, limits)
+        self.read_page_with_work(cursor, limits, false, None)
             .await
             .map(|read| read.page)
     }
@@ -521,6 +550,16 @@ impl<P: StreamProvider> HistoryReader<P> {
         &self,
         cursor: &HistoryCursor,
         limits: HistoryReadLimits,
+    ) -> Result<CountedHistoryPage> {
+        self.read_page_with_work(cursor, limits, true, None).await
+    }
+
+    async fn read_page_with_work(
+        &self,
+        cursor: &HistoryCursor,
+        limits: HistoryReadLimits,
+        retain_records: bool,
+        mut work: Option<&mut dyn HistoryIo>,
     ) -> Result<CountedHistoryPage> {
         self.verifier.verify_audience(&cursor.authority)?;
         if limits.maximum_events == 0
@@ -531,18 +570,26 @@ impl<P: StreamProvider> HistoryReader<P> {
                 "history read bounds or cursor are invalid".into(),
             ));
         }
-        if cursor.through_revision > self.committed_tail().await? {
+        if cursor.through_revision > self.committed_tail_with_work(&mut work).await? {
             return Err(Error::Invalid(
                 "history cursor exceeds committed tail".into(),
             ));
         }
-        let mut next = cursor.clone();
+        let mut next = match work.as_deref_mut() {
+            Some(work) => HistoryCursor {
+                authority: work.clone_authority(&cursor.authority)?,
+                after_revision: cursor.after_revision,
+                through_revision: cursor.through_revision,
+            },
+            None => cursor.clone(),
+        };
         let count = u32::try_from(
             (cursor.through_revision - cursor.after_revision).min(u64::from(limits.maximum_events)),
         )
         .map_err(|_| Error::Invalid("history page count exceeds platform bounds".into()))?;
         let mut events = Vec::new();
         if count == 0 {
+            if let Some(work) = work.as_deref_mut() { work.check_cancellation()?; }
             return Ok(CountedHistoryPage {
                 page: HistoryPage {
                     events,
@@ -552,10 +599,18 @@ impl<P: StreamProvider> HistoryReader<P> {
                 bytes: 0,
             });
         }
+        if let Some(work) = work.as_deref_mut() { work.begin_call()?; }
         let mut records = self.stream.read(cursor.after_revision, count).await?;
         let mut retained_records = Vec::new();
         let mut bytes = 0_u64;
-        while let Some(record) = records.try_next().await? {
+        loop {
+            if let Some(work) = work.as_deref_mut() { work.check_cancellation()?; }
+            let Some(record) = records.try_next().await? else { break; };
+            let record_bytes = record.value.len() as u64;
+            if let Some(work) = work.as_deref_mut() {
+                work.receive_record(record_bytes)?;
+                work.check_cancellation()?;
+            }
             if events.len() >= count as usize || record.sequence != next.after_revision {
                 return Err(Error::Storage(
                     "history page is not bounded and contiguous".into(),
@@ -571,14 +626,27 @@ impl<P: StreamProvider> HistoryReader<P> {
                 next.after_revision,
                 &record,
             )?;
+            if let Some(work) = work.as_deref_mut() {
+                work.admit_output(bytes, events.len() as u64 + 1)?;
+                work.reserve_events(&mut events, count as usize)?;
+            }
             next.after_revision = event.revision;
             events.push(event);
-            retained_records.push(record);
+            if retain_records {
+                retained_records.push(record);
+            } else {
+                drop(record);
+                if let Some(work) = work.as_deref_mut() { work.release_record(record_bytes)?; }
+            }
         }
         if events.is_empty() {
             return Err(Error::Storage(
                 "history page stopped before its pinned boundary".into(),
             ));
+        }
+        if let Some(work) = work.as_deref_mut() {
+            work.check_cancellation()?;
+            work.return_output(bytes, events.len() as u64)?;
         }
         Ok(CountedHistoryPage {
             page: HistoryPage {
@@ -591,7 +659,17 @@ impl<P: StreamProvider> HistoryReader<P> {
     }
 
     async fn committed_tail(&self) -> Result<u64> {
-        match self.stream.tail().await {
+        self.committed_tail_with_work(&mut None).await
+    }
+
+    async fn committed_tail_with_work(
+        &self,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<u64> {
+        if let Some(work) = work.as_deref_mut() { work.begin_call()?; }
+        let result = self.stream.tail().await;
+        if let Some(work) = work.as_deref_mut() { work.check_cancellation()?; }
+        match result {
             Ok(tail) => Ok(tail),
             Err(acyclic_stream::StreamError::NotFound) => Ok(0),
             Err(error) => Err(error.into()),

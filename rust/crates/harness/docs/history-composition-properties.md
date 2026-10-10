@@ -84,6 +84,44 @@ The default now uses the finite terminal cache and bounded archive consumers.
 These historical effect-IO measurements do not qualify the changed source,
 Filesystem byte retention, process RSS or 10,000 model turns.
 
+## Measured canonical history pages
+
+`HistoryReader::pin_measured(after_revision, budget, cancellation)` and
+`read_page_measured(cursor, limits, budget, cancellation)` return
+`MeasuredResult<OperationReceipt<_>, Error>` over the same original
+committed-tail and authenticated page implementation. A measured request
+requires finite `WorkBudget` allowances. SDK Stream `tail` and `read`
+invocations consume `backend_read_operations`; failed invocations still count.
+Those counts do not claim inaccessible provider-internal physical OS IO.
+The tail scalar exposes no encoded metadata size, so metadata bytes are not
+invented.
+
+Each received record's actual `value.len()` consumes
+`authority_bytes_read` and `source_bytes_read`, and each received record
+consumes `authority_records_read` and `items_examined`, before position,
+size, canonical decoding or issuer-proof rejection. Oversized records,
+corrupt payloads, duplicate positions and a failure after an accepted prefix
+retain that exact source work. `output_bytes` means the original canonical
+source bytes represented by successfully returned events; no accepted event
+is re-encoded to manufacture a receipt. Failed pages return no output items.
+
+Memory accounting covers observable owned vector capacities, the copied
+cursor authority string and simultaneously retained logical raw byte buffers.
+Opaque provider, protobuf/serde and allocator-internal allocations are
+excluded, not guessed. Known vector growth and SDK calls are admitted before
+the operation; a larger-than-allowed raw record preserves its actual received
+bytes in the failure receipt. Cancellation is checked before SDK calls and
+record polls, and after the tail and each received record. Callers aggregate
+success/failure receipts and pass `WorkCounters::remaining` to later work.
+Ordinary page reads no longer allocate an unused raw-record retention vector;
+the existing counted checkpoint reader retains its original records.
+
+The original 10,000-event cold fixture exercises these receipts against
+provider-observed calls and source bytes, exact-budget retry, one-short
+budgets, cancellation before IO and during the tail, empty pinned pages,
+wrong audiences, oversized/corrupt/duplicate records and partial-stream
+failure. This adds no second reader, projection or journal.
+
 ## Verification surfaces
 
 The native library tests exercise authenticated snapshot restoration, malformed
