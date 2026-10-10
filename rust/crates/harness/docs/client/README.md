@@ -1,4 +1,4 @@
-# acyclic-client
+# Harness client views
 
 Pure, bounded hypotheses over demanded immutable authoritative references. The
 kernel has no IO, authority issuer, domain reducer, journal, admission route,
@@ -32,7 +32,7 @@ let snapshot = client.view(&key, &[branch])?;
 client.discard(branch)?; // hypothesis disposal, never provider cancellation
 ```
 
-Run `cargo run -p acyclic-client-harness-consumer --example harness_views`. This repository qualification fixture is excluded from the independent core archive. It uses the existing workspace test infrastructure. This concrete public
+Run `cargo run -p acyclic-harness --example client_views --no-default-features`. The client primitive is `acyclic_harness::client`; its tests and examples use the existing Harness package and qualification infrastructure. This concrete public
 consumer uses Harness `Reducer`, `ConversationMessage`, `FileRef`, original
 `OperationId`, `Scheduler` and lease fences. Domain validation/reduction remains
 in Harness. Its private in-process snapshot envelope represents a trusted host

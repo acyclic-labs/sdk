@@ -1,13 +1,6 @@
 # CL1 qualification and simplification audit
 
-Scope: the portable speculation/view kernel, data-only hypothesis export,
-public Harness consumer, tests and examples in this crate. Workspace membership,
-lockfile and the coordinator-reserved publication-list entry are additive. The
-private `qualification/harness-consumer` workspace member is coordinator-reserved
-and runs through the existing workspace qualification infrastructure.
-CL2–CL5 frameworks, transport/checkpoint recovery, durable/shared adapters and
-inference computation are excluded. No existing production domain source or CI
-orchestration was changed.
+Scope: the portable Harness client speculation/view module, data-only hypothesis export, public Harness consumer, tests and examples. All client and optimistic work lives in the existing Harness package. There is no standalone client crate, private consumer package or separate release entry. CL2–CL5 frameworks, transport/checkpoint recovery, durable/shared adapters and inference computation are excluded. Existing domain reducers and CI orchestration are unchanged.
 
 Baseline independently verified with `git ls-remote origin refs/heads/main`:
 `e646b77d440631af72eecb29411b7c7497687994`. The owner subsequently rebased onto
@@ -48,7 +41,7 @@ The generic `Basis` must include authority/generation/revision/content identity.
 
 ## Production transition evidence
 
-`tests/transitions.rs` calls the real public kernel. Ten scenarios cover explicit
+`tests/client_transitions.rs` calls the real public kernel. Ten scenarios cover explicit
 views, stable value/basis reference identity, exact duplicate observations,
 reordered/delayed admission, missing evidence, independent concurrent hypotheses,
 different outcomes, rejection, indeterminate completion, cancellation, partial
@@ -67,7 +60,7 @@ infinite schedules. A separate 10,000-revision trace checks constant residency a
 one adapter work step per canonical update. With 16 active independent branches,
 one changed key emits exactly one hypothesis notification and three work visits.
 
-The private fixture's `examples/harness_views.rs` and `tests/public_consumer.rs` compile the same consumer
+Harness `examples/client_views.rs` and `tests/client_public_consumer.rs` compile the same consumer
 on native and WASM. Harness `Reducer`, canonical `ConversationMessage`/`FileRef`,
 original `OperationId`, `Scheduler` and real lease fences own domain semantics.
 It demonstrates message prediction plus concurrent authoritative data, provisional
@@ -93,7 +86,7 @@ not change its source blob `49bbf0e157ab7b2cf756dee88e4d66ada4a9afa8`.
 Windows x86_64, Rust 1.98.1, existing workspace `dev` profile (`opt-level=1`),
 Divan 0.1.21 with its allocation profiler:
 
-`cargo bench -p acyclic-client --bench demand --profile dev --locked -- --sample-count 1000 --max-time 0.5`
+`cargo bench -p acyclic-harness --bench client_demand --profile dev --locked -- --sample-count 1000 --max-time 0.5`
 
 | Active records | Canonical view median | Predicted view median | Canonical reconciliation median | Selective reconciliation median | Cold canonical median / allocations / bytes | Cold speculative median / allocations / bytes |
 |---|---|---|---|---|---|---|
@@ -125,18 +118,9 @@ There is one kernel and one typed adapter seam. No reducer, authority ledger,
 provider lifecycle, journal, transport, framework engine or backward compatibility
 path was copied. Existing reducers remain in their own crates. The numeric test
 adapter is only a bounded kernel fixture; the public consumer uses actual Harness
-reducers. No replaced production path exists in this new crate.
+reducers. No replaced production path exists in this new module.
 
-The audit removed an avoidable package-time coupling: the real-domain public
-consumer is now a private workspace qualification fixture, excluded from the
-core archive. The core has no Harness or UUID dependency, even in its dev graph.
-The fixture is compiled/run by ordinary workspace tests, with no CI changes or
-separate verification engine. The plain initial archive failed because Harness
-0.2.0 was not yet published; a temporary explicit local companion patch produced
-a candidate archive only as source-closure evidence. That failed attempt and
-patched candidate are historical, not publisher/registry passes. After isolation,
-ordinary unpatched Cargo packaging succeeds for the independent core. No registry
-publication occurred.
+The initial standalone packaging and private qualification fixture were removed after the human required all client and optimistic work inside Harness. The unchanged kernel now has one public Harness module; its tests, example and benchmark use the existing package. Both new crates, workspace members, standalone lock entries and release entry are deleted together. Earlier standalone package archives, patched attempts and fresh archive consumer results are historical source evidence only. They do not qualify the final Harness package. No registry publication occurred.
 
 Retained structures have concrete purposes: keyed demand avoids lifetime history;
 original-operation index rejects duplicate live identity and correlates receipts;
@@ -167,6 +151,6 @@ the public Harness consumer. Rust 1.98.1 and wasm-bindgen-test runner 0.2.117 we
 used. These receipts remain scoped source evidence; the later package/fixture
 partition requires affected closure qualification below.
 
-Open: final independent archive/fresh consumer and relocated-fixture platform
+Open: final Harness package/current consumer and relocated-module platform
 qualification; required exact-head SDK Qualification; qualified PR merge and
 independent actual-main SHA/tree verification. An open gate is not a pass.

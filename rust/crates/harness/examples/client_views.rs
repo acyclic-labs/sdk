@@ -8,7 +8,7 @@
     reason = "example assertions qualify the public consumer"
 )]
 
-use acyclic_client::*;
+use acyclic_harness::client::*;
 use acyclic_harness::{
     AgentId, Capabilities, IdempotencyKey, OperationId,
     conversation::{

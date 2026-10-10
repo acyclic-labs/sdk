@@ -1,4 +1,4 @@
-use acyclic_client::*;
+use acyclic_harness::client::*;
 use serde::{Deserialize, Serialize};
 use std::{cell::Cell, rc::Rc, sync::Arc};
 

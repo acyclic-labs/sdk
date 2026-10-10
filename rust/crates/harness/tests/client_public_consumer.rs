@@ -1,5 +1,5 @@
 //! Reducer-backed public consumer compiled identically for native and WASM.
-#[path = "../examples/harness_views.rs"]
+#[path = "../examples/client_views.rs"]
 mod consumer;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_test::*;
