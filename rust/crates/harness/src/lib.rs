@@ -53,6 +53,7 @@ pub mod model;
 #[cfg(feature = "objects")]
 pub mod objects;
 mod obs;
+mod platform_time;
 pub mod projection;
 pub mod registry;
 pub mod resources;

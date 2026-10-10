@@ -1047,7 +1047,7 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
                 if let Some(outcome) = self.outcome(task_id).await? {
                     return Ok(outcome);
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                crate::platform_time::sleep(std::time::Duration::from_millis(delay_ms)).await?;
                 delay_ms = delay_ms.saturating_mul(2).min(1_000);
             }
         })
@@ -1176,7 +1176,7 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
                 if let Some(outcome) = self.outcome(task_id).await? {
                     return Ok(outcome);
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                crate::platform_time::sleep(std::time::Duration::from_millis(delay_ms)).await?;
                 delay_ms = delay_ms.saturating_mul(2).min(1_000);
             }
         })
@@ -1602,17 +1602,11 @@ impl TaskRunLimits {
         let Some(deadline) = self.deadline_epoch_ms else {
             return Ok(None);
         };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| Error::Invalid("system time precedes Unix epoch".into()))?
-            .as_millis();
-        if u128::from(deadline) <= now {
+        let now = crate::platform_time::unix_millis()?;
+        if deadline <= now {
             return Err(Error::Invalid("task deadline has expired".into()));
         }
-        Ok(Some(std::time::Duration::from_millis(
-            u64::try_from(u128::from(deadline) - now)
-                .map_err(|_| Error::Invalid("task deadline is not representable".into()))?,
-        )))
+        Ok(Some(std::time::Duration::from_millis(deadline - now)))
     }
 
     fn allows(&self, child: &Self) -> Result<()> {
@@ -3417,9 +3411,7 @@ impl AgentHarness {
                     input,
                 );
                 let output = match remaining {
-                    Some(duration) => tokio::time::timeout(duration, run)
-                        .await
-                        .map_err(|_| Error::Invalid("task deadline has expired".into()))??,
+                    Some(duration) => crate::platform_time::timeout(duration, run).await??,
                     None => run.await?,
                 };
                 drop(extension_leases);
@@ -4071,7 +4063,8 @@ impl TaskContext {
             .scope
             .run_limits()
             .remaining()?
-            .map(|remaining| tokio::time::Instant::now() + remaining);
+            .map(crate::platform_time::Deadline::after)
+            .transpose()?;
         let binding = self
             .harness
             .model
@@ -4153,9 +4146,7 @@ impl TaskContext {
         let mut stream = binding.provider.generate(request, dispatch);
         loop {
             let next = match deadline {
-                Some(deadline) => tokio::time::timeout_at(deadline, stream.next())
-                    .await
-                    .map_err(|_| Error::Invalid("task deadline has expired".into()))?,
+                Some(deadline) => deadline.wait(stream.next()).await?,
                 None => stream.next().await,
             };
             let Some(event) = next else { break };
@@ -4971,7 +4962,7 @@ impl TaskContext {
         host.inbox(task, after, limit).await
     }
 
-    /// Waits at a recorded absolute timer boundary; live tasks use Tokio time.
+    /// Waits at a recorded absolute timer boundary; live tasks use platform time.
     pub async fn sleep_until(
         &self,
         operation_id: OperationId,
@@ -4991,14 +4982,11 @@ impl TaskContext {
                 .ok_or_else(|| Error::Unsupported("durable task state is not bound".into()))?;
             host.wait_until(task, operation_id, deadline_unix_ms).await
         } else {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|error| Error::Invalid(error.to_string()))?
-                .as_millis();
-            let remaining = u128::from(deadline_unix_ms).saturating_sub(now);
-            let remaining = u64::try_from(remaining).unwrap_or(u64::MAX);
-            tokio::time::sleep(std::time::Duration::from_millis(remaining)).await;
-            Ok(())
+            let now = crate::platform_time::unix_millis()?;
+            crate::platform_time::sleep(std::time::Duration::from_millis(
+                deadline_unix_ms.saturating_sub(now),
+            ))
+            .await
         }
     }
 
