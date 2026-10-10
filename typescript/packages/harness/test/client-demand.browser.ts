@@ -1,4 +1,4 @@
-import { DemandLoader, RequestScheduler, Harness, PageWindow, IndexedDbClientStore, HydrationCache,
+import { DemandLoader, RequestScheduler, Harness, PageWindow, IndexedDbClientStore, HydrationCache, ScheduledTransport,
   type FileRef, type OperationId } from "@acyclic-labs/harness";
 
 const result = document.querySelector<HTMLElement>("#result")!;
@@ -65,6 +65,39 @@ try {
   const baselineReads = reads - beforeBaselineReads;
   assert(coldBytes * 4 === baselineBytes && baselineReads === 4, "cold selective bound versus actual baseline");
 
+  // The reviewed cancellation failures also run on the actual installed browser
+  // path. Hold one real body read before IO while other readers join and cancel.
+  let release!: () => void;
+  const hold = new Promise<void>(resolve => { release = resolve; });
+  const slow = new DemandLoader({ ...source, load: async (file: FileRef, signal: AbortSignal) => { await hold; return source.load(file, signal); } }, scheduler, 2, 1, 4096);
+  const anchor = slow.read(selected);
+  const originalThen = Promise.prototype.then;
+  let attachments = 0, retainedAttachments = 0;
+  Promise.prototype.then = function(this: Promise<unknown>, ...args: Parameters<typeof originalThen>) {
+    attachments++;
+    return originalThen.apply(this, args);
+  } as typeof originalThen;
+  try {
+    for (let i = 0; i < 1000; i++) {
+      const abort = new AbortController(), before = attachments;
+      const reader = slow.read(selected, abort.signal);
+      retainedAttachments += attachments - before;
+      void reader.catch(() => {});
+      abort.abort();
+    }
+  } finally { Promise.prototype.then = originalThen; }
+  assert(retainedAttachments === 0 && slow.residency.demand === 1, "cancelled browser readers retained callbacks");
+  release(); await anchor; slow.dispose();
+  let closed = 0;
+  const handoffAbort = new AbortController();
+  const handoff = new ScheduledTransport({ connect: async () => {
+    queueMicrotask(() => queueMicrotask(() => handoffAbort.abort()));
+    return { async *[Symbol.asyncIterator]() {}, send: async () => {}, close: () => { closed++; } };
+  } }, scheduler, { connect: () => 1, send: () => 1 });
+  const handoffResult = await handoff.connect(new Map(), handoffAbort.signal).catch(error => error);
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  assert(handoffResult.name === "AbortError" && closed === 1, "cancelled browser connection lost cleanup");
+
   // Exercise the existing atomic browser transaction, retaining its honest
   // cursor-only contract. This is not projection-checkpoint recovery evidence.
   const databaseName = `harness-cl3-${crypto.randomUUID()}`;
@@ -78,7 +111,7 @@ try {
   demand.dispose(); baselineCache.clear(); scheduler.dispose(); harness.free();
   assert(scheduler.residency.requests === 0 && demand.residency.bytes === 0, "disposed residency");
   result.dataset.status = "passed";
-  result.textContent = JSON.stringify({ coldReads: 1, coldBytes, baselineReads, baselineBytes, warmReads: 100000, baselineMs, warmMs, warmTransferredBytes: 0, warmReceiptAllocations: 0, demandResidentBytes: boundedBytes, retainedEntries: 2 });
+  result.textContent = JSON.stringify({ coldReads: 1, coldBytes, baselineReads, baselineBytes, warmReads: 100000, baselineMs, warmMs, warmTransferredBytes: 0, warmReceiptAllocations: 0, demandResidentBytes: boundedBytes, retainedEntries: 2, cancelledReaderAttachments: retainedAttachments, cancelledConnectionCloses: closed });
 } catch (error) {
   result.dataset.status = "failed";
   result.textContent = error instanceof Error ? error.stack ?? error.message : String(error);
