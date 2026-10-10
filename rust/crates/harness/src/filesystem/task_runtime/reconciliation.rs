@@ -64,7 +64,7 @@ where
         let Some(transition) = journal.observe_latest_outbox().await? else {
             return self.finish_known_reconciliation(task, fence, lease).await;
         };
-        let context = self.harness.durable_context(task, operation).await?;
+        let context = self.task_context(task, fence.clone()).await?;
         for command in transition.commands.iter().take(maximum_commands as usize) {
             self.host.verify_execution_owner(task, fence.clone()).await?;
             let payload = crate::contract::json_from_slice(

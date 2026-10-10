@@ -502,7 +502,8 @@ async fn default_topology_mail_retains_exact_ack_and_rejects_mutations_after_res
 
 #[tokio::test]
 async fn subtree_cancellation_recovers_intent_without_claiming_provider_stop() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let mut fixture = Fixture::new().await?;
+    fixture.scope = RuntimeScope::new(fixture.scope.grants().clone(), fixture.scope.limits())?;
     let runtime = mailbox_runtime(&fixture).await?;
     let parent_lease = fixture.admit(&runtime).await?;
     runtime.task_host().start_task(&parent_lease).await?;
@@ -513,6 +514,22 @@ async fn subtree_cancellation_recovers_intent_without_claiming_provider_stop() -
     let grandchild = mailbox_child(&fixture, &runtime, child,
         LeaseFence::from(&child_lease.reservation), 131, &fixture.scope).await?;
     let sibling = mailbox_child(&fixture, &runtime, parent, fence.clone(), 132, &fixture.scope).await?;
+    // A real tool dispatch has happened, but its acknowledgement is unavailable.
+    // Requesting cancellation must not turn that uncertainty into proven stop.
+    {
+        let context = runtime.task_context(child, LeaseFence::from(&child_lease.reservation)).await?;
+        let command: WorkflowCommand = serde_json::from_value(
+            runtime.task_host().observe_admission(child).await?.initial.state["command"].clone(),
+        ).map_err(|error| Error::Invalid(error.to_string()))?;
+        let payload: Value = crate::contract::json_from_slice(
+            &context.read_file(&command.payload).await?,
+        ).map_err(|error| Error::Invalid(error.to_string()))?;
+        let commands = runtime.commands();
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(20),
+            commands.execute(context, LeaseFence::from(&child_lease.reservation), command, payload),
+        ).await.is_err());
+        assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 1);
+    }
     let operation = OperationId::from_bytes([133; 16]);
     let mut stale = fence.clone();
     stale.placement.push_str("-forged");
@@ -537,6 +554,8 @@ async fn subtree_cancellation_recovers_intent_without_claiming_provider_stop() -
     reopened.task_host().cancel(parent).await?;
     assert!(reopened.task_host().cancel_child_owned(parent, fence, child, operation).await.is_err());
     assert!(reopened.task_host().observe_task(child).await?.outcome.is_none());
+    assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.tool.reconciled.load(Ordering::SeqCst), 0);
     Ok(())
 }
 
@@ -643,5 +662,25 @@ async fn mailbox_model_checkpoints_one_item_before_new_admission_and_restarts_bo
     assert_eq!(provider.generated.load(Ordering::SeqCst), 1);
     assert!(matches!(reopened.task_host().outcome(task).await?, Some(Outcome::Succeeded(_))));
     assert_eq!(reopened.task_host().inbox(task, 0, 8).await?.len(), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn child_cancellation_cannot_borrow_the_hosts_broader_control_grant() -> Result<()> {
+    let mut fixture = Fixture::new().await?;
+    fixture.scope = fixture.scope.narrow(
+        fixture.scope.grants().without(&Capabilities::new(["operation:cancel"])),
+        fixture.scope.limits(),
+    )?;
+    let runtime = mailbox_runtime(&fixture).await?;
+    let lease = fixture.admit(&runtime).await?;
+    runtime.task_host().start_task(&lease).await?;
+    let parent = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+    let fence = LeaseFence::from(&lease.reservation);
+    let child = mailbox_child(&fixture, &runtime, parent, fence.clone(), 151, &fixture.scope).await?;
+    assert!(matches!(runtime.task_host().cancel_child_owned(
+        parent, fence, child, OperationId::from_bytes([152; 16]),
+    ).await, Err(Error::Unauthorized(_))));
+    assert!(!runtime.task_host().observe_task(child).await?.cancellation_requested);
     Ok(())
 }
