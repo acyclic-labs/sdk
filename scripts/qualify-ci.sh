@@ -446,7 +446,7 @@ case "$lane" in
     CHROMEDRIVER="$(command -v chromedriver)" \
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
     CHROMEDRIVER="$(command -v chromedriver)" \
-      cargo test -p acyclic-harness --features browser --target wasm32-unknown-unknown \
+      cargo test -p acyclic-harness --features wasm,filesystem --target wasm32-unknown-unknown \
         --test native_media_boundary --locked
     GECKODRIVER="$(command -v geckodriver)" \
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
