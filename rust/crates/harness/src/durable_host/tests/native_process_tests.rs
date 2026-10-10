@@ -844,6 +844,7 @@ where
     runtime
         .task_host()
         .admit(TaskAdmissionRecord {
+            resource_proofs: Vec::new(),
             operation_id: OperationId::from_bytes([53; 16]),
             task: identity,
             machine,

@@ -175,6 +175,7 @@ test("Rust owns durable task and batch projection identities", async () => {
   });
   const task = contracts.admitTask({
     ...common,
+    resource_proofs: [],
     operation_id: "12345678-1234-4234-8234-123456789abc",
     input: 4,
   });

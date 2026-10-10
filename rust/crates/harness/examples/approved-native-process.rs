@@ -123,6 +123,7 @@ where
     runtime
         .task_host()
         .admit(TaskAdmissionRecord {
+            resource_proofs: Vec::new(),
             operation_id: OperationId::from_bytes([3; 16]),
             task: identity,
             machine: machine_identity,

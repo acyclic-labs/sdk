@@ -696,6 +696,9 @@ pub struct TaskAdmissionRecord {
     pub output_schema: Value,
     /// Owning parent, if any.
     pub parent: Option<TaskId>,
+    /// Exact created-resource evidence, authenticated by the bound provider.
+    /// References alone never widen parent or root authority.
+    pub resource_proofs: Vec<crate::resource_preparation::ResourceCreationProofRef>,
     /// Effective grants at admission.
     pub grants: Capabilities,
     /// Effective numeric limits at admission.
@@ -771,6 +774,7 @@ impl TaskAdmissionRecord {
             input_schema,
             output_schema,
             parent,
+            resource_proofs: Vec::new(),
             grants,
             limits,
             run_limits,
@@ -780,6 +784,17 @@ impl TaskAdmissionRecord {
         };
         record.validate()?;
         Ok(record)
+    }
+
+    /// Binds exact provider evidence into this immutable child admission.
+    /// The state owner must authenticate every proof before deriving authority.
+    pub fn with_resource_proofs(
+        mut self,
+        proofs: Vec<crate::resource_preparation::ResourceCreationProofRef>,
+    ) -> Result<Self> {
+        self.resource_proofs = proofs;
+        self.validate()?;
+        Ok(self)
     }
 
     /// Validates the provider-neutral request independently of registration.
@@ -796,6 +811,20 @@ impl TaskAdmissionRecord {
             return Err(Error::Invalid(
                 "task and machine identities disagree".into(),
             ));
+        }
+        if !self.resource_proofs.is_empty() && self.parent.is_none() {
+            return Err(Error::Invalid(
+                "resource-derived admission requires a parent".into(),
+            ));
+        }
+        let mut created = BTreeSet::new();
+        for proof in &self.resource_proofs {
+            proof.validate()?;
+            if !created.insert(crate::contract::canonical_json_bytes(&proof.resource)?) {
+                return Err(Error::Invalid(
+                    "task admission repeats a created resource proof".into(),
+                ));
+            }
         }
         validate_task_schemas(&self.input_schema, &self.output_schema, true)?;
         validate_value(&self.input_schema, &self.input, "task input")?;
@@ -823,6 +852,7 @@ impl TaskAdmissionRecord {
         serde_json::json!({
             "contract": "harness.task-admission.v2",
             "operation_id": self.operation_id,
+            "resource_proofs": self.resource_proofs,
             "task": self.task,
             "machine": self.machine,
             "input": self.input,
@@ -5372,6 +5402,7 @@ impl DurableBatchRequest {
             .get(index)
             .ok_or_else(|| Error::Invalid("batch member index is missing".into()))?;
         Ok(TaskAdmissionRecord {
+            resource_proofs: Vec::new(),
             operation_id: self.operation_id(index),
             task: self.task.clone(),
             machine: self.machine.clone(),
@@ -7518,6 +7549,7 @@ mod tests {
         let task_id = TaskId::from_bytes([10; 16]);
         let input = serde_json::json!({"value": 3});
         let record = TaskAdmissionRecord {
+            resource_proofs: Vec::new(),
             operation_id,
             task: definition.identity().clone(),
             machine: machine.identity().clone(),
@@ -7633,6 +7665,7 @@ mod tests {
         let operation_id = OperationId::from_bytes([5; 16]);
         let scope = RuntimeScope::new(Capabilities::new([] as [String; 0]), Limits::default())?;
         let record = TaskAdmissionRecord {
+            resource_proofs: Vec::new(),
             operation_id,
             task: first.identity().clone(),
             machine: match &first.implementation {
@@ -8321,6 +8354,64 @@ mod tests {
                 .0
             );
         }
+        Ok(())
+    }
+    #[test]
+    fn created_resource_proofs_are_exact_canonical_child_data() -> Result<()> {
+        use crate::resource_preparation::ResourceCreationProofRef;
+        use crate::resources::{ProviderRef, ResourceKind, ResourceRef};
+
+        let wire: Value = serde_json::from_str(include_str!("../fixtures/v2/task-admission.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let mut admission = TaskAdmissionRecord::from_canonical_value(wire.clone())?;
+        let provider = ProviderRef::new("test", "creator", "1")?;
+        let proof = ResourceCreationProofRef {
+            provider: provider.clone(),
+            preparation: TaskId::from_bytes([71; 16]),
+            resource: ResourceRef::new(
+                ResourceKind::Sandbox,
+                provider.clone(),
+                b"child".to_vec(),
+                None,
+            )?,
+            evidence: ResourceRef::new(
+                ResourceKind::Stream,
+                provider,
+                b"allocation".to_vec(),
+                None,
+            )?,
+        };
+        assert!(
+            admission
+                .clone()
+                .with_resource_proofs(vec![proof.clone()])
+                .is_err()
+        );
+        admission.parent = Some(TaskId::from_bytes([72; 16]));
+        let original_grants = admission.grants.clone();
+        let child = admission.with_resource_proofs(vec![proof.clone()])?;
+        assert_eq!(child.grants, original_grants);
+        let canonical = child.canonical_value();
+        assert!(TaskAdmissionRecord::from_canonical_value(canonical.clone())? == child);
+        assert!(
+            child
+                .clone()
+                .with_resource_proofs(vec![proof.clone(), proof.clone()])
+                .is_err()
+        );
+        let mut changed = proof;
+        changed.preparation = TaskId::from_bytes([73; 16]);
+        let changed_child = child.clone().with_resource_proofs(vec![changed])?;
+        assert_ne!(
+            crate::contract::canonical_json_digest(&canonical)?,
+            crate::contract::canonical_json_digest(&changed_child.canonical_value())?
+        );
+        let mut missing = wire;
+        missing
+            .as_object_mut()
+            .ok_or_else(|| Error::Invalid("fixture is not an object".into()))?
+            .remove("resource_proofs");
+        assert!(TaskAdmissionRecord::from_canonical_value(missing).is_err());
         Ok(())
     }
 }

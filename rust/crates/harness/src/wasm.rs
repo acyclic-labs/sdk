@@ -217,6 +217,8 @@ struct WasmTaskAdmissionInput {
     machine_digest: Vec<u8>,
     #[tsify(type = "string | null")]
     parent: Option<TaskId>,
+    #[tsify(type = "readonly WasmResourceCreationProofRefWire[]")]
+    resource_proofs: Vec<crate::resource_preparation::ResourceCreationProofRef>,
     #[tsify(type = "readonly string[]")]
     grants: Vec<String>,
     limits: WasmLimitsInput,
@@ -703,6 +705,12 @@ export interface WasmExtensionAdmissionWire {
     readonly selected: readonly WasmExtensionDependencyWire[];
     readonly configurations: readonly WasmExtensionConfigurationWire[];
 }
+export interface WasmResourceCreationProofRefWire {
+    readonly provider: WasmProviderRefWire;
+    readonly preparation: string;
+    readonly resource: WasmResourceRefWire;
+    readonly evidence: WasmResourceRefWire;
+}
 export interface WasmTaskAdmissionWire {
     readonly contract: "harness.task-admission.v2";
     readonly operation_id: string;
@@ -712,6 +720,7 @@ export interface WasmTaskAdmissionWire {
     readonly input_schema: WasmToolJsonSchema;
     readonly output_schema: WasmToolJsonSchema;
     readonly parent: string | null;
+    readonly resource_proofs: readonly WasmResourceCreationProofRefWire[];
     readonly grants: readonly string[];
     readonly limits: WasmNativeLimitsWire;
     readonly run_limits: WasmTaskRunLimitsWire;
@@ -1068,6 +1077,7 @@ pub fn admit_task_wasm(
         input.extensions,
         input.execution,
     )
+    .and_then(|record| record.with_resource_proofs(input.resource_proofs))
     .map_err(js_error)?;
     to_js_admitted(&record.canonical_value())
 }

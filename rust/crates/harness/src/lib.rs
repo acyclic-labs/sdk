@@ -55,6 +55,7 @@ pub mod objects;
 mod obs;
 pub mod projection;
 pub mod registry;
+pub mod resource_preparation;
 pub mod resources;
 pub mod runtime;
 pub mod scheduler;

@@ -317,6 +317,61 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .await
     }
 
+    /// Authenticates one immutable resource request under this ordinary task's
+    /// current uncancelled lease. The returned token grants no resource access.
+    pub async fn resource_preparation(
+        self: &Arc<Self>,
+        request: crate::resource_preparation::ResourcePreparationRequest,
+    ) -> Result<crate::resource_preparation::TaskResourcePreparation> {
+        crate::contract::validate_json_byte_bound(&request, self.maximum_payload_bytes)?;
+        request.validate()?;
+        self.verify(false).await?;
+        // Allocation must consume an explicitly configured retained session,
+        // independently of per-model or per-worker invocation limits.
+        self.host
+            .coordinator
+            .lock()
+            .await
+            .scheduler()
+            .session_limits(self.operation_id())?
+            .validate()?;
+        let admission = self.host.admission(self.operation_id()).await?;
+        let input =
+            serde_json::to_value(&request).map_err(|error| Error::Invalid(error.to_string()))?;
+        let parent_task = admission.parent.ok_or_else(|| {
+            Error::Unauthorized("resource preparation requires an admitted parent".into())
+        })?;
+        if admission.input != input
+            || request.child.parent != Some(parent_task)
+            || request.child.operation_id == admission.operation_id
+            || request
+                .child
+                .resource_proofs
+                .iter()
+                .any(|proof| proof.preparation != self.task_id)
+            || !self.input_grants.contains(&request.creation_grant)
+        {
+            return Err(Error::Unauthorized(
+                "resource request differs from its admitted input, parent or creation authority"
+                    .into(),
+            ));
+        }
+        let origin = crate::resource_preparation::ResourceCreationOrigin {
+            owner: self.host.owner.clone(),
+            parent_task,
+            preparation_task: self.task_id,
+            intended_child: request.child.operation_id,
+            admission_digest: self.workflow.request_digest,
+            request_digest: crate::contract::canonical_json_digest(&request)?,
+            creation_fence: self.fence.clone(),
+        };
+        Ok(crate::resource_preparation::TaskResourcePreparation {
+            owner: self.clone(),
+            request,
+            origin,
+        })
+    }
+
     pub(crate) async fn verify(&self, settlement: bool) -> Result<()> {
         use crate::distributed::JournalWrite;
         self.condition(if settlement {
@@ -1353,6 +1408,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         admission: TaskAdmissionRecord,
         parent_fence: Option<crate::scheduler::LeaseFence>,
     ) -> Result<Admission<TaskId>> {
+        if !admission.resource_proofs.is_empty() {
+            return Err(Error::Unsupported(
+                "resource proof verifier is not bound".into(),
+            ));
+        }
         let operation_id = admission.operation_id;
         let identity = admission.task.clone();
         let machine = admission.machine.clone();
@@ -1606,6 +1666,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let value = self.read_admission_json(&spec.state).await?;
         let admission = TaskAdmissionRecord::from_canonical_value(value)?;
+        if !admission.resource_proofs.is_empty() {
+            return Err(Error::Unsupported(
+                "resource proof verifier is not bound".into(),
+            ));
+        }
         if admission.policy != self.policy.as_ref().map(|policy| policy.identity()) {
             return Err(Error::Conflict(
                 "durable task policy differs from its admission".into(),
@@ -2959,6 +3024,9 @@ mod tests {
     };
     use acyclic_stream::{MemoryStream, SystemUnixMillisClock};
 
+    #[cfg(feature = "filesystem")]
+    mod resource_preparation;
+
     struct MemoryPayloads {
         volume: VolumeRef,
         files: Mutex<BTreeMap<String, Vec<u8>>>,
@@ -2977,6 +3045,7 @@ mod tests {
             })
         }
     }
+
 
     impl SchedulerPayloadStore for MemoryPayloads {
         fn stage<'a>(
@@ -3290,6 +3359,7 @@ mod tests {
         let operation = OperationId::from_bytes([53; 16]);
         let task = TaskId::from_bytes(operation.into_bytes());
         host.admit(TaskAdmissionRecord {
+            resource_proofs: Vec::new(),
             operation_id: operation,
             task: task_identity,
             machine,
@@ -3742,6 +3812,7 @@ mod tests {
         let operation_id = OperationId::from_bytes([77; 16]);
         let task_id = TaskId::from_bytes(operation_id.into_bytes());
         host.admit(TaskAdmissionRecord {
+            resource_proofs: Vec::new(),
             operation_id,
             task,
             machine,
@@ -5033,6 +5104,7 @@ mod tests {
             Arc::new(SystemUnixMillisClock),
         )?;
         let root_admission = |operation_id, input| TaskAdmissionRecord {
+            resource_proofs: Vec::new(),
             operation_id,
             task: task.clone(),
             machine: machine.clone(),

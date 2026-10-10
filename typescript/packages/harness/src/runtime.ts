@@ -1970,6 +1970,7 @@ export class AgentHarness {
       requirements: [...definition.options.requirements ?? []],
       machine_digest: machineDigest,
       parent: parentTaskId ?? null,
+      resource_proofs: [],
       grants: [...this.scope.grants].sort(),
       limits: nativeLimits(this.#contentLimits),
       run_limits: nativeRunLimits(this.scope.limits),
