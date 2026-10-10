@@ -105,12 +105,19 @@ REPL/code-mode and Tree-sitter are outside the original GraphCoder delivery scop
   actual fenced mailbox context. `/inbox FILE` observes `{caller, lease, after}`
   in pages of 16; observation is not consumption. `/queue-mailbox FILE` admits
   `{operation, parent, lease, input}` to the real mailbox-model machine.
+  A donor mailbox `FileRef` does not grant receiver access to the donor volume.
+  The committed receive checkpoint proves parcel transport; the real machine
+  publishes an exact receiver-owned scratch copy before starting the model.
   `/checkpoint FILE` observes `{caller, lease}` through the canonical task handle.
 - `/publication-open`, `/publication-observe`, `/publication-apply` and
   `/publication-reconcile` consume `{operation_id, caller, caller_lease}`.
   They operate only on the configured original SDK plan and journal; preparation
   does not write back. Apply requires the actual owned interaction resolution
   and preserves edits that violate the original preimage check.
+  Each native apply action rechecks the original live owner/fence, exact Approved
+  journal resolution and authenticated source/target grants through measured
+  public APIs. Actual success and failure work receipts consume the same SDK
+  materialization allowance; no fabricated counters or unmeasured guard reads.
 - `/request FILE` submits one already scoped Protobuf `ClientFrame`.
   `/input FILE` requires the conversation-message command discriminator;
   `/approve FILE` requires the exact interaction-resolution command; `/cancel
