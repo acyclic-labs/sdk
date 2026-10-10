@@ -962,28 +962,12 @@ mod tests {
     #[derive(Default)]
     struct ForbiddenStockTools(std::sync::atomic::AtomicUsize);
 
-    impl CodingToolHost for ForbiddenStockTools {
-        fn definition(&self, name: &str, description: &str) -> Result<ToolDefinition> {
-            Host {
-                definition_name: None,
-            }
-            .definition(name, description)
-        }
-
-        fn execute<'a>(
-            &'a self,
-            _: &'a str,
-            _: ToolInvocation,
-        ) -> BoxFuture<'a, Result<ToolResult>> {
+    impl ToolExecutor for ForbiddenStockTools {
+        fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             async { Err(Error::Unsupported("stock tool dispatch forbidden".into())) }.boxed()
         }
-
-        fn reconcile<'a>(
-            &'a self,
-            _: &'a str,
-            _: ToolInvocation,
-        ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             async {
                 Err(Error::Unsupported(
@@ -992,8 +976,9 @@ mod tests {
             }
             .boxed()
         }
-
-        fn project(&self, _: &str, _: &ToolInvocation, _: &ToolResult) -> Result<Value> {
+    }
+    impl ToolProjection for ForbiddenStockTools {
+        fn project(&self, _: &ToolInvocation, _: &ToolResult) -> Result<Value> {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Err(Error::Unsupported("stock tool projection forbidden".into()))
         }
@@ -1081,7 +1066,11 @@ mod tests {
                 Model::new("example", "stock", "1", Value::Null)?,
                 model.clone(),
             )
-            .tools(coding_tools(tools.clone())?)
+            .tool(Tool {
+                definition: example_tool().definition,
+                executor: tools.clone(),
+                projection: tools.clone(),
+            })?
             .grant("model:generate")
             .journal(journal.clone())
             .executor(executor.clone())
@@ -1241,7 +1230,9 @@ mod tests {
             .tool(example_tool())?
             .build()?;
         assert!(matches!(
-            custom.runtime().task::<TurnInput, TurnOutput>("acyclic.stock_turn@2"),
+            custom
+                .runtime()
+                .task::<TurnInput, TurnOutput>("acyclic.stock_turn@2"),
             Err(Error::NotFound(_))
         ));
         assert_eq!(custom.runtime().tool("example.echo")?.name, "example.echo");
