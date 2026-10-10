@@ -183,11 +183,11 @@ where
     fn stage_with_native_work<'a>(
         &'a self, operation_id: crate::OperationId, idempotency_key: &'a str,
         bytes: &'a [u8], work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> BoxFuture<'a, std::result::Result<(FileRef, acyclic_fs::NativeAllocation), crate::NativeRootVerificationError>> {
+    ) -> BoxFuture<'a, Result<(FileRef, acyclic_fs::NativeAllocation)>> {
         Box::pin(async move {
             let io = PreparationIo::from_native_work(work)?;
-            let file = io.native_result(self.stage_with_io(
-                operation_id, idempotency_key, bytes, Some(&io)).await)?;
+            let file = self.stage_with_io(
+                operation_id, idempotency_key, bytes, Some(&io)).await?;
             let retained = file.logical_owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
             Ok((file, custody))
@@ -443,11 +443,11 @@ where
     fn read_with_native_work<'a>(
         &'a self, reference: &'a FileRef, maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> BoxFuture<'a, std::result::Result<(Vec<u8>, acyclic_fs::NativeAllocation), crate::NativeRootVerificationError>> {
+    ) -> BoxFuture<'a, Result<(Vec<u8>, acyclic_fs::NativeAllocation)>> {
         Box::pin(async move {
             let io = PreparationIo::from_native_work(work)?;
             let result = self.read_verified_with_io(reference, maximum_bytes, &io).await;
-            let bytes = io.native_result(result)?;
+            let bytes = result?;
             let custody = io.into_native_custody(bytes.capacity() as u64)?;
             Ok((bytes, custody))
         })
@@ -457,7 +457,7 @@ where
     fn verify_with_native_work<'a>(
         &'a self, reference: &'a FileRef, maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> BoxFuture<'a, std::result::Result<(), crate::NativeRootVerificationError>> {
+    ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let io = PreparationIo::from_native_work(work)?;
             let result = async {
@@ -466,19 +466,19 @@ where
                 io.remaining()?;
                 Ok(())
             }.await;
-            io.native_result(result)
+            result
         })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn supports_native_read(&self, volume: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork) -> std::result::Result<bool, crate::NativeRootVerificationError> {
+    fn supports_native_read(&self, volume: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
         let io = PreparationIo::from_native_work(work)?;
         let result = (|| {
             fork_preparer_io::item(Some(&io), 0)?;
             volume.validate()?;
             Ok(volume.provider() == &self.host.provider)
         })();
-        io.native_result(result)
+        result
     }
 
     fn verify_manifest<'a>(

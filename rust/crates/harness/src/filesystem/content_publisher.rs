@@ -95,11 +95,11 @@ where
     fn stage_once_with_native_work<'a>(
         &'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
         media_type: &'a str, display_name: &'a str, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> BoxProviderFuture<'a, std::result::Result<(FileRef, acyclic_fs::NativeAllocation), crate::NativeRootVerificationError>> {
+    ) -> BoxProviderFuture<'a, crate::Result<(FileRef, acyclic_fs::NativeAllocation)>> {
         Box::pin(async move {
             let io = PreparationIo::from_native_work(work)?;
             let result = self.stage_once_with_io(operation_id, path, bytes, media_type, display_name, &io).await;
-            let file = io.native_result(result)?;
+            let file = result?;
             let retained = file.logical_owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
             Ok((file, custody))

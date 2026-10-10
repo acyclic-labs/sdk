@@ -107,6 +107,11 @@ suspended, then compares coordinator, execution and pending-workflow tails in
 the existing release transaction. Scheduler phase alone is not quiescence;
 unsettled dispatches, absent passive witnesses and reconciliation retain the
 lease. Quota, cancellation and provider errors retain their original cause.
+Native quota and cancellation failures use the canonical
+`Error::NativeWork { cause, custody }` directly. Allocation-free work/cancel
+causes need no guard; owned diagnostics transfer already admitted custody.
+There is no secondary native error wrapper, marker trap, formatting allocation,
+or new retention attempt after a denied operation.
 
 The raw Filesystem host and the `AuthorityIssuer`/verifier pair are trusted provider wiring, not reader inputs. Resolve an attached agent's signed scope against the owner's retained verifier; accepting a reader-supplied verifier would let that reader invent its own grants. The ref and its volume identity remain non-bearer even when the owner makes a directory lazily discoverable.
 

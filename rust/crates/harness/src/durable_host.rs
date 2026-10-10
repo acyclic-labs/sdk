@@ -5400,7 +5400,7 @@ pub(crate) mod tests {
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn owned_task_journal_native_release_requires_original_settlement_and_binding()
-    -> std::result::Result<(), crate::NativeRootVerificationError> {
+    -> Result<()> {
         use crate::executor::{ExecutionEvent, ExecutionJournal as _, ToolFailureKind};
         use crate::filesystem::{
             FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
@@ -5470,7 +5470,7 @@ pub(crate) mod tests {
         };
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-            .map_err(|failure| failure.error)?;
+            .map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
         assert!(!journal.release_if_quiescent_with_native_work(&work, &workflow).await?);
         workflow.admit(owner.workflow_admission().clone()).await?;
         assert!(!journal.release_if_quiescent_with_native_work(&work, &workflow).await?);
@@ -5508,27 +5508,27 @@ pub(crate) mod tests {
         // cancellation does not perform any work beyond its constructor prefix.
         let cancelled = acyclic_fs::CancellationToken::new();
         let cancelled_work = acyclic_fs::NativeMaterializationWork::new(budget, &cancelled)
-            .map_err(|failure| failure.error)?;
+            .map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
         let cancelled_prefix = cancelled_work.receipt();
         cancelled.cancel();
         assert!(matches!(
             journal.release_if_quiescent_with_native_work(&cancelled_work, &workflow).await,
-            Err(crate::NativeRootVerificationError::Native(
-                acyclic_fs::NativeTreeMaterializationError::Cancelled
-            ))
+            Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None
+            })
         ));
         assert_eq!(cancelled_work.receipt(), cancelled_prefix);
         let quota_work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::WorkBudget { backend_read_operations: 0, ..budget }, &cancellation,
-        ).map_err(|failure| failure.error)?;
+        ).map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
         let quota_live = quota_work.live_allocation_bytes();
         assert!(matches!(
             journal.release_if_quiescent_with_native_work(&quota_work, &workflow).await,
-            Err(crate::NativeRootVerificationError::Native(
-                acyclic_fs::NativeTreeMaterializationError::Work(
+            Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::Work(
                     acyclic_fs::WorkError::BudgetExceeded { counter: "backend_read_operations", .. }
-                )
-            ))
+                ), custody: None
+            })
         ));
         assert_eq!(quota_work.receipt().backend_read_operations, 0);
         assert_eq!(quota_work.live_allocation_bytes(), quota_live);
@@ -5541,7 +5541,7 @@ pub(crate) mod tests {
         // three-tail publication, without consuming the still-current lease.
         {
             let proof_io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-            let pending = proof_io.native_result(workflow.prove_release_with_io(&proof_io).await)?
+            let pending = workflow.prove_release_with_io(&proof_io).await?
                 .ok_or_else(|| Error::NotFound("original Suspended source proof".into()))?;
             let execution_tail = stream.stream(format!("harness/v2/execution/{attempt}"))?
                 .tail().await?;
@@ -5553,7 +5553,7 @@ pub(crate) mod tests {
                 owner.release_quiescent_execution_with_native_work(
                     attempt, execution_tail, &pending, &work,
                 ).await,
-                Err(crate::NativeRootVerificationError::Owner(Error::Conflict(_)))
+                Err(Error::Conflict(_))
             ));
             let coordinator = host.coordinator.lock().await;
             let reservation = coordinator.scheduler().operation(operation)
@@ -5563,7 +5563,7 @@ pub(crate) mod tests {
         }
         {
             let proof_io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-            let pending = proof_io.native_result(workflow.prove_release_with_io(&proof_io).await)?
+            let pending = workflow.prove_release_with_io(&proof_io).await?
                 .ok_or_else(|| Error::NotFound("current Suspended source proof".into()))?;
             let execution_tail = stream.stream(format!("harness/v2/execution/{attempt}"))?
                 .tail().await?;
@@ -5580,7 +5580,7 @@ pub(crate) mod tests {
                 owner.release_quiescent_execution_with_native_work(
                     attempt, execution_tail, &pending, &work,
                 ).await,
-                Err(crate::NativeRootVerificationError::Owner(Error::Conflict(_)))
+                Err(Error::Conflict(_))
             ));
             assert!(!journal.release_if_quiescent_with_native_work(&work, &workflow).await?);
             let coordinator = host.coordinator.lock().await;
@@ -5631,7 +5631,7 @@ pub(crate) mod tests {
         let denied_prefix = work.receipt();
         assert!(matches!(
             journal.release_if_quiescent_with_native_work(&work, &replacement_workflow).await,
-            Err(crate::NativeRootVerificationError::Owner(Error::Unauthorized(_)))
+            Err(Error::Unauthorized(_))
         ));
         assert_eq!(work.receipt(), denied_prefix);
         let replacement_journal = FilesystemExecutionJournal::for_task(
@@ -5653,7 +5653,7 @@ pub(crate) mod tests {
         )?;
         assert!(matches!(
             replacement_journal.release_if_quiescent_with_native_work(&work, &other_volume_workflow).await,
-            Err(crate::NativeRootVerificationError::Owner(Error::Unauthorized(_)))
+            Err(Error::Unauthorized(_))
         ));
         assert_eq!(work.receipt(), denied_prefix);
         let other_issuer = AuthorityIssuer::new("other-native-owner", [91; 32], Authority {
@@ -5691,7 +5691,7 @@ pub(crate) mod tests {
         )?;
         assert!(matches!(
             replacement_journal.release_if_quiescent_with_native_work(&work, &other_workflow).await,
-            Err(crate::NativeRootVerificationError::Owner(Error::Unauthorized(_)))
+            Err(Error::Unauthorized(_))
         ));
         assert_eq!(work.receipt(), denied_prefix);
         assert!(host.coordinator.lock().await.scheduler().operation(operation)

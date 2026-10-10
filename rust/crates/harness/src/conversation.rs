@@ -1026,14 +1026,14 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     fn read_with_native_work<'a>(
         &'a self, _reference: &'a FileRef, _maximum_bytes: u64,
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> ContentFuture<'a, std::result::Result<(Vec<u8>, acyclic_fs::NativeAllocation), crate::NativeRootVerificationError>> {
-        Box::pin(async { Err(Error::Unsupported("original native-ledger content resolution is unavailable".into()).into()) })
+    ) -> ContentFuture<'a, crate::Result<(Vec<u8>, acyclic_fs::NativeAllocation)>> {
+        Box::pin(async { Err(Error::Unsupported("original native-ledger content resolution is unavailable".into())) })
     }
 
     /// Availability only; it conveys no read authority.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_read(&self, _volume: &VolumeRef, _work: &acyclic_fs::NativeMaterializationWork) -> std::result::Result<bool, crate::NativeRootVerificationError> {
-        Err(Error::Unsupported("original native-ledger content reader is unavailable".into()).into())
+    fn supports_native_read(&self, _volume: &VolumeRef, _work: &acyclic_fs::NativeMaterializationWork) -> crate::Result<bool> {
+        Err(Error::Unsupported("original native-ledger content reader is unavailable".into()))
     }
 
     /// Verifies through the actual native engine without creating a new meter.
@@ -1041,8 +1041,8 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     fn verify_with_native_work<'a>(
         &'a self, _reference: &'a FileRef, _maximum_bytes: u64,
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> ContentFuture<'a, std::result::Result<(), crate::NativeRootVerificationError>> {
-        Box::pin(async { Err(Error::Unsupported("original native-ledger content verification is unavailable".into()).into()) })
+    ) -> ContentFuture<'a, crate::Result<()>> {
+        Box::pin(async { Err(Error::Unsupported("original native-ledger content verification is unavailable".into())) })
     }
 
     /// Verifies bytes through the provider's actual finite read capability.
@@ -1265,8 +1265,8 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         &'a self, _operation_id: OperationId, _path: &'a str, _bytes: &'a [u8],
         _media_type: &'a str, _display_name: &'a str,
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> ContentFuture<'a, std::result::Result<(FileRef, acyclic_fs::NativeAllocation), crate::NativeRootVerificationError>> {
-        Box::pin(async { Err(Error::Unsupported("original native-ledger once-publication is unavailable".into()).into()) })
+    ) -> ContentFuture<'a, crate::Result<(FileRef, acyclic_fs::NativeAllocation)>> {
+        Box::pin(async { Err(Error::Unsupported("original native-ledger once-publication is unavailable".into())) })
     }
 
     /// Resolves the original operation, metadata and generation without head.
@@ -1446,18 +1446,18 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
     fn read_with_native_work<'a>(
         &'a self, reference: &'a FileRef, maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> ContentFuture<'a, std::result::Result<(Vec<u8>, acyclic_fs::NativeAllocation), crate::NativeRootVerificationError>> {
+    ) -> ContentFuture<'a, crate::Result<(Vec<u8>, acyclic_fs::NativeAllocation)>> {
         Box::pin(async move {
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-            let reader = io.native_result(self.finite_bound_reader(reference.volume(), &io))?;
+            let reader = self.finite_bound_reader(reference.volume(), &io)?;
             reader.read_with_native_work(reference, maximum_bytes, work).await
         })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_read(&self, volume: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork) -> std::result::Result<bool, crate::NativeRootVerificationError> {
+    fn supports_native_read(&self, volume: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork) -> crate::Result<bool> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let reader = io.native_result(self.finite_bound_reader(volume, &io))?;
+        let reader = self.finite_bound_reader(volume, &io)?;
         reader.supports_native_read(volume, work)
     }
 
@@ -1465,10 +1465,10 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
     fn verify_with_native_work<'a>(
         &'a self, reference: &'a FileRef, maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> ContentFuture<'a, std::result::Result<(), crate::NativeRootVerificationError>> {
+    ) -> ContentFuture<'a, crate::Result<()>> {
         Box::pin(async move {
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-            let reader = io.native_result(self.finite_bound_reader(reference.volume(), &io))?;
+            let reader = self.finite_bound_reader(reference.volume(), &io)?;
             reader.verify_with_native_work(reference, maximum_bytes, work).await
         })
     }

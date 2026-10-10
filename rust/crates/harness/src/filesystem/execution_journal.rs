@@ -475,14 +475,14 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
     pub async fn release_if_quiescent_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
         workflow: &super::FilesystemWorkflowJournal<P, A, O>,
-    ) -> std::result::Result<bool, crate::NativeRootVerificationError>
+    ) -> Result<bool>
     where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
     {
         let io = PreparationIo::from_native_work(work)?;
         let (owner, operation) = self.owner.as_ref().ok_or_else(|| Error::Unsupported(
             "quiescence requires a task-owned execution journal".into()))?;
         workflow.require_execution_owner(owner, &self.volume, self.verifier.audience())?;
-        let result = async {
+        let result: Result<_> = async {
             let mut borrowed = io.history_io();
             owner.verify_with_work(true, &mut Some(&mut borrowed)).await?;
             let tail = {
@@ -500,7 +500,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             };
             Ok(workflow.prove_release_with_io(&io).await?.map(|pending| (tail, pending)))
         }.await;
-        let Some((tail, pending)) = io.native_result(result)? else { return Ok(false); };
+        let Some((tail, pending)) = result? else { return Ok(false); };
         owner.release_quiescent_execution_with_native_work(*operation, tail, &pending, work).await
     }
 

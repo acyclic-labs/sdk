@@ -16,8 +16,7 @@ pub(crate) struct PreparationIo {
 enum PreparationLedger {
     Owned { budget: WorkBudget, work: Mutex<(WorkCounters, u64)> },
     #[cfg(not(target_arch = "wasm32"))]
-    Native { work: acyclic_fs::NativeMaterializationWork, custody: Mutex<acyclic_fs::NativeAllocation>,
-        failure: Mutex<Option<acyclic_fs::NativeTreeMaterializationError>> },
+    Native { work: acyclic_fs::NativeMaterializationWork, custody: Mutex<acyclic_fs::NativeAllocation> },
 }
 
 /// A real logical quota reservation spanning an audited opaque serde decode.
@@ -162,47 +161,25 @@ impl PreparationIo {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn from_native_work(work: &acyclic_fs::NativeMaterializationWork) -> std::result::Result<Self, crate::NativeRootVerificationError> {
-        work.remaining()?;
-        let custody = work.retain_owned(0)?;
+    pub(crate) fn from_native_work(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
+        work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let custody = work.retain_owned(0).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(Self {
-            ledger: PreparationLedger::Native { work: work.clone(), custody: Mutex::new(custody), failure: Mutex::new(None) },
+            ledger: PreparationLedger::Native { work: work.clone(), custody: Mutex::new(custody) },
             cancellation: work.cancellation().clone(),
         })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn into_native_custody(self, retained: u64) -> std::result::Result<acyclic_fs::NativeAllocation, crate::NativeRootVerificationError> {
+    pub(crate) fn into_native_custody(self, retained: u64) -> Result<acyclic_fs::NativeAllocation> {
         match self.ledger {
             PreparationLedger::Native { custody, .. } => {
                 let mut guard = custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
-                guard.substitute(retained)?;
+                guard.substitute(retained).map_err(|cause| Error::NativeWork { cause, custody: None })?;
                 Ok(guard)
             }
-            PreparationLedger::Owned { .. } => Err(Error::Invalid("native custody requires the original native ledger".into()).into()),
+            PreparationLedger::Owned { .. } => Err(Error::Invalid("native custody requires the original native ledger".into())),
         }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn native_failure(&self, cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
-        if let PreparationLedger::Native { failure, .. } = &self.ledger {
-            let mut first = failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if first.is_none() { *first = Some(cause); }
-        }
-        Error::Storage(String::new())
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn take_native_failure(&self) -> Option<acyclic_fs::NativeTreeMaterializationError> {
-        match &self.ledger {
-            PreparationLedger::Native { failure, .. } => failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take(),
-            PreparationLedger::Owned { .. } => None,
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn native_result<T>(&self, result: Result<T>) -> std::result::Result<T, crate::NativeRootVerificationError> {
-        crate::NativeRootVerificationError::finish(result.map_err(crate::NativeRootVerificationError::Owner), self.take_native_failure())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -214,20 +191,11 @@ impl PreparationIo {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn native_call<T>(&self, result: std::result::Result<T, crate::NativeRootVerificationError>) -> Result<T> {
-        match result {
-            Ok(value) => Ok(value),
-            Err(crate::NativeRootVerificationError::Owner(cause)) => Err(cause),
-            Err(crate::NativeRootVerificationError::Native(cause)) => Err(self.native_failure(cause)),
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn absorb_native_custody(&self, incoming: acyclic_fs::NativeAllocation) -> Result<()> {
         match &self.ledger {
             PreparationLedger::Native { custody, .. } => custody.lock()
                 .map_err(|_| Error::Storage("native preparation custody is poisoned".into()))?
-                .absorb(incoming).map_err(|cause| self.native_failure(cause)),
+                .absorb(incoming).map_err(|cause| Error::NativeWork { cause, custody: None }),
             PreparationLedger::Owned { .. } => Err(Error::Invalid("native custody belongs to another ledger".into())),
         }
     }
@@ -238,7 +206,7 @@ impl PreparationIo {
             Err(error) => {
                 #[cfg(not(target_arch = "wasm32"))]
                 if matches!(&self.ledger, PreparationLedger::Native { .. }) {
-                    return Err(self.native_failure(acyclic_fs::NativeTreeMaterializationError::Cancelled));
+                    return Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None });
                 }
                 Err(Error::Storage(error.to_string()))
             }
@@ -280,7 +248,7 @@ impl PreparationIo {
             PreparationLedger::Owned { budget, .. } => self.receipt().checked_add(next).and_then(|work| work.verify(*budget))
                 .map_err(|error| Error::Invalid(error.to_string())),
             #[cfg(not(target_arch = "wasm32"))]
-            PreparationLedger::Native { work, .. } => work.admit(next).map_err(|error| self.native_failure(error)),
+            PreparationLedger::Native { work, .. } => work.admit(next).map_err(|cause| Error::NativeWork { cause, custody: None }),
         }
     }
 
@@ -300,7 +268,7 @@ impl PreparationIo {
             PreparationLedger::Native { custody, .. } => {
                 let mut guard = custody.lock().map_err(|_| Error::Storage("native preparation custody is poisoned".into()))?;
                 let live = guard.bytes().checked_add(bytes).ok_or_else(|| Error::Invalid("native preparation ownership overflow".into()))?;
-                guard.resize_retained(live).map_err(|error| self.native_failure(error))
+                guard.resize_retained(live).map_err(|cause| Error::NativeWork { cause, custody: None })
             }
         }
     }
@@ -324,7 +292,7 @@ impl PreparationIo {
             }
             #[cfg(not(target_arch = "wasm32"))]
             PreparationLedger::Native { custody, .. } => custody.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                .release(bytes).map_err(|error| self.native_failure(error)),
+                .release(bytes).map_err(|cause| Error::NativeWork { cause, custody: None }),
         }
     }
 
@@ -349,7 +317,7 @@ impl PreparationIo {
                 Ok(remaining)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            PreparationLedger::Native { work, .. } => work.remaining().map_err(|error| self.native_failure(error)),
+            PreparationLedger::Native { work, .. } => work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None }),
         }
     }
 
@@ -358,7 +326,7 @@ impl PreparationIo {
         match &self.ledger {
             PreparationLedger::Owned { budget, .. } => self.receipt().verify(*budget).map_err(|error| Error::Invalid(error.to_string())),
             #[cfg(not(target_arch = "wasm32"))]
-            PreparationLedger::Native { work, .. } => work.remaining().map(|_| ()).map_err(|error| self.native_failure(error)),
+            PreparationLedger::Native { work, .. } => work.remaining().map(|_| ()).map_err(|cause| Error::NativeWork { cause, custody: None }),
         }
     }
 
@@ -372,7 +340,7 @@ impl PreparationIo {
                 Ok(())
             }
             #[cfg(not(target_arch = "wasm32"))]
-            PreparationLedger::Native { work, .. } => work.spent(next).map_err(|error| self.native_failure(error)),
+            PreparationLedger::Native { work, .. } => work.spent(next).map_err(|cause| Error::NativeWork { cause, custody: None }),
         }
     }
 
@@ -384,8 +352,8 @@ impl PreparationIo {
                 #[cfg(not(target_arch = "wasm32"))]
                 if matches!(&self.ledger, PreparationLedger::Native { .. }) {
                     return Err(match failure.error {
-                        WorkspaceError::Work(cause) => self.native_failure(acyclic_fs::NativeTreeMaterializationError::Work(cause)),
-                        WorkspaceError::Cancelled(_) => self.native_failure(acyclic_fs::NativeTreeMaterializationError::Cancelled),
+                        WorkspaceError::Work(cause) => Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(cause), custody: None },
+                        WorkspaceError::Cancelled(_) => Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None },
                         cause => map_error(cause),
                     });
                 }
@@ -1065,8 +1033,8 @@ impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
         Box::pin(async move {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = self.io.original_native_work() {
-                return self.io.native_call(verifier.verify_with_native_work(reference,
-                    reference.descriptor().byte_length(), work).await);
+                return verifier.verify_with_native_work(reference,
+                    reference.descriptor().byte_length(), work).await;
             }
             self.io.receive_content(verifier.verify_measured(reference, reference.descriptor().byte_length(),
                 self.io.remaining()?, &self.io.cancellation).await)
