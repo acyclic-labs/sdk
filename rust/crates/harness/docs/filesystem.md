@@ -362,3 +362,13 @@ fence, unchanged source or idempotency conflict is reported as that outcome, not
 as a published merge. Successful publication additionally requires the canonical
 provider-verified history receipt. Existing task/tool grant and approval gates
 remain mandatory on dispatch and replay.
+
+Finite coordinator replay uses the ordinary scheduler event/reducer. The SDK
+observer inventories every closed event variant before cloning, admits copied
+DTO fields and the original child-slot copy before allocation, and releases
+temporary event boxes, fences, reducers and cancellation lists after application.
+Existing resident state is borrowed; it is never released against an observer
+which did not acquire its custody. Declaration preflight shares the original
+validator and bounded canonical schema-hash path. These counters describe
+observed SDK work and known DTO storage, not physical provider IO, allocator
+nodes, schema-compiler internals or RSS.

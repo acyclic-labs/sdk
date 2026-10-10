@@ -216,6 +216,19 @@ pub trait SchedulerPayloadStore: acyclic_stream::ProviderPlatform {
         idempotency_key: &'a str,
         bytes: &'a [u8],
     ) -> BoxFuture<'a, Result<FileRef>>;
+
+    /// Stages the same original operation and retry key on the caller's ledger.
+    /// Custom stores without this observer reject before touching a provider.
+    #[cfg(all(feature = "filesystem",not(target_arch = "wasm32")))]
+    fn stage_with_native_work<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _idempotency_key: &'a str,
+        _bytes: &'a [u8],
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> BoxFuture<'a,std::result::Result<(FileRef,acyclic_fs::NativeAllocation),crate::durable_host::NativeRootVerificationError>> {
+        Box::pin(async { Err(Error::Unsupported("scheduler payload store has no native work observer".into()).into()) })
+    }
 }
 
 /// Code-first registry for exact durable reducer implementations.

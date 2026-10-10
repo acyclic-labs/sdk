@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod clone_owned;
+
 /// Versioned resumable entrypoint for durable work.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -502,6 +504,19 @@ impl Scheduler {
 
     /// Plans a declaration, including stable child-slot and cycle checks.
     pub fn declare(&self, spec: OperationSpec) -> Result<SchedulerEvent> {
+        self.validate_declaration(&spec)?;
+        Ok(SchedulerEvent::Declared { spec: Box::new(spec) })
+    }
+
+    fn validate_declaration(&self, spec: &OperationSpec) -> Result<()> {
+        self.validate_declaration_with_work(spec,&mut None)
+    }
+
+    fn validate_declaration_with_work(
+        &self, spec: &OperationSpec,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         if spec.entrypoint.name.trim().is_empty() || spec.entrypoint.version.trim().is_empty() {
             return Err(Error::Invalid(
                 "durable entrypoint name and version are required".into(),
@@ -517,7 +532,9 @@ impl Scheduler {
         }) {
             return Err(Error::Invalid("placement labels are invalid".into()));
         }
-        crate::contract::compile_json_schema(&spec.entrypoint.result_schema, "entrypoint result")?;
+        crate::contract::compile_json_schema_with_work(
+            &spec.entrypoint.result_schema,"entrypoint result",work,
+        )?;
         if self.operations.contains_key(&spec.operation_id) {
             return Err(Error::Conflict("operation identity already exists".into()));
         }
@@ -541,11 +558,15 @@ impl Scheduler {
                     "structured child requires an existing parent and slot".into(),
                 ));
             };
-            if self
-                .child_slots
-                .contains_key(&(parent.operation_id, parent.slot.clone()))
-            {
-                return Err(Error::Conflict("parent child slot is already bound".into()));
+            for ((operation,slot),_) in self.child_slots.range((parent.operation_id,String::new())..) {
+                if let Some(io) = work.as_deref_mut() {
+                    io.check_cancellation()?;
+                    io.codec_charge(crate::contract::JsonCodecCharge::Work {bytes:slot.len() as u64,items:1})?;
+                }
+                if *operation != parent.operation_id || slot > &parent.slot { break; }
+                if slot == &parent.slot {
+                    return Err(Error::Conflict("parent child slot is already bound".into()));
+                }
             }
             if parent_operation.phase == OperationPhase::Terminal
                 || parent_operation.cancellation_requested
@@ -573,9 +594,7 @@ impl Scheduler {
                 }
             }
         }
-        Ok(SchedulerEvent::Declared {
-            spec: Box::new(spec),
-        })
+        Ok(())
     }
 
     /// Returns unplaced dependency-ready operations whose requests fit capacity.
@@ -721,7 +740,41 @@ impl Scheduler {
         )
     )]
     pub fn apply(&mut self, event: SchedulerEvent) -> Result<()> {
-        crate::obs::outcome(self.apply_event(event))
+        crate::obs::outcome(self.apply_event(event,&mut None))
+    }
+
+    /// Replays the same reducer with only newly cloned DTO ownership charged.
+    /// Pre-existing resident state is borrowed, not released against this work.
+    pub(crate) fn apply_with_work(
+        &mut self, event: &SchedulerEvent,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if work.is_none() { return self.apply(event.clone()); }
+        let cloned = event.clone_with_work(work)?;
+        let cloned_owned = cloned.logical_owned_bytes()?;
+        let retained = cloned.retained_clone_owned_bytes()?;
+        let extra_slot = match &cloned {
+            SchedulerEvent::Declared {spec} => spec.parent.as_ref().map(|parent| parent.slot.len() as u64).unwrap_or(0),
+            _ => 0,
+        };
+        if let Some(io) = work.as_deref_mut() {
+            if let Err(error) = (|| {
+                io.admit_owned(extra_slot)?;
+                io.codec_charge(crate::contract::JsonCodecCharge::Copy {bytes:extra_slot})?;
+                io.retain_owned(extra_slot)
+            })() {
+                drop(cloned);
+                let _ = io.release_owned(cloned_owned);
+                return Err(error);
+            }
+        }
+        let result = crate::obs::outcome(self.apply_event(cloned,work));
+        if result.is_ok() {
+            let discarded = cloned_owned.checked_sub(retained)
+                .ok_or_else(|| Error::Invalid("scheduler clone custody underflows".into()))?;
+            if let Some(io) = work.as_deref_mut() { io.release_owned(discarded)?; }
+        }
+        result
     }
 
     /// Preflights the original release/suspension validators without cloning
@@ -736,8 +789,9 @@ impl Scheduler {
         };
         io.check_cancellation()?;
         match event {
+            SchedulerEvent::Declared {spec} => return self.validate_declaration_with_work(spec,work),
             SchedulerEvent::LeaseReleased { .. } | SchedulerEvent::WorkflowSuspended { .. } => {},
-            _ => return Err(Error::Unsupported("finite scheduler projection requires a release or suspension".into())),
+            _ => return Err(Error::Unsupported("finite scheduler projection requires a declaration, release or suspension".into())),
         }
         io.codec_charge(crate::contract::JsonCodecCharge::Work {bytes:0,items:1})?;
         let operation = self.operation(event.operation_id())
@@ -763,7 +817,10 @@ impl Scheduler {
                   would scatter one event's application across many functions without \
                   clarifying any of them"
     )]
-    fn apply_event(&mut self, event: SchedulerEvent) -> Result<()> {
+    fn apply_event(
+        &mut self, event: SchedulerEvent,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
         let primary = event.operation_id();
         let declared_parent = match &event {
             SchedulerEvent::Declared { spec } => {
@@ -883,8 +940,7 @@ impl Scheduler {
             }
             SchedulerEvent::Declared { spec } => {
                 let spec = *spec;
-                let event = self.declare(spec.clone())?;
-                debug_assert!(matches!(event, SchedulerEvent::Declared { .. }));
+                self.validate_declaration_with_work(&spec,work)?;
                 if let Some(parent) = &spec.parent {
                     self.child_slots.insert(
                         (parent.operation_id, parent.slot.clone()),
@@ -2765,6 +2821,50 @@ mod tests {
             assert_eq!(counters.allocation_operations,0);
             assert_eq!(counters.peak_allocation_bytes,0);
         }
+        Ok(())
+    }
+
+    #[cfg(feature = "filesystem")]
+    #[test]
+    fn finite_declared_replay_uses_same_reducer_and_releases_clone_envelope() -> Result<()> {
+        let mut scheduler = Scheduler::new();
+        scheduler.apply(scheduler.declare(spec(id(95),Orchestration::Join)?)?)?;
+        let mut child = spec(id(96),Orchestration::Leaf)?;
+        child.parent = Some(ParentLink {operation_id:id(95),slot:"bounded-child".into()});
+        let declared = scheduler.declare(child)?;
+        let before = scheduler.clone();
+        let mut expected = before.clone();
+        expected.apply(declared.clone())?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::WorkBudget {
+            items_examined:8_192,bytes_copied:1_048_576,bytes_encoded:1_048_576,
+            bytes_hashed:1_048_576,allocation_operations:1_024,peak_allocation_bytes:1_048_576,
+            ..Default::default()
+        };
+        let mut work = crate::store::history::HistoryWork::new(budget,&cancellation);
+        scheduler.project_event_with_work(&declared,&mut Some(&mut work))?;
+        let cloned = declared.clone_with_work(&mut Some(&mut work))?;
+        assert!(cloned.logical_owned_bytes()? > cloned.retained_clone_owned_bytes()?);
+        let cloned_owned = cloned.logical_owned_bytes()?;
+        drop(cloned);
+        crate::store::history::HistoryIo::release_owned(&mut work,cloned_owned)?;
+        scheduler.apply_with_work(&declared,&mut Some(&mut work))?;
+        assert_eq!(scheduler,expected);
+        let receipt = work.finish(Ok(())).map_err(|failure| failure.error)?;
+        assert!(receipt.work.bytes_copied > 0);
+        assert!(receipt.work.peak_allocation_bytes > 0);
+        assert!(receipt.work.items_examined > 0);
+
+        let mut denied = crate::store::history::HistoryWork::new(
+            acyclic_fs::WorkBudget {items_examined:8_192,..Default::default()},&cancellation,
+        );
+        let mut unchanged = before.clone();
+        assert!(unchanged.apply_with_work(&declared,&mut Some(&mut denied)).is_err());
+        assert_eq!(unchanged,before);
+        cancellation.cancel();
+        let mut cancelled = crate::store::history::HistoryWork::new(budget,&cancellation);
+        assert!(unchanged.apply_with_work(&declared,&mut Some(&mut cancelled)).is_err());
+        assert_eq!(unchanged,before);
         Ok(())
     }
 
