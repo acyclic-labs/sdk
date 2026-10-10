@@ -23,6 +23,63 @@ node tools/sdk-generator/backends/erlang/src/generate.mjs \
 node --test tools/sdk-generator/backends/erlang/tests/*.test.mjs
 ```
 
+### Preparing native qualification inputs
+
+The native entrypoints consume previously admitted binary artifacts. They do not
+download or build OTP, Rebar, GPB or grpcbox. Obtain the retained native input
+bundle from the maintainer who performed the qualification; this repository does
+not currently publish that bundle at a public download URL. A fresh checkout can
+run the offline tests above without it.
+
+The bundle must contain these complete trees, preserving executable modes and
+relative symlinks:
+
+```text
+native-inputs/
+  runtime/OTP-29.1.1/       installed OTP, including its original launchers
+  otp-runtime-inventory.json
+  tools/                   all paths in toolchains/generator-files.json
+  dependencies/            all paths in toolchains/dependency-files.json
+```
+
+Copy these artifacts to an owned directory outside this backend, then verify them
+before running generation or installed qualification:
+
+```sh
+export SDK_ERLANG_INPUTS=/absolute/path/to/native-inputs
+node --input-type=module <<'JS'
+import { readFileSync } from 'node:fs';
+import { verifyRuntime, verifyTools } from './tools/sdk-generator/backends/erlang/src/inventory.mjs';
+import { verifyDependencies } from './tools/sdk-generator/backends/erlang/src/qualify.mjs';
+const backend = 'tools/sdk-generator/backends/erlang/';
+const root = process.env.SDK_ERLANG_INPUTS;
+if (!root?.startsWith('/')) throw new Error('An absolute native input root is required');
+const pins = JSON.parse(readFileSync(backend + 'toolchains/toolchain.json'));
+verifyRuntime(root + '/runtime', readFileSync(root + '/otp-runtime-inventory.json'), pins.runtime['linux-x64']);
+verifyTools(root + '/tools', readFileSync(backend + 'toolchains/generator-files.json'), pins);
+verifyDependencies(root + '/dependencies', readFileSync(backend + 'toolchains/dependency-files.json'));
+console.log('Native input inventories passed');
+JS
+```
+
+Use `$SDK_ERLANG_INPUTS/runtime`, `$SDK_ERLANG_INPUTS/otp-runtime-inventory.json`,
+`$SDK_ERLANG_INPUTS/tools` and `$SDK_ERLANG_INPUTS/dependencies` for the matching
+arguments below. The runtime root contains `OTP-29.1.1` directly; no system-wide
+installation prefix is required when using the unchanged admitted installation.
+Do not rerun OTP's `Install` script or rewrite launchers after copying the bundle:
+`Install` embeds its chosen prefix, changing the pinned file bytes.
+
+To prepare replacement artifacts, use the upstream archive hashes in
+`toolchains/toolchain.json` and `toolchains/qualification.json`, preserve the
+generator dependency composition recorded in `toolchains/generator-files.json`,
+and compile the runtime dependencies with the selected OTP. Such a fresh build
+has new file inventories, even when its version labels match. It needs a reviewed
+update to the runtime inventory hash, generator/dependency inventories and pins,
+followed by fresh generation and installed native qualification. Generating a new
+inventory alone does not admit a replacement. Preserve the original bundle,
+installation-prefix information and preparation receipts with that qualification
+evidence so another maintainer can use the exact admitted inputs.
+
 Generated type names use an `acyclic_` prefix to avoid OTP built-in type
 collisions. Byte fields remain binary/iodata, and an absent proto3 optional
 field is represented by an omitted map key. Source filenames and compiler-made
