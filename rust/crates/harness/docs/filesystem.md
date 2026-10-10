@@ -95,6 +95,8 @@ and reading returns `(Vec<u8>, NativeAllocation)`. Keep the allocation guard
 through the last use, then drop the value before its guard. Metadata custody
 counts retained string/key capacities, including spare capacity; it does not
 count opaque allocator headers or global provider-cache residency.
+Clone copy counters count actual string contents, not the source's spare
+capacity; retained guards use the newly owned buffers' actual capacities.
 The scheduler payload store's `stage_with_native_work` follows the same rule
 and preserves its original operation/key-derived result path and retry key.
 Task admission must keep the returned metadata guard through declaration.

@@ -782,6 +782,21 @@ impl FileRef {
             .ok_or_else(|| Error::Invalid("file descriptor ownership overflow".into()))
     }
 
+    /// Variable byte content copied by the canonical closed-DTO clone.
+    /// Retained custody still uses `logical_owned_bytes` after cloning.
+    pub(crate) fn logical_clone_owned_bytes(&self) -> Result<u64> {
+        let owner = match &self.volume.owner {
+            VolumeOwner::Project(owner) | VolumeOwner::Session(owner) => owner.len() as u64,
+            VolumeOwner::Agent(_) => 0,
+        };
+        let provider = &self.volume.provider;
+        [provider.namespace().len(), provider.family().len(), provider.version().len(),
+            self.volume.id.len(), self.path.len(), self.version.len(), self.display_name.len(),
+            self.descriptor.media_type.len()]
+            .into_iter().try_fold(owner, |bytes, length| bytes.checked_add(length as u64)
+                .ok_or_else(|| Error::Invalid("file clone ownership overflow".into())))
+    }
+
     /// Creates a reference after checking paths, version and descriptor.
     pub fn new(
         volume: VolumeRef,
@@ -2564,6 +2579,13 @@ mod tests {
             + file.version.capacity() as u64 + file.display_name.capacity() as u64
             + file.descriptor.media_type.capacity() as u64;
         assert_eq!(file.logical_owned_bytes()?, expected);
+        let copied = file.volume.provider.namespace().len() + file.volume.provider.family().len()
+            + file.volume.provider.version().len() + file.volume.id.len() + file.path.len()
+            + file.version.len() + file.display_name.len() + file.descriptor.media_type.len();
+        assert_eq!(file.logical_clone_owned_bytes()?, copied as u64);
+        assert!(file.logical_clone_owned_bytes()? < file.logical_owned_bytes()?);
+        let clone = file.clone();
+        assert_eq!(clone.logical_clone_owned_bytes()?, file.logical_clone_owned_bytes()?);
         assert!(file.logical_owned_bytes()? > file.path.len() as u64 + file.version.len() as u64
             + file.display_name.len() as u64 + file.descriptor.media_type.len() as u64);
         Ok(())
