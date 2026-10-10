@@ -54,6 +54,7 @@ filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local"]
 native-execution = ["filesystem", "acyclic-fs/native-mount", "dep:acyclic-native-runtime"]
 # Optional native HTTP I/O. Browser hosts implement the same portable boundary.
 mcp-http = ["dep:reqwest"]
+mcp-oauth = ["rmcp/auth", "rmcp/reqwest"]
 objects = ["dep:acyclic-objects"]
 machines = ["dep:acyclic-machines"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
@@ -63,6 +64,7 @@ acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = fa
 acyclic-machines = { version = "=0.2.0", path = "../machines", optional = true }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, optional = true }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
+base64 = "=0.22.1"
 blake3.workspace = true
 bytes.workspace = true
 futures.workspace = true

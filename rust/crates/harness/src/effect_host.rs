@@ -35,8 +35,10 @@ pub struct TaskEffectPlan {
     pub result_schema: crate::conversation::FileRef,
 }
 
+/// Resolves the canonical effect identity for one original task command.
+/// This identity alone grants no dispatch or observation authority.
 #[cfg(feature = "filesystem")]
-pub(crate) fn task_effect_id(task: crate::TaskId, command: OperationId) -> Result<EffectId> {
+pub fn task_effect_id(task: crate::TaskId, command: OperationId) -> Result<EffectId> {
     let digest =
         crate::contract::canonical_json_digest(&("harness/v2/task-effect", task, command))?;
     let mut identity = [0; 16];

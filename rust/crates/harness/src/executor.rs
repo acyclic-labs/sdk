@@ -768,6 +768,20 @@ impl StockExecutor {
         self.compaction = policy;
         self
     }
+    /// Appends one validated context stage to the existing ordered pipeline.
+    pub fn with_context_stage(mut self, stage: Arc<dyn crate::context::ContextStage>) -> Result<Self> {
+        stage.validate()?;
+        self.context = self.context.with(stage);
+        Ok(self)
+    }
+
+    /// Replaces the selected tools without changing their admission machinery.
+    #[must_use]
+    pub fn with_tool_registry(mut self, tools: ToolRegistry) -> Self {
+        self.tools = tools;
+        self
+    }
+
 
     fn model_capacity(&self) -> Result<Option<crate::context::ModelContextCapacity>> {
         match &self.compaction {

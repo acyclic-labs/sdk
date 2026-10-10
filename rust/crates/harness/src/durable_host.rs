@@ -195,6 +195,21 @@ pub struct TaskJournalOwner<P> {
 
 #[cfg(feature = "filesystem")]
 impl<P: StreamProvider> TaskJournalOwner<P> {
+    /// Returns the original task identity without exposing its lease or signer.
+    pub const fn task_id(&self) -> TaskId {
+        self.task_id
+    }
+
+    /// Checks the original task's current authority before a fresh dispatch.
+    pub async fn verify_dispatch(&self) -> Result<()> {
+        self.verify(false).await
+    }
+
+    /// Checks retained settlement authority, including cancellation recovery.
+    pub async fn verify_settlement(&self) -> Result<()> {
+        self.verify(true).await
+    }
+
     pub(crate) const fn input_limits(&self) -> crate::conversation::Limits {
         self.input_limits
     }
