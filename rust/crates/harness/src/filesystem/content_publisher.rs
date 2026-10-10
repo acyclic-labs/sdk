@@ -25,18 +25,35 @@ impl<A, O> FilesystemContentPublisher<A, O> {
         scope: &Scope,
         maximum_bytes: u64,
     ) -> Result<Self> {
+        Self::new_with_io(host, volume, verifier, scope, maximum_bytes, None)
+    }
+
+    pub(crate) fn new_with_io(
+        host: Arc<FilesystemHost<A, O>>, volume: VolumeRef,
+        verifier: &AuthorityVerifier, scope: &Scope, maximum_bytes: u64,
+        io: Option<&super::PreparationIo>,
+    ) -> Result<Self> {
         if maximum_bytes == 0 || maximum_bytes == u64::MAX {
             return Err(Error::Invalid(
                 "content publication limit must be positive and finite".into(),
             ));
         }
-        let grant = ContentGrant::verify(verifier, scope, &volume, VolumeOperation::Write)?;
+        let grant = if let Some(io) = io {
+            let mut observer = io.history_io();
+            ContentGrant::verify_with_work(verifier, scope, &volume, VolumeOperation::Write,
+                maximum_bytes, &mut Some(&mut observer))?
+        } else { ContentGrant::verify(verifier, scope, &volume, VolumeOperation::Write)? };
         Ok(Self {
             host,
             volume,
             grant,
             maximum_bytes,
         })
+    }
+
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        self.volume.logical_owned_bytes()?.checked_add(self.grant.logical_owned_bytes()?)
+            .ok_or_else(|| Error::Invalid("content publisher ownership overflow".into()))
     }
 }
 

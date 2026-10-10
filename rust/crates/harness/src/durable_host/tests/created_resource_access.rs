@@ -688,6 +688,8 @@ impl CreationFixture {
 }
 
 mod recursive_lifecycle;
+#[cfg(not(target_arch = "wasm32"))]
+mod creator_native;
 
 #[tokio::test]
 async fn ordinary_task_io_uses_verified_created_volume_without_root_grant_widening() -> Result<()> {

@@ -407,6 +407,21 @@ pub trait ResourceCreationProvider: acyclic_stream::ProviderPlatform {
         request: &'a ResourcePreparationRequest,
         proof: &'a ResourceCreationProofRef,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<CreatedResourceReceipt>>;
+
+    /// Authenticates the same creator proof using the caller's original native
+    /// ledger/token. Returned custody must cover the owned receipt until actual
+    /// scope consumption transfers it; ordinary verification is not a fallback.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn verify_with_native_work<'a>(
+        &'a self, _request: &'a ResourcePreparationRequest,
+        _proof: &'a ResourceCreationProofRef, _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<
+        (CreatedResourceReceipt, acyclic_fs::NativeAllocation),
+    >> {
+        Box::pin(async {
+            Err(Error::Unsupported("provider has no original native-ledger creator verifier".into()))
+        })
+    }
 }
 
 /// A private kernel-produced seal, never deserialized from user input.

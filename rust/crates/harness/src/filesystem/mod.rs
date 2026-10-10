@@ -263,18 +263,40 @@ impl<A, O> FilesystemContentVerifier<A, O> {
         scope: Scope,
         maximum_bytes: u64,
     ) -> Result<Self> {
+        Self::new_with_io(host, verifier, scope, maximum_bytes, None)
+    }
+
+    pub(crate) fn new_with_io(
+        host: Arc<FilesystemHost<A, O>>,
+        verifier: AuthorityVerifier,
+        scope: Scope,
+        maximum_bytes: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<Self> {
         if maximum_bytes == 0 {
             return Err(Error::Invalid(
                 "content admission limit must be positive".into(),
             ));
         }
-        verifier.verify(&scope)?;
+        if let Some(io) = io {
+            let mut observer = io.history_io();
+            verifier.verify_with_work(&scope, &mut Some(&mut observer))?;
+        } else {
+            verifier.verify(&scope)?;
+        }
         Ok(Self {
             host,
             verifier,
             scope,
             maximum_bytes,
         })
+    }
+
+    /// Newly owned scalar/string payload only; the deployment/keystore Arc is
+    /// borrowed host authority, not a second owned filesystem.
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        self.scope.logical_owned_bytes()?.checked_add(self.verifier.logical_owned_bytes()?)
+            .ok_or_else(|| Error::Invalid("content verifier ownership overflow".into()))
     }
 }
 

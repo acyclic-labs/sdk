@@ -356,6 +356,26 @@ from created namespace content mappings and never add source-volume metadata,
 select a private destination or substitute the child's allocation generation
 for a foreign file's immutable version.
 
+Native created-namespace and exact-reference readers implement
+`supports_native_read`, `read_with_native_work`, and `verify_with_native_work`;
+namespace writers implement `stage_once_with_native_work`. Original allocation,
+seed, donor and grant reauthentication and the actual content engine use the
+same supplied `NativeMaterializationWork` ledger and cancellation token, never a
+new remaining-budget ledger or an ordinary fallback. Returned value/custody
+tuples retain their `NativeAllocation` through physical payload drop or transfer
+into the authenticated runtime scope. These boundaries return the canonical
+Harness `Result`: `Error::NativeWork` preserves the original native cause and
+any already-admitted diagnostic custody; owner/source rejection keeps its
+original Harness error. No string-parsed or flattened storage error replaces it.
+
+`ResourceCreationProvider::verify_with_native_work` verifies the same original
+creator request, allocation, report and seed using that supplied ledger/token.
+The Filesystem provider shares ordinary verification's canonical receipt
+factory; scope signing and verification use the original observed MAC engine.
+Owned reader/writer/scopes and receipt vectors are admitted before construction.
+The closed request/proof/origin capture holds a conservative DTO-slot/text quota
+until its runtime owner drops; this is not exact allocator-node footprint or RSS.
+Custom providers without an actual native verifier reject before backend IO.
 Merge retains its explicitly selected immutable source, original conflict
 choices, notice and inspected destination generation before publication.
 `ParentProjectController::prepare_project_import_at` restores that original

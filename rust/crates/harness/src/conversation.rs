@@ -468,17 +468,40 @@ impl ContentGrant {
         volume: &VolumeRef,
         operation: VolumeOperation,
     ) -> Result<Self> {
-        verifier.verify(scope)?;
+        Self::verify_with_work(verifier, scope, volume, operation, u64::MAX, &mut None)
+    }
+
+    pub(crate) fn verify_with_work(
+        verifier: &AuthorityVerifier, scope: &Scope, volume: &VolumeRef,
+        operation: VolumeOperation, maximum_bytes: u64,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        verifier.verify_with_work(scope, work)?;
         if operation == VolumeOperation::Write {
             volume.require_writer(scope.agent())?;
         }
-        if !scope
-            .capabilities()
-            .contains(&volume.capability(operation)?)
-        {
-            return Err(Error::Unauthorized(
-                "volume operation is not granted".into(),
-            ));
+        let digest = crate::contract::canonical_json_digest_with_work(volume, maximum_bytes, work)?;
+        let hash = blake3::Hash::from_bytes(digest).to_hex();
+        let prefix = match operation { VolumeOperation::Read => "volume:read:", VolumeOperation::Write => "volume:write:" };
+        // The capability is a fixed-size ASCII label, not an unobserved format!
+        // allocation before the original observer gets to admit its ownership.
+        let mut label = [0_u8; 77];
+        let length = prefix.len() + hash.len();
+        label[..prefix.len()].copy_from_slice(prefix.as_bytes());
+        label[prefix.len()..length].copy_from_slice(hash.as_bytes());
+        let text = std::str::from_utf8(&label[..length])
+            .map_err(|_| Error::Invalid("volume capability encoding failed".into()))?;
+        let capability = if let Some(io) = work.as_deref_mut() {
+            io.clone_text(text)?
+        } else { text.to_owned() };
+        let owned = capability.capacity() as u64;
+        let allowed = scope.capabilities().contains(&capability);
+        drop(capability);
+        if let Some(io) = work.as_deref_mut() { io.release_owned(owned)?; }
+        if !allowed { return Err(Error::Unauthorized("volume operation is not granted".into())); }
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = work.as_deref_mut() {
+            io.retain_owned(volume.logical_owned_bytes()?)?;
         }
         Ok(Self {
             volume: volume.clone(),
@@ -518,6 +541,17 @@ impl ContentGrant {
             return Err(Error::Unauthorized("volume operation is not granted".into()));
         }
         Ok(())
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        let mut bytes = self.volume.logical_owned_bytes()?;
+        if let Some(file) = &self.exact_file {
+            bytes = bytes.checked_add(file.logical_owned_bytes()?)
+                .ok_or_else(|| Error::Invalid("content grant ownership overflow".into()))?;
+        }
+        bytes.checked_add(self.directory_prefix.as_ref().map_or(0, |prefix| prefix.capacity() as u64))
+            .ok_or_else(|| Error::Invalid("content grant ownership overflow".into()))
     }
 
     /// Verifies a signed private-directory or whole-volume read grant. A

@@ -247,58 +247,184 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
     fn verify<'a>(&'a self, request: &'a ResourcePreparationRequest, proof: &'a ResourceCreationProofRef)
         -> BoxFuture<'a, Result<CreatedResourceReceipt>>
     {
+        Box::pin(async move { self.verify_with_io(request, proof, None).await })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn verify_with_native_work<'a>(
+        &'a self, request: &'a ResourcePreparationRequest, proof: &'a ResourceCreationProofRef,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> BoxFuture<'a, Result<(CreatedResourceReceipt, acyclic_fs::NativeAllocation)>> {
         Box::pin(async move {
-            let allocation = authenticate(&self.host, self.issuer.verifier().audience(), request, proof).await?;
-            let scope = self.issuer.root_for_agent(allocation.agent,
-                format!("created:{}:{}", proof.preparation, allocation.volume.storage_name()?),
-                Capabilities::new([
-                    allocation.volume.capability(VolumeOperation::Read)?,
-                    allocation.volume.capability(VolumeOperation::Write)?,
-                ]));
-            let access = Arc::new(CreatedFilesystemAccess {
-                host: self.host.clone(), owner: self.issuer.verifier().audience().clone(),
-                request: request.clone(), proof: proof.clone(),
-                origin: allocation.origin.clone(), generation: allocation.generation.clone(),
-                prepared_generation: allocation.prepared_generation,
-                volume: allocation.volume.clone(),
-                agent: allocation.agent, creation_operation: allocation.creation_operation,
-                reader: FilesystemContentVerifier::new(self.host.clone(), self.issuer.verifier(), scope.clone(), request.maximum_bytes)?,
-                writer: FilesystemContentPublisher::new(self.host.clone(), allocation.volume.clone(), &self.issuer.verifier(), &scope, request.maximum_bytes)?,
-            });
-            let mut operations = Vec::with_capacity(2 + allocation.reference_files.len());
-            let mut references = Vec::with_capacity(allocation.reference_files.len());
-            operations.push(CreatedResourceOperation::ReadVolume(allocation.volume.clone()));
-            operations.push(CreatedResourceOperation::WriteVolume(allocation.volume.clone()));
-            for file in allocation.reference_files {
-                let source_agent = match file.volume().owner() {
-                    crate::conversation::VolumeOwner::Agent(agent) => *agent,
-                    _ => allocation.agent,
-                };
-                let reference_scope = self.issuer.root_for_agent(source_agent,
-                    format!("created-reference:{}:{}", proof.preparation, file.read_capability()?),
-                    Capabilities::new([file.read_capability()?]));
-                let reader = Arc::new(CreatedFilesystemReference {
-                    allocation: access.clone(), file: file.clone(),
-                    reader: FilesystemContentVerifier::new(self.host.clone(), self.issuer.verifier(),
-                        reference_scope, request.maximum_bytes)?,
-                });
-                operations.push(CreatedResourceOperation::ReadFile(file.clone()));
-                references.push(CreatedReferenceBinding { file, reader });
-            }
-            Ok(CreatedResourceReceipt {
-                origin: allocation.origin, resource: proof.resource.clone(), evidence: proof.evidence.clone(),
-                allocation_generation: allocation.generation,
-                operations,
-                references,
-                content: vec![CreatedContentBinding {
-                    volume: allocation.volume, default_writer: allocation.default_writer,
-                    authority: allocation.authority,
-                    artifact_writer: allocation.artifact_writer,
-                    scratch_creation: allocation.default_writer.then(|| crate::resource_preparation::ChildScratchCreationProof::new(access.clone())),
-                    binding: ContentBindings { reader: access.clone(), writer: Some(access) },
-                }],
-            })
+            let io = PreparationIo::from_native_work(work)?;
+            let receipt = self.verify_with_io(request, proof, Some(&io)).await?;
+            // This is conservative closed-capture quota plus real owned scopes/
+            // buffers, never a claim of exact allocator-node footprint or RSS.
+            let retained = io.owned_bytes()?;
+            let custody = io.into_native_custody(retained)?;
+            Ok((receipt, custody))
         })
+    }
+}
+
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemResourceCreationProvider<A, O> {
+    async fn verify_with_io(
+        &self, request: &ResourcePreparationRequest, proof: &ResourceCreationProofRef,
+        io: Option<&PreparationIo>,
+    ) -> Result<CreatedResourceReceipt> {
+        let allocation = if let Some(io) = io {
+            authenticate_with_io(&self.host, self.issuer.audience(), request, proof, io).await?
+        } else { authenticate(&self.host, self.issuer.audience(), request, proof).await? };
+        if let Some(io) = io {
+            let mut observer = io.history_io();
+            crate::core::resource_creation_clone_reservation(request, proof, &allocation.origin,
+                &mut Some(&mut observer))?;
+            let generation_bytes = allocation.generation.logical_owned_bytes()?;
+            let resource_bytes = proof.resource.logical_owned_bytes()?;
+            let evidence_bytes = proof.evidence.logical_owned_bytes()?;
+            let bytes = allocation.volume.logical_owned_bytes()?.checked_mul(4)
+                .and_then(|bytes| bytes.checked_add(generation_bytes))
+                .and_then(|bytes| bytes.checked_add(self.issuer.audience().id.len() as u64))
+                .and_then(|bytes| bytes.checked_add(resource_bytes))
+                .and_then(|bytes| bytes.checked_add(evidence_bytes))
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<CreatedFilesystemAccess<A, O>>() as u64))
+                .ok_or_else(|| Error::Invalid("creator capture ownership overflow".into()))?;
+            io.claim(bytes)?;
+            io.allocation_attempt(std::mem::size_of::<CreatedFilesystemAccess<A, O>>() as u64)?;
+            io.check_cancellation()?;
+        }
+        let scope = if let Some(io) = io {
+            let name = io.capability(&allocation.volume, "harness-")?;
+            let read = Self::owned_label("volume:read:", &name["harness-".len()..], io)?;
+            let write = Self::owned_label("volume:write:", &name["harness-".len()..], io)?;
+            self.created_scope(allocation.agent, "created:", proof, name, [read, write], io)?
+        } else {
+            self.issuer.root_for_agent(allocation.agent,
+                format!("created:{}:{}", proof.preparation, allocation.volume.storage_name()?),
+                Capabilities::new([allocation.volume.capability(VolumeOperation::Read)?,
+                    allocation.volume.capability(VolumeOperation::Write)?]))
+        };
+        let verifier = if let Some(io) = io {
+            let mut observer = io.history_io();
+            self.issuer.verifier_with_work(&mut Some(&mut observer))?
+        } else { self.issuer.verifier() };
+        let writer = FilesystemContentPublisher::new_with_io(self.host.clone(), allocation.volume.clone(),
+            &verifier, &scope, request.maximum_bytes, io)?;
+        let reader = FilesystemContentVerifier::new_with_io(self.host.clone(), verifier, scope,
+            request.maximum_bytes, io)?;
+        if let Some(io) = io {
+            let owned = reader.logical_owned_bytes()?.checked_add(writer.logical_owned_bytes()?)
+                .ok_or_else(|| Error::Invalid("creator content ownership overflow".into()))?;
+            if owned > io.owned_bytes()? {
+                return Err(Error::Invalid("creator content exceeds its admitted capture quota".into()));
+            }
+        }
+        let access = Arc::new(CreatedFilesystemAccess {
+            host: self.host.clone(), owner: self.issuer.audience().clone(),
+            request: request.clone(), proof: proof.clone(), origin: allocation.origin.clone(),
+            generation: allocation.generation.clone(), prepared_generation: allocation.prepared_generation,
+            volume: allocation.volume.clone(), reader, writer,
+        });
+        let count = allocation.reference_files.len();
+        let operation_count = count.checked_add(2)
+            .ok_or_else(|| Error::Invalid("creator receipt item count overflow".into()))?;
+        if let Some(io) = io {
+            let slots = operation_count.checked_mul(std::mem::size_of::<CreatedResourceOperation>())
+                .and_then(|bytes| bytes.checked_add(count.checked_mul(std::mem::size_of::<CreatedReferenceBinding>())?))
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<CreatedContentBinding>()))
+                .ok_or_else(|| Error::Invalid("creator receipt slot overflow".into()))?;
+            io.claim(slots as u64)?;
+            io.allocation_attempt((operation_count * std::mem::size_of::<CreatedResourceOperation>()) as u64)?;
+            io.allocation_attempt((count * std::mem::size_of::<CreatedReferenceBinding>()) as u64)?;
+        }
+        let mut operations = Vec::with_capacity(operation_count);
+        let mut references = Vec::with_capacity(count);
+        operations.push(CreatedResourceOperation::ReadVolume(allocation.volume.clone()));
+        operations.push(CreatedResourceOperation::WriteVolume(allocation.volume.clone()));
+        for file in allocation.reference_files {
+            let source_agent = match file.volume().owner() {
+                crate::conversation::VolumeOwner::Agent(agent) => *agent, _ => allocation.agent,
+            };
+            if let Some(io) = io {
+                let bytes = file.logical_owned_bytes()?.checked_mul(2)
+                    .and_then(|bytes| bytes.checked_add(std::mem::size_of::<CreatedFilesystemReference<A, O>>() as u64))
+                    .ok_or_else(|| Error::Invalid("creator reference ownership overflow".into()))?;
+                io.claim(bytes)?;
+                io.allocation_attempt(std::mem::size_of::<CreatedFilesystemReference<A, O>>() as u64)?;
+            }
+            let scope = if let Some(io) = io {
+                let suffix = io.capability(&file, "file:read:")?;
+                let capability = Self::owned_label("", &suffix, io)?;
+                self.created_scope(source_agent, "created-reference:", proof, suffix, [capability], io)?
+            } else {
+                self.issuer.root_for_agent(source_agent,
+                    format!("created-reference:{}:{}", proof.preparation, file.read_capability()?),
+                    Capabilities::new([file.read_capability()?]))
+            };
+            let verifier = if let Some(io) = io {
+                let mut observer = io.history_io();
+                self.issuer.verifier_with_work(&mut Some(&mut observer))?
+            } else { self.issuer.verifier() };
+            let verifier = FilesystemContentVerifier::new_with_io(self.host.clone(), verifier, scope, request.maximum_bytes, io)?;
+            if let Some(io) = io {
+                if verifier.logical_owned_bytes()? > io.owned_bytes()? {
+                    return Err(Error::Invalid("creator reference exceeds its admitted capture quota".into()));
+                }
+            }
+            let reader = Arc::new(CreatedFilesystemReference {
+                allocation: access.clone(), file: file.clone(), reader: verifier,
+            });
+            operations.push(CreatedResourceOperation::ReadFile(file.clone()));
+            references.push(CreatedReferenceBinding { file, reader });
+        }
+        if let Some(io) = io {
+            io.allocation_attempt(std::mem::size_of::<CreatedContentBinding>() as u64)?;
+        }
+        Ok(CreatedResourceReceipt {
+            origin: allocation.origin, resource: proof.resource.clone(), evidence: proof.evidence.clone(),
+            allocation_generation: allocation.generation, operations, references,
+            content: vec![CreatedContentBinding { volume: allocation.volume,
+                default_writer: allocation.default_writer,
+                binding: ContentBindings { reader: access.clone(), writer: Some(access) } }],
+        })
+    }
+
+    fn created_scope<const N: usize>(
+        &self, agent: crate::AgentId, prefix: &str, proof: &ResourceCreationProofRef,
+        suffix: String, capabilities: [String; N], io: &PreparationIo,
+    ) -> Result<crate::Scope> {
+        use std::fmt::Write as _;
+        let length = prefix.len().checked_add(36 + 1).and_then(|length| length.checked_add(suffix.len()))
+            .ok_or_else(|| Error::Invalid("creator scope identity overflow".into()))?;
+        let copied = WorkCounters { bytes_copied: length as u64, ..Default::default() };
+        io.preflight(copied)?;
+        io.claim((length + N * std::mem::size_of::<String>()) as u64)?;
+        io.allocation_attempt(length as u64)?;
+        let mut id = String::with_capacity(length);
+        write!(&mut id, "{prefix}{}:{suffix}", proof.preparation)
+            .map_err(|_| Error::Invalid("creator scope formatting failed".into()))?;
+        io.charge(copied)?;
+        let capabilities = Capabilities::new(capabilities);
+        let temporary = suffix.capacity() as u64 + id.capacity() as u64 + capabilities.logical_owned_bytes()?;
+        let mut observer = io.history_io();
+        let scope = self.issuer.root_for_agent_with_work(agent, &id, &capabilities, &mut Some(&mut observer))?;
+        drop((suffix, id, capabilities));
+        io.release(temporary)?;
+        Ok(scope)
+    }
+
+    fn owned_label(prefix: &str, suffix: &str, io: &PreparationIo) -> Result<String> {
+        let length = prefix.len().checked_add(suffix.len())
+            .ok_or_else(|| Error::Invalid("creator label ownership overflow".into()))?;
+        let copied = WorkCounters { bytes_copied: length as u64, ..Default::default() };
+        io.preflight(copied)?;
+        io.claim(length as u64)?;
+        io.allocation_attempt(length as u64)?;
+        let mut value = String::with_capacity(length);
+        value.push_str(prefix);
+        value.push_str(suffix);
+        io.charge(copied)?;
+        Ok(value)
     }
 }
 
@@ -404,6 +530,34 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
         }
         self.reader.supports_measured_read(volume, budget, cancellation)
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn supports_native_read(&self, volume: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork)
+        -> Result<bool> {
+        if volume != self.file.volume() { return Ok(false); }
+        self.reader.supports_native_read(volume, work)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_with_native_work<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
+        work: &'a acyclic_fs::NativeMaterializationWork)
+        -> ContentFuture<'a, Result<(Vec<u8>, acyclic_fs::NativeAllocation)>> {
+        Box::pin(async move {
+            let io = PreparationIo::from_native_work(work)?;
+            self.reauthenticate_with_io(file, &io).await?;
+            drop(io);
+            self.reader.read_with_native_work(file, maximum_bytes.min(self.allocation.request.maximum_bytes), work).await
+        })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn verify_with_native_work<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
+        work: &'a acyclic_fs::NativeMaterializationWork)
+        -> ContentFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let io = PreparationIo::from_native_work(work)?;
+            self.reauthenticate_with_io(file, &io).await?;
+            drop(io);
+            self.reader.verify_with_native_work(file, maximum_bytes.min(self.allocation.request.maximum_bytes), work).await
+        })
+    }
     fn read_measured<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
         budget: WorkBudget, cancellation: &'a CancellationToken)
         -> ContentFuture<'a, MeasuredResult<OperationReceipt<Vec<u8>>, Error>> {
@@ -447,6 +601,34 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
         }
         self.reader.supports_measured_read(volume, budget, cancellation)
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn supports_native_read(&self, volume: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork)
+        -> Result<bool> {
+        if volume != &self.volume { return Ok(false); }
+        self.reader.supports_native_read(volume, work)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_with_native_work<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
+        work: &'a acyclic_fs::NativeMaterializationWork)
+        -> ContentFuture<'a, Result<(Vec<u8>, acyclic_fs::NativeAllocation)>> {
+        Box::pin(async move {
+            let io = PreparationIo::from_native_work(work)?;
+            self.reauthenticate_with_io(file.volume(), &io).await?;
+            drop(io);
+            self.reader.read_with_native_work(file, maximum_bytes.min(self.request.maximum_bytes), work).await
+        })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn verify_with_native_work<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
+        work: &'a acyclic_fs::NativeMaterializationWork)
+        -> ContentFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let io = PreparationIo::from_native_work(work)?;
+            self.reauthenticate_with_io(file.volume(), &io).await?;
+            drop(io);
+            self.reader.verify_with_native_work(file, maximum_bytes.min(self.request.maximum_bytes), work).await
+        })
+    }
     fn read_measured<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
         budget: WorkBudget, cancellation: &'a CancellationToken)
         -> ContentFuture<'a, MeasuredResult<OperationReceipt<Vec<u8>>, Error>> {
@@ -487,6 +669,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPublisher for CreatedFilesystemAccess<A, O> {
     fn volume(&self) -> &VolumeRef { &self.volume }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn supports_native_stage(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        if self.writer.volume() != &self.volume {
+            return Err(Error::Unauthorized("created writer is not its exact bound namespace".into()));
+        }
+        // Availability is not allocation authentication. Actual staging below
+        // still reauthenticates original creator evidence before any write.
+        self.writer.supports_native_stage(work)
+    }
     fn stage<'a>(&'a self, operation: OperationId, path: &'a str, bytes: &'a [u8], media_type: &'a str, display_name: &'a str) -> BoxFuture<'a, Result<FileRef>> {
         Box::pin(async move { self.reauthenticate(&self.volume).await?; self.writer.stage(operation, path, bytes, media_type, display_name).await })
     }
@@ -510,6 +701,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
                     io.remaining()?, cancellation).await)
             }.await;
             content_result(&io, result)
+        })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stage_once_with_native_work<'a>(&'a self, operation: OperationId, path: &'a str, bytes: &'a [u8],
+        media_type: &'a str, display_name: &'a str, work: &'a acyclic_fs::NativeMaterializationWork)
+        -> ContentFuture<'a, Result<(FileRef, acyclic_fs::NativeAllocation)>> {
+        Box::pin(async move {
+            let io = PreparationIo::from_native_work(work)?;
+            self.reauthenticate_with_io(&self.volume, &io).await?;
+            drop(io);
+            self.writer.stage_once_with_native_work(operation, path, bytes, media_type, display_name, work).await
         })
     }
     fn observe_staged_once_measured<'a>(&'a self, operation: OperationId, maximum_bytes: u64,
