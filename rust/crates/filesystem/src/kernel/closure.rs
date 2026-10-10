@@ -162,6 +162,7 @@ struct ProofContext<'a, S> {
     work: WorkCounters,
     objects: HashSet<ObjectId>,
     blob_lengths: HashMap<ObjectId, u64>,
+    extent_lengths: HashMap<ObjectId, u64>,
     cancellation: &'a CancellationToken,
 }
 
@@ -179,6 +180,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             work: WorkCounters::default(),
             objects: HashSet::new(),
             blob_lengths: HashMap::new(),
+            extent_lengths: HashMap::new(),
             cancellation,
         }
     }
@@ -435,6 +437,15 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
 
     async fn prove_extent_tree(&mut self, root: ObjectId, size: u64) -> Result<(), ClosureError> {
         Self::require_kind(root, ObjectKind::ExtentPage)?;
+        // Reuse only a complete proof in this invocation. The declared length is
+        // part of the proof: a shared root cannot authenticate a different span.
+        if let Some(length) = self.extent_lengths.get(&root) {
+            return if *length == size {
+                Ok(())
+            } else {
+                Err(ClosureError::RoutingBoundsMismatch)
+            };
+        }
         let mut pending = vec![(root, 0_u64, size)];
         let mut pages = HashSet::new();
         while let Some((page_id, first, end)) = pending.pop() {
@@ -477,6 +488,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 }
             }
         }
+        self.extent_lengths.insert(root, size);
         Ok(())
     }
 

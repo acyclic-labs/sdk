@@ -1651,47 +1651,81 @@ fn missing_metadata_preserves_backend_failure_work() -> Result<(), Box<dyn std::
 }
 
 #[test]
-fn shared_metadata_is_authenticated_once() -> Result<(), Box<dyn std::error::Error>> {
+fn shared_regular_data_and_metadata_are_authenticated_once()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let metadata_id = put(
         &store,
         ObjectKind::Metadata,
         encode_file_metadata(metadata())?,
     )?;
-    let root_id = FileId::from_bytes([1; 16]);
-    let child_id = FileId::from_bytes([2; 16]);
-    let tree = put(
+    let blob = blob_with_bytes(&store, b"body")?;
+    let extents = put(
         &store,
-        ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![TreeEntry {
-                name: LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?,
-                file_id: child_id,
-                kind: FileKind::Regular,
+        ObjectKind::ExtentPage,
+        encode_extent_page(
+            &ExtentPage::Leaf(vec![Extent {
+                offset: 0,
+                length: 4,
+                kind: ExtentKind::Content {
+                    object: blob,
+                    object_offset: 0,
+                },
             }]),
             8,
         )?,
     )?;
-    let generation = generation_with_records(
+    let root_id = FileId::from_bytes([1; 16]);
+    let child_ids = [FileId::from_bytes([2; 16]), FileId::from_bytes([3; 16])];
+    let tree = put(
         &store,
-        root_id,
-        vec![
-            directory_record(root_id, 1, metadata_id, tree),
-            FileRecord {
-                file_id: child_id,
-                kind: FileKind::Regular,
-                link_count: 1,
-                metadata: metadata_id,
-                payload: FilePayload::InlineRegular(InlineFileData::new(b"body")?),
-            },
-        ],
+        ObjectKind::TreePage,
+        encode_tree_page(
+            &TreePage::Leaf(vec![
+                TreeEntry {
+                    name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec(), 255)?,
+                    file_id: child_ids[0],
+                    kind: FileKind::Regular,
+                },
+                TreeEntry {
+                    name: LogicalName::new(NameEncoding::Utf8, b"second".to_vec(), 255)?,
+                    file_id: child_ids[1],
+                    kind: FileKind::Regular,
+                },
+            ]),
+            8,
+        )?,
     )?;
-
+    let mut records = vec![directory_record(root_id, 1, metadata_id, tree)];
+    for file_id in child_ids {
+        records.push(FileRecord {
+            file_id,
+            kind: FileKind::Regular,
+            link_count: 1,
+            metadata: metadata_id,
+            payload: FilePayload::Regular {
+                logical_bytes: 4,
+                extents,
+            },
+        });
+    }
+    let generation = generation_with_records(&store, root_id, records.clone())?;
     let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED)?;
-    assert_eq!(proof.file_count, 2);
-    assert_eq!(proof.object_count, 4);
-    assert_eq!(proof.work.object_probes, 4);
-    assert_eq!(proof.work.backend_read_operations, 4);
+    assert_eq!(proof.file_count, 3);
+    assert_eq!(proof.object_count, 7);
+    assert_eq!(proof.work.object_probes, 7);
+    assert_eq!(proof.work.backend_read_operations, 7);
+
+    // A previously proven extent root must still reject a conflicting file size.
+    records[2].payload = FilePayload::Regular {
+        logical_bytes: 5,
+        extents,
+    };
+    let conflicting = generation_with_records(&store, root_id, records)?;
+    assert!(matches!(
+        prove_generation_closure(&store, conflicting, limits(), WorkBudget::UNBOUNDED),
+        Err(ClosureError::RoutingBoundsMismatch)
+    ));
     Ok(())
 }
 
