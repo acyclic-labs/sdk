@@ -480,23 +480,26 @@ impl IndexedPublication {
         }
     }
 
+    pub(crate) fn add_index_with_work(
+        &self,
+        request: &mut crate::distributed::PreparedCommitRequest<'_, '_>,
+    ) -> Result<()> {
+        for (path, tail, bytes) in &self.indexes {
+            request.push_condition(if *tail == 0 {
+                CommitCondition::Absent { path: path.clone() }
+            } else {
+                CommitCondition::Tail { path: path.clone(), expected: *tail }
+            })?;
+            request.append(path.clone(), bytes.clone())?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn request<P: StreamProvider>(
         &self,
         client: &StreamClient<P>,
         key: IdempotencyKey,
     ) -> Result<CommitRequest> {
-        self.request_with_work(client, key, &mut None).await
-    }
-
-    pub(crate) async fn request_with_work<P: StreamProvider>(
-        &self,
-        client: &StreamClient<P>,
-        key: IdempotencyKey,
-        work: &mut Option<&mut dyn super::history::HistoryIo>,
-    ) -> Result<CommitRequest> {
-        if let Some(observer) = work.as_deref_mut() {
-            observer.begin_call()?;
-        }
         let target = match client.bounds(self.path.as_str()).await {
             Ok(_) => CommitCondition::Tail {
                 path: self.path.clone(),

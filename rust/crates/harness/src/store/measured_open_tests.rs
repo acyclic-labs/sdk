@@ -38,6 +38,92 @@ mod measured_open_tests {
     }
 
     #[tokio::test]
+    async fn prepared_publication_preserves_atomic_indexes_and_preallocation_denial() -> Result<()> {
+        let provider = Arc::new(Provider::default());
+        let client = StreamClient::new(provider.clone());
+        let writer = with_content(StreamAggregate::open(
+            &client, authority(), issuer().verifier(), schemas()).await?);
+        let ApplyResult::Applied { event } = writer.reducer().plan(&command(1)?)? else {
+            return Err(Error::Invalid("fresh original command must apply".into()));
+        };
+        let publication = operations::IndexedPublication::new(
+            &authority(), &event, encode_event(&authority(), &event)?)?;
+        let cancellation = CancellationToken::new();
+        let mut denied = budget();
+        denied.allocation_operations = 0;
+        provider.reset_io();
+        let mut work = history::HistoryWork::new(denied, &cancellation);
+        assert!(crate::distributed::PreparedCommitRequest::new_with_digest(
+            [67; 32], &mut Some(&mut work)).is_err());
+        let failed = work.finish(Ok(())).map_err(|failure| failure.error)?;
+        assert_eq!(failed.work.allocation_operations + failed.work.bytes_copied, 0);
+        assert_eq!(provider.io_snapshot().writes, 0);
+        let mut allowed = budget();
+        allowed.backend_write_operations = 1;
+        allowed.authority_bytes_written = allowed.authority_bytes_read;
+        allowed.authority_records_appended = allowed.authority_records_read;
+        let mut work = history::HistoryWork::new(allowed, &cancellation);
+        let mut observer: Option<&mut dyn history::HistoryIo> = Some(&mut work);
+        let mut prepared = crate::distributed::PreparedCommitRequest::new_with_digest(
+            [68; 32], &mut observer)?;
+        prepared.push_condition(acyclic_stream::CommitCondition::Absent {
+            path: publication.path.clone(),
+        })?;
+        prepared.append(publication.path.clone(), publication.bytes.clone())?;
+        publication.add_index_with_work(&mut prepared)?;
+        let outcome = crate::distributed::commit_prepared_with_work(
+            &client, prepared, event.operation_id).await?;
+        let acyclic_stream::CommitOutcome::Committed(envelope) = outcome else {
+            return Err(Error::Conflict("original indexed publication unexpectedly conflicted".into()));
+        };
+        publication.verify(&envelope)?;
+        drop(observer);
+        let receipt = work.finish(Ok(())).map_err(|failure| failure.error)?;
+        assert_eq!(receipt.work.backend_write_operations, 1);
+        assert_eq!(receipt.work.authority_records_appended, envelope.mutations.len() as u64);
+        let reader = writer.history_reader()?;
+        assert_eq!(reader.operation_event(event.operation_id).await?, Some(event));
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_reader_constructor_rejects_before_copy_and_transfers_original_custody() -> Result<()> {
+        use acyclic_fs::{NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
+        let provider = Arc::new(Provider::default());
+        let client = StreamClient::new(provider.clone());
+        let cancellation = CancellationToken::new();
+        let mut denied = budget();
+        denied.bytes_copied = 0;
+        let native = NativeMaterializationWork::new(denied, &cancellation)
+            .expect("original accounting state");
+        let prefix = native.receipt();
+        let mut io = history::native_work_io(&native).expect("empty custody");
+        assert!(matches!(HistoryReader::new_with_work(
+            &client, &authority(), &issuer().verifier(), Some(&mut io)),
+            Err(Error::NativeWork {
+                cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                    counter: "bytes_copied", ..
+                }), custody: None,
+            })));
+        assert_eq!(native.receipt(), prefix);
+        drop(io);
+        let native = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("original accounting state");
+        let mut io = history::native_work_io(&native).expect("empty custody");
+        let reader = HistoryReader::new_with_work(
+            &client, &authority(), &issuer().verifier(), Some(&mut io))?;
+        let custody = io.into_custody();
+        assert!(custody.bytes() >= authority().stream_path()?.len() as u64);
+        assert!(native.receipt().bytes_copied >= authority().stream_path()?.len() as u64);
+        let sdk = provider.io_snapshot();
+        assert_eq!(sdk.reads + sdk.tails as u64 + sdk.writes + sdk.inspections
+            + sdk.commit_reads + sdk.other_calls, 0);
+        drop(reader);
+        drop(custody);
+        Ok(())
+    }
+    #[tokio::test]
     async fn measured_checkpoint_open_matches_original_cut_and_exact_sdk_work() -> Result<()> {
         let (provider, client) = fixture().await?;
         let expected = StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?.reducer().snapshot()?;
