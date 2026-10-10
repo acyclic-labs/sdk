@@ -516,6 +516,13 @@ impl NativeAllocation {
     /// Borrows this guard's original operation ledger without creating a meter.
     pub const fn work(&self) -> &NativeMaterializationWork { &self.meter }
 
+    /// Tests whether both payload guards retain the same original ledger.
+    ///
+    /// This pure custody identity test grants no resource or mutation authority.
+    pub fn shares_ledger(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.meter.state, &other.meter.state)
+    }
+
     /// Transfers existing custody without another allocation.
     ///
     /// # Errors
