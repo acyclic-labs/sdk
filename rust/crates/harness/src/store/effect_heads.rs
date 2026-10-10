@@ -252,10 +252,11 @@ async fn root_at<P: StreamProvider>(
         || certificate.canonical_path != authority.stream_path()?
         || certificate.revision != revision
         || certificate.proof
-            != verifier.effect_history_root_proof(
+            != verifier.effect_history_root_proof_with_work(
                 revision,
                 certificate.canonical_digest,
                 certificate.root,
+                work,
             )?
     {
         return Err(Error::Unauthorized(
@@ -271,11 +272,12 @@ async fn root_at<P: StreamProvider>(
     .await?
     .ok_or_else(|| Error::Storage("effect cut canonical anchor is missing".into()))?;
     charge(&mut used, canonical.value.len() as u64, maximum_bytes)?;
-    if let Some(observer) = work.as_deref_mut() {
-        observer.hashed_bytes(canonical.value.len() as u64)?;
+    if canonical.commit_id != record.commit_id || {
+        if let Some(observer) = work.as_deref_mut() {
+            observer.hashed_bytes(canonical.value.len() as u64)?;
+        }
+        *blake3::hash(&canonical.value).as_bytes() != certificate.canonical_digest
     }
-    if canonical.commit_id != record.commit_id
-        || *blake3::hash(&canonical.value).as_bytes() != certificate.canonical_digest
     {
         return Err(Error::Storage(
             "effect cut differs from its original atomic publication".into(),
@@ -312,13 +314,16 @@ async fn load_node<P: StreamProvider>(
         .await?
         .ok_or_else(|| Error::Storage("authenticated effect index node is missing".into()))?;
     charge(used, record.value.len() as u64, maximum)?;
-    if let Some(observer) = work.as_deref_mut() {
-        observer.begin_call()?;
-        observer.hashed_bytes(record.value.len() as u64)?;
+    if record.value.len() as u64 > MAX_NODE_BYTES || {
+        let stream = client.stream(path.as_str())?;
+        if let Some(observer) = work.as_deref_mut() { observer.begin_call()?; }
+        stream.tail().await? != 1
+    } || {
+        if let Some(observer) = work.as_deref_mut() {
+            observer.hashed_bytes(record.value.len() as u64)?;
+        }
+        *blake3::hash(&record.value).as_bytes() != hash
     }
-    if record.value.len() as u64 > MAX_NODE_BYTES
-        || client.stream(path.as_str())?.tail().await? != 1
-        || *blake3::hash(&record.value).as_bytes() != hash
     {
         return Err(Error::Storage(
             "authenticated effect index node differs".into(),
@@ -378,15 +383,12 @@ async fn walk<P: StreamProvider>(
                     let target = (old_capacity.max(1) * 2).min(128);
                     let element_bytes = std::mem::size_of::<Branch>() as u64;
                     if let Some(observer) = work.as_deref_mut() {
-                        observer.retain_owned(target as u64 * element_bytes)?;
-                        observer.copy_bytes(path.len() as u64 * element_bytes)?;
+                        observer.admit_allocation(target as u64 * element_bytes)?;
                     }
                     path.try_reserve_exact(target - path.len())
                         .map_err(|_| Error::Invalid("effect proof path allocation failed".into()))?;
                     if let Some(observer) = work.as_deref_mut() {
-                        if path.capacity() > target {
-                            observer.retain_owned((path.capacity() - target) as u64 * element_bytes)?;
-                        }
+                        observer.retain_owned(path.capacity() as u64 * element_bytes)?;
                         observer.release_owned(old_capacity as u64 * element_bytes)?;
                     }
                 }
@@ -584,10 +586,11 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
         revision: event.revision,
         canonical_digest,
         root: previous.hash,
-        proof: verifier.effect_history_root_proof(
+        proof: verifier.effect_history_root_proof_with_work(
             event.revision,
             canonical_digest,
             previous.hash,
+            work,
         )?,
     };
     let bytes = super::history::canonical_bytes_with_work(&certificate, MAX_CERTIFICATE_BYTES, work)?;

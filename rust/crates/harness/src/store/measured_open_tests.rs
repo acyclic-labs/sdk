@@ -218,6 +218,47 @@ mod measured_open_tests {
         assert_eq!(receipt.work.authority_bytes_read, provider.io_snapshot().read_bytes);
         assert_eq!(receipt.work.backend_read_operations, provider.io_snapshot().reads + provider.io_snapshot().tails as u64);
         assert_eq!(receipt.work.items_returned, 3);
+        let reader = HistoryReader::new(&client, &authority(), issuer().verifier())?;
+        let read_work = reader.read_page_measured(
+            &HistoryCursor { authority: authority(), after_revision: 0, through_revision: 3 },
+            default_projection_read_limits(), budget(), &cancellation,
+        ).await.map_err(|failure| failure.error)?.work;
+        // Restore executes the original reducer's admission MAC in addition
+        // to the reader's canonical verification; no source re-encode is
+        // invented merely to estimate its transient/resident clone custody.
+        assert!(receipt.work.bytes_encoded > read_work.bytes_encoded);
+        assert!(receipt.work.bytes_hashed > read_work.bytes_hashed);
+        assert!(receipt.work.peak_allocation_bytes > 0);
+        for cut in [1, 3] {
+            provider.reset_io();
+            let archived = reader.effect_events_measured(
+                &HistoryCursor { authority: authority(), after_revision: 0, through_revision: cut },
+                effect_id, default_projection_read_limits(), budget(), &cancellation,
+            ).await.map_err(|failure| failure.error)?;
+            assert_eq!(archived.value, expected.events.iter().take(cut as usize).cloned().collect::<Vec<_>>());
+            assert_eq!(archived.work.items_returned, cut);
+            assert_eq!(archived.work.authority_bytes_read, provider.io_snapshot().read_bytes);
+            assert_eq!(archived.work.backend_read_operations, provider.io_snapshot().reads + provider.io_snapshot().tails as u64);
+            assert_eq!(provider.io_snapshot().writes, 0);
+        }
+        provider.reset_io();
+        let absent = reader.effect_events_measured(
+            &HistoryCursor { authority: authority(), after_revision: 0, through_revision: 3 },
+            EffectId::from_bytes([99; 16]), default_projection_read_limits(), budget(), &cancellation,
+        ).await.map_err(|failure| failure.error)?;
+        assert!(absent.value.is_empty());
+        assert_eq!(absent.work.items_returned, 0);
+        assert_eq!(absent.work.output_bytes, 0);
+        assert!(absent.work.authority_records_read > 0);
+        provider.reset_io();
+        let denied = reader.effect_events_measured(
+            &HistoryCursor { authority: authority(), after_revision: 0, through_revision: 3 },
+            effect_id, default_projection_read_limits(),
+            WorkBudget { backend_read_operations: 0, ..budget() }, &cancellation,
+        ).await.expect_err("SDK admission must precede even the original tail request");
+        assert_eq!(denied.work.backend_read_operations, 0);
+        assert_eq!(provider.io_snapshot().reads, 0);
+        assert_eq!(provider.io_snapshot().tails, 0);
         let terminal = expected.events.last().expect("original resolved event");
         provider.reset_io();
         let mut work = history::HistoryWork::new(budget(), &cancellation);

@@ -114,8 +114,7 @@ fn reserve_chunk_slot<T>(
     let target = (values.capacity().max(1) * 2).min(maximum);
     let element_bytes = std::mem::size_of::<T>() as u64;
     let old_capacity = values.capacity();
-    observer.admit_owned(target as u64 * element_bytes)?;
-    observer.copy_bytes(values.len() as u64 * element_bytes)?;
+    observer.admit_allocation(target as u64 * element_bytes)?;
     values.try_reserve_exact(target - values.len())
         .map_err(|_| Error::Invalid("projection chunk vector allocation failed".into()))?;
     observer.retain_owned(values.capacity() as u64 * element_bytes)?;
@@ -517,6 +516,14 @@ impl ProjectionLocation {
                 "projection snapshot differs from its canonical anchor".into(),
             ));
         }
+        let anchor_owned = if work.is_some() {
+            crate::core::event_clone_reservation(&event)?
+                .checked_add(actual_authority.id.capacity() as u64)
+                .ok_or_else(|| Error::Invalid("projection anchor custody overflows".into()))?
+        } else { 0 };
+        drop(event);
+        drop(actual_authority);
+        if let Some(work) = work.as_deref_mut() { work.release_owned(anchor_owned)?; }
         if let Some(work) = work.as_deref_mut() {
             work.check_cancellation()?;
         }

@@ -11,6 +11,9 @@ use crate::{
 use crate::core::ApplyResult;
 use prost::Message as _;
 mod admission;
+#[cfg(all(test, feature = "filesystem"))]
+#[path = "wire_codec/admission_tests.rs"]
+mod admission_tests;
 
 const EVENT_WIRE_VERSION: &str = "2";
 
@@ -25,12 +28,12 @@ pub(crate) fn encode_event_with_work(
     let mut metadata = admission::Quota::new(work, admission::encode_metadata_quota(authority, event)?)?;
     let payload = crate::store::history::canonical_bytes_with_work(
         &event.payload, acyclic_stream::MAX_RECORD_BYTES as u64, metadata.work())?;
+    metadata.adopt(payload.capacity() as u64)?;
     if let Some(work) = metadata.work().as_deref_mut() {
         work.hashed_bytes(crate::FILE_DESCRIPTOR_SET.len() as u64)?;
     }
     let envelope = event_envelope(authority, event, payload);
-    let payload_capacity = envelope.canonical_payload_json.capacity() as u64;
-    metadata.replace(admission::envelope_owned(&envelope) - payload_capacity)?;
+    metadata.replace(admission::envelope_owned(&envelope))?;
     let length = envelope.encoded_len();
     let mut output = Vec::new();
     if let Some(work) = metadata.work().as_deref_mut() {
@@ -39,11 +42,12 @@ pub(crate) fn encode_event_with_work(
     } else {
         output.reserve_exact(length);
     }
+    metadata.adopt(output.capacity() as u64)?;
     let result = envelope.encode(&mut output);
     if let Some(work) = metadata.work().as_deref_mut() { work.encoded_bytes(output.len() as u64)?; }
     drop(envelope);
-    if let Some(work) = metadata.work().as_deref_mut() { work.release_owned(payload_capacity)?; }
     result.map_err(|error| Error::Storage(error.to_string()))?;
+    metadata.transfer_part(output.capacity() as u64)?;
     Ok(output)
 }
 

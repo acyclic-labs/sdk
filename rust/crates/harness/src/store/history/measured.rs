@@ -84,6 +84,26 @@ impl<P: StreamProvider> HistoryReader<P> {
         work.finish(result)
     }
 
+    /// Reads one effect's authenticated transition prefix at the exact pinned
+    /// cut, including issuer-authenticated absence. This grants no execution
+    /// authority and uses the original bounded radix/locator reader, not replay.
+    /// Output bytes are the original canonical records represented by events.
+    pub async fn effect_events_measured(
+        &self, cursor: &HistoryCursor, effect: crate::EffectId,
+        limits: HistoryReadLimits, budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> MeasuredResult<OperationReceipt<Vec<Event>>, Error> {
+        let mut work = HistoryWork::new(budget, cancellation);
+        let result = async {
+            work.preflight()?;
+            super::super::effects::read_with_work(
+                &self.client, &self.verifier, cursor, effect, limits,
+                &mut Some(&mut work),
+            ).await
+        }.await;
+        work.finish(result)
+    }
+
     /// Verifies the original published child without acquiring another lease,
     /// restoring an aggregate, rebinding, or requiring a Summary projection.
     pub async fn verify_published_child_measured(
@@ -95,7 +115,7 @@ impl<P: StreamProvider> HistoryReader<P> {
             work.preflight()?;
             let limits = HistoryReadLimits {
                 maximum_events: 2,
-                maximum_bytes: budget.bytes_read,
+                maximum_bytes: budget.authority_bytes_read,
             };
             self.verify_published_child_with_work(parent, seed, limits, &mut Some(&mut work)).await
         }.await;
@@ -350,6 +370,19 @@ impl HistoryIo for HistoryWork<'_> {
     fn reserve_messages(&mut self, messages: &mut Vec<crate::conversation::ConversationMessage>, maximum: usize) -> Result<()> { self.reserve_item(messages, maximum) }
     fn reserve_values(&mut self, values: &mut Vec<serde_json::Value>, maximum: usize) -> Result<()> { self.reserve_item(values, maximum) }
     fn reserve_bytes(&mut self, bytes: &mut Vec<u8>, capacity: usize) -> Result<()> { HistoryWork::reserve_bytes(self, bytes, capacity) }
+    fn reserve_text(&mut self, text: &mut String, capacity: usize) -> Result<()> {
+        if capacity <= text.capacity() { return Ok(()); }
+        let old = text.capacity();
+        self.admit_owned((capacity - old) as u64)?;
+        self.planned(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })?;
+        text.try_reserve_exact(capacity - text.len())
+            .map_err(|error| Error::Storage(format!("history text allocation failed: {error}")))?;
+        self.retain((text.capacity() - old) as u64)
+    }
+    fn admit_allocation(&mut self, bytes: u64) -> Result<()> {
+        self.admit_owned(bytes)?;
+        self.planned(WorkCounters { allocation_operations: u64::from(bytes != 0), ..WorkCounters::default() })
+    }
     fn copy_bytes(&mut self, bytes: u64) -> Result<()> { self.planned(WorkCounters { bytes_copied: bytes, ..WorkCounters::default() }) }
     fn encoded_bytes(&mut self, bytes: u64) -> Result<()> { self.observed(WorkCounters { bytes_encoded: bytes, ..WorkCounters::default() }) }
     fn admit_encoding(&self, bytes: u64) -> Result<()> {

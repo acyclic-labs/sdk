@@ -119,13 +119,24 @@ impl<'a, 'b> Quota<'a, 'b> {
     }
     pub(super) fn work(&mut self) -> &mut Option<&'b mut dyn HistoryIo> { self.work }
     pub(super) fn replace(&mut self, bytes: u64) -> Result<()> {
-        if let Some(work) = self.work.as_deref_mut() { work.release_owned(self.bytes)?; }
-        self.bytes = 0;
-        if let Some(work) = self.work.as_deref_mut() {
-            work.admit_owned(bytes)?;
-            work.retain_owned(bytes)?;
+        if bytes <= self.bytes {
+            if let Some(work) = self.work.as_deref_mut() { work.release_owned(self.bytes - bytes)?; }
+        } else if let Some(work) = self.work.as_deref_mut() {
+            let extra = bytes - self.bytes;
+            work.admit_owned(extra)?;
+            work.retain_owned(extra)?;
         }
         self.bytes = bytes;
+        Ok(())
+    }
+    pub(super) fn adopt(&mut self, bytes: u64) -> Result<()> {
+        self.bytes = self.bytes.checked_add(bytes)
+            .ok_or_else(|| Error::Storage("event quota custody overflows".into()))?;
+        Ok(())
+    }
+    pub(super) fn transfer_part(&mut self, bytes: u64) -> Result<()> {
+        self.bytes = self.bytes.checked_sub(bytes)
+            .ok_or_else(|| Error::Storage("event quota transfer exceeds custody".into()))?;
         Ok(())
     }
     pub(super) fn transfer(&mut self) { self.bytes = 0; }

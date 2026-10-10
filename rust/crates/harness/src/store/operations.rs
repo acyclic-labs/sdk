@@ -169,13 +169,13 @@ pub(super) fn decode_location_with_work(
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct MessageLocation {
-    location: OperationLocation,
-    message_id: uuid::Uuid,
-    sequence: u64,
+pub(super) struct MessageLocation {
+    pub(super) location: OperationLocation,
+    pub(super) message_id: uuid::Uuid,
+    pub(super) sequence: u64,
 }
 
-fn decode_message_location_with_work(
+pub(super) fn decode_message_location_with_work(
     bytes: &[u8],
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<MessageLocation> {
@@ -300,8 +300,7 @@ fn reserve_indexes(
     if needed <= indexes.capacity() { return Ok(()); }
     let element_bytes = std::mem::size_of::<(StreamPath, u64, Bytes)>() as u64;
     let old_capacity = indexes.capacity();
-    observer.admit_owned(needed as u64 * element_bytes)?;
-    observer.copy_bytes(indexes.len() as u64 * element_bytes)?;
+    observer.admit_allocation(needed as u64 * element_bytes)?;
     indexes.try_reserve_exact(additional)
         .map_err(|_| Error::Invalid("publication index allocation failed".into()))?;
     observer.retain_owned(indexes.capacity() as u64 * element_bytes)?;
@@ -675,7 +674,7 @@ pub(crate) async fn find_operation_bounded_with_work<P: StreamProvider>(
             "operation location is not a single immutable record".into(),
         ));
     }
-    let location: OperationLocation = crate::executor::decode_json(&index.value)?;
+    let location = decode_location_with_work(&index.value, work)?;
     if &location.authority != authority
         || location.operation_id != operation
         || location.revision == 0
@@ -687,6 +686,10 @@ pub(crate) async fn find_operation_bounded_with_work<P: StreamProvider>(
     let (event, bytes) = verify_operation_locator_with_work(
         client, authority, verifier, &index, &location, maximum_bytes, work,
     ).await?;
+    let location_bytes = location.authority.id.capacity() as u64;
+    drop(location);
+    if let Some(work) = work.as_deref_mut() { work.release_owned(location_bytes)?; }
+    drop(index);
     if let Some(work) = work.as_deref_mut() {
         work.stage_output(bytes - index_bytes, 1)?;
         work.release_record(index_bytes)?;
@@ -735,9 +738,9 @@ pub(crate) async fn verify_operation_locator_with_work<P: StreamProvider>(
         .ok_or_else(|| Error::Invalid("operation lookup exceeds byte bound".into()))?;
     let event = super::history::verify_history_record_with_work(verifier, authority, sequence, &record, work)?;
     verify_operation_binding(authority, index, location, &record, &event)?;
-    if let Some(work) = work.as_deref_mut() {
-        work.release_record(record.value.len() as u64)?;
-    }
+    let record_bytes = record.value.len() as u64;
+    drop(record);
+    if let Some(work) = work.as_deref_mut() { work.release_record(record_bytes)?; }
     Ok((event, consumed_bytes))
 }
 
@@ -938,7 +941,7 @@ async fn verify_message_locator_with_work<P: StreamProvider>(
     maximum_bytes: u64,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
-    let location: MessageLocation = crate::executor::decode_json(&index.value)?;
+    let location = decode_message_location_with_work(&index.value, work)?;
     if &location.location.authority != authority
         || expected_id.is_some_and(|id| location.message_id != id)
         || expected_sequence.is_some_and(|sequence| location.sequence != sequence)
@@ -960,13 +963,20 @@ async fn verify_message_locator_with_work<P: StreamProvider>(
     )
     .await?;
     let index_bytes = index.value.len() as u64;
+    drop(index);
     if let Some(work) = work.as_deref_mut() { work.release_record(index_bytes)?; }
-    if location.sequence == 0 {
-        return if location.message_id.is_nil()
-            && matches!(
-                event.payload,
-                crate::core::EventPayload::ConversationBound { .. }
-            ) {
+    let message_id = location.message_id;
+    let sequence = location.sequence;
+    let location_bytes = location.location.authority.id.capacity() as u64;
+    drop(location);
+    if let Some(work) = work.as_deref_mut() { work.release_owned(location_bytes)?; }
+    if sequence == 0 {
+        let bound = message_id.is_nil()
+            && matches!(&event.payload, crate::core::EventPayload::ConversationBound { .. });
+        let event_bytes = if work.is_some() { crate::core::event_clone_reservation(&event)? } else { 0 };
+        drop(event);
+        if let Some(work) = work.as_deref_mut() { work.release_owned(event_bytes)?; }
+        return if bound {
             Ok((None, consumed_bytes))
         } else {
             Err(Error::Storage(
@@ -983,7 +993,7 @@ async fn verify_message_locator_with_work<P: StreamProvider>(
             ));
         }
     };
-    if message.id != location.message_id || message.sequence != location.sequence {
+    if message.id != message_id || message.sequence != sequence {
         return Err(Error::Storage(
             "message location differs from its canonical message".into(),
         ));

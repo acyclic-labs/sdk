@@ -73,6 +73,18 @@ impl InheritedConversationPrefix {
         attached_agents: &[AgentId],
         conversation: &crate::conversation::ConversationState,
     ) -> Result<Self> {
+        Self::select_with_work(parent, parent_revision, through_sequence, attached_agents, conversation, &mut None)
+    }
+
+    pub(crate) fn select_with_work(
+        parent: Authority,
+        parent_revision: u64,
+        through_sequence: u64,
+        attached_agents: &[AgentId],
+        conversation: &crate::conversation::ConversationState,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        let mut owned = ForkValidationWork::new(work)?;
         let parent_agent = conversation
             .agent
             .ok_or_else(|| Error::Invalid("inherited prefix parent is unbound".into()))?;
@@ -86,20 +98,36 @@ impl InheritedConversationPrefix {
                 "too many attached agents for inherited context".into(),
             ));
         }
-        let readers = attached_agents.iter().copied().collect::<BTreeSet<_>>();
+        let mut readers = BTreeSet::new();
+        for reader in attached_agents {
+            owned.checkpoint()?;
+            if !readers.contains(reader) {
+                owned.slots::<AgentId>(1)?;
+                readers.insert(*reader);
+            }
+        }
         if readers.len() != attached_agents.len() {
             return Err(Error::Invalid(
                 "inherited attached agents are invalid".into(),
             ));
         }
         let message_digest = conversation.history_prefix_digest(through_sequence)?;
+        let attached_bytes = attached_agents.len() as u64 * std::mem::size_of::<AgentId>() as u64;
+        if !attached_agents.is_empty() && let Some(observer) = owned.work().as_deref_mut() {
+            observer.admit_allocation(attached_bytes)?;
+            observer.copy_bytes(attached_bytes)?;
+        }
+        let attached_agents = attached_agents.to_vec();
+        if let Some(observer) = owned.work().as_deref_mut() {
+            observer.retain_owned(attached_agents.capacity() as u64 * std::mem::size_of::<AgentId>() as u64)?;
+        }
         Ok(Self {
             format_version: 3,
             parent,
             parent_revision,
             parent_agent,
             through_sequence,
-            attached_agents: attached_agents.to_vec(),
+            attached_agents,
             message_digest,
         })
     }
@@ -1589,6 +1617,16 @@ impl<'a, 'b> ForkValidationWork<'a, 'b> {
         Ok(())
     }
 
+    /// Adopts buffers already retained by the same observer without charging
+    /// their allocation again; the existing guard releases them on every exit.
+    pub(super) fn adopt(&mut self, bytes: u64) -> Result<()> {
+        if self.work.is_some() {
+            self.retained = self.retained.checked_add(bytes)
+                .ok_or_else(|| Error::Invalid("fork custody storage overflows".into()))?;
+        }
+        Ok(())
+    }
+
     pub(super) fn release(&mut self, bytes: u64) -> Result<()> {
         if let Some(observer) = self.work.as_deref_mut() {
             self.retained = self.retained.checked_sub(bytes)
@@ -1631,6 +1669,9 @@ impl<'a, 'b> ForkValidationWork<'a, 'b> {
         let digest = self.digest(value)?;
         let length = prefix.len().checked_add(64)
             .ok_or_else(|| Error::Invalid("fork capability storage overflows".into()))?;
+        if let Some(observer) = self.work.as_deref_mut() {
+            observer.admit_allocation(length as u64)?;
+        }
         self.retain(length as u64)?;
         let mut capability = String::new();
         capability.try_reserve_exact(length).map_err(|error| Error::Invalid(error.to_string()))?;
@@ -2172,11 +2213,11 @@ impl ForkReport {
         self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<ForkSeed> {
-        if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
-        self.validate_with_work(work)?;
+        let mut owned = ForkValidationWork::new(work)?;
+        self.validate_with_work(owned.work())?;
         let mut resources = Vec::new();
         let mut omissions = Vec::new();
-        if let Some(observer) = work.as_deref_mut() {
+        if let Some(observer) = owned.work().as_deref_mut() {
             let resource_count = self.captures.iter()
                 .filter(|capture| matches!(capture, Capture::Captured(_))).count();
             let omission_count = self.captures.len() - resource_count;
@@ -2184,14 +2225,23 @@ impl ForkReport {
             let omission_bytes = omission_count as u64 * std::mem::size_of::<ForkOmission>() as u64;
             observer.admit_owned(resource_bytes.checked_add(omission_bytes)
                 .ok_or_else(|| Error::Invalid("fork seed vector capacity overflows".into()))?)?;
+            if resource_count != 0 { observer.admit_allocation(resource_bytes)?; }
             resources.try_reserve_exact(resource_count)
                 .map_err(|_| Error::Invalid("fork resource vector allocation failed".into()))?;
-            observer.retain_owned(resources.capacity() as u64 * std::mem::size_of::<CapturedResource>() as u64)?;
+            let resource_capacity = resources.capacity() as u64 * std::mem::size_of::<CapturedResource>() as u64;
+            observer.retain_owned(resource_capacity)?;
+            owned.retained = resource_capacity;
+            let observer = owned.work().as_deref_mut().ok_or_else(|| Error::Invalid("fork allocation observer disappeared".into()))?;
+            if omission_count != 0 { observer.admit_allocation(omission_bytes)?; }
             omissions.try_reserve_exact(omission_count)
                 .map_err(|_| Error::Invalid("fork omission vector allocation failed".into()))?;
-            observer.retain_owned(omissions.capacity() as u64 * std::mem::size_of::<ForkOmission>() as u64)?;
+            let omission_capacity = omissions.capacity() as u64 * std::mem::size_of::<ForkOmission>() as u64;
+            observer.retain_owned(omission_capacity)?;
+            owned.retained = owned.retained.checked_add(omission_capacity)
+                .ok_or_else(|| Error::Invalid("fork vector custody overflows".into()))?;
         }
         for (selection, capture) in self.request.selections.into_iter().zip(self.captures) {
+            owned.checkpoint()?;
             match capture {
                 Capture::Captured(resource) if resource.source == selection.revision => {
                     resource.validate()?;
@@ -2238,7 +2288,10 @@ impl ForkReport {
             attachment_manifests: self.attachment_manifests,
             boundary: self.request.boundary,
         };
-        seed.validate_with_work(work)?;
+        seed.validate_with_work(owned.work())?;
+        // Transfer these actual newly allocated vector slots with the returned
+        // seed; failures drop the vectors before the existing custody guard.
+        owned.retained = 0;
         Ok(seed)
     }
 }

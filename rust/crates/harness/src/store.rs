@@ -75,6 +75,37 @@ fn fork_child_binding_with_work(
     ))
 }
 
+fn fork_command_key_with_work(
+    prefix: &str,
+    operation: OperationId,
+    work: &mut Option<&mut dyn history::HistoryIo>,
+) -> Result<(IdempotencyKey, u64)> {
+    use std::fmt::Write as _;
+    let capacity = prefix.len().checked_add(36)
+        .ok_or_else(|| Error::Invalid("fork command identity length overflows".into()))?;
+    let mut text = String::new();
+    if let Some(observer) = work.as_deref_mut() {
+        observer.reserve_text(&mut text, capacity)?;
+        if let Err(error) = observer.copy_bytes(capacity as u64) {
+            let held = text.capacity() as u64;
+            drop(text);
+            observer.release_owned(held)?;
+            return Err(error);
+        }
+    } else {
+        text.try_reserve_exact(capacity)
+            .map_err(|_| Error::Invalid("fork command identity allocation failed".into()))?;
+    }
+    let held = if work.is_some() { text.capacity() as u64 } else { 0 };
+    let result = write!(&mut text, "{prefix}{operation}")
+        .map_err(|_| Error::Invalid("fork command identity formatting failed".into()))
+        .and_then(|()| IdempotencyKey::new(text));
+    if result.is_err() && let Some(observer) = work.as_deref_mut() {
+        observer.release_owned(held)?;
+    }
+    result.map(|key| (key, held))
+}
+
 /// Native, deterministic migration implementation selected by the exact
 /// installed target digest. External-effect migrations belong in an effect
 /// journal, not this pre-publication transformation boundary.
@@ -458,10 +489,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let seed = report.into_seed()?;
         self.execute(Command {
             operation_id: seed.operation_id,
-            idempotency_key: IdempotencyKey::new(format!(
-                "fork-publication:{}",
-                seed.operation_id
-            ))?,
+            idempotency_key: fork_command_key_with_work("fork-publication:", seed.operation_id, &mut None)?.0,
             expected_revision: seed.parent_revision,
             scope,
             causal_parent: None,
@@ -486,7 +514,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let mut work = history::HistoryWork::new(budget, cancellation);
         let result = async {
             work.preflight()?;
-            report.validate_with_work(&mut Some(&mut work))?;
             if report.request.parent != *self.reducer.authority() {
                 return Err(Error::Unauthorized("fork report belongs to another parent".into()));
             }
@@ -494,20 +521,33 @@ impl<P: StreamProvider> StreamAggregate<P> {
             if scope.agent() != Some(owner.authenticated_fork_agent()?) {
                 return Err(Error::Unauthorized("fork publication scope differs from its admitted caller".into()));
             }
-            let seed = report.into_seed_with_work(&mut Some(&mut work))?;
-            self.execute_guarded_publication_with_work(
+            let mut observer: Option<&mut dyn history::HistoryIo> = Some(&mut work);
+            let mut custody = crate::fork::ForkValidationWork::new(&mut observer)?;
+            let seed = report.into_seed_with_work(custody.work())?;
+            let vector_slots = seed.resources.capacity() as u64 * std::mem::size_of::<crate::fork::CapturedResource>() as u64
+                + seed.omissions.capacity() as u64 * std::mem::size_of::<crate::fork::ForkOmission>() as u64;
+            custody.adopt(vector_slots)?;
+            let (key, key_slots) = fork_command_key_with_work("fork-publication:", seed.operation_id, custody.work())?;
+            custody.adopt(key_slots)?;
+            let box_slots = std::mem::size_of::<ForkSeed>() as u64;
+            custody.work().as_deref_mut().ok_or_else(|| Error::Invalid("fork observer disappeared".into()))?
+                .admit_allocation(box_slots)?;
+            let seed = Box::new(seed);
+            custody.retain(box_slots)?;
+            let result = self.execute_guarded_publication_with_work(
                 Command {
                     operation_id: seed.operation_id,
-                    idempotency_key: IdempotencyKey::new(format!("fork-publication:{}", seed.operation_id))?,
+                    idempotency_key: key,
                     expected_revision: seed.parent_revision,
                     scope,
                     causal_parent: None,
-                    action: Action::PublishFork { seed: Box::new(seed) },
+                    action: Action::PublishFork { seed },
                 },
                 owner,
                 crate::distributed::JournalWrite::Fresh,
-                &mut Some(&mut work),
-            ).await
+                custody.work(),
+            ).await;
+            result
         }.await;
         work.finish(result)
     }
@@ -610,7 +650,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
         self.execute(Command {
             operation_id: bind_operation,
-            idempotency_key: IdempotencyKey::new(format!("fork-child-bind:{}", seed.operation_id))?,
+            idempotency_key: fork_command_key_with_work("fork-child-bind:", seed.operation_id, &mut None)?.0,
             expected_revision: 0,
             scope,
             causal_parent: Some(causal_parent),
@@ -637,7 +677,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let mut work = history::HistoryWork::new(budget, cancellation);
         let result = async {
             work.preflight()?;
-            seed.validate_with_work(&mut Some(&mut work))?;
+            let mut observer: Option<&mut dyn history::HistoryIo> = Some(&mut work);
+            let mut custody = crate::fork::ForkValidationWork::new(&mut observer)?;
+            seed.validate_with_work(custody.work())?;
             let parent_agent = owner.authenticated_fork_agent()?;
             owner.authenticate_fork_parent(&seed.parent)?;
             if parent.reducer.authority() != &seed.parent
@@ -651,7 +693,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             }
             let fork_revision = seed.parent_revision.checked_add(1)
                 .ok_or_else(|| Error::Invalid("fork parent revision overflow".into()))?;
-            let fork_event = parent.read_event_at_with_work(fork_revision, &mut Some(&mut work)).await?;
+            let fork_event = parent.read_event_at_with_work(fork_revision, custody.work()).await?;
             if fork_event.revision != fork_revision
                 || fork_event.operation_id != seed.operation_id
                 || fork_event.scope.agent() != Some(parent_agent)
@@ -660,16 +702,17 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 return Err(Error::Conflict("parent fork event does not match the child seed".into()));
             }
             let (bind_operation, causal_parent) =
-                fork_child_binding_with_work(seed, &mut Some(&mut work))?;
+                fork_child_binding_with_work(seed, custody.work())?;
+            custody.adopt(causal_parent.authority.id.capacity() as u64)?;
             let conversation = self.reducer.conversation()
                 .ok_or_else(|| Error::Invalid("fork child is not a conversation".into()))?;
             if conversation.agent == Some(seed.child_agent) {
-                let event = self.read_event_at_with_work(1, &mut Some(&mut work)).await?;
+                let event = self.read_event_at_with_work(1, custody.work()).await?;
                 if event.revision == 1 && event.operation_id == bind_operation
                     && event.causal_parent.as_ref() == Some(&causal_parent)
                     && matches!(event.payload, crate::core::EventPayload::ConversationBound { agent } if agent == seed.child_agent)
                 {
-                    owner.verify_dispatch_with_work(&mut Some(&mut work)).await?;
+                    owner.verify_dispatch_with_work(custody.work()).await?;
                     return Ok(());
                 }
                 return Err(Error::Conflict("child conversation was bound outside its published fork".into()));
@@ -677,10 +720,12 @@ impl<P: StreamProvider> StreamAggregate<P> {
             if self.reducer.revision() != 0 || conversation.agent.is_some() {
                 return Err(Error::Conflict("fork child already has a different history".into()));
             }
-            self.execute_guarded_publication_with_work(
+            let (key, key_slots) = fork_command_key_with_work("fork-child-bind:", seed.operation_id, custody.work())?;
+            custody.adopt(key_slots)?;
+            let result = self.execute_guarded_publication_with_work(
                 Command {
                     operation_id: bind_operation,
-                    idempotency_key: IdempotencyKey::new(format!("fork-child-bind:{}", seed.operation_id))?,
+                    idempotency_key: key,
                     expected_revision: 0,
                     scope,
                     causal_parent: Some(causal_parent),
@@ -688,8 +733,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 },
                 owner,
                 crate::distributed::JournalWrite::Fresh,
-                &mut Some(&mut work),
-            ).await?;
+                custody.work(),
+            ).await;
+            result?;
             Ok(())
         }.await;
         work.finish(result)
@@ -1083,11 +1129,23 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .checked_add(bytes)
                 .filter(|total| *total <= maximum_bytes)
                 .ok_or_else(|| Error::Invalid("projection suffix exceeds byte allowance".into()))?;
-            reducer.apply_committed(event.clone())?;
+            let clone_bytes = if work.is_some() { crate::core::event_clone_reservation(&event)? } else { 0 };
+            if let Some(work) = work.as_deref_mut() {
+                work.check_cancellation()?;
+                // Reserve only this original caller clone. The same canonical
+                // reducer separately admits its resident event/cache clone.
+                let copies = clone_bytes;
+                work.admit_owned(copies)?;
+                work.retain_owned(copies)?;
+            }
+            drop(reducer.apply_committed_with_work(event.clone(), work)?);
+            if let Some(work) = work.as_deref_mut() { work.release_owned(clone_bytes)?; }
             if indexed {
                 reducer.mark_indexed_terminal_effect(&event)?;
             }
             reducer.enforce_terminal_effect_limit()?;
+            drop(event);
+            if let Some(work) = work.as_deref_mut() { work.release_owned(clone_bytes)?; }
             let record_bytes = record.value.len() as u64;
             drop(record);
             if let Some(work) = work.as_deref_mut() { work.release_record(record_bytes)?; }

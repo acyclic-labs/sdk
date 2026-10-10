@@ -288,6 +288,14 @@ async fn guarded_fork_reopen_and_child_replay_keep_original_identity_and_owner_f
         &setup.owner, budget, &cancelled).await.is_err());
     assert!(setup.parent.publish_fork_report_measured(setup.report.clone(), setup.parent_scope.clone(),
         &setup.owner, WorkBudget { peak_allocation_bytes: 1, ..budget }, &cancellation).await.is_err());
+    let wrong_parent_agent = crate::core::AuthorityIssuer::new("created-owner", [80; 32], seed.parent.clone())
+        .root_for_agent(AgentId::from_bytes([80; 16]), "not-original-admitted-parent", Capabilities::new(["fork:publish".into()]));
+    assert!(setup.parent.publish_fork_report_measured(setup.report.clone(), wrong_parent_agent,
+        &setup.owner, budget, &cancellation).await.is_err());
+    let mut hostile_report = setup.report.clone();
+    hostile_report.request.child_agent = AgentId::from_bytes([96; 16]);
+    assert!(setup.parent.publish_fork_report_measured(hostile_report, setup.parent_scope.clone(),
+        &setup.owner, budget, &cancellation).await.is_err());
     assert_eq!(setup.parent.reducer().revision(), before);
     // Discarding the original confirmed reply models a lost client reply, not a
     // synthesized SDK acknowledgment or another publication engine.

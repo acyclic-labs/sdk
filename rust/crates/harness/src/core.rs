@@ -59,6 +59,12 @@ pub struct Authority {
 impl Authority {
     /// Returns the only Stream path that may own this aggregate.
     pub fn stream_path(&self) -> Result<String> {
+        self.stream_path_with_work(&mut None)
+    }
+
+    pub(crate) fn stream_path_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<String> {
         if self.id.is_empty()
             || AUTHORITY_ID_FORBIDDEN_EXACT.contains(&self.id.as_str())
             || self.id.contains(AUTHORITY_ID_FORBIDDEN_SEPARATORS)
@@ -75,7 +81,22 @@ impl Authority {
             AggregateKind::Turn => "turns",
             AggregateKind::Task => "tasks",
         };
-        Ok(format!("harness/v2/{segment}/{}", self.id))
+        if let Some(work) = work.as_deref_mut() {
+            let bytes = "harness/v2/".len().checked_add(segment.len())
+                .and_then(|bytes| bytes.checked_add(1))
+                .and_then(|bytes| bytes.checked_add(self.id.len()))
+                .ok_or_else(|| Error::Invalid("aggregate path length overflows".into()))?;
+            let mut path = String::new();
+            work.reserve_text(&mut path, bytes)?;
+            work.copy_bytes(bytes as u64)?;
+            path.push_str("harness/v2/");
+            path.push_str(segment);
+            path.push('/');
+            path.push_str(&self.id);
+            Ok(path)
+        } else {
+            Ok(format!("harness/v2/{segment}/{}", self.id))
+        }
     }
 }
 
@@ -131,6 +152,10 @@ impl Scope {
     #[must_use]
     pub const fn agent(&self) -> Option<AgentId> {
         self.agent
+    }
+
+    pub(crate) fn logical_clone_owned_bytes(&self) -> Result<u64> {
+        snapshot::scope_clone_owned_bytes(self)
     }
 
     pub(crate) fn from_wire(
@@ -382,6 +407,19 @@ impl AuthorityVerifier {
         &self.audience
     }
 
+    pub(crate) fn clone_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        match work.as_deref_mut() {
+            Some(work) => Ok(Self {
+                id: work.clone_text(&self.id)?,
+                key: self.key,
+                audience: work.clone_authority(&self.audience)?,
+            }),
+            None => Ok(self.clone()),
+        }
+    }
+
     /// Verifies issuer identity and the complete immutable grant.
     pub fn verify(&self, scope: &Scope) -> Result<()> {
         let expected = scope_proof(
@@ -542,36 +580,88 @@ impl AuthorityVerifier {
         canonical_digest: [u8; 32],
         root: Option<[u8; 32]>,
     ) -> Result<[u8; 32]> {
-        let canonical = crate::contract::canonical_json_bytes(&(
+        self.effect_history_root_proof_with_work(revision, canonical_digest, root, &mut None)
+    }
+
+    pub(crate) fn effect_history_root_proof_with_work(
+        &self, revision: u64, canonical_digest: [u8; 32], root: Option<[u8; 32]>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<[u8; 32]> {
+        let path = self.audience.stream_path_with_work(work)?;
+        let canonical = crate::store::history::canonical_bytes_with_work(&(
             &self.id,
             &self.audience,
-            self.audience.stream_path()?,
+            &path,
             revision,
             canonical_digest,
             root,
-        ))?;
+        ), crate::store::default_projection_read_limits().maximum_bytes, work);
+        let canonical = match canonical {
+            Ok(canonical) => canonical,
+            Err(error) => {
+                let retained = path.capacity() as u64;
+                drop(path);
+                if let Some(work) = work.as_deref_mut() { let _ = work.release_owned(retained); }
+                return Err(error);
+            }
+        };
+        let admitted = if let Some(work) = work.as_deref_mut() {
+            work.hashed_bytes(b"harness/v1/effect-history-root\0".len() as u64 + 8 + canonical.len() as u64)
+        } else { Ok(()) };
+        if let Err(error) = admitted {
+            let retained = canonical.capacity() as u64 + path.capacity() as u64;
+            drop(canonical);
+            drop(path);
+            if let Some(work) = work.as_deref_mut() { let _ = work.release_owned(retained); }
+            return Err(error);
+        }
         let mut hasher = blake3::Hasher::new_keyed(&self.key);
         hasher.update(b"harness/v1/effect-history-root\0");
         hasher.update(&(canonical.len() as u64).to_le_bytes());
         hasher.update(&canonical);
-        Ok(*hasher.finalize().as_bytes())
+        let proof = *hasher.finalize().as_bytes();
+        let retained = canonical.capacity() as u64 + path.capacity() as u64;
+        drop(canonical);
+        drop(path);
+        if let Some(work) = work.as_deref_mut() { work.release_owned(retained)?; }
+        Ok(proof)
     }
 
     pub(crate) fn fork_history_proof(&self, seed: &ForkSeed) -> Result<[u8; 32]> {
+        self.fork_history_proof_with_work(seed, &mut None)
+    }
+
+    pub(crate) fn fork_history_proof_with_work(
+        &self, seed: &ForkSeed,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<[u8; 32]> {
         self.verify_audience(&seed.parent)?;
-        let canonical = crate::contract::canonical_json_bytes(&(
+        let canonical = crate::store::history::canonical_bytes_with_work(&(
             (&self.id, &seed.operation_id, &seed.parent, seed.parent_revision,
              &seed.child, seed.child_agent, &seed.attached_agents, &seed.resources,
              &seed.omissions, &seed.child_private_volume),
             (&seed.child_private_generation, &seed.inherited_context, &seed.summary,
              seed.inherited_through_sequence, &seed.shared_grants,
              &seed.reference_grants, &seed.attachment_manifests, &seed.boundary),
-        ))?;
+        ), crate::store::default_projection_read_limits().maximum_bytes, work)?;
+        let admitted = if let Some(work) = work.as_deref_mut() {
+            work.hashed_bytes(b"harness/v1/fork-history-witness\0".len() as u64 + 8 + canonical.len() as u64)
+        } else { Ok(()) };
+        if let Err(error) = admitted {
+            let retained = canonical.capacity() as u64;
+            drop(canonical);
+            if let Some(work) = work.as_deref_mut() { let _ = work.release_owned(retained); }
+            return Err(error);
+        }
         let mut hasher = blake3::Hasher::new_keyed(&self.key);
         hasher.update(b"harness/v1/fork-history-witness\0");
         hasher.update(&(canonical.len() as u64).to_le_bytes());
         hasher.update(&canonical);
-        Ok(*hasher.finalize().as_bytes())
+        let proof = *hasher.finalize().as_bytes();
+        let retained = canonical.capacity() as u64;
+        drop(canonical);
+        if let Some(work) = work.as_deref_mut() { work.release_owned(retained)?; }
+        Ok(proof)
     }
 
     #[cfg(feature = "filesystem")]
@@ -2164,6 +2254,14 @@ impl Reducer {
         let intent = canonical_intent_with_work(command, work)?;
         if let Some(event) = self.event_for_operation(command.operation_id) {
             if event.intent_digest == intent {
+                if let Some(observer) = work.as_deref_mut() {
+                    let reservation = snapshot::event_clone_reservation(event)?;
+                    if matches!(&event.payload, EventPayload::ForkPublished { .. }) {
+                        observer.admit_allocation(std::mem::size_of::<ForkSeed>() as u64)?;
+                    }
+                    observer.admit_owned(reservation)?;
+                    observer.retain_owned(reservation)?;
+                }
                 return Ok(ApplyResult::Replayed {
                     event: event.clone(),
                 });
@@ -2183,12 +2281,13 @@ impl Reducer {
                 command.expected_revision, self.revision
             )));
         }
-        self.authorize(
+        self.authorize_with_work(
             |capability| require_capability(&command.scope, capability),
             command.scope.agent(),
             command.operation_id,
             command.action.kind(),
             archived_effect,
+            work,
         )?;
         match &command.action {
             Action::MigrateExtensionState { content, .. } => {
@@ -2211,7 +2310,7 @@ impl Reducer {
                     "conversation binding does not match the authenticated agent".into(),
                 ));
             }
-            Action::PublishFork { seed } => self.require_fresh_fork(seed)?,
+            Action::PublishFork { seed } => self.require_fresh_fork_with_work(seed, work)?,
             _ => {}
         }
         validate_causal_parent(
@@ -2220,7 +2319,12 @@ impl Reducer {
             command.causal_parent.as_ref(),
         )?;
         let revision = next_revision(self.revision)?;
-        let payload = self.transition(&command.action, archived_effect)?;
+        if let Some(observer) = work.as_deref_mut() {
+            let reservation = snapshot::command_clone_reservation(command)?;
+            observer.admit_owned(reservation)?;
+            observer.retain_owned(reservation)?;
+        }
+        let payload = self.transition_with_work(&command.action, archived_effect, work)?;
         let mut event = Event {
             revision,
             operation_id: command.operation_id,
@@ -2253,13 +2357,14 @@ impl Reducer {
     }
 
     /// Authorizes one transition identically when planned and when committed.
-    fn authorize(
+    fn authorize_with_work(
         &self,
         require: impl Fn(&str) -> Result<()>,
         agent: Option<AgentId>,
         operation_id: OperationId,
         (kind, subject): (TransitionKind, Subject<'_>),
         archived_effect: Option<(EffectId, &EffectState)>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         require(kind.spec().2)?;
         match subject {
@@ -2283,16 +2388,30 @@ impl Reducer {
                         "fork must be published by the parent agent".into(),
                     ));
                 }
-                if seed.validate().is_err()
-                    || seed.operation_id != operation_id
-                    || seed.parent != self.authority
+                let validation = seed.validate_with_work(work);
+                if work.is_some() {
+                    validation?;
+                } else if validation.is_err() {
+                    return Err(Error::Invalid(
+                        "fork manifest is not bound to its operation and parent revision".into(),
+                    ));
+                }
+                if seed.operation_id != operation_id || seed.parent != self.authority
                     || seed.parent_revision != self.revision
-                    || self.validate_fork_reference_ownership(seed).is_err()
                 {
                     return Err(Error::Invalid(
                         "fork manifest is not bound to its operation and parent revision".into(),
                     ));
                 }
+                let ownership = self.validate_fork_reference_ownership_with_work(seed, work);
+                if work.is_some() {
+                    ownership?;
+                } else if ownership.is_err() {
+                    return Err(Error::Invalid(
+                        "fork manifest is not bound to its operation and parent revision".into(),
+                    ));
+                }
+                let mut owned = crate::fork::ForkValidationWork::new(work)?;
                 for resource in &seed.resources {
                     if let crate::fork::ResourceRevision::Project { volume, .. } = &resource.source {
                         require(&volume.capability(VolumeOperation::Read)?)?;
@@ -2309,7 +2428,8 @@ impl Reducer {
                                 "scratch is not owned by the direct parent".into(),
                             ));
                         }
-                        require(&volume.capability(VolumeOperation::Read)?)?;
+                        let capability = owned.volume_capability(volume)?;
+                        require(&capability)?;
                     }
                 }
                 Ok(())
@@ -2352,6 +2472,14 @@ impl Reducer {
         self.authority_verifier.verify_audience(&self.authority)?;
         if let Some(existing) = self.event_for_operation(event.operation_id) {
             if existing == &event {
+                if let Some(observer) = work.as_deref_mut() {
+                    let reservation = snapshot::event_clone_reservation(existing)?;
+                    if matches!(&existing.payload, EventPayload::ForkPublished { .. }) {
+                        observer.admit_allocation(std::mem::size_of::<ForkSeed>() as u64)?;
+                    }
+                    observer.admit_owned(reservation)?;
+                    observer.retain_owned(reservation)?;
+                }
                 return Ok(ApplyResult::Replayed {
                     event: existing.clone(),
                 });
@@ -2368,15 +2496,26 @@ impl Reducer {
             )));
         }
         self.authority_verifier.verify_event_with_work(&event, work)?;
-        self.authorize(
+        self.authorize_with_work(
             |capability| require_recorded_capability(&event.scope, capability),
             event.scope.agent(),
             event.operation_id,
             event.payload.kind(),
             None,
+            work,
         )?;
         validate_causal_parent(&self.authority, self.revision, event.causal_parent.as_ref())?;
-        self.apply_payload(&event.payload, event.revision)?;
+        if let Some(observer) = work.as_deref_mut() {
+            let reservation = snapshot::event_clone_reservation(&event)?
+                .checked_add(std::mem::size_of::<(OperationId, u64)>() as u64)
+                .ok_or_else(|| Error::Invalid("committed event clone quota overflows".into()))?;
+            if matches!(&event.payload, EventPayload::ForkPublished { .. }) {
+                observer.admit_allocation(std::mem::size_of::<ForkSeed>() as u64)?;
+            }
+            observer.admit_owned(reservation)?;
+            observer.retain_owned(reservation)?;
+        }
+        self.apply_payload_with_work(&event.payload, event.revision, work)?;
         self.revision = event.revision;
         self.operation_positions
             .insert(event.operation_id, event.revision);
@@ -2497,11 +2636,9 @@ impl Reducer {
     /// Reconstructs one read-only effect using the same authorization and
     /// payload reducer as canonical replay. Callers have already bound every
     /// sparse revision to its original atomic effect locator and canonical event.
-    pub(crate) fn project_effect(
-        authority: Authority,
-        verifier: AuthorityVerifier,
-        effect_id: EffectId,
-        events: &[Event],
+    pub(crate) fn project_effect_with_work(
+        authority: Authority, verifier: AuthorityVerifier, effect_id: EffectId,
+        events: &[Event], work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<EffectState> {
         let mut projection = Self::new(authority, verifier, SchemaRegistry::default());
         let mut previous = 0;
@@ -2511,20 +2648,29 @@ impl Reducer {
                     "effect projection has invalid identity or order".into(),
                 ));
             }
-            projection.authority_verifier.verify_event(event)?;
-            projection.authorize(
+            projection.authority_verifier.verify_event_with_work(event, work)?;
+            projection.authorize_with_work(
                 |capability| require_recorded_capability(&event.scope, capability),
                 event.scope.agent(),
                 event.operation_id,
                 event.payload.kind(),
                 None,
+                work,
             )?;
             validate_causal_parent(
                 &projection.authority,
                 event.revision - 1,
                 event.causal_parent.as_ref(),
             )?;
-            projection.apply_payload(&event.payload, event.revision)?;
+            if let Some(work) = work.as_deref_mut() {
+                // The original payload reducer clones its owned effect fields.
+                // The closed event schema is a conservative logical reservation
+                // while that result and its original decoded source are live.
+                let owned = snapshot::event_clone_reservation(event)?;
+                work.admit_owned(owned)?;
+                work.retain_owned(owned)?;
+            }
+            projection.apply_payload_with_work(&event.payload, event.revision, work)?;
             previous = event.revision;
         }
         projection
@@ -2551,34 +2697,46 @@ impl Reducer {
         self.forks.values()
     }
 
-    fn require_fresh_fork(&self, seed: &ForkSeed) -> Result<()> {
-        let child_project = seed.resources.iter().find_map(|resource| {
+    fn require_fresh_fork_with_work(
+        &self, seed: &ForkSeed,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        let mut owned = crate::fork::ForkValidationWork::new(work)?;
+        let mut child_project = None;
+        for resource in &seed.resources {
+            owned.checkpoint()?;
             if let crate::fork::ResourceRevision::Project { volume, .. } = &resource.revision {
-                Some(volume)
-            } else {
-                None
+                child_project = Some(volume);
+                break;
             }
-        });
-        if seed.child == self.authority
-            || self.forks.contains_key(&seed.child)
-            || self.forks.values().any(|prior| {
-                prior.child_agent == seed.child_agent
-                    || prior.child_private_volume == seed.child_private_volume
-                    || prior.resources.iter().any(|resource| {
-                        matches!(
-                            (&resource.revision, child_project),
-                            (
-                                crate::fork::ResourceRevision::Project { volume, .. },
-                                Some(child_project)
-                            ) if volume == child_project
-                        )
-                    })
-            })
-        {
-            Err(Error::Conflict("invalid fork publication".into()))
-        } else {
-            Ok(())
         }
+        owned.checkpoint()?;
+        if seed.child == self.authority {
+            return Err(Error::Conflict("invalid fork publication".into()));
+        }
+        owned.checkpoint()?;
+        if self.forks.contains_key(&seed.child) {
+            return Err(Error::Conflict("invalid fork publication".into()));
+        }
+        for prior in self.forks.values() {
+            owned.checkpoint()?;
+            if prior.child_agent == seed.child_agent {
+                return Err(Error::Conflict("invalid fork publication".into()));
+            }
+            owned.checkpoint()?;
+            if prior.child_private_volume == seed.child_private_volume {
+                return Err(Error::Conflict("invalid fork publication".into()));
+            }
+            for resource in &prior.resources {
+                owned.checkpoint()?;
+                if matches!((&resource.revision, child_project),
+                    (crate::fork::ResourceRevision::Project { volume, .. }, Some(child_project)) if volume == child_project)
+                {
+                    return Err(Error::Conflict("invalid fork publication".into()));
+                }
+            }
+        }
+        Ok(())
     }
 
     #[cfg(feature = "filesystem")]
@@ -2594,30 +2752,39 @@ impl Reducer {
         {
             return Err(Error::Conflict("fork archive differs from its original parent cut".into()));
         }
-        self.validate_fork_reference_ownership_using(seed, history)?;
+        self.validate_fork_reference_ownership_using_with_work(seed, history, &mut None)?;
         seed.history_witness = Some(self.authority_verifier.fork_history_proof(seed)?);
         Ok(())
     }
 
     fn validate_fork_reference_ownership(&self, seed: &ForkSeed) -> Result<()> {
+        self.validate_fork_reference_ownership_with_work(seed, &mut None)
+    }
+
+    fn validate_fork_reference_ownership_with_work(
+        &self, seed: &ForkSeed,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
         if let Some(proof) = seed.history_witness {
-            if proof != self.authority_verifier.fork_history_proof(seed)? {
+            if proof != self.authority_verifier.fork_history_proof_with_work(seed, work)? {
                 return Err(Error::Unauthorized("fork archive witness differs from its exact seed".into()));
             }
             return Ok(());
         }
-        self.validate_fork_reference_ownership_using(seed, &self.conversation)
+        self.validate_fork_reference_ownership_using_with_work(seed, &self.conversation, work)
     }
 
     #[allow(
         clippy::too_many_lines,
         reason = "fork publication checks one complete seed"
     )]
-    fn validate_fork_reference_ownership_using(
+    fn validate_fork_reference_ownership_using_with_work(
         &self,
         seed: &ForkSeed,
         history: &ConversationState,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
+        let mut owned = crate::fork::ForkValidationWork::new(work)?;
         let inherited_count = usize::try_from(seed.inherited_through_sequence)
             .map_err(|_| Error::Invalid("inherited conversation prefix is too large".into()))?;
         let parent_agent = history.agent
@@ -2632,27 +2799,45 @@ impl Reducer {
                 "fork inherited prefix exceeds parent conversation".into(),
             ));
         }
-        let materialized = seed
-            .inherited_context
-            .iter()
-            .find(|file| file.path() == ".system/inherited-conversation/prefix.json");
+        let mut materialized = None;
+        for file in &seed.inherited_context {
+            owned.checkpoint()?;
+            if file.path() == ".system/inherited-conversation/prefix.json" {
+                materialized = Some(file);
+                break;
+            }
+        }
         if seed.inherited_through_sequence > 0 && materialized.is_none() {
             return Err(Error::Invalid(
                 "fork omitted its inherited conversation prefix".into(),
             ));
         }
         if let Some(file) = materialized {
-            let prefix = InheritedConversationPrefix::select(
-                self.authority.clone(),
+            let parent = match owned.work().as_deref_mut() {
+                Some(observer) => observer.clone_authority(&self.authority)?,
+                None => self.authority.clone(),
+            };
+            owned.adopt(parent.id.capacity() as u64)?;
+            let prefix = InheritedConversationPrefix::select_with_work(
+                parent,
                 self.revision,
                 seed.inherited_through_sequence,
                 &seed.attached_agents,
                 history,
+                owned.work(),
             )?;
-            let bytes = prefix.canonical_bytes()?;
+            owned.adopt(prefix.attached_agents.capacity() as u64 * std::mem::size_of::<AgentId>() as u64)?;
+            let bytes = owned.canonical(&prefix)?;
+            const PREFIX_MEDIA: &str = "application/vnd.acyclic.harness.inherited-conversation+json";
+            if let Some(observer) = owned.work().as_deref_mut() {
+                observer.hashed_bytes(bytes.len() as u64)?;
+                observer.admit_allocation(PREFIX_MEDIA.len() as u64)?;
+                observer.copy_bytes(PREFIX_MEDIA.len() as u64)?;
+            }
+            owned.retain(PREFIX_MEDIA.len() as u64)?;
             let expected = FileDescriptor::from_bytes(
                 &bytes,
-                "application/vnd.acyclic.harness.inherited-conversation+json",
+                PREFIX_MEDIA,
             )?;
             if file.descriptor() != &expected
                 || file.display_name() != "inherited-conversation.json"
@@ -2661,6 +2846,14 @@ impl Reducer {
                     "inherited conversation differs from authoritative parent history".into(),
                 ));
             }
+            let byte_capacity = bytes.capacity() as u64;
+            let prefix_slots = prefix.parent.id.capacity() as u64
+                + prefix.attached_agents.capacity() as u64 * std::mem::size_of::<AgentId>() as u64;
+            let descriptor_capacity = expected.media_type().len() as u64;
+            drop(expected);
+            drop(bytes);
+            drop(prefix);
+            owned.release(byte_capacity + prefix_slots + descriptor_capacity)?;
         }
         if history.resident_after_sequence() > 0 && inherited_count > 0 {
             return Err(Error::Invalid(
@@ -2670,54 +2863,77 @@ impl Reducer {
         let mut published_refs = std::collections::BTreeMap::new();
         let mut published_manifests = std::collections::BTreeSet::new();
         for message in history.messages.iter().take(inherited_count) {
-            let mut retain = |file: &crate::conversation::FileRef| -> Result<()> {
-                published_refs.insert(file.read_capability()?, file.clone());
-                Ok(())
-            };
-            retain(&message.content)?;
+            owned.checkpoint()?;
+            Self::retain_fork_reference(&mut published_refs, &message.content, &mut owned)?;
             match &message.attachments {
                 crate::conversation::ReferencedAttachments::Inline { items } => {
                     for item in items {
-                        retain(&item.file)?;
+                        owned.checkpoint()?;
+                        Self::retain_fork_reference(&mut published_refs, &item.file, &mut owned)?;
                     }
                 }
                 crate::conversation::ReferencedAttachments::Manifest { manifest, .. } => {
-                    published_manifests.insert(manifest.read_capability()?);
-                    retain(manifest)?;
+                    let capability = owned.file_capability(manifest)?;
+                    Self::retain_fork_capability(&mut published_manifests, capability, &mut owned)?;
+                    Self::retain_fork_reference(&mut published_refs, manifest, &mut owned)?;
                 }
             }
             for file in message.extensions.values() {
-                retain(file)?;
+                owned.checkpoint()?;
+                Self::retain_fork_reference(&mut published_refs, file, &mut owned)?;
             }
         }
         if let Some(summary) = &seed.summary {
             // The provider binds this original checkpoint capture to its allocated seed.
             for file in &summary.references {
-                published_refs.insert(file.read_capability()?, file.clone());
+                owned.checkpoint()?;
+                Self::retain_fork_reference(&mut published_refs, file, &mut owned)?;
             }
         }
-        let selected_manifests = seed
-            .attachment_manifests
-            .iter()
-            .map(crate::conversation::FileRef::read_capability)
-            .collect::<Result<std::collections::BTreeSet<_>>>()?;
-        if selected_manifests != published_manifests {
+        let mut selected_manifests = std::collections::BTreeSet::new();
+        for file in &seed.attachment_manifests {
+            owned.checkpoint()?;
+            let capability = owned.file_capability(file)?;
+            Self::retain_fork_capability(&mut selected_manifests, capability, &mut owned)?;
+        }
+        owned.checkpoint()?;
+        let same_manifests = if selected_manifests.len() != published_manifests.len() {
+            false
+        } else {
+            let mut same = true;
+            for (selected, published) in selected_manifests.iter().zip(&published_manifests) {
+                owned.checkpoint()?;
+                if selected != published { same = false; break; }
+            }
+            same
+        };
+        if !same_manifests {
             return Err(Error::Invalid(
                 "fork attachment manifests do not match the parent transcript".into(),
             ));
         }
-        let granted = seed
-            .reference_grants
-            .iter()
-            .map(|grant| Ok((grant.capability()?, grant.reader)))
-            .collect::<Result<std::collections::BTreeSet<_>>>()?;
+        let mut granted = std::collections::BTreeMap::<AgentId, std::collections::BTreeSet<String>>::new();
+        for grant in &seed.reference_grants {
+            owned.checkpoint()?;
+            let capability = owned.file_capability(&grant.file)?;
+            let readers = match granted.entry(grant.reader) {
+                std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    owned.slots::<(AgentId, std::collections::BTreeSet<String>)>(1)?;
+                    entry.insert(std::collections::BTreeSet::new())
+                }
+            };
+            Self::retain_fork_capability(readers, capability, &mut owned)?;
+        }
         for reader in std::iter::once(seed.child_agent).chain(seed.attached_agents.iter().copied())
         {
+            owned.checkpoint()?;
             for (capability, file) in &published_refs {
+                owned.checkpoint()?;
                 if file.volume().owner() == &crate::conversation::VolumeOwner::Agent(reader) {
                     continue;
                 }
-                if !granted.contains(&(capability.clone(), reader)) {
+                if !granted.get(&reader).is_some_and(|grants| grants.contains(capability)) {
                     return Err(Error::Invalid(
                         "fork omits a published reference grant".into(),
                     ));
@@ -2725,29 +2941,44 @@ impl Reducer {
             }
         }
         for grant in &seed.reference_grants {
+            owned.checkpoint()?;
             let file = &grant.file;
             if file.volume() == &seed.child_private_volume {
-                if grant.attachment_manifest.is_some() || !seed.inherited_context.contains(file) {
+                if grant.attachment_manifest.is_some() || {
+                    let mut inherited = false;
+                    for candidate in &seed.inherited_context {
+                        owned.checkpoint()?;
+                        if candidate == file { inherited = true; break; }
+                    }
+                    !inherited
+                } {
                     return Err(Error::Invalid(
                         "fork reference is not inherited context".into(),
                     ));
                 }
             } else if file.volume().owner()
                 == &crate::conversation::VolumeOwner::Agent(parent_agent)
-                || seed.resources.iter().any(|capture| match &capture.source {
-                    crate::fork::ResourceRevision::Project { volume, .. }
-                    | crate::fork::ResourceRevision::SharedVolume(volume) => {
-                        volume == file.volume()
+                || {
+                    let mut selected = false;
+                    for capture in &seed.resources {
+                        owned.checkpoint()?;
+                        if match &capture.source {
+                            crate::fork::ResourceRevision::Project { volume, .. }
+                            | crate::fork::ResourceRevision::SharedVolume(volume) => volume == file.volume(),
+                            _ => false,
+                        } { selected = true; break; }
                     }
-                    _ => false,
-                })
+                    selected
+                }
             {
                 // The first pass indexed every direct reference, including
                 // complete FileRef metadata. Reuse it instead of rescanning the
                 // parent prefix for each child/attached-reader grant.
-                let published = published_refs
-                    .get(&file.read_capability()?)
-                    .is_some_and(|published| published == file);
+                let capability = owned.file_capability(file)?;
+                let capacity = capability.capacity() as u64;
+                let published = published_refs.get(&capability).is_some_and(|published| *published == file);
+                drop(capability);
+                owned.release(capacity)?;
                 match &grant.attachment_manifest {
                     None if !published => {
                         return Err(Error::Invalid(
@@ -2755,7 +2986,14 @@ impl Reducer {
                         ));
                     }
                     Some(manifest)
-                        if !published_manifests.contains(&manifest.read_capability()?) =>
+                        if {
+                            let capability = owned.file_capability(manifest)?;
+                            let capacity = capability.capacity() as u64;
+                            let missing = !published_manifests.contains(&capability);
+                            drop(capability);
+                            owned.release(capacity)?;
+                            missing
+                        } =>
                     {
                         return Err(Error::Invalid(
                             "fork reference manifest is not a published attachment list".into(),
@@ -2768,6 +3006,42 @@ impl Reducer {
                     "fork cannot delegate another owner's file".into(),
                 ));
             }
+        }
+        Ok(())
+    }
+
+    fn retain_fork_reference<'a>(
+        references: &mut std::collections::BTreeMap<String, &'a crate::conversation::FileRef>,
+        file: &'a crate::conversation::FileRef,
+        owned: &mut crate::fork::ForkValidationWork<'_, '_>,
+    ) -> Result<()> {
+        let capability = owned.file_capability(file)?;
+        let capacity = capability.capacity() as u64;
+        match references.entry(capability) {
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                entry.insert(file);
+                owned.release(capacity)?;
+            }
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                owned.slots::<(String, &crate::conversation::FileRef)>(1)?;
+                entry.insert(file);
+            }
+        }
+        Ok(())
+    }
+
+    fn retain_fork_capability(
+        capabilities: &mut std::collections::BTreeSet<String>,
+        capability: String,
+        owned: &mut crate::fork::ForkValidationWork<'_, '_>,
+    ) -> Result<()> {
+        let capacity = capability.capacity() as u64;
+        if capabilities.contains(&capability) {
+            drop(capability);
+            owned.release(capacity)?;
+        } else {
+            owned.slots::<String>(1)?;
+            capabilities.insert(capability);
         }
         Ok(())
     }
@@ -2812,10 +3086,11 @@ impl Reducer {
                   its EventPayload; splitting per-arm would scatter one command's validation \
                   across many functions without clarifying any of them"
     )]
-    fn transition(
+    fn transition_with_work(
         &self,
         action: &Action,
         archived_effect: Option<(EffectId, &EffectState)>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<EventPayload> {
         match action {
             Action::TransitionLifecycle { to, reason } => {
@@ -3033,11 +3308,16 @@ impl Reducer {
                 })
             }
             Action::PublishFork { seed } => {
-                seed.validate()?;
-                self.validate_fork_reference_ownership(seed)?;
+                seed.validate_with_work(work)?;
+                self.validate_fork_reference_ownership_with_work(seed, work)?;
                 self.validate_extension_fork(seed)?;
                 if self.forks.contains_key(&seed.child) {
                     return Err(Error::Conflict("fork child is already published".into()));
+                }
+                if let Some(observer) = work.as_deref_mut() {
+                    // Box::clone performs this known allocation; nested owned
+                    // fields are covered by the command source-schema quota.
+                    observer.admit_allocation(std::mem::size_of::<ForkSeed>() as u64)?;
                 }
                 Ok(EventPayload::ForkPublished { seed: seed.clone() })
             }
@@ -3127,7 +3407,10 @@ impl Reducer {
                   would scatter one event's application across many functions without \
                   clarifying any of them"
     )]
-    fn apply_payload(&mut self, payload: &EventPayload, revision: u64) -> Result<()> {
+    fn apply_payload_with_work(
+        &mut self, payload: &EventPayload, revision: u64,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
         match payload {
             EventPayload::LifecycleTransitioned { from, to, .. } => {
                 if *from != self.lifecycle {
@@ -3346,9 +3629,17 @@ impl Reducer {
                 effect.status = observation.status.clone();
             }
             EventPayload::ForkPublished { seed } => {
-                seed.validate()?;
+                seed.validate_with_work(work)?;
                 self.validate_extension_fork(seed)?;
-                self.require_fresh_fork(seed)?;
+                self.require_fresh_fork_with_work(seed, work)?;
+                if let Some(observer) = work.as_deref_mut() {
+                    let reservation = snapshot::fork_seed_clone_reservation(seed)?
+                        .checked_add(seed.child.id.len() as u64)
+                        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<(Authority, ForkSeed)>() as u64))
+                        .ok_or_else(|| Error::Invalid("fork map clone quota overflows".into()))?;
+                    observer.admit_owned(reservation)?;
+                    observer.retain_owned(reservation)?;
+                }
                 self.forks.insert(seed.child.clone(), seed.as_ref().clone());
             }
             EventPayload::ProjectMergePublished { receipt } => {
@@ -5462,6 +5753,60 @@ resolve_interaction interaction_resolved interaction:resolve";
                 agent: crate::AgentId::from_bytes([1; 16]),
             },
         ))?;
+        #[cfg(feature = "filesystem")]
+        {
+            use acyclic_fs::{CancellationToken, WorkBudget};
+            let budget = WorkBudget {
+                bytes_copied: 16_777_216, bytes_encoded: 16_777_216, bytes_hashed: 16_777_216,
+                items_examined: 1_000_000, allocation_operations: 100_000, peak_allocation_bytes: 268_435_456,
+                ..WorkBudget::default()
+            };
+            let cancellation = CancellationToken::new();
+            let mut work = crate::store::history::HistoryWork::new(budget, &cancellation);
+            reducer.validate_fork_reference_ownership_with_work(&seed, &mut Some(&mut work))?;
+            reducer.require_fresh_fork_with_work(&seed, &mut Some(&mut work))?;
+            let receipt = work.finish(Ok(())).map_err(|failure| failure.error)?;
+            assert!(receipt.work.items_examined > 0);
+            let mut narrow = crate::store::history::HistoryWork::new(
+                WorkBudget { items_examined: 1, ..budget }, &cancellation);
+            assert!(reducer.require_fresh_fork_with_work(&seed, &mut Some(&mut narrow)).is_err());
+            let cancelled = CancellationToken::new();
+            cancelled.cancel();
+            let mut work = crate::store::history::HistoryWork::new(budget, &cancelled);
+            assert!(reducer.validate_fork_reference_ownership_with_work(&seed, &mut Some(&mut work)).is_err());
+
+            // The original no-witness path validates a real canonical prefix
+            // descriptor against the same loaded parent, including its hashes.
+            let prefix = InheritedConversationPrefix::select(parent.clone(), 1, 0, &[], &reducer.conversation)?;
+            let prefix_bytes = prefix.canonical_bytes()?;
+            let mut materialized = seed.clone();
+            materialized.inherited_context.push(FileRef::new(
+                seed.child_private_volume.clone(), ".system/inherited-conversation/prefix.json", "generation-1",
+                FileDescriptor::from_bytes(&prefix_bytes,
+                    "application/vnd.acyclic.harness.inherited-conversation+json")?,
+                "inherited-conversation.json",
+            )?);
+            reducer.validate_fork_reference_ownership(&materialized)?;
+            let mut work = crate::store::history::HistoryWork::new(budget, &cancellation);
+            reducer.validate_fork_reference_ownership_with_work(&materialized, &mut Some(&mut work))?;
+            let receipt = work.finish(Ok(())).map_err(|failure| failure.error)?;
+            assert!(receipt.work.bytes_encoded > 0);
+            assert!(receipt.work.bytes_hashed >= prefix_bytes.len() as u64);
+            let mut work = crate::store::history::HistoryWork::new(
+                WorkBudget { bytes_encoded: 1, ..budget }, &cancellation);
+            assert!(reducer.validate_fork_reference_ownership_with_work(&materialized, &mut Some(&mut work)).is_err());
+            let mut hostile_manifests = seed.clone();
+            hostile_manifests.attachment_manifests.push(request_file(b"[]")?);
+            assert!(matches!(reducer.validate_fork_reference_ownership(&hostile_manifests), Err(Error::Invalid(_))));
+            let mut work = crate::store::history::HistoryWork::new(budget, &cancellation);
+            let result = reducer.validate_fork_reference_ownership_with_work(&hostile_manifests, &mut Some(&mut work));
+            let failure = work.finish(result).expect_err("unpublished manifest must fail on the original path");
+            assert!(failure.work.bytes_encoded > 0);
+            assert!(failure.work.bytes_hashed > 0);
+            let mut work = crate::store::history::HistoryWork::new(
+                WorkBudget { peak_allocation_bytes: 1, ..budget }, &cancellation);
+            assert!(reducer.validate_fork_reference_ownership_with_work(&hostile_manifests, &mut Some(&mut work)).is_err());
+        }
         let mut foreign_command = command(
             operation(8),
             1,

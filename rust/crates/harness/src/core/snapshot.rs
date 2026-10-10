@@ -63,6 +63,11 @@ impl CloneInventory {
             std::mem::size_of::<EffectState>(),
             std::mem::size_of::<super::ExtensionBinding>(),
             std::mem::size_of::<super::ExtensionAdmission>(),
+            std::mem::size_of::<super::Command>(),
+            std::mem::size_of::<super::Action>(),
+            std::mem::size_of::<super::Scope>(),
+            std::mem::size_of::<super::RecordedScope>(),
+            std::mem::size_of::<crate::Capabilities>(),
             std::mem::size_of::<super::ExtensionStateMigration>(),
             std::mem::size_of::<ExtensionRecord>(),
             std::mem::size_of::<ExtensionConfiguration>(),
@@ -214,6 +219,22 @@ pub(crate) fn event_clone_reservation(event: &Event) -> Result<u64> {
     source_inventory(event)
 }
 
+pub(crate) fn scope_clone_owned_bytes(scope: &super::Scope) -> Result<u64> {
+    source_inventory(scope)
+}
+
+pub(crate) fn fork_seed_clone_reservation(seed: &ForkSeed) -> Result<u64> {
+    source_inventory(seed)
+}
+
+pub(crate) fn command_clone_reservation(command: &super::Command) -> Result<u64> {
+    // The output event adds two fixed digests while its recorded scope removes
+    // the source scope signature. This closed-schema bound also covers the
+    // original transition result and event construction while both are live.
+    source_inventory(command)?.checked_mul(2)
+        .ok_or_else(|| Error::Invalid("command clone reservation overflows".into()))
+}
+
 /// Versioned, issuer-authenticated accelerator; Stream events remain authoritative.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -261,6 +282,10 @@ struct Projection {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+impl Snapshot {
+    pub(crate) const LOGICAL_SCHEMA_SLOT_BYTES: u64 = CloneInventory::SLOT;
 }
 
 #[derive(Serialize)]

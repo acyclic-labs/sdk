@@ -77,9 +77,6 @@ fn path(authority: &Authority, effect: EffectId) -> Result<StreamPath> {
     ))?)
 }
 
-async fn tail<P: StreamProvider>(client: &StreamClient<P>, path: &StreamPath) -> Result<u64> {
-    tail_with_work(client, path, &mut None).await
-}
 
 async fn tail_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
@@ -95,16 +92,6 @@ async fn tail_with_work<P: StreamProvider>(
     }
 }
 
-async fn verified<P: StreamProvider>(
-    client: &StreamClient<P>,
-    authority: &Authority,
-    verifier: &AuthorityVerifier,
-    effect: EffectId,
-    record: &Record,
-    maximum_bytes: u64,
-) -> Result<(Event, u64)> {
-    verified_with_work(client, authority, verifier, effect, record, maximum_bytes, &mut None).await
-}
 
 async fn verified_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
@@ -246,12 +233,13 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
     .await
 }
 
-pub(super) async fn read<P: StreamProvider>(
+pub(super) async fn read_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
     verifier: &AuthorityVerifier,
     cursor: &HistoryCursor,
     effect: EffectId,
     limits: HistoryReadLimits,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Vec<Event>> {
     verifier.verify_audience(&cursor.authority)?;
     if limits.maximum_events == 0
@@ -265,23 +253,21 @@ pub(super) async fn read<P: StreamProvider>(
     if cursor.through_revision == 0 {
         return Ok(Vec::new());
     }
-    let canonical_tail = match client.stream(cursor.authority.stream_path()?)?.tail().await {
-        Ok(tail) => tail,
-        Err(StreamError::NotFound) => 0,
-        Err(error) => return Err(error.into()),
-    };
+    let canonical_path = StreamPath::new(cursor.authority.stream_path_with_work(work)?)?;
+    let canonical_tail = tail_with_work(client, &canonical_path, work).await?;
     if cursor.through_revision > canonical_tail {
         return Err(Error::Invalid(
             "effect cursor exceeds committed canonical tail".into(),
         ));
     }
-    let selected = effect_heads::select(
+    let selected = effect_heads::select_with_work(
         client,
         &cursor.authority,
         verifier,
         effect,
         cursor.through_revision,
         limits.maximum_bytes,
+        work,
     )
     .await?;
     let Some(head) = selected.head else {
@@ -306,16 +292,17 @@ pub(super) async fn read<P: StreamProvider>(
             .checked_sub(used)
             .filter(|bytes| *bytes > 0)
             .ok_or_else(|| Error::Invalid("effect history exceeds byte bound".into()))?;
-        let record = operations::one_record(client, &path, position)
+        let record = operations::one_record_with_work(client, &path, position, work)
             .await?
             .ok_or_else(|| Error::Storage("effect transition index is incomplete".into()))?;
-        let (event, bytes) = verified(
+        let (event, bytes) = verified_with_work(
             client,
             &cursor.authority,
             verifier,
             effect,
             &record,
             remaining,
+            work,
         )
         .await?;
         used = used
@@ -334,6 +321,15 @@ pub(super) async fn read<P: StreamProvider>(
             ));
         }
         previous_revision = event.revision;
+        if let Some(work) = work.as_deref_mut() {
+            work.stage_output(bytes - record.value.len() as u64, 1)?;
+            if events.len() == events.capacity() {
+                work.reserve_events(&mut events, limits.maximum_events as usize)?;
+            }
+        }
+        let record_bytes = record.value.len() as u64;
+        drop(record);
+        if let Some(work) = work.as_deref_mut() { work.release_record(record_bytes)?; }
         events.push(event);
     }
     Ok(events)

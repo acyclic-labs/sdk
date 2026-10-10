@@ -36,6 +36,8 @@ pub(crate) trait HistoryIo: Send {
     fn reserve_messages(&mut self, messages: &mut Vec<crate::conversation::ConversationMessage>, maximum: usize) -> Result<()>;
     fn reserve_values(&mut self, values: &mut Vec<serde_json::Value>, maximum: usize) -> Result<()>;
     fn reserve_bytes(&mut self, bytes: &mut Vec<u8>, capacity: usize) -> Result<()>;
+    fn reserve_text(&mut self, text: &mut String, capacity: usize) -> Result<()>;
+    fn admit_allocation(&mut self, bytes: u64) -> Result<()>;
     fn copy_bytes(&mut self, bytes: u64) -> Result<()>;
     fn release_bytes(&mut self, bytes: u64) -> Result<()> { self.release_owned(bytes) }
     fn encoded_bytes(&mut self, bytes: u64) -> Result<()>;
@@ -568,18 +570,40 @@ impl<P: StreamProvider> HistoryReader<P> {
         effect: crate::EffectId,
         limits: HistoryReadLimits,
     ) -> Result<Option<crate::core::EffectState>> {
-        let events =
-            super::effects::read(&self.client, &self.verifier, cursor, effect, limits).await?;
+        self.effect_with_work(cursor, effect, limits, None).await
+    }
+
+    pub(crate) async fn effect_with_work(
+        &self, cursor: &HistoryCursor, effect: crate::EffectId,
+        limits: HistoryReadLimits, mut work: Option<&mut dyn HistoryIo>,
+    ) -> Result<Option<crate::core::EffectState>> {
+        let events = super::effects::read_with_work(
+            &self.client, &self.verifier, cursor, effect, limits, &mut work,
+        ).await?;
         if events.is_empty() {
             return Ok(None);
         }
-        crate::core::Reducer::project_effect(
-            cursor.authority.clone(),
-            self.verifier.clone(),
-            effect,
-            &events,
-        )
-        .map(Some)
+        let authority = match work.as_deref_mut() {
+            Some(work) => work.clone_authority(&cursor.authority)?,
+            None => cursor.authority.clone(),
+        };
+        let verifier = self.verifier.clone_with_work(&mut work)?;
+        let event_owned = if work.is_some() {
+            events.iter().try_fold(
+                events.capacity() as u64 * std::mem::size_of::<Event>() as u64,
+                |bytes, event| bytes.checked_add(crate::core::event_clone_reservation(event)?)
+                    .ok_or_else(|| Error::Invalid("effect source custody overflows".into())),
+            )?
+        } else { 0 };
+        let result = crate::core::Reducer::project_effect_with_work(
+            authority, verifier, effect, &events, &mut work,
+        );
+        drop(events);
+        if let Some(work) = work.as_deref_mut() {
+            let released = work.release_owned(event_owned);
+            if result.is_ok() { released?; }
+        }
+        result.map(Some)
     }
 
     /// Captures a committed boundary once for explicit archival traversal.
@@ -587,7 +611,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         self.pin_with_work(after_revision, None).await
     }
 
-    async fn pin_with_work(
+    pub(crate) async fn pin_with_work(
         &self,
         after_revision: u64,
         mut work: Option<&mut dyn HistoryIo>,
@@ -778,14 +802,24 @@ pub(crate) fn verify_history_record_with_work(
         ));
     }
     let (record_authority, event) = crate::wire_codec::decode_event_with_work(&record.value, work)?;
-    let revision = sequence
-        .checked_add(1)
-        .ok_or_else(|| Error::Storage("history event revision overflows".into()))?;
-    if &record_authority != authority || event.revision != revision {
-        return Err(Error::Storage("history event binding is invalid".into()));
+    let owned_event = if work.is_some() { crate::core::event_clone_reservation(&event)? } else { 0 };
+    let verification = (|| {
+        let revision = sequence.checked_add(1)
+            .ok_or_else(|| Error::Storage("history event revision overflows".into()))?;
+        if &record_authority != authority || event.revision != revision {
+            return Err(Error::Storage("history event binding is invalid".into()));
+        }
+        verifier.verify_audience(authority)?;
+        verifier.verify_event_with_work(&event, work)
+    })();
+    let authority_bytes = record_authority.id.capacity() as u64;
+    drop(record_authority);
+    if let Err(error) = verification {
+        drop(event);
+        if let Some(work) = work.as_deref_mut() { let _ = work.release_owned(authority_bytes + owned_event); }
+        return Err(error);
     }
-    verifier.verify_audience(authority)?;
-    verifier.verify_event_with_work(&event, work)?;
+    if let Some(work) = work.as_deref_mut() { work.release_owned(authority_bytes)?; }
     Ok(event)
 }
 

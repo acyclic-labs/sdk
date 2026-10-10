@@ -28,6 +28,16 @@ impl<P: StreamProvider> StreamAggregate<P> {
             work.preflight()?;
             let intent = crate::core::canonical_intent_with_work(&command, &mut Some(&mut work))?;
             owner.check_root_binding(self.reducer.authority(), command.operation_id, intent)?;
+            const ROOT_CHOICE_DOMAIN: &[u8] = b"harness/v2/root-bind-choice\0";
+            let audience = self.reducer.authority();
+            history::HistoryIo::hashed_bytes(&mut work,
+                (ROOT_CHOICE_DOMAIN.len() + b"conversation".len() + 8 + audience.id.len()) as u64)?;
+            let mut choice = blake3::Hasher::new();
+            choice.update(ROOT_CHOICE_DOMAIN);
+            choice.update(b"conversation");
+            choice.update(&(audience.id.len() as u64).to_le_bytes());
+            choice.update(audience.id.as_bytes());
+            owner.pin_root_binding_choice(command.operation_id, intent, *choice.finalize().as_bytes())?;
             // Reserve the actual future immutable proof before any guarded IO.
             let (original_task, admission_digest, original_fence) = owner.binding_origin();
             let proof = VerifiedRootBinding {
@@ -178,14 +188,23 @@ impl<P: StreamProvider> StreamAggregate<P> {
             reference.revision.saturating_sub(1), work).await?
             .ok_or_else(|| Error::NotFound("causal event".into()))?;
         let (authority, event) = crate::wire_codec::decode_event_with_work(&record.value, work)?;
-        if authority != reference.authority || event.revision != reference.revision {
-            return Err(Error::Invalid("causal event reference does not resolve exactly".into()));
-        }
+        let valid = authority == reference.authority && event.revision == reference.revision;
+        let owned = if work.is_some() {
+            crate::core::event_clone_reservation(&event)?
+                .checked_add(authority.id.capacity() as u64)
+                .ok_or_else(|| Error::Invalid("causal record custody overflows".into()))?
+        } else { 0 };
         let raw = record.value.len() as u64;
         drop(record);
         drop(event);
         drop(authority);
-        if let Some(work) = work.as_deref_mut() { work.release_record(raw)?; }
+        if let Some(work) = work.as_deref_mut() {
+            work.release_record(raw)?;
+            work.release_owned(owned)?;
+        }
+        if !valid {
+            return Err(Error::Invalid("causal event reference does not resolve exactly".into()));
+        }
         Ok(())
     }
 }
