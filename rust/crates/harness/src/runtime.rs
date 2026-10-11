@@ -6269,18 +6269,48 @@ impl AgentHarness {
         for definition in resumable_tools.definitions() {
             native_startup::item(startup, 0)?;
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let duplicate = if let Some(io) = startup {
+            let adapter = if let Some(io) = startup {
                 tools.get_version_with_native_work(&definition.name, &definition.revision,
                     io.original_native_work().ok_or(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Unsupported, reason: "startup requires original native work",
-                    })?)?.is_some()
-            } else { tools.get_version(&definition.name, &definition.revision).is_some() };
+                    })?)?
+            } else { tools.get_version(&definition.name, &definition.revision) };
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let duplicate = tools.get_version(&definition.name, &definition.revision).is_some();
-            if duplicate {
+            let adapter = tools.get_version(&definition.name, &definition.revision);
+            if let Some(adapter) = adapter {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                let pinned = if let Some(io) = startup {
+                    resumable_tools.get_with_native_work(&definition.name, &definition.revision,
+                        io.original_native_work().ok_or(Error::NativeBoundary {
+                            code: crate::wire::ErrorCode::Unsupported, reason: "startup requires original native work",
+                        })?)?
+                } else { resumable_tools.get(&definition.name, &definition.revision) };
+                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                let pinned = resumable_tools.get(&definition.name, &definition.revision);
+                let pinned = pinned.ok_or_else(|| native_startup::error(startup,
+                    crate::wire::ErrorCode::Invalid, "resumable registry differs from its definitions",
+                    || Error::Invalid("resumable registry differs from its definitions".into())))?;
+                let same_adapter = adapter.definition == *definition && {
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    let same_identity = if let Some(io) = startup {
+                        let work = io.original_native_work().ok_or(Error::NativeBoundary {
+                            code: crate::wire::ErrorCode::Unsupported, reason: "startup requires original native work",
+                        })?;
+                        adapter.executor.resumable_machine_identity_with_native_work(work)?
+                            == Some(pinned.machine.identity_with_native_work(work)?)
+                    } else {
+                        adapter.executor.resumable_machine_identity().as_ref()
+                            == Some(pinned.machine.identity())
+                    };
+                    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                    let same_identity = adapter.executor.resumable_machine_identity().as_ref()
+                        == Some(pinned.machine.identity());
+                    same_identity
+                };
+                if same_adapter { continue; }
                 return Err(native_startup::error(startup, crate::wire::ErrorCode::Conflict,
-                    "a tool has both live and resumable implementations",
-                    || Error::Conflict(format!("tool {}@{} has both live and resumable implementations",
+                    "live and resumable implementations differ",
+                    || Error::Conflict(format!("live and resumable implementations differ for tool {}@{}",
                         definition.name, definition.revision))));
             }
         }

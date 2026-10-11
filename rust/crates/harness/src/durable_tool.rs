@@ -63,6 +63,21 @@ impl ResumableToolRegistry {
         self.0.get(&(name.to_owned(), revision.to_owned()))
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn get_with_native_work(
+        &self, name: &str, revision: &str,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<&ResumableTool>> {
+        let (name, name_hold) = work.display(name)?;
+        let (revision, revision_hold) = work.display(revision)?;
+        let key = (name, revision);
+        let found = self.0.get(&key);
+        drop(key);
+        drop(revision_hold);
+        drop(name_hold);
+        Ok(found)
+    }
+
     /// Iterates registered definitions in deterministic identity order.
     pub fn definitions(&self) -> impl Iterator<Item = &ToolDefinition> {
         self.0.values().map(|tool| &tool.definition)

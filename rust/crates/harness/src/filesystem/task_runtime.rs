@@ -1754,9 +1754,11 @@ where
         }
         let admission = self.admission_observed(task, io).await?;
         let terminal = if io.is_some() {
-            self.outcome_observed(task, io).await?.is_some_and(|outcome| outcome.is_terminal())
+            self.outcome_observed(task, io).await?.is_some_and(|outcome|
+                matches!(outcome, Outcome::Succeeded(_) | Outcome::Failed { .. } | Outcome::Cancelled))
         } else {
-            self.host.observe_task(task).await?.outcome.is_some_and(|outcome| outcome.is_terminal())
+            self.host.observe_task(task).await?.outcome.is_some_and(|outcome|
+                matches!(outcome, Outcome::Succeeded(_) | Outcome::Failed { .. } | Outcome::Cancelled))
         };
         if terminal { return Ok(None); }
         let pulled = deadline::run_observed(
