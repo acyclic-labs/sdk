@@ -139,8 +139,10 @@ configured tool scope remains attenuated; a work budget never grants authority.
 Native executor/provider companions return an admitted `NativeFutureBundle`
 before constructing their future. Custom providers without audited native
 companions reject before their callbacks. SDK request copies use direct typed
-field recipes and retain logical metadata/buffer custody through payload drop;
-opaque provider internals and physical allocator/RSS overhead are not measured.
+field recipes and retain logical metadata/buffer custody through payload drop.
+Closed model-content copies also share the original history observer for finite
+owned/native work, transferring only their produced deep-storage claim.
+Opaque provider internals and physical allocator/RSS overhead are not measured.
 
 Stock output-token budgets are caller-controlled: Rust exposes
 `StockExecutor::with_max_output_tokens`, and TypeScript exposes

@@ -127,28 +127,11 @@ pub(crate) fn model_file_clone_with_io(
     model_step(io, 1)?;
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            let (file, custody) = file.clone_with_native_work(work)?;
-            io.absorb_native_custody(custody)?;
-            return Ok(file);
-        }
-        // Legacy measured ownership uses the same known closed FileRef strings.
-        // No native branch reaches this ordinary SDK clone.
-        let bytes = file.logical_clone_owned_bytes()?;
-        let provider = file.volume().provider();
-        let mut allocations = [provider.namespace(), provider.family(), provider.version(),
-            file.volume().id(), file.path(), file.version(), file.display_name(),
-            file.descriptor().media_type()].iter().filter(|text| !text.is_empty()).count() as u64;
-        if let crate::conversation::VolumeOwner::Project(owner)
-            | crate::conversation::VolumeOwner::Session(owner) = file.volume().owner()
-        { allocations += u64::from(!owner.is_empty()); }
-        let copied = acyclic_fs::WorkCounters { bytes_copied: bytes, ..Default::default() };
-        io.preflight(copied)?;
-        io.claim(bytes)?;
-        io.charge(acyclic_fs::WorkCounters { allocation_operations: allocations, ..Default::default() })?;
-        let file = file.clone();
-        io.spent(copied)?;
+        let mut observer = io.history_io();
+        let mut work = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
+        let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
+        let file = crate::core::copy_file(file, &mut quota)?;
+        quota.transfer();
         return Ok(file);
     }
     Ok(file.clone())
@@ -159,61 +142,89 @@ pub(crate) fn model_file_clone_with_io(
 pub(crate) fn model_value_clone_with_io(
     value: &Value, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Value> {
-    if io.is_none() { return Ok(value.clone()); }
-    model_step(io, 1)?;
-    Ok(match value {
-        Value::Null => Value::Null,
-        Value::Bool(value) => Value::Bool(*value),
-        Value::Number(value) => Value::Number(value.clone()),
-        Value::String(value) => Value::String(model_string_clone_with_io(value, io)?),
-        Value::Array(values) => {
-            let mut copied = model_vec_with_capacity(values.len(), io)?;
-            for value in values { model_vec_push(&mut copied, model_value_clone_with_io(value, io)?, io)?; }
-            Value::Array(copied)
-        }
-        Value::Object(values) => {
-            let mut copied = serde_json::Map::new();
-            for (key, value) in values {
-                model_step(io, 1)?;
-                // Logical key/value storage only; opaque BTree allocator nodes
-                // are excluded, not represented as fabricated allocator calls.
-                model_claim_owned(io, std::mem::size_of::<(String, Value)>() as u64)?;
-                copied.insert(model_string_clone_with_io(key, io)?, model_value_clone_with_io(value, io)?);
-            }
-            Value::Object(copied)
-        }
-    })
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let mut observer = io.history_io();
+        let mut work = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
+        let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
+        let value = crate::core::copy_value(value, &mut quota)?;
+        quota.transfer();
+        return Ok(value);
+    }
+    let _ = io;
+    Ok(value.clone())
 }
 
-fn model_configuration_clone_with_io(
-    binding: &NativeConfigurationBinding, io: Option<&crate::executor::PreparationIo>,
-) -> Result<NativeConfigurationBinding> {
-    model_step(io, 1)?;
-    Ok(NativeConfigurationBinding {
-        source: crate::core::EventReference {
-            authority: crate::core::Authority {
-                kind: binding.source.authority.kind,
-                id: model_string_clone_with_io(&binding.source.authority.id, io)?,
-            },
-            revision: binding.source.revision,
-        },
-        configuration: crate::core::ExtensionConfiguration {
-            extension: crate::core::ExtensionDependency {
-                name: model_string_clone_with_io(&binding.configuration.extension.name, io)?,
-                version: binding.configuration.extension.version,
-            },
-            schema_digest: binding.configuration.schema_digest,
-            content: model_file_clone_with_io(&binding.configuration.content, io)?,
-        },
-        implementation_digest: binding.implementation_digest,
-    })
-}
 
 pub(crate) fn model_media_policy_clone_with_io(
     policy: &NativeMediaPolicy, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<NativeMediaPolicy> {
-    if io.is_none() { return Ok(policy.clone()); }
-    model_step(io, 1)?;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let mut observer = io.history_io();
+        let mut work = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
+        let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
+        let policy = model_media_policy_in_quota(policy, &mut quota)?;
+        quota.transfer();
+        return Ok(policy);
+    }
+    let _ = io;
+    Ok(policy.clone())
+}
+
+pub(crate) fn model_tool_result_clone_with_io(
+    content: &ToolResultContent, io: Option<&crate::executor::PreparationIo>,
+) -> Result<ToolResultContent> {
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let mut observer = io.history_io();
+        let mut work = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
+        let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
+        let content = model_tool_result_in_quota(content, &mut quota)?;
+        quota.transfer();
+        return Ok(content);
+    }
+    let _ = io;
+    Ok(content.clone())
+}
+
+
+pub(crate) fn model_content_clone_with_io(
+    content: &ModelContent, io: Option<&crate::executor::PreparationIo>,
+) -> Result<ModelContent> {
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let mut observer = io.history_io();
+        return clone_content_with_work(content, &mut Some(&mut observer)).map(|(content, _)| content);
+    }
+    let _ = io;
+    Ok(content.clone())
+}
+
+/// Copies the closed provider-neutral content graph on the original observer.
+/// The returned claim is deep storage only; its enclosing DTO funds inline headers.
+pub(crate) fn clone_content_with_work(
+    content: &ModelContent, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<(ModelContent, u64)> {
+    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let content = model_content_in_quota(content, &mut quota)?;
+    let retained = quota.retained();
+    quota.transfer();
+    Ok((content, retained))
+}
+
+fn model_copy_node(quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<()> {
+    if let Some(work) = quota.work().as_deref_mut() {
+        work.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+    }
+    Ok(())
+}
+
+fn model_media_policy_in_quota(
+    policy: &NativeMediaPolicy, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<NativeMediaPolicy> {
+    if quota.work().is_none() { return Ok(policy.clone()); }
+    model_copy_node(quota)?;
     let intent = match &policy.intent {
         NativeMediaIntent::Image { detail } => NativeMediaIntent::Image { detail: *detail },
         NativeMediaIntent::Audio { maximum_duration_ms } => NativeMediaIntent::Audio { maximum_duration_ms: *maximum_duration_ms },
@@ -222,97 +233,81 @@ pub(crate) fn model_media_policy_clone_with_io(
         },
         NativeMediaIntent::Document { maximum_pages } => NativeMediaIntent::Document { maximum_pages: *maximum_pages },
     };
-    Ok(NativeMediaPolicy {
-        intent, maximum_bytes: policy.maximum_bytes, maximum_work: policy.maximum_work,
-        configuration: policy.configuration.as_ref().map(|binding| model_configuration_clone_with_io(binding, io)).transpose()?,
-    })
+    let configuration = policy.configuration.as_ref().map(|binding| -> Result<NativeConfigurationBinding> {
+        model_copy_node(quota)?;
+        Ok(NativeConfigurationBinding {
+            source: crate::core::copy_reference(&binding.source, quota)?,
+            configuration: crate::core::copy_configuration(&binding.configuration, quota)?,
+            implementation_digest: binding.implementation_digest,
+        })
+    }).transpose()?;
+    Ok(NativeMediaPolicy { intent, maximum_bytes: policy.maximum_bytes,
+        maximum_work: policy.maximum_work, configuration })
 }
 
-fn model_policy_clone_with_io(
-    policy: &FileProjectionPolicy, io: Option<&crate::executor::PreparationIo>,
+fn model_policy_in_quota(
+    policy: &FileProjectionPolicy, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<FileProjectionPolicy> {
-    model_step(io, 1)?;
+    if quota.work().is_none() { return Ok(policy.clone()); }
+    model_copy_node(quota)?;
     Ok(match policy {
         FileProjectionPolicy::Reference => FileProjectionPolicy::Reference,
         FileProjectionPolicy::BoundedFull => FileProjectionPolicy::BoundedFull,
-        FileProjectionPolicy::Native(policy) => {
-            let bytes = std::mem::size_of::<NativeMediaPolicy>() as u64;
-            #[cfg(feature = "filesystem")]
-            if let Some(io) = io {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(work) = io.original_native_work() {
-                    let custody = work.claim(bytes)?;
-                    let copied = Box::new(model_media_policy_clone_with_io(policy, Some(io))?);
-                    io.absorb_native_custody(custody)?;
-                    return Ok(FileProjectionPolicy::Native(copied));
-                }
-                io.claim(bytes)?;
-                io.allocation_attempt(bytes)?;
-            }
-            #[cfg(not(feature = "filesystem"))]
-            let _ = bytes;
-            FileProjectionPolicy::Native(Box::new(model_media_policy_clone_with_io(policy, io)?))
-        }
+        FileProjectionPolicy::Native(policy) => FileProjectionPolicy::Native(
+            crate::core::copy_boxed(policy.as_ref(), quota, model_media_policy_in_quota)?),
     })
 }
 
-pub(crate) fn model_tool_result_clone_with_io(
-    content: &ToolResultContent, io: Option<&crate::executor::PreparationIo>,
+fn model_tool_result_in_quota(
+    content: &ToolResultContent, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<ToolResultContent> {
-    if io.is_none() { return Ok(content.clone()); }
-    model_step(io, 1)?;
+    if quota.work().is_none() { return Ok(content.clone()); }
+    model_copy_node(quota)?;
     Ok(match content {
-        ToolResultContent::Json { value } => ToolResultContent::Json { value: model_value_clone_with_io(value, io)? },
-        ToolResultContent::Parts { parts } => {
-            let mut copied = model_vec_with_capacity(parts.len(), io)?;
-            for part in parts {
-                model_step(io, 1)?;
-                let part = match part {
-                    ModelDataPart::Text { text } => ModelDataPart::Text { text: model_string_clone_with_io(text, io)? },
+        ToolResultContent::Json { value } => ToolResultContent::Json { value: crate::core::copy_value(value, quota)? },
+        ToolResultContent::Parts { parts } => ToolResultContent::Parts {
+            parts: crate::core::copy_vector(parts, quota, |part, quota| {
+                model_copy_node(quota)?;
+                Ok(match part {
+                    ModelDataPart::Text { text } => ModelDataPart::Text { text: crate::core::copy_text(text, quota)? },
                     ModelDataPart::File { file, policy } => ModelDataPart::File {
-                        file: model_file_clone_with_io(file, io)?, policy: model_policy_clone_with_io(policy, io)?,
+                        file: crate::core::copy_file(file, quota)?, policy: model_policy_in_quota(policy, quota)?,
                     },
-                };
-                model_vec_push(&mut copied, part, io)?;
-            }
-            ToolResultContent::Parts { parts: copied }
-        }
+                })
+            })?,
+        },
     })
 }
 
-fn model_part_clone_with_io(
-    part: &ModelContentPart, io: Option<&crate::executor::PreparationIo>,
+fn model_part_in_quota(
+    part: &ModelContentPart, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<ModelContentPart> {
-    model_step(io, 1)?;
+    model_copy_node(quota)?;
     Ok(match part {
-        ModelContentPart::Text { text } => ModelContentPart::Text { text: model_string_clone_with_io(text, io)? },
+        ModelContentPart::Text { text } => ModelContentPart::Text { text: crate::core::copy_text(text, quota)? },
         ModelContentPart::File { file, policy } => ModelContentPart::File {
-            file: model_file_clone_with_io(file, io)?, policy: model_policy_clone_with_io(policy, io)?,
+            file: crate::core::copy_file(file, quota)?, policy: model_policy_in_quota(policy, quota)?,
         },
         ModelContentPart::ToolCall { call_id, name, arguments } => ModelContentPart::ToolCall {
-            call_id: model_string_clone_with_io(call_id, io)?, name: model_string_clone_with_io(name, io)?,
-            arguments: model_value_clone_with_io(arguments, io)?,
+            call_id: crate::core::copy_text(call_id, quota)?, name: crate::core::copy_text(name, quota)?,
+            arguments: crate::core::copy_value(arguments, quota)?,
         },
         ModelContentPart::ToolResult { call_id, name, content } => ModelContentPart::ToolResult {
-            call_id: model_string_clone_with_io(call_id, io)?, name: model_string_clone_with_io(name, io)?,
-            content: model_tool_result_clone_with_io(content, io)?,
+            call_id: crate::core::copy_text(call_id, quota)?, name: crate::core::copy_text(name, quota)?,
+            content: model_tool_result_in_quota(content, quota)?,
         },
     })
 }
 
-pub(crate) fn model_content_clone_with_io(
-    content: &ModelContent, io: Option<&crate::executor::PreparationIo>,
+fn model_content_in_quota(
+    content: &ModelContent, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<ModelContent> {
-    if io.is_none() { return Ok(content.clone()); }
-    model_step(io, 1)?;
+    if quota.work().is_none() { return Ok(content.clone()); }
+    model_copy_node(quota)?;
     Ok(match content {
-        ModelContent::Text(text) => ModelContent::Text(model_string_clone_with_io(text, io)?),
-        ModelContent::Part(part) => ModelContent::Part(model_part_clone_with_io(part, io)?),
-        ModelContent::Parts(parts) => {
-            let mut copied = model_vec_with_capacity(parts.len(), io)?;
-            for part in parts { model_vec_push(&mut copied, model_part_clone_with_io(part, io)?, io)?; }
-            ModelContent::Parts(copied)
-        }
+        ModelContent::Text(text) => ModelContent::Text(crate::core::copy_text(text, quota)?),
+        ModelContent::Part(part) => ModelContent::Part(model_part_in_quota(part, quota)?),
+        ModelContent::Parts(parts) => ModelContent::Parts(crate::core::copy_vector(parts, quota, model_part_in_quota)?),
     })
 }
 
