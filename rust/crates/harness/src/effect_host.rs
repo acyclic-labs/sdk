@@ -1,8 +1,4 @@
 //! Conversation-owned effect admission, dispatch and reconciliation.
-//!
-//! Native companions borrow the original ledger through admission, history,
-//! provider work and settlement. Returned status metadata owns its custody;
-//! reconciliation never turns an uncertain durable attempt into another dispatch.
 
 use crate::contract::capability;
 use crate::{
@@ -40,7 +36,6 @@ pub struct TaskEffectPlan {
 }
 
 /// Resolves the canonical effect identity for one original task command.
-/// This identity alone grants no dispatch or observation authority.
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for TaskEffectPlan {
     fn maximum_slot_bytes() -> u64 {
@@ -128,14 +123,6 @@ async fn verify_owner<P: StreamProvider>(
     owner.verify(settlement).await
 }
 
-/// Uses the canonical physical field-copy engine on the original observer.
-pub(crate) fn clone_file_with_work(
-    file: &crate::conversation::FileRef,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<crate::conversation::FileRef> {
-    file.clone_with_work(work)
-}
-
 fn status_clone_bytes(status: &EffectStatus) -> Result<u64> {
     match status {
         EffectStatus::Succeeded { result } => result.logical_clone_owned_bytes(),
@@ -152,12 +139,12 @@ fn status_owned_bytes(status: &EffectStatus) -> Result<u64> {
     }
 }
 
-fn clone_status_with_work(
+fn clone_status(
     status: &EffectStatus, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<EffectStatus> {
     match status {
         EffectStatus::Succeeded { result } => Ok(EffectStatus::Succeeded {
-            result: clone_file_with_work(result, work)?,
+            result: result.clone_with_work(work)?,
         }),
         EffectStatus::Failed { message } => Ok(EffectStatus::Failed {
             message: match work.as_deref_mut() {
@@ -172,18 +159,6 @@ fn clone_status_with_work(
 fn attestation_owned_bytes(value: &EffectAttestation) -> Result<u64> {
     (value.provider.capacity() as u64).checked_add(status_owned_bytes(&value.status)?)
         .ok_or_else(|| Error::Invalid("effect attestation ownership overflows".into()))
-}
-
-fn clone_attestation_with_work(
-    value: &EffectAttestation, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<EffectAttestation> {
-    value.clone_with_work(work)
-}
-
-fn clone_scope_with_work(
-    scope: &Scope, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<Scope> {
-    scope.clone_with_work(work)
 }
 
 #[cfg(feature = "filesystem")]
@@ -222,8 +197,8 @@ fn prepare_action_with_work(
             };
             Action::PlanEffect {
                 effect_id, provider, guarantee: plan.guarantee, effect_kind,
-                request: clone_file_with_work(&plan.request, work)?,
-                result_schema: clone_file_with_work(&plan.result_schema, work)?,
+                request: plan.request.clone_with_work(work)?,
+                result_schema: plan.result_schema.clone_with_work(work)?,
             }
         },
         TaskEffectAction::Dispatch(attempt_id) => Action::MarkEffectDispatched {
@@ -322,7 +297,6 @@ impl<P: StreamProvider> ObservedEffectAggregate<P> {
 }
 
 /// Resolves a pinned provider attempt into its owning conversation history.
-/// Callers must separately authenticate which tasks may ask about that history.
 pub struct ConversationEffectHost<P> {
     stream: StreamClient<P>,
     authority: Authority,
@@ -387,8 +361,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         Ok(self)
     }
 
-    /// Configures only the resident success/failure cache; active uncertainty
-    /// stays resident and every archived observation keeps its original proof.
+    /// Configures only the resident success/failure cache; active uncertainty stays resident and every archived observation keeps its original proof.
     pub fn with_resident_terminal_effect_limit(mut self, maximum: usize) -> Result<Self> {
         if maximum == 0 {
             return Err(Error::Invalid(
@@ -400,7 +373,6 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     }
 
     /// Consumes the owner's already-funded authority, issuer and signed scope.
-    /// The provider catalog and content facade remain the original SDK objects.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[allow(clippy::too_many_arguments, reason = "same owned conversation binding plus its original custody")]
     pub fn new_with_native_work(
@@ -492,7 +464,6 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     }
 
     /// Funds the SDK-owned Arc body before its one allocation attempt.
-    /// The allocator header and shared provider backing are not claimed.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn into_arc_with_native_work(
         mut self, work: &acyclic_fs::NativeMaterializationWork,
@@ -511,11 +482,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         Ok(Arc::new(self))
     }
 
-    async fn aggregate(&self) -> Result<ObservedEffectAggregate<P>> {
-        self.aggregate_on_with_work(&self.stream, &mut None).await
-    }
-
-    async fn aggregate_on_with_work(
+    async fn aggregate(
         &self, stream: &StreamClient<P>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<ObservedEffectAggregate<P>> {
@@ -555,7 +522,6 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     }
 
     /// Checks the original provider's native support before allocating a transport future.
-    /// This pure preflight does not replace the owner and signed-scope authorization.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn require_native_task_effect_plan(
         &self, plan: &TaskEffectPlan, work: &acyclic_fs::NativeMaterializationWork,
@@ -567,7 +533,6 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     }
 
     /// Runs one task command through the original conversation effect lifecycle.
-    /// Only the durable dispatch winner invokes the provider; later calls reconcile.
     #[cfg(feature = "filesystem")]
     pub async fn run_task_effect(
         &self, owner: &crate::durable_host::TaskJournalOwner<P>,
@@ -577,8 +542,6 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     }
 
     /// Runs that same lifecycle, retaining the actual returned status metadata.
-    /// The caller retains the immutable plan and its custody through this await.
-    /// The original command engine copies its fields only when preparing the command.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn run_task_effect_with_native_work(
         &self, owner: &crate::durable_host::TaskJournalOwner<P>,
@@ -608,14 +571,14 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         let effect_id = task_effect_id_with_work(owner.task_binding().0, command_id, work)?;
         self.task_action(owner, effect_id, "plan", TaskEffectAction::Plan(plan), work).await?;
         let stream = owner.stream();
-        let aggregate = self.aggregate_on_with_work(&stream, work).await?;
+        let aggregate = self.aggregate(&stream, work).await?;
         let effect = aggregate.effect_for_host(effect_id, work).await?;
         if !matches!(effect.status,
             EffectStatus::Planned | EffectStatus::Dispatched | EffectStatus::Indeterminate)
         {
-            return clone_status_with_work(&effect.status, work);
+            return clone_status(&effect.status, work);
         }
-        self.providers.resolve_with_work(&effect, work)?;
+        self.providers.resolve(&effect, work)?;
         let dispatched = if effect.status == EffectStatus::Planned {
             matches!(self.task_action(owner, effect_id, "dispatch",
                 TaskEffectAction::Dispatch(EffectAttemptId::from_bytes(effect_id.into_bytes())),
@@ -623,18 +586,18 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         } else { false };
         drop(effect);
         drop(aggregate);
-        let aggregate = self.aggregate_on_with_work(&stream, work).await?;
+        let aggregate = self.aggregate(&stream, work).await?;
         let effect = aggregate.effect_for_host(effect_id, work).await?;
         if !matches!(effect.status, EffectStatus::Dispatched | EffectStatus::Indeterminate) {
             verify_owner(owner, true, work).await?;
-            return clone_status_with_work(&effect.status, work);
+            return clone_status(&effect.status, work);
         }
         let attestation = if dispatched {
             verify_owner(owner, false, work).await?;
-            Some(self.providers.dispatch_state_and_attest_with_work(
+            Some(self.providers.dispatch_state_and_attest(
                 &self.issuer, effect_id, &effect, work).await?)
         } else {
-            self.providers.reconcile_and_attest_with_work(
+            self.providers.reconcile_and_attest(
                 &self.issuer, effect_id, &effect, work).await?
         };
         match attestation {
@@ -682,7 +645,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         validate_task_plan(owner, plan, false, work)?;
         let effect_id = task_effect_id_with_work(owner.task_binding().0, command_id, work)?;
         let stream = owner.stream();
-        let aggregate = self.aggregate_on_with_work(&stream, work).await?;
+        let aggregate = self.aggregate(&stream, work).await?;
         let effect = aggregate.effect_for_host(effect_id, work).await?;
         if effect.provider != plan.provider || effect.guarantee != plan.guarantee
             || effect.effect_kind != plan.effect_kind || effect.request != plan.request
@@ -692,9 +655,9 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                 "task effect differs from retained command"));
         }
         if !matches!(effect.status, EffectStatus::Dispatched | EffectStatus::Indeterminate) {
-            return clone_status_with_work(&effect.status, work);
+            return clone_status(&effect.status, work);
         }
-        match self.providers.reconcile_and_attest_with_work(
+        match self.providers.reconcile_and_attest(
             &self.issuer, effect_id, &effect, work).await?
         {
             Some(attestation) => self.settle(
@@ -718,11 +681,11 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         let operation_id = OperationId::from_bytes(identity);
         loop {
             let stream = owner.stream();
-            let mut aggregate = self.aggregate_on_with_work(&stream, work).await?;
+            let mut aggregate = self.aggregate(&stream, work).await?;
             let expected_revision = aggregate.reducer().operation_revision(operation_id)
                 .map_or(aggregate.reducer().revision(), |revision| revision - 1);
             let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let scope = clone_scope_with_work(&self.scope, custody.work())?;
+            let scope = self.scope.clone_with_work(custody.work())?;
             custody.adopt(scope.logical_owned_bytes()?)?;
             let copied_action = prepare_action_with_work(effect_id, &action, custody.work())?;
             custody.adopt(action_owned_bytes(&copied_action)?)?;
@@ -770,10 +733,10 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                 crate::durable_host::TaskJournalOwner::stream);
             #[cfg(not(feature = "filesystem"))]
             let stream = self.stream.clone();
-            let mut aggregate = self.aggregate_on_with_work(&stream, retained.work()).await?;
+            let mut aggregate = self.aggregate(&stream, retained.work()).await?;
             let current = aggregate.effect_for_host(effect_id, retained.work()).await?;
             if current.status == attestation.status {
-                return clone_status_with_work(&attestation.status, retained.work());
+                return clone_status(&attestation.status, retained.work());
             }
             if current.attempts != effect.attempts
                 || !matches!(current.status, EffectStatus::Dispatched | EffectStatus::Indeterminate)
@@ -783,9 +746,9 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             }
             drop(current);
             let mut command_custody = crate::wire_codec::CodecQuota::new(retained.work(), 0)?;
-            let scope = clone_scope_with_work(&self.scope, command_custody.work())?;
+            let scope = self.scope.clone_with_work(command_custody.work())?;
             command_custody.adopt(scope.logical_owned_bytes()?)?;
-            let observation = clone_attestation_with_work(&attestation, command_custody.work())?;
+            let observation = attestation.clone_with_work(command_custody.work())?;
             command_custody.adopt(attestation_owned_bytes(&observation)?)?;
             let (key, key_bytes) = effect_key("effect-reconcile:", operation_id, None, command_custody.work())?;
             command_custody.adopt(key_bytes)?;
@@ -820,7 +783,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             match result {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 Err(error) if error.is_native_failure() => return Err(error),
-                Ok(_) => return clone_status_with_work(&attestation.status, retained.work()),
+                Ok(_) => return clone_status(&attestation.status, retained.work()),
                 Err(error) if error.code() == crate::wire::ErrorCode::Conflict => continue,
                 Err(error) => return Err(error),
             }
@@ -831,17 +794,17 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
 impl<P: StreamProvider> DurableEffectObserver for ConversationEffectHost<P> {
     fn reconcile<'a>(&'a self, effect_id: EffectId) -> BoxFuture<'a, Result<EffectStatus>> {
         Box::pin(async move {
-            let aggregate = self.aggregate().await?;
+            let aggregate = self.aggregate(&self.stream, &mut None).await?;
             let effect = aggregate.effect_for_host(effect_id, &mut None).await?;
             if !matches!(
                 effect.status,
                 EffectStatus::Dispatched | EffectStatus::Indeterminate
             ) {
-                return clone_status_with_work(&effect.status, &mut None);
+                return clone_status(&effect.status, &mut None);
             }
             let Some(attestation) = self
                 .providers
-                .reconcile_and_attest(&self.issuer, effect_id, &effect)
+                .reconcile_and_attest(&self.issuer, effect_id, &effect, &mut None)
                 .await?
             else {
                 return Ok(EffectStatus::Indeterminate);

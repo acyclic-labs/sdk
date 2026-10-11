@@ -89,10 +89,7 @@ impl WasmRecursiveForkSource {
         to_js(&self.binding.request)
     }
 
-    /// Creates only canonical input. The caller separately admits the registered
-    /// ordinary preparation machine, and retains its original admission receipt.
-    /// This consumer retains `snapshot()` externally; it does not substitute an
-    /// owner file checkpoint or a mutable latest source during recovery.
+    /// Creates only canonical input.
     #[wasm_bindgen(js_name = preparationRequest)]
     pub fn preparation_request(&self, preparation_task: String,
         #[wasm_bindgen(unchecked_param_type = "WasmTaskAdmissionWire")] child: JsValue,
@@ -114,8 +111,6 @@ impl WasmRecursiveForkSource {
 #[wasm_bindgen]
 impl WasmTaskRuntime {
     /// Opens a genuine authenticated aggregate on this exact BrowserStream.
-    /// The owner and signed scope belong to the current caller, not the selected
-    /// foreign project. Root bindings are explicit; children use admitted volumes.
     #[wasm_bindgen(js_name = prepareRecursiveForkSource)]
     pub async fn prepare_recursive_fork_source(&self, caller: String,
         #[wasm_bindgen(unchecked_param_type = "WasmBrowserLeaseFence")] fence: JsValue,
@@ -171,8 +166,7 @@ impl WasmTaskRuntime {
         Ok(WasmRecursiveForkSource { binding, filesystem: self.filesystem.clone(), caller, snapshot })
     }
 
-    /// Restores only the supplied authenticated original WASM reducer. Its head
-    /// event must match the canonical Stream; no refresh or tail substitution.
+    /// Restores only the supplied authenticated original WASM reducer.
     #[wasm_bindgen(js_name = restoreRecursiveForkSource)]
     pub async fn restore_recursive_fork_source(&self, caller: String,
         #[wasm_bindgen(unchecked_param_type = "WasmBrowserLeaseFence")] fence: JsValue,
@@ -213,8 +207,7 @@ impl WasmTaskRuntime {
         Ok(WasmRecursiveForkSource { binding, filesystem: self.filesystem.clone(), caller, snapshot })
     }
 
-    /// Resumes the exact original preparation/admission lease with its selected
-    /// real provider. Other task input or runtime providers fail closed.
+    /// Resumes the exact original preparation/admission lease with its selected real provider.
     #[wasm_bindgen(js_name = resumeForkPreparation, unchecked_return_type = "WasmBrowserWork")]
     pub async fn resume_fork_preparation(&self, source: &WasmRecursiveForkSource,
         #[wasm_bindgen(unchecked_param_type = "WorkLease")] lease: JsValue,
@@ -274,8 +267,6 @@ impl WasmTaskRuntime {
             .ok_or_else(|| js_error(Error::Unauthorized("lease has no original recursive preparation input".into())))?;
         let fork: ForkRequest = serde_json::from_value(fork)
             .map_err(|error| js_error(Error::Invalid(error.to_string())))?;
-        // The ordinary owner has already authenticated the exact registered
-        // digest; this bridge only restricts the retained workflow's purpose.
         if admission.parent != Some(source.caller)
             || admission.machine.name != "acyclic.fork_preparation" || admission.machine.version != "1"
             || fork != source.binding.request {

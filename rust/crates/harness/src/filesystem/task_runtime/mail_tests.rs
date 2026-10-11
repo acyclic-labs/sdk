@@ -7,8 +7,6 @@ use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, CommitReque
 use bytes::Bytes;
 
 fn finite_mail_budget() -> Result<WorkBudget> {
-    // Spell the finite fixture across the canonical counter schema so a global
-    // counter cutover cannot leave a silently unbounded or omitted field.
     let mut fields = serde_json::to_value(WorkBudget::default())
         .map_err(|cause| Error::Invalid(cause.to_string()))?;
     for value in fields.as_object_mut().ok_or_else(|| Error::Invalid("work counter fixture is not an object".into()))?.values_mut() {
@@ -41,8 +39,6 @@ async fn retained_mail_fixture() -> Result<(Fixture, Runtime, TaskId, FileRef)> 
 #[tokio::test]
 async fn native_mailbox_page_empty_precancel_and_denial_keep_original_ledger() -> Result<()> {
     let (fixture, runtime, task, _) = retained_mail_fixture().await?;
-    // Passive recipient observation is not a new lease or dispatch. Advancing
-    // the deadline does not give this read authority to cancel or publish.
     fixture.clock.0.store(20, Ordering::SeqCst);
     let cancellation = CancellationToken::new();
     let work = original_mail_work(finite_mail_budget()?, &cancellation)?;

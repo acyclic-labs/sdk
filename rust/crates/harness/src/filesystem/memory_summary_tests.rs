@@ -16,7 +16,6 @@ use crate::durable_host::CoordinatorTaskHost;
 use crate::runtime::{DurableTaskHost as _, TaskAdmissionRecord, TaskDefinition, TaskRegistry};
 use crate::workflow::{MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine};
 
-
 #[derive(Default)]
 struct SummaryModel(Mutex<Vec<PreparedModelRequest>>);
 
@@ -113,7 +112,6 @@ impl ResumableMachine for SummaryLeaseMachine {
 }
 
 /// Authenticates a real ordinary task lease through the public owner API.
-/// Test setup is not part of the creator's finite capture attempt.
 async fn sealed_summary_preparation(
     storage: &MemoryHarnessStorage,
     preparer: &FilesystemForkPreparer<MemoryAuthorityBackend, MemoryObjectBackend>,
@@ -281,9 +279,6 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         crate::executor::canonical_checkpoint_for_operation(storage.journal.as_ref(), last, limits)
             .await?
             .ok_or_else(|| Error::Invalid("missing admitted checkpoint".into()))?;
-    // Keep B as the explicit source selection while a later turn admits C.
-    // The finite creator must prove B's original operation and then the
-    // authenticated delta through the frozen parent, not substitute C.
     let later = OperationId::new();
     let later_input = storage.stage(later, "turns/later/input.txt",
         "r".repeat(60_000).as_bytes(), "text/plain", "later-input.txt").await?;
@@ -300,8 +295,6 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     )
     .await?
     .with_content_verifier(storage.content_verifier.clone());
-    // Admit a checkpoint-backed selection through the closed assistant record,
-    // then retire the entire resident suffix through the normal store API.
     let conversation = aggregate
         .reducer()
         .conversation()
@@ -507,8 +500,6 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     assert!(matches!(storage.host.resolve(&child_private_workspace).await, Err(Error::NotFound(_))));
     let (task_preparation, _successful_invocation) =
         sealed_summary_preparation(&storage, &preparer, &request, 1_000_000, 134_217_728).await?;
-    // The producer has committed its capture, but the conversation has not
-    // observed the acknowledgement. Retry through the same sealed task owner.
     let lost_acknowledgement = preparer.prepare_for_task(request.clone(), &task_preparation).await?;
     let preparer = preparer.with_task_preparation(Arc::new(task_preparation))?;
     let report = aggregate.prepare_fork(&preparer, request.clone()).await?;
@@ -562,8 +553,6 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     }
     let seed = report.into_seed()?;
     assert!(seed.history_witness.is_some());
-    // The original proof cannot bless omission, changed readers or a changed
-    // logical cut, even when the public seed digest is recomputed.
     for mutation in 0..4 {
         let mut changed = seed.clone();
         match mutation {
@@ -742,7 +731,6 @@ async fn assert_summary_child_import(
             .await
             .is_err()
     );
-    // A same-agent conversation bound independently is not the admitted fork.
     let other_stream = StreamClient::new(Arc::new(MemoryStream::default()));
     let mut unrelated = StreamAggregate::open(
         &other_stream,
@@ -835,7 +823,6 @@ async fn assert_summary_child_import(
     Ok(())
 }
 
-// Observe the real provider through the public client; every mutation is denied.
 struct ColdSummaryStream {
     client: StreamClient<MemoryStream>,
     reads: std::sync::atomic::AtomicUsize,
@@ -1086,7 +1073,6 @@ async fn assert_cold_summary_reads(
             observed.reads.store(0, Ordering::SeqCst);
             observed.fail_read.store(0, Ordering::SeqCst);
         }
-        // Fresh reader objects after failed observation: no restored reducer or cache.
         let cold_parent = HistoryReader::new(&client, &seed.parent, storage.verifier())?;
         let cold_child = HistoryReader::new(&client, &seed.child, issuer.verifier())?;
         stage = Some(
@@ -1182,8 +1168,6 @@ async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
         }
         drop(aggregate);
         if index == TURNS - 3 {
-            // Reconstruct the real journal and bundle with original authority
-            // and providers. No original projection or execution cache survives.
             storage.journal = Arc::new(
                 FilesystemExecutionJournal::new(
                     storage.stream.clone(),

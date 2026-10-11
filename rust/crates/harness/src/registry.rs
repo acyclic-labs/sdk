@@ -155,8 +155,7 @@ impl<T> PinnedRegistry<T> {
             .map_err(|_| Error::Storage("component registry lock poisoned".into()))
     }
 
-    /// Stops accepting new work for one logical component while preserving
-    /// every active exact-version lease until it is released.
+    /// Stops accepting new work for one logical component while preserving every active exact-version lease until it is released.
     pub fn disable(&self, name: &str) -> Result<()> {
         validate_component_label(name, "component name")?;
         let mut state = self

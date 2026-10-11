@@ -58,11 +58,6 @@ fn projection_error(
     projection_boundary(work.as_deref().is_some_and(operations::original_native_decode_mode), code, reason)
 }
 
-// Closed derived DTO: no Value, RawValue, flatten, ignored or custom fields.
-// The one original lexical pass includes duplicate keys and malformed values.
-// Its token count bounds all attempted Chunk Vec elements; serde's geometric
-// growth needs at most 2*n+4 slots. String ownership fits input bytes. The
-// original codec separately supplies scratch; diagnostics are schema audited.
 pub(super) fn decode_projection_location_with_work(
     bytes: &[u8], work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(ProjectionLocation, u64)> {
@@ -92,9 +87,6 @@ pub(super) fn decode_projection_location_with_work(
         crate::contract::JsonValueSchema::None,
         &mut |charge| {
             let result = if let crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes, value_shape } = charge {
-                // Native None issues a sealed no-Raw witness. The portable
-                // legacy helper marks unknown generic reachability, but this
-                // concrete DTO still has no Raw/Value deserializers.
                 if value_shape.input_bytes() != bytes.len() as u64
                     || value_shape.virtual_items() != 0
                     || (native && value_shape.unresolved_raw())
@@ -104,9 +96,6 @@ pub(super) fn decode_projection_location_with_work(
                 }
                 let diagnostic = crate::contract::json_typed_diagnostic_owned_bytes(
                     value_shape, diagnostic_labels, native.then_some(crate::wire::ErrorCode::Storage))?;
-                // ProjectionLocation's inline Authority (AggregateKind +
-                // String header), u64s, [u8;32] and Vec header are funded
-                // once. ProjectionChunk's fixed digest/u32 are in Vec slots.
                 let planned = value_shape.lexical_items().checked_mul(2)
                     .and_then(|slots| slots.checked_add(4))
                     .and_then(|slots| slots.checked_mul(std::mem::size_of::<ProjectionChunk>() as u64))
@@ -141,9 +130,6 @@ pub(super) fn decode_projection_location_with_work(
             return Err(error);
         }
     };
-    // Transfer the actual buffers AND the concrete inline Self slot claimed
-    // above. The caller owns this DTO and drops it before releasing the scalar;
-    // parser scratch and diagnostic-only allowance do not survive success.
     let owned = location.authority.id.capacity() as u64
         + location.chunks.capacity() as u64 * std::mem::size_of::<ProjectionChunk>() as u64
         + std::mem::size_of::<ProjectionLocation>() as u64;
@@ -181,10 +167,6 @@ fn head_path(authority: &Authority) -> Result<StreamPath> {
     ))?)
 }
 
-// Content-defined boundaries converge after a changed prefix, so appending
-// history does not retain another copy of its unchanged interior every 64 events.
-// The rolling value depends only on the last 64 bytes; boundaries are bounded
-// between 16 KiB and one Stream record, apart from the final chunk.
 fn projection_chunks<'a>(
     bytes: &'a [u8],
     work: &mut Option<&mut dyn HistoryIo>,
@@ -250,17 +232,8 @@ fn chunk_path(authority: &Authority, chunk: &ProjectionChunk) -> Result<StreamPa
     ))?)
 }
 
-pub(super) async fn stage_immutable_record<P: StreamProvider>(
-    client: &StreamClient<P>,
-    path: StreamPath,
-    bytes: OwnedBytes,
-) -> Result<()> {
-    stage_immutable_record_with_work(client, path, bytes, &mut None).await
-}
 
-/// Consumes the original encoder buffer and transfers native allocation custody
-/// into the SDK carrier before any request alias or authority write. Ordinary
-/// observers retain the exact capacity measured before the vector moves.
+/// Consumes the original encoder buffer and transfers native allocation custody into the SDK carrier before any request alias or authority write.
 pub(super) async fn stage_immutable_vec_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
     path: (StreamPath, u64),
@@ -337,11 +310,11 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
         let (outcome, native_received) = if native {
             let key_owned = retained - path_owned;
             retained -= key_owned;
-            let mut request = crate::distributed::PreparedCommitRequest::new_with_retained_key(
+            let mut request = crate::distributed::PreparedCommitRequest::new(
                 key, key_owned, work);
             request.push_condition(CommitCondition::Absent { path: path.clone() })?;
             request.append(path.clone(), bytes.clone())?;
-            let committed = request.commit_once_with_work(client).await;
+            let committed = request.commit_once(client, None).await;
             drop(request);
             committed?.map_err(|error| error.into_error(work))?
         } else {
@@ -433,8 +406,6 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
         }
         drop(outcome);
         if let Some(observer) = work.as_deref_mut() { observer.release_owned(native_received)?; }
-        // A competing publication may stage identical content. Only the later
-        // canonical commit makes the checkpoint visible.
         let record = operations::one_record_with_work(client, &path, 0, work).await?;
         let identical = record.as_ref().is_some_and(|record| record.value == bytes);
         let received_bytes = record.as_ref().map_or(0, |record| operations::sdk_record_retained_bytes(record, work));
@@ -460,13 +431,6 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
     operations::release_owned_after_drop(result, retained, work)
 }
 
-pub(super) async fn publication<P: StreamProvider>(
-    client: &StreamClient<P>,
-    reducer: &Reducer,
-    event: &Event,
-) -> Result<operations::IndexedPublication> {
-    publication_with_work(client, reducer, event, &mut None).await
-}
 
 pub(super) async fn publication_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
@@ -656,8 +620,6 @@ pub(super) async fn supplied<P: StreamProvider>(
         .filter(|count| *count <= limits.maximum_events)
         .ok_or_else(|| Error::Invalid("snapshot cache exceeds event allowance".into()))?;
     let consumed_bytes = crate::contract::json_byte_length(&snapshot, limits.maximum_bytes)?;
-    // All caller input preflight precedes provider IO; the original restore
-    // still authenticates the issuer MAC and registry before state is used.
     Ok(LoadedProjection {
         snapshot: Some(snapshot),
         through_revision: projection_cut(tail(client, authority, work).await?, original_revision, work)?,
@@ -666,14 +628,6 @@ pub(super) async fn supplied<P: StreamProvider>(
     })
 }
 
-pub(super) async fn load<P: StreamProvider>(
-    client: &StreamClient<P>,
-    authority: &Authority,
-    verifier: &AuthorityVerifier,
-    limits: HistoryReadLimits,
-) -> Result<LoadedProjection> {
-    load_with_work(client, authority, verifier, limits, None, &mut None).await
-}
 
 pub(super) async fn load_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
@@ -688,9 +642,6 @@ pub(super) async fn load_with_work<P: StreamProvider>(
         return Err(projection_error(work, crate::wire::ErrorCode::Invalid,
             "projection read bounds must be positive"));
     }
-    // Observe the real committed tail before choosing a checkpoint. Explicit
-    // historical cuts select their own floor position; later publications
-    // cannot change that authenticated checkpoint or its canonical anchor.
     let through_revision = projection_cut(tail(client, authority, work).await?, original_revision, work)?;
     let checkpoint_count = through_revision / u64::from(DEFAULT_PROJECTION_EVENTS);
     if checkpoint_count == 0 {
@@ -727,7 +678,6 @@ pub(super) async fn load_with_work<P: StreamProvider>(
                 return Err(projection_error(work, crate::wire::ErrorCode::Invalid,
                     "projection checkpoint boundary exceeds read allowance"));
             }
-            // Claimed payload bounds precede anchor and chunk IO.
             if location.bytes > limits.maximum_bytes.saturating_sub(consumed_bytes) {
                 return Err(projection_error(work, crate::wire::ErrorCode::Invalid,
                     "projection read exceeds byte allowance"));
@@ -778,7 +728,6 @@ impl ProjectionLocation {
             }
             let ((actual_authority, event), event_retained) =
                 crate::wire_codec::decode_event_with_work_and_custody(&canonical.value, work)?;
-            // Consume the original event scalar, never a second graph walk.
             let authority_owned = if work.is_some() { actual_authority.id.capacity() as u64 } else { 0 };
             let result = async {
                 verifier.verify_event_with_work(&event, work)?;
@@ -839,9 +788,6 @@ async fn load_chunks<P: StreamProvider>(
     let length = usize::try_from(location.bytes)
         .map_err(|_| projection_error(work, crate::wire::ErrorCode::Invalid,
             "projection size exceeds platform"))?;
-    // Validate the complete manifest before allocation or chunk IO. Minimum
-    // interior lengths also bound IO count independently of attacker-provided
-    // lists of tiny chunks. The last chunk may be shorter.
     let mut total = 0_u64;
     if location.chunks.is_empty() {
         return Err(projection_error(work, crate::wire::ErrorCode::Storage,

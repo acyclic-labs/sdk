@@ -65,8 +65,7 @@ enum TaskImplementation<I, O> {
     Resumable(Arc<dyn ResumableMachine>),
 }
 
-/// Immutable typed task definition. Live code is process-local; only an exact
-/// registered resumable machine can be admitted through a durable host.
+/// Immutable typed task definition.
 pub struct TaskDefinition<I, O> {
     identity: ComponentIdentity,
     input_schema: Value,
@@ -127,8 +126,6 @@ impl<I, O> TaskDefinition<I, O> {
     }
 
     /// Binds a pinned state machine and its exact admission/result schemas.
-    /// Durable work cannot inherit the permissive local-task defaults because
-    /// both boundaries must remain interpretable after a process restart.
     pub fn resumable(
         machine: Arc<dyn ResumableMachine>,
         input_schema: Value,
@@ -138,7 +135,6 @@ impl<I, O> TaskDefinition<I, O> {
     }
 
     /// Moves genuinely guarded schema values into the original definition.
-    /// Returned metadata custody must be consumed by native registration.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn resumable_with_native_work(
         machine: Arc<dyn ResumableMachine>, input_schema: Value, output_schema: Value,
@@ -224,8 +220,7 @@ impl<I, O> TaskDefinition<I, O> {
         Ok(self)
     }
 
-    /// Adds a borrowed requirement before native registration, preserving the
-    /// actual constructor custody rather than adopting an ordinary builder.
+    /// Adds a borrowed requirement before native registration, preserving the actual constructor custody rather than adopting an ordinary builder.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn requires_with_native_work(
         self, requirement: &str, metadata_custody: acyclic_fs::NativeAllocation,
@@ -318,8 +313,6 @@ impl<I, O> TaskDefinition<I, O> {
     }
 
     /// Opens the registered task's retained workflow under its exact lease.
-    /// Recovery reads the committed checkpoint/outbox; advancing still requires
-    /// uncancelled ownership and an atomically task-fenced journal provider.
     pub async fn open(
         self: &Arc<Self>,
         context: &TaskContext,
@@ -772,8 +765,6 @@ async fn validate_latest_task_transition(
 }
 
 /// A registered task's current checkpoint and bounded workflow replay index.
-/// The existing workflow journal remains authoritative; dropping this handle
-/// discards its projection and retains no waiting worker future.
 pub struct ResumableTaskSession {
     task_id: TaskId,
     fence: crate::scheduler::LeaseFence,
@@ -839,8 +830,7 @@ impl ResumableTaskSession {
         Ok(())
     }
 
-    /// Commits one deterministic task transition and its outbox. Both fresh
-    /// steps and exact retries require the current uncancelled lease.
+    /// Commits one deterministic task transition and its outbox.
     pub async fn step(
         &mut self,
         operation_id: OperationId,
@@ -859,8 +849,6 @@ impl ResumableTaskSession {
         input: Value,
         custody: acyclic_fs::NativeAllocation,
     ) -> Result<(MachineTransition, acyclic_fs::NativeAllocation)> {
-        // Field order keeps the actual response alive only while its guard is
-        // retained, including a capability rejection before invoking the host.
         let mut input = (input, custody);
         self.require_native_session(input.1.work())?;
         let io = crate::filesystem::PreparationIo::from_native_work(input.1.work())?;
@@ -1033,9 +1021,6 @@ pub(crate) fn scope_metadata_boundary(
 }
 
 /// Builds the two identities that durable hosts retain for one resumable task.
-/// This is the shared construction path for native admission and the WASM
-/// adapter; JavaScript must not reproduce the digest envelope or machine
-/// identity rules itself.
 pub fn task_admission_identities(
     name: &str,
     version: &str,
@@ -1106,7 +1091,6 @@ fn validate_task_schemas_with_io(
     validate_task_schemas_with_work(input, output, resumable, &mut work)
 }
 
-
 fn admission_contract_error(
     work: &Option<&mut dyn crate::store::history::HistoryIo>, reason: &'static str,
 ) -> Error {
@@ -1152,7 +1136,6 @@ fn validate_task_identity_with_io(
 }
 
 /// Runs closed physical field producers against the original preparation ledger.
-/// The transferred allowance remains owned by the caller's PreparationIo.
 fn task_copy_with_io<T>(
     io: Option<&crate::executor::PreparationIo>,
     copy: impl FnOnce(&mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<T>,
@@ -1291,8 +1274,6 @@ fn task_definition_arc<I: 'static, O: 'static>(entry: &TaskEntry) -> Option<Arc<
     { entry.definition.downcast_ref::<Arc<TaskDefinition<I, O>>>().cloned() }
 }
 
-// An erased view of the same registered Arc, not another definition or registry.
-// Workers need not know a task's Rust input/output types to reopen its workflow.
 trait RegisteredTaskDefinition: acyclic_stream::ProviderPlatform {
     fn open_workflow(
         self: Arc<Self>,
@@ -1453,8 +1434,6 @@ impl TaskRegistry {
             io.retain_owned((std::mem::size_of::<TaskEntry>()
                 + std::mem::size_of::<(String, String)>()) as u64)?;
         }
-        // All native duplicate metadata is admitted and copied before Arc
-        // publication. None retains its original field/callback evaluation.
         let copied = if io.is_some() {
             Some((
                 task_copy_with_io(io, |quota| task_copy_component(&definition.identity, quota))?,
@@ -1496,8 +1475,7 @@ impl TaskRegistry {
         }))
     }
 
-    /// Resolves one Rust input/output pair. An unqualified name is accepted
-    /// only when exactly one version is bound; `name@version` is always exact.
+    /// Resolves one Rust input/output pair.
     pub fn get<I: 'static, O: 'static>(&self, name: &str) -> Result<Arc<TaskDefinition<I, O>>> {
         let stored = if let Some((logical, version)) = name.rsplit_once('@') {
             self.0
@@ -1578,7 +1556,6 @@ impl TaskRegistry {
     }
 
     /// Copies actual registry metadata under the original work before growth.
-    /// Published definition Arcs retain their own source guards independently.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn clone_with_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
@@ -1781,8 +1758,7 @@ pub struct ExecutionPlacement {
     pub build: ArtifactRef,
     /// Ready environment when the route is tied to a specific sandbox.
     pub environment: Option<SandboxRef>,
-    /// Nonzero provider attestation over readiness, resources, mounts, and
-    /// scoped credential bindings; never a credential or endpoint itself.
+    /// Nonzero provider attestation over readiness, resources, mounts, and scoped credential bindings; never a credential or endpoint itself.
     pub readiness_revision: [u8; 32],
 }
 
@@ -1802,8 +1778,7 @@ impl ExecutionPlacement {
     }
 }
 
-/// Exact owner-retained task admission. It is stored as an immutable payload;
-/// durable events contain only its content reference.
+/// Exact owner-retained task admission.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskAdmissionRecord {
@@ -1822,7 +1797,6 @@ pub struct TaskAdmissionRecord {
     /// Owning parent, if any.
     pub parent: Option<TaskId>,
     /// Exact created-resource evidence, authenticated by the bound provider.
-    /// References alone never widen parent or root authority.
     pub resource_proofs: Vec<crate::resource_preparation::ResourceCreationProofRef>,
     /// Effective grants at admission.
     pub grants: Capabilities,
@@ -1866,15 +1840,13 @@ pub struct TaskChildrenPage {
 }
 
 /// Canonical ordinary task identity for a caller-retained admission operation.
-/// This is not an agent-ID conversion and grants no execution authority.
 #[must_use]
 pub fn task_id_for_admission(operation: OperationId) -> TaskId {
     TaskId::from_bytes(operation.into_bytes())
 }
 
 impl TaskAdmissionRecord {
-    /// Canonical task identity of this ordinary admission. Agent, source and
-    /// tool/effect identities must not be substituted for this operation.
+    /// Canonical task identity of this ordinary admission.
     #[must_use]
     pub fn task_id(&self) -> TaskId {
         task_id_for_admission(self.operation_id)
@@ -1933,8 +1905,6 @@ impl TaskAdmissionRecord {
     }
 
     /// Copies the original admission fields on the caller's allocation context.
-    /// Resident JSON (including opaque signed claims) is copied physically,
-    /// without serialization, deserialization or issuance of another grant.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn clone_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
@@ -2036,9 +2006,7 @@ impl TaskAdmissionRecord {
         Ok((copied, custody))
     }
 
-    /// Constructs and validates an exact admission envelope from the fields
-    /// supplied by an SDK boundary. Identity derivation and all invariants are
-    /// deliberately owned here so native and WASM callers share one path.
+    /// Constructs and validates an exact admission envelope from the fields supplied by an SDK boundary.
     #[allow(
         clippy::too_many_arguments,
         reason = "flat SDK-boundary constructor taking each envelope field"
@@ -2089,7 +2057,6 @@ impl TaskAdmissionRecord {
     }
 
     /// Binds exact provider evidence into this immutable child admission.
-    /// The state owner must authenticate every proof before deriving authority.
     pub fn with_resource_proofs(
         mut self,
         proofs: Vec<crate::resource_preparation::ResourceCreationProofRef>,
@@ -2100,13 +2067,11 @@ impl TaskAdmissionRecord {
     }
 
     /// Validates the provider-neutral request independently of registration.
-    /// The owner additionally checks the exact registered task and authority.
     pub fn validate(&self) -> Result<()> {
         self.validate_with_work(&mut None)
     }
 
     /// Checks this borrowed admission on its caller's original native ledger.
-    /// The task owner still verifies registration, grants and creation proofs.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn validate_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
@@ -2311,9 +2276,6 @@ impl TaskAdmissionRecord {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
             let mut quota = crate::wire_codec::CodecQuota::new(work, std::mem::size_of::<Self>() as u64)?;
-            // Inspect the actual closed admission schema before consuming its
-            // paid tree. The three Value fields move intact; only the explicit
-            // typed/key/proof containers below require destination growth.
             crate::contract::json_owned_value_shape_bounded(
                 &body, crate::contract::JsonBounds {
                     maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
@@ -2365,8 +2327,6 @@ impl TaskAdmissionRecord {
                 io.retain_owned(slots)?;
             }
             quota.adopt(slots)?;
-            // Strings move into the canonical set. Its private allocator nodes
-            // are excluded; no allocator operation or string copy is invented.
             let grants = Capabilities::new(grant_values.into_iter().map(|value| {
                 let Value::String(text) = value else { unreachable!("checked capability shape") };
                 text
@@ -2457,8 +2417,6 @@ impl TaskAdmissionRecord {
         Ok(owned)
     }
 
-    // Only fixed scalars/identities are accepted here. Allocation-bearing DTOs
-    // use their explicit source constructors and observed vector growth below.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn decode_owned_fixed<T: serde::de::DeserializeOwned>(
         value: Value, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -2481,9 +2439,6 @@ impl TaskAdmissionRecord {
             }, 0, crate::wire::ErrorCode::Invalid, crate::contract::JsonValueSchema::None,
             &mut |charge| {
                 if let crate::contract::JsonCodecCharge::Admission { value_shape, .. } = charge {
-                    // The closed fixed visitors move their resident Strings and
-                    // require no destination collections. Their real serde
-                    // diagnostic is the only new owned allocation allowance.
                     let diagnostic = crate::contract::json_typed_diagnostic_owned_bytes(
                         value_shape, LABELS.len() as u64, Some(crate::wire::ErrorCode::Invalid),
                     )?;
@@ -2589,11 +2544,8 @@ impl TaskAdmissionRecord {
 }
 
 /// Provider boundary for stable durable admission and outcome observation.
-/// The host stages input before committing ref-only operation state and returns
-/// `Indeterminate` when an acknowledgement is lost; callers reconcile by ID.
 pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
-    /// Requires the current uncancelled running lease before a fresh task step
-    /// or dispatch. Settlement ownership alone does not authorize new work.
+    /// Requires the current uncancelled running lease before a fresh task step or dispatch.
     fn verify_dispatch_owner<'a>(
         &'a self,
         _task_id: TaskId,
@@ -2607,7 +2559,6 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
     }
 
     /// Checks the same original dispatch lease on the caller's native ledger.
-    /// Unsupported custom hosts reject before creating a future or doing IO.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn verify_dispatch_owner_with_native_work<'a>(
         &'a self, _task: TaskId, _fence: &'a crate::scheduler::LeaseFence,
@@ -2617,8 +2568,7 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
             reason:"durable host has no original-ledger dispatch verifier"})
     }
 
-    /// Checks that this lease still owns execution or reconciliation. A retained
-    /// cancelled lease may reconcile an existing attempt, but cannot dispatch.
+    /// Checks that this lease still owns execution or reconciliation.
     fn verify_execution_owner<'a>(
         &'a self,
         _task_id: TaskId,
@@ -2655,8 +2605,6 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
     }
 
     /// Charges one exact durable model attempt under the current task owner.
-    /// The host derives ceilings from its retained admission; callers cannot
-    /// choose or reset usage. Uncertain claims remain charged.
     fn claim_model_dispatch<'a>(
         &'a self,
         _task_id: TaskId,
@@ -2713,8 +2661,7 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
             reason: "durable host has no original native execution binding source" })
     }
 
-    /// Authenticates every admission binding for an independently supplied
-    /// spawner. Providers may map task IDs to operation IDs arbitrarily.
+    /// Authenticates every admission binding for an independently supplied spawner.
     fn observe_admission<'a>(
         &'a self,
         _task_id: TaskId,
@@ -2754,8 +2701,7 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
         })
     }
 
-    /// Authenticates a resumed task against its stable admission identity and
-    /// the caller's pinned authority before a context is reconstructed.
+    /// Authenticates a resumed task against its stable admission identity and the caller's pinned authority before a context is reconstructed.
     fn resume_scope<'a>(
         &'a self,
         _task_id: TaskId,
@@ -2804,8 +2750,7 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
             reason: "durable host has no original-ledger owned admission producer",
         })
     }
-    /// Resolves an uncertain admission by its original operation alone. `None`
-    /// means the owner has authoritatively observed that it was not committed.
+    /// Resolves an uncertain admission by its original operation alone.
     fn reconcile_admission<'a>(
         &'a self,
         _operation_id: OperationId,
@@ -2828,8 +2773,7 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
             reason: "durable host has no original-ledger admission reconciliation producer",
         })
     }
-    /// Publishes one immutable batch request before declaring any indexed
-    /// child. A repeated ID with another request must conflict.
+    /// Publishes one immutable batch request before declaring any indexed child.
     fn admit_batch<'a>(
         &'a self,
         _request: DurableBatchRequest,
@@ -2840,8 +2784,7 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
             ))
         })
     }
-    /// Observes the committed batch and its indexed admissions without
-    /// submitting any absent member or retrying an uncertain effect.
+    /// Observes the committed batch and its indexed admissions without submitting any absent member or retrying an uncertain effect.
     fn reconcile_batch<'a>(
         &'a self,
         _request: DurableBatchRequest,
@@ -2852,8 +2795,7 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
             ))
         })
     }
-    /// Loads the owner's original immutable batch request by identity. This
-    /// permits reconciliation after the caller has lost its input vector.
+    /// Loads the owner's original immutable batch request by identity.
     fn load_batch<'a>(
         &'a self,
         _batch_id: BatchId,
@@ -2864,8 +2806,7 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
             ))
         })
     }
-    /// Publishes one durable group cancellation declaration and reconciles
-    /// requests for every accepted member. It never asserts terminal outcomes.
+    /// Publishes one durable group cancellation declaration and reconciles requests for every accepted member.
     fn cancel_batch<'a>(
         &'a self,
         _batch_id: BatchId,
@@ -2880,8 +2821,7 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
     fn supports_batch_cancellation(&self) -> bool {
         false
     }
-    /// Observes a previously admitted task without re-executing it. `None`
-    /// means ordinary pending work, never an unknown external outcome.
+    /// Observes a previously admitted task without re-executing it.
     fn outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>>;
 
     /// Observes a terminal value while retaining its original native allocation.
@@ -2896,8 +2836,7 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
             reason: "durable host has no original-ledger outcome observer",
         })
     }
-    /// Waits for a terminal observation. Hosts with completion notification
-    /// can override this bounded-poll fallback without changing task handles.
+    /// Waits for a terminal observation.
     fn wait_outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Outcome<Value>>> {
         Box::pin(async move {
             let mut delay_ms = 50_u64;
@@ -2990,8 +2929,7 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
         })
     }
 
-    /// Reconciles or executes one exact, policy-checked tool operation. The
-    /// host records intent before dispatch and returns uncertainty explicitly.
+    /// Reconciles or executes one exact, policy-checked tool operation.
     fn execute_tool<'a>(
         &'a self,
         _task_id: TaskId,
@@ -3009,8 +2947,7 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
     }
 }
 
-/// Owner-bound durable task state, independently replaceable from admission
-/// and execution. Returned observations are authoritative for typed handles.
+/// Owner-bound durable task state, independently replaceable from admission and execution.
 pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
     /// Exact policy revision enforced when state-bound effects are reconciled.
     fn policy_identity(&self) -> Option<ComponentIdentity>;
@@ -3204,7 +3141,6 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
         })
     }
     /// Journals and reconciles an exact tool operation under the owning task.
-    /// The state owner may dispatch through any independently bound executor.
     fn execute_tool<'a>(
         &'a self,
         _task_id: TaskId,
@@ -3397,9 +3333,7 @@ impl TaskStateProvider for HostTaskState {
     }
 }
 
-/// Independently replaceable durable admission boundary. A spawner commits
-/// identities and requests; the bound state host remains the authority for
-/// typed observation, resumed scope, and cancellation.
+/// Independently replaceable durable admission boundary.
 pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
     /// Exact policy revision enforced during child admission.
     fn policy_identity(&self) -> Option<ComponentIdentity>;
@@ -3422,8 +3356,6 @@ pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
             reason: "task spawner has no original native execution binding source" })
     }
     /// Publishes or reconciles one complete caller-identified admission.
-    /// The spawner receives the same immutable record the state owner must
-    /// later attest; individual arguments cannot silently fall out of sync.
     fn admit<'a>(
         &'a self,
         request: TaskAdmissionRecord,
@@ -3526,26 +3458,7 @@ pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
     }
 }
 
-struct HostTaskSpawner(
-    Arc<dyn DurableTaskHost>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    Option<acyclic_fs::NativeAllocation>,
-);
-
-impl HostTaskSpawner {
-    fn new_observed(host: Arc<dyn DurableTaskHost>, io: StartupIo<'_>) -> Result<Self> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let custody = if let Some(io) = io {
-            io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-            io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
-            Some(io.take_native_custody(std::mem::size_of::<Self>() as u64)?)
-        } else { None };
-        let _ = io;
-        Ok(Self(host, #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] custody))
-    }
-}
-
-impl TaskSpawner for HostTaskSpawner {
+impl TaskSpawner for HostTaskState {
     fn policy_identity(&self) -> Option<ComponentIdentity> {
         self.0.policy_identity()
     }
@@ -3629,9 +3542,7 @@ impl TaskSpawner for HostTaskSpawner {
     }
 }
 
-/// One replaceable execution route. It packages a qualified placement with
-/// the exact admission and observation authorities that can run it; selecting
-/// it never falls back to a process-local task or another host.
+/// One replaceable execution route.
 pub trait ExecutionProvider: acyclic_stream::ProviderPlatform {
     /// Immutable provider implementation pinned in every admitted placement.
     fn identity(&self) -> ComponentIdentity;
@@ -3646,15 +3557,12 @@ pub trait ExecutionProvider: acyclic_stream::ProviderPlatform {
     fn spawner(&self) -> Arc<dyn TaskSpawner>;
     /// Owner-bound observation and cancellation for the same route.
     fn state(&self) -> Arc<dyn TaskStateProvider>;
-    /// Read-only qualification of one exact admitted task and its accessible
-    /// input. Upload, mount, and credential preparation belongs to admission
-    /// under its stable operation ID, with reconciliation on uncertainty.
+    /// Read-only qualification of one exact admitted task and its accessible input.
     fn qualify<'a>(
         &'a self,
         request: &'a TaskAdmissionRecord,
     ) -> BoxFuture<'a, Result<ExecutionPlacement>>;
-    /// Batch qualification must cover every input before the manifest is
-    /// published. A provider cannot silently substitute single-task routing.
+    /// Batch qualification must cover every input before the manifest is published.
     fn qualify_batch<'a>(
         &'a self,
         _request: &'a DurableBatchRequest,
@@ -3668,7 +3576,6 @@ pub trait ExecutionProvider: acyclic_stream::ProviderPlatform {
 }
 
 /// Replaceable owner-bound observer for an already planned provider effect.
-/// Reconciliation never creates a new dispatch attempt.
 pub trait DurableEffectObserver: acyclic_stream::ProviderPlatform {
     /// Returns the latest attested status after querying the pinned attempt.
     fn reconcile<'a>(
@@ -3677,11 +3584,9 @@ pub trait DurableEffectObserver: acyclic_stream::ProviderPlatform {
     ) -> BoxFuture<'a, Result<crate::core::EffectStatus>>;
 }
 
-/// Replaceable local interaction router. Durable interactions instead use the
-/// host's recorded request/answer boundary.
+/// Replaceable local interaction router.
 pub trait InteractionRouter: acyclic_stream::ProviderPlatform {
-    /// Returns a typed outcome while retaining request and answer bytes in its
-    /// own provider; callers must not journal either body.
+    /// Returns a typed outcome while retaining request and answer bytes in its own provider; callers must not journal either body.
     fn route<'a>(
         &'a self,
         operation_id: OperationId,
@@ -3708,9 +3613,7 @@ pub trait InteractionRouter: acyclic_stream::ProviderPlatform {
     }
 }
 
-/// Owner-mediated interaction ledger. Routing cannot grant resolution authority;
-/// every decision carries a signed responder scope and exact CAS version.
-/// The optional value is absent when the owner has no admitted ticket.
+/// Owner-mediated interaction ledger.
 pub type InteractionInspection = Option<(InteractionTicket, Option<InteractionResolution>)>;
 
 /// Owner-mediated resolver for versioned questions and approvals.
@@ -3827,8 +3730,6 @@ pub struct RuntimeScope {
     extension_schemas: Option<SchemaRegistry>,
     resource_proofs: Vec<crate::resource_preparation::ResourceCreationProofRef>,
     created_access: Option<Arc<crate::resource_preparation::CreatedResourceAccess>>,
-    // Ordinary Clone copies data but does not claim native metadata provenance.
-    // This original input guard is last, after every owned variable-capacity field.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     _native_grants_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -3871,12 +3772,6 @@ impl RuntimeScope {
     }
 
     /// Moves already-paid grants into a checked native root, without a copy.
-    ///
-    /// The scope retains the supplied original grants custody intrinsically.
-    /// The returned guard covers this scope's known logical Self slot; no heap
-    /// allocation is performed for that stack metadata. Distinct original
-    /// grants and construction ledgers remain distinct, without policy rejection.
-    /// Drop the scope before its returned guard.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn new_with_native_work(
         grants: (Capabilities, acyclic_fs::NativeAllocation),
@@ -4007,7 +3902,6 @@ impl RuntimeScope {
     }
 
     /// Copies existing grants and concrete metadata on the original ledger.
-    /// No authority, created-resource seal, or extension selection is minted.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn clone_with_native_work(
         &self,
@@ -4018,7 +3912,6 @@ impl RuntimeScope {
     }
 
     /// Attenuates paid grants using the ordinary checks and native metadata copy.
-    /// Drop the returned scope before its metadata guard.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn narrow_with_native_work(
         &self,
@@ -4031,8 +3924,6 @@ impl RuntimeScope {
     }
 
     /// Copies only the real proof Vec backing and its concrete reference fields.
-    /// The enclosing record/scope owns the Vec header and retains the produced
-    /// observer custody until after dropping the returned payload.
     pub(crate) fn clone_resource_proofs_with_work(
         proofs: &[crate::resource_preparation::ResourceCreationProofRef],
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -4076,8 +3967,6 @@ impl RuntimeScope {
         use crate::store::history::HistoryIo as _;
         let mut io = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        // The Scope header includes its inline Vec/Option/Arc fields and is
-        // logical stack metadata, not an allocator attempt. Claim it only once.
         io.retain_owned(std::mem::size_of::<Self>() as u64)?;
         let extension_schemas = match &self.extension_schemas {
             Some(schemas) => Some(schemas.clone_with_work(&mut Some(&mut io))?),
@@ -4182,7 +4071,6 @@ impl RuntimeScope {
     }
 
     /// Pins one committed agent selection for this scope and all descendants.
-    /// Calling this on an already pinned scope cannot retarget it.
     pub fn with_extensions_from(self, agent: &Reducer) -> Result<Self> {
         self.with_original_extensions(agent.original_extension_binding()?)
     }
@@ -4288,7 +4176,6 @@ impl RuntimeScope {
     }
 
     /// Exact durable proof references retained for descendant scope attenuation.
-    /// References alone do not seal a scope or install content handles.
     #[must_use]
     pub fn resource_proofs(&self) -> &[crate::resource_preparation::ResourceCreationProofRef] {
         &self.resource_proofs
@@ -4349,7 +4236,6 @@ impl RuntimeScope {
                     "runtime scope cannot widen ancestor authority"));
             }
         }
-        // narrow() seals the original extension selection before replay.
         if self.extensions != admission.extensions {
             return Err(scope_metadata_boundary(work, crate::wire::ErrorCode::Conflict,
                 "replay cannot retarget original extension admission"));
@@ -4365,8 +4251,6 @@ impl RuntimeScope {
             .map(|extensions| extensions.copy_with_quota(&mut quota)).transpose()?;
         let extension_schemas = self.extension_schemas.as_ref()
             .map(|schemas| schemas.clone_with_work(quota.work())).transpose()?;
-        // The consumed seal already owns its logical Self and deep payload.
-        // Moving that paid value into an Arc is not another payload copy.
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if access.is_some()
             && let Some(native) = quota.work().as_deref().and_then(|io| io.original_native_work())
@@ -4443,8 +4327,7 @@ impl RuntimeScope {
         lease.fence()
     }
 
-    /// Current actor comes from the provider-authenticated scratch allocation,
-    /// including read-only attenuation, never from a declarer or a task UUID.
+    /// Current actor comes from the provider-authenticated scratch allocation, including read-only attenuation, never from a declarer or a task UUID.
     pub(crate) fn current_created_agent(&self) -> Result<Option<crate::AgentId>> {
         self.current_created_private_volume()?.map(|volume| match volume.owner() {
             crate::conversation::VolumeOwner::Agent(agent) => Ok(*agent),
@@ -4527,8 +4410,6 @@ impl RuntimeScope {
     ) -> Result<Self> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         if let Some(access) = &mut self.created_access {
-            // An inherited seal keeps its original lease. Fresh authentication
-            // supplies the unique seal; attaching a lease never clones payloads.
             if access.publication_lease.is_some() { return Ok(self); }
             let access = Arc::get_mut(access).ok_or_else(|| admission_contract_error(
                 work, "created publication seal is already shared",
@@ -4560,8 +4441,6 @@ impl RuntimeScope {
     }
 
     /// Finds only an exact provider-authenticated, owner-consumed reference.
-    /// The bound reader still verifies original authority/fence at use; lookup
-    /// is not a prefix grant and is independent of the Filesystem adapter.
     pub(crate) fn created_reference(
         &self,
         file: &FileRef,
@@ -4630,8 +4509,6 @@ pub async fn join_runtime<O: DeserializeOwned + Send + 'static>(
 }
 
 /// Streams typed task outcomes in completion order with their admitted IDs.
-/// Dropping the stream does not cancel tasks; keep a group handle when the
-/// caller needs explicit descendant cancellation.
 pub fn completion_stream_runtime<O: DeserializeOwned + Send + 'static>(
     tasks: Vec<RuntimeTask<O>>,
 ) -> BoxStream<'static, (String, Result<Outcome<O>>)> {
@@ -4932,10 +4809,6 @@ pub struct TaskDependencyEnvironment {
 }
 
 /// Validates an immutable task dependency graph and its provider requirements.
-///
-/// Names and versions are always resolved exactly.  This is the contract used
-/// by both native Rust composition and the TypeScript builder through WASM;
-/// callers must not reproduce this graph walk in another language.
 pub fn validate_task_requirements(
     tasks: &BTreeMap<(String, String), BTreeSet<String>>,
     tools: &BTreeSet<(String, String)>,
@@ -5127,7 +5000,6 @@ pub(crate) fn check_tool_approval(outcome: InteractionOutcome) -> Result<()> {
 }
 
 /// Binds typed and stock tool approvals to the same runtime-owned action.
-/// Provider call names are part of the exact invocation, not operation IDs.
 pub(crate) fn tool_approval_request(
     task: TaskId,
     policy: &ComponentIdentity,
@@ -5176,7 +5048,6 @@ pub(crate) fn tool_approval_request_with_native_work(
     }), custody))
 }
 
-// Owned policy data is physically dropped before its original allocation guard.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 struct NativePolicyPayload<T> {
     value: T,
@@ -5205,8 +5076,6 @@ fn validate_native_policy_identity(
         code: crate::wire::ErrorCode::Conflict,
         reason: "policy identity does not retain its original ledger",
     })?;
-    // Bound identities are compared with the structurally validated original:
-    // any implementation change must remain Conflict, not a fresh Invalid.
     validate_policy_identity_custody_with_native_work(&paid.value, custody, work)
 }
 
@@ -5334,8 +5203,7 @@ fn tool_approval_binding_with_work(
     Ok((OperationId::from_bytes(id_bytes), digest))
 }
 
-/// Provider-owned, scope-bound file handles. The reader verifies every exact
-/// ref; the optional writer can only publish into its original owner's volume.
+/// Provider-owned, scope-bound file handles.
 #[derive(Clone)]
 pub struct ContentBindings {
     /// Authenticated, exact-version read and residency boundary.
@@ -5344,12 +5212,10 @@ pub struct ContentBindings {
     pub writer: Option<Arc<dyn ContentPublisher>>,
 }
 
-/// Artifact access uses the same immutable, digest-verified file contract as
-/// conversation content, but is selected independently of workspace files.
+/// Artifact access uses the same immutable, digest-verified file contract as conversation content, but is selected independently of workspace files.
 pub type ArtifactBindings = ContentBindings;
 
-/// Immutable admission bindings assembled before tasks can run. Each optional
-/// provider boundary remains independently replaceable.
+/// Immutable admission bindings assembled before tasks can run.
 pub struct Bindings {
     /// Version-pinned typed task definitions.
     pub tasks: TaskRegistry,
@@ -5367,9 +5233,7 @@ pub struct Bindings {
     pub state: Option<Arc<dyn TaskStateProvider>>,
     /// Independently replaceable durable admission and batch boundary.
     pub spawner: Option<Arc<dyn TaskSpawner>>,
-    /// Qualified route packaging a compatible task build, spawner, and state
-    /// owner. Explicit `state`/`spawner` bindings may replace either member
-    /// only when they advertise this same execution identity.
+    /// Qualified route packaging a compatible task build, spawner, and state owner.
     pub execution: Option<Arc<dyn ExecutionProvider>>,
     /// Optional local interaction router.
     pub interactions: Option<Arc<dyn InteractionRouter>>,
@@ -5389,7 +5253,6 @@ pub struct Bindings {
 
 impl Bindings {
     /// Starts a local composition with no implicit authority or providers.
-    /// Callers add only the boundaries their runtime actually uses.
     #[must_use]
     pub fn local() -> Self {
         Self {
@@ -5413,8 +5276,6 @@ impl Bindings {
     }
 
     /// Selects a qualified execution provider for new durable admissions.
-    /// Its state and spawner are used unless explicitly replaced with peers
-    /// advertising the same immutable execution identity.
     #[must_use]
     pub fn execution(mut self, value: Arc<dyn ExecutionProvider>) -> Self {
         self.execution = Some(value);
@@ -5533,10 +5394,7 @@ pub(crate) fn validate_child_page_request(
     Ok(())
 }
 
-/// Checks one `(revision, next_after)` page of `(slot, id)` children against
-/// its `(expected_revision, after_slot, maximum)` request: unique non-nil
-/// identities in strictly increasing valid slot order, continuing from the
-/// last returned slot.
+/// Checks one `(revision, next_after)` page of `(slot, id)` children against its `(expected_revision, after_slot, maximum)` request: unique non-nil identities in strictly increasing valid slot order, continuing from the last returned slot.
 pub(crate) fn validate_child_page<'a>(
     label: &str,
     (revision, next_after): (u64, Option<&str>),
@@ -5867,8 +5725,7 @@ impl AgentHarness {
         }
     }
 
-    /// Replaces only durable admission. Accepted work must still be observable
-    /// through this runtime's separately bound owner state host.
+    /// Replaces only durable admission.
     fn bind_spawner(self: &Arc<Self>, spawner: Arc<dyn TaskSpawner>) -> Result<Arc<Self>> {
         if self.state.is_none() {
             return Err(Error::Invalid(
@@ -5909,8 +5766,7 @@ impl AgentHarness {
         Ok(Arc::new(bound))
     }
 
-    /// Returns the parent-authorized workspace boundary only while this
-    /// immutable runtime scope retains project fork or merge authority.
+    /// Returns the parent-authorized workspace boundary only while this immutable runtime scope retains project fork or merge authority.
     pub fn workspaces(&self) -> Result<Arc<dyn crate::merge::ProjectWorkspaceProvider>> {
         if !self.scope.grants().contains(capability::FORK_PUBLISH)
             && !self.scope.grants().contains(capability::PROJECT_MERGE)
@@ -5925,8 +5781,7 @@ impl AgentHarness {
             .ok_or_else(|| Error::Unsupported("project workspace provider is not bound".into()))
     }
 
-    /// Selects a newly captured parent revision for future work. Existing task
-    /// contexts keep their previous immutable binding and cannot be retargeted.
+    /// Selects a newly captured parent revision for future work.
     pub fn at_parent_snapshot(
         self: &Arc<Self>,
         preparer: Arc<dyn crate::fork::ForkPreparer>,
@@ -5956,9 +5811,7 @@ impl AgentHarness {
         self.bind_fork_preparer(preparer)
     }
 
-    /// Derives an immutable application view with no more authority or
-    /// resources than its parent. Registrations, providers, and the local
-    /// ownership group stay pinned; only grants and bounds are attenuated.
+    /// Derives an immutable application view with no more authority or resources than its parent.
     pub fn scoped(self: &Arc<Self>, grants: Capabilities, limits: Limits) -> Result<Arc<Self>> {
         let mut child = self.as_ref().clone();
         child.scope = self.scope.narrow(grants, limits)?;
@@ -5968,8 +5821,6 @@ impl AgentHarness {
     }
 
     /// Narrows the effective task execution bounds for newly admitted work.
-    /// The scoped view has its own bounded local group; existing work keeps
-    /// the authority and group pinned at its admission.
     pub fn scoped_run_limits(self: &Arc<Self>, limits: TaskRunLimits) -> Result<Arc<Self>> {
         let mut child = self.as_ref().clone();
         child.scope = self.scope.clone().with_run_limits(limits)?;
@@ -5979,8 +5830,7 @@ impl AgentHarness {
         Ok(Arc::new(child))
     }
 
-    /// Selects a different qualified execution route for newly admitted work
-    /// under attenuated authority. Already admitted tasks retain their route.
+    /// Selects a different qualified execution route for newly admitted work under attenuated authority.
     pub fn scoped_execution(
         self: &Arc<Self>,
         grants: Capabilities,
@@ -6097,8 +5947,7 @@ impl AgentHarness {
         Self::with_interactions(tasks, tools, scope, concurrency, host, None)
     }
 
-    /// Composes the same typed runtime with independently replaceable local
-    /// interaction routing.
+    /// Composes the same typed runtime with independently replaceable local interaction routing.
     pub fn with_interactions(
         tasks: TaskRegistry,
         tools: ToolRegistry,
@@ -6110,8 +5959,7 @@ impl AgentHarness {
         Self::with_content(tasks, tools, scope, concurrency, host, interactions, None)
     }
 
-    /// Binds exact owner-mediated content access without coupling Harness core
-    /// to Filesystem, Objects, or another concrete storage implementation.
+    /// Binds exact owner-mediated content access without coupling Harness core to Filesystem, Objects, or another concrete storage implementation.
     pub fn with_content(
         tasks: TaskRegistry,
         tools: ToolRegistry,
@@ -6170,8 +6018,7 @@ impl AgentHarness {
         )
     }
 
-    /// Builds the same original runtime composition from paid configuration
-    /// copies. Provider handles are shared; this never issues a task scope.
+    /// Builds the same original runtime composition from paid configuration copies.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[allow(clippy::too_many_arguments, reason = "the original runtime provider configuration plus native work")]
     pub fn with_policy_with_native_work(
@@ -6347,7 +6194,7 @@ impl AgentHarness {
         let policy_identity = policy.as_ref().map(|policy| policy.identity());
         let extension_runtime = scope.extension_runtime();
         let spawner = host.as_ref().map(|host| {
-            HostTaskSpawner::new_observed(Arc::clone(host), startup)
+            HostTaskState::new_observed(Arc::clone(host), startup)
                 .map(|source| Arc::new(source) as Arc<dyn TaskSpawner>)
         }).transpose()?;
         let state = host.as_ref().map(|host| {
@@ -6470,8 +6317,7 @@ impl AgentHarness {
         Ok(report)
     }
 
-    /// Binds a model only for scoped task/tool model requests. The default
-    /// turn executor has its own pinned model binding.
+    /// Binds a model only for scoped task/tool model requests.
     pub fn bind_model(
         self: &Arc<Self>,
         model: Model,
@@ -6495,8 +6341,7 @@ impl AgentHarness {
         Arc::new(bound)
     }
 
-    /// Selects a different model for future local child work without changing
-    /// the parent's pinned task, tool, policy, or authority bindings.
+    /// Selects a different model for future local child work without changing the parent's pinned task, tool, policy, or authority bindings.
     pub fn scoped_model(
         self: &Arc<Self>,
         grants: Capabilities,
@@ -6522,8 +6367,7 @@ impl AgentHarness {
         self.tasks.get(name)
     }
 
-    /// Resolves a registered task by separate exact name and version, without
-    /// encoding either component into a textual selector.
+    /// Resolves a registered task by separate exact name and version, without encoding either component into a textual selector.
     pub fn task_version<I: 'static, O: 'static>(
         &self,
         name: &str,
@@ -6540,8 +6384,7 @@ impl AgentHarness {
             .ok_or_else(|| Error::NotFound(format!("tool {name}")))
     }
 
-    /// Verifies an already staged input or output through a bound content or
-    /// artifact owner and the runtime's effective read grant.
+    /// Verifies an already staged input or output through a bound content or artifact owner and the runtime's effective read grant.
     pub async fn verify_readable_file(&self, file: &FileRef) -> Result<()> {
         file.validate()?;
         self.scope.limits.validate_file(file)?;
@@ -6732,8 +6575,7 @@ impl AgentHarness {
             .await
     }
 
-    /// Looks up a lost durable admission acknowledgement without redispatching
-    /// its input or trusting a caller-selected task definition.
+    /// Looks up a lost durable admission acknowledgement without redispatching its input or trusting a caller-selected task definition.
     pub async fn reconcile_admission(
         &self,
         operation_id: OperationId,
@@ -6780,8 +6622,7 @@ impl AgentHarness {
         Ok(Some((task_id, identity)))
     }
 
-    /// Reattaches only to an admission pinned to this registered resumable
-    /// definition. The caller cannot choose an output type by assertion.
+    /// Reattaches only to an admission pinned to this registered resumable definition.
     pub async fn attach<I: 'static, O: DeserializeOwned + Send + 'static>(
         &self,
         task_id: TaskId,
@@ -6820,8 +6661,6 @@ impl AgentHarness {
     }
 
     /// Opens an admitted registered task from its retained input and workflow.
-    /// The supplied journal must attest the exact task lease and atomically
-    /// fence its publications through that owner.
     pub async fn open_task<I: 'static, O: 'static>(
         self: &Arc<Self>,
         task_id: TaskId,
@@ -6857,10 +6696,6 @@ impl AgentHarness {
     }
 
     /// Builds a registered descendant request using the original guarded input.
-    ///
-    /// This does not admit the child or acquire its parent's lease: submit the
-    /// returned request through the original owned-admission host with the
-    /// separately guarded original parent fence.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn registered_child_admission_with_native_work(
         &self, operation: OperationId, name: &str, version: &str,
@@ -6885,9 +6720,6 @@ impl AgentHarness {
         Ok((record, custody))
     }
     /// Builds a registered root admission from an already guarded native input.
-    ///
-    /// The configured scope and exact registered definition remain authoritative;
-    /// this does not accept a caller-selected scope or create a parent binding.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn registered_root_admission_with_native_work<I, O>(
         &self, operation: OperationId, definition: &Arc<TaskDefinition<I, O>>,
@@ -6931,9 +6763,7 @@ impl AgentHarness {
         Ok((record, custody))
     }
 
-    /// Reopens an admitted task through its exact registered definition without
-    /// requiring the worker to know its Rust input/output types. Uses the same
-    /// definition Arc and validation path as `open_task`.
+    /// Reopens an admitted task through its exact registered definition without requiring the worker to know its Rust input/output types.
     pub async fn open_registered_task(
         self: &Arc<Self>,
         task_id: TaskId,
@@ -7054,8 +6884,7 @@ impl AgentHarness {
         }
     }
 
-    /// Discovers direct durable children from their owner, not from fork or
-    /// conversation history. Continuation must carry the observed revision.
+    /// Discovers direct durable children from their owner, not from fork or conversation history.
     pub async fn children(
         &self,
         parent: TaskId,
@@ -7134,10 +6963,6 @@ impl AgentHarness {
             scope.extensions().cloned(),
             None,
         )?.with_resource_proofs(scope.resource_proofs().to_vec())?;
-        // Reconcile an already committed operation before checking extension
-        // admission state. This path must remain available after a local or
-        // registry-wide disable; only the subsequent new-admission path is
-        // gated by `retain_task_extensions`.
         if let Some(admission) = self
             .reconcile_scoped_admission(operation_id, definition, &expected, &scope, host, spawner)
             .await?
@@ -7300,8 +7125,6 @@ impl AgentHarness {
                         reason: "resumed scope differs from its original metadata ledger" });
                 }
                 self.validate_native_resumed_scope(&admitted.0, operation, work)?;
-                // These immutable configured registries share their existing
-                // backing; the issued scope itself is consumed, never cloned.
                 admitted.0.extension_runtime = self.scope.extension_runtime.clone();
                 admitted.0.extension_schemas = self.scope.extension_schemas.clone();
                 admitted.0.extensions_sealed = true;
@@ -7481,8 +7304,7 @@ fn validate_task_dependencies(
     validate_task_requirements_observed(&task_requirements, &available_tools, &environment, &grants, io)
 }
 
-/// One admitted task's mailbox borrowed from its current owner token. This is
-/// not a registry and cannot accept a caller-selected sender or fence.
+/// One admitted task's mailbox borrowed from its current owner token.
 pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
     fn validate_scope(&self, scope: &RuntimeScope) -> Result<()>;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -7503,7 +7325,6 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
     fn read_received<'a>(
         &'a self, receive_operation: OperationId, item: &'a InboxItem,
     ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>>;
-
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn send_with_native_work<'a>(
@@ -7592,7 +7413,6 @@ struct NativeRootOutputBinding {
 }
 
 /// Capability-scoped context passed to live task code.
-// Cloning ordinary contexts must not duplicate a native producer receipt.
 pub struct TaskContext {
     harness: Arc<AgentHarness>,
     task_id: OperationId,
@@ -7638,9 +7458,7 @@ enum ContentPublication<'a> {
 }
 
 impl TaskContext {
-    /// Selects a trusted host-provided output binding under the unchanged task
-    /// authority. An authenticated created volume must use its exact sealed
-    /// reader/writer handles, not a replacement root publisher.
+    /// Selects a trusted host-provided output binding under the unchanged task authority.
     pub fn with_content_bindings(mut self, binding: ContentBindings) -> Result<Self> {
         let writer = binding.writer.as_ref()
             .ok_or_else(|| Error::Unauthorized("output binding has no writer".into()))?;
@@ -7660,8 +7478,7 @@ impl TaskContext {
         Ok(self)
     }
 
-    /// Selects an existing authenticated created destination without cloning
-    /// the harness, widening grants or acquiring another owner reservation.
+    /// Selects an existing authenticated created destination without cloning the harness, widening grants or acquiring another owner reservation.
     pub fn with_output_volume(self, volume: &VolumeRef) -> Result<Self> {
         let binding = self.scope.created_content(Some(volume))
             .ok_or_else(|| Error::Unauthorized("output volume has no admitted creation binding".into()))?
@@ -7669,8 +7486,7 @@ impl TaskContext {
         self.with_content_bindings(binding)
     }
 
-    /// Returns only the exact creator-authenticated handles already admitted
-    /// to this task. No service-journal or harness-content fallback is permitted.
+    /// Returns only the exact creator-authenticated handles already admitted to this task.
     pub fn created_content_bindings(&self, volume: &VolumeRef) -> Result<ContentBindings> {
         volume.validate()?;
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
@@ -7699,8 +7515,7 @@ impl TaskContext {
         Ok(self)
     }
 
-    /// Returns only the original owner fence already bound to this exact task
-    /// context. It never reacquires or guesses a worker lease.
+    /// Returns only the original owner fence already bound to this exact task context.
     #[cfg(feature = "filesystem")]
     pub fn owned_task_fence(&self) -> Result<crate::scheduler::LeaseFence> {
         let owner = self.owned_mailbox.as_ref()
@@ -7779,8 +7594,7 @@ impl TaskContext {
         Ok(child)
     }
 
-    /// Overrides only this live task's model binding for itself and local
-    /// descendants. Durable work needs a recorded provider transition.
+    /// Overrides only this live task's model binding for itself and local descendants.
     pub fn scoped_model(
         &self,
         grants: Capabilities,
@@ -7798,8 +7612,7 @@ impl TaskContext {
         Ok(child)
     }
 
-    /// Places newly admitted descendants on another qualified provider. A
-    /// resumed task must record the transition as a durable effect first.
+    /// Places newly admitted descendants on another qualified provider.
     pub fn scoped_execution(
         &self,
         grants: Capabilities,
@@ -7821,7 +7634,6 @@ impl TaskContext {
     }
 
     /// Builds a transient model view from explicit sources for live task code.
-    /// A resumable task must record this provider boundary before recovery.
     pub async fn build_context(&self, input: &ContextInput) -> Result<Context> {
         if self.durable_task.is_some() {
             return Err(Error::Unsupported(
@@ -7838,8 +7650,6 @@ impl TaskContext {
         let limits = self.scope.limits();
         let mut files = Vec::new();
         let mut configurations = Vec::new();
-        // Finish structural limits and authority checks for the entire request
-        // before resolving even its first body.
         for message in messages {
             message.content.validate_limits(limits)?;
             for file in message.content.file_refs() {
@@ -7908,7 +7718,6 @@ impl TaskContext {
     }
 
     /// Runs one bounded, provider-neutral model request from live task code.
-    /// Durable tasks must use a resumable recorded effect instead of hidden I/O.
     #[allow(
         clippy::too_many_lines,
         reason = "keep authorization, token admission and bounded streaming in execution order"
@@ -8034,8 +7843,7 @@ impl TaskContext {
         Ok(events)
     }
 
-    /// Adds a locally pinned policy layer. Durable tasks cannot change their
-    /// owner's admitted policy identity after admission.
+    /// Adds a locally pinned policy layer.
     pub fn scoped_policy(&self, policy: Arc<dyn ToolPolicy>) -> Result<Self> {
         if self.durable_task.is_some() {
             return Err(Error::Unsupported(
@@ -8104,15 +7912,12 @@ impl TaskContext {
     }
 
     /// Reads one immutable file through the owner's authenticated provider.
-    /// A ref alone does not grant access; the effective task scope must retain
-    /// a whole-volume, exact-file, or bounded-directory read capability.
     pub async fn read_file(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
         self.read_bound_file(self.content_binding(Some(file.volume())), file)
             .await
     }
 
-    /// Verifies whole-volume READ under this issued context and its original
-    /// owner. It constructs no authority, lease, filesystem path, or grant.
+    /// Verifies whole-volume READ under this issued context and its original owner.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn verify_original_volume_read_with_native_work<P: acyclic_stream::StreamProvider>(
         &self, owner: &crate::durable_host::TaskJournalOwner<P>, volume: &VolumeRef,
@@ -8140,21 +7945,19 @@ impl TaskContext {
     }
 
     /// Reads through the original bound provider on the caller's native ledger.
-    /// Returned bytes retain their actual original allocation custody.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn read_file_with_native_work(
         &self, file: &FileRef, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<acyclic_stream::OwnedBytes> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let result = async {
-            // The issued scope and FileRef are closed, already validated data.
             if file.path().len() > self.scope.limits.path_bytes
                 || file.descriptor().byte_length() > self.scope.limits.file_bytes
             {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                     reason: "file exceeds the issued task content limits" });
             }
-            if !read_granted_measured(&self.scope.grants,file,&io)? {
+            if !read_granted_with_work(&self.scope.grants,file, &mut Some(&mut (&io).history_io()))? {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "task scope cannot read this file" });
             }
@@ -8198,8 +8001,7 @@ impl TaskContext {
         Ok(())
     }
 
-    /// Resolves an immutable artifact without coupling its provider to the
-    /// workspace/content binding. The same owner-mediated grant is required.
+    /// Resolves an immutable artifact without coupling its provider to the workspace/content binding.
     pub async fn read_artifact(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
         self.read_bound_file(
             self.scope.created_content(Some(file.volume())).or(self.harness.artifacts.as_ref()), file,
@@ -8207,9 +8009,7 @@ impl TaskContext {
             .await
     }
 
-    /// Discovers a private owner directory without a prior `FileRef`. An attached
-    /// reader must retain the owner's signed subtree capability; the provider
-    /// authenticates that grant again on every page.
+    /// Discovers a private owner directory without a prior `FileRef`.
     pub async fn list_private_directory(
         &self,
         volume: &VolumeRef,
@@ -8261,8 +8061,7 @@ impl TaskContext {
         Ok(page)
     }
 
-    /// Resolves the current file at a named private path into verified pinned
-    /// bytes; the returned `FileRef` can later be shared independently.
+    /// Resolves the current file at a named private path into verified pinned bytes; the returned `FileRef` can later be shared independently.
     pub async fn read_private_path(
         &self,
         volume: &VolumeRef,
@@ -8342,8 +8141,7 @@ impl TaskContext {
         Ok(bytes)
     }
 
-    /// Stages exact bytes before a task may publish their ref. The provider is
-    /// bound to one original writer and the task scope cannot widen that grant.
+    /// Stages exact bytes before a task may publish their ref.
     pub async fn stage_file(
         &self,
         operation_id: OperationId,
@@ -8365,7 +8163,6 @@ impl TaskContext {
     }
 
     /// Publishes to an explicitly selected authenticated created volume.
-    /// Selecting a volume cannot retarget an inherited owner-bound writer.
     #[allow(
         clippy::too_many_arguments,
         reason = "exact volume, retry identity, body and file metadata stay explicit"
@@ -8390,7 +8187,6 @@ impl TaskContext {
     }
 
     /// Publishes one exact file contract per operation through its original writer.
-    /// A changed path, body or metadata cannot reuse an existing operation receipt.
     pub async fn stage_file_once(
         &self,
         operation_id: OperationId,
@@ -8412,7 +8208,6 @@ impl TaskContext {
     }
 
     /// Observes the original once-publication, never a refreshed source/head.
-    /// The reference itself grants no authority to read its bytes.
     pub async fn observe_staged_file_once(&self, operation_id: OperationId) -> Result<Option<FileRef>> {
         let writer = self.bound_content_writer(self.content_binding(None))?;
         let file = writer.observe_staged_once(operation_id, self.scope.limits.file_bytes).await?;
@@ -8462,7 +8257,7 @@ impl TaskContext {
         let result = async {
             file.validate()?;
             self.scope.limits.validate_file(file)?;
-            if !read_granted_measured(&self.scope.grants, file, &io)? {
+            if !read_granted_with_work(&self.scope.grants, file, &mut Some(&mut (&io).history_io()))? {
                 return Err(Error::Unauthorized("task scope cannot read this file".into()));
             }
             let reader = if let Some(reader) = self.scope.created_reference(file) {
@@ -8545,8 +8340,7 @@ impl TaskContext {
         Ok(writer)
     }
 
-    /// Uses the same once-publication writer and native-work ledger. The
-    /// returned allocation retains the actual FileRef's owned metadata.
+    /// Uses the same once-publication writer and native-work ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn stage_file_once_with_native_work(
         &self, operation_id: OperationId, path: &str, bytes: &[u8],
@@ -8587,7 +8381,6 @@ impl TaskContext {
     }
 
     /// Publishes immutable artifact bytes under a caller-retained operation ID.
-    /// The artifact binding may use a different provider and owner volume.
     pub async fn stage_artifact(
         &self,
         operation_id: OperationId,
@@ -8612,7 +8405,6 @@ impl TaskContext {
     }
 
     /// Replaces a pinned source through the existing owner-bound publisher.
-    /// The operation must retain the same source generation and replacement bytes.
     pub async fn stage_file_at(
         &self,
         operation_id: OperationId,
@@ -8730,7 +8522,6 @@ impl TaskContext {
     }
 
     /// Calls a local tool under this task's scope and validates both schemas.
-    /// Durable calls use the host's recorded effect boundary, not this live path.
     pub async fn call<I, O>(&self, tool: &ToolRef<I, O>, input: I) -> Result<O>
     where
         I: Serialize,
@@ -8782,8 +8573,7 @@ impl TaskContext {
         serde_json::from_value(result.value).map_err(|error| Error::Invalid(error.to_string()))
     }
 
-    /// Executes a durable tool under a stable operation ID. A lost outcome is
-    /// represented as indeterminate, never retried through the live executor.
+    /// Executes a durable tool under a stable operation ID.
     pub async fn call_durable<I, O>(
         &self,
         operation_id: OperationId,
@@ -8856,10 +8646,7 @@ impl TaskContext {
         definition.open(self, fence, journal).await
     }
 
-    /// Opens one registered, version-pinned resumable tool under this task's
-    /// exact call scope. The owner-supplied journal retains the admission and
-    /// subsequent transitions; callers must reconcile the same operation
-    /// after uncertainty rather than creating another invocation.
+    /// Opens one registered, version-pinned resumable tool under this task's exact call scope.
     pub async fn open_resumable_tool<I: Serialize>(
         &self,
         operation_id: OperationId,
@@ -8887,8 +8674,6 @@ impl TaskContext {
     }
 
     /// Applies the bound policy to one exact action before its executor is dispatched.
-    /// The durable host invokes this again at its own authoritative boundary;
-    /// clients cannot bypass it by calling the host directly.
     pub(crate) async fn authorize_tool(
         &self,
         definition: &ToolDefinition,
@@ -8912,8 +8697,7 @@ impl TaskContext {
         self.policy_overrides.iter().map(|(identity, policy)| (identity, policy))
     }
 
-    /// A borrowed scope can restrict the original grant, never replace its
-    /// sealed selections, created-access owner, or runtime provenance.
+    /// A borrowed scope can restrict the original grant, never replace its sealed selections, created-access owner, or runtime provenance.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn require_native_scope_restriction(&self, scope: &RuntimeScope) -> Result<()> {
         let limits = scope.limits;
@@ -8996,7 +8780,6 @@ impl TaskContext {
         self.authorize_tool_pending_with_work(definition, invocation, Some(work), None, &self.scope).await
     }
 
-    // Only a successfully routed, durably pending outcome becomes a wait.
     pub(crate) async fn authorize_tool_pending(
         &self, definition: &ToolDefinition, invocation: &ToolInvocation,
     ) -> Result<Option<OperationId>> {
@@ -9057,8 +8840,7 @@ impl TaskContext {
         Ok(None)
     }
 
-    /// Computes a policy decision without routing it through a caller-owned
-    /// host. Durable owners route the returned request on their own boundary.
+    /// Computes a policy decision without routing it through a caller-owned host.
     pub(crate) async fn policy_approval(
         &self, policy: &dyn ToolPolicy, definition: &ToolDefinition, invocation: &ToolInvocation,
     ) -> Result<Option<(OperationId, Interaction)>> {
@@ -9187,9 +8969,6 @@ impl TaskContext {
             ));
         }
         require_task_spawn(&self.scope, definition)?;
-        // A parent may await its child while holding its own group permit.
-        // An independently bounded descendant group prevents recursive
-        // fork-join from deadlocking at concurrency one.
         self.harness
             .spawn_in_group(
                 &self.descendants,
@@ -9218,8 +8997,7 @@ impl TaskContext {
         }
     }
 
-    /// Retains an identity before admitting a durable batch. The ID is
-    /// caller-owned and survives loss of the in-process group handle.
+    /// Retains an identity before admitting a durable batch.
     #[must_use]
     pub fn group_with_id(&self, id: GroupId) -> RuntimeGroup {
         let mut group = self.group();
@@ -9285,8 +9063,7 @@ impl TaskContext {
         }
     }
 
-    /// Pure support discovery for the original binding, before callback boxing
-    /// or constructing an owned interaction request. This grants no authority.
+    /// Pure support discovery for the original binding, before callback boxing or constructing an owned interaction request.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn supports_native_interactions(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         self.require_original_native_work(work)?;
@@ -9402,8 +9179,7 @@ impl TaskContext {
         Ok((paid.value, paid.custody))
     }
 
-    /// Opens a schema-constrained question by stable identity. The outcome
-    /// carries an immutable answer ref, never the participant's inline text.
+    /// Opens a schema-constrained question by stable identity.
     pub async fn ask(
         &self,
         operation_id: OperationId,
@@ -9431,8 +9207,7 @@ impl TaskContext {
         mailbox.send(recipient, message_id, payload).await
     }
 
-    /// Reads only one retained parcel selected by this task's original receive
-    /// command. This transports bytes; it does not grant donor file access.
+    /// Reads only one retained parcel selected by this task's original receive command.
     pub async fn read_received_mail(
         &self, receive_operation: OperationId, item: &InboxItem,
     ) -> Result<acyclic_stream::OwnedBytes> {
@@ -9466,7 +9241,6 @@ impl TaskContext {
     }
 
     /// Sends the same exact parcel with the original native owner and work.
-    /// The copied input reference's custody moves into the returned ACK.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn send_with_native_work<'a>(
         &'a self,
@@ -9610,15 +9384,6 @@ pub(crate) fn read_granted(grants: &Capabilities, file: &FileRef) -> Result<bool
     read_granted_with_work(grants, file, &mut None)
 }
 
-#[cfg(feature = "filesystem")]
-pub(crate) fn read_granted_measured(
-    grants: &Capabilities,
-    file: &FileRef,
-    io: &crate::filesystem::PreparationIo,
-) -> Result<bool> {
-    let mut history = io.history_io();
-    read_granted_with_work(grants, file, &mut Some(&mut history))
-}
 
 pub(crate) fn read_granted_with_work(
     grants: &Capabilities,
@@ -9657,18 +9422,6 @@ pub(crate) fn read_granted_with_work(
     Ok(false)
 }
 
-#[cfg(feature = "filesystem")]
-pub(crate) fn read_granted_measured(grants: &Capabilities, file: &FileRef, io: &crate::filesystem::PreparationIo) -> Result<bool> {
-    if io.contains_capability(grants, file, "file:read:")?
-        || io.contains_capability(grants, file.volume(), "volume:read:")? { return Ok(true); }
-    if io.contains_capability(grants, &(file.volume(), ""), "directory:read:")? { return Ok(true); }
-    for (slash, _) in file.path().match_indices('/') {
-        let prefix = &file.path()[..slash];
-        if !crate::conversation::is_internal_path(prefix)
-            && io.contains_capability(grants, &(file.volume(), prefix), "directory:read:")? { return Ok(true); }
-    }
-    Ok(false)
-}
 
 fn contains_content_grant_with_work<T: Serialize + ?Sized>(
     grants: &Capabilities,
@@ -9680,7 +9433,6 @@ fn contains_content_grant_with_work<T: Serialize + ?Sized>(
         value, acyclic_stream::MAX_RECORD_BYTES as u64, work,
     )?;
     let digest = blake3::Hash::from(digest).to_hex();
-    // All three canonical content prefixes fit this fixed stack buffer.
     let mut capability = [0; "directory:read:".len() + 64];
     let end = prefix.len() + digest.len();
     if let Some(io) = work.as_deref_mut() {
@@ -9705,8 +9457,7 @@ pub struct RuntimeGroup {
     batch_policy: BatchGroupPolicy,
 }
 
-/// Ordered immutable batch selection. Reusing an ID with a different body,
-/// task definition, group, or effective scope must conflict at admission.
+/// Ordered immutable batch selection.
 pub struct Batch<I> {
     /// Caller-retained identity allocated before dispatch.
     pub id: BatchId,
@@ -9741,8 +9492,7 @@ pub enum BatchGroupPolicy {
     CancelOnFailure,
 }
 
-/// Exact immutable batch request presented to a durable owner. Inputs remain
-/// private staged bytes in the host; only the manifest ref enters its Stream.
+/// Exact immutable batch request presented to a durable owner.
 #[derive(Clone)]
 pub struct DurableBatchRequest {
     /// Stable group identity.
@@ -9794,9 +9544,7 @@ struct DurableBatchWire {
 }
 
 impl DurableBatchRequest {
-    /// Constructs and validates an exact immutable batch envelope from SDK
-    /// boundary fields. Inputs and task identities are projected in Rust so
-    /// all members and native hosts use the same admission semantics.
+    /// Constructs and validates an exact immutable batch envelope from SDK boundary fields.
     #[allow(
         clippy::too_many_arguments,
         reason = "flat SDK-boundary constructor taking each envelope field"
@@ -9849,8 +9597,7 @@ impl DurableBatchRequest {
         Ok(request)
     }
 
-    /// Retains proof references in a request without granting a scope or
-    /// installing content handles. The state owner authenticates every member.
+    /// Retains proof references in a request without granting a scope or installing content handles.
     pub fn with_resource_proofs(
         mut self,
         proofs: Vec<crate::resource_preparation::ResourceCreationProofRef>,
@@ -9863,8 +9610,7 @@ impl DurableBatchRequest {
         Ok(self)
     }
 
-    /// Validates the complete retained manifest before any child is observed
-    /// or admitted. A syntactically valid JSON envelope is not sufficient.
+    /// Validates the complete retained manifest before any child is observed or admitted.
     pub fn validate(&self) -> Result<()> {
         validate_identity(&self.task.name, &self.task.version)?;
         validate_component_label(&self.machine.name, "machine name")?;
@@ -9908,8 +9654,7 @@ impl DurableBatchRequest {
         Ok(())
     }
 
-    /// Reconstructs only the exact v2 request stored by its owner; unknown or
-    /// omitted fields cannot silently change the admitted child identities.
+    /// Reconstructs only the exact v2 request stored by its owner; unknown or omitted fields cannot silently change the admitted child identities.
     pub fn from_canonical_value(value: Value) -> Result<Self> {
         let canonical = value.clone();
         let wire: DurableBatchWire =
@@ -9965,8 +9710,7 @@ impl DurableBatchRequest {
         })
     }
 
-    /// Derives the sole admission record for one indexed member. The owner
-    /// and caller use this same construction during admit and reconciliation.
+    /// Derives the sole admission record for one indexed member.
     pub fn member_admission(&self, index: usize) -> Result<TaskAdmissionRecord> {
         let input = self
             .inputs
@@ -10014,8 +9758,7 @@ pub fn batch_member_operation_id(
     OperationId::from_bytes(bytes)
 }
 
-/// One exact input slot, preserving the admission decision before and after
-/// terminal observation without introducing another key-bearing shape.
+/// One exact input slot, preserving the admission decision before and after terminal observation without introducing another key-bearing shape.
 pub struct BatchEntry<T> {
     /// Stable batch/index key.
     pub key: InputKey,
@@ -10036,8 +9779,7 @@ pub struct AdmissionBatch<O> {
     extensions: Option<ExtensionLeases>,
 }
 
-/// Ordered outcome of all observable batch slots. `complete` is false while
-/// an admission, task outcome, or observation remains unresolved.
+/// Ordered outcome of all observable batch slots.
 pub struct BatchOutcome<O> {
     /// Stable group identity.
     pub group_id: GroupId,
@@ -10072,8 +9814,7 @@ pub enum BatchCancellationStatus {
     },
 }
 
-/// Per-member request report for a retained batch. Requests are non-atomic;
-/// a later admission can race this observation until an owner seals the batch.
+/// Per-member request report for a retained batch.
 pub struct BatchCancellationReport {
     /// Owning group.
     pub group_id: GroupId,
@@ -10161,9 +9902,7 @@ fn batch_is_complete<O>(
 }
 
 impl<O: DeserializeOwned + Send + 'static> AdmissionBatch<O> {
-    /// Observes accepted members concurrently while preserving every original
-    /// input slot, including rejected and unresolved admissions. Dropping the
-    /// wait never cancels accepted children.
+    /// Observes accepted members concurrently while preserving every original input slot, including rejected and unresolved admissions.
     pub async fn join(self) -> BatchOutcome<O> {
         let Self {
             group_id,
@@ -10171,15 +9910,10 @@ impl<O: DeserializeOwned + Send + 'static> AdmissionBatch<O> {
             entries,
             policy,
             spawner,
-            // Keep native implementations retained until every admitted
-            // member has reached an observable terminal state. The leases
-            // are intentionally batch-scoped, not copied into each handle.
             extensions,
         } = self;
         let _extensions = extensions;
         let count = entries.len();
-        // Cancellation must observe every admitted sibling: a failed member
-        // behind a window of suspended waits otherwise never gets polled.
         let concurrency = if policy == BatchGroupPolicy::CancelOnFailure {
             count.max(1)
         } else {
@@ -10243,8 +9977,7 @@ impl<O: DeserializeOwned + Send + 'static> AdmissionBatch<O> {
     }
 }
 
-/// A typed ordered map cannot silently discard a rejected admission, failed
-/// child, or unknown outcome. Successful entries remain available on failure.
+/// A typed ordered map cannot silently discard a rejected admission, failed child, or unknown outcome.
 pub enum RuntimeMap<O> {
     /// Every input admitted and completed successfully, in input order.
     Complete(Vec<O>),
@@ -10267,8 +10000,7 @@ impl<I, O> ToolRef<I, O> {
 }
 
 impl RuntimeGroup {
-    /// Selects the immutable completion policy for subsequently admitted
-    /// durable batches. Reusing a batch ID under another policy conflicts.
+    /// Selects the immutable completion policy for subsequently admitted durable batches.
     #[must_use]
     pub fn with_batch_policy(mut self, policy: BatchGroupPolicy) -> Self {
         self.batch_policy = policy;
@@ -10428,8 +10160,7 @@ impl RuntimeGroup {
         })
     }
 
-    /// Publishes the exact batch request before any child admission. A lost
-    /// acknowledgement retains indexed identities for explicit reconciliation.
+    /// Publishes the exact batch request before any child admission.
     pub async fn spawn_batch<I, O>(
         &self,
         definition: &Arc<TaskDefinition<I, O>>,
@@ -10474,10 +10205,6 @@ impl RuntimeGroup {
             request.execution = Some(placement);
             request.validate()?;
         }
-        // `spawn_batch` may reconcile a retained request before asking the
-        // owner to admit its missing members, so it remains a new-admission
-        // boundary. Disabled runtimes must reject this path; the explicit
-        // reconcile_batch APIs below are reserved for retained operations.
         let extension_leases = self
             .harness
             .retain_task_extensions(definition, &request.scope)?;
@@ -10536,8 +10263,7 @@ impl RuntimeGroup {
         .map(Some)
     }
 
-    /// Reattaches to an owner's immutable batch by its caller-retained ID,
-    /// without reconstructing the original inputs or resubmitting absent work.
+    /// Reattaches to an owner's immutable batch by its caller-retained ID, without reconstructing the original inputs or resubmitting absent work.
     pub async fn reconcile_batch_id<I, O>(
         &self,
         definition: &Arc<TaskDefinition<I, O>>,
@@ -10620,9 +10346,7 @@ impl RuntimeGroup {
         .map(Some)
     }
 
-    /// Retains one owner-side cancellation declaration before requesting any
-    /// accepted member. Repeating this call reconciles the same declaration;
-    /// neither an acknowledgement nor this report asserts terminal outcomes.
+    /// Retains one owner-side cancellation declaration before requesting any accepted member.
     pub async fn cancel_batch_id<I, O>(
         &self,
         definition: &Arc<TaskDefinition<I, O>>,
@@ -10687,9 +10411,7 @@ impl RuntimeGroup {
             .await
     }
 
-    /// Admits independent live tasks in input order without waiting for their
-    /// results. Every accepted handle remains observable if a later admission
-    /// fails; unlike `map`, this does not impose a failure policy.
+    /// Admits independent live tasks in input order without waiting for their results.
     pub async fn spawn_many<I, O>(
         &self,
         definition: &Arc<TaskDefinition<I, O>>,
@@ -10706,9 +10428,7 @@ impl RuntimeGroup {
         admissions
     }
 
-    /// Admits all independent inputs before awaiting any result, then returns
-    /// either ordered outputs or every input's exact outcome. This collect-all
-    /// helper is local-only; durable batches require retained batch identities.
+    /// Admits all independent inputs before awaiting any result, then returns either ordered outputs or every input's exact outcome.
     pub async fn map<I, O>(
         &self,
         definition: &Arc<TaskDefinition<I, O>>,
@@ -10759,8 +10479,7 @@ impl RuntimeGroup {
         }
     }
 
-    /// Observes admitted members in input order. Observation does not cancel
-    /// other members or convert uncertainty into success.
+    /// Observes admitted members in input order.
     pub async fn join<O: DeserializeOwned + Send + 'static>(
         &self,
         tasks: Vec<RuntimeTask<O>>,
@@ -10768,8 +10487,7 @@ impl RuntimeGroup {
         join_runtime(tasks).await
     }
 
-    /// Folds every admitted outcome in input order, even when completion
-    /// order differs or an observation is uncertain.
+    /// Folds every admitted outcome in input order, even when completion order differs or an observation is uncertain.
     pub async fn ordered_reduce<O, A, F>(
         &self,
         tasks: Vec<RuntimeTask<O>>,
@@ -10784,7 +10502,6 @@ impl RuntimeGroup {
     }
 
     /// Streams admitted outcomes as they complete, retaining each task ID.
-    /// Dropping this stream does not cancel unfinished members.
     pub fn as_completed<O: DeserializeOwned + Send + 'static>(
         &self,
         tasks: Vec<RuntimeTask<O>>,
@@ -10823,7 +10540,6 @@ impl RuntimeGroup {
     }
 
     /// Requests cancellation only of this process's live group and descendants.
-    /// Use `cancel_batch_id` for each durable batch retained by its owner.
     pub fn cancel_local(&self) {
         self.group.cancel();
     }
@@ -10906,7 +10622,6 @@ impl ToolContext {
     }
 
     /// Borrows this tool's attenuated authority without replacing its task.
-    /// Ordinary tool contexts retain the original enclosing task scope.
     #[must_use]
     pub fn effective_scope(&self) -> &RuntimeScope {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -11800,9 +11515,6 @@ mod tests {
             &self,
             request: &crate::model::PreparedModelRequest,
         ) -> Result<crate::context::ModelTokenCount> {
-            // This fixture defines one token as one canonical request byte.
-            // The complete request is charged as fixed framing; it is not a
-            // tokenizer estimate for any real provider or native media.
             Ok(crate::context::ModelTokenCount {
                 request_digest: request.manifest().request_digest,
                 fixed_tokens: u32::try_from(request.bytes().len())
@@ -11873,8 +11585,6 @@ mod tests {
             model_steps: Arc::new(TaskModelSteps::ordinary()),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_metadata_source: None,
-            owned_mailbox: None,
-            output_content: None,
         };
         let message = ModelMessage {
             role: crate::model::ModelRole::User,
@@ -12052,7 +11762,6 @@ mod tests {
     ) -> Result<(ComponentIdentity, acyclic_fs::NativeAllocation)> {
         use crate::store::history::HistoryIo;
         let mut io = crate::store::history::native_work_io(work)?;
-        // Logical inline metadata needs custody, not a heap allocator attempt.
         io.retain_owned(std::mem::size_of::<ComponentIdentity>() as u64)?;
         let name = io.clone_text(&identity.name)?;
         let version = io.clone_text(&identity.version)?;
@@ -12271,8 +11980,6 @@ mod tests {
             model_steps: Arc::new(TaskModelSteps::ordinary()),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_metadata_source: None,
-            owned_mailbox: None,
-            output_content: None,
         };
         let narrowed = context.scoped_policy(child_policy)?;
         let definition = ToolDefinition {
@@ -12657,10 +12364,8 @@ mod tests {
         else {
             return Err(Error::Conflict("local admission changed task kind".into()));
         };
-        assert_eq!(
-            handle.result_owned().await,
-            Outcome::Succeeded(Ok((operation, 7)))
-        );
+        assert!(matches!(handle.result_owned().await,
+            Outcome::Succeeded(Ok((id, value))) if id == operation && value == 7));
         Ok(())
     }
 
@@ -13277,10 +12982,10 @@ mod tests {
                     RuntimeMap::Complete(values) => Ok(values),
                     RuntimeMap::Incomplete(entries) => {
                         assert_eq!(entries.len(), 4);
-                        assert_eq!(entries[0], Ok(Outcome::Succeeded(2)));
-                        assert_eq!(entries[1], Ok(Outcome::Succeeded(4)));
+                        assert!(matches!(entries[0], Ok(Outcome::Succeeded(2))));
+                        assert!(matches!(entries[1], Ok(Outcome::Succeeded(4))));
                         assert!(matches!(&entries[2], Ok(Outcome::Failed { .. })));
-                        assert_eq!(entries[3], Ok(Outcome::Succeeded(8)));
+                        assert!(matches!(entries[3], Ok(Outcome::Succeeded(8))));
                         let members = group
                             .spawn_many(&leaf, [1, 3])
                             .await
@@ -13472,12 +13177,10 @@ mod tests {
                 crate::InteractionRejection::Denied,
             ),
         ] {
-            assert_eq!(
-                check_tool_approval(outcome),
-                Err(Error::InteractionRejected(rejection))
-            );
+            assert!(matches!(check_tool_approval(outcome),
+                Err(Error::InteractionRejected(actual)) if actual == rejection));
         }
-        assert_eq!(check_tool_approval(InteractionOutcome::Approved), Ok(()));
+        assert!(check_tool_approval(InteractionOutcome::Approved).is_ok());
     }
 
     #[tokio::test]
@@ -13515,8 +13218,6 @@ mod tests {
             model_steps: Arc::new(TaskModelSteps::ordinary()),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_metadata_source: None,
-            owned_mailbox: None,
-            output_content: None,
         };
         let definition = ToolDefinition {
             name: "test.echo".into(),

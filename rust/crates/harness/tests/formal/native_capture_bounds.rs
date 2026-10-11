@@ -1,5 +1,4 @@
 //! Solver harness for the exact production capture-admission arithmetic.
-//! OS behavior, durable commits, schemas and path authority are outside this proof.
 
 #[path = "../../src/filesystem/native_capture_bounds.rs"]
 mod production;
