@@ -155,11 +155,34 @@ export async function runBrowserCustodySmoke({ accountId, issue, issueExpiring, 
 
     expiring = await BrowserCustomerCredential.login(options, issueExpiring);
     handles.push(expiring);
-    const delay = Number(expiring.certificateExpiresAtUnixMillis - BigInt(Date.now()) + 50n);
-    if (delay > 0) {
-      const timeout = Promise.withResolvers();
-      setTimeout(timeout.resolve, delay);
-      await timeout.promise;
+    const originalSign = SubtleCrypto.prototype.sign;
+    const signed = Promise.withResolvers();
+    const signatureGate = Promise.withResolvers();
+    SubtleCrypto.prototype.sign = async function (...args) {
+      const actualSignature = await originalSign.apply(this, args);
+      signed.resolve();
+      await signatureGate.promise; // Hold a real signature across actual certificate expiry.
+      return actualSignature;
+    };
+    try {
+      const pendingExpiredBearer = expiring.mint(30n);
+      const rejectedExpiredBearer = rejects(() => pendingExpiredBearer,
+        "Certificate that expired during actual signing released a stale bearer");
+      await Promise.race([signed.promise, pendingExpiredBearer.then(
+        () => { throw new Error("Expiry regression released a bearer before its signing checkpoint"); },
+        error => { throw new Error("Expiry regression did not reach actual WebCrypto signing", { cause: error }); },
+      )]);
+      const delay = Number(expiring.certificateExpiresAtUnixMillis - BigInt(Date.now()) + 50n);
+      if (delay > 0) {
+        const timeout = Promise.withResolvers();
+        setTimeout(timeout.resolve, delay);
+        await timeout.promise;
+      }
+      signatureGate.resolve();
+      await rejectedExpiredBearer;
+    } finally {
+      signatureGate.resolve();
+      SubtleCrypto.prototype.sign = originalSign;
     }
     await rejects(() => expiring.mint(30n), "Expired certificate issued a stale bearer");
     const reopenedExpired = await BrowserCustomerCredential.open(options);
@@ -171,7 +194,7 @@ export async function runBrowserCustodySmoke({ accountId, issue, issueExpiring, 
     });
 
     return { status: "passed", origin: location.origin, accountId,
-      checks: ["real nonextractable Ed25519/AES-GCM keys", "canonical Rust/WASM signed bearer", "encrypted SQL session", "IndexedDB close/reopen", "account namespace isolation", "issuer/invalid/cancelled/transaction-aborted replacement preservation", "own-public-key rejection", "closed/cancelled mint fencing", "single-flight renewal", "deletion fences in-flight login and retained handles", "expiry after reopen"] };
+      checks: ["real nonextractable Ed25519/AES-GCM keys", "canonical Rust/WASM signed bearer", "encrypted SQL session", "IndexedDB close/reopen", "account namespace isolation", "issuer/invalid/cancelled/transaction-aborted replacement preservation", "own-public-key rejection", "closed/cancelled mint fencing", "single-flight renewal", "deletion fences in-flight login and retained handles", "expiry during actual signing and after reopen"] };
   } finally {
     for (const handle of handles) handle?.close();
     await BrowserCustomerCredential.delete(options);
