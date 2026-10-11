@@ -421,6 +421,12 @@ impl DurableToolRunner {
 
     /// Narrows the maximum artifact and projection bytes before publication.
     pub fn with_limits(mut self, limits: Limits) -> Result<Self> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(custody) = &self.native_custody {
+            limits.validate_with_native_work(custody.work())?;
+            self.limits = limits;
+            return Ok(self);
+        }
         limits.validate()?;
         self.limits = limits;
         Ok(self)
