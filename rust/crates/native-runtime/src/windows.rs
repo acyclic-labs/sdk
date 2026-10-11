@@ -5,6 +5,7 @@
     reason = "file I/O submits raw handles to the Compio completion driver"
 )]
 
+use super::NativeFilePayload;
 use crate::{OwnedRead, OwnedWrite};
 use bytes::Bytes;
 use compio_buf::IntoInner as _;
@@ -48,7 +49,7 @@ use windows_sys::Win32::System::Threading::{
 };
 
 #[derive(Clone, Debug)]
-struct ArcFile(Arc<File>);
+struct ArcFile(Arc<NativeFilePayload>);
 
 impl compio_driver::AsFd for ArcFile {
     fn as_fd(&self) -> BorrowedFd<'_> {
@@ -77,6 +78,10 @@ type WriteFinish = Box<dyn FnOnce(io::Result<()>) + Send + 'static>;
 
 thread_local! {
     /// The event this thread waits on for its in-place overlapped requests.
+    /// Its first use creates one OS control handle on the actual calling
+    /// thread. Global service initialization does not prewarm every future
+    /// caller's TLS. This fixed OS resource is neither SDK-owned payload nor
+    /// a namespace/backend read; opaque OS resources/RSS are not byte quotas.
     static IN_PLACE_EVENT: Result<OwnedEvent, i32> = OwnedEvent::create();
 }
 
@@ -117,30 +122,40 @@ fn transfer_in_place(
 struct NativeTransferMeter<'a> {
     meter: &'a dyn crate::NativeReadMeter,
     maximum: usize,
-    admit: fn(&dyn crate::NativeReadMeter, usize) -> io::Result<()>,
-    admit_operations: fn(&dyn crate::NativeReadMeter, u64) -> io::Result<()>,
-    record_operations: fn(&dyn crate::NativeReadMeter, u64) -> io::Result<()>,
-    record_bytes: Option<fn(&dyn crate::NativeReadMeter, usize) -> io::Result<()>>,
+    kind: crate::NativeOperationKind,
+    transfer_bytes: bool,
 }
 
 impl<'a> NativeTransferMeter<'a> {
     fn read(meter: &'a dyn crate::NativeReadMeter, maximum: usize) -> Self {
         Self {
             meter, maximum,
-            admit: |meter, maximum| meter.admit_read(maximum),
-            admit_operations: |meter, operations| meter.admit_operations(operations),
-            record_operations: |meter, operations| meter.record_operations(operations),
-            record_bytes: Some(|meter, bytes| meter.record_read(bytes)),
+            kind: crate::NativeOperationKind::Read,
+            transfer_bytes: true,
+        }
+    }
+
+    fn write(meter: &'a dyn crate::NativeReadMeter, maximum: usize) -> Self {
+        Self {
+            meter, maximum,
+            kind: crate::NativeOperationKind::Write,
+            transfer_bytes: true,
+        }
+    }
+
+    fn metadata_read(meter: &'a dyn crate::NativeReadMeter) -> Self {
+        Self {
+            meter, maximum: 0,
+            kind: crate::NativeOperationKind::Read,
+            transfer_bytes: false,
         }
     }
 
     fn mutation_control(meter: &'a dyn crate::NativeReadMeter) -> Self {
         Self {
             meter, maximum: 0,
-            admit: |meter, maximum| meter.admit_write(maximum),
-            admit_operations: |meter, operations| meter.admit_write_operations(operations),
-            record_operations: |meter, operations| meter.record_write_operations(operations),
-            record_bytes: None,
+            kind: crate::NativeOperationKind::Write,
+            transfer_bytes: false,
         }
     }
 }
@@ -151,7 +166,10 @@ fn transfer_in_place_observed(
     issue: impl FnOnce(HANDLE, *mut OVERLAPPED) -> i32,
     meter: Option<NativeTransferMeter<'_>>,
 ) -> io::Result<usize> {
-    if let Some(observer) = meter { (observer.admit_operations)(observer.meter, 2)?; }
+    let mut reservation = match meter {
+        Some(observer) => Some(crate::NativeOperationReservation::new(observer.meter, observer.kind, 2)?),
+        None => None,
+    };
     IN_PLACE_EVENT.with(|event| {
         let event = event
             .as_ref()
@@ -164,31 +182,49 @@ fn transfer_in_place_observed(
         overlapped.Anonymous.Anonymous.OffsetHigh = high;
         overlapped.hEvent = event.0.map_addr(|address| address | 1);
         let mut transferred = 0_u32;
-        if let Some(observer) = meter { (observer.admit)(observer.meter, observer.maximum)?; }
+        let mut byte_reservation = match meter {
+            Some(observer) if observer.transfer_bytes => Some(crate::NativeByteReservation::new(
+                observer.meter, observer.kind, observer.maximum,
+            )?),
+            Some(observer) => {
+                match observer.kind {
+                    crate::NativeOperationKind::Read => observer.meter.admit_bytes(0)?,
+                    crate::NativeOperationKind::Write => observer.meter.admit_write_bytes(0)?,
+                }
+                None
+            }
+            None => None,
+        };
         // The request and its wait both complete before `overlapped` and the
         // caller's buffer leave this frame.
-        if issue(handle, &raw mut overlapped) == 0 {
-            // SAFETY: reads this thread's last error, which the failed
-            // request just set.
-            match unsafe { GetLastError() } {
+        let (issued, issue_charge) = match reservation.as_mut() {
+            Some(reservation) => reservation.attempt(|| issue(handle, &raw mut overlapped)),
+            None => (issue(handle, &raw mut overlapped), Ok(())),
+        };
+        if issued == 0 {
+            // SAFETY: the actual issue just set this thread's last error.
+            let code = unsafe { GetLastError() };
+            match code {
                 ERROR_IO_PENDING => {}
-                ERROR_HANDLE_EOF => return Ok(0),
-                _ => return Err(io::Error::last_os_error()),
+                ERROR_HANDLE_EOF => { issue_charge?; return Ok(0); }
+                _ => { issue_charge?; return Err(io::Error::from_raw_os_error(code as i32)); }
             }
         }
-        // Once issued, completion must settle even if cancellation arrives.
-        // Its allowance was admitted before the request, and recorded only
-        // on the branch which really invokes GetOverlappedResult.
-        let completion_charge = meter.map_or(Ok(()), |observer| {
-            (observer.record_operations)(observer.meter, 1)
-        });
-        let completed = unsafe {
-            GetOverlappedResult(handle, &raw const overlapped, &raw mut transferred, 1)
+        // This request owns completion allowance withheld before issue.
+        // Reentrant work cannot steal it, and late errors cannot abandon I/O.
+        let (completed, completion_charge) = match reservation.as_mut() {
+            Some(reservation) => reservation.attempt(|| unsafe {
+                GetOverlappedResult(handle, &raw const overlapped, &raw mut transferred, 1)
+            }),
+            None => (unsafe {
+                GetOverlappedResult(handle, &raw const overlapped, &raw mut transferred, 1)
+            }, Ok(())),
         };
         let error = (completed == 0).then(io::Error::last_os_error);
-        if let Some(observer) = meter {
-            if let Some(record) = observer.record_bytes { record(observer.meter, transferred as usize)?; }
+        if let Some(bytes) = byte_reservation.as_mut() {
+            bytes.record(transferred as usize)?;
         }
+        issue_charge?;
         completion_charge?;
         if let Some(error) = error {
             if error.raw_os_error() == Some(ERROR_HANDLE_EOF as i32) {
@@ -219,9 +255,8 @@ pub(super) fn control_in_place_measured(
     output: &mut [u8],
     meter: &dyn crate::NativeReadMeter,
 ) -> io::Result<usize> {
-    let maximum = output.len();
     control_in_place_observed(file, code, input, output,
-        Some(NativeTransferMeter::read(meter, maximum)))
+        Some(NativeTransferMeter::metadata_read(meter)))
 }
 
 pub(super) fn control_in_place_measured_mutation(
@@ -471,18 +506,10 @@ pub(super) fn write_at_known_overlapped(
 ) -> io::Result<usize> {
     let length = overlapped_range(offset, bytes.len())?;
     if length == 0 { return Ok(0); }
-    meter.admit_write_operations(2)?;
     transfer_in_place_observed(file, offset, |handle, overlapped| {
         // SAFETY: payload and stack OVERLAPPED remain live until completion settles.
         unsafe { WriteFile(handle, bytes.as_ptr(), length, std::ptr::null_mut(), overlapped) }
-    }, Some(NativeTransferMeter {
-        meter,
-        maximum: bytes.len(),
-        admit: |meter, maximum| meter.admit_write(maximum),
-        admit_operations: |meter, count| meter.admit_write_operations(count),
-        record_operations: |meter, count| meter.record_write_operations(count),
-        record_bytes: Some(|meter, count| meter.record_write(count)),
-    }))
+    }, Some(NativeTransferMeter::write(meter, bytes.len())))
 }
 
 pub(super) fn set_len_once(file: &File, size: u64) -> io::Result<()> {
@@ -782,8 +809,8 @@ pub(super) fn set_file_attributes(path: &Path, attributes: u32) -> io::Result<()
 }
 
 enum Job {
-    Read(Arc<File>, bool, Vec<OwnedRead>, ReadFinish),
-    Write(Arc<File>, bool, Vec<OwnedWrite>, WriteFinish),
+    Read(Arc<NativeFilePayload>, bool, Vec<OwnedRead>, ReadFinish),
+    Write(Arc<NativeFilePayload>, bool, Vec<OwnedWrite>, WriteFinish),
 }
 
 #[derive(Clone)]
@@ -837,7 +864,7 @@ fn driver() -> io::Result<Driver> {
 }
 
 pub(super) fn submit_read(
-    file: Arc<File>,
+    file: Arc<NativeFilePayload>,
     overlapped: bool,
     reads: Vec<OwnedRead>,
     finish: ReadFinish,
@@ -852,7 +879,7 @@ pub(super) fn submit_read(
 }
 
 pub(super) fn submit_write(
-    file: Arc<File>,
+    file: Arc<NativeFilePayload>,
     overlapped: bool,
     writes: Vec<OwnedWrite>,
     finish: WriteFinish,
@@ -915,7 +942,7 @@ struct DriverState {
     ready: mpsc::Receiver<u64>,
     pending: HashMap<u64, Pending>,
     batches: HashMap<u64, Batch>,
-    attached_original: HashMap<usize, Weak<File>>,
+    attached_original: HashMap<usize, Weak<NativeFilePayload>>,
     attached_insertions: usize,
     next_id: u64,
 }
@@ -984,7 +1011,7 @@ impl DriverState {
 
     fn submit_read_job(
         &mut self,
-        file: &Arc<File>,
+        file: &Arc<NativeFilePayload>,
         overlapped: bool,
         reads: &[OwnedRead],
         finish: ReadFinish,
@@ -1064,7 +1091,7 @@ impl DriverState {
 
     fn submit_write_job(
         &mut self,
-        file: &Arc<File>,
+        file: &Arc<NativeFilePayload>,
         overlapped: bool,
         writes: Vec<OwnedWrite>,
         finish: WriteFinish,
@@ -1103,7 +1130,7 @@ impl DriverState {
 
     fn attach(
         &mut self,
-        file: &Arc<File>,
+        file: &Arc<NativeFilePayload>,
         overlapped: bool,
         access: u32,
     ) -> io::Result<DriverFile> {
@@ -1493,7 +1520,7 @@ mod tests {
             .open(directory.path().join("positional"))?;
         file.write_all(b"abcdefghijklmnop")?;
         file.seek(SeekFrom::Start(13))?;
-        let file = Arc::new(file);
+        let file = Arc::new(NativeFilePayload::unmetered(file));
         let (sender, receiver) = mpsc::sync_channel(1);
         submit_write(
             Arc::clone(&file),
@@ -1549,7 +1576,7 @@ mod tests {
                 Bytes::from_static(b"op"),
             ]
         );
-        assert_eq!((&*file).stream_position()?, 13);
+        assert_eq!((&**file).stream_position()?, 13);
         Ok(())
     }
 
