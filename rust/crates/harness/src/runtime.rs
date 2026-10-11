@@ -181,8 +181,8 @@ impl<I, O> TaskDefinition<I, O> {
         }
         let mut definition = Self {
             identity: ComponentIdentity {
-                name: crate::executor::clone_preparation(&pinned.name, io)?,
-                version: crate::executor::clone_preparation(&pinned.version, io)?,
+                name: task_copy_text(&pinned.name, io)?,
+                version: task_copy_text(&pinned.version, io)?,
                 digest: [0; 32],
             },
             input_schema, output_schema, requirements: BTreeSet::new(),
@@ -283,17 +283,11 @@ impl<I, O> TaskDefinition<I, O> {
                 if self.requirements.contains(requirement) {
                     None
                 } else {
-                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    #[cfg(feature = "filesystem")]
                     if let Some(io) = io {
-                        // A known logical element, not an opaque BTree allocation.
                         io.retain_owned(std::mem::size_of::<String>() as u64)?;
-                        let mut history = io.history_io();
-                        Some(crate::store::history::HistoryIo::clone_text(&mut history, requirement)?)
-                    } else {
-                        Some(requirement.to_owned())
                     }
-                    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-                    { Some(requirement.to_owned()) }
+                    Some(task_copy_text(requirement, io)?)
                 }
             }
         };
@@ -366,7 +360,10 @@ impl<I, O> TaskDefinition<I, O> {
         }
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let result = async {
-            let fence = crate::executor::clone_preparation(fence, Some(&io))?;
+            let fence = task_copy_with_io(Some(&io), |quota| Ok(crate::scheduler::LeaseFence {
+                reservation_id: crate::core::copy_text(&fence.reservation_id, quota)?,
+                placement: crate::core::copy_text(&fence.placement, quota)?,
+            }))?;
             let fence_retained = io.owned_bytes()?;
             let (session, retained) = self.open_with_io(
                 context.context(), fence, journal, Some(&io),
@@ -427,7 +424,12 @@ impl<I, O> TaskDefinition<I, O> {
         let registered = if io.is_some() {
             context.harness.tasks.0.iter().find(|((name, version), _)| {
                 name == &self.identity.name && version == &self.identity.version
-            }).filter(|(_, entry)| entry.native_custody.is_some())
+            }).filter(|(_, entry)| {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                { entry.native_custody.is_some() }
+                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                { let _ = entry; true }
+            })
                 .and_then(|(_, entry)| task_definition_arc::<I, O>(entry))
                 .ok_or_else(|| task_workflow_error(native, crate::wire::ErrorCode::Conflict,
                     "task definition is not the registered version"))?
@@ -490,7 +492,14 @@ impl<I, O> TaskDefinition<I, O> {
             Some(_) => return Err(task_workflow_error(native, crate::wire::ErrorCode::Conflict,
                 "task workflow admission changed")),
             None => {
-                let copy = crate::executor::clone_preparation(&admission, io)?;
+                let copy = task_copy_with_io(io, |quota| Ok(WorkflowAdmission {
+                    operation_id: admission.operation_id, request_digest: admission.request_digest,
+                    initial: MachineCheckpoint {
+                        machine: task_copy_machine(&admission.initial.machine, quota)?,
+                        revision: admission.initial.revision,
+                        state: crate::core::copy_value(&admission.initial.state, quota)?,
+                    },
+                }))?;
                 if admit_workflow_open(journal.as_ref(), copy, io).await?.value != admission {
                     return Err(task_workflow_error(native, crate::wire::ErrorCode::Conflict,
                         "task workflow admission changed"));
@@ -508,7 +517,7 @@ impl<I, O> TaskDefinition<I, O> {
         validate_latest_task_transition(&workflow, &self.output_schema, io).await?;
         verify_task_execution_owner(host.as_ref(), task_id, &fence, io).await?;
         let before_schema = crate::workflow::workflow_owned_bytes(io)?;
-        let output_schema = crate::executor::clone_preparation(&self.output_schema, io)?;
+        let output_schema = task_copy_value(&self.output_schema, io)?;
         let schema_retained = crate::workflow::workflow_owned_bytes(io)?.checked_sub(before_schema)
             .ok_or_else(|| task_workflow_error(native, crate::wire::ErrorCode::Conflict,
                 "workflow output schema custody changed"))?;
@@ -1140,6 +1149,93 @@ fn validate_task_identity_with_io(
     Ok(())
 }
 
+/// Runs closed physical field producers against the original preparation ledger.
+/// The transferred allowance remains owned by the caller's PreparationIo.
+fn task_copy_with_io<T>(
+    io: Option<&crate::executor::PreparationIo>,
+    copy: impl FnOnce(&mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<T>,
+) -> Result<T> {
+    #[cfg(feature = "filesystem")]
+    let mut observer = io.map(|io| io.history_io());
+    #[cfg(feature = "filesystem")]
+    let mut work = observer.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
+    #[cfg(not(feature = "filesystem"))]
+    let mut work = { let _ = io; None };
+    let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
+    let value = copy(&mut quota)?;
+    quota.transfer();
+    Ok(value)
+}
+
+fn task_copy_text(source: &str, io: Option<&crate::executor::PreparationIo>) -> Result<String> {
+    task_copy_with_io(io, |quota| crate::core::copy_text(source, quota))
+}
+
+fn task_copy_value(source: &Value, io: Option<&crate::executor::PreparationIo>) -> Result<Value> {
+    task_copy_with_io(io, |quota| crate::core::copy_value(source, quota))
+}
+
+fn task_copy_component(source: &ComponentIdentity, quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<ComponentIdentity> {
+    Ok(ComponentIdentity {
+        name: crate::core::copy_text(&source.name, quota)?,
+        version: crate::core::copy_text(&source.version, quota)?, digest: source.digest,
+    })
+}
+
+fn task_copy_machine(source: &MachineIdentity, quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<MachineIdentity> {
+    Ok(MachineIdentity {
+        name: crate::core::copy_text(&source.name, quota)?,
+        version: crate::core::copy_text(&source.version, quota)?, digest: source.digest,
+    })
+}
+
+fn task_copy_requirements(source: &BTreeSet<String>, quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<BTreeSet<String>> {
+    let mut output = BTreeSet::new();
+    for requirement in source {
+        if let Some(io) = quota.work().as_deref_mut() {
+            io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            io.retain_owned(std::mem::size_of::<String>() as u64)?;
+            quota.adopt(std::mem::size_of::<String>() as u64)?;
+        }
+        output.insert(crate::core::copy_text(requirement, quota)?);
+    }
+    Ok(output)
+}
+
+fn task_copy_key(source: &(String, String), io: Option<&crate::executor::PreparationIo>) -> Result<(String, String)> {
+    task_copy_with_io(io, |quota| Ok((
+        crate::core::copy_text(&source.0, quota)?, crate::core::copy_text(&source.1, quota)?,
+    )))
+}
+
+fn task_registered_portable_admission(
+    operation: OperationId, input: Value, parent: Option<TaskId>, scope: &RuntimeScope,
+    entry: &TaskEntry, machine: &MachineIdentity,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<TaskAdmissionRecord> {
+    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    if let Some(io) = quota.work().as_deref_mut() {
+        let bytes = (std::mem::size_of::<TaskAdmissionRecord>() - std::mem::size_of::<Value>()) as u64;
+        io.retain_owned(bytes)?;
+        quota.adopt(bytes)?;
+    }
+    let task = task_copy_component(&entry.identity, &mut quota)?;
+    let machine = task_copy_machine(machine, &mut quota)?;
+    let input_schema = crate::core::copy_value(&entry.input_schema, &mut quota)?;
+    let output_schema = crate::core::copy_value(&entry.output_schema, &mut quota)?;
+    let grants = crate::core::copy_capabilities(scope.grants(), &mut quota)?;
+    let resource_proofs = RuntimeScope::copy_resource_proofs(scope.resource_proofs(), &mut quota)?;
+    let extensions = scope.extensions().map(|extension| extension.copy_with_quota(&mut quota)).transpose()?;
+    let record = TaskAdmissionRecord {
+        operation_id: operation, task, machine, input, input_schema, output_schema,
+        parent, resource_proofs, grants, limits: scope.limits(), run_limits: scope.run_limits(),
+        policy: None, extensions, execution: None,
+    };
+    record.validate_with_work(quota.work())?;
+    quota.transfer();
+    Ok(record)
+}
+
 struct TaskEntry {
     identity: ComponentIdentity,
     resumable: bool,
@@ -1173,12 +1269,12 @@ impl Clone for TaskEntry {
 impl TaskEntry {
     fn clone_with_io(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Self> {
         Ok(Self {
-            identity: crate::executor::clone_preparation(&self.identity, io)?,
+            identity: task_copy_with_io(io, |quota| task_copy_component(&self.identity, quota))?,
             resumable: self.resumable,
-            machine: crate::executor::clone_preparation(&self.machine, io)?,
-            input_schema: crate::executor::clone_preparation(&self.input_schema, io)?,
-            output_schema: crate::executor::clone_preparation(&self.output_schema, io)?,
-            requirements: crate::executor::clone_preparation(&self.requirements, io)?,
+            machine: task_copy_with_io(io, |quota| self.machine.as_ref().map(|value| task_copy_machine(value, quota)).transpose())?,
+            input_schema: task_copy_value(&self.input_schema, io)?,
+            output_schema: task_copy_value(&self.output_schema, io)?,
+            requirements: task_copy_with_io(io, |quota| task_copy_requirements(&self.requirements, quota))?,
             definition: self.definition.clone(), workflow_definition: self.workflow_definition.clone(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_custody: None,
@@ -1327,13 +1423,12 @@ impl TaskRegistry {
             match &definition.implementation {
                 TaskImplementation::Live(_) => return Err(task_workflow_error(native,
                     crate::wire::ErrorCode::Unsupported, "live tasks have no native workflow")),
-                TaskImplementation::Resumable(machine) => Some(crate::executor::clone_preparation(
-                    task_machine_identity(machine.as_ref(), io)?, io,
-                )?),
+                TaskImplementation::Resumable(machine) => Some(task_copy_with_io(io, |quota|
+                    task_copy_machine(task_machine_identity(machine.as_ref(), io)?, quota))?),
             }
         } else { None };
-        let name = crate::executor::clone_preparation(&definition.identity.name, io)?;
-        let version = crate::executor::clone_preparation(&definition.identity.version, io)?;
+        let name = task_copy_text(&definition.identity.name, io)?;
+        let version = task_copy_text(&definition.identity.version, io)?;
         let duplicate = if io.is_some() {
             let mut found = false;
             for ((existing_name, existing_version), _) in &self.0 {
@@ -1360,11 +1455,11 @@ impl TaskRegistry {
         // publication. None retains its original field/callback evaluation.
         let copied = if io.is_some() {
             Some((
-                crate::executor::clone_preparation(&definition.identity, io)?,
+                task_copy_with_io(io, |quota| task_copy_component(&definition.identity, quota))?,
                 observed_machine,
-                crate::executor::clone_preparation(&definition.input_schema, io)?,
-                crate::executor::clone_preparation(&definition.output_schema, io)?,
-                crate::executor::clone_preparation(&definition.requirements, io)?,
+                task_copy_value(&definition.input_schema, io)?,
+                task_copy_value(&definition.output_schema, io)?,
+                task_copy_with_io(io, |quota| task_copy_requirements(&definition.requirements, quota))?,
             ))
         } else { None };
         #[cfg(feature = "filesystem")]
@@ -1505,7 +1600,7 @@ impl TaskRegistry {
                 let result = (|| {
                     entry_io.retain_owned((std::mem::size_of::<TaskEntry>()
                         + std::mem::size_of::<(String, String)>()) as u64)?;
-                    let key = crate::executor::clone_preparation(key, Some(&entry_io))?;
+                    let key = task_copy_key(key, Some(&entry_io))?;
                     Ok((key, entry.clone_with_io(Some(&entry_io))?))
                 })();
                 let retained = entry_io.owned_bytes()?;
@@ -1516,7 +1611,7 @@ impl TaskRegistry {
                 registry.0.insert(key, copied);
                 continue;
             }
-            registry.0.insert(crate::executor::clone_preparation(key, io)?, entry.clone_with_io(io)?);
+            registry.0.insert(task_copy_key(key, io)?, entry.clone_with_io(io)?);
         }
         Ok(registry)
     }
@@ -1556,9 +1651,8 @@ impl TaskRegistry {
         } else {
             let mut found = None;
             for ((registered_name, registered_version), entry) in &self.0 {
-                work.as_deref_mut().expect("observed registry lookup").charge(crate::WorkCounters {
-                    items_examined: 1, ..Default::default()
-                })?;
+                work.as_deref_mut().expect("observed registry lookup")
+                    .codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
                 if registered_name == name && registered_version == version {
                     found = Some(entry);
                     break;
@@ -1566,22 +1660,22 @@ impl TaskRegistry {
             }
             found
         }.ok_or_else(|| {
-            #[cfg(not(target_arch = "wasm32"))]
-            if work.is_some() { return Error::NativeBoundary {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) { return Error::NativeBoundary {
                 code: crate::wire::ErrorCode::NotFound, reason: "registered child task version is absent",
             }; }
             Error::NotFound(format!("task {name}@{version}"))
         })?;
         let machine = entry.machine.as_ref().filter(|_| entry.resumable).ok_or_else(|| {
-            #[cfg(not(target_arch = "wasm32"))]
-            if work.is_some() { return Error::NativeBoundary {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) { return Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported, reason: "live task cannot be a durable child command",
             }; }
             Error::Unsupported("live task cannot be a durable command".into())
         })?;
         if expected_digest.is_some_and(|digest| digest != entry.identity.digest) {
-            #[cfg(not(target_arch = "wasm32"))]
-            if work.is_some() { return Err(Error::NativeBoundary {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) { return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Conflict,
                 reason: "root definition differs from the registered task",
             }); }
@@ -1590,7 +1684,7 @@ impl TaskRegistry {
         let mut descendant = parent.is_none();
         for grant in scope.grants().iter() {
             if let Some(io) = work.as_deref_mut() {
-                io.charge(crate::WorkCounters { items_examined: 1, ..Default::default() })?;
+                io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
             }
             if grant.strip_prefix("task:spawn:").and_then(|grant| grant.strip_prefix(name))
                 .and_then(|grant| grant.strip_prefix('@')) == Some(version)
@@ -1600,15 +1694,15 @@ impl TaskRegistry {
             }
         }
         if !descendant {
-            #[cfg(not(target_arch = "wasm32"))]
-            if work.is_some() { return Err(Error::NativeBoundary {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) { return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized, reason: "original scope lacks the registered descendant grant",
             }); }
             require_descendant_grant(scope.grants(), &entry.identity)?;
         }
         if parent.is_some() && (scope.extensions().is_some() || entry.requirements.iter().any(|requirement| requirement.starts_with("extension:"))) {
-            #[cfg(not(target_arch = "wasm32"))]
-            if work.is_some() { return Err(Error::NativeBoundary {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) { return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported, reason: "stock child extension runner is not composed",
             }); }
             return Err(Error::Unsupported("stock child extension runner is not composed".into()));
@@ -1617,49 +1711,10 @@ impl TaskRegistry {
             return TaskAdmissionRecord::from_parts(
                 operation, name, version, input, entry.input_schema.clone(), entry.output_schema.clone(),
                 &entry.requirements, &machine.digest, parent, scope.grants().clone(),
-                scope.limits(), scope.run_limits(), scope.extensions().cloned(), None, None,
+                scope.limits(), scope.run_limits(), None, scope.extensions().cloned(), None,
             ).and_then(|record| record.with_resource_proofs(scope.resource_proofs().to_vec()));
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let native = work.as_deref().and_then(|io| io.original_native_work()).cloned()
-                .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-                    reason: "native child builder requires its original SDK ledger" })?;
-            work.as_deref_mut().expect("native child source").retain_owned(
-                (std::mem::size_of::<TaskAdmissionRecord>() - std::mem::size_of::<Value>()) as u64,
-            )?;
-            let task = ComponentIdentity {
-                name: work.as_deref_mut().expect("native child source").clone_text(&entry.identity.name)?,
-                version: work.as_deref_mut().expect("native child source").clone_text(&entry.identity.version)?,
-                digest: entry.identity.digest,
-            };
-            let machine = MachineIdentity {
-                name: work.as_deref_mut().expect("native child source").clone_text(name)?,
-                version: work.as_deref_mut().expect("native child source").clone_text(version)?,
-                digest: machine.digest,
-            };
-            let input_schema = clone_child_schema_with_work(&entry.input_schema, work)?;
-            let output_schema = clone_child_schema_with_work(&entry.output_schema, work)?;
-            let (grants, grant_custody) = Capabilities::new_with_native_work(
-                scope.grants().iter().chain(entry.requirements.iter().map(String::as_str)), &native,
-            )?;
-            work.as_deref_mut().expect("native admission source").absorb_native_custody(grant_custody)?;
-            let resource_proofs = RuntimeScope::clone_resource_proofs_with_work(
-                scope.resource_proofs(), work,
-            )?;
-            let extensions = scope.extensions()
-                .map(|extension| extension.clone_with_work(work))
-                .transpose()?;
-            let record = TaskAdmissionRecord {
-                operation_id: operation, task, machine, input, input_schema, output_schema,
-                parent, resource_proofs, grants, limits: scope.limits(),
-                run_limits: scope.run_limits(), policy: None, extensions, execution: None,
-            };
-            record.validate_with_work(work)?;
-            return Ok(record);
-        }
-        #[cfg(target_arch = "wasm32")]
-        Err(Error::Unsupported("native child admission is unavailable on wasm".into()))
+        task_registered_portable_admission(operation, input, parent, scope, entry, machine, work)
     }
 
     pub(crate) fn validate_durable_admission(
@@ -1681,16 +1736,8 @@ impl TaskRegistry {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         let mut quota = crate::wire_codec::CodecQuota::new(work,0)?;
-        let name = match quota.work().as_deref_mut() {
-            Some(io) => io.clone_text(&identity.name)?,
-            None => identity.name.clone(),
-        };
-        quota.adopt(name.capacity() as u64)?;
-        let version = match quota.work().as_deref_mut() {
-            Some(io) => io.clone_text(&identity.version)?,
-            None => identity.version.clone(),
-        };
-        quota.adopt(version.capacity() as u64)?;
+        let name = crate::core::copy_text(&identity.name, &mut quota)?;
+        let version = crate::core::copy_text(&identity.version, &mut quota)?;
         let lookup = (name,version);
         let entry = match self.0.get(&lookup) {
             Some(entry) => entry,
