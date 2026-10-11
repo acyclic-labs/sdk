@@ -608,6 +608,71 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
     }
 
+    /// Plans immutable selected source imports on the actual destination work.
+    /// Existing source custody stays with this inspection; parsed caller-owned
+    /// roots are borrowed, and destination approval/publication remain separate.
+    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+    pub async fn prepare_native_selected_import_with_native_work<D, S>(
+        &self, lazy: &LazyWorkspace<A, O, D, S>, frozen: LazySnapshotRef,
+        requested: &[acyclic_fs::kernel::NamespacePath],
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(acyclic_fs::SelectedImportPlan, acyclic_fs::NativeAllocation)>
+    where D: DemandSource + 'static, S: LazyWorkspaceStore {
+        let remaining = work.remaining()?;
+        let reader = match &self.reader {
+            SourceReader::Project(reader) => reader,
+            SourceReader::Caller(_) => return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native source inspection requires operation-bound authorization",
+            }),
+        };
+        let selected = reader.authorization();
+        self.require_native_project_selection_with_native_work(
+            selected.source_task, &selected.project, &selected.generation, Some(frozen), work,
+        ).await?;
+        if requested.is_empty() || requested.len() as u64 > remaining.items_examined
+            || requested.len() as u64 > selected.maximum_work
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "selected import roots exceed their original finite allowance",
+            });
+        }
+        for path in requested {
+            work.charge(WorkCounters { items_examined: 1, ..Default::default() })?;
+            let protected = path.components().first().is_some_and(|name| match name.encoding() {
+                NameEncoding::Utf8 | NameEncoding::PosixBytes => name.as_bytes() == b".system",
+                NameEncoding::WindowsUtf16Le => name.as_bytes() == b".\0s\0y\0s\0t\0e\0m\0",
+            });
+            if path.encoded_bytes() as usize > reader.limits.path_bytes || protected {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "selected import path leaves its public project boundary",
+                });
+            }
+        }
+        let _serial = reader.serial.lock().await;
+        self.require_native_project_selection_with_native_work(
+            selected.source_task, &selected.project, &selected.generation, Some(frozen), work,
+        ).await?;
+        let io = PreparationIo::from_native_work(work)?;
+        reader.native_binding_with_io(lazy, frozen, "/", &io)?;
+        let result = lazy.prepare_selected_import_with_native_work(frozen, requested, work).await;
+        match result {
+            Ok(owned) => {
+                self.require_native_project_selection_with_native_work(
+                    selected.source_task, &selected.project, &selected.generation, Some(frozen), work,
+                ).await?;
+                Ok(owned)
+            }
+            Err((acyclic_fs::LazyWorkspaceError::NativeWork(cause), custody)) =>
+                Err(Error::NativeWork { cause, custody }),
+            Err((acyclic_fs::LazyWorkspaceError::Cancelled, custody)) =>
+                Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody }),
+            Err((source, custody)) => Err(Error::NativeSource { source, custody }),
+        }
+    }
+
     /// Reads unresolved native content through the trusted host's ACTUAL lazy
     /// binding and the original frozen snapshot, not its authored-only generation.
     /// Receipts retain the actual SDK work, including failed/stale-source reads.

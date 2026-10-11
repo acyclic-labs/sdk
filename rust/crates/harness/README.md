@@ -763,6 +763,14 @@ original read handle rather than adding foreign READ to the caller's scope.
 Native directory inspection uses the actual dispatch owner and exact subtree
 grant, returns the immutable generation and original page custody, and excludes
 the internal `.system` entry without allocating a replacement name.
+`prepare_native_selected_import_with_native_work` borrows parsed public
+namespace roots and the actual original destination volume work. The sealed
+source must share that work's ledger, but keeps its independent original
+resource custody: no source guard is retagged or absorbed into the destination.
+Original source cancellation, operation, immutable generation/native snapshot
+and current owner are checked before the serial wait, before SDK planning and
+after its result. The actual SDK plan carries destination-work custody; approval
+and publication still require the destination's separate WRITE authority.
 
 Inherited reference projection and summary registration use the canonical
 history/content engines with the original native work observer. Reference and
