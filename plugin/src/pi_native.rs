@@ -1188,18 +1188,23 @@ impl<P: StreamProvider + 'static> PiNativeRunner<P> {
     }
 
 
-    pub(crate) async fn confirm_process_cleanup_with_work(
+    /// Verifies immutable result content only; never issues namespace cleanup,
+    /// dispatch, publication or deletion authority.
+    pub(crate) async fn verify_terminal_process_result_with_native_work(
         &self, binding: &PiTaskBinding, context: &TaskContext, maximum_bytes: u64, meter: &NativeMaterializationWork,
-    ) -> std::result::Result<PiNativeDrainedProcess, NativeReceiptError> {
+    ) -> std::result::Result<(), NativeReceiptError> {
         if context.durable_task_id() != Some(self.owner.task_id()) {
-            return Err(NativeReceiptError::Owner(Error::Unauthorized("Pi cleanup content context belongs to another original task".into())));
+            return Err(NativeReceiptError::Owner(Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Unauthorized,
+                reason: "Pi result content context belongs to another original task",
+            }));
         }
         let result = async {
             let (terminal_outcome, _terminal_custody) = self.owner.outcome_with_native_work(&meter).await.map_err(NativeReceiptError::Owner)?;
             let terminal = terminal_outcome.is_some();
             if !terminal { self.owner.verify_with_native_work(true, &meter).await.map_err(NativeReceiptError::Owner)?; }
             if binding.task_id != self.owner.task_id() {
-                return Err(NativeReceiptError::Owner(invalid("Pi process cleanup selected another task")));
+                return Err(NativeReceiptError::Record("Pi process result selected another original task"));
             }
             let receipt = self.receipt_with_native_work(&meter).await?
                 .ok_or(NativeReceiptError::Owner(Error::Indeterminate(self.command)))?;
@@ -1211,14 +1216,16 @@ impl<P: StreamProvider + 'static> PiNativeRunner<P> {
                 _ => receipt.diagnostic.as_ref().ok_or(NativeReceiptError::Owner(Error::Indeterminate(self.command)))?,
             };
             let storage = binding.results.as_ref()
-                .ok_or_else(|| NativeReceiptError::Owner(invalid("Pi cleanup has no original result storage")))?;
+                .ok_or(NativeReceiptError::Record("Pi process result has no original result storage"))?;
             if !matches!(storage.allocation, PiScratchAllocation::Created(_)) || output.volume() != &storage.volume {
-                return Err(NativeReceiptError::Owner(Error::Unauthorized("Pi cleanup diagnostic belongs to another created result volume".into())));
+                return Err(NativeReceiptError::Record("Pi process result belongs to another created result volume"));
             }
             self.owner.require_volume_grant_with_native_work(&storage.volume, VolumeOperation::Read, &meter)
                 .map_err(NativeReceiptError::Owner)?;
-            if output.descriptor().byte_length() > maximum_bytes {
-                return Err(NativeReceiptError::Record("Pi cleanup result exceeds its original content allowance"));
+            if output.descriptor().byte_length() > maximum_bytes
+                || output.descriptor().media_type() != "application/json"
+            {
+                return Err(NativeReceiptError::Record("Pi process result exceeds its original content allowance or type"));
             }
             let bytes = context.read_file_with_native_work(output, meter).await.map_err(NativeReceiptError::Owner)?;
             if !process_cleanup_completed(bytes.as_ref(), maximum_bytes, meter).map_err(NativeReceiptError::Owner)? {
@@ -1226,13 +1233,13 @@ impl<P: StreamProvider + 'static> PiNativeRunner<P> {
             }
             if terminal {
                 let (after, _after_custody) = self.owner.outcome_with_native_work(&meter).await.map_err(NativeReceiptError::Owner)?;
-                if after.is_none() {
-                    return Err(NativeReceiptError::Owner(Error::Conflict("Pi original terminal process observation changed".into())));
+                if after != terminal_outcome {
+                    return Err(NativeReceiptError::Record("Pi original terminal process outcome changed"));
                 }
             } else {
                 self.owner.verify_with_native_work(true, &meter).await.map_err(NativeReceiptError::Owner)?;
             }
-            Ok(PiNativeDrainedProcess { task: binding.task_id, command: self.command })
+            Ok(())
         }.await;
         result
     }

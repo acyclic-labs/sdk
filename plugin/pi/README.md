@@ -636,6 +636,10 @@ Native TaskContext input, session and cleanup-result reads retain the SDK's
 intrinsic `OwnedBytes` directly through validation and decoding. Consumers
 borrow its slice; they never extract, rebuild or retire a separate byte guard.
 Decoded DTO metadata custody remains separate from payload ownership.
+The terminal-result verifier returns unit after checking the original receipt,
+Created-Results READ authority, bounded immutable content and the unchanged
+terminal outcome. This read-only content check cannot issue a process, view
+drain, publication or disposal capability.
 Intent loading, original runtime binding and request construction use borrowed DTOs and the original bounded
 native codec before owned copies. A partial startup retains the actual native
 session, including its source watcher and destination guard, until bounded stop

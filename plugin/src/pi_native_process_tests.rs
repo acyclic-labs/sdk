@@ -357,10 +357,8 @@ async fn required_pinned_pi_native_effect_lost_ack_and_disk_runtime_reopen_do_no
     assert!(result.0.success); assert!(result.0.stop.is_none());
     let stdout = std::str::from_utf8(&result.0.stdout).map_err(|error| invalid(&error.to_string()))?;
     assert!(stdout.contains("original native instruction")); assert!(stdout.contains("actual native child instruction"));
-    let drained = recovered.confirm_process_cleanup_with_work(&fixture.binding, fixture.context.context(), 1_048_576, &recovery_work).await
-        .map_err(receipt_error)?;
-    assert_eq!(drained.task, fixture.binding.task_id);
-    assert_eq!(drained.command, fixture.command);
+    recovered.verify_terminal_process_result_with_native_work(
+        &fixture.binding, fixture.context.context(), 1_048_576, &recovery_work).await.map_err(receipt_error)?;
     assert!(recovery_work.receipt().backend_read_operations > 0, "successful cleanup reads the authenticated result, not a nonexistent stop diagnostic");
     let drain_proof = recovered.drain_with_native_work(
         &fixture.view, &recovery_work, &recovery_cancellation)?.await?;
@@ -390,17 +388,15 @@ async fn required_pinned_pi_native_cancellation_records_actual_cleanup_without_p
     assert!(stop.cleanup_completed, "native cleanup must be observed, not inferred from the session path");
     let cleanup_cancellation = CancellationToken::new();
     let cleanup_work = pi_meter(super::super::native_root_source::budget(), &cleanup_cancellation)?;
-    let cleanup = runner.confirm_process_cleanup_with_work(&fixture.binding, fixture.context.context(), 1_048_576, &cleanup_work).await
-        .map_err(receipt_error)?;
-    assert_eq!(cleanup.task, fixture.binding.task_id);
-    assert_eq!(cleanup.command, fixture.command);
+    runner.verify_terminal_process_result_with_native_work(
+        &fixture.binding, fixture.context.context(), 1_048_576, &cleanup_work).await.map_err(receipt_error)?;
     assert!(cleanup_work.receipt().backend_read_operations > 0, "actual cleanup artifact read work must be reported");
     let drain_proof = runner.drain_with_native_work(
         &fixture.view, &cleanup_work, &cleanup_cancellation)?.await?;
     assert!(fixture.owner.child_scratch_creation_proof().is_err(), "an admitted root's named volume grants cannot fabricate a created-child scratch disposal proof");
     let mut forged_result_binding = fixture.binding.clone();
     forged_result_binding.results.as_mut().unwrap().volume = fixture.binding.scratch.volume.clone();
-    assert!(runner.confirm_process_cleanup_with_work(&forged_result_binding, fixture.context.context(),
+    assert!(runner.verify_terminal_process_result_with_native_work(&forged_result_binding, fixture.context.context(),
         1_048_576, &cleanup_work).await.is_err());
     let recovery_cancellation = CancellationToken::new();
     let recovery_work = pi_meter(super::super::native_root_source::budget(), &recovery_cancellation)?;
@@ -445,10 +441,8 @@ async fn required_pinned_pi_native_warm_supervisor_stop_drains_without_cancellin
     let stop = result.0.stop.as_ref().ok_or_else(|| invalid("actual warm stop lacks its process-tree observation"))?;
     assert_eq!(stop.kind, acyclic_harness::filesystem::NativeProcessStopKind::ControlStopped);
     assert!(stop.cleanup_completed, "signal acknowledgement alone is not process-tree and stdio drainage");
-    let drained = runner.confirm_process_cleanup_with_work(&fixture.binding, fixture.context.context(), 1_048_576, &work).await
-        .map_err(receipt_error)?;
-    assert_eq!(drained.task, fixture.binding.task_id);
-    assert_eq!(drained.command, fixture.command);
+    runner.verify_terminal_process_result_with_native_work(
+        &fixture.binding, fixture.context.context(), 1_048_576, &work).await.map_err(receipt_error)?;
     assert!(work.receipt().backend_read_operations > 0);
     let recovered = Runner::recover(fixture.owner.clone(), fixture.command, &fixture.plan, fixture.approval, fixture.authority(&work)?, &work)
         .await.map_err(receipt_error)?;
