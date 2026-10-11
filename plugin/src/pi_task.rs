@@ -91,6 +91,43 @@ struct CommandResult {
 struct ControlResults {
     commands: Vec<PiControlReply>,
 }
+
+/// Closed first-party decoder contracts: never select a schema for arbitrary T.
+#[cfg(not(target_arch = "wasm32"))]
+trait NativeMetadata: serde::de::DeserializeOwned {
+    const VALUE_SCHEMA: acyclic_harness::JsonValueSchema;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NativeMetadata for PiTaskInput {
+    // Binding/root/command metadata contains only typed identifiers, strings,
+    // maps, arrays and immutable FileRefs, not serde_json::Value leaves.
+    const VALUE_SCHEMA: acyclic_harness::JsonValueSchema = acyclic_harness::JsonValueSchema::None;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NativeMetadata for PiControlInput {
+    const VALUE_SCHEMA: acyclic_harness::JsonValueSchema = acyclic_harness::JsonValueSchema::None;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NativeMetadata for CommandResults {
+    // Outcome<FileRef> is a closed typed terminal/indeterminate outcome.
+    const VALUE_SCHEMA: acyclic_harness::JsonValueSchema = acyclic_harness::JsonValueSchema::None;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NativeMetadata for PiTaskState {
+    // The SDK has no Pi-specific selector. Its genuine whole-document shape
+    // conservatively covers hosting.reply.value, even after body masking.
+    const VALUE_SCHEMA: acyclic_harness::JsonValueSchema = acyclic_harness::JsonValueSchema::Root;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NativeMetadata for ControlResults {
+    // Likewise covers commands[*].value through the genuine SDK shape scan.
+    const VALUE_SCHEMA: acyclic_harness::JsonValueSchema = acyclic_harness::JsonValueSchema::Root;
+}
 pub(crate) struct PiTaskMachine {
     identity: MachineIdentity,
     schema: Value,
@@ -866,15 +903,13 @@ fn native_metadata_quota<T>(bytes: u64, lexical_items: u64) -> acyclic_harness::
     let overflow = || native_work_error(acyclic_fs::NativeTreeMaterializationError::Work(
         acyclic_fs::WorkError::Overflow,
     ));
-    let parser = acyclic_harness::contract::json_value_decode_owned_bytes(bytes, lexical_items)
-        .map_err(|_| overflow())?;
-    // The SDK witness owns parser slots/diagnostics. Add the concrete Pi/SDK
-    // tagged buffers (state/execution/root and VolumeOwner), temporary slots, final
-    // String/Vec/FileRef storage, failed-message copy and one-command Vec.
-    // These are opaque logical quotas, never reported allocator operations.
+    // This is only the closed DTO's opaque logical quota. The canonical SDK
+    // decoder independently issues its authentic Value shape and the guarded
+    // decode callback adds json_value_decode_owned_bytes(shape) before parsing.
+    // Cover tagged buffers, temporary/final String/Vec/FileRef storage and the
+    // one-command Vec; never report these quotas as allocator operations.
     let tagged_slot = (4 * std::mem::size_of::<Value>()) as u64;
     lexical_items.checked_mul(tagged_slot)
-        .and_then(|tagged| parser.checked_add(tagged))
         .and_then(|owned| bytes.checked_mul(8).and_then(|strings| owned.checked_add(strings)))
         .and_then(|owned| owned.checked_add(std::mem::size_of::<T>() as u64))
         .and_then(|owned| owned.checked_add(std::mem::size_of::<WorkflowCommand>() as u64))
@@ -882,7 +917,7 @@ fn native_metadata_quota<T>(bytes: u64, lexical_items: u64) -> acyclic_harness::
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn native_metadata<T: serde::de::DeserializeOwned>(
+fn native_metadata<T: NativeMetadata>(
     value: &impl Serialize,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> acyclic_harness::Result<(T, acyclic_fs::NativeAllocation)> {
@@ -904,7 +939,7 @@ fn native_metadata<T: serde::de::DeserializeOwned>(
         }
     };
     let decoded = super::pi_root_provider::guarded_pi_decode::<T>(
-        &bytes, NATIVE_METADATA_MAXIMUM, quota, work,
+        &bytes, NATIVE_METADATA_MAXIMUM, quota, T::VALUE_SCHEMA, work,
     );
     drop(bytes);
     drop(bytes_custody);

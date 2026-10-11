@@ -145,7 +145,7 @@ impl<'a> PiSelectedHost<'a> {
         let encoded = crate::pi_root_provider::guarded_pi_bytes(&admission.0.input, maximum, work)?;
         drop(admission);
         let result = crate::pi_root_provider::guarded_pi_decode(&encoded.0, maximum,
-            maximum.checked_mul(8).ok_or_else(|| invalid("admission ownership bound overflow"))?, work);
+            maximum.checked_mul(8).ok_or_else(|| invalid("admission ownership bound overflow"))?, acyclic_harness::JsonValueSchema::None, work);
         drop(encoded);
         result
     }
@@ -220,7 +220,7 @@ impl<'a> PiSelectedHost<'a> {
         drop(payload);
         let decoded = crate::pi_root_provider::guarded_pi_decode::<PiSelectedCommand>(&encoded.0,
             crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
-            crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8, work)?;
+            crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8, acyclic_harness::JsonValueSchema::None, work)?;
         drop(encoded);
         let input = &decoded.0;
         if input.caller != owner.task_id() || input.sdk_operation.is_empty() {
@@ -351,7 +351,7 @@ fn decode_cursor<T: serde::de::DeserializeOwned>(value: &str, cancellation: &Can
     let bytes = hex::decode(value).map_err(storage)?;
     let result = crate::pi_root_provider::guarded_pi_decode(&bytes,
         (crate::MAXIMUM_CONTROL_MESSAGE_BYTES / 2) as u64,
-        crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8, work);
+        crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8, acyclic_harness::JsonValueSchema::None, work);
     drop(bytes);
     drop(bytes_custody);
     result
@@ -581,7 +581,7 @@ impl PiSelectedHost<'_> {
         work: &acyclic_fs::NativeMaterializationWork) -> Result<Option<(SelectedImportIntent, acyclic_fs::NativeAllocation)>> {
         crate::pi_root_provider::read_pi_input_with_native_work(&self.protected, &self.filesystem,
             operation, "selected-import-intent", crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8,
-            context, work).await
+            acyclic_harness::JsonValueSchema::None, context, work).await
     }
     #[allow(clippy::too_many_arguments, reason = "original owner, frozen evidence and prepared approval are independent")]
     async fn writeback(&self, context: &TaskContext, owner: &Arc<TaskJournalOwner<LocalStream>>,
