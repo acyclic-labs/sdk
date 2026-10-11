@@ -549,13 +549,12 @@ impl<'a> PiBuiltinHost<'a> {
             let _path_custody = converted.1;
             let path = converted.0;
             match reader.read_with_native_work(context, &owner, &path, *maximum_bytes, &self.work).await {
-                Ok((bytes, custody)) => {
+                Ok(bytes) => {
                     let response = match authorize_owner(context, &owner, request.caller, &self.work).await {
-                        Ok(()) => read_response(bytes.as_ref(), candidate, "SOURCE", &self.work),
+                        Ok(()) => read_response(bytes.as_slice(), candidate, "SOURCE", &self.work),
                         Err(error) => Err(error),
                     };
                     drop(bytes);
-                    drop(custody);
                     return response;
                 }
                 Err(error) if is_absent(&error) => { last_absence = Some(error); }

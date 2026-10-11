@@ -931,7 +931,7 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
     pub(crate) async fn read_with_native_work<P: StreamProvider>(
         &self, context: &TaskContext, owner: &TaskJournalOwner<P>, path: &str, maximum_bytes: u64,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(bytes::Bytes, acyclic_fs::NativeAllocation)> {
+    ) -> Result<acyclic_stream::OwnedBytes> {
         self.require_reader(context, path)?;
         if context.durable_task_id() != Some(owner.task_id()) || owner.task_id() != self.reader {
             return Err(selected_unauthorized("native selected read changed its ORIGINAL caller owner"));
@@ -954,7 +954,7 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
     pub(crate) async fn read_link_with_native_work<P: StreamProvider>(
         &self, context: &TaskContext, owner: &TaskJournalOwner<P>, path: &str,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(bytes::Bytes, acyclic_fs::NativeAllocation)> {
+    ) -> Result<acyclic_stream::OwnedBytes> {
         self.require_reader(context, path)?;
         if context.durable_task_id() != Some(owner.task_id()) || owner.task_id() != self.reader {
             return Err(selected_unauthorized("native selected link read changed its ORIGINAL caller owner"));
@@ -1224,12 +1224,12 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
                     acyclic_fs::demand::SourceNodeKind::RegularFile => {
                         let old = before.read_with_native_work(context, owner, &path.0, context.scope().limits().file_bytes, native_work).await?;
                         let new = after.read_with_native_work(context, owner, &path.0, context.scope().limits().file_bytes, native_work).await?;
-                        (old.0 != new.0).then_some(PiDifferenceKind::Modified)
+                        (old.as_slice() != new.as_slice()).then_some(PiDifferenceKind::Modified)
                     }
                     acyclic_fs::demand::SourceNodeKind::SymbolicLink => {
                         let old = before.read_link_with_native_work(context, owner, &path.0, native_work).await?;
                         let new = after.read_link_with_native_work(context, owner, &path.0, native_work).await?;
-                        (old.0 != new.0).then_some(PiDifferenceKind::Modified)
+                        (old.as_slice() != new.as_slice()).then_some(PiDifferenceKind::Modified)
                     }
                     _ => None,
                 }
