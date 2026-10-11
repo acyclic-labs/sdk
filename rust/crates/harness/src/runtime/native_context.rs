@@ -140,6 +140,15 @@ impl ToolContext {
         })
     }
 
+    /// Borrows the original shared task without reconstructing its owner.
+    /// Callers must separately check this tool's genuine metadata and admission.
+    pub(crate) fn native_task(&self) -> Option<&Arc<NativeTaskContext>> {
+        match &self.task {
+            ToolTaskContext::Native(task) => Some(task),
+            ToolTaskContext::Ordinary(_) => None,
+        }
+    }
+
     /// Checks genuine SDK tool metadata funding without granting tool authority.
     pub(crate) fn native_metadata_matches(&self, work: &NativeMaterializationWork) -> bool {
         let ToolTaskContext::Native(task) = &self.task else { return false; };
@@ -476,6 +485,7 @@ mod tests {
             Arc::clone(&shared), operation, &call_id, &original,
         )?;
         assert!(std::ptr::eq(tool.task(), shared.context()));
+        assert!(Arc::ptr_eq(tool.native_task().expect("original native task"), &shared));
         assert!(std::ptr::eq(&*tool, shared.context()));
         assert_eq!(tool.operation_id(), operation);
         assert_eq!(tool.call_id(), call_id);
@@ -489,6 +499,7 @@ mod tests {
         let before = original.receipt();
         let clone = tool.clone();
         assert!(std::ptr::eq(clone.task(), shared.context()));
+        assert!(Arc::ptr_eq(clone.native_task().expect("same shared task"), &shared));
         assert!(!clone.native_metadata_matches(&original));
         assert_eq!(clone.call_id(), tool.call_id());
         assert_eq!(original.receipt(), before);
