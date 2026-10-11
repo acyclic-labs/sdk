@@ -96,24 +96,48 @@ struct ControlResults {
 #[cfg(not(target_arch = "wasm32"))]
 trait NativeMetadata: serde::de::DeserializeOwned {
     const VALUE_SCHEMA: acyclic_harness::JsonValueSchema;
+    const DIAGNOSTIC_LABEL_BYTES: u64;
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+const PI_COMMAND_DIAGNOSTIC_LABEL_BYTES: u64 =
+    super::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES
+    + super::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
+        "WorkflowCommand", "operation_id", "kind", "payload",
+    ]);
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES: u64 =
+    PI_COMMAND_DIAGNOSTIC_LABEL_BYTES
+    + super::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
+        "PiTaskInput", "binding", "execution", "PiTaskExecution", "kind",
+        "host", "child", "root", "preparation", "launch",
+    ]);
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeMetadata for PiTaskInput {
     // Binding/root/command metadata contains only typed identifiers, strings,
     // maps, arrays and immutable FileRefs, not serde_json::Value leaves.
     const VALUE_SCHEMA: acyclic_harness::JsonValueSchema = acyclic_harness::JsonValueSchema::None;
+    const DIAGNOSTIC_LABEL_BYTES: u64 = PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES;
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeMetadata for PiControlInput {
     const VALUE_SCHEMA: acyclic_harness::JsonValueSchema = acyclic_harness::JsonValueSchema::None;
+    const DIAGNOSTIC_LABEL_BYTES: u64 = PI_COMMAND_DIAGNOSTIC_LABEL_BYTES
+        + super::pi_root_provider::pi_serde_diagnostic_labels_bytes(&["PiControlInput", "command"]);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeMetadata for CommandResults {
     // Outcome<FileRef> is a closed typed terminal/indeterminate outcome.
     const VALUE_SCHEMA: acyclic_harness::JsonValueSchema = acyclic_harness::JsonValueSchema::None;
+    const DIAGNOSTIC_LABEL_BYTES: u64 = PI_COMMAND_DIAGNOSTIC_LABEL_BYTES
+        + super::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
+            "CommandResults", "commands", "CommandResult", "operation_id", "value",
+            "Outcome", "Succeeded", "Failed", "Cancelled", "Indeterminate", "message",
+        ]);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -121,12 +145,23 @@ impl NativeMetadata for PiTaskState {
     // The SDK has no Pi-specific selector. Its genuine whole-document shape
     // conservatively covers hosting.reply.value, even after body masking.
     const VALUE_SCHEMA: acyclic_harness::JsonValueSchema = acyclic_harness::JsonValueSchema::Root;
+    const DIAGNOSTIC_LABEL_BYTES: u64 = PI_COMMAND_DIAGNOSTIC_LABEL_BYTES
+        + super::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
+            "PiTaskState", "state", "preparing", "command", "allocating", "operation",
+            "hosting", "allocation", "reply", "controlling", "ready", "awaiting",
+            "completed", "result", "failed", "message",
+            "PiControlReply", "operation_id", "value",
+        ]);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeMetadata for ControlResults {
     // Likewise covers commands[*].value through the genuine SDK shape scan.
     const VALUE_SCHEMA: acyclic_harness::JsonValueSchema = acyclic_harness::JsonValueSchema::Root;
+    const DIAGNOSTIC_LABEL_BYTES: u64 = PI_COMMAND_DIAGNOSTIC_LABEL_BYTES
+        + super::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
+            "ControlResults", "commands", "PiControlReply", "operation_id", "value",
+        ]);
 }
 pub(crate) struct PiTaskMachine {
     identity: MachineIdentity,
@@ -939,7 +974,7 @@ fn native_metadata<T: NativeMetadata>(
         }
     };
     let decoded = super::pi_root_provider::guarded_pi_decode::<T>(
-        &bytes, NATIVE_METADATA_MAXIMUM, quota, T::VALUE_SCHEMA, work,
+        &bytes, NATIVE_METADATA_MAXIMUM, quota, T::VALUE_SCHEMA, T::DIAGNOSTIC_LABEL_BYTES, work,
     );
     drop(bytes);
     drop(bytes_custody);

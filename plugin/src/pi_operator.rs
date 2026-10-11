@@ -237,37 +237,44 @@ pub(crate) fn parse_digest(digest: &str) -> Result<[u8; 32]> {
     Ok(bytes)
 }
 
+pub(crate) const fn prepared_labels_bytes() -> u64 {
+    pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
+        "PiPreparedApproval", "PiSelectedCommand", "PiSelectedImportReceipt", "VolumeRefWire", "ProviderRefWire", "VolumeOwner",
+        "MaterializationJournal", "MaterializationPlan", "MaterializationEdit", "MaterializationIntent",
+        "MaterializationPreparationIdentity", "MaterializationPreparationProgress", "MaterializationPreparationAllocation",
+        "MaterializationPreparationSelection", "MaterializationPreimage", "LazySnapshotRef", "SourceReference", "WorkCounters",
+        "version", "session", "command", "operation", "approval_digest", "private_volume", "source_snapshot", "selected_snapshot",
+        "imported", "import_receipt", "journal", "canonical_digest_input", "root_path", "source_path",
+        "caller", "sdk_operation", "source", "root", "directory", "cursor", "maximum_entries", "destination", "paths",
+        "confirm", "import_operation", "destination_snapshot", "provider", "id", "class", "owner", "namespace", "family", "kind",
+        "project", "agent", "session", "agent_private", "session_shared", "revision", "plan", "root_identity",
+        "preparation_identity", "preparation_progress", "work", "preimages", "phase", "applied", "restored",
+        "operation_id", "intent", "edits", "GenerationTransition", "NativePreparation", "from", "to", "selection", "original",
+        "provider_identity", "volume", "generation", "Install", "Remove", "Rename", "SetMetadata", "path", "image",
+        "target", "backup", "parent", "pending", "Operation", "Target", "Backup", "Preparing", "Prepared", "Applying", "Applied",
+        "RollingBack", "RolledBack", "workspace_id", "authored_generation", "identity", "epoch", "overlay", "shadows",
+        "authorityRecordsRead", "authorityRecordsAppended", "authorityBytesRead", "authorityBytesWritten", "objectProbes",
+        "backendReadOperations", "backendWriteOperations", "durabilityOperations", "pageReads", "pageWrites",
+        "objectBytesRead", "objectBytesWritten", "bytesHashed", "bytesCopied", "bytesEncoded", "sourceBytesRead",
+        "sourcePathComponents", "sourceEntriesVisited", "outputBytes", "itemsExamined", "itemsReturned",
+        "allocationOperations", "peakAllocationBytes", "materializations",
+        "provider identity is invalid", "file or volume label is invalid",
+        "unknown variant ``, expected one of ", "unknown field ``, expected one of ", "duplicate field ``", "missing field ``",
+        "invalid type: , expected ", "invalid value: , expected ", "invalid length , expected ", " at line  column ",
+        "a sequence", "a map", "a string", "a byte array", "an integer", "an array of length 16", "an array of length 32",
+        "a valid UUID string", "invalid request: ", "storage failure: ",
+    ])
+}
+
 /// Audited closed operator DTO quota, including its internally tagged body and
 /// adjacent VolumeOwner content. Logical admission is not physical allocation.
 fn operator_owned_quota(items: u64, input_bytes: u64, scratch: u64) -> Result<u64> {
-    // The SDK's audited serde diagnostic convention: two overlapping error
-    // buffers, debug escaping at six bytes per input byte, plus schema labels.
-    const DIAGNOSTIC_LABELS: &str = concat!(
-        "PiPreparedApproval PiSelectedCommand PiSelectedImportReceipt VolumeRefWire ProviderRefWire VolumeOwner ",
-        "PiOperatorBody PiOperatorFileEvidence PiOperatorFileCursor action inspect approval prepared digest decision ",
-        "session_id operator project_files file_evidence offset maximum_bytes approve decline ",
-        "MaterializationJournal MaterializationPlan MaterializationEdit MaterializationIntent ",
-        "MaterializationPreparationIdentity MaterializationPreparationProgress MaterializationPreparationAllocation ",
-        "MaterializationPreparationSelection MaterializationPreimage LazySnapshotRef SourceReference WorkCounters ",
-        "version session command operation approval_digest private_volume source_snapshot selected_snapshot imported ",
-        "import_receipt journal canonical_digest_input root_path source_path caller sdk_operation source root directory ",
-        "cursor maximum_entries destination paths confirm import_operation destination_snapshot provider id class owner ",
-        "namespace family kind project agent session project agent_private session_shared ",
-        "revision plan root_identity preparation_identity preparation_progress work preimages phase applied restored ",
-        "operation_id intent edits GenerationTransition NativePreparation from to selection original provider_identity ",
-        "volume generation Install Remove Rename SetMetadata path image target backup parent pending Operation Target Backup ",
-        "Preparing Prepared Applying Applied RollingBack RolledBack workspace_id authored_generation identity epoch overlay shadows ",
-        "authorityRecordsRead authorityRecordsAppended authorityBytesRead authorityBytesWritten objectProbes ",
-        "backendReadOperations backendWriteOperations durabilityOperations pageReads pageWrites objectBytesRead objectBytesWritten ",
-        "bytesHashed bytesCopied bytesEncoded sourceBytesRead sourcePathComponents sourceEntriesVisited outputBytes ",
-        "itemsExamined itemsReturned allocationOperations peakAllocationBytes materializations ",
-        "provider identity is invalid file or volume label is invalid ",
-        "unknown variant ``, expected one of unknown field ``, expected one of duplicate field ``missing field ``",
-        "invalid type: , expected invalid value: , expected invalid length , expected  at line  column ",
-        "a sequence a map a string a byte array an integer an array of length 16 an array of length 32 a valid UUID string ",
-        "invalid request: storage failure: ",
-    );
-    let diagnostic_static_bytes = 4 * (5 * DIAGNOSTIC_LABELS.len() as u64 + 2 * u64::from(usize::BITS));
+    let body_labels_bytes = pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
+        "PiOperatorBody", "PiOperatorFileEvidence", "PiOperatorFileCursor", "PiOperatorDecision",
+        "action", "inspect", "approval", "prepared", "digest", "decision", "session_id", "operator",
+        "project_files", "file_evidence", "offset", "maximum_bytes", "approve", "decline",
+    ]);
+    let diagnostic_static_bytes = 4 * (prepared_labels_bytes() + body_labels_bytes + 2 * u64::from(usize::BITS));
     // Cargo.lock pins serde 1.0.229; use its actual Content/map-pair layout,
     // not Value's unrelated layout, for the adjacent VolumeOwner tag.
     let content_slot = std::mem::size_of::<serde::__private229::de::Content<'static>>()

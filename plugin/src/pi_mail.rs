@@ -156,6 +156,14 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     result
 }
 
+const MAIL_DIAGNOSTIC_LABEL_BYTES: u64 =
+    super::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES
+    + super::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
+        "PiMailKind", "message", "steer", "PiMailEnvelope", "kind",
+        "PiMailPayload", "sender", "envelope", "MailSendTaskCommand",
+        "recipient", "payload",
+    ]);
+
 trait NativeMailboxDto: serde::de::DeserializeOwned {}
 impl NativeMailboxDto for PiMailEnvelope {}
 impl NativeMailboxDto for PiMailPayload {}
@@ -168,7 +176,7 @@ fn decode<T: NativeMailboxDto>(
     // The SDK's issued source-shape bound covers their dynamic slots and
     // strings; this witness adds the concrete inline envelope before serde.
     guarded_pi_decode(bytes, MAXIMUM_PI_MAIL_BYTES, std::mem::size_of::<T>() as u64,
-        acyclic_harness::JsonValueSchema::None, work)
+        acyclic_harness::JsonValueSchema::None, MAIL_DIAGNOSTIC_LABEL_BYTES, work)
 }
 
 /// Passive polling acquires no reservation and charges no workflow task steps.
