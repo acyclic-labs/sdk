@@ -11,8 +11,8 @@ impl Drop for Cleanup {
 }
 
 /// Real OS-vault qualification, not an issuer fixture, mock store, or Cloud bearer proof.
-/// Canonical usable-bearer qualification additionally requires the live Cloud issuer to
-/// certify this fresh public key; never substitute a test Root for that prerequisite.
+/// Canonical usable-bearer proof additionally uses the Cloud-owned local issuer/verifier
+/// in conformance.rs. Neither this vault smoke nor that test-only Root qualifies live Identity.
 #[test]
 #[ignore = "requires the real logged-in OS user's unlocked credential vault"]
 fn real_os_custody_create_reopen_sign_delete_and_failures() {
@@ -110,4 +110,28 @@ fn real_os_custody_create_reopen_sign_delete_and_failures() {
     current.delete().expect("actual OS deletion");
     assert!(matches!(reopened.with_sql_session(|_| ()), Err(CustodyError::NotFound)));
     assert!(matches!(RestoredCustomerLeaf::open(namespace), Err(CustodyError::NotFound)));
+}
+
+/// Actual Linux session-bus refusal boundary. Run only after establishing that this
+/// session has neither a Secret Service owner nor an activatable Secret Service.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires a real Linux session bus without an available Secret Service vault"]
+fn real_linux_unavailable_vault_never_falls_back() {
+    let mut nonce = [0u8; 16];
+    getrandom::fill(&mut nonce).expect("actual Linux random source");
+    let mut suffix = String::with_capacity(32);
+    use std::fmt::Write;
+    for byte in nonce {
+        write!(suffix, "{byte:02x}").expect("isolated public namespace hex");
+    }
+    let account = format!("custody-linux-unavailable-{suffix}");
+    let namespace = CustomerCustodyNamespace::new("https://custody-linux-unavailable.invalid",
+        "staging", &account, "leaf-unavailable").expect("isolated unavailable-vault namespace");
+    assert!(matches!(RestoredCustomerLeaf::open(namespace.clone()), Err(CustodyError::Unavailable)));
+    let pending = PendingCustomerLeaf::generate().expect("actual own Linux leaf");
+    assert!(matches!(pending.store_pair(namespace.clone(),
+        Zeroizing::new("explicit-linux-unavailable-test-session".into())), Err(CustodyError::Unavailable)));
+    assert!(matches!(RestoredCustomerLeaf::open(namespace.clone()), Err(CustodyError::Unavailable)));
+    assert!(matches!(platform::delete(&namespace.name), Err(CustodyError::Unavailable)));
 }
