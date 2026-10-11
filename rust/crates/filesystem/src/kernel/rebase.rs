@@ -132,10 +132,11 @@ struct CapturedState {
     usage: DependencyUse,
 }
 
-/// Observer-local logical DATA custody. This control token never holds a map.
+/// Owner-local logical DATA and admitted primitive custody; never holds a map.
 #[derive(Debug, Default)]
 pub(crate) struct ProofDataCustody {
     retained: AtomicU64,
+    physical_retained: AtomicU64,
     completed_data_work: Mutex<ProofDataWorkReport>,
 }
 
@@ -144,17 +145,86 @@ struct ProofDataWorkReport {
     total: WorkCounters,
     pending: WorkCounters,
     reported_retained_bytes: u64,
+    reported_physical_bytes: u64,
     delivery_generation: u64,
+    live_future_bytes: u64,
+    live_cache_bytes: u64,
+    #[cfg(not(target_arch = "wasm32"))]
+    native_original: Option<Weak<crate::demand::NativeDemandReadMeter>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    native_control_born: u128,
+    #[cfg(not(target_arch = "wasm32"))]
+    native_control_retired: u128,
 }
 
 impl ProofDataCustody {
+    /// Registers this token with exactly one original native invocation before
+    /// its constructor admits any directly owned primitive. No borrowed ledger
+    /// can replace that binding, including after the original weak owner dies.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn bind_native_original(
+        &self, original: &Arc<crate::demand::NativeDemandReadMeter>,
+    ) -> bool {
+        let mut completed = self.completed_data_work.lock();
+        match completed.native_original.as_ref() {
+            Some(bound) => bound.as_ptr() == Arc::as_ptr(original),
+            None => {
+                completed.native_original = Some(Arc::downgrade(original));
+                true
+            },
+        }
+    }
+
+    /// Pure original-binding identity, never registration or borrowed custody.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn is_native_original(
+        &self, original: &Arc<crate::demand::NativeDemandReadMeter>,
+    ) -> bool {
+        self.completed_data_work.lock().native_original.as_ref()
+            .is_some_and(|bound| bound.as_ptr() == Arc::as_ptr(original))
+    }
+
+    /// Exact cumulative original-owned DATA/control events, not a graph footprint.
+    /// Native reconciliation alone releases these original allocation claims.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn native_control_events(&self) -> (u128, u128) {
+        let completed = self.completed_data_work.lock();
+        (completed.native_control_born, completed.native_control_retired)
+    }
+
+    /// Separates directly original-admitted primitives from imported SDK DATA
+    /// and child-operation controls, without a racy independent event snapshot.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn non_native_retained_payload_bytes(&self) -> u64 {
+        let completed = self.completed_data_work.lock();
+        let native_live = u64::try_from(completed.native_control_born - completed.native_control_retired)
+            .expect("live native primitives fit their original allocation ledger");
+        self.retained_payload_bytes().checked_sub(native_live)
+            .expect("native live primitives are included in actual payload custody")
+    }
+
     pub(crate) fn retained_bytes(&self) -> u64 {
         self.retained.load(Ordering::Acquire)
     }
 
-    pub(crate) fn live_data_counts(&self) -> (u64, u64) {
+    /// Actual admitted proof-control and root-vector payloads, excluding DATA
+    /// and this token's separately admitted allocation.
+    pub(crate) fn physical_retained_bytes(&self) -> u64 {
+        self.physical_retained.load(Ordering::Acquire)
+    }
+
+    /// Payload custody reconciled by the original operation's retained root.
+    /// Token metadata is a separate, one-time constructor admission.
+    pub(crate) fn retained_payload_bytes(&self) -> u64 {
+        self.retained_bytes().checked_add(self.physical_retained_bytes())
+            .expect("admitted proof payloads fit their original allocation ledger")
+    }
+
+    pub(crate) fn live_payload_counts(&self) -> (u64, u64) {
         let completed = self.completed_data_work.lock();
-        (self.retained_bytes(), completed.reported_retained_bytes)
+        let standing = completed.reported_retained_bytes.checked_add(completed.reported_physical_bytes)
+            .expect("reported payloads fit their original allocation ledger");
+        (self.retained_payload_bytes(), standing)
     }
 
     pub(crate) const fn logical_owned_bytes(&self) -> u64 {
@@ -169,13 +239,116 @@ impl ProofDataCustody {
         self.completed_data_work.lock().pending
     }
 
-    pub(crate) fn record_data_work(&self, work: WorkCounters) -> Result<(), WorkError> {
+    pub(crate) fn record_data_work(&self, mut work: WorkCounters) -> Result<(), WorkError> {
         let mut completed = self.completed_data_work.lock();
+        work.peak_allocation_bytes = work.peak_allocation_bytes
+            .checked_add(completed.live_future_bytes).ok_or(WorkError::Overflow)?;
         let total = completed.total.checked_add(work)?;
         let pending = completed.pending.checked_add(work)?;
         completed.total = total;
         completed.pending = pending;
         Ok(())
+    }
+
+    /// One reached producer's completed receipt or scalar charge, never a
+    /// global work delta. Cache/frame standing bytes are the same live buffers.
+    pub(crate) fn record_completed_leaf_work(&self, mut work: WorkCounters) -> Result<(), WorkError> {
+        let mut completed = self.completed_data_work.lock();
+        let data = self.retained_payload_bytes()
+            .checked_sub(completed.reported_retained_bytes)
+            .and_then(|bytes| bytes.checked_sub(completed.reported_physical_bytes))
+            .ok_or(WorkError::Overflow)?;
+        work.peak_allocation_bytes = work.peak_allocation_bytes
+            .checked_add(completed.live_future_bytes)
+            .and_then(|bytes| bytes.checked_add(completed.live_cache_bytes))
+            .and_then(|bytes| bytes.checked_add(data)).ok_or(WorkError::Overflow)?;
+        let total = completed.total.checked_add(work)?;
+        let pending = completed.pending.checked_add(work)?;
+        completed.total = total;
+        completed.pending = pending;
+        Ok(())
+    }
+
+    pub(crate) fn record_operation_clone_work(&self, bytes: u64, uncached_live_bytes: u64) -> Result<(), WorkError> {
+        if bytes == 0 { return Ok(()); }
+        let mut completed = self.completed_data_work.lock();
+        let data = self.retained_payload_bytes()
+            .checked_sub(completed.reported_retained_bytes)
+            .and_then(|bytes| bytes.checked_sub(completed.reported_physical_bytes))
+            .ok_or(WorkError::Overflow)?;
+        let peak = completed.live_future_bytes.checked_add(completed.live_cache_bytes)
+            .and_then(|live| live.checked_add(data))
+            .and_then(|live| live.checked_add(uncached_live_bytes))
+            .and_then(|live| live.checked_add(bytes)).ok_or(WorkError::Overflow)?;
+        let work = WorkCounters {
+            allocation_operations: 1, bytes_copied: bytes,
+            peak_allocation_bytes: peak, ..WorkCounters::default()
+        };
+        let total = completed.total.checked_add(work)?;
+        let pending = completed.pending.checked_add(work)?;
+        completed.total = total;
+        completed.pending = pending;
+        Ok(())
+    }
+
+    pub(crate) fn operation_cache_bytes(&self) -> u64 {
+        self.completed_data_work.lock().live_cache_bytes
+    }
+
+    /// Exact same-operation cache backing/owned buffers, not proof custody.
+    pub(crate) fn add_operation_cache_bytes(&self, bytes: u64) -> Result<(), WorkError> {
+        let mut completed = self.completed_data_work.lock();
+        completed.live_cache_bytes = completed.live_cache_bytes.checked_add(bytes)
+            .ok_or(WorkError::Overflow)?;
+        Ok(())
+    }
+
+    pub(crate) fn release_operation_cache_bytes(&self, bytes: u64) {
+        let mut completed = self.completed_data_work.lock();
+        completed.live_cache_bytes = completed.live_cache_bytes.checked_sub(bytes)
+            .expect("operation cache retirement follows actual buffer destruction");
+    }
+
+    /// Only the canonical heap primitive reports these known physical frames.
+    /// They are work, never proof DATA or retained adoption bytes.
+    pub(crate) fn record_heap_future_event(
+        &self,
+        event: crate::heap_future::HeapFutureEvent,
+    ) -> Result<u64, WorkError> {
+        let mut completed = self.completed_data_work.lock();
+        match event {
+            crate::heap_future::HeapFutureEvent::BeforeFrame { bytes, budget } => {
+                let peak = completed.live_cache_bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
+                if peak > budget.peak_allocation_bytes {
+                    return Err(WorkError::BudgetExceeded {
+                        counter: "peak_allocation_bytes", observed: peak,
+                        maximum: budget.peak_allocation_bytes,
+                    });
+                }
+                return Ok(completed.live_cache_bytes);
+            }
+            crate::heap_future::HeapFutureEvent::Admitted(mut work) => {
+                let bytes = work.peak_allocation_bytes;
+                let live = completed.live_future_bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
+                let data = self.retained_payload_bytes()
+                    .checked_sub(completed.reported_retained_bytes)
+                    .and_then(|bytes| bytes.checked_sub(completed.reported_physical_bytes))
+                    .ok_or(WorkError::Overflow)?;
+                work.peak_allocation_bytes = live.checked_add(data)
+                    .and_then(|bytes| bytes.checked_add(completed.live_cache_bytes))
+                    .ok_or(WorkError::Overflow)?;
+                let total = completed.total.checked_add(work)?;
+                let pending = completed.pending.checked_add(work)?;
+                completed.live_future_bytes = live;
+                completed.total = total;
+                completed.pending = pending;
+            }
+            crate::heap_future::HeapFutureEvent::Released(bytes) => {
+                completed.live_future_bytes = completed.live_future_bytes.checked_sub(bytes)
+                    .ok_or(WorkError::Overflow)?;
+            }
+        }
+        Ok(0)
     }
 
     /// A receipt-report cache only; operative work and allocation custody stay intact.
@@ -184,6 +357,7 @@ impl ProofDataCustody {
         let generation = completed.delivery_generation.checked_add(1)
             .expect("proof DATA delivery generation exhausted");
         completed.reported_retained_bytes = self.retained_bytes();
+        completed.reported_physical_bytes = self.physical_retained_bytes();
         completed.delivery_generation = generation;
         std::mem::take(&mut completed.pending)
     }
@@ -191,11 +365,28 @@ impl ProofDataCustody {
 
 /// Lives beside the actual owned key; a weak-only map move moves this claim,
 /// while a deep clone deliberately starts without the original owner's claim.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct ProofDataClaim {
     owner: Weak<ProofDataCustody>,
     bytes: u64,
     delivery_generation: u64,
+    physical: bool,
+    physical_reported: bool,
+    // Last: retain the original ledger until physical retirement is published.
+    #[cfg(not(target_arch = "wasm32"))]
+    native_original: Option<Arc<crate::demand::NativeDemandReadMeter>>,
+}
+
+impl std::fmt::Debug for ProofDataClaim {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("ProofDataClaim")
+            .field("owner", &self.owner)
+            .field("bytes", &self.bytes)
+            .field("delivery_generation", &self.delivery_generation)
+            .field("physical", &self.physical)
+            .field("physical_reported", &self.physical_reported)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ProofDataClaim {
@@ -206,6 +397,99 @@ impl ProofDataClaim {
         Self {
             owner: Arc::downgrade(owner), bytes,
             delivery_generation: completed.delivery_generation,
+            physical: false, physical_reported: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            native_original: None,
+        }
+    }
+
+    /// Attaches to a primitive already admitted by the containing constructor.
+    /// Its owner destroys the actual payload before destroying this tag.
+    pub(crate) fn control(owner: &Arc<ProofDataCustody>, bytes: u64) -> Self {
+        Self::control_claim(owner, bytes, true)
+    }
+
+    /// Tags an exact primitive admitted directly by the already registered
+    /// original native ledger. Ordinary and child-SDK control tags never emit
+    /// these events or retain permission to release that original allocation.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn native_control(owner: &Arc<ProofDataCustody>, bytes: u64) -> Self {
+        if bytes == 0 { return Self::default(); }
+        let mut completed = owner.completed_data_work.lock();
+        let original = completed.native_original.as_ref().and_then(Weak::upgrade)
+            .expect("native primitives require their registered live original ledger");
+        // Each newly owned primitive has one genuine positive allocation.
+        // At most u64 allocation operations of at most u64 bytes fit in u128.
+        completed.native_control_born += u128::from(bytes);
+        let mut claim = Self::control_claim_in_report(owner, bytes, true, &mut completed);
+        claim.native_original = Some(original);
+        claim
+    }
+
+    /// Certifies only this exact paid physical primitive, not token lineage or
+    /// a retained-footprint estimate. A default tag certifies no allocation.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn is_native_original(
+        &self, original: &Arc<crate::demand::NativeDemandReadMeter>, known_bytes: u64,
+    ) -> bool {
+        if known_bytes == 0 {
+            return self.bytes == 0 && self.native_original.is_none();
+        }
+        self.physical && self.bytes == known_bytes
+            && self.native_original.as_ref().is_some_and(|paid| Arc::ptr_eq(paid, original))
+    }
+
+    /// The actual name/path buffer was admitted by this registered original
+    /// ledger, not imported from a child SDK receipt. It stays DATA custody.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn native_data(owner: &Arc<ProofDataCustody>, bytes: u64) -> Self {
+        if bytes == 0 { return Self::default(); }
+        let mut completed = owner.completed_data_work.lock();
+        let original = completed.native_original.as_ref().and_then(Weak::upgrade)
+            .expect("native DATA requires its registered live original ledger");
+        completed.reported_retained_bytes = completed.reported_retained_bytes.checked_add(bytes)
+            .expect("native DATA fits its admitted original allocation ledger");
+        // Each actual buffer has one birth; u64 bytes * u64 allocation ops
+        // cannot overflow the fixed u128 cumulative original-event counters.
+        completed.native_control_born += u128::from(bytes);
+        owner.retained.fetch_add(bytes, Ordering::AcqRel);
+        Self {
+            owner: Arc::downgrade(owner), bytes,
+            delivery_generation: completed.delivery_generation,
+            physical: false, physical_reported: false,
+            native_original: Some(original),
+        }
+    }
+
+    /// A reached SDK operation has just admitted this new primitive. Its
+    /// original producer imports the completed receipt before marking it standing.
+    pub(crate) fn pending_control(owner: &Arc<ProofDataCustody>, bytes: u64) -> Self {
+        Self::control_claim(owner, bytes, false)
+    }
+
+    fn control_claim(owner: &Arc<ProofDataCustody>, bytes: u64, reported: bool) -> Self {
+        if bytes == 0 { return Self::default(); }
+        let mut completed = owner.completed_data_work.lock();
+        Self::control_claim_in_report(owner, bytes, reported, &mut completed)
+    }
+
+    fn control_claim_in_report(
+        owner: &Arc<ProofDataCustody>,
+        bytes: u64,
+        reported: bool,
+        completed: &mut ProofDataWorkReport,
+    ) -> Self {
+        if reported {
+            completed.reported_physical_bytes = completed.reported_physical_bytes.checked_add(bytes)
+                .expect("constructor control fits its original allocation ledger");
+        }
+        owner.physical_retained.fetch_add(bytes, Ordering::AcqRel);
+        Self {
+            owner: Arc::downgrade(owner), bytes,
+            delivery_generation: completed.delivery_generation,
+            physical: true, physical_reported: reported,
+            #[cfg(not(target_arch = "wasm32"))]
+            native_original: None,
         }
     }
 }
@@ -218,7 +502,23 @@ impl Drop for ProofDataClaim {
     fn drop(&mut self) {
         if let Some(owner) = self.owner.upgrade() {
             let mut completed = owner.completed_data_work.lock();
-            if self.delivery_generation < completed.delivery_generation {
+            #[cfg(not(target_arch = "wasm32"))]
+            let native = self.native_original.is_some();
+            #[cfg(target_arch = "wasm32")]
+            let native = false;
+            #[cfg(not(target_arch = "wasm32"))]
+            if native {
+                completed.native_control_retired += u128::from(self.bytes);
+            }
+            if self.physical {
+                if self.physical_reported || self.delivery_generation < completed.delivery_generation {
+                    completed.reported_physical_bytes = completed.reported_physical_bytes.checked_sub(self.bytes)
+                        .expect("reported control retires with its actual payload");
+                }
+                owner.physical_retained.fetch_sub(self.bytes, Ordering::AcqRel);
+                return;
+            }
+            if native || self.delivery_generation < completed.delivery_generation {
                 completed.reported_retained_bytes = completed.reported_retained_bytes.checked_sub(self.bytes)
                     .expect("reported proof DATA retires with its actual key");
             }
@@ -248,6 +548,29 @@ impl std::ops::DerefMut for CapturedValue {
     fn deref_mut(&mut self) -> &mut Self::Target { &mut self.state }
 }
 
+/// The exact shared map Arc payload. Keys retire their DATA claims before
+/// the final control tag retires this known primitive's admitted payload.
+#[derive(Clone, Debug, Default)]
+struct CapturedMap {
+    entries: BTreeMap<DependencyRegion, CapturedValue>,
+    _control: ProofDataClaim,
+}
+
+impl PartialEq for CapturedMap {
+    fn eq(&self, other: &Self) -> bool { self.entries == other.entries }
+}
+
+impl Eq for CapturedMap {}
+
+impl std::ops::Deref for CapturedMap {
+    type Target = BTreeMap<DependencyRegion, CapturedValue>;
+    fn deref(&self) -> &Self::Target { &self.entries }
+}
+
+impl std::ops::DerefMut for CapturedMap {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.entries }
+}
+
 /// Validated, sorted, and deduplicated checkout dependency proof.
 ///
 /// Construction pays normalization cost once. Equal-generation refresh can
@@ -256,7 +579,7 @@ impl std::ops::DerefMut for CapturedValue {
 /// classification is constant work too.
 #[derive(Clone, Debug)]
 pub struct CheckoutDependencies {
-    captured: Arc<BTreeMap<DependencyRegion, CapturedValue>>,
+    captured: Arc<CapturedMap>,
     name_data_bytes: u64,
     cloned_name_data_bytes: u64,
     data_generation: u64,
@@ -282,7 +605,32 @@ impl CheckoutDependencies {
     /// Arc payload allocated by construction of an empty dependency proof,
     /// excluding allocator and Arc headers.
     pub(crate) const fn empty_logical_owned_bytes() -> usize {
-        std::mem::size_of::<BTreeMap<DependencyRegion, CapturedValue>>()
+        std::mem::size_of::<CapturedMap>()
+    }
+
+    /// Tags only the unique empty map just admitted by its constructor.
+    /// Shared authority proofs are never copied or adopted by this attachment.
+    pub(crate) fn attach_fresh_control_custody(&mut self, owner: &Arc<ProofDataCustody>) -> bool {
+        self.attach_fresh_control_with(owner, ProofDataClaim::control)
+    }
+
+    /// The same unique constructor payload, already admitted by its registered
+    /// original native ledger before later proof construction can fail.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn attach_fresh_native_control_custody(&mut self, owner: &Arc<ProofDataCustody>) -> bool {
+        self.attach_fresh_control_with(owner, ProofDataClaim::native_control)
+    }
+
+    fn attach_fresh_control_with(
+        &mut self, owner: &Arc<ProofDataCustody>,
+        claim: fn(&Arc<ProofDataCustody>, u64) -> ProofDataClaim,
+    ) -> bool {
+        let Some(captured) = Arc::get_mut(&mut self.captured) else { return false; };
+        if !captured.entries.is_empty() || captured._control.bytes != 0 || self.data_generation != 0 {
+            return false;
+        }
+        captured._control = claim(owner, Self::empty_logical_owned_bytes() as u64);
+        true
     }
 
     /// Visits retained name buffers, not opaque BTree node/entry storage.
@@ -352,7 +700,7 @@ impl CheckoutDependencies {
             name_data_bytes: captured.keys().map(|region| dependency_name_bytes(region, false)).sum(),
             cloned_name_data_bytes: captured.keys().map(|region| dependency_name_bytes(region, true)).sum(),
             data_generation: 0,
-            captured: Arc::new(captured),
+            captured: Arc::new(CapturedMap { entries: captured, _control: ProofDataClaim::default() }),
         })
     }
 
@@ -465,7 +813,65 @@ impl CheckoutDependencies {
         &mut self,
         extension: DependencyExtension,
         owner: Option<&Arc<ProofDataCustody>>,
+        admit: impl FnMut(u64, u64, u64, u64) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.commit_with_data_claims(
+            extension, admit,
+            |bytes| Ok(owner.map(|owner| ProofDataClaim::pending_control(owner, bytes)).unwrap_or_default()),
+            |bytes, _| Ok(ProofDataClaim::new(owner, bytes)),
+        )
+    }
+
+    /// Moves paid staged keys and admits only the actual COW map constructor
+    /// on the same original ledger. The caller commits this prepared proof
+    /// only after every candidate root replacement has also succeeded.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn commit_with_original_data_custody(
+        &mut self,
+        extension: DependencyExtension,
+        owner: &Arc<ProofDataCustody>,
+        staged: &mut crate::NativeAllocation,
+        original: &crate::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<(), crate::FsError> {
+        if !staged.work().shares_ledger(original) || !original.owns_native_checkout_token(owner) {
+            return Err(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout));
+        }
+        cancellation.check()?;
+        original.with_native_checkout_controls(|scope, allocations, work, budget, cancellation| {
+            self.commit_with_data_claims(
+                extension,
+                |bytes, operations, copied, items| {
+                    cancellation.check()?;
+                    let delta = WorkCounters { bytes_copied: copied, items_examined: items,
+                        ..WorkCounters::UNCHARGED };
+                    work.admit(&delta, &budget)?;
+                    // Zero-op moved keys are exclusively paid by `staged`.
+                    if operations != 0 || copied != 0 {
+                        allocations.claim_bytes(bytes, operations, work, budget)
+                            .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
+                    }
+                    work.charge(&delta, &budget)?;
+                    Ok(())
+                },
+                |bytes| Ok(ProofDataClaim::native_control(owner, bytes)),
+                |bytes, copied| {
+                    if copied {
+                        Ok(ProofDataClaim::native_data(owner, bytes))
+                    } else {
+                        staged.transfer_checkout_data_bytes(bytes, owner, scope).map_err(Into::into)
+                    }
+                },
+            )
+        })
+    }
+
+    fn commit_with_data_claims<E: From<WorkError>>(
+        &mut self,
+        extension: DependencyExtension,
         mut admit: impl FnMut(u64, u64, u64, u64) -> Result<(), E>,
+        mut control: impl FnMut(u64) -> Result<ProofDataClaim, E>,
+        mut data: impl FnMut(u64, bool) -> Result<ProofDataClaim, E>,
     ) -> Result<(), E> {
         let mut changes = false;
         for region in extension.staged.keys() {
@@ -489,12 +895,18 @@ impl CheckoutDependencies {
                 operations = operations.checked_add(u64::from(dependency_name_bytes(region, true) != 0))
                     .ok_or(WorkError::Overflow)?;
             }
-            // Only actual name buffers are DATA. Tree layout and inline
-            // key/value control metadata are not fabricated logical buffers.
-            admit(self.cloned_name_data_bytes, operations, self.cloned_name_data_bytes, 0)?;
+            // Admit the actual new Arc payload with its actual name buffers
+            // atomically: denial must not report a copy that never occurred.
+            // Opaque BTree nodes and allocator/Arc headers remain excluded.
+            let control_bytes = Self::empty_logical_owned_bytes() as u64;
+            let bytes = self.cloned_name_data_bytes.checked_add(control_bytes)
+                .ok_or(WorkError::Overflow)?;
+            let operations = operations.checked_add(1).ok_or(WorkError::Overflow)?;
+            admit(bytes, operations, self.cloned_name_data_bytes, 0)?;
             let captured = Arc::make_mut(&mut self.captured);
+            captured._control = control(control_bytes)?;
             for (region, value) in captured.iter_mut() {
-                value.data = ProofDataClaim::new(owner, dependency_name_bytes(region, false));
+                value.data = data(dependency_name_bytes(region, false), true)?;
             }
             self.name_data_bytes = self.cloned_name_data_bytes;
         }
@@ -514,7 +926,7 @@ impl CheckoutDependencies {
                     let cloned_name_data_bytes = self.cloned_name_data_bytes
                         .checked_add(dependency_name_bytes(&region, true)).ok_or(WorkError::Overflow)?;
                     admit(retained, 0, 0, 0)?;
-                    let data = ProofDataClaim::new(owner, retained);
+                    let data = data(retained, false)?;
                     captured.insert(region, CapturedValue { state: CapturedState { expected, usage }, data });
                     self.name_data_bytes = name_data_bytes;
                     self.cloned_name_data_bytes = cloned_name_data_bytes;
@@ -529,26 +941,82 @@ impl CheckoutDependencies {
     /// different states.
     #[cfg(any(feature = "native-mount", test))]
     pub(crate) fn merged(&self, other: &Self) -> Option<Self> {
+        let mut work = WorkCounters::default();
+        let mut allocations = super::allocation::AllocationLedger::default();
+        self.merged_with_data_admission::<WorkError>(
+            other, None, |bytes, operations, copied, items| {
+                let mut next = work.checked_add(WorkCounters {
+                    bytes_copied: copied, items_examined: items, ..WorkCounters::default()
+                })?;
+                next.verify(WorkBudget::UNBOUNDED)?;
+                allocations.claim_bytes(bytes, operations, &mut next, WorkBudget::UNBOUNDED)
+                    .map_err(|error| error.into_work_or(WorkError::Overflow))?;
+                work = next;
+                Ok(())
+            },
+        ).ok().flatten()
+    }
+
+    /// The same merge engine, admitting each owned name before cloning it.
+    /// Inline entries and opaque BTree nodes are not logical DATA buffers.
+    #[cfg(any(feature = "native-mount", test))]
+    pub(crate) fn merged_with_data_admission<E: From<WorkError>>(
+        &self,
+        other: &Self,
+        owner: Option<&Arc<ProofDataCustody>>,
+        mut admit: impl FnMut(u64, u64, u64, u64) -> Result<(), E>,
+    ) -> Result<Option<Self>, E> {
         if Arc::ptr_eq(&self.captured, &other.captured) {
-            return Some(self.clone());
+            return Ok(Some(self.clone()));
         }
-        let mut merged = self.clone();
-        let captured = Arc::make_mut(&mut merged.captured);
-        merged.name_data_bytes = merged.cloned_name_data_bytes;
-        merged.data_generation = merged.data_generation.checked_add(1)?;
+        let generation = self.data_generation.checked_add(1).ok_or(WorkError::Overflow)?;
+        let mut captured: BTreeMap<DependencyRegion, CapturedValue> = BTreeMap::new();
+        let mut name_data_bytes = 0_u64;
+        for (region, state) in self.captured.iter() {
+            admit(0, 0, 0, 1)?;
+            let bytes = dependency_name_bytes(region, true);
+            let retained = name_data_bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
+            admit(bytes, u64::from(bytes != 0), bytes, 0)?;
+            let region = region.clone();
+            let data = ProofDataClaim::new(owner, dependency_name_bytes(&region, false));
+            captured.insert(region, CapturedValue { state: state.state, data });
+            name_data_bytes = retained;
+        }
         for (region, state) in other.captured.iter() {
+            admit(0, 0, 0, 1)?;
             match captured.get_mut(region) {
-                Some(existing) if existing.expected != state.expected => return None,
+                Some(existing) if existing.expected != state.expected => return Ok(None),
                 Some(existing) => existing.usage = existing.usage.with(state.usage),
                 None => {
+                    let bytes = dependency_name_bytes(region, true);
+                    let retained = name_data_bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
+                    admit(bytes, u64::from(bytes != 0), bytes, 0)?;
                     let region = region.clone();
-                    merged.name_data_bytes += dependency_name_bytes(&region, false);
-                    merged.cloned_name_data_bytes += dependency_name_bytes(&region, true);
-                    captured.insert(region, state.clone());
+                    let data = ProofDataClaim::new(owner, dependency_name_bytes(&region, false));
+                    captured.insert(region, CapturedValue { state: state.state, data });
+                    name_data_bytes = retained;
                 }
             }
         }
-        Some(merged)
+        // The new Arc owns this exact map control payload, not a guessed
+        // per-entry/node allocation. Stack-resident merge control is excluded.
+        admit(Self::empty_logical_owned_bytes() as u64, 1, 0, 0)?;
+        let control = owner.map(|owner| ProofDataClaim::pending_control(
+            owner, Self::empty_logical_owned_bytes() as u64,
+        )).unwrap_or_default();
+        Ok(Some(Self {
+            captured: Arc::new(CapturedMap { entries: captured, _control: control }),
+            name_data_bytes,
+            cloned_name_data_bytes: name_data_bytes,
+            data_generation: generation,
+        }))
+    }
+
+    /// An allocation-free seal: holding its Arc makes any later write COW.
+    #[cfg(feature = "native-mount")]
+    pub(crate) fn same_capture(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.captured, &other.captured)
+            && self.data_generation == other.data_generation
     }
 
     fn extend(
@@ -732,6 +1200,9 @@ pub enum RebaseError<E: std::error::Error> {
     /// Work exceeded or overflowed the admitted budget.
     #[error(transparent)]
     Work(#[from] WorkError),
+    /// A bounded conflict result could not be allocated.
+    #[error("safe rebase conflict allocation failed")]
+    AllocationFailed,
 }
 
 /// Compares only captured regions against a candidate generation.
@@ -828,68 +1299,181 @@ pub async fn classify_rebase_async<P: AsyncRebaseProbe>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<RebaseReceipt, OperationFailure<RebaseError<P::Error>>> {
-    if base == candidate {
-        return Ok(RebaseReceipt {
-            decision: RebaseDecision::Safe {
-                generation: candidate,
-            },
-            work: WorkCounters::default(),
-        });
+    let mut accounting = super::allocation::KernelAccounting::standalone(budget, cancellation);
+    let adapter = StandaloneClassificationProbe(probe);
+    let classified = classify_rebase_with_accounting(
+        &adapter, base, candidate, dependencies, maximum_conflicts, &mut accounting, cancellation,
+    ).await;
+    let work = accounting.spent();
+    match classified {
+        Ok((decision, allocation)) => {
+            drop(allocation);
+            Ok(RebaseReceipt { decision, work })
+        }
+        Err(error) => Err(OperationFailure::new(match error {
+            ClassifyRebaseFailure::Probe(error) => RebaseError::Probe(error),
+            ClassifyRebaseFailure::ZeroConflictLimit => RebaseError::ZeroConflictLimit,
+            ClassifyRebaseFailure::Accounting(crate::FsError::Work(error)) => RebaseError::Work(error),
+            ClassifyRebaseFailure::Accounting(crate::FsError::Cancelled(_)) => RebaseError::Cancelled,
+            ClassifyRebaseFailure::Accounting(_) => RebaseError::AllocationFailed,
+        }, work)),
     }
-    if maximum_conflicts == 0 {
-        return Err(OperationFailure::before_work(
-            RebaseError::ZeroConflictLimit,
-        ));
-    }
-    let mut work = WorkCounters::default();
-    let mut conflicts = Vec::new();
-    let mut truncated = false;
-    for (region, captured) in dependencies.captured.iter() {
-        cancellation
-            .check()
-            .map_err(|_| OperationFailure::new(RebaseError::Cancelled, work))?;
-        work = work
-            .checked_add(WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::default()
-            })
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        let remaining = work
-            .remaining(budget)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        let actual = probe
-            .probe_async(candidate, region, remaining, cancellation)
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, RebaseError::Probe))?;
-        work = work
-            .checked_add(actual.work)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        work.verify(budget)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        if actual.value != captured.expected {
-            if u32::try_from(conflicts.len()).unwrap_or(u32::MAX) < maximum_conflicts {
-                conflicts.push(RebaseConflict {
-                    region: region.clone(),
-                    usage: captured.usage,
-                    expected: captured.expected,
-                    actual: actual.value,
-                });
-            } else {
-                truncated = true;
+}
+
+/// Exact-region provider for the canonical classification engine. Native
+/// implementations borrow the original journal at each authenticated leaf.
+pub(crate) trait AccountingRebaseProbe {
+    type Error;
+    fn probe_with_accounting(
+        &self,
+        generation: GenerationId,
+        region: &DependencyRegion,
+        accounting: &mut super::allocation::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = Result<DependencyState, ClassifyRebaseFailure<Self::Error>>>;
+}
+
+pub(crate) enum ClassifyRebaseFailure<E> {
+    Probe(E),
+    Accounting(crate::FsError),
+    ZeroConflictLimit,
+}
+
+struct StandaloneClassificationProbe<'a, P>(&'a P);
+
+impl<P: AsyncRebaseProbe> AccountingRebaseProbe for StandaloneClassificationProbe<'_, P> {
+    type Error = P::Error;
+    async fn probe_with_accounting(
+        &self,
+        generation: GenerationId,
+        region: &DependencyRegion,
+        accounting: &mut super::allocation::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<DependencyState, ClassifyRebaseFailure<Self::Error>> {
+        // This adapter is constructed only by the standalone public API.
+        let budget = accounting.remaining().map_err(ClassifyRebaseFailure::Accounting)?;
+        match self.0.probe_async(generation, region, budget, cancellation).await {
+            Ok(receipt) => {
+                retain_standalone_probe_work(accounting, receipt.work)
+                    .map_err(ClassifyRebaseFailure::Accounting)?;
+                Ok(receipt.value)
+            }
+            Err(failure) => {
+                // Probe failures retain the work that actually happened,
+                // including an over-budget measured backend receipt.
+                retain_standalone_probe_work(accounting, *failure.work)
+                    .map_err(ClassifyRebaseFailure::Accounting)?;
+                Err(ClassifyRebaseFailure::Probe(failure.error))
             }
         }
     }
-    let decision = if conflicts.is_empty() {
-        RebaseDecision::Safe {
-            generation: candidate,
+}
+
+fn retain_standalone_probe_work(
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+    delta: WorkCounters,
+) -> Result<(), crate::FsError> {
+    accounting.with_allocations(|_, work, budget, _| {
+        *work = work.checked_add(delta)?;
+        work.verify(budget)?;
+        Ok(())
+    })
+}
+
+/// Classifies the borrowed proof without copying its shared captured map.
+/// The returned guard follows the decision and owns precisely its conflict
+/// vector and copied names; neither generation's unrelated regions are read.
+pub(crate) async fn classify_rebase_with_accounting<P: AccountingRebaseProbe>(
+    probe: &P,
+    base: GenerationId,
+    candidate: GenerationId,
+    dependencies: &CheckoutDependencies,
+    maximum_conflicts: u32,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(RebaseDecision, super::allocation::KernelOwnedAllocation), ClassifyRebaseFailure<P::Error>> {
+    use super::persistent_point::{Owned, absorb};
+    accounting.check().map_err(ClassifyRebaseFailure::Accounting)?;
+    if base == candidate {
+        return accounting.with_owned_allocations(|_, _, _, _| {
+            Ok(RebaseDecision::Safe { generation: candidate })
+        }).map_err(ClassifyRebaseFailure::Accounting);
+    }
+    if maximum_conflicts == 0 { return Err(ClassifyRebaseFailure::ZeroConflictLimit); }
+    let mut conflicts = Owned::<Vec<RebaseConflict>>::allocate(0, accounting)
+        .map_err(ClassifyRebaseFailure::Accounting)?;
+    let result = async {
+        let mut truncated = false;
+        for (region, captured) in dependencies.captured.iter() {
+            cancellation.check().map_err(|error| ClassifyRebaseFailure::Accounting(error.into()))?;
+            accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })
+                .map_err(ClassifyRebaseFailure::Accounting)?;
+            let actual = probe.probe_with_accounting(candidate, region, accounting, cancellation)
+                .await?;
+            if actual == captured.expected { continue; }
+            if conflicts.value.len() >= maximum_conflicts as usize {
+                truncated = true;
+                continue;
+            }
+            conflicts.ensure_for_push(maximum_conflicts as usize, accounting)
+                .map_err(ClassifyRebaseFailure::Accounting)?;
+            let (region, allocation, bytes) = clone_conflict_region(region, accounting)
+                .map_err(ClassifyRebaseFailure::Accounting)?;
+            if let Err(error) = absorb(&mut conflicts.allocation, allocation) {
+                drop(region);
+                return Err(ClassifyRebaseFailure::Accounting(error));
+            }
+            conflicts.bytes = conflicts.bytes.checked_add(bytes)
+                .ok_or_else(|| ClassifyRebaseFailure::Accounting(WorkError::Overflow.into()))?;
+            conflicts.value.push(RebaseConflict {
+                region, usage: captured.usage, expected: captured.expected, actual,
+            });
         }
-    } else {
-        RebaseDecision::Conflicted {
-            conflicts,
-            truncated,
+        Ok(truncated)
+    }.await;
+    match result {
+        Ok(truncated) => {
+            let decision = if conflicts.value.is_empty() {
+                RebaseDecision::Safe { generation: candidate }
+            } else {
+                RebaseDecision::Conflicted { conflicts: conflicts.value, truncated }
+            };
+            Ok((decision, conflicts.allocation))
         }
-    };
-    Ok(RebaseReceipt { decision, work })
+        Err(error) => {
+            conflicts.retire(accounting).map_err(ClassifyRebaseFailure::Accounting)?;
+            Err(error)
+        }
+    }
+}
+
+fn clone_conflict_region(
+    region: &DependencyRegion,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+) -> Result<(DependencyRegion, super::allocation::KernelOwnedAllocation, u64), crate::FsError> {
+    use super::persistent_btree::{Format, TreeFormat};
+    match region {
+        DependencyRegion::DirectoryName { directory_id, name } => {
+            let (name, allocation) = super::persistent_io::clone_key_with_accounting::<TreeFormat>(
+                name, u32::MAX, accounting,
+            )?;
+            let bytes = TreeFormat::key_owned_bytes(&name);
+            Ok((DependencyRegion::DirectoryName { directory_id: *directory_id, name }, allocation, bytes))
+        }
+        DependencyRegion::DirectoryRange { directory_id, after: Some(after), maximum_entries } => {
+            let (after, allocation) = super::persistent_io::clone_key_with_accounting::<TreeFormat>(
+                after, u32::MAX, accounting,
+            )?;
+            let bytes = TreeFormat::key_owned_bytes(&after);
+            Ok((DependencyRegion::DirectoryRange {
+                directory_id: *directory_id, after: Some(after), maximum_entries: *maximum_entries,
+            }, allocation, bytes))
+        }
+        _ => {
+            let (region, allocation) = accounting.with_owned_allocations(|_, _, _, _| Ok(region.clone()))?;
+            Ok((region, allocation, 0))
+        }
+    }
 }
 
 /// Dependency-proof construction errors.

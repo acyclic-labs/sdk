@@ -361,7 +361,8 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         approval: InteractionId, authority: NativeProcessAuthority,
         work: &NativeMaterializationWork,
     ) -> std::result::Result<Self, NativeReceiptError> {
-        super::super::native_execution::native_future_typed(|| async move {
+        crate::NativeFutureBundle::new(work, || async move {
+            Ok::<_, Error>((async move {
             let (outcome, outcome_custody) = owner.outcome_with_native_work(work).await?;
             if outcome.is_none() { owner.verify_with_native_work(true, work).await?; }
             owner.require_volume_grant_with_native_work(plan.request.volume(),
@@ -397,15 +398,19 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             drop(outcome); drop(outcome_custody);
             Ok(Self { owner, command, plan, admission: NativeAdmission::ReceiptOnly,
                 view: None, approval, authority, supervisor, effect_id, history,
-                _native_work: Some(work.clone()), _custody: Some(custody) })
-        }, work)?.await
+                _native_work: Some(work.clone()),
+                _custody: Some(finite_binding::shared_custody(custody, work)?) })
+            }).await)
+        })?.await?
     }
     /// Observe the original attempt on the caller's original native work ledger.
     /// Previous capture/publication work remains receipt data, never query work.
     pub async fn receipt_with_native_work(
         &self, attempt: crate::EffectAttemptId, work: &NativeMaterializationWork,
     ) -> std::result::Result<Option<NativeProcessReceipt>, NativeReceiptError> {
-        super::super::native_execution::native_future_typed(|| self.receipt_original(attempt, Some(work)), work)?.await
+        crate::NativeFutureBundle::new(work, || async move {
+            Ok::<_, Error>(self.receipt_original(attempt, Some(work)).await)
+        })?.await?
     }
 
     pub(super) async fn receipt_original(

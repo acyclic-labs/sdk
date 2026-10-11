@@ -676,11 +676,12 @@ where W::Error: From<NativeExchangeError> {
 pub fn exchange_native_entries_with_budget(
     left: &Path, right: &Path, budget: crate::WorkBudget,
     cancellation: &crate::CancellationToken,
-) -> crate::MeasuredResult<crate::OperationReceipt<()>, NativeExchangeError> {
-    let work = crate::materializer::NativeMaterializationWork::new(budget, cancellation);
+) -> Result<crate::OperationReceipt<()>, (NativeExchangeError, crate::WorkCounters)> {
+    let work = crate::materializer::NativeMaterializationWork::new(budget, cancellation)
+        .map_err(|(cause, work)| (NativeExchangeError::from(cause), work))?;
     exchange_native_entries_measured(left, right, &work)
         .map(|value| crate::OperationReceipt { value, work: work.receipt() })
-        .map_err(|error| crate::OperationFailure::new(error.into(), work.receipt()))
+        .map_err(|error| (error.into(), work.receipt()))
 }
 
 /// Uses the caller's operation-wide ledger rather than starting a nested meter.
@@ -714,11 +715,12 @@ pub(crate) fn recover_native_entry_exchange_measured(
 #[cfg(feature = "native-watch")]
 pub fn recover_native_entry_exchange_with_budget(
     live: &Path, budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
-) -> crate::MeasuredResult<crate::OperationReceipt<()>, NativeExchangeError> {
-    let work = crate::materializer::NativeMaterializationWork::new(budget, cancellation);
+) -> Result<crate::OperationReceipt<()>, (NativeExchangeError, crate::WorkCounters)> {
+    let work = crate::materializer::NativeMaterializationWork::new(budget, cancellation)
+        .map_err(|(cause, work)| (NativeExchangeError::from(cause), work))?;
     recover_native_entry_exchange_measured(live, &work)
         .map(|value| crate::OperationReceipt { value, work: work.receipt() })
-        .map_err(|error| crate::OperationFailure::new(error.into(), work.receipt()))
+        .map_err(|error| (error.into(), work.receipt()))
 }
 
 const NATIVE_EXCHANGE_JOURNAL_VERSION: u32 = 1;
@@ -921,7 +923,7 @@ pub fn exchange_native_entries(left: &Path, right: &Path) -> Result<(), NativeEx
     #[cfg(feature = "native-watch")]
     {
         exchange_native_entries_with_budget(left, right, crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()).map(|_| ()).map_err(|failure| failure.error)
+            &crate::CancellationToken::new()).map(|_| ()).map_err(|failure| failure.0)
     }
     #[cfg(not(feature = "native-watch"))]
     {
@@ -944,7 +946,8 @@ pub(crate) fn recover_native_entry_exchange(live: &Path) -> Result<(), NativeExc
     #[cfg(feature = "native-watch")]
     {
         let work = crate::materializer::NativeMaterializationWork::new(
-            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .map_err(|(cause, _)| NativeExchangeError::from(cause))?;
         return recover_native_entry_exchange_measured(live, &work).map_err(Into::into);
     }
     #[cfg(all(windows, not(feature = "native-watch")))]
@@ -1329,7 +1332,7 @@ fn recover_exchange(
 #[cfg(feature = "native-watch")]
 fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
     exchange_native_entries_with_budget(live, prepared, crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new()).map(|_| ()).map_err(|failure| failure.error)
+        &crate::CancellationToken::new()).map(|_| ()).map_err(|failure| failure.0)
 }
 
 #[cfg(all(target_os = "macos", not(feature = "native-watch")))]
@@ -1399,7 +1402,8 @@ mod tests {
     #[cfg(all(windows, feature = "native-watch"))]
     fn measured_entry_witness_fixture(live: &Path, prepared: &Path, witness: &Path) {
         let cancellation = crate::CancellationToken::new();
-        let ledger = crate::materializer::NativeMaterializationWork::new(finite_entry_budget(), &cancellation);
+        let ledger = crate::materializer::NativeMaterializationWork::new(finite_entry_budget(), &cancellation)
+            .expect("original native meter");
         let mut work = &ledger;
         let parent = crate::native_host::open_root_directory_with_work(live.parent().expect("parent"), &mut work)
             .expect("held fixture parent");
@@ -1427,12 +1431,12 @@ mod tests {
         let cancellation = crate::CancellationToken::new();
         let failure = exchange_native_entries_with_budget(&live, &prepared,
             crate::WorkBudget::default(), &cancellation).expect_err("zero allowance");
-        assert_eq!(*failure.work, crate::WorkCounters::default());
+        assert_eq!(failure.1, crate::WorkCounters::default());
         cancellation.cancel();
         let failure = exchange_native_entries_with_budget(&live, &prepared,
             finite_entry_budget(), &cancellation).expect_err("cancelled");
-        assert!(matches!(failure.error, NativeExchangeError::Cancelled));
-        assert_eq!(*failure.work, crate::WorkCounters::default());
+        assert!(matches!(failure.0, NativeExchangeError::Cancelled));
+        assert_eq!(failure.1, crate::WorkCounters::default());
         assert_eq!(std::fs::read(&live).expect("original preserved"), b"before");
         assert_eq!(std::fs::read(&prepared).expect("prepared preserved"), b"after");
     }
@@ -1474,11 +1478,11 @@ mod tests {
             let cancellation = crate::CancellationToken::new();
             let failure = exchange_native_entries_with_budget(&live, &prepared, budget, &cancellation)
                 .expect_err("journal admission denied before physical edits");
-            assert!(matches!(failure.error, NativeExchangeError::Work(_)));
-            assert!(failure.work.backend_write_operations > 0);
-            assert_eq!(failure.work.durability_operations, 0);
-            if deny_bytes { assert_eq!(failure.work.output_bytes, 0); }
-            else { assert!(failure.work.output_bytes > 0); }
+            assert!(matches!(failure.0, NativeExchangeError::Work(_)));
+            assert!(failure.1.backend_write_operations > 0);
+            assert_eq!(failure.1.durability_operations, 0);
+            if deny_bytes { assert_eq!(failure.1.output_bytes, 0); }
+            else { assert!(failure.1.output_bytes > 0); }
             assert!(!witness.exists());
             assert!(!scratch.exists());
             assert_eq!(std::fs::read(&live).expect("original retained"), b"before");
@@ -1502,9 +1506,9 @@ mod tests {
         budget.durability_operations = 0;
         let failure = exchange_native_entries_with_budget(&live, &prepared,
             budget, &crate::CancellationToken::new()).expect_err("durability denied");
-        assert!(matches!(failure.error, NativeExchangeError::Work(_)));
-        assert_eq!(failure.work.backend_write_operations, 1);
-        assert_eq!(failure.work.durability_operations, 0);
+        assert!(matches!(failure.0, NativeExchangeError::Work(_)));
+        assert_eq!(failure.1.backend_write_operations, 1);
+        assert_eq!(failure.1.durability_operations, 0);
         assert_eq!(std::fs::read(&live).expect("actual published bytes"), b"after");
         assert_eq!(std::fs::read(&prepared).expect("actual displaced bytes"), b"before");
     }
@@ -1519,7 +1523,7 @@ mod tests {
         std::fs::write(root.join("live"), b"before").expect("original");
         std::fs::write(root.join("prepared"), b"after").expect("prepared");
         let ledger = crate::materializer::NativeMaterializationWork::new(
-            finite_entry_budget(), &crate::CancellationToken::new());
+            finite_entry_budget(), &crate::CancellationToken::new()).expect("original native meter");
         let mut work = &ledger;
         let parent = crate::native_host::open_root_directory_with_work(&root, &mut work).expect("original held parent");
         std::fs::rename(&root, &saved).expect("displace original root");
@@ -1549,8 +1553,8 @@ mod tests {
         let cancellation = crate::CancellationToken::new();
         let failure = exchange_native_entries_with_budget(&live, &other, finite_entry_budget(), &cancellation)
             .expect_err("original request path identity remains authoritative");
-        assert!(matches!(failure.error, NativeExchangeError::IncompatibleJournal));
-        assert_eq!(failure.work.backend_write_operations, 0);
+        assert!(matches!(failure.0, NativeExchangeError::IncompatibleJournal));
+        assert_eq!(failure.1.backend_write_operations, 0);
         assert!(witness.exists());
         assert_eq!(std::fs::read(&live).expect("original retained"), b"before");
         assert_eq!(std::fs::read(&prepared).expect("original preparation retained"), b"after");
@@ -1631,9 +1635,9 @@ mod tests {
             std::fs::write(&live, b"user replacement").expect("user replacement");
             let failure = recover_native_entry_exchange_with_budget(&live, finite_entry_budget(),
                 &crate::CancellationToken::new()).expect_err("replacement is not original authority");
-            assert!(matches!(failure.error, NativeExchangeError::IncompatibleJournal));
-            assert!(failure.work.backend_read_operations > 0);
-            assert_eq!(failure.work.backend_write_operations, 0);
+            assert!(matches!(failure.0, NativeExchangeError::IncompatibleJournal));
+            assert!(failure.1.backend_read_operations > 0);
+            assert_eq!(failure.1.backend_write_operations, 0);
             assert_eq!(std::fs::read(&live).expect("user replacement retained"), b"user replacement");
             assert_eq!(std::fs::read(&saved).expect("original binding retained"),
                 if completed { b"after".as_slice() } else { b"before".as_slice() });
@@ -1656,7 +1660,7 @@ mod tests {
         std::fs::write(&prepared, b"after").expect("prepared");
         measured_entry_witness_fixture(&live, &prepared, &witness);
         let ledger = crate::materializer::NativeMaterializationWork::new(
-            finite_entry_budget(), &crate::CancellationToken::new());
+            finite_entry_budget(), &crate::CancellationToken::new()).expect("original native meter");
         let mut work = &ledger;
         let parent = crate::native_host::open_root_directory_with_work(&root, &mut work).expect("original held root");
         std::fs::rename(&root, &saved).expect("displace original physical parent");
@@ -1689,10 +1693,10 @@ mod tests {
         exact_prefix.backend_write_operations = 0;
         let failure = recover_native_entry_exchange_with_budget(&live, exact_prefix, &cancellation)
             .expect_err("reject only the actual cleanup mutation");
-        assert!(matches!(failure.error, NativeExchangeError::Work(_)));
-        assert_eq!(failure.work.backend_write_operations, 0);
-        assert_eq!(failure.work.backend_read_operations, baseline.work.backend_read_operations);
-        assert_eq!(failure.work.source_bytes_read, baseline.work.source_bytes_read);
+        assert!(matches!(failure.0, NativeExchangeError::Work(_)));
+        assert_eq!(failure.1.backend_write_operations, 0);
+        assert_eq!(failure.1.backend_read_operations, baseline.work.backend_read_operations);
+        assert_eq!(failure.1.source_bytes_read, baseline.work.source_bytes_read);
         assert!(witness.exists());
         assert_eq!(std::fs::read(&live).expect("original retained"), b"before");
         assert_eq!(std::fs::read(&prepared).expect("prepared retained"), b"after");

@@ -34,6 +34,7 @@ pub(crate) trait NativeHostWork {
     type Allocation;
     type CleanupWrite;
     fn io_error_kind(error: &Self::Error) -> Option<io::ErrorKind>;
+    fn allocation_failed(error: std::collections::TryReserveError) -> Self::Error;
     fn invalid_request() -> Self::Error {
         io::Error::new(io::ErrorKind::InvalidInput, "invalid native source request").into()
     }
@@ -41,6 +42,12 @@ pub(crate) trait NativeHostWork {
     fn admit(&mut self, delta: WorkCounters) -> Result<(), Self::Error>;
     fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error>;
     fn claim(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error>;
+    /// Reserves bounded logical output for an opaque standard-library decode.
+    /// Its hidden allocator behavior is not reported as a fabricated attempt.
+    fn reserve_opaque_decode(&mut self, logical_max: u64) -> Result<Self::Allocation, Self::Error>;
+    /// Records completed physical backing and updates its existing guard
+    /// before any late refusal; errors must not erase newly owned bytes.
+    fn reconcile_allocation(&mut self, allocation: &mut Self::Allocation, actual: u64) -> Result<(), Self::Error>;
     fn release(&mut self, allocation: Self::Allocation) -> Result<(), Self::Error>;
     /// Records the actual started request before invoking host IO. Shared
     /// meters must release their admission leaf lock before `operation`.
@@ -67,6 +74,7 @@ impl NativeHostWork for DemandWork {
         match error { DemandError::Io(error) => Some(error.kind()), _ => None }
     }
     fn invalid_request() -> Self::Error { DemandError::InvalidRequest }
+    fn allocation_failed(error: std::collections::TryReserveError) -> Self::Error { DemandError::Allocation(error) }
     fn check(&self) -> Result<(), Self::Error> { DemandWork::check(self) }
     fn admit(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
         self.check()?;
@@ -74,6 +82,13 @@ impl NativeHostWork for DemandWork {
     }
     fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error> { DemandWork::record(self, delta) }
     fn claim(&mut self, bytes: u64) -> Result<u64, Self::Error> { self.allocate(bytes)?; Ok(bytes) }
+    fn reserve_opaque_decode(&mut self, logical_max: u64) -> Result<Self::Allocation, Self::Error> {
+        self.adopt(logical_max)?;
+        Ok(logical_max)
+    }
+    fn reconcile_allocation(&mut self, allocation: &mut Self::Allocation, actual: u64) -> Result<(), Self::Error> {
+        self.reconcile_native_allocation(allocation, actual)
+    }
     fn release(&mut self, bytes: u64) -> Result<(), Self::Error> { DemandWork::release(self, bytes) }
     fn reserve_cleanup_write(&mut self) -> Result<u64, Self::Error> {
         self.check()?;
@@ -109,6 +124,9 @@ impl NativeHostWork for &crate::materializer::NativeMaterializationWork {
     fn io_error_kind(error: &Self::Error) -> Option<io::ErrorKind> {
         match error { crate::materializer::NativeTreeMaterializationError::Io(error) => Some(error.kind()), _ => None }
     }
+    fn allocation_failed(error: std::collections::TryReserveError) -> Self::Error {
+        crate::materializer::NativeTreeMaterializationError::AllocationFailed(error)
+    }
     fn check(&self) -> Result<(), Self::Error> {
         crate::materializer::NativeMaterializationWork::admit(self, WorkCounters::UNCHARGED)
     }
@@ -118,6 +136,12 @@ impl NativeHostWork for &crate::materializer::NativeMaterializationWork {
     fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error> { self.record_admitted(delta) }
     fn claim(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error> {
         crate::materializer::NativeMaterializationWork::claim(self, bytes)
+    }
+    fn reserve_opaque_decode(&mut self, logical_max: u64) -> Result<Self::Allocation, Self::Error> {
+        self.retain_owned(logical_max)
+    }
+    fn reconcile_allocation(&mut self, allocation: &mut Self::Allocation, actual: u64) -> Result<(), Self::Error> {
+        allocation.reconcile_capacity(actual)
     }
     fn release(&mut self, allocation: Self::Allocation) -> Result<(), Self::Error> { drop(allocation); Ok(()) }
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error> {
@@ -263,12 +287,12 @@ pub(crate) fn canonical_directory_wide_with_work<W: NativeHostWork<Error = Deman
 /// Resolves a source root without hiding CWD retries or native control I/O.
 /// The returned native path's capacity remains claimed in `work`.
 #[cfg(unix)]
-pub(crate) fn normalize_root_path_measured(
-    path: &Path, work: &mut DemandWork,
+pub(crate) fn normalize_root_path_measured<W: NativeHostWork<Error = DemandError, Allocation = u64>>(
+    path: &Path, work: &mut W,
 ) -> Result<std::path::PathBuf, DemandError> {
     use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
     work.check()?;
-    if path.is_absolute() { return clone_path_measured(path, work); }
+    if path.is_absolute() { return clone_path_with_work(path, work).map(|(path, _allocation)| path); }
     let cwd = cwd_path_measured(work)?;
     let cwd_capacity = cwd.capacity() as u64;
     let result = (|| {
@@ -342,7 +366,7 @@ fn cwd_metadata_flags() -> i32 {
 }
 
 #[cfg(target_os = "linux")]
-fn cwd_path_measured(work: &mut DemandWork) -> Result<std::path::PathBuf, DemandError> {
+fn cwd_path_measured<W: NativeHostWork<Error = DemandError, Allocation = u64>>(work: &mut W) -> Result<std::path::PathBuf, DemandError> {
     use std::os::unix::ffi::OsStringExt as _;
     // The Linux syscall itself stops at PATH_MAX; glibc's hidden ancestry
     // fallback is deliberately replaced by the shared measured reader below.
@@ -406,7 +430,7 @@ fn cwd_path_measured(work: &mut DemandWork) -> Result<std::path::PathBuf, Demand
 }
 
 #[cfg(target_os = "macos")]
-fn cwd_path_measured(work: &mut DemandWork) -> Result<std::path::PathBuf, DemandError> {
+fn cwd_path_measured<W: NativeHostWork<Error = DemandError, Allocation = u64>>(work: &mut W) -> Result<std::path::PathBuf, DemandError> {
     use std::os::fd::AsRawFd as _;
     use std::os::unix::ffi::OsStringExt as _;
     let current = cwd_open_measured(c".", work)?;
@@ -426,7 +450,9 @@ fn cwd_path_measured(work: &mut DemandWork) -> Result<std::path::PathBuf, Demand
             }
         }
         for (index, byte) in bytes.iter().enumerate() {
-            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+            let step = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
+            work.admit(step)?;
+            work.record(step)?;
             if *byte == 0 {
                 if index == 0 || bytes[0] != b'/' {
                     return Err(io::Error::from_raw_os_error(libc::ENOENT).into());
@@ -843,6 +869,8 @@ pub(crate) enum NativeOpenOptions {
     Read,
     ReadWrite,
     CreateNew,
+    /// Creates only an absent regular leaf, retaining a read/write descriptor.
+    ReadWriteCreateNew,
     ReadWriteCreate,
 }
 
@@ -964,6 +992,7 @@ pub(crate) fn open_leaf_with_work<W: NativeHostWork>(
             NativeOpenOptions::Read => libc::O_RDONLY,
             NativeOpenOptions::CreateNew => libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
             NativeOpenOptions::ReadWrite => libc::O_RDWR,
+            NativeOpenOptions::ReadWriteCreateNew => libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
             NativeOpenOptions::ReadWriteCreate => libc::O_RDWR | libc::O_CREAT,
         };
         unix_name_with_work(name.as_os_str(), work, |name, work| {
@@ -2585,7 +2614,7 @@ impl HostDirectory {
     /// Exchanges native entries without releasing either original parent.
     pub(crate) fn exchange_to_measured(
         &self, name: &Path, destination: &Self, destination_name: &Path,
-        work: &mut DemandWork,
+        work: &mut impl crate::demand::SourceDemandReadWork,
     ) -> Result<(), DemandError> {
         crate::native_exchange::exchange_native_entries_held_measured(
             &self.directory, name, &destination.directory, destination_name, work,
@@ -2594,7 +2623,7 @@ impl HostDirectory {
 
     /// Resolves the existing identity-bearing entry exchange witness.
     pub(crate) fn recover_entry_exchange_measured(
-        &self, name: &Path, work: &mut DemandWork,
+        &self, name: &Path, work: &mut impl crate::demand::SourceDemandReadWork,
     ) -> Result<(), DemandError> {
         crate::native_exchange::recover_native_entry_exchange_held_measured(
             &self.directory, name, work,
@@ -3310,19 +3339,27 @@ impl HostRoot {
     }
 
     pub(crate) fn open_file_yielding_wide_measured(&self, path: &[u16], work: &mut DemandWork) -> Result<YieldingFile, DemandError> {
+        self.open_file_yielding_wide_with_work(path, work)
+    }
+
+    pub(crate) fn open_file_yielding_wide_with_work<W: crate::demand::SourceDemandReadWork>(
+        &self, path: &[u16], work: &mut W,
+    ) -> Result<YieldingFile, DemandError> {
         use windows::Wdk::Storage::FileSystem::{FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT, FILE_OPEN_REQUIRING_OPLOCK, NTCREATEFILE_CREATE_OPTIONS};
         use windows::Win32::Storage::FileSystem::FILE_GENERIC_READ;
         let options = FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT;
-        let file = match open_windows_wide_at_measured(&self.directory, path, FILE_GENERIC_READ,
-            options | FILE_OPEN_REQUIRING_OPLOCK, work) {
+        let file = match open_windows_wide_at_with_work(&self.directory, path, FILE_GENERIC_READ,
+            options | FILE_OPEN_REQUIRING_OPLOCK, work, || DemandError::InvalidRequest) {
             Ok(file) => file,
-            Err(DemandError::Io(_)) => open_windows_wide_at_measured(&self.directory, path, FILE_GENERIC_READ,
-                options | NTCREATEFILE_CREATE_OPTIONS(0), work)?,
+            Err(DemandError::Io(_)) => open_windows_wide_at_with_work(&self.directory, path, FILE_GENERIC_READ,
+                options | NTCREATEFILE_CREATE_OPTIONS(0), work, || DemandError::InvalidRequest)?,
             Err(error) => return Err(error),
         };
         match file {
-            Some(file) => YieldingFile::new_measured(file.into_std(), work),
-            None => YieldingFile::plain_measured(self.open_file_wide_measured(path, work)?.into_std(), work),
+            Some(file) => YieldingFile::new_with_work(file.into_std(), work),
+            None => YieldingFile::plain_with_work(
+                self.open_file_wide_for_with_work(path, FileReads::Positional, work)?.into_std(), work,
+            ),
         }
     }
 
@@ -4305,7 +4342,7 @@ fn with_root_path_name_with_work<W: NativeHostWork, T>(
 }
 
 #[cfg(windows)]
-fn encode_root_path_name_with_work<W: NativeHostWork>(
+pub(crate) fn encode_root_path_name_with_work<W: NativeHostWork>(
     path: &Path, work: &mut W,
 ) -> Result<(Vec<u16>, W::Allocation), W::Error> {
     use std::os::windows::ffi::OsStrExt as _;
@@ -4352,7 +4389,29 @@ pub(crate) fn normalize_root_wide_with_work<W: NativeHostWork<Allocation = u64, 
     if short_absolute || name.starts_with(&[92, 92, 63, 92]) || name.starts_with(&[92, 63, 63, 92]) {
         return Ok((name, live_bytes));
     }
-    let result = with_normalized_windows_root_name(&name, !path.is_absolute(), work, |name, work| {
+    let result = normalize_root_wide_name_with_work(&name, path.is_absolute(), work)
+        .map(|output| {
+            let bytes = output.capacity() as u64 * 2;
+            (output, bytes)
+        });
+    drop(name);
+    if let Err(error) = work.release(live_bytes) {
+        if let Ok((output, allocation)) = result {
+            drop(output);
+            work.release(allocation)?;
+        }
+        return Err(error);
+    }
+    result
+}
+
+/// Normalizes an already-owned raw UTF-16 input without re-encoding it.
+/// The caller keeps input custody and owns the returned exact native capacity.
+#[cfg(windows)]
+pub(crate) fn normalize_root_wide_name_with_work<W: NativeHostWork<Allocation = u64, Error = DemandError>>(
+    name: &[u16], absolute: bool, work: &mut W,
+) -> Result<Vec<u16>, DemandError> {
+    with_normalized_windows_root_name(name, !absolute, work, |name, work| {
         let bytes = name.len() as u64 * 2;
         let copied = WorkCounters { bytes_copied: bytes, ..WorkCounters::UNCHARGED };
         work.admit(copied)?;
@@ -4363,17 +4422,8 @@ pub(crate) fn normalize_root_wide_with_work<W: NativeHostWork<Allocation = u64, 
             work.release(allocation)?;
             return Err(error);
         }
-        Ok((output, allocation))
-    });
-    drop(name);
-    if let Err(error) = work.release(live_bytes) {
-        if let Ok((output, allocation)) = result {
-            drop(output);
-            work.release(allocation)?;
-        }
-        return Err(error);
-    }
-    result
+        Ok(output)
+    })
 }
 
 #[cfg(windows)]
@@ -4409,10 +4459,12 @@ pub(crate) fn root_path_identity_wide_with_work<W: NativeHostWork>(
 
 #[cfg(windows)]
 impl HostRoot {
-    pub(crate) fn open_root_wide_measured(name: &[u16], work: &mut DemandWork) -> Result<Self, DemandError> {
+    pub(crate) fn open_root_wide_measured<W: NativeHostWork>(name: &[u16], work: &mut W) -> Result<Self, W::Error> {
         check_root_wide_name(name, work)?;
-        native_read(work)?;
-        let directory = Dir::from_std_file(open_windows_root_name(name)?);
+        let file = native_attempt(work,
+            WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED },
+            || open_windows_root_name(name))?;
+        let directory = Dir::from_std_file(file);
         let identity = directory_identity_with_work(&directory, work)?;
         Ok(Self::from_held_dir_with_identity(directory, identity))
     }
@@ -4636,6 +4688,12 @@ impl HostRoot {
     #[must_use]
     pub const fn identity(&self) -> crate::NativeRootIdentity {
         self.identity
+    }
+
+    pub(crate) fn held_identity_with_work<W: NativeHostWork>(
+        &self, work: &mut W,
+    ) -> Result<crate::NativeRootIdentity, W::Error> {
+        directory_identity_with_work(&self.directory, work)
     }
 
     /// Whether this root's filesystem is local. A network or user-space
@@ -6347,6 +6405,7 @@ pub(crate) fn open_windows_leaf_with_options_with_work<W: NativeHostWork>(parent
             open_windows_leaf_handle_with_work(parent, name, FILE_GENERIC_READ | FILE_GENERIC_WRITE, Some(false), work)?
         }
         NativeOpenOptions::CreateNew => create_windows_wide_at_measured(parent, name, false, false, false, false, work)?,
+        NativeOpenOptions::ReadWriteCreateNew => create_windows_wide_at_measured(parent, name, false, false, false, false, work)?,
         NativeOpenOptions::ReadWriteCreate => create_windows_wide_at_measured(parent, name, false, false, true, false, work)?,
     };
     let information = native_attempt(work, WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED }, || {
@@ -7265,6 +7324,10 @@ impl YieldingFile {
     }
 
     fn new_measured(file: File, work: &mut DemandWork) -> Result<Self, DemandError> {
+        Self::new_with_work(file, work)
+    }
+
+    fn new_with_work<W: crate::demand::SourceDemandReadWork>(file: File, work: &mut W) -> Result<Self, DemandError> {
         use std::os::windows::io::AsRawHandle as _;
         use windows::Win32::Foundation::{ERROR_IO_PENDING, HANDLE, CloseHandle};
         use windows::Win32::System::IO::DeviceIoControl;
@@ -7277,7 +7340,7 @@ impl YieldingFile {
             CreateEventW, INFINITE, RegisterWaitForSingleObject, WT_EXECUTEONLYONCE,
         };
         let handle = HANDLE(file.as_raw_handle());
-        let mut yielding = Self::plain_measured(file, work)?;
+        let mut yielding = Self::plain_with_work(file, work)?;
         let result = (|| {
             // SAFETY: event creation has no borrowed pointer arguments.
             let event = unsafe { CreateEventW(None, true, false, None) }.map_err(io::Error::other)?;
@@ -7296,7 +7359,7 @@ impl YieldingFile {
                 },
                 output: REQUEST_OPLOCK_OUTPUT_BUFFER::default(),
             }));
-            if let Err(error) = native_read(work) {
+            if let Err(error) = native_read_with_work(work) {
                 unsafe { let _ = CloseHandle(event); drop(Box::from_raw(request)); }
                 work.release(bytes)?;
                 return Err(error);
@@ -7335,6 +7398,10 @@ impl YieldingFile {
     }
 
     fn plain_measured(file: File, work: &mut DemandWork) -> Result<Self, DemandError> {
+        Self::plain_with_work(file, work)
+    }
+
+    fn plain_with_work<W: crate::demand::SourceDemandReadWork>(file: File, work: &mut W) -> Result<Self, DemandError> {
         let file_bytes = std::mem::size_of::<File>() as u64;
         let held_bytes = std::mem::size_of::<YieldingHeld>() as u64;
         work.allocate(file_bytes)?;
@@ -7406,19 +7473,28 @@ impl YieldingFile {
     }
 
     pub(crate) fn read_at_measured(&self, offset: u64, destination: &mut [u8], work: &mut DemandWork) -> Result<usize, DemandError> {
+        self.read_at_with_work(offset, destination, work)
+    }
+
+    pub(crate) fn read_at_with_work<W: crate::demand::SourceDemandReadWork>(
+        &self, offset: u64, destination: &mut [u8], work: &mut W,
+    ) -> Result<usize, DemandError> {
         work.check()?;
-        work.work.admit(&WorkCounters {
-            backend_read_operations: 2,
-            source_bytes_read: destination.len().min(u32::MAX as usize) as u64,
-            ..WorkCounters::UNCHARGED
-        }, &work.budget)?;
+        if destination.is_empty() { return Ok(0); }
         use std::os::windows::io::AsRawHandle as _;
         use windows::Win32::Foundation::{CloseHandle, ERROR_HANDLE_EOF, ERROR_IO_PENDING, HANDLE, WAIT_FAILED, WAIT_TIMEOUT};
         use windows::Win32::Storage::FileSystem::ReadFile;
         use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
         use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 
-        {
+        work.with_native_read_meter(|meter| {
+            let mut operations = acyclic_native_runtime::NativeOperationReservation::new(
+                meter, acyclic_native_runtime::NativeOperationKind::Read, 2,
+            ).map_err(crate::demand::native_demand_error)?;
+            let mut byte_reservation = acyclic_native_runtime::NativeByteReservation::new(
+                meter, acyclic_native_runtime::NativeOperationKind::Read,
+                destination.len().min(u32::MAX as usize),
+            ).map_err(crate::demand::native_demand_error)?;
             let held = self
                 .held
                 .file
@@ -7439,15 +7515,10 @@ impl YieldingFile {
             let length = destination.len().min(u32::MAX as usize);
             let buffer = destination.get_mut(..length).unwrap_or_default();
             let mut transferred = 0;
-            if let Err(error) = native_read(work) {
-                // No read has started, so the event can be closed at once.
-                unsafe { let _ = CloseHandle(event); }
-                return Err(error);
-            }
             // SAFETY: the buffer and `overlapped` outlive the request, which
             // is waited for before either goes.
             let mut pending = false;
-            let started =
+            let (started, start_charge) = operations.attempt(|| {
                 unsafe { ReadFile(handle, Some(buffer), None, Some(&raw mut overlapped)) }.or_else(
                     |error| {
                         if error.code() == ERROR_IO_PENDING.to_hresult() {
@@ -7457,7 +7528,8 @@ impl YieldingFile {
                             Err(error)
                         }
                     },
-                );
+                )
+            });
             // Keep the file alive after releasing the lock. A break cancels
             // this request; its completion is still awaited before freeing
             // the buffer and OVERLAPPED.
@@ -7470,7 +7542,7 @@ impl YieldingFile {
             let mut interrupted = None;
             if pending {
                 loop {
-                    if let Err(error) = work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }) {
+                    if let Err(error) = meter.examine(1, 0).map_err(crate::demand::native_demand_error) {
                         interrupted = Some(error);
                         unsafe { let _ = CancelIoEx(HANDLE(file.as_raw_handle()), Some(&raw const overlapped)); }
                         break;
@@ -7486,18 +7558,22 @@ impl YieldingFile {
             }
             // This cleanup boundary was admitted before starting the request;
             // it must be charged even when cancellation arrived during the wait.
-            let completion_charge = if started.is_ok() {
-                work.record(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })
-            } else { Ok(()) };
+            let mut completion_charge = Ok(());
             let read = started.and_then(|()| {
-                unsafe { GetOverlappedResult(HANDLE(file.as_raw_handle()), &raw const overlapped, &raw mut transferred, true) }
+                let (read, recorded) = operations.attempt(|| unsafe {
+                    GetOverlappedResult(HANDLE(file.as_raw_handle()), &raw const overlapped, &raw mut transferred, true)
+                });
+                completion_charge = recorded;
+                read
             });
             // SAFETY: the request is complete; nothing waits on the event.
             let _ = unsafe { CloseHandle(event) };
-            completion_charge?;
-            work.record(WorkCounters { source_bytes_read: u64::from(transferred), ..WorkCounters::UNCHARGED })?;
+            let bytes_recorded = byte_reservation.record(transferred as usize);
+            start_charge.map_err(crate::demand::native_demand_error)?;
+            completion_charge.map_err(crate::demand::native_demand_error)?;
+            bytes_recorded.map_err(crate::demand::native_demand_error)?;
             if let Some(error) = interrupted { return Err(error); }
-            work.check()?;
+            meter.check().map_err(crate::demand::native_demand_error)?;
             match read {
                 Ok(()) => Ok(transferred as usize),
                 Err(error) if error.code() == ERROR_HANDLE_EOF.to_hresult() => Ok(0),
@@ -7513,7 +7589,7 @@ impl YieldingFile {
                 }
                 Err(error) => Err(DemandError::from(io::Error::from_raw_os_error(error.code().0 & 0xFFFF))),
             }
-        }
+        })
     }
 }
 
@@ -9471,10 +9547,17 @@ pub(crate) fn reports_every_change(
 pub(crate) fn reports_every_change_measured(
     file: &impl std::os::windows::io::AsRawHandle, work: &mut DemandWork,
 ) -> Result<bool, DemandError> {
+    reports_every_change_with_work(file, work)
+}
+
+#[cfg(windows)]
+pub(crate) fn reports_every_change_with_work<W: NativeHostWork<Error = DemandError>>(
+    file: &impl std::os::windows::io::AsRawHandle, work: &mut W,
+) -> Result<bool, DemandError> {
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Storage::FileSystem::GetVolumeInformationByHandleW;
     let mut name = [0_u16; 64];
-    native_read(work)?;
+    work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })?;
     // SAFETY: a live handle and an output buffer that outlives the call.
     unsafe {
         GetVolumeInformationByHandleW(
@@ -10056,7 +10139,7 @@ mod bounded_record_tests {
         let mut budget = WorkBudget::UNBOUNDED;
         budget.backend_write_operations = 2;
         let work = crate::materializer::NativeMaterializationWork::new(budget, &cancellation)
-            .map_err(|failure| failure.error)?;
+            .map_err(|(cause, _)| cause)?;
         let mut boundary = CancelAfterName { work: &work, cancellation: &cancellation, cancel_on_write: true };
         #[cfg(unix)]
         let name = c"cookie";
@@ -10366,7 +10449,7 @@ mod bounded_record_tests {
         use std::os::unix::ffi::OsStrExt as _;
         std::os::unix::fs::symlink(OsStr::from_bytes(&target), temporary.path().join("link"))?;
         let parent = Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())?;
-        let work = crate::materializer::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|failure| failure.error)?;
+        let work = crate::materializer::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| cause)?;
         let (actual, allocation) = read_link_held_with_work(&parent, Path::new("link"), 600, &mut &work)?;
         assert_eq!(actual, target);
         assert_eq!(actual.capacity(), target.len());
@@ -10376,7 +10459,7 @@ mod bounded_record_tests {
         drop((actual, allocation));
         assert_eq!(materialization_live_bytes(&work)?, ACCOUNTING_STATE_BYTES);
 
-        let denied = crate::materializer::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|failure| failure.error)?;
+        let denied = crate::materializer::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| cause)?;
         assert!(read_link_held_with_work(&parent, Path::new("link"), 129, &mut &denied).is_err());
         assert_eq!(denied.receipt().backend_read_operations, 1);
         assert_eq!(denied.receipt().source_bytes_read, 130);
@@ -10397,6 +10480,9 @@ mod bounded_record_tests {
         fn io_error_kind(error: &Self::Error) -> Option<io::ErrorKind> {
             <&crate::materializer::NativeMaterializationWork as NativeHostWork>::io_error_kind(error)
         }
+        fn allocation_failed(error: std::collections::TryReserveError) -> Self::Error {
+            crate::materializer::NativeTreeMaterializationError::AllocationFailed(error)
+        }
         fn check(&self) -> Result<(), Self::Error> { self.work.admit(WorkCounters::UNCHARGED) }
         fn admit(&mut self, delta: WorkCounters) -> Result<(), Self::Error> { self.work.admit(delta) }
         fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
@@ -10408,6 +10494,12 @@ mod bounded_record_tests {
             Ok(())
         }
         fn claim(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error> { self.work.claim(bytes) }
+        fn reserve_opaque_decode(&mut self, logical_max: u64) -> Result<Self::Allocation, Self::Error> {
+            self.work.retain_owned(logical_max)
+        }
+        fn reconcile_allocation(&mut self, allocation: &mut Self::Allocation, actual: u64) -> Result<(), Self::Error> {
+            allocation.reconcile_capacity(actual)
+        }
         fn release(&mut self, allocation: Self::Allocation) -> Result<(), Self::Error> { drop(allocation); Ok(()) }
         fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error> {
             self.work.reserve_cleanup_write()
@@ -10427,7 +10519,7 @@ mod bounded_record_tests {
         let cancellation = crate::CancellationToken::new();
         let mut budget = WorkBudget::UNBOUNDED;
         budget.peak_allocation_bytes = ACCOUNTING_STATE_BYTES + HostStatReader::BUFFER_BYTES as u64 + 32;
-        let work = crate::materializer::NativeMaterializationWork::new(budget, &cancellation).map_err(|failure| failure.error)?;
+        let work = crate::materializer::NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, _)| cause)?;
         let mut boundary = CancelAfterName { work: &work, cancellation: &cancellation, cancel_on_write: false };
         let (mut reader, allocation) = read_dir_held_with_work(&directory, &mut boundary)?;
         #[cfg(unix)]
@@ -10459,7 +10551,7 @@ mod bounded_record_tests {
         std::fs::write(temporary.path().join("kept"), b"data")?;
         let file = File::open(temporary.path().join("kept"))?;
         let directory = Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())?;
-        let work = crate::materializer::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|failure| failure.error)?;
+        let work = crate::materializer::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| cause)?;
         let before = stat_file_with_work(&file, &mut &work)?;
         std::fs::rename(temporary.path().join("kept"), temporary.path().join("original"))?;
         std::fs::write(temporary.path().join("kept"), b"replacement")?;
@@ -10493,7 +10585,7 @@ mod bounded_record_tests {
         let directory = Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())?;
         let mut budget = WorkBudget::UNBOUNDED;
         budget.peak_allocation_bytes = ACCOUNTING_STATE_BYTES + 2 * HostStatReader::BUFFER_BYTES as u64 + 64;
-        let work = crate::materializer::NativeMaterializationWork::new(budget, &crate::CancellationToken::new()).map_err(|failure| failure.error)?;
+        let work = crate::materializer::NativeMaterializationWork::new(budget, &crate::CancellationToken::new()).map_err(|(cause, _)| cause)?;
         let (mut first, first_allocation) = read_dir_held_with_work(&directory, &mut &work)?;
         let (mut second, second_allocation) = read_dir_held_with_work(&directory, &mut &work)?;
         assert_eq!(first_allocation.bytes(), HostStatReader::BUFFER_BYTES as u64);
@@ -10538,7 +10630,7 @@ mod bounded_record_tests {
         { budget.backend_read_operations = 2; }
         #[cfg(windows)]
         { budget.backend_read_operations = 3; }
-        let work = crate::materializer::NativeMaterializationWork::new(budget, &crate::CancellationToken::new()).map_err(|failure| failure.error)?;
+        let work = crate::materializer::NativeMaterializationWork::new(budget, &crate::CancellationToken::new()).map_err(|(cause, _)| cause)?;
         let (mut reader, allocation) = read_dir_held_with_work(&directory, &mut &work)?;
         #[cfg(unix)]
         let failure = reader.next_with_work(&mut &work);

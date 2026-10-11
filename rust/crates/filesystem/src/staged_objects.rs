@@ -6,19 +6,23 @@
 //! staged bytes, but cannot publish an authority head referring to them.
 //!
 //! Staged bytes beyond the resident memory window spill to an unlinked private
-//! file without any durability barrier, so authoring never waits on the
-//! durable provider. Publication durably drains exactly the staged part of
-//! the closure it makes reachable; objects no published closure needs, such
-//! as pages later mutations superseded, stay private and vanish with the
-//! engine. A spill file past its bound is drained a bounded step at a time
-//! by the admissions that grow it, as housekeeping outside their own work,
-//! which is always safe because durability is a superset of staging.
+//! file without a durability barrier. Publication durably drains exactly the
+//! staged part of the closure it makes reachable; superseded objects remain
+//! private. A spill file past its bound drains a segment-bounded step. Native
+//! staging and overflow use the caller's original work and cancellation,
+//! including their inner provider admissions and publication fence.
+//!
+//! Resident Bytes preserve their intrinsic custody without readoption. Spill
+//! copies and runtime reads retain actual buffers through the last byte alias;
+//! known vectors, boxed frames and byte-owner controls use the original ledger.
+//! Opaque index nodes and provider transport internals are excluded.
 
 use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue, PublicationScope,
 };
 use crate::cancellation::CancellationToken;
-use crate::heap_future::in_heap;
+use crate::async_storage::{NativeObjectRead, NativeObjectReadBatch};
+use crate::materializer::{NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError};
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
     HashedObject, ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention,
@@ -32,6 +36,46 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, PoisonError};
 use tokio::sync::RwLock;
+
+struct StagedReadBytes {
+    read: acyclic_native_runtime::NativeReadResult,
+    _control: NativeAllocation,
+}
+
+impl AsRef<[u8]> for StagedReadBytes {
+    fn as_ref(&self) -> &[u8] { self.read.bytes.as_ref() }
+}
+
+// The copied spill buffer owns its original allocation through every Bytes
+// alias, including an abandoned runtime submission.
+struct StagedSpillBytes {
+    bytes: Vec<u8>,
+    _buffer: NativeAllocation,
+    _control: NativeAllocation,
+}
+
+impl AsRef<[u8]> for StagedSpillBytes {
+    fn as_ref(&self) -> &[u8] { &self.bytes }
+}
+
+fn staged_vector<T>(
+    capacity: usize, native: Option<&NativeMaterializationWork>,
+) -> Result<(Option<NativeAllocation>, Vec<T>), ObjectStoreError> {
+    let bytes = capacity.checked_mul(std::mem::size_of::<T>())
+        .ok_or(crate::WorkError::Overflow)?;
+    let mut control = native.map(|work| {
+        if bytes == 0 { work.retain_owned(0) } else { work.claim(bytes as u64) }
+    }).transpose()?;
+    let mut values = Vec::new();
+    values.try_reserve_exact(capacity).map_err(|error|
+        ObjectStoreError::Native(NativeTreeMaterializationError::AllocationFailed(error)))?;
+    if let Some(control) = &mut control {
+        let actual = values.capacity().checked_mul(std::mem::size_of::<T>())
+            .ok_or(crate::WorkError::Overflow)?;
+        control.resize_retained(actual as u64)?;
+    }
+    Ok((control, values))
+}
 
 // The local provider stores one batch in a bounded segment. Every durable
 // drain batch stays within that segment regardless of source tree size, and a
@@ -82,25 +126,27 @@ enum Lookup {
 }
 
 /// Serves one resident object without copying its bytes.
-fn resident_read(bytes: Bytes, maximum_bytes: u64, budget: WorkBudget) -> ObjectResult<ObjectRead> {
+fn resident_read(
+    bytes: Bytes, maximum_bytes: u64, budget: WorkBudget,
+    native: Option<&NativeMaterializationWork>,
+) -> Result<ObjectReceipt<ObjectRead>, (ObjectStoreError, WorkCounters)> {
     let length = byte_length(&bytes);
     if length > maximum_bytes {
-        return Err(ObjectFailure::before_work(ObjectStoreError::TooLarge {
-            observed: length,
-            maximum: maximum_bytes,
-        }));
+        return Err((ObjectStoreError::TooLarge {
+            observed: length, maximum: maximum_bytes,
+        }, WorkCounters::default()));
     }
     let work = WorkCounters {
         object_bytes_read: length,
         ..WorkCounters::default()
     };
-    work.verify(budget)
-        .map_err(|error| ObjectFailure::before_work(error.into()))?;
+    if let Some(native) = native {
+        native.charge(work).map_err(|error| (error.into(), WorkCounters::default()))?;
+    } else {
+        work.verify(budget).map_err(|error| (error.into(), WorkCounters::default()))?;
+    }
     Ok(ObjectReceipt {
-        value: ObjectRead {
-            bytes,
-            retention: ObjectReadRetention::Shared,
-        },
+        value: ObjectRead { bytes, retention: ObjectReadRetention::Shared },
         work,
     })
 }
@@ -186,8 +232,9 @@ impl Index {
     /// Takes the resident objects to spill, oldest first, until the window
     /// would be half full. An object read since it was last considered is
     /// re-queued once instead.
-    fn spill_victims(&mut self) -> Vec<(ObjectId, Bytes)> {
-        let mut victims = Vec::new();
+    fn spill_victims(
+        &mut self, victims: &mut Vec<(ObjectId, Bytes)>,
+    ) {
         let mut spilled = 0_u64;
         while self.resident_bytes.saturating_sub(spilled) > MAXIMUM_RESIDENT_BYTES / 2 {
             let Some((_, object_id)) = self.order.pop_first() else {
@@ -211,7 +258,7 @@ impl Index {
             spilled = spilled.saturating_add(byte_length(bytes));
             victims.push((object_id, bytes.clone()));
         }
-        victims
+        // The caller owns the preallocated vector and its native custody.
     }
 
     /// Records victims written at `offset` onward as spilled. Each is still
@@ -240,26 +287,6 @@ impl Index {
         self.drained.insert(object_id);
     }
 
-    /// Splits `targets` into the staged objects drained while the sweep
-    /// count was `sweeps`, which leave staging already durable, and the rest.
-    /// A sweep since forgets every drained identity.
-    fn take_drained(
-        &mut self,
-        targets: Vec<ObjectId>,
-        sweeps: u64,
-    ) -> (Vec<ObjectId>, Vec<ObjectId>) {
-        if self.drained_at != sweeps {
-            self.drained.clear();
-            self.drained_at = sweeps;
-        }
-        let (durable, targets): (Vec<_>, Vec<_>) = targets.into_iter().partition(|object_id| {
-            self.drained.contains(object_id) && self.objects.contains_key(object_id)
-        });
-        for &object_id in &durable {
-            self.remove(object_id);
-        }
-        (durable, targets)
-    }
 
     /// Forgets one staged object.
     fn remove(&mut self, object_id: ObjectId) {
@@ -339,78 +366,85 @@ impl<S> StagedObjects<S> {
     /// The caller holds the spill file exclusively. Objects stay resident,
     /// and readable from memory, until the write completes, so a failed
     /// spill leaves staging unchanged apart from recency.
-    async fn spill_locked(&self, budget: WorkBudget) -> ObjectResult<()> {
-        let span = crate::obs::span!(
-            DEBUG,
-            "acyclic.fs.staged.spill",
-            outcome = crate::obs::Empty,
-            error.kind = crate::obs::Empty,
-            work.items = crate::obs::Empty,
-            work.bytes = crate::obs::Empty,
-            work.durability = crate::obs::Empty,
-        );
-        let result = crate::obs::in_span(&span, async move {
-            let (victims, offset) = {
-                let mut index = self.index_mut();
-                if index.resident_bytes <= MAXIMUM_RESIDENT_BYTES {
-                    return Ok(ObjectReceipt {
-                        value: (),
-                        work: WorkCounters::default(),
-                    });
-                }
-                (index.spill_victims(), index.spill_end)
-            };
-            let spilled = victims.iter().fold(0_u64, |total, (_, bytes)| {
-                total.saturating_add(byte_length(bytes))
-            });
-            let work = WorkCounters {
-                backend_write_operations: 1,
-                object_bytes_written: spilled,
-                bytes_copied: spilled,
-                allocation_operations: 1,
-                peak_allocation_bytes: spilled,
-                ..WorkCounters::default()
-            };
-            let restore = |index: &mut Index| {
-                for (object_id, _) in &victims {
-                    if let Some(Staged::Resident { order, .. }) = index.objects.get(object_id) {
-                        index.order.insert(*order, *object_id);
-                    }
-                }
-            };
-            if let Err(error) = work.verify(budget) {
-                restore(&mut self.index_mut());
-                return Err(ObjectFailure::before_work(error.into()));
+    async fn spill_locked(
+        &self, budget: WorkBudget, cancellation: &CancellationToken,
+        native: Option<&NativeMaterializationWork>,
+    ) -> ObjectResult<()> {
+        cancellation.check().map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+        let (_victim_control, victims, offset) = {
+            // Admission and victim selection share this lock: concurrent
+            // resident puts cannot grow the vector beyond its funded capacity.
+            let mut index = self.index_mut();
+            if index.resident_bytes <= MAXIMUM_RESIDENT_BYTES {
+                return Ok(ObjectReceipt { value: (), work: WorkCounters::default() });
             }
-            let mut buffer = Vec::new();
-            if buffer
-                .try_reserve_exact(usize::try_from(spilled).unwrap_or(usize::MAX))
-                .is_err()
-            {
-                restore(&mut self.index_mut());
-                return Err(ObjectFailure::before_work(ObjectStoreError::Rejected(
-                    "staged spill allocation failed".to_owned(),
-                )));
+            let (control, mut victims) = staged_vector(index.order.len(), native)
+                .map_err(ObjectFailure::before_work)?;
+            index.spill_victims(&mut victims);
+            (control, victims, index.spill_end)
+        };
+        let spilled = victims.iter().fold(0_u64, |total, (_, bytes)|
+            total.saturating_add(byte_length(bytes)));
+        let work = WorkCounters {
+            backend_write_operations: 1,
+            object_bytes_written: spilled,
+            bytes_copied: spilled,
+            allocation_operations: 1,
+            peak_allocation_bytes: spilled,
+            ..WorkCounters::default()
+        };
+        let result = async {
+            if native.is_none() {
+                work.verify(budget).map_err(|error| ObjectFailure::before_work(error.into()))?;
             }
+            let length = usize::try_from(spilled)
+                .map_err(|_| ObjectFailure::before_work(crate::WorkError::Overflow.into()))?;
+            let copy = native.map(|native| native.reserve_copy(spilled)).transpose()
+                .map_err(|error| ObjectFailure::before_work(error.into()))?;
+            let (buffer_control, mut buffer) = staged_vector(length, native)
+                .map_err(ObjectFailure::before_work)?;
+            let owner_control = native.map(|native| native.claim(std::mem::size_of::<StagedSpillBytes>() as u64))
+                .transpose().map_err(|error| ObjectFailure::before_work(error.into()))?;
             for (_, bytes) in &victims {
                 buffer.extend_from_slice(bytes);
             }
-            if let Err(error) = self
-                .spill
-                .write_all_batch_async(vec![OwnedWrite {
-                    offset,
-                    bytes: Bytes::from(buffer),
-                }])
-                .await
-            {
-                restore(&mut self.index_mut());
-                return Err(ObjectFailure::new(error.into(), work));
+            if let Some(copy) = copy {
+                copy.record(spilled).map_err(|error| ObjectFailure::before_work(error.into()))?;
             }
-            self.index_mut().mark_spilled(&victims, offset);
-            Ok(ObjectReceipt { value: (), work })
-        })
-        .await;
-        crate::obs::measured_on(&span, result, |receipt| &receipt.work)
+            if let Some(native) = native {
+                native.admit(WorkCounters { object_bytes_written: spilled, ..WorkCounters::default() })
+                    .map_err(|error| ObjectFailure::before_work(error.into()))?;
+                let bytes = Bytes::from_owner(StagedSpillBytes {
+                    bytes: buffer,
+                    _buffer: buffer_control.expect("native spill buffer is admitted"),
+                    _control: owner_control.expect("native spill owner is admitted"),
+                });
+                self.spill.write_bounded_async(offset, bytes, native.runtime_meter_owner())
+                    .map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?
+                    .await.map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?;
+                // Physical partial writes (including cancellation) are
+                // recorded by the runtime as output_bytes before returning.
+                native.record_admitted(WorkCounters { object_bytes_written: spilled, ..WorkCounters::default() })
+                    .map_err(|error| ObjectFailure::before_work(error.into()))?;
+            } else {
+                self.spill.write_all_batch_async(vec![OwnedWrite {
+                    offset, bytes: Bytes::from(buffer),
+                }]).await.map_err(|error| ObjectFailure::new(error.into(), work))?;
+            }
+            Ok(())
+        }.await;
+        if let Err(error) = result {
+            let mut index = self.index_mut();
+            for (object_id, _) in &victims {
+                if let Some(Staged::Resident { order, .. }) = index.objects.get(object_id) {
+                    let order = *order;
+                    index.order.insert(order, *object_id);
+                }
+            }
+            return Err(error);
+        }
+        self.index_mut().mark_spilled(&victims, offset);
+        Ok(ObjectReceipt { value: (), work: if native.is_some() { WorkCounters::default() } else { work } })
     }
 
     /// Reads spilled objects back in one submission and authenticates each
@@ -446,46 +480,52 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
     /// overflows and, while the spill file is past its bound, drains one
     /// batch of spilled objects durably.
     ///
-    /// Only the spill belongs to the admission: it is what keeps staging's
-    /// memory bounded. The drain step is housekeeping any admission could
-    /// have done, so it runs under its own bounded work, is not charged to
-    /// the caller, and never fails the admission; a failed step leaves its
-    /// objects staged for the next step or publication.
-    async fn relieve_window(&self, budget: WorkBudget) -> ObjectResult<()> {
+    /// Ordinary overflow housekeeping retains its independent bounded step.
+    /// Native overflow stays on the admission's original ledger and token,
+    /// including the durable drain; failure leaves the remainder staged.
+    async fn relieve_window(
+        &self, budget: WorkBudget, cancellation: &CancellationToken,
+        native: Option<&NativeMaterializationWork>,
+    ) -> ObjectResult<()> {
         let _spill_file = self.spill_io.write().await;
-        let spilled = self.spill_locked(budget).await?;
-        let targets = {
+        let spilled = self.spill_locked(budget, cancellation, native).await?;
+        let (_target_control, targets) = {
             let index = self.index();
             if index.spill_end <= MAXIMUM_SPILL_BYTES {
                 return Ok(spilled);
             }
             let mut batch_bytes = 0_u64;
-            index
-                .objects
-                .iter()
-                .filter_map(|(&object_id, staged)| match *staged {
-                    Staged::Spilled { length, .. } => Some((object_id, length)),
-                    Staged::Resident { .. } => None,
-                })
-                .take_while(|&(_, length)| {
-                    let first = batch_bytes == 0;
-                    batch_bytes = batch_bytes.saturating_add(length);
-                    first || batch_bytes <= MAXIMUM_DRAIN_BYTES
-                })
-                .map(|(object_id, _)| object_id)
-                .collect::<Vec<_>>()
+            let mut count = 0;
+            for staged in index.objects.values() {
+                if let Some(native) = native {
+                    native.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })
+                        .map_err(|error| ObjectFailure::before_work(error.into()))?;
+                }
+                if let Staged::Spilled { length, .. } = staged {
+                    if count != 0 && batch_bytes.saturating_add(*length) > MAXIMUM_DRAIN_BYTES { break; }
+                    batch_bytes = batch_bytes.saturating_add(*length);
+                    count += 1;
+                }
+            }
+            let (control, mut targets) = staged_vector(count, native).map_err(ObjectFailure::before_work)?;
+            for (&object_id, staged) in &index.objects {
+                if targets.len() == count { break; }
+                if let Some(native) = native {
+                    native.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })
+                        .map_err(|error| ObjectFailure::before_work(error.into()))?;
+                }
+                if matches!(staged, Staged::Spilled { .. }) { targets.push(object_id); }
+            }
+            (control, targets)
         };
-        // One segment-bounded batch bounds the step's work; a fresh token
-        // keeps the caller's cancellation from abandoning it midway.
         let unswept = self.collection.unswept().await;
-        let _step = self
-            .drain_locked(
-                &unswept,
-                targets,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await;
+        if let Some(native) = native {
+            self.drain_locked(&unswept, &targets, budget, cancellation, Some(native)).await?;
+        } else {
+            let _step = self.drain_locked(
+                &unswept, &targets, WorkBudget::UNBOUNDED, &CancellationToken::new(), None,
+            ).await;
+        }
         Ok(spilled)
     }
 
@@ -500,95 +540,124 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
     /// naming it is written, and a running collection is told it is being
     /// kept, exactly as if it were written again.
     async fn drain_locked(
-        &self,
-        unswept: &crate::collection::Unswept,
-        targets: Vec<ObjectId>,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
+        &self, unswept: &crate::collection::Unswept, targets: &[ObjectId],
+        budget: WorkBudget, cancellation: &CancellationToken,
+        native: Option<&NativeMaterializationWork>,
     ) -> ObjectResult<()> {
         let mut work = WorkCounters::default();
-        let (durable, targets) = self
-            .index_mut()
-            .take_drained(targets, self.collection.sweeps());
-        self.collection.writing(unswept, durable);
-        let mut targets = targets.into_iter().peekable();
+        {
+            let mut index = self.index_mut();
+            let sweeps = self.collection.sweeps();
+            if index.drained_at != sweeps {
+                index.drained.clear();
+                index.drained_at = sweeps;
+            }
+        }
+        let mut position = 0;
         loop {
-            cancellation
-                .check()
-                .map_err(|_| ObjectFailure::new(ObjectStoreError::Cancelled, work))?;
-            let mut writes = Vec::new();
-            let mut spilled = Vec::new();
+            cancellation.check().map_err(|_| ObjectFailure::new(ObjectStoreError::Cancelled, work))?;
+            let mut end = position;
+            let mut count = 0;
             {
                 let index = self.index();
-                let mut batch_bytes = 0_u64;
-                while let Some(&object_id) = targets.peek() {
-                    let Some(staged) = index.objects.get(&object_id) else {
-                        targets.next();
-                        continue;
-                    };
-                    let length = staged.length();
-                    if !(writes.is_empty() && spilled.is_empty())
-                        && batch_bytes.saturating_add(length) > MAXIMUM_DRAIN_BYTES
-                    {
-                        break;
+                let mut bytes = 0_u64;
+                for &object_id in &targets[position..] {
+                    if let Some(native) = native {
+                        native.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })
+                            .map_err(|error| ObjectFailure::new(error.into(), work))?;
                     }
-                    targets.next();
-                    batch_bytes = batch_bytes.saturating_add(length);
-                    match *staged {
-                        Staged::Resident { ref bytes, .. } => writes.push(ObjectWrite {
-                            object_id,
-                            bytes: bytes.clone(),
-                        }),
-                        Staged::Spilled { offset, length } => {
-                            spilled.push((object_id, offset, length));
+                    if let Some(staged) = index.objects.get(&object_id) {
+                        if !index.drained.contains(&object_id) {
+                            if count != 0 && bytes.saturating_add(staged.length()) > MAXIMUM_DRAIN_BYTES { break; }
+                            bytes = bytes.saturating_add(staged.length());
+                            count += 1;
                         }
+                    }
+                    end += 1;
+                }
+            }
+            let (_write_control, mut writes) = staged_vector::<ObjectWrite>(count, native)
+                .map_err(|error| ObjectFailure::new(error, work))?;
+            let (_spilled_control, mut spilled) = staged_vector::<(ObjectId, u64, u64)>(count, native)
+                .map_err(|error| ObjectFailure::new(error, work))?;
+            {
+                let mut index = self.index_mut();
+                for &object_id in &targets[position..end] {
+                    if let Some(native) = native {
+                        native.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })
+                            .map_err(|error| ObjectFailure::new(error.into(), work))?;
+                    }
+                    if index.drained.contains(&object_id) {
+                        self.collection.writing(unswept, [object_id]);
+                        index.remove(object_id);
+                        continue;
+                    }
+                    match index.objects.get(&object_id) {
+                        Some(Staged::Resident { bytes, .. }) => writes.push(ObjectWrite {
+                            object_id, bytes: bytes.clone(),
+                        }),
+                        Some(&Staged::Spilled { offset, length }) => spilled.push((object_id, offset, length)),
+                        None => {}
                     }
                 }
             }
-            if writes.is_empty() && spilled.is_empty() {
-                break;
-            }
-            if !spilled.is_empty() {
-                let spilled_bytes = spilled
-                    .iter()
-                    .fold(0_u64, |total, &(_, _, length)| total.saturating_add(length));
-                work = work
-                    .checked_add(WorkCounters {
-                        backend_read_operations: 1,
-                        object_bytes_read: spilled_bytes,
-                        bytes_hashed: spilled_bytes,
-                        ..WorkCounters::default()
-                    })
-                    .map_err(|error| ObjectFailure::new(error.into(), work))?;
-                work.verify(budget)
-                    .map_err(|error| ObjectFailure::new(error.into(), work))?;
-                let read = self
-                    .read_spilled(&spilled)
-                    .await
-                    .map_err(|error| ObjectFailure::new(error, work))?;
-                writes.extend(read.into_iter().map(|object| {
-                    let (object_id, bytes) = object.into_parts();
-                    ObjectWrite { object_id, bytes }
-                }));
-            }
-            self.collection
-                .writing(unswept, writes.iter().map(|write| write.object_id));
-            let receipt = self
-                .inner
-                .put_many(
-                    &writes,
-                    work.remaining(budget)
-                        .map_err(|error| ObjectFailure::new(error.into(), work))?,
-                    cancellation,
-                )
-                .await
-                .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-            work = work
-                .checked_add(receipt.work)
-                .map_err(|error| ObjectFailure::new(error.into(), work))?;
-            let mut index = self.index_mut();
-            for write in &writes {
-                index.acknowledge(write.object_id);
+            position = end;
+            if writes.is_empty() && spilled.is_empty() { break; }
+            if let Some(native) = native {
+                for (object_id, offset, length) in spilled {
+                    cancellation.check().map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+                    let control = native.claim(std::mem::size_of::<StagedReadBytes>() as u64)
+                        .map_err(|error| ObjectFailure::before_work(error.into()))?;
+                    let hashed = length.checked_add(crate::storage::OBJECT_DIGEST_ENVELOPE_BYTES)
+                        .ok_or_else(|| ObjectFailure::before_work(crate::WorkError::Overflow.into()))?;
+                    native.admit(WorkCounters { object_bytes_read: length, bytes_hashed: hashed, ..WorkCounters::default() })
+                        .map_err(|error| ObjectFailure::before_work(error.into()))?;
+                    let length_usize = usize::try_from(length)
+                        .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Corrupt))?;
+                    let read = self.spill.read_bounded_async(offset, length_usize, native.runtime_meter_owner())
+                        .map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?
+                        .await.map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?;
+                    let observed = read.bytes.len() as u64;
+                    native.record_admitted(WorkCounters { object_bytes_read: observed, ..WorkCounters::default() })
+                        .map_err(|error| ObjectFailure::before_work(error.into()))?;
+                    if observed != length { return Err(ObjectFailure::before_work(ObjectStoreError::Corrupt)); }
+                    native.charge(WorkCounters { bytes_hashed: hashed, ..WorkCounters::default() })
+                        .map_err(|error| ObjectFailure::before_work(error.into()))?;
+                    if crate::storage::object_digest(object_id.kind, &read.bytes) != object_id.digest {
+                        return Err(ObjectFailure::before_work(ObjectStoreError::Corrupt));
+                    }
+                    writes.push(ObjectWrite { object_id, bytes: Bytes::from_owner(StagedReadBytes { read, _control: control }) });
+                }
+                // A native batch has no partial-success receipt. Admit one
+                // object at a time and remove only the acknowledged prefix.
+                for write in &writes {
+                    cancellation.check().map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+                    self.collection.writing(unswept, [write.object_id]);
+                    self.inner.put_with_native_work(write.object_id, write.bytes.clone(), native, cancellation)
+                        .await.map_err(ObjectFailure::before_work)?;
+                    self.index_mut().acknowledge(write.object_id);
+                }
+            } else {
+                if !spilled.is_empty() {
+                    let spilled_bytes = spilled.iter().fold(0_u64, |total, &(_, _, length)| total.saturating_add(length));
+                    work = work.checked_add(WorkCounters {
+                        backend_read_operations: 1, object_bytes_read: spilled_bytes,
+                        bytes_hashed: spilled_bytes, ..WorkCounters::default()
+                    }).map_err(|error| ObjectFailure::new(error.into(), work))?;
+                    work.verify(budget).map_err(|error| ObjectFailure::new(error.into(), work))?;
+                    let read = self.read_spilled(&spilled).await.map_err(|error| ObjectFailure::new(error, work))?;
+                    writes.extend(read.into_iter().map(|object| {
+                        let (object_id, bytes) = object.into_parts();
+                        ObjectWrite { object_id, bytes }
+                    }));
+                }
+                self.collection.writing(unswept, writes.iter().map(|write| write.object_id));
+                let receipt = self.inner.put_many(&writes,
+                    work.remaining(budget).map_err(|error| ObjectFailure::new(error.into(), work))?, cancellation,
+                ).await.map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+                // Cleanup cannot be skipped by cancellation after acknowledgement.
+                for write in &writes { self.index_mut().acknowledge(write.object_id); }
+                work = work.checked_add(receipt.work).map_err(|error| ObjectFailure::new(error.into(), work))?;
             }
         }
         let truncate = {
@@ -596,13 +665,168 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             index.spilled_objects == 0 && index.spill_end != 0
         };
         if truncate {
-            self.spill
-                .set_len_async(0)
-                .await
-                .map_err(|error| ObjectFailure::new(error.into(), work))?;
+            if let Some(native) = native {
+                self.spill.set_len_bounded_async(0, native.runtime_meter_owner())
+                    .map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?
+                    .await.map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?;
+            } else {
+                self.spill.set_len_async(0).await.map_err(|error| ObjectFailure::new(error.into(), work))?;
+            }
             self.index_mut().spill_end = 0;
         }
         Ok(ObjectReceipt { value: (), work })
+    }
+
+    async fn put_engine(
+        &self, object_id: ObjectId, bytes: Bytes, budget: WorkBudget,
+        cancellation: &CancellationToken, native: Option<&NativeMaterializationWork>,
+    ) -> ObjectResult<()> {
+        cancellation.check().map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+        let hashed = byte_length(&bytes).checked_add(
+            if native.is_some() { crate::storage::OBJECT_DIGEST_ENVELOPE_BYTES } else { 0 },
+        ).ok_or_else(|| ObjectFailure::before_work(crate::WorkError::Overflow.into()))?;
+        let verified = WorkCounters { bytes_hashed: hashed, ..WorkCounters::default() };
+        if let Some(native) = native {
+            native.charge(verified).map_err(|error| ObjectFailure::before_work(error.into()))?;
+        } else {
+            verified.verify(budget).map_err(|error| ObjectFailure::before_work(error.into()))?;
+        }
+        let prior = if native.is_some() { WorkCounters::default() } else { verified };
+        let object = HashedObject::verify(object_id, bytes)
+            .ok_or_else(|| ObjectFailure::new(ObjectStoreError::DigestMismatch, prior))?;
+        let admitted = self.put_hashed_engine(object,
+            prior.remaining(budget).map_err(|error| ObjectFailure::new(error.into(), prior))?,
+            cancellation, native,
+        ).await.map_err(|failure| failure.map_with_prior_work(prior, std::convert::identity))?;
+        Ok(ObjectReceipt { value: (), work: prior.checked_add(admitted.work)
+            .map_err(|error| ObjectFailure::new(error.into(), prior))? })
+    }
+
+    async fn put_hashed_engine(
+        &self, object: HashedObject, budget: WorkBudget,
+        cancellation: &CancellationToken, native: Option<&NativeMaterializationWork>,
+    ) -> ObjectResult<()> {
+        cancellation.check().map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+        if let Some(native) = native { native.remaining().map_err(|error| ObjectFailure::before_work(error.into()))?; }
+        if object.length() > MAXIMUM_DRAIN_BYTES {
+            let mut allocation = None;
+            let (mut future, _) = crate::heap_future::in_heap_admitted(
+                native,
+                |native, bytes| {
+                    allocation = native.map(|native| native.claim(bytes)).transpose()?;
+                    Ok::<_, NativeTreeMaterializationError>(())
+                },
+                |native| async move {
+                    let unswept = self.collection.unswept().await;
+                    self.collection.writing(&unswept, [object.object_id()]);
+                    if let Some(native) = native {
+                        self.inner.put_hashed_with_native_work(object, native, cancellation).await
+                            .map_err(ObjectFailure::before_work)?;
+                        Ok(ObjectReceipt { value: (), work: WorkCounters::default() })
+                    } else {
+                        self.inner.put_hashed(object, budget, cancellation).await
+                    }
+                },
+            ).map_err(|error| ObjectFailure::before_work(error.into()))?;
+            let result = future.as_mut().await;
+            drop(future);
+            drop(allocation);
+            return result;
+        }
+        // Bytes already owns its intrinsic custody. Staging clones or moves
+        // that physical owner; it never adopts the incoming allocation again.
+        let overflowing = {
+            let (object_id, bytes) = object.into_parts();
+            let mut index = self.index_mut();
+            index.admit_resident(object_id, bytes) && index.resident_bytes > MAXIMUM_RESIDENT_BYTES
+        };
+        if !overflowing { return Ok(ObjectReceipt { value: (), work: WorkCounters::default() }); }
+        let mut allocation = None;
+        let (mut future, _) = crate::heap_future::in_heap_admitted(
+            native,
+            |native, bytes| {
+                allocation = native.map(|native| native.claim(bytes)).transpose()?;
+                Ok::<_, NativeTreeMaterializationError>(())
+            },
+            |native| self.relieve_window(budget, cancellation, native),
+        ).map_err(|error| ObjectFailure::before_work(error.into()))?;
+        let result = future.as_mut().await;
+        drop(future);
+        drop(allocation);
+        result
+    }
+
+    async fn put_many_engine(
+        &self, writes: &[ObjectWrite], budget: WorkBudget,
+        cancellation: &CancellationToken, native: Option<&NativeMaterializationWork>,
+    ) -> ObjectResult<()> {
+        if writes.is_empty() {
+            return Err(ObjectFailure::before_work(ObjectStoreError::Rejected("object write batch is empty".to_owned())));
+        }
+        let mut work = WorkCounters::default();
+        for write in writes {
+            let receipt = self.put_engine(write.object_id, write.bytes.clone(),
+                work.remaining(budget).map_err(|error| ObjectFailure::new(error.into(), work))?,
+                cancellation, native,
+            ).await.map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+            work = work.checked_add(receipt.work).map_err(|error| ObjectFailure::new(error.into(), work))?;
+        }
+        Ok(ObjectReceipt { value: (), work })
+    }
+
+    async fn flush_engine(
+        &self, scope: PublicationScope<'_>, budget: WorkBudget,
+        cancellation: &CancellationToken, native: Option<&NativeMaterializationWork>,
+    ) -> ObjectResult<crate::PublicationHold> {
+        cancellation.check().map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+        let span = crate::obs::span!(
+            DEBUG, "acyclic.fs.staged.flush",
+            outcome = crate::obs::Empty, error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty, work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+        );
+        let result = crate::obs::in_span(&span, async move {
+            let _spill_file = self.spill_io.write().await;
+            let (objects, proven_at) = match scope {
+                PublicationScope::Closure { objects, proven_at } => (objects, proven_at),
+                PublicationScope::Everything => (&[][..], self.collection.sweeps()),
+            };
+            let unswept = self.collection.admit(
+                objects, |object_id| self.index().objects.contains_key(object_id), proven_at,
+            ).await.map_err(ObjectFailure::before_work)?;
+            let (_target_control, targets) = {
+                let index = self.index();
+                let capacity = match scope {
+                    PublicationScope::Closure { objects, .. } => objects.len(),
+                    PublicationScope::Everything => index.objects.len(),
+                };
+                let (control, mut targets) = staged_vector(capacity, native).map_err(ObjectFailure::before_work)?;
+                match scope {
+                    PublicationScope::Closure { objects, .. } => {
+                        for &object_id in objects {
+                            if let Some(native) = native {
+                                native.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })
+                                    .map_err(|error| ObjectFailure::before_work(error.into()))?;
+                            }
+                            if index.objects.contains_key(&object_id) { targets.push(object_id); }
+                        }
+                    },
+                    PublicationScope::Everything => {
+                        for &object_id in index.objects.keys() {
+                            if let Some(native) = native {
+                                native.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })
+                                    .map_err(|error| ObjectFailure::before_work(error.into()))?;
+                            }
+                            targets.push(object_id);
+                        }
+                    },
+                }
+                (control, targets)
+            };
+            let drained = self.drain_locked(&unswept, &targets, budget, cancellation, native).await?;
+            Ok(ObjectReceipt { value: unswept.into_hold(), work: drained.work })
+        }).await;
+        crate::obs::measured_on(&span, result, |receipt| &receipt.work)
     }
 
     /// Reads one object that was spilled when looked up: from the spill file
@@ -614,26 +838,23 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         maximum_bytes: u64,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> ObjectResult<ObjectRead> {
+        native: Option<&NativeMaterializationWork>,
+    ) -> Result<ObjectReceipt<ObjectRead>, (ObjectStoreError, WorkCounters)> {
         // Sharing the spill file keeps a drain from truncating or reusing it
         // until this read completes.
         let spill_file = self.spill_io.read().await;
         let (offset, length) = match self.lookup(object_id) {
             Lookup::Spilled { offset, length } => (offset, length),
-            Lookup::Resident(bytes) => return resident_read(bytes, maximum_bytes, budget),
+            Lookup::Resident(bytes) => return resident_read(bytes, maximum_bytes, budget, native),
             Lookup::Absent => {
                 drop(spill_file);
-                return self
-                    .inner
-                    .read(object_id, maximum_bytes, budget, cancellation)
-                    .await;
+                return self.read_durable(object_id, maximum_bytes, budget, cancellation, native).await;
             }
         };
         if length > maximum_bytes {
-            return Err(ObjectFailure::before_work(ObjectStoreError::TooLarge {
-                observed: length,
-                maximum: maximum_bytes,
-            }));
+            return Err((ObjectStoreError::TooLarge {
+                observed: length, maximum: maximum_bytes,
+            }, WorkCounters::default()));
         }
         let work = WorkCounters {
             backend_read_operations: 1,
@@ -641,15 +862,36 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             bytes_hashed: length,
             ..WorkCounters::default()
         };
-        work.verify(budget)
-            .map_err(|error| ObjectFailure::before_work(error.into()))?;
-        let object = self
-            .read_spilled(&[(object_id, offset, length)])
-            .await
-            .map_err(|error| ObjectFailure::new(error, work))?
-            .pop()
-            .ok_or_else(|| ObjectFailure::new(ObjectStoreError::Corrupt, work))?;
-        let (_, bytes) = object.into_parts();
+        let bytes = if let Some(native) = native {
+            cancellation.check().map_err(|_| (ObjectStoreError::Cancelled, WorkCounters::default()))?;
+            native.admit(WorkCounters {
+                object_bytes_read: length, bytes_hashed: length, ..WorkCounters::default()
+            }).map_err(|error| (error.into(), WorkCounters::default()))?;
+            let requested = usize::try_from(length).map_err(|_| (ObjectStoreError::Corrupt, WorkCounters::default()))?;
+            let read = self.spill.read_bounded_async(offset, requested, native.runtime_meter_owner())
+                .map_err(|error| (ObjectStoreError::Native(NativeTreeMaterializationError::from_runtime_error(error)), WorkCounters::default()))?
+                .await.map_err(|error| (ObjectStoreError::Native(NativeTreeMaterializationError::from_runtime_error(error)), WorkCounters::default()))?;
+            let observed = read.bytes.len() as u64;
+            native.record_admitted(WorkCounters {
+                object_bytes_read: observed, ..WorkCounters::default()
+            }).map_err(|error| (error.into(), WorkCounters::default()))?;
+            native.charge(WorkCounters {
+                bytes_hashed: observed, ..WorkCounters::default()
+            }).map_err(|error| (error.into(), WorkCounters::default()))?;
+            if observed != length || object_id.digest != crate::storage::object_digest(object_id.kind, &read.bytes) {
+                return Err((ObjectStoreError::Corrupt, WorkCounters::default()));
+            }
+            // NativeReadResult owns the actual runtime buffer guard. Keep the
+            // entire result inside the Bytes owner before exposing any alias.
+            let control = native.claim(std::mem::size_of::<StagedReadBytes>() as u64)
+                .map_err(|error| (error.into(), WorkCounters::default()))?;
+            Bytes::from_owner(StagedReadBytes { read, _control: control })
+        } else {
+            work.verify(budget).map_err(|error| (error.into(), WorkCounters::default()))?;
+            let object = self.read_spilled(&[(object_id, offset, length)]).await
+                .map_err(|error| (error, work))?.pop().ok_or((ObjectStoreError::Corrupt, work))?;
+            object.into_parts().1
+        };
         // A spilled object read again is live; it returns to the
         // window when there is room, and otherwise stays spilled.
         let mut index = self.index_mut();
@@ -662,12 +904,99 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             index.insert_resident(object_id, bytes.clone());
         }
         Ok(ObjectReceipt {
-            value: ObjectRead {
-                bytes,
-                retention: ObjectReadRetention::Shared,
-            },
+            value: ObjectRead { bytes, retention: ObjectReadRetention::Shared },
             work,
         })
+    }
+
+    async fn read_durable(
+        &self, object_id: ObjectId, maximum_bytes: u64, budget: WorkBudget,
+        cancellation: &CancellationToken, native: Option<&NativeMaterializationWork>,
+    ) -> Result<ObjectReceipt<ObjectRead>, (ObjectStoreError, WorkCounters)> {
+        if let Some(native) = native {
+            return self.inner.read_with_native_work(object_id, maximum_bytes, native, cancellation)
+                .await.map(|read| ObjectReceipt { value: read.into_read(), work: WorkCounters::default() })
+                .map_err(|error| (error, WorkCounters::default()));
+        }
+        self.inner.read(object_id, maximum_bytes, budget, cancellation).await
+            .map_err(|failure| (failure.error, *failure.work))
+    }
+
+    async fn read_engine(
+        &self, object_id: ObjectId, maximum_bytes: u64, budget: WorkBudget,
+        cancellation: &CancellationToken, native: Option<&NativeMaterializationWork>,
+    ) -> Result<ObjectReceipt<ObjectRead>, (ObjectStoreError, WorkCounters)> {
+        cancellation.check().map_err(|_| (ObjectStoreError::Cancelled, WorkCounters::default()))?;
+        match self.lookup(object_id) {
+            Lookup::Resident(bytes) => resident_read(bytes, maximum_bytes, budget, native),
+            // Keep the canonical resident fast path out of the larger I/O frame.
+            Lookup::Absent => {
+                let mut allocation = None;
+                let (mut future, _) = crate::heap_future::in_heap_admitted(
+                    native,
+                    |native, bytes| {
+                        allocation = native.map(|native| native.claim(bytes)).transpose()?;
+                        Ok::<_, NativeTreeMaterializationError>(())
+                    },
+                    |native| self.read_durable(object_id, maximum_bytes, budget, cancellation, native),
+                ).map_err(|error| (error.into(), WorkCounters::default()))?;
+                let result = future.as_mut().await;
+                drop(future);
+                drop(allocation);
+                result
+            }
+            Lookup::Spilled { .. } => {
+                let mut allocation = None;
+                let (mut future, _) = crate::heap_future::in_heap_admitted(
+                    native,
+                    |native, bytes| {
+                        allocation = native.map(|native| native.claim(bytes)).transpose()?;
+                        Ok::<_, NativeTreeMaterializationError>(())
+                    },
+                    |native| self.read_spilled_object(object_id, maximum_bytes, budget, cancellation, native),
+                ).map_err(|error| (error.into(), WorkCounters::default()))?;
+                let result = future.as_mut().await;
+                drop(future);
+                drop(allocation);
+                result
+            }
+        }
+    }
+
+    fn decoded_get(
+        &self, key: DecodedCacheKey, native: Option<&NativeMaterializationWork>,
+    ) -> Result<Option<DecodedCacheValue>, ObjectStoreError> {
+        if let Some(native) = native { native.remaining()?; }
+        match self.index().objects.get(&key.object_id) {
+            Some(Staged::Resident { decoded, .. }) => Ok(decoded.get()
+                .filter(|(cached, _)| *cached == key).map(|(_, value)| value.clone())),
+            Some(Staged::Spilled { .. }) => Ok(None),
+            None => match native {
+                Some(native) => self.inner.decoded_cache_get_with_native_work(key, native),
+                None => self.inner.decoded_cache_get(key),
+            },
+        }
+    }
+
+    fn decoded_admit(
+        &self, key: DecodedCacheKey, value: DecodedCacheValue, native: Option<&NativeMaterializationWork>,
+    ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
+        if let Some(native) = native { native.remaining()?; }
+        match self.index().objects.get(&key.object_id) {
+            Some(Staged::Resident { decoded, .. }) => {
+                let (cached, shared) = decoded.get_or_init(|| (key, value.clone()));
+                Ok(if *cached == key {
+                    DecodedCacheAdmission::Shared(shared.clone())
+                } else {
+                    DecodedCacheAdmission::Uncached(value)
+                })
+            }
+            Some(Staged::Spilled { .. }) => Ok(DecodedCacheAdmission::Uncached(value)),
+            None => match native {
+                Some(native) => self.inner.decoded_cache_admit_with_native_work(key, value, native),
+                None => self.inner.decoded_cache_admit(key, value),
+            },
+        }
     }
 }
 
@@ -682,14 +1011,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         &self,
         key: DecodedCacheKey,
     ) -> Result<Option<DecodedCacheValue>, ObjectStoreError> {
-        match self.index().objects.get(&key.object_id) {
-            Some(Staged::Resident { decoded, .. }) => Ok(decoded
-                .get()
-                .filter(|(cached, _)| *cached == key)
-                .map(|(_, value)| value.clone())),
-            Some(Staged::Spilled { .. }) => Ok(None),
-            None => self.inner.decoded_cache_get(key),
-        }
+        self.decoded_get(key, None)
     }
 
     fn decoded_cache_admit(
@@ -697,120 +1019,40 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         key: DecodedCacheKey,
         value: DecodedCacheValue,
     ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
-        match self.index().objects.get(&key.object_id) {
-            Some(Staged::Resident { decoded, .. }) => {
-                let (cached, shared) = decoded.get_or_init(|| (key, value.clone()));
-                Ok(if *cached == key {
-                    DecodedCacheAdmission::Shared(shared.clone())
-                } else {
-                    DecodedCacheAdmission::Uncached(value)
-                })
-            }
-            Some(Staged::Spilled { .. }) => Ok(DecodedCacheAdmission::Uncached(value)),
-            None => self.inner.decoded_cache_admit(key, value),
-        }
+        self.decoded_admit(key, value, None)
+    }
+
+    fn decoded_cache_get_with_native_work(
+        &self, key: DecodedCacheKey, work: &NativeMaterializationWork,
+    ) -> Result<Option<DecodedCacheValue>, ObjectStoreError> {
+        self.decoded_get(key, Some(work))
+    }
+
+    fn decoded_cache_admit_with_native_work(
+        &self, key: DecodedCacheKey, value: DecodedCacheValue, work: &NativeMaterializationWork,
+    ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
+        self.decoded_admit(key, value, Some(work))
     }
 
     async fn put(
-        &self,
-        object_id: ObjectId,
-        bytes: Bytes,
-        budget: WorkBudget,
+        &self, object_id: ObjectId, bytes: Bytes, budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        let verified = WorkCounters {
-            bytes_hashed: byte_length(&bytes),
-            ..WorkCounters::default()
-        };
-        verified
-            .verify(budget)
-            .map_err(|error| ObjectFailure::before_work(error.into()))?;
-        let object = HashedObject::verify(object_id, bytes)
-            .ok_or_else(|| ObjectFailure::new(ObjectStoreError::DigestMismatch, verified))?;
-        let admitted = self
-            .put_hashed(
-                object,
-                verified
-                    .remaining(budget)
-                    .map_err(|error| ObjectFailure::new(error.into(), verified))?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(verified, std::convert::identity))?;
-        Ok(ObjectReceipt {
-            value: (),
-            work: verified
-                .checked_add(admitted.work)
-                .map_err(|error| ObjectFailure::new(error.into(), verified))?,
-        })
+        self.put_engine(object_id, bytes, budget, cancellation, None).await
     }
 
     async fn put_hashed(
-        &self,
-        object: HashedObject,
-        budget: WorkBudget,
+        &self, object: HashedObject, budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        // Direct admission and spilling await I/O in their own heap frames,
-        // so a resident admission, which almost every page write is, never
-        // builds or moves their larger futures.
-        if object.length() > MAXIMUM_DRAIN_BYTES {
-            let unswept = self.collection.unswept().await;
-            self.collection.writing(&unswept, [object.object_id()]);
-            let written = in_heap(|| self.inner.put_hashed(object, budget, cancellation)).await;
-            drop(unswept);
-            return written;
-        }
-        // The object's hash is its identity: an equal identity already
-        // staged holds these exact bytes.
-        let overflowing = {
-            let (object_id, bytes) = object.into_parts();
-            let mut index = self.index_mut();
-            index.admit_resident(object_id, bytes) && index.resident_bytes > MAXIMUM_RESIDENT_BYTES
-        };
-        if !overflowing {
-            return Ok(ObjectReceipt {
-                value: (),
-                work: WorkCounters::default(),
-            });
-        }
-        in_heap(|| self.relieve_window(budget)).await
+        self.put_hashed_engine(object, budget, cancellation, None).await
     }
 
     async fn put_many(
-        &self,
-        writes: &[ObjectWrite],
-        budget: WorkBudget,
+        &self, writes: &[ObjectWrite], budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
-        if writes.is_empty() {
-            return Err(ObjectFailure::before_work(ObjectStoreError::Rejected(
-                "object write batch is empty".to_owned(),
-            )));
-        }
-        let mut work = WorkCounters::default();
-        for write in writes {
-            let receipt = self
-                .put(
-                    write.object_id,
-                    write.bytes.clone(),
-                    work.remaining(budget)
-                        .map_err(|error| ObjectFailure::new(error.into(), work))?,
-                    cancellation,
-                )
-                .await
-                .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-            work = work
-                .checked_add(receipt.work)
-                .map_err(|error| ObjectFailure::new(error.into(), work))?;
-        }
-        Ok(ObjectReceipt { value: (), work })
+        self.put_many_engine(writes, budget, cancellation, None).await
     }
 
     async fn put_many_hashed(
@@ -843,58 +1085,75 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
     }
 
     async fn flush_before_publish(
-        &self,
-        scope: PublicationScope<'_>,
-        budget: WorkBudget,
+        &self, scope: PublicationScope<'_>, budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<crate::PublicationHold> {
-        let span = crate::obs::span!(
-            DEBUG,
-            "acyclic.fs.staged.flush",
-            outcome = crate::obs::Empty,
-            error.kind = crate::obs::Empty,
-            work.items = crate::obs::Empty,
-            work.bytes = crate::obs::Empty,
-            work.durability = crate::obs::Empty,
-        );
-        let result = crate::obs::in_span(&span, async move {
-            let _spill_file = self.spill_io.write().await;
-            // Admitted before the drain: a collection cannot sweep what the
-            // drain stores until the record naming it is written.
-            let (objects, proven_at) = match scope {
-                PublicationScope::Closure { objects, proven_at } => (objects, proven_at),
-                PublicationScope::Everything => (&[][..], self.collection.sweeps()),
-            };
-            let unswept = self
-                .collection
-                .admit(
-                    objects,
-                    |object_id| self.index().objects.contains_key(object_id),
-                    proven_at,
-                )
-                .await
-                .map_err(ObjectFailure::before_work)?;
-            let targets = {
-                let index = self.index();
-                match scope {
-                    PublicationScope::Closure { objects, .. } => objects
-                        .iter()
-                        .copied()
-                        .filter(|object_id| index.objects.contains_key(object_id))
-                        .collect(),
-                    PublicationScope::Everything => index.objects.keys().copied().collect(),
-                }
-            };
-            let drained = self
-                .drain_locked(&unswept, targets, budget, cancellation)
-                .await?;
-            Ok(ObjectReceipt {
-                value: unswept.into_hold(),
-                work: drained.work,
-            })
-        })
-        .await;
-        crate::obs::measured_on(&span, result, |receipt| &receipt.work)
+        self.flush_engine(scope, budget, cancellation, None).await
+    }
+
+    async fn put_with_native_work(
+        &self, object_id: ObjectId, bytes: Bytes, work: &NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<(), ObjectStoreError> {
+        self.put_engine(object_id, bytes, work.remaining()?, cancellation, Some(work))
+            .await.map(|_| ()).map_err(|failure| failure.error)
+    }
+
+    async fn put_hashed_with_native_work(
+        &self, object: HashedObject, work: &NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<(), ObjectStoreError> {
+        self.put_hashed_engine(object, work.remaining()?, cancellation, Some(work))
+            .await.map(|_| ()).map_err(|failure| failure.error)
+    }
+
+    async fn put_many_with_native_work(
+        &self, writes: &[ObjectWrite], work: &NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<(), ObjectStoreError> {
+        self.put_many_engine(writes, work.remaining()?, cancellation, Some(work))
+            .await.map(|_| ()).map_err(|failure| failure.error)
+    }
+
+    async fn flush_before_publish_with_native_work(
+        &self, scope: PublicationScope<'_>, work: &NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::PublicationHold, ObjectStoreError> {
+        let mut allocation = None;
+        let (mut future, _) = crate::heap_future::in_heap_admitted(
+            Some(work),
+            |native, bytes| {
+                allocation = native.map(|native| native.claim(bytes)).transpose()?;
+                Ok::<_, NativeTreeMaterializationError>(())
+            },
+            |native| self.flush_engine(scope, WorkBudget::default(), cancellation, native),
+        )?;
+        let result = future.as_mut().await.map(|receipt| receipt.value).map_err(|failure| failure.error);
+        drop(future);
+        drop(allocation);
+        result
+    }
+
+    async fn prepare_generation_publication(
+        &self, request: &crate::kernel::PublishGenerationRequest,
+        proof: &crate::kernel::GenerationProof, append: &crate::GuardedAppend,
+        scope: crate::PublicationScope<'_>, budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<()> {
+        self.inner.prepare_generation_publication(
+            request, proof, append, scope, budget, cancellation,
+        ).await
+    }
+
+    async fn prepare_generation_publication_with_native_work(
+        &self, request: &crate::kernel::PublishGenerationRequest,
+        proof: &crate::kernel::GenerationProof, append: &crate::GuardedAppend,
+        scope: crate::PublicationScope<'_>, original: &crate::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<(), ObjectStoreError> {
+        self.inner.prepare_generation_publication_with_native_work(
+            request, proof, append, scope, original, cancellation,
+        ).await
     }
 
     fn collection(&self) -> Option<&Arc<crate::Collection>> {
@@ -938,26 +1197,18 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<ObjectRead> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        match self.lookup(object_id) {
-            Lookup::Resident(bytes) => resident_read(bytes, maximum_bytes, budget),
-            // Every other answer awaits I/O and runs in its own heap frame,
-            // so the resident answer, which every staged page read takes,
-            // never builds or moves those larger futures.
-            Lookup::Absent => {
-                in_heap(|| {
-                    self.inner
-                        .read(object_id, maximum_bytes, budget, cancellation)
-                })
-                .await
-            }
-            Lookup::Spilled { .. } => {
-                in_heap(|| self.read_spilled_object(object_id, maximum_bytes, budget, cancellation))
-                    .await
-            }
-        }
+        self.read_engine(object_id, maximum_bytes, budget, cancellation, None)
+            .await.map_err(|(error, work)| ObjectFailure::new(error, work))
+    }
+
+    async fn read_with_native_work(
+        &self, object_id: ObjectId, maximum_bytes: u64,
+        work: &NativeMaterializationWork, cancellation: &CancellationToken,
+    ) -> Result<NativeObjectRead, ObjectStoreError> {
+        let mut read = self.read_engine(object_id, maximum_bytes, work.remaining()?, cancellation, Some(work))
+            .await.map_err(|(error, _)| error)?.value;
+        read.retention = ObjectReadRetention::Shared;
+        NativeObjectRead::shared(read)
     }
 
     async fn read_many(
@@ -967,6 +1218,13 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         cancellation: &CancellationToken,
     ) -> ObjectResult<Vec<ObjectRead>> {
         crate::async_storage::read_many_sequential_async(self, requests, budget, cancellation).await
+    }
+
+    async fn read_many_with_native_work(
+        &self, requests: &[ObjectReadRequest],
+        work: &NativeMaterializationWork, cancellation: &CancellationToken,
+    ) -> Result<NativeObjectReadBatch, ObjectStoreError> {
+        crate::async_storage::read_many_sequential_with_native_work(self, requests, work, cancellation).await
     }
 
     async fn contains(
@@ -1445,6 +1703,7 @@ mod tests {
         let decoded = DecodedCacheValue {
             value: Arc::new(7_u32),
             logical_bytes: 4,
+            native_custody: None,
         };
         assert!(store.decoded_cache_get(key)?.is_none());
         assert!(matches!(
@@ -1536,6 +1795,394 @@ mod tests {
         drop(store);
         drop(provider);
         assert!(reopen_contains(directory.path(), &closure).await?);
+        Ok(())
+    }
+
+    fn native_read_budget() -> WorkBudget {
+        WorkBudget {
+            backend_read_operations: 8,
+            object_probes: 64,
+            object_bytes_read: 65_536,
+            bytes_hashed: 65_536,
+            bytes_copied: 65_536,
+            source_bytes_read: 65_536,
+            items_examined: 4_096,
+            items_returned: 256,
+            allocation_operations: 256,
+            peak_allocation_bytes: 1_048_576,
+            ..WorkBudget::default()
+        }
+    }
+
+    async fn spill_fixture(store: &LocalStaged, token: &CancellationToken)
+    -> Result<(ObjectId, Bytes), Box<dyn std::error::Error>> {
+        let (id, bytes) = blob(Bytes::from_static(b"real spill bytes"));
+        store.put(id, bytes.clone(), WorkBudget::UNBOUNDED, token).await?;
+        let _spill_file = store.spill_io.write().await;
+        store.spill.write_all_batch_async(vec![OwnedWrite { offset: 0, bytes: bytes.clone() }]).await?;
+        let mut index = store.index_mut();
+        if let Some(Staged::Resident { order, .. }) = index.objects.get(&id) {
+            let order = *order;
+            index.order.remove(&order);
+        }
+        index.mark_spilled(&[(id, bytes.clone())], 0);
+        Ok((id, bytes))
+    }
+
+    #[tokio::test]
+    async fn native_spill_alias_retains_actual_buffer_after_cache_and_store_drop()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let (store, _provider) = open_staged(directory.path()).await?;
+        let token = CancellationToken::new();
+        let (id, bytes) = spill_fixture(&store, &token).await?;
+        let work = NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
+        let read = store.read_with_native_work(id, bytes.len() as u64, &work, &token).await?;
+        assert_eq!(read.read().bytes, bytes);
+        let alias = read.read().bytes.clone();
+        let held = work.live_allocation_bytes();
+        assert!(held >= NativeMaterializationWork::accounting_state_bytes() + bytes.len() as u64);
+        assert_eq!(work.receipt().backend_read_operations, 1);
+        assert_eq!(work.receipt().object_bytes_read, bytes.len() as u64);
+        let prefix = work.receipt();
+        drop(store.read_with_native_work(id, bytes.len() as u64, &work, &token).await?);
+        assert_eq!(work.receipt().backend_read_operations, prefix.backend_read_operations);
+        assert_eq!(work.receipt().allocation_operations, prefix.allocation_operations);
+        drop(read);
+        drop(store);
+        assert_eq!(work.live_allocation_bytes(), held);
+        assert_eq!(alias, bytes);
+        drop(alias);
+        assert_eq!(work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_prefix()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let (store, _provider) = open_staged(directory.path()).await?;
+        let token = CancellationToken::new();
+        let (id, bytes) = spill_fixture(&store, &token).await?;
+        let mut budget = native_read_budget();
+        budget.backend_read_operations = 0;
+        let denied = NativeMaterializationWork::new(budget, &token).map_err(|(error, _)| error)?;
+        assert!(matches!(store.read_with_native_work(id, bytes.len() as u64, &denied, &token).await,
+            Err(ObjectStoreError::Native(NativeTreeMaterializationError::Work(
+                crate::WorkError::BudgetExceeded { counter: "backend_read_operations", .. })))));
+        assert_eq!(denied.receipt().backend_read_operations, 0);
+        assert_eq!(denied.receipt().object_bytes_read, 0);
+        assert_eq!(denied.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+
+        let work = NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
+        let spill_file = store.spill_io.write().await;
+        let mut future = Box::pin(store.read_with_native_work(id, bytes.len() as u64, &work, &token));
+        assert!(Future::poll(future.as_mut(),
+            &mut std::task::Context::from_waker(std::task::Waker::noop())).is_pending());
+        assert!(work.live_allocation_bytes() > NativeMaterializationWork::accounting_state_bytes());
+        drop(future);
+        drop(spill_file);
+        assert_eq!(work.receipt().backend_read_operations, 0);
+        assert_eq!(work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+
+        store.spill.write_all_batch_async(vec![OwnedWrite {
+            offset: 0, bytes: Bytes::from_static(b"bad! spill bytes"),
+        }]).await?;
+        let work = NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
+        assert!(matches!(store.read_with_native_work(id, bytes.len() as u64, &work, &token).await,
+            Err(ObjectStoreError::Corrupt)));
+        assert_eq!(work.receipt().backend_read_operations, 1);
+        assert_eq!(work.receipt().object_bytes_read, bytes.len() as u64);
+        assert_eq!(work.receipt().bytes_hashed, bytes.len() as u64);
+        assert_eq!(work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+        assert!(matches!(store.lookup(id), Lookup::Spilled { .. }));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_staged_decoded_alias_keeps_original_guard_after_resident_ejection()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct Page { _custody: Arc<NativeAllocation> }
+        let directory = tempfile::tempdir()?;
+        let (store, _provider) = open_staged(directory.path()).await?;
+        let token = CancellationToken::new();
+        let (id, bytes) = blob(Bytes::from_static(b"resident native page"));
+        store.put(id, bytes.clone(), WorkBudget::UNBOUNDED, &token).await?;
+        let work = NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
+        let initial = work.receipt().allocation_operations;
+        let read = store.read_with_native_work(id, bytes.len() as u64, &work, &token).await?;
+        assert_eq!(read.read().bytes.as_ptr(), bytes.as_ptr());
+        assert_eq!(work.receipt().allocation_operations, initial);
+        assert_eq!(work.receipt().backend_read_operations, 0);
+        let mut allocation = work.claim(std::mem::size_of::<Page>() as u64)?;
+        let mut control = work.claim(std::mem::size_of::<NativeAllocation>() as u64)?;
+        allocation.absorb(&mut control)?;
+        let custody = Arc::new(allocation);
+        let page = Arc::new(Page { _custody: Arc::clone(&custody) });
+        let key = DecodedCacheKey::new::<Page>(id, DecodeLimits::default());
+        let prefix = work.receipt();
+        drop(store.decoded_cache_admit_with_native_work(key, DecodedCacheValue {
+            value: page, logical_bytes: std::mem::size_of::<Page>() as u64, native_custody: Some(custody),
+        }, &work)?);
+        let cached = store.decoded_cache_get_with_native_work(key, &work)?.ok_or("resident native decoded miss")?;
+        assert_eq!(work.receipt().allocation_operations, prefix.allocation_operations);
+        let alias = Arc::clone(&cached.value);
+        let held = work.live_allocation_bytes();
+        drop(cached);
+        store.index_mut().remove(id);
+        assert_eq!(work.live_allocation_bytes(), held);
+        drop(alias);
+        assert_eq!(work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_custody()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let (store, _provider) = open_staged(directory.path()).await?;
+        let token = CancellationToken::new();
+        let (first, first_bytes) = spill_fixture(&store, &token).await?;
+        let (second, second_bytes) = blob(Bytes::from_static(b"second spill bytes"));
+        store.put(second, second_bytes.clone(), WorkBudget::UNBOUNDED, &token).await?;
+        {
+            let _spill_file = store.spill_io.write().await;
+            let offset = store.index().spill_end;
+            store.spill.write_all_batch_async(vec![OwnedWrite {
+                offset, bytes: second_bytes.clone(),
+            }]).await?;
+            let mut index = store.index_mut();
+            if let Some(Staged::Resident { order, .. }) = index.objects.get(&second) {
+                let order = *order;
+                index.order.remove(&order);
+            }
+            index.mark_spilled(&[(second, second_bytes.clone())], offset);
+        }
+        let work = NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
+        let requests = [
+            ObjectReadRequest { object_id: first, maximum_bytes: first_bytes.len() as u64 },
+            ObjectReadRequest { object_id: second, maximum_bytes: second_bytes.len() as u64 },
+        ];
+        let batch = store.read_many_with_native_work(&requests, &work, &token).await?;
+        assert_eq!(batch.reads().len(), 2);
+        assert_eq!(batch.reads()[0].bytes, first_bytes);
+        assert_eq!(batch.reads()[1].bytes, second_bytes);
+        // Staging's canonical ordinary convention is sequential scalar reads;
+        // native attribution must retain both real submissions, not invent one.
+        assert_eq!(work.receipt().backend_read_operations, 2);
+        assert_eq!(work.receipt().object_bytes_read, (first_bytes.len() + second_bytes.len()) as u64);
+        let alias = batch.reads()[0].bytes.clone();
+        let (values, allocation) = batch.into_parts();
+        assert_eq!(allocation.bytes(), (values.capacity() * std::mem::size_of::<ObjectRead>()) as u64);
+        drop(values);
+        drop(allocation);
+        drop(store);
+        assert!(work.live_allocation_bytes() > NativeMaterializationWork::accounting_state_bytes());
+        drop(alias);
+        assert_eq!(work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+        Ok(())
+    }
+    fn native_write_budget() -> WorkBudget {
+        WorkBudget {
+            backend_read_operations: 128,
+            backend_write_operations: 128,
+            durability_barriers: 128,
+            object_probes: 256,
+            object_bytes_read: 64 * 1_048_576,
+            object_bytes_written: 64 * 1_048_576,
+            source_bytes_read: 64 * 1_048_576,
+            output_bytes: 64 * 1_048_576,
+            bytes_hashed: 128 * 1_048_576,
+            bytes_copied: 128 * 1_048_576,
+            items_examined: 8_192,
+            items_returned: 256,
+            allocation_operations: 1_024,
+            peak_allocation_bytes: 64 * 1_048_576,
+            ..WorkBudget::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn native_flush_exact_closure_preserves_intrinsic_alias_without_readoption()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let token = CancellationToken::new();
+        let work = NativeMaterializationWork::new(native_write_budget(), &token).map_err(|(error, _)| error)?;
+        let (buffer, mut body) = staged_vector::<u8>(32, Some(&work))?;
+        body.extend_from_slice(b"original physical byte owner");
+        let control = work.claim(std::mem::size_of::<StagedSpillBytes>() as u64)?;
+        let bytes = Bytes::from_owner(StagedSpillBytes {
+            bytes: body, _buffer: buffer.ok_or("unfunded test buffer")?, _control: control,
+        });
+        let object = HashedObject::new(ObjectKind::Blob, bytes.clone());
+        let object_id = object.object_id();
+        let store = StagedObjects::open(crate::MemoryObjectStore::default(), directory.path().to_path_buf()).await?;
+        let before = work.receipt();
+        store.put_hashed_with_native_work(object, &work, &token).await?;
+        assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
+        let alias = match store.lookup(object_id) {
+            Lookup::Resident(bytes) => bytes,
+            _ => return Err("native admission did not remain resident".into()),
+        };
+        assert_eq!(alias.as_ptr(), bytes.as_ptr());
+        let (unselected, obsolete) = blob(Bytes::from_static(b"unpublished superseded object"));
+        store.put_with_native_work(unselected, obsolete, &work, &token).await?;
+        let closure = [object_id];
+        let hold = store.flush_before_publish_with_native_work(
+            PublicationScope::Closure { objects: &closure, proven_at: store.collection.sweeps() }, &work, &token,
+        ).await?;
+        assert!(!store.index().objects.contains_key(&object_id));
+        assert!(store.index().objects.contains_key(&unselected));
+        assert!(store.inner().contains(object_id, WorkBudget::UNBOUNDED, &token).await?.value);
+        assert!(!store.inner().contains(unselected, WorkBudget::UNBOUNDED, &token).await?.value);
+        assert_eq!(work.receipt().backend_write_operations, 1);
+        drop(hold);
+        drop(bytes);
+        drop(store);
+        assert!(work.live_allocation_bytes() > NativeMaterializationWork::accounting_state_bytes());
+        drop(alias);
+        assert_eq!(work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_spilled_flush_cleans_acknowledged_objects_and_reuses_spill()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let (store, provider) = open_staged(directory.path()).await?;
+        let token = CancellationToken::new();
+        let (id, bytes) = spill_fixture(&store, &token).await?;
+        let work = NativeMaterializationWork::new(native_write_budget(), &token).map_err(|(error, _)| error)?;
+        let closure = [id];
+        let hold = store.flush_before_publish_with_native_work(
+            PublicationScope::Closure { objects: &closure, proven_at: store.collection.sweeps() }, &work, &token,
+        ).await?;
+        assert!(store.index().objects.is_empty());
+        assert_eq!(store.index().spilled_objects, 0);
+        assert_eq!(store.index().spill_end, 0);
+        assert_eq!(work.receipt().object_bytes_read, bytes.len() as u64);
+        assert!(work.receipt().backend_read_operations > 0);
+        assert!(work.receipt().backend_write_operations > 0);
+        assert!(work.receipt().durability_barriers > 0);
+        drop(hold);
+        drop(store);
+        drop(provider);
+        assert!(reopen_contains(directory.path(), &closure).await?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_spill_denial_precedes_physical_write_and_restores_victims()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let store = StagedObjects::open(crate::MemoryObjectStore::default(), directory.path().to_path_buf()).await?;
+        let token = CancellationToken::new();
+        let mut ids = Vec::new();
+        for marker in 0..3_u8 {
+            let (id, bytes) = blob(Bytes::from(vec![marker; 2 * 1_048_576]));
+            store.index_mut().admit_resident(id, bytes);
+            ids.push(id);
+        }
+        let mut budget = native_write_budget();
+        budget.backend_write_operations = 0;
+        let denied = NativeMaterializationWork::new(budget, &token).map_err(|(error, _)| error)?;
+        let _spill_file = store.spill_io.write().await;
+        assert!(store.spill_locked(WorkBudget::default(), &token, Some(&denied)).await.is_err());
+        assert_eq!(denied.receipt().backend_write_operations, 0);
+        assert_eq!(denied.receipt().object_bytes_written, 0);
+        assert_eq!(store.index().spill_end, 0);
+        assert_eq!(store.index().spilled_objects, 0);
+        assert_eq!(store.index().order.len(), ids.len());
+        let physical = store.spill.read_batch_async(vec![OwnedRead { offset: 0, length: 1 }]).await?;
+        assert!(physical[0].is_empty());
+        for id in &ids { assert!(matches!(store.lookup(*id), Lookup::Resident(_))); }
+        let work = NativeMaterializationWork::new(native_write_budget(), &token).map_err(|(error, _)| error)?;
+        store.spill_locked(WorkBudget::default(), &token, Some(&work)).await?;
+        assert!(work.receipt().backend_write_operations > 0);
+        assert_eq!(work.receipt().object_bytes_written, store.index().spill_end);
+        assert!(store.index().spilled_objects > 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_flush_spilled_read_denial_keeps_private_remainder()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let (store, _provider) = open_staged(directory.path()).await?;
+        let token = CancellationToken::new();
+        let (id, _) = spill_fixture(&store, &token).await?;
+        let mut budget = native_write_budget();
+        budget.backend_read_operations = 0;
+        let work = NativeMaterializationWork::new(budget, &token).map_err(|(error, _)| error)?;
+        let closure = [id];
+        assert!(store.flush_before_publish_with_native_work(
+            PublicationScope::Closure { objects: &closure, proven_at: store.collection.sweeps() }, &work, &token,
+        ).await.is_err());
+        assert_eq!(work.receipt().backend_read_operations, 0);
+        assert_eq!(work.receipt().backend_write_operations, 0);
+        assert_eq!(work.receipt().object_bytes_read, 0);
+        assert!(matches!(store.lookup(id), Lookup::Spilled { .. }));
+        assert_eq!(store.index().spilled_objects, 1);
+        Ok(())
+    }
+
+    struct CancelAfterNativePut {
+        inner: crate::MemoryObjectStore,
+        cancel_once: AtomicBool,
+    }
+
+    impl AsyncObjectStore for CancelAfterNativePut {
+        async fn put(&self, id: ObjectId, bytes: Bytes, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<()> {
+            AsyncObjectStore::put(&self.inner, id, bytes, budget, cancellation).await
+        }
+        async fn put_with_native_work(
+            &self, id: ObjectId, bytes: Bytes, work: &NativeMaterializationWork, cancellation: &CancellationToken,
+        ) -> Result<(), ObjectStoreError> {
+            AsyncObjectStore::put_with_native_work(&self.inner, id, bytes, work, cancellation).await?;
+            if self.cancel_once.swap(false, Ordering::Relaxed) { cancellation.cancel(); }
+            Ok(())
+        }
+        async fn read(&self, id: ObjectId, maximum: u64, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<ObjectRead> {
+            AsyncObjectStore::read(&self.inner, id, maximum, budget, cancellation).await
+        }
+        async fn read_many(&self, requests: &[ObjectReadRequest], budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<Vec<ObjectRead>> {
+            AsyncObjectStore::read_many(&self.inner, requests, budget, cancellation).await
+        }
+        async fn contains(&self, id: ObjectId, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<bool> {
+            AsyncObjectStore::contains(&self.inner, id, budget, cancellation).await
+        }
+    }
+
+    #[tokio::test]
+    async fn native_flush_cancellation_removes_successful_prefix_only()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let store = StagedObjects::open(CancelAfterNativePut {
+            inner: crate::MemoryObjectStore::default(), cancel_once: AtomicBool::new(true),
+        }, directory.path().to_path_buf()).await?;
+        let token = CancellationToken::new();
+        let (first, first_bytes) = blob(Bytes::from_static(b"acknowledged first"));
+        let (second, second_bytes) = blob(Bytes::from_static(b"retryable second"));
+        let work = NativeMaterializationWork::new(native_write_budget(), &token).map_err(|(error, _)| error)?;
+        store.put_with_native_work(first, first_bytes.clone(), &work, &token).await?;
+        store.put_with_native_work(second, second_bytes, &work, &token).await?;
+        let closure = [first, second];
+        assert!(matches!(store.flush_before_publish_with_native_work(
+            PublicationScope::Closure { objects: &closure, proven_at: store.collection.sweeps() }, &work, &token,
+        ).await, Err(ObjectStoreError::Cancelled)));
+        assert!(!store.index().objects.contains_key(&first));
+        assert!(store.index().objects.contains_key(&second));
+        assert_eq!(work.receipt().backend_write_operations, 1);
+        assert_eq!(work.receipt().object_bytes_written, first_bytes.len() as u64);
+        let token = CancellationToken::new();
+        let retry = NativeMaterializationWork::new(native_write_budget(), &token).map_err(|(error, _)| error)?;
+        let hold = store.flush_before_publish_with_native_work(
+            PublicationScope::Closure { objects: &closure, proven_at: store.collection.sweeps() }, &retry, &token,
+        ).await?;
+        assert!(store.index().objects.is_empty());
+        assert_eq!(retry.receipt().backend_write_operations, 1);
+        assert_eq!(work.receipt().backend_write_operations, 1);
+        drop(hold);
         Ok(())
     }
 }

@@ -295,6 +295,27 @@ pub enum AuthorityStoreError {
     /// Operation was cancelled before durable authority work began.
     #[error("authority operation was cancelled")]
     Cancelled,
+    /// This custom provider cannot fund the canonical producer in the original
+    /// native allocation ledger. Rejected before provider I/O.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("authority provider does not support original native work")]
+    NativeOriginalUnsupported,
+    /// A failure from the caller's actual original native work owner.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error(transparent)]
+    NativeOriginal(#[from] crate::materializer::NativeTreeMaterializationError),
+    /// Canonical SDK failure without a formatted diagnostic allocation.
+    #[error(transparent)]
+    NativeStream(#[from] acyclic_stream::StreamError),
+    /// Canonical durable record validation preserves its actual typed cause.
+    #[error(transparent)]
+    DurableCodec(#[from] crate::streams_record::StreamsAuthorityRecordError),
+    /// Fixed canonical corruption reason needs no owned diagnostic buffer.
+    #[error("authority storage is corrupt: {0}")]
+    CorruptStatic(&'static str),
+    /// Fixed canonical rejection reason needs no owned diagnostic buffer.
+    #[error("authority backend rejected operation: {0}")]
+    RejectedStatic(&'static str),
     /// The authority does not exist.
     #[error("authority does not exist")]
     Missing,
@@ -304,6 +325,26 @@ pub enum AuthorityStoreError {
     /// A configured replay bound is invalid.
     #[error("replay limit must have non-zero record and payload bounds")]
     InvalidReplayLimit,
+    /// The memory authority mutex cannot safely expose its state.
+    #[error("authority mutex poisoned")]
+    MemoryAuthorityPoisoned,
+    /// Replay starts beyond the canonical durable head.
+    #[error("replay cursor is ahead of authority head")]
+    ReplayCursorAhead {
+        /// Requested exclusive replay cursor.
+        after: Sequence,
+        /// Current durable sequence.
+        head: Sequence,
+    },
+    /// Replay's sequence cannot be represented by this process.
+    #[error("replay cursor does not fit process")]
+    ReplayCursorProcessOverflow {
+        /// Requested exclusive replay cursor.
+        after: Sequence,
+    },
+    /// The actual replay metadata allocator rejected its admitted reservation.
+    #[error("memory replay allocation failed: {0}")]
+    MemoryReplayAllocationFailed(#[source] std::collections::TryReserveError),
     /// One authority record cannot fit into the requested replay page.
     #[error("next authority record has {observed} payload bytes; replay maximum is {maximum}")]
     ReplayRecordTooLarge {
@@ -496,6 +537,18 @@ pub struct HashedObject {
     bytes: Bytes,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+struct NativeImmutablePayload {
+    bytes: Vec<u8>,
+    _allocation: crate::materializer::NativeAllocation,
+    _control: crate::materializer::NativeAllocation,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl AsRef<[u8]> for NativeImmutablePayload {
+    fn as_ref(&self) -> &[u8] { &self.bytes }
+}
+
 impl HashedObject {
     /// Hashes `bytes` as one object of `kind`.
     #[must_use]
@@ -507,6 +560,68 @@ impl HashedObject {
             },
             bytes,
         }
+    }
+
+    /// Hashes an existing immutable owner without claiming its body again.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new_with_native_work(
+        kind: ObjectKind,
+        bytes: Bytes,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<Self, ObjectStoreError> {
+        cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
+        let hash = WorkCounters {
+            bytes_hashed: u64::try_from(bytes.len()).map_err(|_| crate::WorkError::Overflow)?
+                .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
+                .ok_or(crate::WorkError::Overflow)?,
+            ..WorkCounters::default()
+        };
+        work.admit(hash)?;
+        let object_id = ObjectId { kind, digest: object_digest(kind, &bytes) };
+        work.record_admitted(hash)?;
+        work.admit(WorkCounters::default())?;
+        cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
+        Ok(Self { object_id, bytes })
+    }
+
+    /// Transfers a guarded vector into the physical immutable byte owner.
+    ///
+    /// Errors leave both caller-owned inputs unchanged, including on a
+    /// different-ledger guard or denied owner allocation. Every byte alias
+    /// retains the original vector capacity until the final alias is dropped.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_native_vec(
+        kind: ObjectKind,
+        bytes: &mut Vec<u8>,
+        allocation: &mut crate::materializer::NativeAllocation,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<Self, ObjectStoreError> {
+        cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
+        let capacity = u64::try_from(bytes.capacity()).map_err(|_| crate::WorkError::Overflow)?;
+        if !work.shares_ledger(allocation.work()) || allocation.bytes() < capacity {
+            return Err(crate::materializer::NativeTreeMaterializationError::InvalidLayout.into());
+        }
+        let hash = WorkCounters {
+            bytes_hashed: u64::try_from(bytes.len()).map_err(|_| crate::WorkError::Overflow)?
+                .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
+                .ok_or(crate::WorkError::Overflow)?,
+            ..WorkCounters::default()
+        };
+        work.admit(hash)?;
+        let control = work.claim(std::mem::size_of::<NativeImmutablePayload>() as u64)?;
+        let object_id = ObjectId { kind, digest: object_digest(kind, bytes) };
+        work.record_admitted(hash)?;
+        work.admit(WorkCounters::default())?;
+        cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
+        let payload_allocation = allocation.split_off(capacity)?;
+        let payload = NativeImmutablePayload {
+            bytes: std::mem::take(bytes),
+            _allocation: payload_allocation,
+            _control: control,
+        };
+        Ok(Self { object_id, bytes: Bytes::from_owner(payload) })
     }
 
     /// Admits `bytes` under `object_id` only if they hash to it.
@@ -648,6 +763,19 @@ pub trait ObjectStore: Send + Sync {
         budget: WorkBudget,
     ) -> ObjectResult<ObjectRead>;
 
+    /// Reads against the caller's original native work and allocation journal.
+    /// Custom providers without this capability fail before accessing storage.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_with_native_work(
+        &self,
+        _object_id: ObjectId,
+        _maximum_bytes: u64,
+        _work: &crate::materializer::NativeMaterializationWork,
+        _cancellation: &crate::CancellationToken,
+    ) -> Result<crate::async_storage::NativeObjectRead, ObjectStoreError> {
+        Err(ObjectStoreError::NativeUnavailable)
+    }
+
     /// Reads an ordered batch of complete bounded objects.
     ///
     /// The result position always matches the request position. Implementations
@@ -663,6 +791,17 @@ pub trait ObjectStore: Send + Sync {
         requests: &[ObjectReadRequest],
         budget: WorkBudget,
     ) -> ObjectResult<Vec<ObjectRead>>;
+
+    /// Executes this provider's actual batch under the original native journal.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_many_with_native_work(
+        &self,
+        _requests: &[ObjectReadRequest],
+        _work: &crate::materializer::NativeMaterializationWork,
+        _cancellation: &crate::CancellationToken,
+    ) -> Result<crate::async_storage::NativeObjectReadBatch, ObjectStoreError> {
+        Err(ObjectStoreError::NativeUnavailable)
+    }
 
     /// Returns whether the exact typed object is present and verified.
     ///
@@ -690,12 +829,33 @@ impl<T: ObjectStore + ?Sized> ObjectStore for Arc<T> {
         (**self).read(object_id, maximum_bytes, budget)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_with_native_work(
+        &self,
+        object_id: ObjectId,
+        maximum_bytes: u64,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::async_storage::NativeObjectRead, ObjectStoreError> {
+        (**self).read_with_native_work(object_id, maximum_bytes, work, cancellation)
+    }
+
     fn read_many(
         &self,
         requests: &[ObjectReadRequest],
         budget: WorkBudget,
     ) -> ObjectResult<Vec<ObjectRead>> {
         (**self).read_many(requests, budget)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_many_with_native_work(
+        &self,
+        requests: &[ObjectReadRequest],
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::async_storage::NativeObjectReadBatch, ObjectStoreError> {
+        (**self).read_many_with_native_work(requests, work, cancellation)
     }
 
     fn contains(&self, object_id: ObjectId, budget: WorkBudget) -> ObjectResult<bool> {
@@ -709,12 +869,24 @@ pub enum ObjectStoreError {
     /// Operation was cancelled before immutable-object work began.
     #[error("object operation was cancelled")]
     Cancelled,
+    /// A simulator emitted its actual static interceptor failure.
+    #[error("simulation: {0}")]
+    Simulation(&'static str),
     /// Exact typed object is absent.
     #[error("object is missing")]
     Missing,
     /// Supplied bytes do not match the typed object digest.
     #[error("object digest does not match canonical bytes")]
     DigestMismatch,
+    /// An immutable write batch contains no objects.
+    #[error("object write batch is empty")]
+    EmptyWriteBatch,
+    /// An immutable read batch contains no requests.
+    #[error("object read batch is empty")]
+    EmptyReadBatch,
+    /// The resident table or read-result allocator rejected the exact reserve.
+    #[error("memory object allocation failed: {0}")]
+    MemoryTableAllocationFailed(#[source] std::collections::TryReserveError),
     /// Object exceeds the backend's declared bound.
     #[error("object is {observed} bytes; maximum is {maximum}")]
     TooLarge {
@@ -741,6 +913,17 @@ pub enum ObjectStoreError {
     /// Backend work could not be admitted without exceeding the caller budget.
     #[error(transparent)]
     Work(#[from] crate::performance::WorkError),
+    /// This custom provider has no original-native accounting capability.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("object provider does not support original native accounting")]
+    NativeUnavailable,
+    /// The original native journal rejected or failed the operation.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error(transparent)]
+    Native(#[from] crate::materializer::NativeTreeMaterializationError),
+    /// The logical Objects provider returned its canonical typed category.
+    #[error(transparent)]
+    LogicalObjects(#[from] acyclic_objects::v1::Error),
 }
 
 #[cfg(test)]

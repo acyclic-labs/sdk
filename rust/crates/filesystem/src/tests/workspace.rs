@@ -4636,3 +4636,211 @@ async fn measured_reservation_query_is_existing_only_and_preserves_original_proo
     assert_eq!(workspace.head().await?.id(), original.id());
     Ok(())
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_workspace_name_aliases_keep_exact_original_spelling_custody()
+-> Result<(), Box<dyn Error>> {
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(
+        selected_transaction_budget(), &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let state_bytes = original.live_allocation_bytes();
+    let prior_allocation = original.claim(std::mem::size_of::<[u8; 37]>() as u64)?;
+    let prior_data = Box::new([0_u8; 37]);
+    let baseline = original.live_allocation_bytes();
+    assert_eq!(baseline, state_bytes + std::mem::size_of_val(prior_data.as_ref()) as u64);
+    let name = WorkspaceName::new_with_native_work("cafe\u{301}", &original, &cancellation)?;
+    let ordinary = WorkspaceName::new_measured("café", WorkBudget::UNBOUNDED, &cancellation)?;
+    assert_eq!(name, ordinary.value);
+    assert_eq!(name.as_str(), "café");
+    let custody_bytes = std::mem::size_of::<(Arc<str>, crate::NativeAllocation)>() as u64;
+    let held = original.live_allocation_bytes();
+    assert_eq!(held, baseline + name.as_str().len() as u64 + custody_bytes);
+    assert_eq!(original.receipt().bytes_copied, ordinary.work.bytes_copied);
+    let before_clone = original.receipt();
+    let alias = name.clone();
+    assert_eq!(original.receipt(), before_clone);
+    assert_eq!(original.live_allocation_bytes(), held);
+    let namespace = [73_u8; 16];
+    let id = WorkspaceId::derive_with_native_work(namespace, &alias, &original, &cancellation)?;
+    assert_eq!(id, WorkspaceId::derive(namespace, &ordinary.value));
+    let after_hash = original.receipt();
+    assert_eq!(after_hash.bytes_hashed - before_clone.bytes_hashed,
+        b"acyclic-fs-workspace-id-v1\0".len() as u64 + 16 + 8 + alias.as_str().len() as u64);
+    assert_eq!(after_hash.bytes_copied - before_clone.bytes_copied, 16);
+    drop(name);
+    assert_eq!(alias.as_str(), "café");
+    assert_eq!(original.live_allocation_bytes(), held);
+    drop(alias);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.receipt(), after_hash);
+    drop(prior_data);
+    drop(prior_allocation);
+    assert_eq!(original.live_allocation_bytes(), state_bytes);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_workspace_name_equal_spelling_does_not_cross_original_ledgers()
+-> Result<(), Box<dyn Error>> {
+    let cancellation = CancellationToken::new();
+    let first = crate::NativeMaterializationWork::new(
+        selected_transaction_budget(), &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let second = crate::NativeMaterializationWork::new(
+        selected_transaction_budget(), &cancellation,
+    ).map_err(|(error, _)| error)?;
+    assert!(!first.shares_ledger(&second));
+    let first_baseline = first.live_allocation_bytes();
+    let second_baseline = second.live_allocation_bytes();
+    let first_name = WorkspaceName::new_with_native_work("cafe\u{301}", &first, &cancellation)?;
+    let second_name = WorkspaceName::new_with_native_work("café", &second, &cancellation)?;
+    assert_eq!(first_name, second_name);
+    let second_held = second.live_allocation_bytes();
+    let second_work = second.receipt();
+    drop(first_name);
+    assert_eq!(first.live_allocation_bytes(), first_baseline);
+    assert_eq!(second.live_allocation_bytes(), second_held);
+    assert_eq!(second.receipt(), second_work);
+    assert_eq!(second_name.as_str(), "café");
+    drop(second_name);
+    assert_eq!(second.live_allocation_bytes(), second_baseline);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_workspace_name_denial_preserves_prior_live_data_and_actual_work()
+-> Result<(), Box<dyn Error>> {
+    let cancellation = CancellationToken::new();
+    for name in ["a", "a\u{301}\u{301}\u{301}\u{301}\u{301}"] {
+        let mut budget = selected_transaction_budget();
+        budget.peak_allocation_bytes = crate::NativeMaterializationWork::accounting_state_bytes() + 37;
+        let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let prior_allocation = original.claim(std::mem::size_of::<[u8; 37]>() as u64)?;
+        let prior_data = Box::new([0_u8; 37]);
+        let before = original.receipt();
+        let baseline = original.live_allocation_bytes();
+        let error = WorkspaceName::new_with_native_work(name, &original, &cancellation)
+            .expect_err("original live data leaves no room for a name or NFC scratch");
+        assert!(matches!(error, WorkspaceError::Work(crate::WorkError::BudgetExceeded {
+            counter: "peak_allocation_bytes", ..
+        })));
+        let spent = original.receipt();
+        assert!(spent.items_examined > before.items_examined);
+        assert_eq!(spent.allocation_operations, before.allocation_operations);
+        assert_eq!(spent.peak_allocation_bytes, before.peak_allocation_bytes);
+        assert_eq!(spent.bytes_copied, before.bytes_copied);
+        assert_eq!(spent.bytes_hashed, before.bytes_hashed);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(prior_data.as_ref(), &[0_u8; 37]);
+        drop(prior_data);
+        drop(prior_allocation);
+        assert_eq!(original.live_allocation_bytes(),
+            crate::NativeMaterializationWork::accounting_state_bytes());
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_workspace_name_cancellation_and_hash_denial_do_not_fabricate_work()
+-> Result<(), Box<dyn Error>> {
+    for cancel_original in [false, true] {
+        let root = CancellationToken::new();
+        let caller = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(selected_transaction_budget(), &root)
+            .map_err(|(error, _)| error)?;
+        let before = original.receipt();
+        let baseline = original.live_allocation_bytes();
+        if cancel_original { root.cancel(); } else { caller.cancel(); }
+        assert!(matches!(WorkspaceName::new_with_native_work("cafe\u{301}", &original, &caller),
+            Err(WorkspaceError::Cancelled(_))));
+        assert_eq!(original.receipt(), before);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+    }
+    let cancellation = CancellationToken::new();
+    let mut budget = selected_transaction_budget();
+    budget.bytes_hashed = 0;
+    let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let name = WorkspaceName::new_with_native_work("cafe\u{301}", &original, &cancellation)?;
+    let before = original.receipt();
+    let baseline = original.live_allocation_bytes();
+    assert!(matches!(WorkspaceId::derive_with_native_work([73; 16], &name, &original, &cancellation),
+        Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
+            counter: "bytes_hashed", ..
+        }))));
+    assert_eq!(original.receipt(), before);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    drop(name);
+    assert_eq!(original.live_allocation_bytes(),
+        crate::NativeMaterializationWork::accounting_state_bytes());
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_kernel_errors_keep_typed_workspace_budget_and_cancellation() {
+    let work = WorkspaceError::from(crate::FsError::NativeKernel(
+        crate::NativeTreeMaterializationError::Work(crate::WorkError::Overflow),
+    ));
+    assert!(matches!(work, WorkspaceError::Work(crate::WorkError::Overflow)));
+    let cancelled = WorkspaceError::from(crate::FsError::NativeKernel(
+        crate::NativeTreeMaterializationError::Cancelled,
+    ));
+    assert!(matches!(cancelled, WorkspaceError::Cancelled(_)));
+    let nested = WorkspaceError::from(crate::FsError::NativeKernel(
+        crate::NativeTreeMaterializationError::Io(std::io::Error::other(
+            crate::NativeTreeMaterializationError::Work(crate::WorkError::Overflow),
+        )),
+    ));
+    assert!(matches!(nested, WorkspaceError::Work(crate::WorkError::Overflow)));
+    let object = WorkspaceError::from(crate::FsError::Object(crate::ObjectStoreError::Native(
+        crate::NativeTreeMaterializationError::Cancelled,
+    )));
+    assert!(matches!(object, WorkspaceError::Cancelled(_)));
+    let authority = WorkspaceError::from(crate::FsError::Authority(
+        crate::AuthorityStoreError::NativeOriginal(crate::NativeTreeMaterializationError::Work(
+            crate::WorkError::Overflow,
+        )),
+    ));
+    assert!(matches!(authority, WorkspaceError::Work(crate::WorkError::Overflow)));
+}
+
+#[test]
+fn root_read_merge_overflow_keeps_both_exact_prefixes_in_workspace_errors() {
+    let prior = crate::WorkCounters {
+        bytes_copied: u64::MAX,
+        ..crate::WorkCounters::UNCHARGED
+    };
+    let backend = crate::WorkCounters {
+        bytes_copied: 1,
+        ..crate::WorkCounters::UNCHARGED
+    };
+    assert_eq!(prior.with_backend(backend, 0), Err(crate::WorkError::Overflow));
+    let direct = WorkspaceError::from(crate::FsError::RootReadWorkMerge {
+        prior, backend, error: crate::WorkError::Overflow,
+    });
+    let wrapped = WorkspaceError::engine(crate::OperationFailure::new(
+        crate::FsError::RootReadWorkMerge {
+            prior, backend, error: crate::WorkError::Overflow,
+        },
+        backend,
+    ));
+    for error in [direct, wrapped] {
+        match error {
+            WorkspaceError::Filesystem(crate::FsError::RootReadWorkMerge {
+                prior: actual_prior, backend: actual_backend, error,
+            }) => {
+                assert_eq!(actual_prior, prior);
+                assert_eq!(actual_backend, backend);
+                assert_eq!(error, crate::WorkError::Overflow);
+            }
+            other => panic!("exact completed prefixes were lost: {other}"),
+        }
+    }
+}

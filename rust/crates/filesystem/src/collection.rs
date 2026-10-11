@@ -92,6 +92,8 @@ pub(crate) struct HeldRoots {
     pub(crate) working: GenerationRoot,
     /// The checkout's volume configuration, which bounds its pages.
     pub(crate) config: crate::model::VolumeConfig,
+    // Last: the real held Vec is destroyed before its owner-local tag.
+    control: crate::kernel::ProofDataClaim,
 }
 
 /// Keeps a publication's admitted closure from being swept until its record
@@ -407,6 +409,8 @@ pub(crate) struct CheckoutRoots {
     working: GenerationRoot,
     config: crate::model::VolumeConfig,
     hold: Option<Hold>,
+    // Last: both working and collection-held root buffers retire first.
+    working_control: crate::kernel::ProofDataClaim,
 }
 
 impl CheckoutRoots {
@@ -421,6 +425,7 @@ impl CheckoutRoots {
                 base,
                 working: working.clone(),
                 config,
+                control: crate::kernel::ProofDataClaim::default(),
             }))
         });
         Self {
@@ -428,6 +433,7 @@ impl CheckoutRoots {
             working,
             config,
             hold,
+            working_control: crate::kernel::ProofDataClaim::default(),
         }
     }
 
@@ -441,17 +447,59 @@ impl CheckoutRoots {
         budget: WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<Self, crate::FsError> {
+        Self::new_measured_with_control(
+            collection, config, base, (working, crate::kernel::ProofDataClaim::default()),
+            allocations, work, budget, cancellation, None,
+        )
+    }
+
+    /// Moves the decoder's same already-admitted working buffer and tag while
+    /// attaching exact held copies before any registration can fail.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn new_native_measured(
+        collection: Option<&Arc<Collection>>,
+        config: crate::model::VolumeConfig,
+        base: ObjectId,
+        working: (GenerationRoot, crate::kernel::ProofDataClaim),
+        allocations: &mut AllocationLedger,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+        cancellation: &crate::CancellationToken,
+        owner: &Arc<crate::kernel::ProofDataCustody>,
+    ) -> Result<Self, crate::FsError> {
+        Self::new_measured_with_control(
+            collection, config, base, working, allocations, work, budget, cancellation, Some(owner),
+        )
+    }
+
+    fn new_measured_with_control(
+        collection: Option<&Arc<Collection>>,
+        config: crate::model::VolumeConfig,
+        base: ObjectId,
+        working: (GenerationRoot, crate::kernel::ProofDataClaim),
+        allocations: &mut AllocationLedger,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+        cancellation: &crate::CancellationToken,
+        native_owner: Option<&Arc<crate::kernel::ProofDataCustody>>,
+    ) -> Result<Self, crate::FsError> {
         let hold = match collection {
             Some(collection) => {
-                let held_working = clone_generation_root(&working, allocations, work, budget)?;
+                let held_working = clone_generation_root_with_control(
+                    &working.0, allocations, work, budget, native_owner,
+                )?;
                 Some(collection.register_measured(
-                    Held::Checkout(HeldRoots { base, working: held_working, config }),
+                    Held::Checkout(HeldRoots {
+                        base, working: held_working.0, config, control: held_working.1,
+                    }),
                     allocations, work, budget, cancellation,
                 )?)
             }
             None => None,
         };
-        Ok(Self { base, working, config, hold })
+        Ok(Self {
+            base, working: working.0, config, hold, working_control: working.1,
+        })
     }
 
     pub(crate) fn replicate_measured(
@@ -461,16 +509,137 @@ impl CheckoutRoots {
         budget: WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<Self, crate::FsError> {
-        let working = clone_generation_root(&self.working, allocations, work, budget)?;
-        Self::new_measured(
+        self.replicate_with_control(allocations, work, budget, cancellation, None)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn replicate_native_measured(
+        &self,
+        allocations: &mut AllocationLedger,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+        cancellation: &crate::CancellationToken,
+        owner: &Arc<crate::kernel::ProofDataCustody>,
+    ) -> Result<Self, crate::FsError> {
+        self.replicate_with_control(allocations, work, budget, cancellation, Some(owner))
+    }
+
+    fn replicate_with_control(
+        &self,
+        allocations: &mut AllocationLedger,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+        cancellation: &crate::CancellationToken,
+        native_owner: Option<&Arc<crate::kernel::ProofDataCustody>>,
+    ) -> Result<Self, crate::FsError> {
+        let working = clone_generation_root_with_control(
+            &self.working, allocations, work, budget, native_owner,
+        )?;
+        Self::new_measured_with_control(
             self.hold.as_ref().map(|hold| &hold.collection), self.config,
-            self.base, working, allocations, work, budget, cancellation,
+            self.base, working, allocations, work, budget, cancellation, native_owner,
         )
+    }
+
+    /// Verifies the exact working/held vectors that move into an original
+    /// pinned reader. Cached slot storage and token lineage prove no payment.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn same_original_scope(
+        &self, original: &Arc<crate::demand::NativeDemandReadMeter>,
+    ) -> bool {
+        if !self.working_control.is_native_original(original, root_parent_bytes(&self.working)) {
+            return false;
+        }
+        let Some(hold) = &self.hold else { return true; };
+        let holds = hold.collection.holds.lock().unwrap_or_else(PoisonError::into_inner);
+        match holds.slots.get(hold.id).and_then(|slot| slot.held.as_ref()) {
+            Some(Held::Checkout(roots)) => roots.control.is_native_original(
+                original, root_parent_bytes(&roots.working),
+            ),
+            _ => false,
+        }
     }
 
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
         crate::foundation::usize_to_u64(self.working.parents.capacity() * std::mem::size_of::<crate::GenerationId>())
             + self.hold.as_ref().map_or(0, Hold::logical_owned_bytes)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn has_hold(&self) -> bool {
+        self.hold.is_some()
+    }
+
+    /// Only freshly cloned, measured root buffers receive these exact tags.
+    /// Collection slot capacity is cached shared storage, not handle custody.
+    pub(crate) fn attach_control_custody(&mut self, owner: &Arc<crate::kernel::ProofDataCustody>) {
+        self.working_control = crate::kernel::ProofDataClaim::control(owner, root_parent_bytes(&self.working));
+        if let Some(hold) = &self.hold {
+            let mut holds = hold.collection.holds.lock().unwrap_or_else(PoisonError::into_inner);
+            let held = holds.slots.get_mut(hold.id).and_then(|slot| slot.held.as_mut())
+                .expect("a freshly admitted hold remains registered");
+            if let Held::Checkout(roots) = held {
+                roots.control = crate::kernel::ProofDataClaim::control(owner, root_parent_bytes(&roots.working));
+            }
+        }
+    }
+
+
+    pub(crate) fn prepare_held_root(
+        &self,
+        working: &GenerationRoot,
+        allocations: &mut AllocationLedger,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+    ) -> Result<Option<GenerationRoot>, crate::FsError> {
+        self.hold.as_ref().map(|_| clone_generation_root(working, allocations, work, budget)).transpose()
+    }
+
+    /// Copies only the publication-held root, charging its actual primitive
+    /// buffer to the original checkout control owner.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn prepare_held_root_native(
+        &self,
+        working: &GenerationRoot,
+        allocations: &mut AllocationLedger,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+        owner: &Arc<crate::kernel::ProofDataCustody>,
+    ) -> Result<Option<(GenerationRoot, crate::kernel::ProofDataClaim)>, crate::FsError> {
+        self.hold.as_ref().map(|_| {
+            clone_generation_root_native(working, allocations, work, budget, owner)
+        }).transpose()
+    }
+
+    /// Moves already admitted root copies after the publication seal.
+    /// Replacements destroy each old vector before retiring its tag.
+    pub(crate) fn set_prepared_root(
+        &mut self,
+        base: ObjectId,
+        working: GenerationRoot,
+        control: crate::kernel::ProofDataClaim,
+        held: Option<(GenerationRoot, crate::kernel::ProofDataClaim)>,
+    ) {
+        self.base = base;
+        self.set_prepared_working(working, control, held);
+    }
+
+    /// Replaces only the working tree with admitted buffers; base lineage and
+    /// the checkout's base-root copy remain unchanged.
+    pub(crate) fn set_prepared_working(
+        &mut self,
+        working: GenerationRoot,
+        control: crate::kernel::ProofDataClaim,
+        held: Option<(GenerationRoot, crate::kernel::ProofDataClaim)>,
+    ) {
+        if let Some(hold) = &self.hold {
+            let (working, control) = held.expect("the existing registration has a prepared root");
+            hold.update(Held::Checkout(HeldRoots { base: self.base, working, config: self.config, control }));
+        } else {
+            debug_assert!(held.is_none());
+        }
+        self.working = working;
+        self.working_control = control;
     }
 
     /// The generation the checkout is based on.
@@ -501,9 +670,11 @@ impl CheckoutRoots {
                 base: self.base,
                 working: working.clone(),
                 config: self.config,
+                control: crate::kernel::ProofDataClaim::default(),
             }));
         }
         self.working = working;
+        self.working_control = crate::kernel::ProofDataClaim::default();
     }
 }
 
@@ -519,6 +690,10 @@ impl Deref for CheckoutRoots {
     fn deref(&self) -> &GenerationRoot {
         &self.working
     }
+}
+
+fn root_parent_bytes(root: &GenerationRoot) -> u64 {
+    crate::foundation::usize_to_u64(root.parents.capacity() * std::mem::size_of::<crate::GenerationId>())
 }
 
 fn held_owned_bytes(held: &Held) -> u64 {
@@ -550,25 +725,68 @@ pub(crate) fn clone_generation_root(
     work: &mut WorkCounters,
     budget: WorkBudget,
 ) -> Result<GenerationRoot, crate::FsError> {
+    clone_generation_root_with_control(root, allocations, work, budget, None)
+        .map(|(root, _)| root)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn clone_generation_root_native(
+    root: &GenerationRoot,
+    allocations: &mut AllocationLedger,
+    work: &mut WorkCounters,
+    budget: WorkBudget,
+    owner: &Arc<crate::kernel::ProofDataCustody>,
+) -> Result<(GenerationRoot, crate::kernel::ProofDataClaim), crate::FsError> {
+    clone_generation_root_with_control(root, allocations, work, budget, Some(owner))
+}
+
+fn clone_generation_root_with_control(
+    root: &GenerationRoot,
+    allocations: &mut AllocationLedger,
+    work: &mut WorkCounters,
+    budget: WorkBudget,
+    native_owner: Option<&Arc<crate::kernel::ProofDataCustody>>,
+) -> Result<(GenerationRoot, crate::kernel::ProofDataClaim), crate::FsError> {
+    let requested = crate::foundation::usize_to_u64(
+        root.parents.len() * std::mem::size_of::<crate::GenerationId>(),
+    );
     allocations.claim_elements::<crate::GenerationId>(root.parents.len(), work, budget)
         .map_err(handle_allocation_error)?;
     let mut parents = Vec::new();
-    parents.try_reserve_exact(root.parents.len()).map_err(|_| crate::FsError::HandleAllocationFailed)?;
-    let excess = parents.capacity().saturating_sub(root.parents.len()) * std::mem::size_of::<crate::GenerationId>();
-    if excess != 0 {
-        allocations.claim_bytes(crate::foundation::usize_to_u64(excess), 0, work, WorkBudget::UNBOUNDED)
-            .map_err(handle_allocation_error)?;
-        work.verify(budget)?;
+    if parents.try_reserve_exact(root.parents.len()).is_err() {
+        drop(parents);
+        allocations.release(requested).map_err(handle_allocation_error)?;
+        return Err(crate::FsError::HandleAllocationFailed);
     }
-    charge_handle_copy(
-        crate::foundation::usize_to_u64(root.parents.len() * std::mem::size_of::<crate::GenerationId>()),
-        work, budget,
-    )?;
-    parents.extend_from_slice(&root.parents);
-    Ok(GenerationRoot {
+    let actual = crate::foundation::usize_to_u64(
+        parents.capacity() * std::mem::size_of::<crate::GenerationId>(),
+    );
+    let excess = actual.saturating_sub(requested);
+    if excess != 0 {
+        if let Err(error) = allocations.claim_bytes(excess, 0, work, WorkBudget::UNBOUNDED) {
+            drop(parents);
+            allocations.release(requested).map_err(handle_allocation_error)?;
+            return Err(handle_allocation_error(error));
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let control = native_owner.map(|owner| crate::kernel::ProofDataClaim::native_control(owner, actual))
+        .unwrap_or_default();
+    #[cfg(target_arch = "wasm32")]
+    let control = {
+        debug_assert!(native_owner.is_none());
+        crate::kernel::ProofDataClaim::default()
+    };
+    // The actual buffer precedes its tag through every fallible copy/registration
+    // boundary, including a capacity correction that exceeds the original budget.
+    let mut parents = (parents, control);
+    if excess != 0 { work.verify(budget)?; }
+    charge_handle_copy(requested, work, budget)?;
+    parents.0.extend_from_slice(&root.parents);
+    Ok((GenerationRoot {
         volume_id: root.volume_id, root_file_id: root.root_file_id, file_table: root.file_table,
-        parents, required_features: root.required_features,
-    })
+        parents: parents.0, required_features: root.required_features,
+    }, parents.1))
 }
 
 #[cfg(test)]
@@ -594,7 +812,136 @@ mod tests {
                 required_features: 0,
             },
             config: crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral),
+            control: crate::kernel::ProofDataClaim::default(),
         })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn original_native_root_copy_and_registration_failures_retire_actual_buffers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = crate::CancellationToken::new();
+        let meter = Arc::new(crate::demand::NativeDemandReadMeter(std::sync::Mutex::new(
+            crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )));
+        let custody = meter.with_original_leaf(|original| -> Result<_, Box<dyn std::error::Error>> {
+            let (mut sink, allocations, work, budget, _) = original.native_checkout_control_parts(&meter);
+            allocations.claim_bytes(std::mem::size_of::<crate::kernel::ProofDataCustody>() as u64, 1, work, budget)?;
+            let custody = Arc::new(crate::kernel::ProofDataCustody::default());
+            sink.register(&custody, allocations, work, budget)?;
+            Ok(custody)
+        })?;
+        let baseline = meter.with_original_leaf(|original| original.allocation_parts().0.live_bytes());
+        let Held::Checkout(mut roots) = checkout_hold() else { unreachable!() };
+        roots.working.parents = vec![crate::GenerationId::new(object(7).digest)];
+        let denied = meter.with_original_leaf(|original| {
+            let (allocations, work, _, _) = original.allocation_parts();
+            clone_generation_root_native(
+                &roots.working, allocations, work,
+                WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED }, &custody,
+            )
+        }).err().ok_or("zero copy budget copied a native parent buffer")?;
+        assert!(matches!(denied, crate::FsError::Work(_)));
+        let (born, retired) = custody.native_control_events();
+        assert!(born >= std::mem::size_of::<crate::GenerationId>() as u128);
+        assert_eq!(born, retired, "a copy-denied actual vector drops its tag");
+        assert_eq!(custody.physical_retained_bytes(), 0);
+        meter.with_original_leaf(|original| original.reconcile_native_controls())?;
+        assert_eq!(meter.with_original_leaf(|original| original.allocation_parts().0.live_bytes()), baseline);
+        let collection = Arc::new(Collection::default());
+        let source = CheckoutRoots::new(Some(&collection), roots.config, roots.base, roots.working);
+        let cancelled = crate::CancellationToken::new();
+        cancelled.cancel();
+        let failed = meter.with_original_leaf(|original| {
+            let (allocations, work, budget, _) = original.allocation_parts();
+            source.replicate_native_measured(allocations, work, budget, &cancelled, &custody)
+        }).err().ok_or("cancelled held registration installed a native replica")?;
+        assert!(matches!(failed, crate::FsError::Cancelled(_)));
+        let (next_born, next_retired) = custody.native_control_events();
+        assert!(next_born > born, "both actual working and held copies reached allocation");
+        assert_eq!(next_born, next_retired);
+        assert_eq!(custody.physical_retained_bytes(), 0);
+        meter.with_original_leaf(|original| original.reconcile_native_controls())?;
+        assert_eq!(meter.with_original_leaf(|original| original.allocation_parts().0.live_bytes()), baseline);
+        let mut paid = meter.with_original_leaf(|original| {
+            let (allocations, work, budget, _) = original.allocation_parts();
+            source.replicate_native_measured(allocations, work, budget, &cancellation, &custody)
+        })?;
+        assert!(paid.same_original_scope(&meter));
+        let foreign = Arc::new(crate::demand::NativeDemandReadMeter(std::sync::Mutex::new(
+            crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )));
+        assert!(!paid.same_original_scope(&foreign));
+        let held_control = {
+            let mut holds = collection.holds.lock().unwrap_or_else(PoisonError::into_inner);
+            let held = holds.slots.get_mut(paid.hold.as_ref().expect("paid registration").id)
+                .and_then(|slot| slot.held.as_mut()).expect("actual held vector");
+            let Held::Checkout(roots) = held else { unreachable!() };
+            std::mem::take(&mut roots.control)
+        };
+        assert!(!paid.same_original_scope(&meter), "a paid working vector does not certify an untagged held copy");
+        {
+            let mut holds = collection.holds.lock().unwrap_or_else(PoisonError::into_inner);
+            let held = holds.slots.get_mut(paid.hold.as_ref().expect("paid registration").id)
+                .and_then(|slot| slot.held.as_mut()).expect("actual held vector");
+            let Held::Checkout(roots) = held else { unreachable!() };
+            roots.control = held_control;
+        }
+        assert!(paid.same_original_scope(&meter));
+        paid.set_working(source.working.clone());
+        assert!(custody.is_native_original(&meter), "token lineage is unchanged by an ordinary replacement");
+        assert!(!paid.same_original_scope(&meter), "token lineage cannot certify the new unadmitted vectors");
+        let Held::Checkout(empty) = checkout_hold() else { unreachable!() };
+        let empty = CheckoutRoots::new(None, empty.config, empty.base, empty.working);
+        assert!(empty.same_original_scope(&meter), "actual zero-capacity buffers require no allocation tag");
+        Ok(())
+    }
+
+    #[test]
+    fn private_root_vector_tags_retire_actual_buffers_without_adopting_cached_slots()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let collection = Arc::new(Collection::default());
+        let cancellation = crate::CancellationToken::new();
+        let Held::Checkout(mut roots) = checkout_hold() else { unreachable!() };
+        roots.working.parents = vec![crate::GenerationId::new(object(7).digest)];
+        let original = CheckoutRoots::new(
+            Some(&collection), roots.config, roots.base, roots.working,
+        );
+        let custody = Arc::new(crate::kernel::ProofDataCustody::default());
+        let mut allocations = AllocationLedger::default();
+        let mut work = WorkCounters::default();
+        let mut measured = original.replicate_measured(
+            &mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation,
+        )?;
+        measured.attach_control_custody(&custody);
+        let (copied_held, held_bytes) = {
+            let holds = collection.holds.lock().unwrap_or_else(PoisonError::into_inner);
+            let held = holds.slots.get(measured.hold.as_ref().expect("registered clone").id)
+                .and_then(|slot| slot.held.as_ref()).expect("live cloned roots");
+            let Held::Checkout(roots) = held else { unreachable!() };
+            (held.clone(), root_parent_bytes(&roots.working))
+        };
+        let bytes = root_parent_bytes(&measured.working) + held_bytes;
+        assert_eq!(custody.physical_retained_bytes(), bytes);
+        assert_eq!(custody.retained_bytes(), 0);
+        assert!(work.peak_allocation_bytes >= bytes);
+        drop(measured);
+        assert_eq!(custody.physical_retained_bytes(), 0,
+            "snapshot clones never inherit original vector tags");
+        assert!(collection.holds.lock().unwrap_or_else(PoisonError::into_inner).slots.capacity() > 0,
+            "freed per-handle buffers do not destroy or adopt cached slot backing");
+        drop(copied_held);
+        let mut measured = original.replicate_measured(
+            &mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation,
+        )?;
+        measured.attach_control_custody(&custody);
+        assert!(custody.physical_retained_bytes() > 0);
+        measured.set_working(original.working.clone());
+        assert_eq!(custody.physical_retained_bytes(), 0,
+            "unmeasured replacements retire old buffers without phantom adoption");
+        drop(measured);
+        drop(original);
+        Ok(())
     }
 
     #[test]

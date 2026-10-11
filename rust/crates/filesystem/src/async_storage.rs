@@ -17,6 +17,188 @@ use std::mem::size_of;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
+/// An immutable read whose SDK-owned buffers retain the original native journal.
+///
+/// Known shared backend bytes are borrowed. An owned or opaque returned payload
+/// carries its admitted logical custody inside the byte owner, so cloning a
+/// view never retires that custody before the final view is destroyed.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+pub struct NativeObjectRead {
+    read: ObjectRead,
+}
+
+/// One genuine native batch, including its physically owned result container.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+pub struct NativeObjectReadBatch {
+    reads: Vec<ObjectRead>,
+    allocation: crate::materializer::NativeAllocation,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NativeObjectReadBatch {
+    pub(crate) fn new(
+        reads: Vec<ObjectRead>,
+        allocation: crate::materializer::NativeAllocation,
+    ) -> Result<Self, crate::storage::ObjectStoreError> {
+        let bytes = reads.capacity().checked_mul(size_of::<ObjectRead>())
+            .and_then(|bytes| u64::try_from(bytes).ok());
+        if bytes != Some(allocation.bytes()) {
+            drop(reads);
+            drop(allocation);
+            return Err(crate::storage::ObjectStoreError::Corrupt);
+        }
+        Ok(Self { reads, allocation })
+    }
+
+    /// Borrows the actual ordered results without another allocation.
+    pub fn reads(&self) -> &[ObjectRead] { &self.reads }
+
+    pub(crate) fn reads_mut(&mut self) -> &mut [ObjectRead] { &mut self.reads }
+
+    /// Moves the container and its original guard; destroy the vector first.
+    pub fn into_parts(self) -> (Vec<ObjectRead>, crate::materializer::NativeAllocation) {
+        (self.reads, self.allocation)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct NativeObjectBytes {
+    bytes: Bytes,
+    _allocation: crate::materializer::NativeAllocation,
+    _control: crate::materializer::NativeAllocation,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl AsRef<[u8]> for NativeObjectBytes {
+    fn as_ref(&self) -> &[u8] { self.bytes.as_ref() }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NativeObjectRead {
+    pub(crate) fn shared(read: ObjectRead) -> Result<Self, crate::storage::ObjectStoreError> {
+        if read.retention != crate::storage::ObjectReadRetention::Shared {
+            return Err(crate::storage::ObjectStoreError::Corrupt);
+        }
+        Ok(Self { read })
+    }
+
+    pub(crate) fn owned(
+        mut read: ObjectRead,
+        allocation: crate::materializer::NativeAllocation,
+    ) -> Result<Self, crate::storage::ObjectStoreError> {
+        let logical_bytes = match read.retention {
+            crate::storage::ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
+            crate::storage::ObjectReadRetention::Shared => {
+                drop(read);
+                drop(allocation);
+                return Err(crate::storage::ObjectStoreError::Corrupt);
+            }
+        };
+        if allocation.bytes() != logical_bytes {
+            drop(read);
+            drop(allocation);
+            return Err(crate::storage::ObjectStoreError::Corrupt);
+        }
+        let control = match allocation.work().claim(size_of::<NativeObjectBytes>() as u64) {
+            Ok(control) => control,
+            Err(error) => {
+                drop(read);
+                drop(allocation);
+                return Err(error.into());
+            }
+        };
+        read.bytes = Bytes::from_owner(NativeObjectBytes {
+            bytes: read.bytes, _allocation: allocation, _control: control,
+        });
+        Ok(Self { read })
+    }
+
+    /// Borrows the actual read without taking a second allocation claim.
+    pub const fn read(&self) -> &ObjectRead { &self.read }
+
+    pub(crate) fn read_mut(&mut self) -> &mut ObjectRead { &mut self.read }
+
+    /// Moves the same view; its physical byte owner keeps original custody.
+    pub fn into_read(self) -> ObjectRead { self.read }
+}
+
+/// Opaque SDK observation for one actual object-read receipt.
+///
+/// Only the SDK can construct an observer. Providers cannot assert that work
+/// was observed: the default read boundary records its actual returned prefix.
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+pub struct ObjectReadObservation<'a> {
+    custody: &'a crate::kernel::ProofDataCustody,
+}
+
+impl<'a> ObjectReadObservation<'a> {
+    pub(crate) fn new(custody: &'a crate::kernel::ProofDataCustody) -> Self {
+        Self { custody }
+    }
+
+    pub(crate) fn is_for(self, custody: &crate::kernel::ProofDataCustody) -> bool {
+        std::ptr::eq(self.custody, custody)
+    }
+
+    pub(crate) fn standing_bytes(self) -> u64 {
+        self.custody.operation_cache_bytes()
+    }
+
+    pub(crate) fn remaining_budget(
+        self,
+        budget: WorkBudget,
+        standing: u64,
+    ) -> Result<WorkBudget, crate::storage::ObjectFailure> {
+        let mut remaining = budget;
+        remaining.peak_allocation_bytes = budget.peak_allocation_bytes.checked_sub(standing)
+            .ok_or_else(|| crate::storage::ObjectFailure::before_work(
+                crate::storage::ObjectStoreError::Work(crate::WorkError::BudgetExceeded {
+                    counter: "peak_allocation_bytes",
+                    observed: standing,
+                    maximum: budget.peak_allocation_bytes,
+                }),
+            ))?;
+        Ok(remaining)
+    }
+
+    pub(crate) fn scope_result(
+        result: ObjectResult<ObjectRead>,
+        standing: u64,
+        budget: WorkBudget,
+    ) -> ObjectResult<ObjectRead> {
+        if standing == 0 {
+            return result;
+        }
+        match result {
+            Ok(mut receipt) => {
+                receipt.work = WorkCounters::default().with_backend(receipt.work, standing)
+                    .map_err(|error| crate::storage::ObjectFailure::new(error.into(), receipt.work))?;
+                receipt.work.verify(budget)
+                    .map_err(|error| crate::storage::ObjectFailure::new(error.into(), receipt.work))?;
+                Ok(receipt)
+            }
+            Err(failure) => match WorkCounters::default().with_backend(*failure.work, standing) {
+                Ok(work) => Err(crate::storage::ObjectFailure::new(failure.error, work)),
+                Err(error) => Err(crate::storage::ObjectFailure::new(error.into(), *failure.work)),
+            },
+        }
+    }
+
+    pub(crate) fn complete(self, result: ObjectResult<ObjectRead>) -> ObjectResult<ObjectRead> {
+        let work = match &result {
+            Ok(receipt) => receipt.work,
+            Err(failure) => *failure.work,
+        };
+        self.custody.record_completed_leaf_work(work).map_err(|error| {
+            crate::storage::ObjectFailure::new(error.into(), work)
+        })?;
+        result
+    }
+}
+
 /// Runtime-appropriate bound for storage futures.
 ///
 /// Native service futures must move between executor workers. Browser futures
@@ -79,6 +261,8 @@ impl DecodedCacheKey {
 pub struct DecodedCacheValue {
     pub(crate) value: Arc<dyn Any + Send + Sync>,
     pub(crate) logical_bytes: u64,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) native_custody: Option<Arc<crate::materializer::NativeAllocation>>,
 }
 
 /// Whether a decoded value became shared cache state or remains operation-owned.
@@ -662,6 +846,39 @@ pub trait AsyncAuthorityStore: StorageProvider {
         }
     }
 
+    /// Publishes the canonical guarded append in the original native ledger.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn compare_and_append_guarded_with_native_work(
+        &self,
+        request: GuardedAppend,
+        original: &crate::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = Result<
+        (AppendOutcome, crate::NativeAllocation), crate::storage::AuthorityStoreError,
+    >> + StorageFuture {
+        let _ = (request, original, cancellation);
+        std::future::ready(Err(crate::storage::AuthorityStoreError::NativeOriginalUnsupported))
+    }
+
+    /// Seals the actual canonical publication after planning, before every
+    /// provider dispatch. The callback's original error is never reformatted.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn compare_and_append_guarded_with_native_owner<F, Fut, E>(
+        &self,
+        request: GuardedAppend,
+        original: &crate::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+        guard: &mut F,
+    ) -> impl Future<Output = Result<(AppendOutcome, crate::NativeAllocation), E>> + StorageFuture
+    where
+        F: FnMut(crate::NativeMaterializationWork) -> Fut + Send,
+        Fut: Future<Output = Result<(), E>> + Send,
+        E: From<crate::storage::AuthorityStoreError> + Send,
+    {
+        let _ = (request, original, cancellation, guard);
+        std::future::ready(Err(crate::storage::AuthorityStoreError::NativeOriginalUnsupported.into()))
+    }
+
     /// Durably creates an authority whose first record is `commit`, or
     /// confirms that it already exists with exactly that first record.
     /// Answers whether its first record is `commit`. Backends that can
@@ -682,6 +899,20 @@ pub trait AsyncAuthorityStore: StorageProvider {
             budget,
             cancellation,
         )
+    }
+
+    /// Creates the same initial authority record without a separate operation,
+    /// work root, journal, or unchecked output allocation.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn create_authority_with_first_record_with_native_work(
+        &self,
+        authority: AuthorityId,
+        commit: ProposedCommit,
+        original: &crate::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = Result<bool, crate::storage::AuthorityStoreError>> + StorageFuture {
+        let _ = (authority, commit, original, cancellation);
+        std::future::ready(Err(crate::storage::AuthorityStoreError::NativeOriginalUnsupported))
     }
 
     /// Guarded first-record publication. Native providers override this method
@@ -815,16 +1046,159 @@ pub trait AsyncAuthorityStore: StorageProvider {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> impl Future<Output = AuthorityResult<Option<crate::foundation::DurableCommit>>> + StorageFuture;
+
+    /// Reads the canonical head against the caller's original native ledger.
+    /// Opaque custom providers reject before any I/O, rather than allocating
+    /// first and fabricating an after-the-fact receipt.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn head_with_native_work(
+        &self,
+        authority_id: AuthorityId,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = Result<Head, crate::storage::AuthorityStoreError>> + StorageFuture {
+        let _ = (authority_id, work, cancellation);
+        std::future::ready(Err(crate::storage::AuthorityStoreError::NativeOriginalUnsupported))
+    }
+
+    /// Produces a canonical replay page funded in the original ledger. The
+    /// returned guard owns only actual newly produced output buffers.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn replay_with_native_work(
+        &self,
+        authority_id: AuthorityId,
+        after: Sequence,
+        limit: ReplayLimit,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = Result<
+        (Vec<crate::foundation::DurableCommit>, crate::materializer::NativeAllocation),
+        crate::storage::AuthorityStoreError,
+    >> + StorageFuture {
+        let _ = (authority_id, after, limit, work, cancellation);
+        std::future::ready(Err(crate::storage::AuthorityStoreError::NativeOriginalUnsupported))
+    }
+
+    /// Applies the canonical writer fence using the original native ledger.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn fence_with_native_work(
+        &self,
+        authority_id: AuthorityId,
+        expected: Head,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = Result<FenceOutcome, crate::storage::AuthorityStoreError>> + StorageFuture {
+        let _ = (authority_id, expected, work, cancellation);
+        std::future::ready(Err(crate::storage::AuthorityStoreError::NativeOriginalUnsupported))
+    }
+
+    /// Resolves the original operation without allocating outside its ledger.
+    /// Existing immutable payload owners are not charged as fresh allocations.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn find_operation_with_native_work(
+        &self,
+        authority_id: AuthorityId,
+        operation_id: OperationId,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = Result<
+        (Option<crate::foundation::DurableCommit>, crate::materializer::NativeAllocation),
+        crate::storage::AuthorityStoreError,
+    >> + StorageFuture {
+        let _ = (authority_id, operation_id, work, cancellation);
+        std::future::ready(Err(crate::storage::AuthorityStoreError::NativeOriginalUnsupported))
+    }
 }
 
 /// Explicit opt-in for synchronous stores that are safe to complete inline.
 ///
-/// Implementing this marker makes the synchronous authority methods satisfy
+/// Implementing this trait makes the synchronous authority methods satisfy
 /// [`AsyncAuthorityStore`] without yielding. Blocking native backends must use
-/// a provider-owned bounded blocking executor instead.
-pub trait ImmediateAuthorityStore: AuthorityStore {}
+/// a provider-owned bounded blocking executor instead. Original native work
+/// requires an explicit implementation; opaque stores reject before I/O.
+pub trait ImmediateAuthorityStore: AuthorityStore {
+    /// Reads the canonical head directly against the original native ledger.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn head_with_native_work(
+        &self, authority_id: AuthorityId,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<Head, crate::storage::AuthorityStoreError> {
+        let _ = (authority_id, work, cancellation);
+        Err(crate::storage::AuthorityStoreError::NativeOriginalUnsupported)
+    }
 
-impl<T: ImmediateAuthorityStore + ?Sized> ImmediateAuthorityStore for Arc<T> {}
+    /// Replays a bounded canonical page with custody of its actual new buffers.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn replay_with_native_work(
+        &self, authority_id: AuthorityId, after: Sequence, limit: ReplayLimit,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<(Vec<crate::foundation::DurableCommit>, crate::materializer::NativeAllocation), crate::storage::AuthorityStoreError> {
+        let _ = (authority_id, after, limit, work, cancellation);
+        Err(crate::storage::AuthorityStoreError::NativeOriginalUnsupported)
+    }
+
+    /// Applies the canonical fence directly against the original native ledger.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn fence_with_native_work(
+        &self, authority_id: AuthorityId, expected: Head,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<FenceOutcome, crate::storage::AuthorityStoreError> {
+        let _ = (authority_id, expected, work, cancellation);
+        Err(crate::storage::AuthorityStoreError::NativeOriginalUnsupported)
+    }
+
+    /// Resolves an operation while preserving existing shared payload owners.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn find_operation_with_native_work(
+        &self, authority_id: AuthorityId, operation_id: OperationId,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<(Option<crate::foundation::DurableCommit>, crate::materializer::NativeAllocation), crate::storage::AuthorityStoreError> {
+        let _ = (authority_id, operation_id, work, cancellation);
+        Err(crate::storage::AuthorityStoreError::NativeOriginalUnsupported)
+    }
+}
+
+impl<T: ImmediateAuthorityStore + ?Sized> ImmediateAuthorityStore for Arc<T> {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn head_with_native_work(
+        &self, authority_id: AuthorityId,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<Head, crate::storage::AuthorityStoreError> {
+        ImmediateAuthorityStore::head_with_native_work(self.as_ref(), authority_id, work, cancellation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn replay_with_native_work(
+        &self, authority_id: AuthorityId, after: Sequence, limit: ReplayLimit,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<(Vec<crate::foundation::DurableCommit>, crate::materializer::NativeAllocation), crate::storage::AuthorityStoreError> {
+        ImmediateAuthorityStore::replay_with_native_work(self.as_ref(), authority_id, after, limit, work, cancellation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn fence_with_native_work(
+        &self, authority_id: AuthorityId, expected: Head,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<FenceOutcome, crate::storage::AuthorityStoreError> {
+        ImmediateAuthorityStore::fence_with_native_work(self.as_ref(), authority_id, expected, work, cancellation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn find_operation_with_native_work(
+        &self, authority_id: AuthorityId, operation_id: OperationId,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<(Option<crate::foundation::DurableCommit>, crate::materializer::NativeAllocation), crate::storage::AuthorityStoreError> {
+        ImmediateAuthorityStore::find_operation_with_native_work(self.as_ref(), authority_id, operation_id, work, cancellation)
+    }
+}
 
 /// The objects one authority record makes reachable, which must be durable
 /// before the record is appended.
@@ -857,6 +1231,17 @@ pub trait AsyncObjectStore: StorageProvider {
         Ok(None)
     }
 
+    /// Borrows the same immutable cache entry under the original native context.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn decoded_cache_get_with_native_work(
+        &self,
+        key: DecodedCacheKey,
+        work: &crate::materializer::NativeMaterializationWork,
+    ) -> Result<Option<DecodedCacheValue>, crate::storage::ObjectStoreError> {
+        work.remaining()?;
+        self.decoded_cache_get(key)
+    }
+
     /// Offers one authenticated decoded representation to a disposable cache.
     ///
     /// # Errors
@@ -871,6 +1256,18 @@ pub trait AsyncObjectStore: StorageProvider {
         Ok(DecodedCacheAdmission::Uncached(value))
     }
 
+    /// Admits the same already guarded value without resetting native custody.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn decoded_cache_admit_with_native_work(
+        &self,
+        key: DecodedCacheKey,
+        value: DecodedCacheValue,
+        work: &crate::materializer::NativeMaterializationWork,
+    ) -> Result<DecodedCacheAdmission, crate::storage::ObjectStoreError> {
+        work.remaining()?;
+        self.decoded_cache_admit(key, value)
+    }
+
     /// Asynchronously admits one verified immutable object.
     fn put(
         &self,
@@ -879,6 +1276,18 @@ pub trait AsyncObjectStore: StorageProvider {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> impl Future<Output = ObjectResult<()>> + StorageFuture;
+
+    /// Admits bytes using the caller's original native work and intrinsic custody.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_with_native_work(
+        &self,
+        _object_id: ObjectId,
+        _bytes: Bytes,
+        _work: &crate::materializer::NativeMaterializationWork,
+        _cancellation: &CancellationToken,
+    ) -> impl Future<Output = Result<(), crate::storage::ObjectStoreError>> + StorageFuture {
+        async { Err(crate::storage::ObjectStoreError::NativeUnavailable) }
+    }
 
     /// Asynchronously admits one object whose identity its construction
     /// already proved. A store that verifies digests on admission may skip
@@ -892,6 +1301,17 @@ pub trait AsyncObjectStore: StorageProvider {
     ) -> impl Future<Output = ObjectResult<()>> + StorageFuture {
         let (object_id, bytes) = object.into_parts();
         self.put(object_id, bytes, budget, cancellation)
+    }
+
+    /// Reuses the constructor's digest proof and physical byte owner.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_hashed_with_native_work(
+        &self,
+        _object: crate::storage::HashedObject,
+        _work: &crate::materializer::NativeMaterializationWork,
+        _cancellation: &CancellationToken,
+    ) -> impl Future<Output = Result<(), crate::storage::ObjectStoreError>> + StorageFuture {
+        async { Err(crate::storage::ObjectStoreError::NativeUnavailable) }
     }
 
     /// Asynchronously admits an ordered bounded group of verified immutable objects.
@@ -913,6 +1333,17 @@ pub trait AsyncObjectStore: StorageProvider {
                 ),
             ))
         }
+    }
+
+    /// Uses one provider batch primitive without resetting the native ledger.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_many_with_native_work(
+        &self,
+        _writes: &[ObjectWrite],
+        _work: &crate::materializer::NativeMaterializationWork,
+        _cancellation: &CancellationToken,
+    ) -> impl Future<Output = Result<(), crate::storage::ObjectStoreError>> + StorageFuture {
+        async { Err(crate::storage::ObjectStoreError::NativeUnavailable) }
     }
 
     /// Asynchronously admits an ordered bounded group of objects whose
@@ -958,6 +1389,16 @@ pub trait AsyncObjectStore: StorageProvider {
         }
     }
 
+    /// Makes the closure durable under the original native work owner.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn flush_before_publish_with_native_work(
+        &self,
+        _scope: PublicationScope<'_>,
+        _work: &crate::materializer::NativeMaterializationWork,
+        _cancellation: &CancellationToken,
+    ) -> impl Future<Output = Result<crate::PublicationHold, crate::storage::ObjectStoreError>> + StorageFuture {
+        async { Err(crate::storage::ObjectStoreError::NativeUnavailable) }
+    }
     /// Prepares the original canonical append after its closure has been flushed.
     /// The publisher keeps its `PublicationHold` live through this call and CAS.
     ///
@@ -1017,6 +1458,22 @@ pub trait AsyncObjectStore: StorageProvider {
         }
     }
 
+    /// Prepares those same original values under the caller's native ledger.
+    /// The publication hold remains live through this provider callback and CAS.
+    /// Unsupported providers fail before I/O, allocation, or publication.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn prepare_generation_publication_with_native_work(
+        &self,
+        _request: &crate::kernel::PublishGenerationRequest,
+        _proof: &crate::kernel::GenerationProof,
+        _append: &crate::GuardedAppend,
+        _scope: crate::PublicationScope<'_>,
+        _original: &crate::NativeMaterializationWork,
+        _cancellation: &crate::CancellationToken,
+    ) -> impl Future<Output = Result<(), crate::storage::ObjectStoreError>> + StorageFuture {
+        async { Err(crate::storage::ObjectStoreError::NativeUnavailable) }
+    }
+
     /// The collection this store runs while it stays open, if it collects.
     fn collection(&self) -> Option<&Arc<crate::Collection>> {
         None
@@ -1038,6 +1495,48 @@ pub trait AsyncObjectStore: StorageProvider {
         cancellation: &CancellationToken,
     ) -> impl Future<Output = ObjectResult<ObjectRead>> + StorageFuture;
 
+    /// Reads using the caller's original native budget, cancellation and journal.
+    /// Unsupported custom providers fail before I/O or payload allocation.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_with_native_work(
+        &self,
+        _object_id: ObjectId,
+        _maximum_bytes: u64,
+        _work: &crate::materializer::NativeMaterializationWork,
+        _cancellation: &CancellationToken,
+    ) -> impl Future<Output = Result<NativeObjectRead, crate::storage::ObjectStoreError>> + StorageFuture {
+        async { Err(crate::storage::ObjectStoreError::NativeUnavailable) }
+    }
+
+    /// Reads through the same provider operation, recording its actual completed
+    /// SDK prefix before a caller can decode, fail, or unwind afterward.
+    #[doc(hidden)]
+    fn read_with_custody(
+        &self,
+        object_id: ObjectId,
+        maximum_bytes: u64,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+        observation: Option<ObjectReadObservation<'_>>,
+    ) -> impl Future<Output = ObjectResult<ObjectRead>> + StorageFuture {
+        async move {
+            cancellation.check().map_err(|_| crate::storage::ObjectFailure::before_work(
+                crate::storage::ObjectStoreError::Cancelled,
+            ))?;
+            let standing = observation.map_or(0, ObjectReadObservation::standing_bytes);
+            let remaining = match observation {
+                Some(observation) => observation.remaining_budget(budget, standing)?,
+                None => budget,
+            };
+            let result = self.read(object_id, maximum_bytes, remaining, cancellation).await;
+            let result = match observation {
+                Some(observation) => observation.complete(result),
+                None => result,
+            };
+            ObjectReadObservation::scope_result(result, standing, budget)
+        }
+    }
+
     /// Asynchronously reads an ordered batch of complete bounded objects.
     ///
     /// Backends with transactional multi-get or batched I/O should override
@@ -1050,6 +1549,17 @@ pub trait AsyncObjectStore: StorageProvider {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> impl Future<Output = ObjectResult<Vec<ObjectRead>>> + StorageFuture;
+
+    /// Reads the same actual backend frontier against the original native journal.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_many_with_native_work(
+        &self,
+        _requests: &[ObjectReadRequest],
+        _work: &crate::materializer::NativeMaterializationWork,
+        _cancellation: &CancellationToken,
+    ) -> impl Future<Output = Result<NativeObjectReadBatch, crate::storage::ObjectStoreError>> + StorageFuture {
+        async { Err(crate::storage::ObjectStoreError::NativeUnavailable) }
+    }
 
     /// Asynchronously probes one exact object identity.
     fn contains(
@@ -1064,9 +1574,112 @@ pub trait AsyncObjectStore: StorageProvider {
 ///
 /// This marker also admits the synchronous kernel convenience functions.
 /// Blocking native backends must own bounded async dispatch internally.
-pub trait ImmediateObjectStore: ObjectStore {}
+pub trait ImmediateObjectStore: ObjectStore {
+    /// Admits one object through the original native accounting engine.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_with_native_work(
+        &self, _object_id: ObjectId, _bytes: Bytes,
+        _work: &crate::materializer::NativeMaterializationWork,
+        _cancellation: &CancellationToken,
+    ) -> Result<(), crate::storage::ObjectStoreError> {
+        Err(crate::storage::ObjectStoreError::NativeUnavailable)
+    }
 
-impl<T: ImmediateObjectStore + ?Sized> ImmediateObjectStore for Arc<T> {}
+    /// Reuses an already proved immutable digest.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_hashed_with_native_work(
+        &self, _object: crate::storage::HashedObject,
+        _work: &crate::materializer::NativeMaterializationWork,
+        _cancellation: &CancellationToken,
+    ) -> Result<(), crate::storage::ObjectStoreError> {
+        Err(crate::storage::ObjectStoreError::NativeUnavailable)
+    }
+
+    /// Admits one native batch through the provider's batch primitive.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_many_with_native_work(
+        &self, _writes: &[ObjectWrite],
+        _work: &crate::materializer::NativeMaterializationWork,
+        _cancellation: &CancellationToken,
+    ) -> Result<(), crate::storage::ObjectStoreError> {
+        Err(crate::storage::ObjectStoreError::NativeUnavailable)
+    }
+
+    /// Completes the native durability boundary without a receipt ledger.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn flush_before_publish_with_native_work(
+        &self, _scope: PublicationScope<'_>,
+        _work: &crate::materializer::NativeMaterializationWork,
+        _cancellation: &CancellationToken,
+    ) -> Result<crate::PublicationHold, crate::storage::ObjectStoreError> {
+        Err(crate::storage::ObjectStoreError::NativeUnavailable)
+    }
+
+    /// Performs the actual provider preparation with the original native ledger.
+    /// Unlike the ordinary default, missing native support never authorizes CAS.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn prepare_generation_publication_with_native_work(
+        &self,
+        _request: &crate::kernel::PublishGenerationRequest,
+        _proof: &crate::kernel::GenerationProof,
+        _append: &crate::GuardedAppend,
+        _scope: crate::PublicationScope<'_>,
+        _original: &crate::NativeMaterializationWork,
+        _cancellation: &crate::CancellationToken,
+    ) -> Result<(), crate::storage::ObjectStoreError> {
+        Err(crate::storage::ObjectStoreError::NativeUnavailable)
+    }
+}
+
+impl<T: ImmediateObjectStore + ?Sized> ImmediateObjectStore for Arc<T> {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_with_native_work(
+        &self, object_id: ObjectId, bytes: Bytes,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<(), crate::storage::ObjectStoreError> {
+        ImmediateObjectStore::put_with_native_work(&**self, object_id, bytes, work, cancellation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_hashed_with_native_work(
+        &self, object: crate::storage::HashedObject,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<(), crate::storage::ObjectStoreError> {
+        ImmediateObjectStore::put_hashed_with_native_work(&**self, object, work, cancellation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_many_with_native_work(
+        &self, writes: &[ObjectWrite],
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<(), crate::storage::ObjectStoreError> {
+        ImmediateObjectStore::put_many_with_native_work(&**self, writes, work, cancellation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn flush_before_publish_with_native_work(
+        &self, scope: PublicationScope<'_>,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::PublicationHold, crate::storage::ObjectStoreError> {
+        ImmediateObjectStore::flush_before_publish_with_native_work(&**self, scope, work, cancellation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn prepare_generation_publication_with_native_work(
+        &self, request: &crate::kernel::PublishGenerationRequest,
+        proof: &crate::kernel::GenerationProof, append: &crate::GuardedAppend,
+        scope: crate::PublicationScope<'_>, original: &crate::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<(), crate::storage::ObjectStoreError> {
+        ImmediateObjectStore::prepare_generation_publication_with_native_work(
+            &**self, request, proof, append, scope, original, cancellation,
+        )
+    }
+}
 
 /// Explicit sequential implementation for adapters whose physical backend has
 /// no multi-get primitive. Backends must opt into this implementation rather
@@ -1082,83 +1695,175 @@ pub async fn read_many_sequential_async<S: AsyncObjectStore + ?Sized>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> ObjectResult<Vec<ObjectRead>> {
-    cancellation.check().map_err(|_| {
-        crate::storage::ObjectFailure::before_work(crate::storage::ObjectStoreError::Cancelled)
-    })?;
+    let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
+        budget, cancellation,
+    );
+    let result = read_many_sequential_engine(store, requests, &mut accounting, cancellation).await;
+    let work = accounting.spent();
+    match result {
+        Ok(values) => Ok(crate::storage::ObjectReceipt { value: values.reads, work }),
+        Err(error) => Err(crate::storage::ObjectFailure::new(
+            sequential_read_error(error), work,
+        )),
+    }
+}
+
+/// Explicit sequential native adapter using the caller's original work and
+/// allocation custody. Each underlying scalar read remains a scalar read.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn read_many_sequential_with_native_work<S: AsyncObjectStore + ?Sized>(
+    store: &S,
+    requests: &[ObjectReadRequest],
+    work: &crate::NativeMaterializationWork,
+    cancellation: &CancellationToken,
+) -> Result<NativeObjectReadBatch, crate::storage::ObjectStoreError> {
+    let mut accounting = crate::kernel::allocation::KernelAccounting::native(work, cancellation);
+    let result = read_many_sequential_engine(store, requests, &mut accounting, cancellation)
+        .await.map_err(sequential_read_error)?;
+    match result.allocation {
+        crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
+            NativeObjectReadBatch::new(result.reads, allocation)
+        }
+        crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
+            drop(result.reads);
+            Err(crate::storage::ObjectStoreError::Corrupt)
+        }
+    }
+}
+
+struct SequentialObjectReads {
+    reads: Vec<ObjectRead>,
+    allocation: crate::kernel::allocation::KernelOwnedAllocation,
+}
+
+async fn read_many_sequential_engine<S: AsyncObjectStore + ?Sized>(
+    store: &S,
+    requests: &[ObjectReadRequest],
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<SequentialObjectReads, crate::FsError> {
+    accounting.check()?;
     if requests.is_empty() {
-        return Err(crate::storage::ObjectFailure::before_work(
-            crate::storage::ObjectStoreError::Rejected("object read batch is empty".to_owned()),
-        ));
+        return Err(crate::storage::ObjectStoreError::EmptyReadBatch.into());
     }
-    let item_count = u64::try_from(requests.len()).unwrap_or(u64::MAX);
-    let vector_bytes = u64::try_from(requests.len())
-        .unwrap_or(u64::MAX)
-        .saturating_mul(u64::try_from(size_of::<ObjectRead>()).unwrap_or(u64::MAX));
-    let mut work = crate::performance::WorkCounters {
+    let item_count = u64::try_from(requests.len())
+        .map_err(|_| crate::performance::WorkError::Overflow)?;
+    let requested_bytes = requests.len().checked_mul(size_of::<ObjectRead>())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(crate::performance::WorkError::Overflow)?;
+    accounting.admit(crate::performance::WorkCounters {
         items_examined: item_count,
-        allocation_operations: u64::from(!requests.is_empty()),
-        peak_allocation_bytes: vector_bytes,
-        ..crate::performance::WorkCounters::default()
-    };
-    let mut admission = work;
-    admission.items_returned = item_count;
-    admission
-        .verify(budget)
-        .map_err(|error| crate::storage::ObjectFailure::before_work(error.into()))?;
-    let mut values = Vec::new();
-    values.try_reserve_exact(requests.len()).map_err(|_| {
-        crate::storage::ObjectFailure::before_work(crate::storage::ObjectStoreError::Rejected(
-            "object batch result allocation failed".to_owned(),
-        ))
+        items_returned: item_count,
+        ..crate::performance::WorkCounters::UNCHARGED
     })?;
-    let mut retained_bytes = vector_bytes;
+    accounting.charge(crate::performance::WorkCounters {
+        items_examined: item_count,
+        ..crate::performance::WorkCounters::UNCHARGED
+    })?;
+    let (reads, allocation) = accounting.with_owned_allocations(
+        |allocations, work, budget, _| {
+            allocations.claim_bytes(requested_bytes, 1, work, budget)
+                .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
+            let mut reads = Vec::new();
+            if let Err(error) = reads.try_reserve_exact(requests.len()) {
+                allocations.release(requested_bytes)
+                    .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
+                return Err(crate::storage::ObjectStoreError::MemoryTableAllocationFailed(error).into());
+            }
+            let actual_bytes = reads.capacity().checked_mul(size_of::<ObjectRead>())
+                .and_then(|bytes| u64::try_from(bytes).ok())
+                .ok_or(crate::performance::WorkError::Overflow)?;
+            allocations.record_owned_bytes(actual_bytes - requested_bytes, work)
+                .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
+            Ok(reads)
+        },
+    )?;
+    let mut values = SequentialObjectReads { reads, allocation };
+    // Preserve the actual vector and its guard until after any late capacity
+    // denial. No native allocation guard is dropped under the work lock.
+    accounting.admit(crate::performance::WorkCounters::UNCHARGED)?;
     for request in requests {
-        cancellation.check().map_err(|_| {
-            crate::storage::ObjectFailure::new(crate::storage::ObjectStoreError::Cancelled, work)
-        })?;
-        let remaining = work
-            .remaining(budget)
-            .map_err(|error| crate::storage::ObjectFailure::new(error.into(), work))?;
-        let receipt = store
-            .read(
-                request.object_id,
-                request.maximum_bytes,
-                remaining,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| {
-                let nested = *failure.work;
-                let peak = work
-                    .peak_allocation_bytes
-                    .max(retained_bytes.saturating_add(nested.peak_allocation_bytes));
-                match work.checked_add(nested) {
-                    Ok(mut combined) => {
-                        combined.peak_allocation_bytes = peak;
-                        crate::storage::ObjectFailure::new(failure.error, combined)
-                    }
-                    Err(error) => crate::storage::ObjectFailure::new(error.into(), work),
-                }
-            })?;
-        let nested_peak = retained_bytes.saturating_add(receipt.work.peak_allocation_bytes);
-        work = work
-            .checked_add(receipt.work)
-            .map_err(|error| crate::storage::ObjectFailure::new(error.into(), work))?;
-        work.peak_allocation_bytes = work.peak_allocation_bytes.max(nested_peak);
-        retained_bytes = retained_bytes.saturating_add(match receipt.value.retention {
-            crate::storage::ObjectReadRetention::Shared => 0,
-            crate::storage::ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
-        });
-        work.peak_allocation_bytes = work.peak_allocation_bytes.max(retained_bytes);
-        work.verify(budget)
-            .map_err(|error| crate::storage::ObjectFailure::new(error.into(), work))?;
-        values.push(receipt.value);
+        accounting.check()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = accounting.native_work() {
+            let read = store.read_with_native_work(
+                request.object_id, request.maximum_bytes, work, cancellation,
+            ).await?;
+            values.reads.push(read.into_read());
+            continue;
+        }
+        let result = store.read(
+            request.object_id, request.maximum_bytes, accounting.remaining()?, cancellation,
+        ).await;
+        // A completed provider receipt must be recorded even if cancellation
+        // became visible during the read; merging itself is not a new operation.
+        match result {
+            Ok(receipt) => {
+                let retained = match receipt.value.retention {
+                    crate::storage::ObjectReadRetention::Shared => 0,
+                    crate::storage::ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
+                };
+                merge_completed_object_read(accounting, receipt.work, retained)?;
+                values.reads.push(receipt.value);
+            }
+            Err(failure) => {
+                merge_completed_object_read(accounting, *failure.work, 0)?;
+                return Err(failure.error.into());
+            }
+        }
     }
-    work.items_returned = item_count;
-    Ok(crate::storage::ObjectReceipt {
-        value: values,
-        work,
-    })
+    accounting.charge(crate::performance::WorkCounters {
+        items_returned: item_count,
+        ..crate::performance::WorkCounters::UNCHARGED
+    })?;
+    Ok(values)
+}
+
+pub(crate) fn merge_completed_object_read(
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+    completed: crate::performance::WorkCounters,
+    retained: u64,
+) -> Result<(), crate::FsError> {
+    fn merge(
+        allocations: &mut crate::kernel::allocation::AllocationLedger,
+        work: &mut crate::performance::WorkCounters,
+        budget: WorkBudget,
+        completed: crate::performance::WorkCounters,
+        retained: u64,
+    ) -> Result<(), crate::FsError> {
+        let peak = allocations.live_bytes().checked_add(completed.peak_allocation_bytes)
+            .ok_or(crate::performance::WorkError::Overflow)?;
+        let mut combined = work.checked_add(completed)?;
+        combined.peak_allocation_bytes = combined.peak_allocation_bytes.max(peak);
+        *work = combined;
+        allocations.record_owned_bytes(retained, work)
+            .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
+        work.verify(budget)?;
+        Ok(())
+    }
+    match accounting {
+        crate::kernel::allocation::KernelAccounting::Standalone {
+            allocations, work, budget, ..
+        } => merge(allocations, work, *budget, completed, retained),
+        crate::kernel::allocation::KernelAccounting::BorrowedStandalone {
+            allocations, work, budget, ..
+        } => merge(allocations, work, *budget, completed, retained),
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::kernel::allocation::KernelAccounting::NativeOriginal { .. } => {
+            Err(crate::storage::ObjectStoreError::Corrupt.into())
+        }
+    }
+}
+
+pub(crate) fn sequential_read_error(error: crate::FsError) -> crate::storage::ObjectStoreError {
+    match error {
+        crate::FsError::Object(error) => error,
+        crate::FsError::Work(error) => crate::storage::ObjectStoreError::Work(error),
+        crate::FsError::Cancelled(_) => crate::storage::ObjectStoreError::Cancelled,
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::FsError::NativeKernel(error) => crate::storage::ObjectStoreError::Native(error),
+        _ => crate::storage::ObjectStoreError::Corrupt,
+    }
 }
 
 impl<T: ImmediateAuthorityStore + ?Sized> AsyncAuthorityStore for T {
@@ -1277,6 +1982,42 @@ impl<T: ImmediateAuthorityStore + ?Sized> AsyncAuthorityStore for T {
         })?;
         AuthorityStore::find_operation(self, authority_id, operation_id, budget)
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn head_with_native_work(
+        &self, authority_id: AuthorityId,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<Head, crate::storage::AuthorityStoreError> {
+        ImmediateAuthorityStore::head_with_native_work(self, authority_id, work, cancellation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn replay_with_native_work(
+        &self, authority_id: AuthorityId, after: Sequence, limit: ReplayLimit,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<(Vec<crate::foundation::DurableCommit>, crate::materializer::NativeAllocation), crate::storage::AuthorityStoreError> {
+        ImmediateAuthorityStore::replay_with_native_work(self, authority_id, after, limit, work, cancellation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn fence_with_native_work(
+        &self, authority_id: AuthorityId, expected: Head,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<FenceOutcome, crate::storage::AuthorityStoreError> {
+        ImmediateAuthorityStore::fence_with_native_work(self, authority_id, expected, work, cancellation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn find_operation_with_native_work(
+        &self, authority_id: AuthorityId, operation_id: OperationId,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<(Option<crate::foundation::DurableCommit>, crate::materializer::NativeAllocation), crate::storage::AuthorityStoreError> {
+        ImmediateAuthorityStore::find_operation_with_native_work(self, authority_id, operation_id, work, cancellation)
+    }
 }
 
 impl<T: ImmediateObjectStore + ?Sized> AsyncObjectStore for T {
@@ -1291,6 +2032,54 @@ impl<T: ImmediateObjectStore + ?Sized> AsyncObjectStore for T {
             crate::storage::ObjectFailure::before_work(crate::storage::ObjectStoreError::Cancelled)
         })?;
         ObjectStore::put(self, object_id, bytes, budget)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn put_with_native_work(
+        &self, object_id: ObjectId, bytes: Bytes,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<(), crate::storage::ObjectStoreError> {
+        ImmediateObjectStore::put_with_native_work(self, object_id, bytes, work, cancellation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn put_hashed_with_native_work(
+        &self, object: crate::storage::HashedObject,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<(), crate::storage::ObjectStoreError> {
+        ImmediateObjectStore::put_hashed_with_native_work(self, object, work, cancellation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn put_many_with_native_work(
+        &self, writes: &[ObjectWrite],
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<(), crate::storage::ObjectStoreError> {
+        ImmediateObjectStore::put_many_with_native_work(self, writes, work, cancellation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn flush_before_publish_with_native_work(
+        &self, scope: PublicationScope<'_>,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::PublicationHold, crate::storage::ObjectStoreError> {
+        ImmediateObjectStore::flush_before_publish_with_native_work(self, scope, work, cancellation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn prepare_generation_publication_with_native_work(
+        &self, request: &crate::kernel::PublishGenerationRequest,
+        proof: &crate::kernel::GenerationProof, append: &crate::GuardedAppend,
+        scope: crate::PublicationScope<'_>, original: &crate::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<(), crate::storage::ObjectStoreError> {
+        ImmediateObjectStore::prepare_generation_publication_with_native_work(
+            self, request, proof, append, scope, original, cancellation,
+        )
     }
 
     async fn put_many(
@@ -1318,6 +2107,17 @@ impl<T: ImmediateObjectStore + ?Sized> AsyncObjectStore for T {
         ObjectStore::read(self, object_id, maximum_bytes, budget)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn read_with_native_work(
+        &self,
+        object_id: ObjectId,
+        maximum_bytes: u64,
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<NativeObjectRead, crate::storage::ObjectStoreError> {
+        ObjectStore::read_with_native_work(self, object_id, maximum_bytes, work, cancellation)
+    }
+
     async fn read_many(
         &self,
         requests: &[ObjectReadRequest],
@@ -1328,6 +2128,16 @@ impl<T: ImmediateObjectStore + ?Sized> AsyncObjectStore for T {
             crate::storage::ObjectFailure::before_work(crate::storage::ObjectStoreError::Cancelled)
         })?;
         ObjectStore::read_many(self, requests, budget)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn read_many_with_native_work(
+        &self,
+        requests: &[ObjectReadRequest],
+        work: &crate::materializer::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<NativeObjectReadBatch, crate::storage::ObjectStoreError> {
+        ObjectStore::read_many_with_native_work(self, requests, work, cancellation)
     }
 
     async fn contains(
