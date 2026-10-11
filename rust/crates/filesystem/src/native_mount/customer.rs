@@ -950,6 +950,7 @@ where
     {
         // Capture the whole paid tuple: an unpolled future drops data first.
         let input = (plan, plan_allocation);
+        let cancellation = cancellation.clone();
         async move {
             let input = input;
             let plan_custody = input.1;
@@ -973,7 +974,7 @@ where
                     .map_err(E::from)?;
                 let snapshot = self.source.import_selected_meter_guarded(
                     destination, plan, operation, permit, native_work,
-                    cancellation, before_publication,
+                    &cancellation, before_publication,
                 ).await?;
                 with_live_session(&self.session, |session| session.revalidate_with_meter(native_work))
                     .map_err(E::from)?;

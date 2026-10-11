@@ -1,5 +1,4 @@
 //! Real live task admission and authenticated FS reads for explicit text variants.
-//! Durable restart/fork/cancellation and stock model/browser execution are separate gates.
 #![cfg(feature = "filesystem")]
 
 use acyclic_fs::Fs;
@@ -102,7 +101,6 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
             "source.txt",
         )
         .await?;
-    // A later workspace generation must not change the immutable source selected by the task.
     let later = writer
         .stage(
             OperationId::new(),
@@ -219,7 +217,6 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                 search_projector.project(&invocation, &canonical)?,
                 json!({"kind":"json","value":canonical.value})
             );
-            // Public typed calls use the actual admitted live context and writer.
             let write = context.tool::<WriteFileInput, FileResult>("acyclic.write_file")?;
             let whole = context.tool::<ReadFileInput, String>("acyclic.read_file")?;
             let edit = context.tool::<EditFileInput, FileResult>("acyclic.edit_file")?;
@@ -332,7 +329,6 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                 host.resolve(&workspace).await?.generation,
                 before_failed_writes
             );
-            // The original tool-call grants survive attenuation; file access does not.
             let restricted = context.scoped(
                 Capabilities::new([
                     "tool:call:acyclic.read_file_range",
@@ -371,7 +367,6 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                     .is_err()
             );
             assert_eq!(reader.reads.load(Ordering::SeqCst), before);
-            // Copying a valid invocation does not authorize a different operation or call.
             for wrong in [
                 ToolContext::new(context.clone(), OperationId::new(), "retained-read")?,
                 ToolContext::new(context.clone(), invocation.operation_id, "different-call")?,
@@ -384,7 +379,6 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                 ));
             }
             assert_eq!(reader.reads.load(Ordering::SeqCst), before);
-            // An authenticated provider still cannot substitute bytes for the pinned descriptor.
             reader.corrupt.store(true, Ordering::SeqCst);
             assert!(context.call(&read, input).await.is_err());
             assert_eq!(reader.reads.load(Ordering::SeqCst), before + 1);

@@ -1,12 +1,9 @@
 //! Bounded newline protocol for an already approved native process exchange.
-//!
-//! This codec never launches a process or retries an operation. The existing
-//! native process owner must retain writes, observations, deadlines and cleanup.
 
 use super::{
     PROTOCOL_VERSION,
-    rpc::{NativeWork, initialization_with_native_work, notification_with_native_work,
-        rpc_result_with_native_work},
+    rpc::{NativeWork, initialization, notification,
+        rpc_result},
 };
 use crate::{Error, OperationId, Result};
 use bytes::BytesMut;
@@ -75,8 +72,7 @@ pub struct McpStdioRequest {
     /// Exact object parameters included in approval and durable identity.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmToolJsonValue"))]
     pub params: Value,
-    /// Positive cumulative byte allowance per input/output direction. Native
-    /// capture also enforces its combined stdout/stderr allowance independently.
+    /// Positive cumulative byte allowance per input/output direction.
     pub maximum_bytes: u32,
 }
 
@@ -88,7 +84,6 @@ impl McpStdioRequest {
     }
 
     /// Prepares this same protocol engine on the caller's original native ledger.
-    /// The first write must be physically dropped before its returned custody.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn exchange_with_native_work(
         &self,
@@ -100,7 +95,7 @@ impl McpStdioRequest {
     }
 
     fn exchange_inner(&self, work: NativeWork<'_>) -> Result<(McpStdioExchange, OwnedWrite)> {
-        super::services::validate_stdio_params_with_native_work(self.method.as_str(), &self.params, work)?;
+        super::services::validate_stdio_params(self.method.as_str(), &self.params, work)?;
         McpStdioExchange::new_inner(
             self.initialization, self.operation, self.method.as_str(),
             &self.params, self.maximum_bytes, work,
@@ -113,7 +108,6 @@ impl McpStdioRequest {
     }
 
     /// Validates a retained complete transcript without performing its writes.
-    /// Receipt recovery can decode an existing result, never redispatch stdin.
     pub fn decode_response(&self, stdout: &[u8]) -> Result<Value> {
         let (mut exchange, _) = self.exchange()?;
         exchange.push(stdout)?;
@@ -131,7 +125,6 @@ enum Phase {
 }
 
 /// Transient parser state for one initialized, one-shot stdio request.
-/// It is not a durable receipt, process owner or recovery mechanism.
 pub struct McpStdioExchange {
     initialization: OperationId,
     operation: OperationId,
@@ -210,8 +203,7 @@ impl McpStdioExchange {
             guard.resize_retained(std::mem::size_of::<Self>() as u64).map_err(native_error)?;
             guard.grow(maximum_bytes as u64).map_err(native_error)?;
         }
-        // One allocation for all cumulative stdout: library split/advance cannot
-        // demand growth because total admitted input never exceeds this capacity.
+        // One allocation for all cumulative stdout: library split/advance cannot demand growth because total admitted input never exceeds this capacity.
         let line = if work.is_some() { BytesMut::with_capacity(maximum_bytes) } else { BytesMut::new() };
         Ok((Self {
             initialization, operation, request: combined, phase: Phase::Initialize,
@@ -220,15 +212,13 @@ impl McpStdioExchange {
         }, first))
     }
 
-    /// Consumes stdout with the ordinary policy. Native custody cannot be lost
-    /// by accidentally switching a prepared exchange to an unmetered caller.
+    /// Consumes stdout with the ordinary policy.
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<u8>> {
         let write = self.push_inner(bytes, None)?;
         Ok(write.bytes)
     }
 
     /// Consumes stdout on the SAME original ledger and transfers exact writes.
-    /// Drop the returned bytes before their allocation guard.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn push_with_native_work(
         &mut self, bytes: &[u8], work: &acyclic_fs::NativeMaterializationWork,
@@ -287,8 +277,6 @@ impl McpStdioExchange {
             let body = &self.line[..end];
             let body = body.strip_suffix(b"\r").unwrap_or(body);
             let body = body.strip_prefix(b"\xef\xbb\xbf").unwrap_or(body);
-            // Reserve the closed RawValue + Value schema BEFORE trusted serde;
-            // borrowed validation prevents the library's private-input logging.
             let mut frame_custody = frame_admission(body, self.maximum_bytes, work)?;
             let raw_length = validate_raw(body, work, &mut frame_custody)?;
             copy_work(work, raw_length)?;
@@ -299,21 +287,21 @@ impl McpStdioExchange {
             let message: Value = decode_value(raw.get().as_bytes(), work, &mut frame_custody)?;
             drop(raw);
             if message.get("id").is_none() {
-                notification_with_native_work(&message, work)?;
+                notification(&message, work)?;
                 drop(message);
                 continue;
             }
             match self.phase {
                 Phase::Initialize => {
-                    let result = rpc_result_with_native_work(message, self.initialization, work)?;
-                    initialization_with_native_work(&result, work)?;
+                    let result = rpc_result(message, self.initialization, work)?;
+                    initialization(&result, work)?;
                     drop(result);
                     writes = std::mem::replace(&mut self.request,
                         OwnedWrite { bytes: Vec::new(), custody: None });
                     self.phase = Phase::Request;
                 }
                 Phase::Request => {
-                    let value = rpc_result_with_native_work(message, self.operation, work)?;
+                    let value = rpc_result(message, self.operation, work)?;
                     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                     if let Some(guard) = frame_custody.as_mut() {
                         let retained = value_storage(&value, work)?;
@@ -349,8 +337,7 @@ impl McpStdioExchange {
         }).ok_or(Error::Indeterminate(self.operation))
     }
 
-    /// Moves the actual result and its original guard, without cloning or
-    /// releasing result storage. Drop the returned Value before its guard.
+    /// Moves the actual result and its original guard, without cloning or releasing result storage.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn finish_with_native_work(mut self) -> Result<(Value, acyclic_fs::NativeAllocation)> {
         let work = self.custody.as_ref().ok_or_else(|| rejection(None, "missing MCP native custody"))?.work();
@@ -490,8 +477,6 @@ fn encode_line<T: Serialize>(value: &T, maximum: usize, work: NativeWork<'_>) ->
             .max(crate::contract::lexical_json_diagnostic_bytes())).map_err(native_error)?;
         let mut custody = work.retain_owned(0).map_err(native_error)?;
         let mut quota = work.retain_owned(0).map_err(native_error)?;
-        // Borrowed, closed SDK structs and Value parameters: no intermediate
-        // json! tree, param clone, or protocol grammar independent of serde.
         let encoded = crate::json_bytes_bounded_trusted(value, bounds(maximum.saturating_sub(1)),
             &mut |event| codec_charge(work, &mut custody, &mut quota, event));
         let bytes = match encoded {
@@ -526,11 +511,6 @@ fn frame_admission(body: &[u8], maximum: usize, work: NativeWork<'_>) -> Result<
     let mut custody = native_custody(work)?;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
-        // Closed serde Value schema: at most one container/key/scalar per input
-        // byte. Each sequence's geometric capacity is <= 8*its token count;
-        // map logical slots, string payload, raw box and 2*max(n,8) lexer
-        // scratch are simultaneously covered. Opaque map/allocator overhead is
-        // not a logical payload allocation claim.
         let per_token = (8 * std::mem::size_of::<Value>()
             + std::mem::size_of::<(String, Value)>() + 4) as u64;
         let quota = (body.len() as u64).max(8).checked_mul(per_token)
@@ -822,8 +802,6 @@ mod tests {
             .finish();
         tracing::subscriber::with_default(subscriber, || {
             let private = b"PRIVATE_STDOUT_FIXTURE invalid json\n";
-            // Negative control proves the dependency and log capture expose the
-            // marker when the unguarded codec sees the malformed frame.
             let mut unguarded = JsonRpcMessageCodec::<Box<RawValue>>::new();
             assert!(unguarded.decode(&mut BytesMut::from(&private[..])).is_err());
             assert!(

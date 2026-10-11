@@ -1,5 +1,4 @@
 //! Native producer bindings for the shared, owner-fenced recursive tools.
-//! Source capture, preparation, publication and admission remain library-owned.
 #![allow(missing_docs, reason = "private producer-authenticated binary composition")]
 
 use super::native::{AuthorityBinding, Config, Files, Runtime};
@@ -21,8 +20,7 @@ use std::sync::Arc;
 
 pub type Source = ConfiguredRecursiveToolSource<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
 
-/// Explicit trusted producer bindings. Task, agent, effect and admission IDs
-/// are separate. An unlisted model-chosen identity receives no authority.
+/// Explicit trusted producer bindings.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeToolsConfig {
@@ -49,9 +47,7 @@ pub struct NativeToolCaller {
     pub result_volume: Option<VolumeRef>,
 }
 
-/// An original signed allocation/input, not permission to mint a production
-/// authority for an arbitrary tool ID. Its model command retains a pinned
-/// payload FileRef; the shared owner verifies its exact text and read grant.
+/// An original signed allocation/input, not permission to mint a production authority for an arbitrary tool ID.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeToolFork {
@@ -73,17 +69,13 @@ pub struct NativeToolMerge {
     pub notice: ConversationMessage,
 }
 
-/// This adapter only translates trusted native configuration. The same source
-/// object owns both tool registries and the runtime's preparation callback.
-/// The shared source binds the original runtime once through Weak, avoiding a
-/// source/registry/runtime ownership cycle and any descendant root fallback.
+/// This adapter only translates trusted native configuration.
 pub struct NativeToolSource {
     source: Arc<Source>,
 }
 
 impl NativeToolSource {
-    /// Borrows configuration so unrelated original fork snapshots are not
-    /// cloned. Only the finite provider bindings needed by the source are kept.
+    /// Borrows configuration so unrelated original fork snapshots are not cloned.
     pub fn new(config: &Config, stream: StreamClient<LocalStream>, files: Arc<Files>) -> Result<Arc<Self>> {
         if config.tools.callers.len() > 64 || config.tools.forks.len() > 64 || config.tools.merges.len() > 64
             || config.fork_sources.len() > 64
@@ -112,8 +104,6 @@ impl NativeToolSource {
                     project: fork.project.clone(),
                     private_volume: fork.private_volume.clone(),
                     admission: fork.admission.clone(),
-                    // The model artifact contains untagged ModelContent::Text
-                    // at /input; /payload selects that exact pinned artifact.
                     child_message_pointer: "/payload".into(),
                     child_message_file_pointer: Some("/input".into()),
                     input_files: vec![command.payload],
@@ -131,8 +121,6 @@ impl NativeToolSource {
             inherited_messages: 64,
             inherited_references: 64,
             content_budget: config.tools.content_budget,
-            // Native assembly installs its actual service/graph policy
-            // explicitly; this browser configuration hook cannot infer a root.
             project_policy_graph_root: None,
             original_sources: config.fork_sources.iter()
                 .filter(|source| config.tools.callers.iter().any(|caller| caller.task == source.caller))
@@ -150,8 +138,7 @@ impl NativeToolSource {
         self.source.tools(maximum_request_bytes)
     }
 
-    /// Install this exact object with Runtime::with_recursive_source before
-    /// constructing the runtime Arc and binding its original owner below.
+    /// Install this exact object with Runtime::with_recursive_source before constructing the runtime Arc and binding its original owner below.
     pub fn recursive_source(&self) -> Arc<Source> {
         self.source.clone()
     }

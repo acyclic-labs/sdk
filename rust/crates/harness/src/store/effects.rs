@@ -1,5 +1,4 @@
 //! Exact effect transitions derived from their original canonical atomic commits.
-//! Native source custody survives codec and verifier overlap until physical drop.
 
 use super::{HistoryCursor, HistoryReadLimits, effect_heads, history::HistoryIo, operations};
 use crate::{
@@ -24,7 +23,6 @@ fn decode_location_with_work(
         operations::validate_canonical_json_with_work(bytes, acyclic_stream::MAX_RECORD_BYTES as u64, work)?;
     }
     let Some(observer) = work.as_deref_mut() else { return crate::executor::decode_json(bytes); };
-    // This fixed named-field schema owns only its original Authority.id.
     let mut reservation = 0;
     let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(
         bytes.len() as u64,
@@ -134,7 +132,6 @@ fn release_record_after_drop<T>(
     }
 }
 
-
 async fn tail_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
     path: &StreamPath,
@@ -143,7 +140,6 @@ async fn tail_with_work<P: StreamProvider>(
     operations::tail_optional_with_work(client, path, work).await
         .map(|tail| tail.unwrap_or(0))
 }
-
 
 async fn verified_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
@@ -197,14 +193,6 @@ async fn verified_with_work<P: StreamProvider>(
     }
 }
 
-pub(super) async fn add_publication_index<P: StreamProvider>(
-    client: &StreamClient<P>,
-    reducer: &Reducer,
-    event: &Event,
-    publication: &mut operations::IndexedPublication,
-) -> Result<()> {
-    add_publication_index_with_work(client, reducer, event, publication, &mut None).await
-}
 
 pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
@@ -223,8 +211,6 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
         let mut path = Some(path_with_work(reducer.authority(), effect_id, work)?);
         let result = async {
             let expected = if matches!(event.payload, EventPayload::EffectPlanned { .. }) {
-                // The immutable first record is also the lifetime effect-ID fence.
-                // A new operation cannot reuse a retired effect identity.
                 0
             } else {
                 let source_path = &path.as_ref().expect("original effect path").0;
@@ -430,17 +416,6 @@ pub(super) async fn read_with_retained_quota<P: StreamProvider>(
     }
 }
 
-/// Proves retirement against an already authenticated canonical record. The
-/// two derived records are charged without decoding the canonical event again.
-pub(super) async fn retirement_proof<P: StreamProvider>(
-    client: &StreamClient<P>,
-    authority: &Authority,
-    event: &Event,
-    canonical: &Record,
-    maximum_bytes: u64,
-) -> Result<(bool, u64)> {
-    retirement_proof_with_work(client, authority, event, canonical, maximum_bytes, &mut None).await
-}
 
 pub(super) async fn retirement_proof_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
@@ -532,13 +507,6 @@ pub(super) async fn retirement_proof_with_work<P: StreamProvider>(
     operations::release_owned_after_drop(result, operation_path_capacity, work)
 }
 
-pub(super) async fn retirement_proof_for_event<P: StreamProvider>(
-    client: &StreamClient<P>,
-    authority: &Authority,
-    event: &Event,
-) -> Result<bool> {
-    retirement_proof_for_event_with_work(client, authority, event, &mut None).await
-}
 
 pub(super) async fn retirement_proof_for_event_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
@@ -732,7 +700,7 @@ mod native_effect_paid_point_tests {
             panic!("fresh original effect plan");
         };
         let client = StreamClient::new(Arc::new(MemoryStream::default()));
-        let publication = checkpoints::publication(&client, &reducer, &event).await?;
+        let publication = checkpoints::publication_with_work(&client, &reducer, &event, &mut None).await?;
         let request = publication.request(&client,
             IdempotencyKey::new(Bytes::from_static(b"paid-effect-point"))?).await?;
         let acyclic_stream::CommitOutcome::Committed(envelope) = client.commit(request).await? else {

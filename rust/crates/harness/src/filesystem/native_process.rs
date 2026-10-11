@@ -90,8 +90,6 @@ impl NativeProcessRequest {
                 if let Some(io) = io {
                     io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
                 }
-                // The original Unicode uppercase spelling, without constructing
-                // a second owned key or an unmetered case-folding set.
                 if key.chars().flat_map(char::to_uppercase)
                     .eq(prior.chars().flat_map(char::to_uppercase)) {
                     return Err(validation_error(io, crate::wire::ErrorCode::Invalid,
@@ -115,8 +113,6 @@ impl NativeProcessRequest {
             return Err(validation_error(io, crate::wire::ErrorCode::Conflict,
                 "native command view changed"));
         }
-        // This is only the locator grammar. The prepared view checks its
-        // original held root and each no-follow directory before capture.
         let relative = self.cwd.strip_prefix(&view.options.root)
             .map_err(|_| validation_error(io, crate::wire::ErrorCode::Conflict,
                 "native cwd is outside the selected locator"))?;
@@ -142,14 +138,11 @@ pub struct NativeProcessAuthority {
     pub results: Arc<dyn ContentPublisher>,
     /// Existing resolved-approval ledger verifier.
     pub approvals: Arc<dyn ToolApprovalVerifier>,
-    /// Original custody of operation-owned authority data. Shared provider aliases
-    /// retain it until the authority and all of its capability fields are dropped.
-    /// Pre-existing ordinary service capabilities carry no operation-owned claim.
+    /// Original custody of operation-owned authority data.
     pub authority_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
-/// Optional provider for one retained task command. Construction launches nothing.
-/// Ordinary host processes are trusted effects, not a confinement boundary.
+/// Optional provider for one retained task command.
 pub struct NativeProcessProvider<P: StreamProvider> {
     owner: Arc<TaskJournalOwner<P>>,
     command: OperationId,
@@ -181,7 +174,6 @@ enum NativeCapturePhase {
     Spawning,
     Running,
     Drained,
-    // Observed ACK (or same-slot recovery) after actual Pending/Drained quiescence.
     Recorded,
     Uncertain,
 }
@@ -231,10 +223,8 @@ impl NativeSupervisorControl {
                 .map_err(|error| Error::NativeWork {
                     cause: work.runtime_error(error), custody: None })?;
         } else {
-            // No owned tree is not evidence that an uncertain OS outcome settled.
             return Ok(());
         }
-        // A successfully reaped tree physically drops before its original alias.
         retained.take();
         self.record_capture(NativeCapturePhase::Drained)
             .map_err(|error| Error::NativeWork { cause: error.into(), custody: None })
@@ -405,7 +395,7 @@ struct NativeReceiptCodecSlot {
 impl NativeReceiptCodecSlot {
     fn new(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         let custody = work.claim(std::mem::size_of::<NativeReceiptCodecCause>() as u64)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         Ok(Self {
             source: Box::new(NativeReceiptCodecCause { cause: None, _custody: None }),
             custody,
@@ -426,8 +416,7 @@ impl NativeReceiptCodecSlot {
 }
 
 impl NativeReceiptError {
-    /// Transfers the original typed cause and its already admitted custody to
-    /// the canonical Harness error without formatting or copying diagnostics.
+    /// Transfers the original typed cause and its already admitted custody to the canonical Harness error without formatting or copying diagnostics.
     #[must_use]
     pub fn into_root_error(self) -> Error {
         finite_dispatch::root_error(self)
@@ -435,8 +424,6 @@ impl NativeReceiptError {
 }
 
 /// Actual SDK-issued final snapshot data for one original approved mapping.
-/// The index binds the pinned request order; neither this data nor deserialization
-/// grants Project READ, publication, namespace adoption or process authority.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeProcessPublishedVolume {
@@ -447,7 +434,6 @@ pub struct NativeProcessPublishedVolume {
 }
 
 /// Authenticated original attempt and its durable native diagnostic.
-/// Launch-only receipts retain uncertainty; this observation conveys no authority.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeProcessReceipt {
@@ -478,10 +464,6 @@ pub struct NativeProcessReceipt {
 
 impl NativeProcessReceipt {
     /// Moves the observed effect together with its original measured payload custody.
-    ///
-    /// The remaining receipt fields are physically dropped before their logical
-    /// retention is released. Ordinary or deserialized receipts have no measured
-    /// custody and cannot manufacture one through this conversion.
     pub fn into_effect_with_native_custody(
         self,
     ) -> std::result::Result<(EffectObservation, acyclic_fs::NativeAllocation), NativeReceiptError> {
@@ -528,21 +510,14 @@ impl<P> NativeProcessProvider<P>
 where
     P: StreamProvider + 'static,
 {
-    /// Borrows the immutable plan retained for this original native operation.
-    /// Observation and recovery do not duplicate its admitted payload custody.
-    pub fn original_plan(&self) -> &TaskEffectPlan {
-        &self.plan
-    }
 
-    /// Original one-shot task-effect attempt selected by the existing effect
-    /// engine. This observation selector does not authorize dispatch or reads.
+    /// Original one-shot task-effect attempt selected by the existing effect engine.
     #[must_use]
     pub fn original_attempt(&self) -> crate::EffectAttemptId {
         crate::EffectAttemptId::from_bytes(self.effect_id.into_bytes())
     }
 
-    /// Signal only this original owned supervisor. No process joins occur here;
-    /// lifecycle callers can signal every job before awaiting any one of them.
+    /// Signal only this original owned supervisor.
     pub async fn signal_stop(
         &self, attempt: crate::EffectAttemptId,
         work: &acyclic_fs::NativeMaterializationWork,
@@ -568,8 +543,6 @@ where
             items_examined: 1, ..acyclic_fs::WorkCounters::default()
         }).map_err(NativeReceiptError::Native)?;
         let (completed, _) = self.supervisor.snapshot(attempt)?;
-        // Genuine terminal outcome observation is distinct from process drain.
-        // It never grants dispatch or filesystem write authority.
         self.authenticate_cleanup_owner(work).await?;
         cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)
             .map_err(NativeReceiptError::Native)?;
@@ -591,8 +564,7 @@ where
         Ok(())
     }
 
-    /// Await actual collection and the original durable observed receipt after
-    /// signalling. This does not stop by PID, cancel the view/task, or relaunch.
+    /// Await actual collection and the original durable observed receipt after signalling.
     pub async fn request_stop(
         &self, attempt: crate::EffectAttemptId,
         work: &acyclic_fs::NativeMaterializationWork,
@@ -661,8 +633,7 @@ where
         self.receipt_original(attempt, None, None).await.map_err(receipt_observation::ordinary_error)
     }
 
-    /// Reads retained output after authenticating this exact attempt. Unknown
-    /// cleanup may have a diagnostic artifact but remains indeterminate.
+    /// Reads retained output after authenticating this exact attempt.
     pub async fn output(
         &self,
         attempt: crate::EffectAttemptId,
@@ -694,8 +665,6 @@ where
     }
 
     /// Loads the pinned request/schema and verifies exact approval and task grants.
-    /// Consumers stage `NativeProcessRequest` as the plan's JSON request and use
-    /// the ordinary conversation interaction approval before constructing this.
     pub async fn new(
         owner: Arc<TaskJournalOwner<P>>,
         command: OperationId,
@@ -710,8 +679,7 @@ where
         ).await
     }
 
-    /// Reopens receipt observation after provider drop or host restart, including
-    /// cancellation. It needs no native directories and has no dispatch capability.
+    /// Reopens receipt observation after provider drop or host restart, including cancellation.
     pub async fn recover(
         owner: Arc<TaskJournalOwner<P>>,
         command: OperationId,
@@ -724,9 +692,7 @@ where
         ).await
     }
 
-
     /// Binds this exact prepared namespace to its original finite work family.
-    /// Admission precedes construction of the binding future and content reads.
     pub fn new_with_native_work<'a>(
         owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: &'a TaskEffectPlan,
         view: Arc<dyn NativeProcessView<P>>, approval: InteractionId,
@@ -747,7 +713,7 @@ where
     ) -> Result<Arc<Self>> {
         self.require_work_family(work)?;
         let custody = work.claim(std::mem::size_of::<Self>() as u64)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         finite_binding::absorb_shared(&self._custody, custody)?;
         Ok(Arc::new(self))
     }
@@ -786,7 +752,7 @@ where
     ) -> Result<bool> {
         self.require_work_family(work)?;
         work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         Ok(kind == NATIVE_PROCESS_EFFECT_KIND && guarantee == EffectGuarantee::AtMostOnce)
     }
     fn linearizable_reconciliation(&self) -> bool {
@@ -826,7 +792,7 @@ where
         })?;
         view.operation_cancellation().check()
             .map_err(acyclic_fs::NativeTreeMaterializationError::from)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         let payload = finite_dispatch::dispatch_payload(request, Some(work))
             .map_err(finite_dispatch::root_error)?;
         crate::NativeFutureBundle::new(work, || async move {
@@ -854,7 +820,6 @@ where
         })
     }
 }
-
 
 fn require_view_grants<P: StreamProvider>(
     owner: &TaskJournalOwner<P>,
@@ -967,8 +932,6 @@ fn invocation_failure(error: Error, work: acyclic_fs::WorkCounters) -> NativeExe
     }
 }
 
-// Admission precedes construction: evaluating the large installed execution
-// future on the caller's stack would defeat this necessary heap boundary.
 #[inline(never)]
 fn box_execution<F: Future>(
     build: impl FnOnce(acyclic_fs::WorkCounters) -> F,
@@ -986,15 +949,12 @@ fn box_execution<F: Future>(
     Ok(Box::pin(build(work)))
 }
 
-
 fn receipt_path(attempt: crate::EffectAttemptId) -> Result<StreamPath> {
     use std::fmt::Write as _;
     let mut path = String::new();
-    // The ordinary path retains its exact String construction policy.
-    // Native callers use the intrinsically guarded StreamPath constructor.
     path.try_reserve_exact("harness/v2/native-process/".len() + 36)
         .map_err(acyclic_fs::NativeTreeMaterializationError::AllocationFailed)
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        .map_err(Error::from)?;
     write!(&mut path, "harness/v2/native-process/{attempt}")
         .map_err(|_| Error::NativeBoundary {
             code: crate::wire::ErrorCode::Storage, reason: "native receipt path formatting failed",
@@ -1003,8 +963,6 @@ fn receipt_path(attempt: crate::EffectAttemptId) -> Result<StreamPath> {
         code: crate::wire::ErrorCode::Storage, source, custody: None,
     })
 }
-
-
 
 #[cfg(test)]
 mod execution_admission_tests {

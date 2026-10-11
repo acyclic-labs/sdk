@@ -256,8 +256,7 @@ impl TaskGroup {
             .await
     }
 
-    /// Admits one live operation under its caller-retained identity. This
-    /// prevents concurrent duplicates; settled work is still journal-owned.
+    /// Admits one live operation under its caller-retained identity.
     pub async fn try_spawn_with_operation<T, F>(
         &self,
         id: OperationId,
@@ -404,8 +403,7 @@ impl<T> TaskHandle<T> {
         }
     }
 
-    /// Waits for a terminal outcome, cancelling this task if the wait is
-    /// dropped. Ordinary result observation retains its existing semantics.
+    /// Waits for a terminal outcome, cancelling this task if the wait is dropped.
     pub fn result_owned(self) -> impl Future<Output = Outcome<T>> {
         struct CancelOnDrop(Option<AbortHandle>);
         impl Drop for CancelOnDrop {

@@ -23,8 +23,8 @@ use crate::kernel::{
 };
 use crate::lazy_workspace::logical_child_path;
 use crate::{
-    AsyncAuthorityStore, AsyncObjectStore, FileId, IdempotencyKey, LazyDirectoryCursor, LazyLookup,
-    LazyWorkspace, LazyWorkspaceError, LazyWorkspaceStore, NativeRootIdentity, WorkspaceMetadata,
+    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, FileId, IdempotencyKey, LazyDirectoryCursor, LazyLookup,
+    LazyWorkspace, LazyWorkspaceError, LazyWorkspaceStore, NativeRootIdentity, WorkBudget, WorkspaceMetadata,
 };
 use bytes::Bytes;
 use acyclic_stream::OwnedBytes;
@@ -3545,13 +3545,13 @@ where
         ).await
     }
 
-    async fn recover_pending_mount_change_measured<F, Fut, E>(
-        &self,
+    fn recover_pending_mount_change_measured<'a, 'work, F, Fut, E>(
+        &'a self,
         permit: crate::PublicationPermit,
-        work: &mut MountSyncWork<'_>,
-        cancellation: &crate::CancellationToken,
-        before_publication: &mut F,
-    ) -> Result<(), E>
+        work: &'a mut MountSyncWork<'work>,
+        cancellation: &'a crate::CancellationToken,
+        before_publication: &'a mut F,
+    ) -> impl Future<Output = Result<(), E>> + Send + 'a
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
@@ -3559,117 +3559,115 @@ where
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         E: From<MountSourceError> + Send + 'static,
     {
-        let native_owned = match &work.meter {
-            super::adapter::NativeDemandCarrier::Shared(meter) =>
-                Some(super::NativeMountMeterWork::from_meter(Arc::clone(meter))),
-            super::adapter::NativeDemandCarrier::Borrowed(_)
-                | super::adapter::NativeDemandCarrier::Native(_) => None,
-        };
-        let native = match &work.meter {
-            super::adapter::NativeDemandCarrier::Native(original) => Some(*original),
-            _ => native_owned.as_ref(),
-        };
-        work.items(1)?;
-        let custody = self.removals.lock().map_err(|_| MountSourceError::Stale)?.publication;
-        if let (Some(custody), Some(original)) = (custody, native)
-            && custody.selected.is_some()
-            && let Some(generation) = self.lazy.selected_import_generation_with_work(
-                custody.operation, original, cancellation,
-            ).await.map_err(native_lazy_error)?
-        {
-            return self.finish_acknowledged_mount_custody_with_sync_work(
-                custody.operation, generation, work, original, cancellation,
-            ).await?.ok_or(MountSourceError::Indeterminate).map(|_| ()).map_err(E::from);
-        }
-        let mut committed = if let Some(original) = native {
-            self.lazy.mount_removal_publication_with_work(original, cancellation).await.map_err(native_lazy_error)?
-        } else {
-            let (budget, prior_live) = work.sdk_scope()?;
-            let result = self.lazy.mount_removal_publication_measured(budget, cancellation).await;
-            work.accept_sdk(result, prior_live, lazy_error)?
-        };
-        if let Some(custody) = custody {
-            if !custody.published {
-                if committed.is_none() {
-                    // A failed/ambiguous journal CAS never replaces the inputs
-                    // of the checkout candidate that was already installed.
-                    let (paths, records) = self.frozen_mount_inputs(custody.operation, work)?;
-                    let selected_inputs = SelectedInputsLoan::take(&self.removals, custody.operation, work)?;
-                    if let Some(original) = native {
-                        self.lazy.prepare_mount_removals_combined_with_work(
-                            &paths.value, selected_inputs.value.as_ref().map_or(&[], |effects| effects.paths.as_slice()),
-                            &records.value, IdempotencyKey::from_bytes(custody.operation.into_bytes()),
-                            original, cancellation,
-                        ).await.map_err(native_lazy_error)?;
-                    } else {
-                        let (budget, prior_live) = work.sdk_scope()?;
-                        let result = self.lazy.prepare_mount_removals_measured(
-                            &paths.value, &records.value, IdempotencyKey::from_bytes(custody.operation.into_bytes()),
-                            budget, cancellation,
-                        ).await;
-                        work.accept_sdk(result, prior_live, lazy_error)?;
-                    }
-                    selected_inputs.discard();
-                    drop(paths);
-                    drop(records);
-                    work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
-                    committed = Some(false);
-                }
-                let retained = {
-                    let mut checkout = work.lock_checkout(&self.authored, cancellation).await?;
-                    checkout.has_retained_operation().then(|| checkout.retained_operation_id())
-                };
-                if retained == Some(custody.operation) {
-                    work.sync_authored_recovery_guarded(
-                        &self.authored, permit, cancellation, before_publication,
-                    ).await?;
-                } else if committed != Some(true) {
-                    return Err(E::from(MountSourceError::Stale));
-                }
-                self.mark_mount_published(custody.operation)?;
-            }
-            if let Some(original) = native
+        async move {
+            let native = match &work.meter {
+                super::adapter::NativeDemandCarrier::Shared(meter) =>
+                    Some(super::NativeMountMeterWork::from_meter(Arc::clone(meter))),
+                super::adapter::NativeDemandCarrier::Native(original) => Some((*original).clone()),
+                super::adapter::NativeDemandCarrier::Borrowed(_) => None,
+            };
+            work.items(1)?;
+            let custody = self.removals.lock().map_err(|_| MountSourceError::Stale)?.publication;
+            if let (Some(custody), Some(original)) = (custody, native.as_ref())
                 && custody.selected.is_some()
-            {
-                let generation = self.lazy.selected_import_generation_with_work(
+                && let Some(generation) = self.lazy.selected_import_generation_with_work(
                     custody.operation, original, cancellation,
-                ).await.map_err(native_lazy_error)?.ok_or(MountSourceError::Indeterminate)?;
+                ).await.map_err(native_lazy_error)?
+            {
                 return self.finish_acknowledged_mount_custody_with_sync_work(
                     custody.operation, generation, work, original, cancellation,
                 ).await?.ok_or(MountSourceError::Indeterminate).map(|_| ()).map_err(E::from);
             }
-            if committed.is_some() {
-                let finished = if let Some(original) = native {
+            let mut committed = if let Some(original) = native.as_ref() {
+                self.lazy.mount_removal_publication_with_work(original, cancellation).await.map_err(native_lazy_error)?
+            } else {
+                let (budget, prior_live) = work.sdk_scope()?;
+                let result = self.lazy.mount_removal_publication_measured(budget, cancellation).await;
+                work.accept_sdk(result, prior_live, lazy_error)?
+            };
+            if let Some(custody) = custody {
+                if !custody.published {
+                    if committed.is_none() {
+                        // A failed/ambiguous journal CAS never replaces the inputs
+                        // of the checkout candidate that was already installed.
+                        let (paths, records) = self.frozen_mount_inputs(custody.operation, work)?;
+                        let selected_inputs = SelectedInputsLoan::take(&self.removals, custody.operation, work)?;
+                        if let Some(original) = native.as_ref() {
+                            self.lazy.prepare_mount_removals_combined_with_work(
+                                &paths.value, selected_inputs.value.as_ref().map_or(&[], |effects| effects.paths.as_slice()),
+                                &records.value, IdempotencyKey::from_bytes(custody.operation.into_bytes()),
+                                original, cancellation,
+                            ).await.map_err(native_lazy_error)?;
+                        } else {
+                            let (budget, prior_live) = work.sdk_scope()?;
+                            let result = self.lazy.prepare_mount_removals_measured(
+                                &paths.value, &records.value, IdempotencyKey::from_bytes(custody.operation.into_bytes()),
+                                budget, cancellation,
+                            ).await;
+                            work.accept_sdk(result, prior_live, lazy_error)?;
+                        }
+                        selected_inputs.discard();
+                        drop(paths);
+                        drop(records);
+                        work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
+                        committed = Some(false);
+                    }
+                    let retained = {
+                        let mut checkout = work.lock_checkout(&self.authored, cancellation).await?;
+                        checkout.has_retained_operation().then(|| checkout.retained_operation_id())
+                    };
+                    if retained == Some(custody.operation) {
+                        work.sync_authored_recovery_guarded(
+                            &self.authored, permit, cancellation, before_publication,
+                        ).await?;
+                    } else if committed != Some(true) {
+                        return Err(E::from(MountSourceError::Stale));
+                    }
+                    self.mark_mount_published(custody.operation)?;
+                }
+                if let Some(original) = native.as_ref()
+                    && custody.selected.is_some()
+                {
+                    let generation = self.lazy.selected_import_generation_with_work(
+                        custody.operation, original, cancellation,
+                    ).await.map_err(native_lazy_error)?.ok_or(MountSourceError::Indeterminate)?;
+                    return self.finish_acknowledged_mount_custody_with_sync_work(
+                        custody.operation, generation, work, original, cancellation,
+                    ).await?.ok_or(MountSourceError::Indeterminate).map(|_| ()).map_err(E::from);
+                }
+                if committed.is_some() {
+                    let finished = if let Some(original) = native.as_ref() {
+                        self.lazy.finish_mount_removals_with_work(original, cancellation).await.map_err(native_lazy_error)?
+                    } else {
+                        let (budget, prior_live) = work.sdk_scope()?;
+                        let result = self.lazy.finish_mount_removals_measured(budget, cancellation).await;
+                        work.accept_sdk(result, prior_live, lazy_error)?
+                    };
+                    if !finished { return Err(E::from(MountSourceError::Stale)); }
+                }
+                return self.finish_mount_custody(custody.operation, work).map_err(E::from);
+            }
+            // A reopened source has no transient pins. Its existing journal and
+            // original authority decision, not an in-memory readiness flag, recover
+            // the durable identity. Uninstalled local preparations confer no rights.
+            let retained = work.lock_checkout(&self.authored, cancellation).await?.has_retained_operation();
+            if retained {
+                work.sync_authored_recovery_guarded(
+                    &self.authored, permit, cancellation, before_publication,
+                ).await?;
+            }
+            if let Some(committed) = committed {
+                let published = if let Some(original) = native.as_ref() {
                     self.lazy.finish_mount_removals_with_work(original, cancellation).await.map_err(native_lazy_error)?
                 } else {
                     let (budget, prior_live) = work.sdk_scope()?;
                     let result = self.lazy.finish_mount_removals_measured(budget, cancellation).await;
                     work.accept_sdk(result, prior_live, lazy_error)?
                 };
-                if !finished { return Err(E::from(MountSourceError::Stale)); }
+                if (committed || retained) && !published { return Err(E::from(MountSourceError::Stale)); }
             }
-            return self.finish_mount_custody(custody.operation, work).map_err(E::from);
+            self.abort_detached_publication(work).map_err(E::from)
         }
-        // A reopened source has no transient pins. Its existing journal and
-        // original authority decision, not an in-memory readiness flag, recover
-        // the durable identity. Uninstalled local preparations confer no rights.
-        let retained = work.lock_checkout(&self.authored, cancellation).await?.has_retained_operation();
-        if retained {
-            work.sync_authored_recovery_guarded(
-                &self.authored, permit, cancellation, before_publication,
-            ).await?;
-        }
-        if let Some(committed) = committed {
-            let published = if let Some(original) = native {
-                self.lazy.finish_mount_removals_with_work(original, cancellation).await.map_err(native_lazy_error)?
-            } else {
-                let (budget, prior_live) = work.sdk_scope()?;
-                let result = self.lazy.finish_mount_removals_measured(budget, cancellation).await;
-                work.accept_sdk(result, prior_live, lazy_error)?
-            };
-            if (committed || retained) && !published { return Err(E::from(MountSourceError::Stale)); }
-        }
-        self.abort_detached_publication(work).map_err(E::from)
     }
 
     fn frozen_mount_inputs(
@@ -3780,18 +3778,20 @@ where
         cancellation: &crate::CancellationToken,
     ) -> Result<Option<crate::LazySnapshotRef>, MountSourceError>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
+        let original = original.clone();
+        let cancellation = cancellation.clone();
         work.items(1)?;
         let custody = self.removals.lock().map_err(|_| MountSourceError::Stale)?.publication;
         let Some(custody) = custody else {
             return self.lazy.selected_import_snapshot_for_generation_with_work(
-                operation, generation, original, cancellation,
+                operation, generation, &original, &cancellation,
             ).await.map(Some).map_err(native_lazy_error);
         };
         if custody.operation != operation { return Ok(None); }
         let Some(proof) = custody.selected else { return Ok(None); };
         if !custody.published {
             if !self.authored.shared_checkout().resolve_acknowledged_original_with_native_work(
-                operation, generation, original, cancellation, Some(self.authored.cancellation()),
+                operation, generation, &original, &cancellation, Some(self.authored.cancellation()),
                 self.authored.publication_guard(),
             ).await? {
                 return Ok(None);
@@ -3800,7 +3800,7 @@ where
         }
         let snapshot = self.lazy.selected_committed_snapshot_with_work(
             operation, generation, proof.checkpoint, proof.source,
-            proof.source_config, proof.input, original, cancellation,
+            proof.source_config, proof.input, &original, &cancellation,
         ).await.map_err(native_lazy_error)?;
         self.finish_mount_custody(operation, work)?;
         Ok(Some(snapshot))

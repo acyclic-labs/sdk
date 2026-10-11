@@ -462,7 +462,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
 }
 
 pub(super) fn once_key(operation: OperationId, io: Option<&PreparationIo>) -> Result<IdempotencyKey> {
-    // OperationId's canonical UUID Display has exactly 36 ASCII bytes.
     let length = "filesystem-single-file:".len() + 36;
     if let Some(io) = io {
         io.claim(length as u64)?;

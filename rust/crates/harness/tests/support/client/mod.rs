@@ -22,8 +22,6 @@ pub struct Evidence {
     pub publish: bool,
 }
 
-// A deliberately small domain for exhaustive kernel transitions, not a domain
-// engine supplied to consumers. Real Harness reuse is tested separately.
 pub struct Numbers {
     pub visits: Rc<Cell<usize>>,
     pub adapter: Rc<Cell<u128>>,
@@ -56,7 +54,6 @@ impl Domain for Numbers {
         branch: &Hypothesis<u64, Basis, u64, u64, u64>,
         work: usize,
     ) -> Result<(usize, usize), Error> {
-        // This fixture has no retained authoritative operation receipts.
         if branch.prediction != PredictionOutcome::Pending
             || branch.outcome != OperationOutcome::Unknown
         {
