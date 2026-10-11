@@ -114,10 +114,46 @@ impl<'a> TrustedDecodeReservation<'a> {
 /// containers. This is not an arbitrary DeserializeOwned heap sandbox.
 pub(crate) trait PreparationRecord: serde::de::DeserializeOwned + Serialize {
     fn maximum_slot_bytes() -> u64;
+    /// Whole logical allowance before the audited visitor, including any
+    /// custom DTO reconstruction/cache temporaries. Snapshot carriers override
+    /// this profile using the canonical Snapshot admission, not a second scan.
+    fn decode_owned_allowance(
+        shape: crate::contract::JsonValueShape, codec_scratch: u64, input_bytes: u64,
+    ) -> Result<u64> {
+        preparation_decode_owned_allowance::<Self>(shape, codec_scratch, input_bytes)
+    }
     /// Value-free private DTOs use None; Value-bearing records must override it.
     fn json_value_schema() -> crate::contract::JsonValueSchema {
         crate::contract::JsonValueSchema::None
     }
+}
+
+fn preparation_decode_owned_allowance<T: PreparationRecord>(
+    shape: crate::contract::JsonValueShape, codec_scratch: u64, input_bytes: u64,
+) -> Result<u64> {
+    let value_owned = match T::json_value_schema() {
+        crate::contract::JsonValueSchema::None => codec_scratch,
+        _ => codec_scratch.max(crate::contract::json_value_decode_owned_bytes(shape)?),
+    };
+    let nodes = shape.lexical_items().checked_add(shape.virtual_items())
+        .ok_or_else(|| decode_allowance_error("preparation DTO item count overflow"))?;
+    let typed = match T::json_value_schema() {
+        crate::contract::JsonValueSchema::Root => Some(0),
+        _ => nodes.checked_mul(T::maximum_slot_bytes())
+            .and_then(|bytes| bytes.checked_mul(8))
+            .and_then(|bytes| input_bytes.checked_mul(4)
+                .and_then(|strings| bytes.checked_add(strings))),
+    };
+    typed.and_then(|bytes| bytes.checked_add(value_owned))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<T>() as u64))
+        .ok_or_else(|| decode_allowance_error("preparation DTO ownership overflow"))
+}
+
+fn decode_allowance_error(reason: &'static str) -> Error {
+    #[cfg(not(target_arch = "wasm32"))]
+    { Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason } }
+    #[cfg(target_arch = "wasm32")]
+    { Error::Invalid(reason.into()) }
 }
 
 pub(crate) fn preparation_slot_bytes<T>() -> u64 {
@@ -716,29 +752,9 @@ impl PreparationIo {
         let mut charge = |next| {
             match next {
                 crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes, value_shape } => {
-                    // Tagged Content/Vec temporaries are distinct from returned
-                    // Value payloads. Root Value has no typed Content envelope.
-                    // The Value bound already includes parser scratch, so share
-                    // that allowance with the generic codec baseline via max.
-                    let value_owned = match value_schema {
-                        crate::contract::JsonValueSchema::None => maximum_owned_bytes,
-                        _ => maximum_owned_bytes.max(
-                            crate::contract::json_value_decode_owned_bytes(value_shape)?,
-                        ),
-                    };
-                    let items = value_shape.lexical_items().checked_add(value_shape.virtual_items())
-                        .ok_or_else(|| self.invalid("preparation DTO item count overflow"))?;
-                    let typed_owned = match value_schema {
-                        crate::contract::JsonValueSchema::Root => Some(0),
-                        _ => items.checked_mul(T::maximum_slot_bytes())
-                            .and_then(|slots| slots.checked_mul(8))
-                            .and_then(|slots| (bytes.len() as u64).checked_mul(4)
-                                .and_then(|strings| slots.checked_add(strings))),
-                    };
-                    let owned = typed_owned
-                        .and_then(|owned| owned.checked_add(value_owned))
-                        .and_then(|owned| owned.checked_add(std::mem::size_of::<T>() as u64))
-                        .ok_or_else(|| self.invalid("preparation DTO ownership overflow"))?;
+                    let owned = T::decode_owned_allowance(
+                        value_shape, maximum_owned_bytes, bytes.len() as u64,
+                    )?;
                     reservation.reserve(owned)?;
                     Ok(())
                 }
@@ -818,7 +834,7 @@ impl PreparationIo {
         &self, source: &serde_json::Value, code: crate::wire::ErrorCode,
     ) -> Result<T> {
         let mut decoded = self.value_decode_with_schema::<T>(
-            source, code, T::json_value_schema(), preparation_slot_bytes::<T>(),
+            source, code, T::json_value_schema(), preparation_slot_bytes::<T>(), None,
         )?;
         let actual = (std::mem::size_of::<T>() as u64)
             .checked_add(decoded.value.logical_owned_bytes()?)
@@ -833,6 +849,7 @@ impl PreparationIo {
     ) -> Result<ReservedDecoded<'_, T>> {
         self.value_decode_with_schema(
             source, code, T::json_value_schema(), T::maximum_slot_bytes(),
+            Some(T::decode_owned_allowance),
         )
     }
 
@@ -840,6 +857,7 @@ impl PreparationIo {
     fn value_decode_with_schema<T: serde::de::DeserializeOwned>(
         &self, source: &serde_json::Value, code: crate::wire::ErrorCode,
         schema: crate::contract::JsonValueSchema, slot_bytes: u64,
+        profile: Option<fn(crate::contract::JsonValueShape, u64, u64) -> Result<u64>>,
     ) -> Result<ReservedDecoded<'_, T>> {
         if self.original_native_work().is_none() {
             return Err(self.invalid("native Value decoding requires original work"));
@@ -853,10 +871,13 @@ impl PreparationIo {
         let result = crate::contract::json_from_value_bounded_native_trusted(
             source, bounds, 0, code, schema, &mut |next| match next {
                 crate::contract::JsonCodecCharge::Admission { value_shape, .. } => {
-                    let allowance = crate::contract::json_typed_value_decode_owned_bytes(
-                        value_shape, slot_bytes,
-                    )?.checked_add(std::mem::size_of::<T>() as u64)
-                        .ok_or_else(|| self.invalid("typed Value reservation overflow"))?;
+                    let allowance = match profile {
+                        Some(profile) => profile(value_shape, 0, value_shape.input_bytes())?,
+                        None => crate::contract::json_typed_value_decode_owned_bytes(
+                            value_shape, slot_bytes,
+                        )?.checked_add(std::mem::size_of::<T>() as u64)
+                            .ok_or_else(|| self.invalid("typed Value reservation overflow"))?,
+                    };
                     reservation.reserve(allowance)
                 }
                 next => self.codec_charge(next, false),
@@ -1011,6 +1032,88 @@ pub(in crate::filesystem) fn validate_content_path(path: &str, io: Option<&Prepa
     crate::conversation::validate_content_path(path)
 }
 
+pub(in crate::filesystem) fn clone_text(value: &str, io: Option<&PreparationIo>) -> Result<String> {
+    match io {
+        Some(io) => crate::store::history::HistoryIo::clone_text(&mut io.history_io(), value),
+        None => Ok(value.to_owned()),
+    }
+}
+
+pub(in crate::filesystem) fn format_text(value: std::fmt::Arguments<'_>, io: Option<&PreparationIo>) -> Result<String> {
+    crate::contract::preparation_format(value, io)
+}
+
+pub(in crate::filesystem) fn hex_key(bytes: &[u8], io: Option<&PreparationIo>) -> Result<String> {
+    let Some(io) = io else { return Ok(hex::encode(bytes)); };
+    let capacity = bytes.len().checked_mul(2).ok_or_else(|| invalid(Some(io), "hex key size overflow"))?;
+    let copied = WorkCounters { bytes_copied: capacity as u64, ..Default::default() };
+    io.claim(capacity as u64)?;
+    io.preflight(copied)?;
+    if capacity != 0 { io.allocation_attempt(capacity as u64)?; }
+    let mut output = String::new();
+    output.try_reserve_exact(capacity).map_err(Error::Allocation)?;
+    for byte in bytes {
+        output.push(b"0123456789abcdef"[(byte >> 4) as usize] as char);
+        output.push(b"0123456789abcdef"[(byte & 15) as usize] as char);
+    }
+    if output.capacity() > capacity { io.claim((output.capacity() - capacity) as u64)?; }
+    io.charge(copied)?;
+    Ok(output)
+}
+
+pub(in crate::filesystem) fn conflict(io: Option<&PreparationIo>, reason: &'static str) -> Error {
+    #[cfg(not(target_arch = "wasm32"))]
+    if io.and_then(PreparationIo::original_native_work).is_some() {
+        return Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, reason };
+    }
+    let _ = io;
+    Error::Conflict(reason.into())
+}
+
+pub(in crate::filesystem) fn unauthorized(io: Option<&PreparationIo>, reason: &'static str) -> Error {
+    #[cfg(not(target_arch = "wasm32"))]
+    if io.and_then(PreparationIo::original_native_work).is_some() {
+        return Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason };
+    }
+    let _ = io;
+    Error::Unauthorized(reason.into())
+}
+
+pub(in crate::filesystem) fn unsupported(io: Option<&PreparationIo>, reason: &'static str) -> Error {
+    #[cfg(not(target_arch = "wasm32"))]
+    if io.and_then(PreparationIo::original_native_work).is_some() {
+        return Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason };
+    }
+    let _ = io;
+    Error::Unsupported(reason.into())
+}
+
+pub(in crate::filesystem) fn vector<T>(capacity: usize, io: Option<&PreparationIo>) -> Result<Vec<T>> {
+    let bytes = capacity.checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| invalid(io, "vector capacity overflow"))?;
+    if let Some(io) = io {
+        io.claim(bytes as u64)?;
+        if bytes != 0 { io.allocation_attempt(bytes as u64)?; }
+    }
+    let mut output = Vec::new();
+    output.try_reserve_exact(capacity).map_err(Error::Allocation)?;
+    if let Some(io) = io {
+        let actual = output.capacity().checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(|| invalid(Some(io), "vector capacity overflow"))?;
+        if actual > bytes { io.claim((actual - bytes) as u64)?; }
+    }
+    Ok(output)
+}
+
+pub(in crate::filesystem) fn clone_bytes(bytes: &[u8], io: Option<&PreparationIo>) -> Result<Vec<u8>> {
+    let copied = WorkCounters { bytes_copied: bytes.len() as u64, ..Default::default() };
+    if let Some(io) = io { io.preflight(copied)?; }
+    let mut output = vector(bytes.len(), io)?;
+    output.extend_from_slice(bytes);
+    if let Some(io) = io { io.charge(copied)?; }
+    Ok(output)
+}
+
 pub(in crate::filesystem) fn strings(io: &PreparationIo, values: &[&str]) -> Result<()> {
     for value in values {
         io.claim(value.len() as u64)?;
@@ -1022,19 +1125,14 @@ pub(in crate::filesystem) fn file_ref(
     volume: &VolumeRef, path: &str, version: &str, descriptor: &FileDescriptor,
     display_name: &str, io: Option<&PreparationIo>,
 ) -> Result<FileRef> {
-    if let Some(io) = io {
-        let provider = volume.provider();
-        strings(io, &[provider.namespace(), provider.family(), provider.version(), volume.id(),
-            path, version, descriptor.media_type(), display_name])?;
-        if let VolumeOwner::Project(owner) | VolumeOwner::Session(owner) = volume.owner() {
-            strings(io, &[owner])?;
-        }
-    }
-    FileRef::new(volume.clone(), path, version, descriptor.clone(), display_name)
+    FileRef::new_with_io(volume, path, version, descriptor, display_name, io)
 }
 
 pub(in crate::filesystem) fn clone_file(reference: &FileRef, io: Option<&PreparationIo>) -> Result<FileRef> {
-    file_ref(reference.volume(), reference.path(), reference.version(), reference.descriptor(), reference.display_name(), io)
+    match io {
+        Some(io) => reference.clone_with_io(io),
+        None => Ok(reference.clone()),
+    }
 }
 
 pub(in crate::filesystem) fn reference_key(reference: &FileRef, io: Option<&PreparationIo>) -> Result<String> {
@@ -1366,9 +1464,9 @@ impl PreparationHistoryIo<'_> {
             .ok_or_else(|| Error::Invalid("history vector ownership overflow".into()))? as u64;
         self.io.claim(bytes)?;
         self.io.allocation_attempt(bytes)?;
-        values.try_reserve_exact(target - values.len()).map_err(|error| Error::Storage(error.to_string()))?;
+        values.try_reserve_exact(target - values.len()).map_err(Error::Allocation)?;
         let actual = (values.capacity() - old).checked_mul(std::mem::size_of::<T>())
-            .ok_or_else(|| Error::Invalid("history vector ownership overflow".into()))? as u64;
+            .ok_or_else(|| self.io.invalid("history vector ownership overflow"))? as u64;
         if actual > bytes { self.io.claim(actual - bytes)?; }
         else { self.io.release(bytes - actual)?; }
         Ok(())
@@ -1407,7 +1505,7 @@ impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
     fn admit_owned(&self, bytes: u64) -> Result<()> {
         self.check_cancellation()?;
         if bytes > self.io.remaining()?.peak_allocation_bytes {
-            return Err(Error::Invalid("history exceeds live logical byte allowance".into()));
+            return Err(self.io.invalid("history exceeds live logical byte allowance"));
         }
         Ok(())
     }
@@ -1424,7 +1522,11 @@ impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
         self.io.claim(text.len() as u64)?;
         self.io.preflight(WorkCounters { bytes_copied: text.len() as u64, ..Default::default() })?;
         if !text.is_empty() { self.io.allocation_attempt(text.len() as u64)?; }
-        let mut copy = String::with_capacity(text.len());
+        let mut copy = String::new();
+        copy.try_reserve_exact(text.len()).map_err(Error::Allocation)?;
+        if copy.capacity() > text.len() {
+            self.io.claim((copy.capacity() - text.len()) as u64)?;
+        }
         copy.push_str(text);
         self.io.charge(WorkCounters { bytes_copied: text.len() as u64, ..Default::default() })?;
         Ok(copy)
@@ -1438,7 +1540,7 @@ impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
         let old = values.capacity();
         self.io.claim((capacity - old) as u64)?;
         self.io.allocation_attempt((capacity - old) as u64)?;
-        values.try_reserve_exact(capacity - values.len()).map_err(|error| Error::Storage(error.to_string()))?;
+        values.try_reserve_exact(capacity - values.len()).map_err(Error::Allocation)?;
         if values.capacity() > capacity { self.io.claim((values.capacity() - capacity) as u64)?; }
         Ok(())
     }
@@ -1447,7 +1549,7 @@ impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
         let old = text.capacity();
         self.io.claim((capacity - old) as u64)?;
         self.io.allocation_attempt((capacity - old) as u64)?;
-        text.try_reserve_exact(capacity - text.len()).map_err(|error| Error::Storage(error.to_string()))?;
+        text.try_reserve_exact(capacity - text.len()).map_err(Error::Allocation)?;
         if text.capacity() > capacity { self.io.claim((text.capacity() - capacity) as u64)?; }
         Ok(())
     }

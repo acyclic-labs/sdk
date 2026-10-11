@@ -14,6 +14,8 @@ pub struct FilesystemContentPublisher<A, O> {
     volume: VolumeRef,
     grant: ContentGrant,
     maximum_bytes: u64,
+    #[cfg(not(target_arch = "wasm32"))]
+    _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl<A, O> FilesystemContentPublisher<A, O> {
@@ -33,11 +35,7 @@ impl<A, O> FilesystemContentPublisher<A, O> {
         verifier: &AuthorityVerifier, scope: &Scope, maximum_bytes: u64,
         io: Option<&super::PreparationIo>,
     ) -> Result<Self> {
-        if maximum_bytes == 0 || maximum_bytes == u64::MAX {
-            return Err(Error::Invalid(
-                "content publication limit must be positive and finite".into(),
-            ));
-        }
+        Self::validate_limit(maximum_bytes, io)?;
         let grant = if let Some(io) = io {
             let mut observer = io.history_io();
             ContentGrant::verify_with_work(verifier, scope, &volume, VolumeOperation::Write,
@@ -48,12 +46,52 @@ impl<A, O> FilesystemContentPublisher<A, O> {
             volume,
             grant,
             maximum_bytes,
+            #[cfg(not(target_arch = "wasm32"))]
+            _native_metadata: None,
         })
     }
 
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         self.volume.logical_owned_bytes()?.checked_add(self.grant.logical_owned_bytes()?)
             .ok_or_else(|| Error::Invalid("content publisher ownership overflow".into()))
+    }
+
+    fn validate_limit(maximum_bytes: u64, io: Option<&PreparationIo>) -> Result<()> {
+        if maximum_bytes == 0 || maximum_bytes == u64::MAX {
+            return Err(super::fork_preparer_io::invalid(io,
+                "content publication limit must be positive and finite"));
+        }
+        Ok(())
+    }
+
+    /// Copies only newly owned configuration after the original write proof.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new_with_native_work(
+        host: Arc<FilesystemHost<A, O>>, volume: &VolumeRef,
+        verifier: &AuthorityVerifier, scope: &Scope, maximum_bytes: u64,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        let io = PreparationIo::from_native_work(work)?;
+        Self::validate_limit(maximum_bytes, Some(&io))?;
+        let grant = ContentGrant::verify_with_io(
+            verifier, scope, volume, VolumeOperation::Write, &io,
+        )?;
+        let volume = volume.clone_with_io(&io)?;
+        io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+        let retained = io.owned_bytes()?;
+        let _native_metadata = Some(io.into_native_custody(retained)?);
+        Ok(Self { host, volume, grant, maximum_bytes, _native_metadata })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn into_native_shared(self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Arc<Self>> {
+        if !self._native_metadata.as_ref().is_some_and(|custody| work.shares_ledger(custody.work())) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "native publisher sharing requires original metadata custody" });
+        }
+        let io = PreparationIo::from_native_work(work)?;
+        io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
+        Ok(Arc::new(self))
     }
 }
 
@@ -110,8 +148,8 @@ where
     fn supports_native_stage(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         let io = PreparationIo::from_native_work(work)?;
         super::fork_preparer_io::item(Some(&io), 0)?;
-        self.volume.validate()?;
-        self.grant.require(&self.volume, VolumeOperation::Write)
+        self.volume.validate_with_native_work(work)?;
+        self.grant.require_with_io(&self.volume, VolumeOperation::Write, Some(&io))
     }
 
     #[cfg(not(target_arch = "wasm32"))]

@@ -316,6 +316,21 @@ pub struct FilesystemExecutionJournal<P, A, O> {
 }
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
+    /// Compares existing private bindings; it grants no lease or authority and
+    /// performs no I/O, allocation, copying, or scope construction.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn original_task_execution_binding_matches(
+        &self, task: crate::TaskId, fence: &crate::scheduler::LeaseFence,
+        turn: OperationId, operation: OperationId,
+        host: &crate::durable_host::CoordinatorTaskHost<P>,
+    ) -> bool {
+        self.execution.as_ref().is_some_and(|identity|
+            identity.operation == operation && identity.turn == turn)
+            && self.owner.as_ref().is_some_and(|(owner, bound)|
+                *bound == operation && owner.matches_task_binding(task, fence)
+                    && owner.original_host_binding_matches(host))
+    }
+
     /// Binds one execution to the task's exact lease and coordinator provider.
     /// The original turn identifies committed context independently of this
     /// task's execution namespace.

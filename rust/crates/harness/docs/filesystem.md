@@ -209,9 +209,9 @@ journal's owned fields. Stream and schema sharing is Arc-only; opaque Arc weak
 backing and allocator-node/RSS footprint are not claimed. Native fresh workflow
 admission uses the same staged admission identity, append and retry engine as
 ordinary admission, with the original cancellation and owner tail fences.
-Native scheduler-payload and content-reader constructors likewise authenticate
-borrowed configuration before funding its actual metadata copies. Their
-intrinsic guard outlives owned fields; `into_native_shared` admits the actual
+Native scheduler-payload, content-reader, and content-publisher constructors
+likewise authenticate borrowed configuration before funding metadata copies.
+Their intrinsic guard outlives owned fields; `into_native_shared` admits the actual
 SDK Arc allocation attempt without claiming opaque Arc backing bytes or
 creating another ledger.
 
@@ -225,6 +225,13 @@ are reported as logical live/peak ownership, not allocator calls, heap/RSS, or
 opaque allocator-node footprint. Direct Value production counts its declared
 root object slot separately from deep tree storage; wire-size checks build no
 tree or byte buffer and do not claim encoded-byte output.
+Audited preparation profiles can reserve the canonical Snapshot reconstruction,
+cache and canonicalization temporaries before its original visitor; that
+profile replaces generic Value allowance rather than charging Raw storage twice.
+Known producer metadata, mutation paths and byte copies use the same original
+ledger's actual String/Vec allocation attempts and copied-byte counters. Shared
+Context and FileRef field-copy engines preserve Value semantics without a
+serialize/parse clone.
 
 Native manifest loading uses the same canonical pinned-byte decoder and member
 limit as measured loading. The bounded seed checks the limit before another

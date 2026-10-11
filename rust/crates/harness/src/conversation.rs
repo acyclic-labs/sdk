@@ -554,6 +554,15 @@ impl VolumeRef {
             blake3::Hash::from_bytes(crate::contract::canonical_json_digest(self)?).to_hex()
         ))
     }
+
+    /// Produces the same physical namespace on the original native ledger.
+    /// The returned name grants no resource access.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn storage_name_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(String, acyclic_fs::NativeAllocation)> {
+        crate::filesystem::native_volume_storage_name(self, work)
+    }
 }
 
 /// Operations that can be granted independently on a volume.
@@ -1055,6 +1064,28 @@ impl FileDescriptor {
         Self::new(Sha256::digest(bytes).into(), bytes.len() as u64, media_type)
     }
 
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn from_bytes_with_io(
+        bytes: &[u8], media_type: &str, io: Option<&crate::filesystem::PreparationIo>,
+    ) -> Result<Self> {
+        let Some(io) = io else { return Self::from_bytes(bytes, media_type); };
+        let inspection = acyclic_fs::WorkCounters {
+            items_examined: media_type.len() as u64 + 1, ..Default::default()
+        };
+        io.preflight(inspection)?;
+        let reason = Self::validation_fields(bytes.len() as u64, media_type);
+        io.charge(inspection)?;
+        if let Some(reason) = reason { return Err(io.invalid(reason)); }
+        let hashing = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
+        io.preflight(hashing)?;
+        let sha256 = Sha256::digest(bytes).into();
+        io.charge(hashing)?;
+        let mut observer = io.history_io();
+        let work: &mut dyn crate::store::history::HistoryIo = &mut observer;
+        let media_type = work.clone_text(media_type)?;
+        Ok(Self { sha256, byte_length: bytes.len() as u64, media_type })
+    }
+
     /// Verifies both digest and exact length, including empty files.
     pub fn verify(&self, bytes: &[u8]) -> Result<()> {
         self.verify_inner(bytes, &mut || Ok(()), false)
@@ -1144,15 +1175,19 @@ impl FileDescriptor {
     }
 
     fn validation_reason(&self) -> Option<&'static str> {
-        if self.byte_length > MAX_EXACT_JS_INTEGER {
+        Self::validation_fields(self.byte_length, &self.media_type)
+    }
+
+    fn validation_fields(byte_length: u64, media_type: &str) -> Option<&'static str> {
+        if byte_length > MAX_EXACT_JS_INTEGER {
             return Some("file byte length exceeds cross-language precision");
         }
-        let Some((kind, subtype)) = self.media_type.split_once('/') else {
+        let Some((kind, subtype)) = media_type.split_once('/') else {
             return Some("media type is invalid");
         };
         if kind.is_empty()
             || subtype.is_empty()
-            || self.media_type.chars().any(|character| {
+            || media_type.chars().any(|character| {
                 !character.is_ascii_alphanumeric()
                     && !matches!(character, '/' | '-' | '+' | '.' | '_')
             })
@@ -1294,6 +1329,45 @@ impl FileRef {
             .map_err(|error| Error::Invalid(error.to_string()))?;
         file.validate_with_work(work)?;
         Ok(file)
+    }
+
+    /// Creates the same reference from borrowed metadata, using the canonical
+    /// guarded field-copy engine when a finite observer is present.
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn new_with_io(
+        volume: &VolumeRef, path: &str, version: &str, descriptor: &FileDescriptor,
+        display_name: &str, io: Option<&crate::filesystem::PreparationIo>,
+    ) -> Result<Self> {
+        let Some(io) = io else {
+            return Self::new(volume.clone(), path, version, descriptor.clone(), display_name);
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.original_native_work() {
+            volume.validate_with_native_work(work)?;
+            validate_content_path_with_native_work(path, work)?;
+            for label in [version, display_name] {
+                inspect_native_metadata(work, label.len())?;
+                validate_label_native(label, MAX_LABEL_BYTES)?;
+            }
+            descriptor.validate_with_native_work(work)?;
+        } else {
+            volume.validate()?;
+            validate_content_path(path)?;
+            validate_label(version, MAX_LABEL_BYTES)?;
+            validate_label(display_name, MAX_LABEL_BYTES)?;
+            descriptor.validate()?;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            volume.validate()?;
+            validate_content_path(path)?;
+            validate_label(version, MAX_LABEL_BYTES)?;
+            validate_label(display_name, MAX_LABEL_BYTES)?;
+            descriptor.validate()?;
+        }
+        let mut observer = io.history_io();
+        let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
+        Self::copy_fields_with_work(volume, path, version, descriptor, display_name, &mut work)
     }
 
     /// Validates a ref decoded at any external boundary.
