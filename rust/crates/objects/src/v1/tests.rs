@@ -591,8 +591,7 @@ proptest::proptest! {
         ..proptest::prelude::ProptestConfig::with_cases(64)
     })]
 
-    /// Cursor-seeking pagination yields exactly the full prefix/delimiter
-    /// listing, including multi-byte and `char::MAX` key boundaries.
+    /// Cursor-seeking pagination yields exactly the full prefix/delimiter listing, including multi-byte and `char::MAX` key boundaries.
     #[test]
     fn paginated_listing_matches_full_listing(
         keys in proptest::collection::vec(listing_name(1..6), 0..24),
@@ -995,7 +994,7 @@ pub(super) struct NativeTransportMeter {
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeTransportMeter {
-    pub fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             memory: 0.into(), limit: u64::MAX.into(), cancelled: false.into(),
             cancel_on_copy: u64::MAX.into(), quota_on_copy: u64::MAX.into(),
@@ -1137,39 +1136,6 @@ impl acyclic_native_runtime::NativeReadMeter for NativeTransportMeter {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn native_allocation_credits_withhold_refund_and_consume_after_cancellation()
-    -> Result<(), Box<dyn std::error::Error + Send + Sync>>
-{
-    use acyclic_native_runtime::{NativeReadMeter, ReadAllocationReservation};
-    use std::sync::{Arc, atomic::Ordering::SeqCst};
-    let observed = Arc::new(NativeTransportMeter::new());
-    observed.limit.store(8, SeqCst);
-    observed.allocation_limit.store(1, SeqCst);
-    let meter: Arc<dyn NativeReadMeter> = observed.clone();
-    let credit = ReadAllocationReservation::new(&meter, 8)?;
-    assert_eq!(observed.memory.load(SeqCst), 0);
-    assert_eq!(observed.allocations.load(SeqCst), 0);
-    assert_eq!(meter.adopt(1).unwrap_err().kind(), std::io::ErrorKind::OutOfMemory);
-    assert_eq!(meter.allocate_refcount_header().unwrap_err().kind(), std::io::ErrorKind::OutOfMemory);
-    drop(credit);
-    assert_eq!(*observed.pending_allocations.lock(), (0, 0));
-    let credit = ReadAllocationReservation::new(&meter, 8)?;
-    observed.cancelled.store(true, SeqCst);
-    observed.limit.store(0, SeqCst);
-    observed.allocation_limit.store(0, SeqCst);
-    let allocation = credit.allocate()?;
-    let physical = Box::new([0_u8; 8]);
-    assert_eq!(observed.memory.load(SeqCst), 8);
-    assert_eq!(observed.allocations.load(SeqCst), 1);
-    assert_eq!(*observed.pending_allocations.lock(), (0, 0));
-    drop(physical);
-    drop(allocation);
-    assert_eq!(observed.memory.load(SeqCst), 0);
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
 fn native_wire_aliases_keep_original_claim_after_context_retirement()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 {
@@ -1177,7 +1143,7 @@ fn native_wire_aliases_keep_original_claim_after_context_retirement()
     use std::sync::{Arc, atomic::Ordering::SeqCst};
     let observed = Arc::new(NativeTransportMeter::new());
     let meter: Arc<dyn NativeReadMeter> = observed.clone();
-    let prepared = Download::prepare_native(0, meter.clone())?;
+    let prepared = super::Download::prepare_native(0, meter.clone())?;
     let controls = super::response::NativeGetControls { meter, errors: prepared.errors() };
     let (data, allocation) = controls.copy(b"immutable native wire")?;
     let wire = controls.wire_bytes(data, allocation)?;

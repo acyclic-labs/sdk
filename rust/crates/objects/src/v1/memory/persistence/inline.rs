@@ -41,19 +41,12 @@ impl Journal {
             _ => self.external_with(body, publication),
         }
     }
-    /// Moves every body the journal carries into segments, so a checkpoint can
-    /// drop the frames that carried them. Bodies are packed into as few
-    /// segments as the segment bounds allow, each synchronized as it is
-    /// written, and their directory entries are made durable once, before the
-    /// relocated state is returned for the checkpoint to record: a compaction
-    /// costs a few synchronizations, not two for every small body.
+    /// Moves every body the journal carries into segments, so a checkpoint can drop the frames that carried them.
     pub(super) fn materialize_inline(&self, state: &mut State) -> Result<(), LocalOpenError> {
         self.materialize_inline_with(state, None).map_err(open_error)
     }
 
-    /// Native materialization retains authenticated owned read buffers and
-    /// relocation storage on the current original meter through their actual
-    /// owners; ordinary maintenance takes this identical packing engine.
+    /// Native materialization retains authenticated owned read buffers and relocation storage on the current original meter through their actual owners; ordinary maintenance takes this identical packing engine.
     pub(super) fn materialize_inline_with(
         &self,
         state: &mut State,
@@ -188,9 +181,7 @@ impl Journal {
     }
 }
 
-/// One segment's worth of journal bodies being materialized. A segment holds
-/// each distinct body once: the journal may carry equal bodies, such as empty
-/// ones, at several offsets, and they all move to the same record.
+/// One segment's worth of journal bodies being materialized.
 #[derive(Default)]
 struct Materialized {
     bodies: Vec<([u8; 32], OwnedBytes)>,

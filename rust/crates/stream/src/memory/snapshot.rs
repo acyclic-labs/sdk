@@ -1,11 +1,4 @@
-//! The whole state machine as one self-contained encoding, from which a durable provider
-//! restarts instead of replaying every command it ever ran.
-//!
-//! Native compaction observes the same encoder. Its pointer memo is a sorted
-//! vector beside the original node queue; actual insertion shifts and standard
-//! vector capacities are funded, without guessing opaque map/header capacity.
-//! Scratch guards retire only after their buffers, and the resulting raw
-//! encoding retains its original-meter guard until the consumer drops it.
+//! Canonical snapshots of the stream state machine.
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
@@ -30,32 +23,22 @@ const RETAINS_REPLAY: u8 = 1;
 const RETAINS_COMMIT: u8 = 2;
 
 impl MemoryStream {
-    /// Encodes the whole state.
-    pub(crate) async fn encode_state(&self) -> Vec<u8> {
-        let state = self.state.read().await;
-        encode(&state)
-    }
 
-    /// Uses the same canonical snapshot codec, with the original invocation
-    /// admitted before every owned buffer, copy, and retained wire graph.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn encode_state_observed(
+
+    /// Encodes the state with optional native admission.
+    pub(crate) async fn encode_state(
         &self,
         meter: WireMeter<'_>,
     ) -> std::io::Result<ObservedWire<Vec<u8>>> {
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(meter) = meter { meter.check()?; }
         let state = self.state.read().await;
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(meter) = meter { meter.check()?; }
         encode_observed(&state, meter)
     }
 
     /// Replaces the whole state with one [`Self::encode_state`] encoded.
-    ///
-    /// # Errors
-    ///
-    /// Fails with [`StreamError::InvalidArgument`], changing nothing, when
-    /// `encoded` is not such an encoding. Fails with [`StreamError::Capacity`],
-    /// also changing nothing, when the decoded state exceeds this provider's limits.
     pub(crate) async fn install_state(&self, encoded: &[u8]) -> Result<(), StreamError> {
         let decoded = decode(encoded).ok_or(StreamError::InvalidArgument)?;
         if decoded.paths.len() > self.limits.paths
@@ -409,8 +392,7 @@ fn validate_inventory(state: &State) -> Option<()> {
         .then_some(())
 }
 
-/// The node an encoded reference names: 0 for none, otherwise one after
-/// its index.
+/// The node an encoded reference names: 0 for none, otherwise one after its index.
 fn reference(nodes: &[Arc<History>], index: usize) -> Option<Option<Arc<History>>> {
     match index {
         0 => Some(None),
@@ -722,7 +704,7 @@ mod tests {
         };
         let first = stream.append(request.clone()).await?;
         let restored = MemoryStream::new(limits);
-        restored.install_state(&stream.encode_state().await).await?;
+        restored.install_state(&stream.encode_state(None).await.expect("unmetered snapshot encoding").value).await?;
         assert_eq!(restored.append(request.clone()).await?, first);
         assert_eq!(restored.tail(request.path.clone()).await?, 1);
         let mut changed = request.clone();
@@ -770,7 +752,7 @@ mod tests {
         };
         let commit_result = stream.commit(committed.clone()).await?;
         let restored = MemoryStream::default();
-        restored.install_state(&stream.encode_state().await).await?;
+        restored.install_state(&stream.encode_state(None).await.expect("unmetered snapshot encoding").value).await?;
         assert_eq!(restored.append(appended).await?, append_result);
         assert_eq!(restored.fork(forked).await?, fork_result);
         assert_eq!(restored.commit(committed).await?, commit_result);
@@ -872,7 +854,7 @@ mod tests {
         };
         let outcome = stream.commit(request.clone()).await?;
         let restored = MemoryStream::default();
-        restored.install_state(&stream.encode_state().await).await?;
+        restored.install_state(&stream.encode_state(None).await.expect("unmetered snapshot encoding").value).await?;
         assert_eq!(restored.commit(request).await?, outcome);
         assert_eq!(restored.tail(empty).await?, 0);
         assert_eq!(restored.tail(no_history).await?, 0);
@@ -918,13 +900,13 @@ mod tests {
                 idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from_static(b"kept"))?),
             })
             .await?;
-        let valid = stream.encode_state().await;
+        let valid = stream.encode_state(None).await.expect("unmetered snapshot encoding").value;
         for length in 0..valid.len() {
             assert_eq!(
                 stream.install_state(&valid[..length]).await,
                 Err(StreamError::InvalidArgument)
             );
-            assert_eq!(stream.encode_state().await, valid);
+            assert_eq!(stream.encode_state(None).await.expect("unmetered snapshot encoding").value, valid);
         }
         let mut impossible_decision = valid.clone();
         impossible_decision[MAGIC.len()..MAGIC.len() + 8].copy_from_slice(&u64::MAX.to_le_bytes());
@@ -954,7 +936,7 @@ mod tests {
                 stream.install_state(&obsolete).await,
                 Err(StreamError::InvalidArgument)
             );
-            assert_eq!(stream.encode_state().await, valid);
+            assert_eq!(stream.encode_state(None).await.expect("unmetered snapshot encoding").value, valid);
         }
         for limits in [
             MemoryLimits {
@@ -983,14 +965,14 @@ mod tests {
             },
         ] {
             let constrained = MemoryStream::new(limits);
-            let empty = constrained.encode_state().await;
+            let empty = constrained.encode_state(None).await.expect("unmetered snapshot encoding").value;
             assert_eq!(
                 constrained.install_state(&valid).await,
                 Err(StreamError::Capacity)
             );
-            assert_eq!(constrained.encode_state().await, empty);
+            assert_eq!(constrained.encode_state(None).await.expect("unmetered snapshot encoding").value, empty);
         }
-        assert_eq!(stream.encode_state().await, valid);
+        assert_eq!(stream.encode_state(None).await.expect("unmetered snapshot encoding").value, valid);
         Ok(())
     }
 
@@ -1169,7 +1151,7 @@ mod tests {
                 idempotency_key: None,
             })
             .await?;
-        assert!(decode(&stream.encode_state().await).is_some());
+        assert!(decode(&stream.encode_state(None).await.expect("unmetered snapshot encoding").value).is_some());
         let mut state = stream.state.write().await;
         let envelope = state
             .commits
@@ -1204,7 +1186,7 @@ mod tests {
             })
             .await?;
         stream.append(append(b"future")).await?;
-        assert!(decode(&stream.encode_state().await).is_some());
+        assert!(decode(&stream.encode_state(None).await.expect("unmetered snapshot encoding").value).is_some());
         let mut state = stream.state.write().await;
         let future = state
             .paths
@@ -1256,7 +1238,7 @@ mod tests {
                 idempotency_key: None,
             })
             .await?;
-        let timed = stream.encode_state().await;
+        let timed = stream.encode_state(None).await.expect("unmetered snapshot encoding").value;
         clock.0.store(90, Ordering::SeqCst);
         let restored = MemoryStream::new_with_clock(MemoryLimits::default(), clock);
         restored.install_state(&timed).await?;

@@ -320,8 +320,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     Ok(())
 }
 
-/// A stale tail condition changes nothing, and a fork mutation extends
-/// its new path with records in the same commit.
+/// A stale tail condition changes nothing, and a fork mutation extends its new path with records in the same commit.
 async fn verify_commit_forks(
     provider: &dyn StreamProvider,
     source: StreamPath,
@@ -370,8 +369,7 @@ async fn verify_stale_tail_condition(
     Ok(())
 }
 
-/// A fork mutation appends its records after the inherited prefix, in the
-/// same commit, and its committed fact carries them.
+/// A fork mutation appends its records after the inherited prefix, in the same commit, and its committed fact carries them.
 async fn verify_fork_with_records(
     provider: &dyn StreamProvider,
     source: StreamPath,

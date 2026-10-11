@@ -1,10 +1,4 @@
 //! Canonical mutation facts prepared against one authority's pre-commit observations.
-//!
-//! These helpers do not authorize, publish, retain retry identities or reserve the
-//! provider's resident record quotas. Providers must hold one atomic authority's
-//! stable pre-commit observations for every tail lookup, including count passes.
-//! Ordinary and optional native-observer calls share these fact builders; the
-//! observer funds actual output vector capacities before allocation.
 use std::collections::BTreeMap;
 
 use crate::OwnedBytes;
@@ -16,12 +10,10 @@ use crate::{
 };
 use crate::memory::{MemoryObserver, MemoryOutput, MemoryResult, provider_result};
 
-/// Pre-commit existence and exclusive tails. Every condition, source and destination must
-/// have an entry; `None` explicitly means absent. Missing observations are invalid.
+/// Pre-commit existence and exclusive tails.
 pub type ObservedTails = BTreeMap<StreamPath, Option<u64>>;
 
-/// Prepares an append against the observed tail (absence is tail zero). A conflict
-/// has no envelope. Retry lookup, authorization and capacity admission precede publication.
+/// Prepares an append against the observed tail (absence is tail zero).
 pub fn append(
     request: &AppendRequest,
     observed_tail: Option<u64>,
@@ -55,8 +47,7 @@ pub fn append(
     ))
 }
 
-/// Prepares an immutable-prefix fork against pre-commit source and destination
-/// existence. An omitted cut resolves to the observed source tail after retry lookup.
+/// Prepares an immutable-prefix fork against pre-commit source and destination existence.
 pub fn fork(
     request: &ForkRequest,
     source_tail: Option<u64>,
@@ -135,8 +126,7 @@ where
     })
 }
 
-/// The closed completion ingress has one already allocated record slot. Its
-/// immutable arguments are normalized before the source action, not at finish.
+/// The closed completion ingress has one already allocated record slot.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn single_append_template(request: &CommitRequest) -> Result<(&StreamPath, u64), StreamError> {
     let [CommitCondition::Tail { path: first, expected: first_tail },
@@ -154,8 +144,7 @@ pub(crate) fn single_append_template(request: &CommitRequest) -> Result<(&Stream
     Ok((path, start))
 }
 
-/// Rebinds only scalar metadata and an immutable body alias in the real fact
-/// vector allocated by `mutations_with_observer`. No Vec or Arc is created here.
+/// Rebinds only scalar metadata and an immutable body alias in the real fact vector allocated by `mutations_with_observer`.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn fill_single_append(
     envelope: &mut CommittedEnvelope,
@@ -176,9 +165,7 @@ pub(crate) fn fill_single_append(
     Ok(())
 }
 
-/// Normalizes and validates a commit, checks exact conditions and source authority, and
-/// constructs its immutable envelope using the accepted ID and timestamp.
-/// Forks observe the source before this commit, even when the same commit appends to it.
+/// Normalizes and validates a commit, checks exact conditions and source authority, and constructs its immutable envelope using the accepted ID and timestamp.
 pub fn commit(
     request: &mut CommitRequest,
     observed: &ObservedTails,
@@ -307,9 +294,7 @@ pub(crate) fn mutations(
     )).map(|output| output.value)
 }
 
-/// One physical mutation-fact builder; an observer never changes its authority
-/// algebra or creates a second work root. Stock providers retain the returned
-/// capacity claim with their actual output or resident owner.
+/// One physical mutation-fact builder; an observer never changes its authority algebra or creates a second work root.
 pub(crate) fn mutations_with_observer(
     mutations: &[CommitMutation],
     tail: impl Fn(&StreamPath) -> Option<u64>,

@@ -16,7 +16,6 @@ pub(super) const RECORD_LIMIT: usize = 2 * 1024 * 1024;
 const MINIMUM_MAINTENANCE_INLINE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Current invocation authority and custody for temporary publication controls.
-/// Declare before the controls: their physical storage must retire first.
 pub(crate) struct Publication {
     pub(crate) meter: Option<Arc<dyn NativeReadMeter>>,
     retained: Option<ReadAllocation>,
@@ -29,9 +28,6 @@ impl Publication {
     pub(crate) fn check(&self) -> Result<(), NativeObjectsError> {
         if let Some(meter) = &self.meter { meter.check()?; }
         Ok(())
-    }
-    pub(crate) fn io<T>(result: std::io::Result<T>) -> Result<T, NativeObjectsError> {
-        result.map_err(NativeObjectsError::Admission)
     }
     pub(crate) fn allocate(&mut self, bytes: usize) -> Result<(), NativeObjectsError> {
         if let Some(meter) = &self.meter {
@@ -363,10 +359,7 @@ pub(super) fn response_kind<R>() -> Result<u32, Error> {
     }
 }
 
-/// An upper bound on the bytes one put adds to a durable record: its inline
-/// body, plus its object change and retry receipt. Each of those holds at most
-/// the request's bucket, key, metadata and identity, a 66-byte `ETag` and
-/// fixed-width fields; a larger body adds only a segment reference.
+/// An upper bound on the bytes one put adds to a durable record: its inline body, plus its object change and retry receipt.
 pub(super) fn put_record_bytes(query: &wire::PutObjectHeader, body: &OwnedBytes) -> usize {
     let inline = if body.len() <= inline::LIMIT {
         body.len()
@@ -983,9 +976,7 @@ fn bucket_changes(before: &State, next: &State, delta: &mut Delta, publication: 
 }
 
 #[cfg(test)]
-/// The journal record taking `before` to `next`. Object maps are compared with
-/// `OrdMap::diff`, which skips every subtree the two states share, so the cost
-/// follows the change, not the number of stored objects.
+/// The journal record taking `before` to `next`.
 fn difference(before: &State, next: &State, ordinal: u64) -> Result<Delta, Error> {
     difference_with(before, next, ordinal, &mut Publication::new(None)).map_err(service_error)
 }

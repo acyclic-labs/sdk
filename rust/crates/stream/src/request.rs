@@ -1,11 +1,7 @@
 //! Provider-facing canonical validation and retry digests.
-//!
-//! These checks are independent of provider state. Providers must still check authorization,
-//! conditions, source existence, capacity and caller deadlines at their own atomic authority.
 use crate::{AppendRequest, CommitRequest, ForkRequest, StreamError, memory};
 
 /// Validates an append and returns the canonical retry digest.
-/// The retry identity itself is excluded from the digest.
 pub fn append_digest(request: &AppendRequest) -> Result<[u8; 32], StreamError> {
     memory::validate_records(&request.records)?;
     memory::validate_append_size(request)?;
@@ -13,7 +9,6 @@ pub fn append_digest(request: &AppendRequest) -> Result<[u8; 32], StreamError> {
 }
 
 /// Validates a fork and returns its canonical retry digest.
-/// Resolve an omitted cut only after replay lookup, at the provider's atomic authority.
 pub fn fork_digest(request: &ForkRequest) -> Result<[u8; 32], StreamError> {
     if request.source == request.destination {
         return Err(StreamError::InvalidArgument);
@@ -23,8 +18,6 @@ pub fn fork_digest(request: &ForkRequest) -> Result<[u8; 32], StreamError> {
 }
 
 /// Normalizes and validates a coordinated commit, then returns its canonical retry digest.
-/// Sorts participants and mutations in place and rejects duplicate paths or missing conditions.
-/// A caller deadline is not part of operation identity and must be checked separately.
 pub fn commit_digest(request: &mut CommitRequest) -> Result<[u8; 32], StreamError> {
     memory::normalize_commit(request)?;
     memory::validate_commit_shape(request)?;
@@ -32,10 +25,6 @@ pub fn commit_digest(request: &mut CommitRequest) -> Result<[u8; 32], StreamErro
 }
 
 /// Computes the canonical digest of a pre-normalized, caller-validated request.
-///
-/// This borrowed projection performs no validation, normalization, authorization,
-/// or proof authentication. Callers must establish those prerequisites before
-/// using the digest; it is not independently an authority or capability receipt.
 #[must_use]
 pub fn normalized_commit_digest(request: &CommitRequest) -> [u8; 32] {
     memory::commit_digest(request)

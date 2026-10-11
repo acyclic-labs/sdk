@@ -1,5 +1,4 @@
 //! Bounded logical Objects provider; native publication meters the same atomic engine.
-//! Native Memory owns each actual table event; Local physical events belong to its runtime.
 use std::collections::BTreeMap;
 use std::ops::Bound;
 use std::sync::{Arc, Mutex};
@@ -187,9 +186,7 @@ impl Clone for State {
     }
 }
 
-/// Updates `next`'s object byte total from `before`'s by walking only the
-/// object subtrees the two states do not share, so quota admission costs the
-/// change, not the store size. Returns that total plus in-progress upload parts.
+/// Updates `next`'s object byte total from `before`'s by walking only the object subtrees the two states do not share, so quota admission costs the change, not the store size.
 fn stored_bytes(before: &State, next: &mut State) -> Option<usize> {
     let sum = |bucket: &Bucket| {
         bucket.objects.values().try_fold(0_usize, |total, object| {
@@ -242,10 +239,6 @@ impl MemoryObjects {
         Ok(state)
     }
     /// Creates the infrastructure-free SDK composition with an existing `default` bucket.
-    ///
-    /// The bootstrap bucket has an epoch creation time. Cursor authentication entropy is
-    /// obtained on first pagination; failure returns `Unavailable`, never an unsigned token.
-    /// No cardinality limit is added to the composition's existing 64 MiB byte limit.
     #[must_use]
     pub fn with_default_bucket() -> (Self, wire::BucketRef) {
         let bucket = wire::BucketRef {
@@ -280,9 +273,6 @@ impl MemoryObjects {
     }
 
     /// Synchronously admits one bucket for a native SDK composition.
-    ///
-    /// # Errors
-    /// Rejects invalid names, unavailable entropy/time or insufficient entry capacity.
     pub fn with_bucket(
         name: impl Into<String>,
         options: MemoryOptions,
@@ -325,9 +315,7 @@ impl MemoryObjects {
         })
     }
 
-    // A failed mutation rolls back both publication and its receipt. Persistent ordered
-    // maps share unchanged entries, so admission does not copy the entire object store
-    // and retained retry inventory. Only the committed state owns current representations.
+    // Failed mutations roll back publication and receipt together.
     fn mutate<R: Message + Default + 'static>(
         &self,
         digest: [u8; 32],
@@ -436,40 +424,24 @@ impl MemoryObjects {
     ) -> Vec<Result<wire::ObjectInfo, Error>> {
         let mut staged = self.clone();
         staged.defer_local = true;
-        let mut input = requests.into_iter().peekable();
+        let mut input = requests.into_iter();
         let mut results = Vec::with_capacity(input.len());
-        while input.peek().is_some() {
-            // Group puts while their bounded record bytes fit one private
-            // record, so a typical small publish costs one synchronization.
+        while let Some(count) = put_group_sizes(input.as_slice()).next() {
             let mut next = state.clone();
-            let mut bytes = 0_usize;
-            let mut batch = Vec::new();
-            while let Some((query, body)) = input.next_if(|(query, body)| {
-                let total = bytes.saturating_add(persistence::put_record_bytes(query, body));
-                let fits = bytes == 0 || total <= persistence::RECORD_LIMIT;
-                if fits {
-                    bytes = total;
-                }
-                fits
-            }) {
-                batch.push(staged.put_locked(&mut next, &query, body));
+            let start = results.len();
+            for (query, body) in input.by_ref().take(count) {
+                results.push(staged.put_locked(&mut next, &query, body));
             }
-            if next.sequence == state.sequence {
-                results.extend(batch);
-                continue;
-            }
-            let committed = self
-                .journal
-                .as_ref()
-                .ok_or(Error::from(Unavailable))
-                .and_then(|journal| journal.commit(state, &mut next));
-            match committed {
-                Ok(()) => {
-                    *state = next;
-                    results.extend(batch);
-                }
-                Err(error) => {
-                    results.extend(batch.into_iter().map(|result| result.and(Err(error))));
+            if next.sequence != state.sequence {
+                match self.journal.as_ref().ok_or(Error::from(Unavailable))
+                    .and_then(|journal| journal.commit(state, &mut next))
+                {
+                    Ok(()) => *state = next,
+                    Err(error) => {
+                        for result in &mut results[start..] {
+                            if result.is_ok() { *result = Err(error); }
+                        }
+                    }
                 }
             }
         }
@@ -1315,7 +1287,7 @@ struct NativePutGroup {
     failure: Arc<super::NativeObjectsSharedFailure>,
 }
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(feature = "local")]
 fn put_group_sizes(
     requests: &[(wire::PutObjectHeader, OwnedBytes)],
 ) -> impl Iterator<Item = usize> + '_ {
@@ -1539,10 +1511,7 @@ impl ObjectsProvider for MemoryObjects {
                 let cursor = self.decode_cursor(&query)?;
                 let state = self.lock_state()?;
                 let bucket = state.buckets.get(name).ok_or(Error::from(NotFound))?;
-                // Logical entries (keys and common prefixes) never sort below the keys
-                // that produce them, so the scan starts strictly after the cursor and
-                // stops at `limit + 1` entries, skipping each common-prefix group by
-                // seeking to its successor.
+                // Scan strictly after the cursor until one page is full.
                 let mut lower = match &cursor {
                     Some(cursor) if *cursor >= query.prefix => Bound::Excluded(cursor.clone()),
                     _ => Bound::Included(query.prefix.clone()),

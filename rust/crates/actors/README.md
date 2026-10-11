@@ -19,12 +19,7 @@ conversion. The package descriptor is generated from the maintained Rust
 contract declarations and is used to generate TypeScript bindings.
 
 `grpc::connect(endpoint, token)` exposes every generated Actors service RPC.
-Native gRPC trusts the operating system's roots through `rustls-platform-verifier`
-(Windows certificate-chain APIs, macOS Security.framework, Linux native roots).
-On Linux, `SSL_CERT_FILE` and `SSL_CERT_DIR` select those roots.
-`grpc::connect_with_ca_certificate` trusts **only** the supplied PEM CA, not
-ambient roots. This also applies to the native `client::Client` and N-API routes.
-HTTP and browser trust behavior is unchanged.
+Use `grpc::connect_with_ca_certificate` for a caller-supplied private CA.
 `http::Client::new(endpoint, token, maximum_response_bytes)` exposes the same
 nine operations using canonical Protobuf JSON. Invocation carries request and
 response headers. HTTP mutations are not automatically retried.

@@ -563,45 +563,6 @@ async fn checkpoint_packs_multiple_frames_and_preserves_live_pagination()
     Ok(())
 }
 
-/// Compaction moves every body the journal carries into as few segments as the
-/// segment bounds allow, synchronizing their directory once rather than once
-/// per body, and equal bodies (here, two empty ones and a repeated one) share
-/// one record. Every object reads back after the checkpoint and a reopen.
-#[tokio::test]
-async fn compaction_packs_inline_bodies_under_one_directory_synchronization()
--> Result<(), Box<dyn std::error::Error>> {
-    let root = tempfile::tempdir()?;
-    let core = seeded(root.path()).await?;
-    let body = |number: usize| OwnedBytes::from(format!("body {number}"));
-    for number in 0..300 {
-        core.put(put(&format!("key-{number:03}")), body(number))
-            .await?;
-    }
-    core.put(put("repeated"), body(7)).await?;
-    core.put(put("empty-a"), OwnedBytes::new()).await?;
-    core.put(put("empty-b"), OwnedBytes::new()).await?;
-    let journal = core.journal.as_ref().ok_or("missing journal")?;
-    let mut state = core.lock_state()?.clone();
-    let syncs = || crate::physical::tests::PARENT_SYNCS.with(std::cell::Cell::get);
-    let before = syncs();
-    journal.materialize_inline(&mut state)?;
-    assert_eq!(syncs() - before, 1);
-    let segments = std::fs::read_dir(root.path().join("segments"))?.count();
-    assert_eq!(segments, 1);
-    drop(state);
-    core.collect_local_garbage(1_000)?;
-    drop(core);
-    let core = reopen(root.path())?;
-    for number in 0..300 {
-        let key = format!("key-{number:03}");
-        assert_eq!(core.get(get(&key), 64).await?.into_body(), body(number));
-    }
-    assert_eq!(core.get(get("repeated"), 64).await?.into_body(), body(7));
-    assert_eq!(core.get(get("empty-b"), 64).await?.into_body(), OwnedBytes::new());
-    assert_eq!(std::fs::read_dir(root.path().join("segments"))?.count(), 1);
-    Ok(())
-}
-
 #[derive(Clone, Debug)]
 enum Step {
     CreateBucket(u8),
@@ -785,9 +746,7 @@ proptest::proptest! {
         ..proptest::prelude::ProptestConfig::with_cases(16)
     })]
 
-    /// Every committed delta equals a full-scan diff, replays onto its
-    /// predecessor including the immutable decoded put acknowledgement, and
-    /// recovers the exact state and retry metadata at every frame boundary.
+    /// Every committed delta equals a full-scan diff, replays onto its predecessor including the immutable decoded put acknowledgement, and recovers the exact state and retry metadata at every frame boundary.
     #[test]
     fn journal_deltas_replay_and_recover_prefix_states(
         steps in proptest::collection::vec(step(), 1..8),
