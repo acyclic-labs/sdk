@@ -505,6 +505,26 @@ where
         })
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_private_path_with_native_work<'a>(
+        &'a self, volume: &'a VolumeRef, granted_prefix: &'a str, path: &'a str,
+        expected_generation: Option<&'a GenerationRef>, maximum_bytes: u64,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_stream::OwnedBytes, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            let io = PreparationIo::from_native_work(work)?;
+            let authorization = ContentGrant::verify_directory_read_with_native_work(
+                &self.verifier, &self.scope, volume, granted_prefix, work,
+            )?;
+            let (reference, source) = self.host.read_private_path_with_io(
+                volume, &authorization.0, path, expected_generation,
+                maximum_bytes.min(self.maximum_bytes), Some(&io),
+            ).await?;
+            let retained = reference.logical_owned_bytes()?;
+            let custody = io.into_native_custody(retained)?;
+            Ok((reference, source, custody))
+        })
+    }
     fn verify<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let grant = self.read_grant(reference)?;
@@ -564,13 +584,13 @@ where
     fn read_with_native_work<'a>(
         &'a self, reference: &'a FileRef, maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            let result = self.read_verified_with_io(reference, maximum_bytes, &io).await;
-            let bytes = result?;
-            let custody = io.into_native_custody(bytes.capacity() as u64)?;
-            Ok((bytes, custody))
+            self.require_read_measured(reference, &io)?;
+            self.host.read_pinned_io(
+                reference, maximum_bytes.min(self.maximum_bytes), Some(&io),
+            ).await
         })
     }
 
@@ -4475,8 +4495,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         path: &str,
         expected_generation: Option<&GenerationRef>,
         maximum_bytes: u64,
-    ) -> Result<(FileRef, Bytes)> {
-        self.require_private_directory(volume, grant, path)?;
+    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+        self.read_private_path_with_io(
+            volume, grant, path, expected_generation, maximum_bytes, None,
+        ).await
+    }
+
+    async fn read_private_path_with_io(
+        &self, volume: &VolumeRef, grant: &ContentGrant, path: &str,
+        expected_generation: Option<&GenerationRef>, maximum_bytes: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+        self.require_private_directory_with_io(volume, grant, path, io)?;
         let name = path.rsplit('/').next().unwrap_or(path);
         let provisional = FileRef::new(
             volume.clone(),
@@ -5462,7 +5492,7 @@ mod tests {
         let (discovered, bytes) = host
             .read_private_path(&volume, &delegated, "messages/first.txt", None, 16)
             .await?;
-        assert_eq!(bytes, Bytes::from_static(b"two"));
+        assert_eq!(bytes.as_ref(), b"two");
         assert_ne!(discovered.version(), second.version());
         assert_eq!(discovered.path(), second.path());
         assert_eq!(discovered.descriptor(), second.descriptor());

@@ -2355,7 +2355,7 @@ where
     #[cfg(not(target_arch = "wasm32"))]
     fn load_with_native_work<'a>(
         &'a self, reference: &'a FileRef, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             if reference.volume() != &self.volume {
@@ -2364,9 +2364,7 @@ where
             }
             ContentGrant::verify_original_volume_with_io(
                 &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, &io)?;
-            let bytes = self.host.read_pinned_owned_io(reference, self.maximum_payload_bytes, &io).await?;
-            let custody = io.into_native_custody(bytes.capacity() as u64)?;
-            Ok((bytes, custody))
+            self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(&io)).await
         })
     }
 
@@ -2931,15 +2929,11 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     fn read_with_native_work<'a>(
         &'a self, file: &'a FileRef, maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             self.journal.authorize_selected_file_with_io(file, Some(&io))?;
-            let (bytes, custody) = self.inner.read_with_native_work(file, maximum_bytes, work)?.await?;
-            io.absorb_native_custody(custody)?;
-            let retained = io.owned_bytes()?;
-            let custody = io.into_native_custody(retained)?;
-            Ok((bytes, custody))
+            self.inner.read_with_native_work(file, maximum_bytes, work)?.await
         })
     }
 }

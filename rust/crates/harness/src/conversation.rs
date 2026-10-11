@@ -1655,7 +1655,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     fn read_with_native_work<'a>(
         &'a self, _reference: &'a FileRef, _maximum_bytes: u64,
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> crate::Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+    ) -> crate::Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
         Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
             reason: "original native-ledger content resolution is unavailable" })
     }
@@ -1694,8 +1694,8 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
                 reference, reference.descriptor().byte_length(), work,
             )?.await?;
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-            reference.descriptor().verify_with_io(&input.0, Some(&io))?;
-            let items = decode_manifest_bounded(reference, &input.0, item_count as usize, &io)?;
+            reference.descriptor().verify_with_io(input.as_ref(), Some(&io))?;
+            let items = decode_manifest_bounded(reference, input.as_ref(), item_count as usize, &io)?;
             let retained = io.owned_bytes()?;
             let output = (items, io.into_native_custody(retained)?);
             if output.0.len() != item_count as usize {
@@ -1836,6 +1836,19 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         })
     }
 
+    /// Resolves the same private namespace on the original native ledger.
+    /// Unsupported custom readers reject before creating a future or doing IO.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn read_private_path_with_native_work<'a>(
+        &'a self, _volume: &'a VolumeRef, _granted_prefix: &'a str, _path: &'a str,
+        _expected_generation: Option<&'a GenerationRef>, _maximum_bytes: u64,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> crate::Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_stream::OwnedBytes, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "original native-ledger private path resolution is unavailable",
+        })
+    }
     /// Resolves a complete referenced list and enforces configured limits on every member.
     fn verify_manifest<'a>(
         &'a self,
@@ -2134,7 +2147,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
     fn read_with_native_work<'a>(
         &'a self, reference: &'a FileRef, maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> crate::Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+    ) -> crate::Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let reader = self.finite_bound_reader(reference.volume(), &io)?;
         reader.read_with_native_work(reference, maximum_bytes, work)
@@ -2222,6 +2235,17 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         })
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn read_private_path_with_native_work<'a>(
+        &'a self, volume: &'a VolumeRef, granted_prefix: &'a str, path: &'a str,
+        expected_generation: Option<&'a GenerationRef>, maximum_bytes: u64,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> crate::Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_stream::OwnedBytes, acyclic_fs::NativeAllocation)>> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        self.finite_bound_reader(volume, &io)?.read_private_path_with_native_work(
+            volume, granted_prefix, path, expected_generation, maximum_bytes, work,
+        )
+    }
     fn verify<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move { self.owner(reference).await?.verify(reference).await })
     }

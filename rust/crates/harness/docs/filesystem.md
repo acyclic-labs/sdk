@@ -240,6 +240,21 @@ Path inspection, canonical encoding, hashing and output allocation use the
 original ledger before their work; empty-prefix and internal-path policies match
 `directory_read_capability`. A name alone authenticates no grant and adds no
 write authority. Keep its returned guard through the string's physical drop.
+`ContentResidencyVerifier::read_private_path_with_native_work` routes stock
+Filesystem and composite readers through the same namespace/grant engine as
+ordinary reads. The caller's maximum is capped by the reader's sealed limit.
+An explicit generation still means a historical pinned generation, not a
+comparison against the current head. Metadata reads use remaining finite read
+work; trusted decoding and SHA verification precede publication of the ref.
+Only a proven missing metadata record selects the existing octet-stream default;
+other backend, decoding, quota and cancellation failures propagate. The returned
+`(FileRef, acyclic_stream::OwnedBytes, NativeAllocation)` separates only the
+deep FileRef metadata guard. Native byte custody is inseparable from the canonical
+carrier's full backing through the last clone or slice, including an empty view.
+Native readers, journal loads and reference resolvers borrow that carrier through
+verification/decoding, without extracting raw bytes, rebilling byte capacity,
+creating a meter or treating inline result roots as additional heap allocations.
+Custom readers without this genuine native capability reject before IO.
 Native scheduler-payload, content-reader, and content-publisher constructors
 likewise authenticate borrowed configuration before funding metadata copies.
 Their intrinsic guard outlives owned fields; `into_native_shared` admits the actual

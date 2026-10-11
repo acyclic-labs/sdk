@@ -2031,22 +2031,20 @@ impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
         })
     }
     fn read_content<'a>(&'a mut self, verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
-        reference: &'a FileRef) -> Result<crate::store::history::HistoryContentFuture<'a, Vec<u8>>> {
+        reference: &'a FileRef) -> Result<crate::store::history::HistoryContentFuture<'a, acyclic_stream::OwnedBytes>> {
         let io = self.io;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
             return crate::NativeFutureBundle::new(work, || async move {
-                let (bytes, custody) = verifier.read_with_native_work(reference,
-                    reference.descriptor().byte_length(), work)?.await?;
-                io.absorb_native_custody(custody)?;
-                Ok(bytes)
+                verifier.read_with_native_work(reference,
+                    reference.descriptor().byte_length(), work)?.await
             }).map(crate::store::history::HistoryContentFuture::Native);
         }
         io.history_future(|| async move {
             let bytes = io.receive_content(verifier.read_measured(reference, reference.descriptor().byte_length(),
                 io.remaining()?, &io.cancellation).await)?;
             io.retain_owned(bytes.capacity() as u64)?;
-            Ok(bytes)
+            Ok(acyclic_stream::OwnedBytes::from(bytes))
         })
     }
 }
