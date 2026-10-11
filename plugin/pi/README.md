@@ -264,6 +264,9 @@ admits its separate output buffer on that same ledger before growth; the
 transport retains its custody until the actual response write completes.
 Legacy replies carry no native allocation claim. These are SDK-owned-buffer
 bounds, not a measurement of Pi, Node, transport-library or total OS memory.
+Live selected-source lookup verifies the original owner on the caller's native
+work before copying prepared binding metadata. Its returned live-source object
+retains that metadata custody through fork, selected import and physical cleanup.
 
 The pinned Pi `__pi` entry point uses that native path end to end: bounded
 stdin and caller-scope decoding, original native current-directory/environment
