@@ -379,6 +379,12 @@ Value decoder with prepaid real diagnostic custody. The declared original Scope
 MAC is verified before admission content IO. Returned admission guards split only
 record Self plus its actual deep payload and match both Root and resource context;
 the observer's unrelated IO custody is never returned as record custody.
+`TaskAdmissionRecord::clone_with_native_work` physically copies every original
+field through the same admitted Core/History producers, including all three JSON
+trees, proof refs, extension configurations and execution resources. It neither
+round-trips JSON nor reconstructs signed scopes nested in input. Its exact output
+guard follows the copied record through its final use, including resource-scoped
+copies and cancellation or allocation denial of a partial copy.
 The existing `CreationFixture`/memory Filesystem controls cover paid JSON moves,
 exact retained metadata and native scalar causes, Root→child→grandchild source
 identity and read-only attenuation, foreign proof/revision and recursion-cycle

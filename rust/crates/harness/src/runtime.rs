@@ -1891,6 +1891,101 @@ impl TaskAdmissionRecord {
         Ok(owned)
     }
 
+    /// Copies the original admission fields on the caller's allocation context.
+    /// Resident JSON (including opaque signed claims) is copied physically,
+    /// without serialization, deserialization or issuance of another grant.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn clone_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        use crate::store::history::HistoryIo as _;
+        fn component(
+            source: &ComponentIdentity, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+        ) -> Result<ComponentIdentity> {
+            Ok(ComponentIdentity {
+                name: crate::core::copy_text(&source.name, quota)?,
+                version: crate::core::copy_text(&source.version, quota)?,
+                digest: source.digest,
+            })
+        }
+        fn resource(
+            source: &crate::resources::ResourceRef,
+            quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+        ) -> Result<crate::resources::ResourceRef> {
+            let provider = crate::core::copy_provider(source.provider(), quota)?;
+            let key = crate::core::copy_copy_vector(source.key(), quota)?;
+            let version = source.version().map(|value| crate::core::copy_text(value, quota)).transpose()?;
+            crate::resources::ResourceRef::new_with_work(
+                source.kind(), provider, key, version, quota.work(),
+            )
+        }
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        io.check_cancellation()?;
+        let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut io);
+        let mut quota = crate::wire_codec::CodecQuota::new(
+            &mut observer, std::mem::size_of::<Self>() as u64,
+        )?;
+        let task = component(&self.task, &mut quota)?;
+        let machine = MachineIdentity {
+            name: crate::core::copy_text(&self.machine.name, &mut quota)?,
+            version: crate::core::copy_text(&self.machine.version, &mut quota)?,
+            digest: self.machine.digest,
+        };
+        let input = crate::core::copy_value(&self.input, &mut quota)?;
+        let input_schema = crate::core::copy_value(&self.input_schema, &mut quota)?;
+        let output_schema = crate::core::copy_value(&self.output_schema, &mut quota)?;
+        let resource_proofs = crate::core::copy_vector(
+            &self.resource_proofs, &mut quota, |proof, quota| {
+                let (copied, held) = crate::core::resource_creation_proof_clone_with_custody(
+                    proof, quota.work(),
+                )?;
+                quota.adopt(held)?;
+                Ok(copied)
+            },
+        )?;
+        let (grants, grant_custody) = self.grants.clone_with_native_work(work)?;
+        let grant_bytes = grant_custody.bytes();
+        quota.work().as_deref_mut().expect("native admission clone observer")
+            .absorb_native_custody(grant_custody)?;
+        quota.adopt(grant_bytes)?;
+        let policy = self.policy.as_ref().map(|policy| component(policy, &mut quota)).transpose()?;
+        let extensions = self.extensions.as_ref().map(|source| -> Result<_> {
+            let copied = source.clone_with_work(quota.work())?;
+            quota.adopt(copied.logical_owned_bytes()?)?;
+            Ok(copied)
+        }).transpose()?;
+        let execution = self.execution.as_ref().map(|source| -> Result<_> {
+            let provider = component(&source.provider, &mut quota)?;
+            let build = resource(source.build.as_resource(), &mut quota)?;
+            let build = ArtifactRef::from_resource_with_work(build, quota.work())?;
+            let environment = source.environment.as_ref().map(|source| -> Result<_> {
+                let copied = resource(source.as_resource(), &mut quota)?;
+                SandboxRef::from_resource_with_work(copied, quota.work())
+            }).transpose()?;
+            Ok(ExecutionPlacement { provider, build, environment,
+                readiness_revision: source.readiness_revision })
+        }).transpose()?;
+        let copied = Self {
+            operation_id: self.operation_id, task, machine, input, input_schema, output_schema,
+            parent: self.parent, resource_proofs, grants, limits: self.limits,
+            run_limits: self.run_limits, policy, extensions, execution,
+        };
+        let held = quota.retained();
+        quota.transfer();
+        drop(quota);
+        drop(observer);
+        let custody = io.take_native_custody(held)?;
+        if !custody.matches_work(work) {
+            drop(copied);
+            return Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+                custody: Some(custody),
+            });
+        }
+        Ok((copied, custody))
+    }
+
     /// Constructs and validates an exact admission envelope from the fields
     /// supplied by an SDK boundary. Identity derivation and all invariants are
     /// deliberately owned here so native and WASM callers share one path.
