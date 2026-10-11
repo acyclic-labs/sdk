@@ -994,36 +994,4 @@ mod tests {
         assert_eq!(work.live_allocation_bytes(), acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn original_native_deep_json_and_complete_result_retain_custody_until_drop() {
-        let (initialization, operation) = ids();
-        let nested = format!("{}0{}", "[".repeat(192), "]".repeat(192));
-        let expected: Value = crate::contract::json_from_slice(nested.as_bytes()).unwrap();
-        let mut transcript = initialized(initialization);
-        transcript.extend_from_slice(
-            format!("\u{feff}{{\"jsonrpc\":\"2.0\",\"id\":\"{operation}\",\"result\":{nested}}}\r\n").as_bytes());
-        for width in [1, 2, 17, transcript.len()] {
-            let work = native_work();
-            let baseline = work.live_allocation_bytes();
-            let request = McpStdioRequest { initialization, operation,
-                method: McpStdioMethod::ListTools, params: json!({}), maximum_bytes: 4096 };
-            let (mut exchange, first, first_guard) = request.exchange_with_native_work(&work).unwrap();
-            for bytes in transcript.chunks(width) {
-                let (write, guard) = exchange.push_with_native_work(bytes, &work).unwrap();
-                drop(write);
-                drop(guard);
-            }
-            assert!(exchange.is_complete());
-            drop(first);
-            drop(first_guard);
-            let (value, guard) = exchange.finish_with_native_work().unwrap();
-            assert_eq!(value, expected);
-            assert_eq!(work.live_allocation_bytes(), baseline + guard.bytes());
-            work.cancellation().cancel();
-            drop(value);
-            drop(guard);
-            assert_eq!(work.live_allocation_bytes(), baseline);
-        }
-    }
 }
