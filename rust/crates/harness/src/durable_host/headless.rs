@@ -15,6 +15,20 @@ pub struct TaskVolumeSnapshot {
     pub generation: GenerationRef,
 }
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(super) fn copy_generation(source: &GenerationRef,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<GenerationRef> {
+    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let source = source.as_resource();
+    let provider = crate::core::copy_provider(source.provider(), &mut quota)?;
+    let key = crate::core::copy_copy_vector(source.key(), &mut quota)?;
+    let version = source.version().map(|value| crate::core::copy_text(value, &mut quota)).transpose()?;
+    let reference = crate::resources::ResourceRef::new_with_work(source.kind(), provider, key, version, quota.work())?;
+    let generation = GenerationRef::from_resource_with_work(reference, quota.work())?;
+    quota.transfer();
+    Ok(generation)
+}
+
 impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
     /// Returns only selected source metadata from fully authenticated creation receipts.
     pub async fn observe_volume_snapshots(&self, task: TaskId) -> Result<Vec<TaskVolumeSnapshot>> {

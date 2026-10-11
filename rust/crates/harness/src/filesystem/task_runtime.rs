@@ -327,10 +327,10 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     }
     fn inbox<'a>(&'a self, after: u64, maximum: usize) -> BoxFuture<'a, Result<Vec<crate::scheduler::InboxItem>>> {
         Box::pin(async move {
-            self.owner.as_ref().verify(true).await?;
+            self.owner.as_ref().verify(true, &mut None).await?;
             let (task, _) = self.owner.as_ref().task_binding();
             let items = self.host.inbox(task, after, maximum).await?;
-            self.owner.as_ref().verify(true).await?;
+            self.owner.as_ref().verify(true, &mut None).await?;
             Ok(items)
         })
     }
@@ -931,7 +931,7 @@ where
         let mut latest = None;
         while let Some(page) = replay.next_page(&journal).await? {
             self.host
-                .verify_model_history(task, operation, &page)
+                .verify_model_history(task, operation, page.iter(), &mut None)
                 .await?;
             for record in page {
                 if let ExecutionEvent::ModelStarted {

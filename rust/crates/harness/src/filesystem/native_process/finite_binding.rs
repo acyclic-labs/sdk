@@ -207,8 +207,8 @@ async fn bind_body<P: StreamProvider + 'static>(
             owner.validate_input_file_with_native_work(&plan.result_schema, work)?;
         }
         None => {
-            owner.verify(allow_cancelled).await?;
-            owner.require_effect_grants(&plan.provider, false)?;
+            owner.verify(allow_cancelled, &mut None).await?;
+            owner.require_effect_grants(&plan.provider, false, &mut None)?;
             owner.validate_input_file(&plan.request)?;
             owner.validate_input_file(&plan.result_schema)?;
         }
@@ -301,7 +301,7 @@ async fn bind_body<P: StreamProvider + 'static>(
     };
     match work {
         Some(work) => provider.owner.verify_with_native_work(allow_cancelled, work).await?,
-        None => provider.owner.verify(allow_cancelled).await?,
+        None => provider.owner.verify(allow_cancelled, &mut None).await?,
     }
     if let (Some(work), Some(view)) = (work, &provider.view) { require_view_family(view.as_ref(), work)?; }
     Ok(provider)

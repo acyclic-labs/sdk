@@ -164,7 +164,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         write: crate::distributed::JournalWrite, return_event: bool,
         work: &mut Option<&mut dyn history::HistoryIo>,
     ) -> Result<(ApplyResult, u64)> {
-        owner.verify_with_work(write.settlement(), work).await?;
+        owner.verify(write.settlement(), work).await?;
         if let Some(result) = self.replay_indexed_with_retained_quota(&command, return_event, work).await? {
             let returned_owned = result.1;
             let mut returned_custody = crate::wire_codec::CodecQuota::from_retained(work, returned_owned);
@@ -213,8 +213,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .activate_with_work(seed, transient.work()).await?)
         } else { None };
         let mut append_phase = crate::distributed::CommitPhase::NotCalled;
-        let appended = owner.append_conversation_with_work_and_phase(
-            &publication, &key, write, transient.work(), &mut append_phase).await;
+        let appended = owner.append_conversation(
+            &publication, &key, write, transient.work(), Some(&mut append_phase)).await;
         drop(publication);
         let released_publication = transient.relinquish(publication_owned);
         drop(key);

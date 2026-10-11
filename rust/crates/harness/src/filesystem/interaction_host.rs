@@ -383,8 +383,8 @@ where
             let mut work = borrowed.as_mut().map(
                 |work| work as &mut dyn crate::store::history::HistoryIo);
             if let Some(owner) = owner {
-                owner.require_interaction_grant_with_work(&mut work)?;
-                owner.verify_with_work(false, &mut work).await?;
+                owner.require_interaction_grant(&mut work)?;
+                owner.verify(false, &mut work).await?;
             }
             let mut aggregate = self.aggregate(io).await?;
             let (committed, _) = crate::store::operations::find_operation_bounded_with_work(

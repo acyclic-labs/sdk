@@ -183,7 +183,7 @@ where
         scope: Scope,
         maximum_payload_bytes: u64,
     ) -> Result<Self> {
-        owner.validate_storage(&verifier, maximum_payload_bytes)?;
+        owner.validate_storage(&verifier, maximum_payload_bytes, &mut None)?;
         let mut journal = Self::new(
             owner.stream(),
             host,
@@ -357,7 +357,7 @@ where
         record.validate_with_io(io)?;
         if let Some(owner) = &self.owner {
             if verify_machine {
-                owner.validate_workflow_record_with_io(&record, io)?;
+                owner.validate_workflow_record(&record, io)?;
             } else if record.prior.machine != owner.workflow_admission().initial.machine
                 || record.next.machine != owner.workflow_admission().initial.machine
             {
@@ -579,9 +579,9 @@ where
                     return owner.verify_with_native_work(true, work).await;
                 }
                 let mut borrowed = io.history_io();
-                owner.verify_with_work(true, &mut Some(&mut borrowed)).await
+                owner.verify(true, &mut Some(&mut borrowed)).await
             }
-            None => owner.verify(true).await,
+            None => owner.verify(true, &mut None).await,
         }
     }
 
@@ -1167,7 +1167,7 @@ where
             let mut borrowed = io.map(PreparationIo::history_io);
             let mut work = borrowed.as_mut()
                 .map(|work| work as &mut dyn crate::store::history::HistoryIo);
-            owner.verify_with_work(false, &mut work).await?;
+            owner.verify(false, &mut work).await?;
         }
         let _admission;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
@@ -1181,7 +1181,7 @@ where
             expected_revision, &idempotency_key, &record, io,
         )?;
         if let Some(owner) = &self.owner {
-            owner.validate_workflow_record_with_io(&record, io)?;
+            owner.validate_workflow_record(&record, io)?;
         }
         {
             let history_hold;
@@ -1350,7 +1350,7 @@ where
             let mut borrowed = io.map(PreparationIo::history_io);
             let mut work = borrowed.as_mut()
                 .map(|work| work as &mut dyn crate::store::history::HistoryIo);
-            owner.verify_with_work(false, &mut work).await?;
+            owner.verify(false, &mut work).await?;
         }
         if let Some(existing) = self.read_admission(io).await? {
             return if existing == admission { Ok(existing) } else {
