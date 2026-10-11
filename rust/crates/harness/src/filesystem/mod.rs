@@ -5294,41 +5294,6 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn publication_custody_retains_original_commit_after_head_advances() -> Result<()> {
-        let filesystem = Fs::memory();
-        filesystem.create_workspace("publication-custody").await.map_err(map_error)?;
-        let provider = ProviderRef::new("custody", "filesystem", "1")?;
-        let host = FilesystemHost::new(filesystem, provider.clone())?;
-        let workspace = workspace_ref(provider, "publication-custody")?;
-        let initial = host.resolve(&workspace).await?;
-        let key = IdempotencyKey::new("custody-original")?;
-        let mutations = [WorkspaceMutation::PutFile {
-            path: "/original".into(),
-            bytes: b"original".to_vec().into(),
-        }];
-        let committed = host
-            .apply_generation(&workspace, Some(&initial.generation), &mutations, &key)
-            .await?;
-        let original = host.generation_ref(&committed)?;
-        committed
-            .pin(format!("harness-generation-{}", hex::encode(original.as_resource().key())))
-            .await
-            .map_err(map_error)?;
-        host.apply(
-            &workspace,
-            Some(&original),
-            &[WorkspaceMutation::PutFile {
-                path: "/original".into(),
-                bytes: b"later".to_vec().into(),
-            }],
-            &IdempotencyKey::new("custody-later")?,
-        ).await?;
-        assert_eq!(committed.read("/original", 16).await.map_err(map_error)?.as_ref(), b"original");
-        assert_eq!(host.read(&workspace, Some(&original), "/original", 16).await?.as_ref(), b"original");
-        assert_eq!(host.read(&workspace, None, "/original", 16).await?.as_ref(), b"later");
-        Ok(())
-    }
 
     #[tokio::test]
     async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<()> {

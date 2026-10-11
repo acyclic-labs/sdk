@@ -10,7 +10,7 @@ type MailRuntime = FilesystemTaskRuntime<LostSessionAck<MemoryStream>, MemoryAut
 fn budget() -> WorkBudget {
     let units = 65_536;
     let bytes = 64 * 1_024 * 1_024;
-    WorkBudget { authority_records_read: units, authority_records_acknowledged: units,
+    WorkBudget { authority_records_read: units, authority_records_appended: units,
         authority_bytes_read: bytes, authority_bytes_written: bytes,
         object_probes: units, backend_read_operations: units, backend_write_operations: units,
         durability_operations: units, page_reads: units, page_writes: units,

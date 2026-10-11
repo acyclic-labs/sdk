@@ -687,7 +687,7 @@ where
 
     pub(crate) async fn read_answer_with_io(
         &self, id: InteractionId, io: Option<&PreparationIo>,
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<acyclic_stream::OwnedBytes>> {
         let aggregate_hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let aggregate = self.aggregate(io).await?;
@@ -706,7 +706,7 @@ where
 
     pub(crate) async fn read_decision_detail_with_io(
         &self, id: InteractionId, io: Option<&PreparationIo>,
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<acyclic_stream::OwnedBytes>> {
         let aggregate_hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let aggregate = self.aggregate(io).await?;
@@ -725,7 +725,7 @@ where
 
     async fn read_resolution_content_with_io(
         &self, reference: &FileRef, io: Option<&PreparationIo>,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<acyclic_stream::OwnedBytes> {
         match io {
             Some(io) => {
                 ContentGrant::verify_original_volume_with_io(&self.verifier, &self.owner_scope,
@@ -735,7 +735,7 @@ where
             None => {
                 let grant = ContentGrant::verify(&self.verifier, &self.owner_scope,
                     reference.volume(), VolumeOperation::Read)?;
-                Ok(self.host.read_content(reference, &grant, self.maximum_bytes).await?.to_vec())
+                self.host.read_content(reference, &grant, self.maximum_bytes).await
             }
         }
     }
@@ -789,7 +789,7 @@ where
         replay_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "approval replay custody underflows"))?)).transpose()?;
-        let Some((ticket, Some(resolution))) = aggregate.reducer().interaction(interaction_uuid(id)?) else {
+        let Some((ticket, Some(resolution))) = aggregate.reducer().interaction(&interaction_uuid(id)?) else {
             return Err(interaction_boundary(io, crate::wire::ErrorCode::Unauthorized,
                 "tool installation lacks a resolved approval"));
         };
@@ -804,16 +804,7 @@ where
             |work| work as &mut dyn crate::store::history::HistoryIo);
         let bytes_hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let buffered = match io {
-            Some(io) => Some(self.read_resolution_content_with_io(&ticket.request, Some(io)).await?),
-            None => None,
-        };
-        let direct = if io.is_none() {
-            let grant = ContentGrant::verify(&self.verifier, &self.owner_scope,
-                ticket.request.volume(), VolumeOperation::Read)?;
-            self.host.read_content(&ticket.request, &grant, self.maximum_bytes).await?
-        } else { bytes::Bytes::new() };
-        let bytes = buffered.as_deref().unwrap_or(direct.as_ref());
+        let bytes = self.read_resolution_content_with_io(&ticket.request, io).await?;
         bytes_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "approval request bytes custody underflows"))?)).transpose()?;
@@ -830,8 +821,7 @@ where
         request_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "approval request custody underflows"))?)).transpose()?;
-        drop(buffered);
-        drop(direct);
+        drop(bytes);
         drop(bytes_hold);
         if let Some(detail) = &resolution.detail {
             if detail.descriptor().media_type() != "application/json" {
@@ -840,16 +830,7 @@ where
             }
             let detail_bytes_hold;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            let buffered = match io {
-                Some(io) => Some(self.read_resolution_content_with_io(detail, Some(io)).await?),
-                None => None,
-            };
-            let direct = if io.is_none() {
-                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope,
-                    detail.volume(), VolumeOperation::Read)?;
-                self.host.read_content(detail, &grant, self.maximum_bytes).await?
-            } else { bytes::Bytes::new() };
-            let bytes = buffered.as_deref().unwrap_or(direct.as_ref());
+            let bytes = self.read_resolution_content_with_io(detail, io).await?;
             detail_bytes_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
                 .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                     "approval decision bytes custody underflows"))?)).transpose()?;
@@ -862,8 +843,7 @@ where
                 None => ticket.validate_decision_bytes(
                     &request, &resolution.outcome, detail, &bytes)?,
             }
-            drop(buffered);
-            drop(direct);
+            drop(bytes);
             drop(detail_bytes_hold);
         }
         drop(request);
@@ -885,15 +865,12 @@ where
         let aggregate_verifier = self.verifier.clone_with_work(&mut work)?;
         let content_authority = self.verifier.clone_with_work(&mut work)?;
         let scope = self.owner_scope.clone_with_work(&mut work)?;
-        content_authority.verify_with_work(&scope, &mut work)?;
         if let Some(io) = io {
             io.claim(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
             io.allocation_attempt(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
         }
-        let content_verifier = FilesystemContentVerifier {
-            host: Arc::clone(&self.host), verifier: content_authority,
-            scope, maximum_bytes: self.maximum_bytes,
-        };
+        let content_verifier = FilesystemContentVerifier::new_with_io(
+            Arc::clone(&self.host), content_authority, scope, self.maximum_bytes, io)?;
         let content_verifier = Arc::new(content_verifier);
         let aggregate = StreamAggregate::open_with_read_limits_with_work(
             &self.stream, authority, aggregate_verifier, self.schemas.clone(), crate::store::default_projection_read_limits(), &mut work).await?.with_content_verifier(content_verifier);

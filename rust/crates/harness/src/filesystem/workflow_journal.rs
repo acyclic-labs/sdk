@@ -512,7 +512,7 @@ where
 
     /// Original authenticated outbox observation; no machine callback executes.
     pub(crate) async fn observe_latest_outbox(&self) -> Result<Option<crate::workflow::MachineTransition>> {
-        Ok(self.observe_latest_record().await?.map(|record| record.transition))
+        Ok(self.observe_latest_record(None).await?.map(|record| record.transition))
     }
 
     /// Observes the original authenticated outbox without a machine callback.
@@ -522,7 +522,7 @@ where
     ) -> Result<crate::NativeFutureBundle<'a, (Option<crate::workflow::MachineTransition>, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            let transition = self.observe_latest_record_engine(Some(&io)).await?
+            let transition = self.observe_latest_record(Some(&io)).await?
                 .map(|record| record.transition);
             let retained = io.owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
@@ -530,17 +530,9 @@ where
         })
     }
 
-    pub(crate) async fn observe_latest_record(&self) -> Result<Option<WorkflowRecord>> {
-        self.observe_latest_record_engine(None).await
-    }
 
-    pub(crate) async fn observe_latest_record_with_io(
-        &self, io: &PreparationIo,
-    ) -> Result<Option<WorkflowRecord>> {
-        self.observe_latest_record_engine(Some(io)).await
-    }
 
-    async fn observe_latest_record_engine(
+    pub(crate) async fn observe_latest_record(
         &self, io: Option<&PreparationIo>,
     ) -> Result<Option<WorkflowRecord>> {
         let owner = self.owner.as_ref().ok_or_else(||
@@ -578,7 +570,7 @@ where
     pub(crate) async fn prove_release_with_io(
         &self, io: &PreparationIo,
     ) -> Result<Option<WorkflowReleaseWitness<'_, P>>> {
-        let Some(record) = self.observe_latest_record_with_io(io).await? else { return Ok(None); };
+        let Some(record) = self.observe_latest_record(Some(io)).await? else { return Ok(None); };
         if !matches!(record.transition.status, MachineStatus::Suspended) { return Ok(None); }
         let owner = self.owner.as_ref().ok_or_else(|| {
             Error::Unsupported("workflow release requires its original task owner".into())

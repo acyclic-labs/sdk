@@ -295,11 +295,6 @@ impl PreparationRecord for Observation {
     }
 }
 
-struct TaskExecutionIdentity {
-    operation: OperationId,
-    turn: OperationId,
-}
-
 /// Durable, ref-only journal for one exact agent-private volume.
 pub struct FilesystemExecutionJournal<P, A, O> {
     stream: StreamClient<P>,
@@ -312,7 +307,7 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     input_verifier: Option<Arc<dyn ContentResidencyVerifier>>,
     interactions: Option<FilesystemInteractionHost<P, A, O>>,
     owner: Option<(TaskJournalOwner<P>, OperationId)>,
-    execution: Option<TaskExecutionIdentity>,
+    execution: Option<(OperationId, OperationId)>,
     verified: tokio::sync::Mutex<ExecutionSummary>,
     conversation_projection: tokio::sync::Mutex<Option<StreamAggregate<P>>>,
     history_read_limits: Option<crate::store::HistoryReadLimits>,
@@ -336,7 +331,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         host: &crate::durable_host::CoordinatorTaskHost<P>,
     ) -> bool {
         self.execution.as_ref().is_some_and(|identity|
-            identity.operation == operation && identity.turn == turn)
+            identity.0 == operation && identity.1 == turn)
             && self.owner.as_ref().is_some_and(|(owner, bound)|
                 *bound == operation && owner.matches_task_binding(task, fence)
                     && owner.original_host_binding_matches(host))
@@ -372,23 +367,20 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             maximum_payload_bytes,
         )?;
         journal.owner = Some((owner, operation_id));
-        journal.execution = Some(TaskExecutionIdentity {
-            operation: operation_id,
-            turn: turn_operation,
-        });
+        journal.execution = Some((operation_id, turn_operation));
         Ok(journal)
     }
 
     /// Binds passive replay to an original turn without granting a task lease.
     pub(super) fn with_turn(mut self, operation: OperationId, turn: OperationId) -> Self {
-        self.execution = Some(TaskExecutionIdentity { operation, turn });
+        self.execution = Some((operation, turn));
         self
     }
 
     fn turn_operation(&self, operation: OperationId) -> OperationId {
         self.execution
             .as_ref()
-            .map_or(operation, |identity| identity.turn)
+            .map_or(operation, |identity| identity.1)
     }
 
     /// Binds the original task owner while admitting newly owned metadata.
@@ -408,10 +400,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             stream, host, volume, verifier, scope, maximum_payload_bytes, &io,
         )?;
         journal.owner = Some((owner, operation_id));
-        journal.execution = Some(TaskExecutionIdentity {
-            operation: operation_id,
-            turn: turn_operation,
-        });
+        journal.execution = Some((operation_id, turn_operation));
         Ok(journal)
     }
 

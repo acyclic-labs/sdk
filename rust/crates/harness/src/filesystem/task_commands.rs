@@ -197,10 +197,9 @@ struct ModelBinding {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-struct CachedNativePreparation {
-    token: Arc<crate::resource_preparation::TaskResourcePreparation>,
-    custody: acyclic_fs::NativeAllocation,
-}
+type CachedNativePreparation = (
+    Arc<crate::resource_preparation::TaskResourcePreparation>, acyclic_fs::NativeAllocation,
+);
 
 #[cfg(not(target_arch = "wasm32"))]
 struct NativePreparationCache {
@@ -615,19 +614,19 @@ where
             code: crate::wire::ErrorCode::Storage, reason: "native preparation cache is poisoned",
         })?;
         let Some(retained) = cache.entries.get(&(task, operation)) else { return Ok(None); };
-        if !retained.custody.matches_work(work) {
+        if !retained.1.matches_work(work) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "retained preparation belongs to another original work",
             });
         }
-        if retained.token.request() != request {
+        if retained.0.request() != request {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Conflict,
                 reason: "retained preparation differs from the original request",
             });
         }
-        Ok(Some(Arc::clone(&retained.token)))
+        Ok(Some(Arc::clone(&retained.0)))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -640,11 +639,11 @@ where
             code: crate::wire::ErrorCode::Storage, reason: "native preparation cache is poisoned",
         })?;
         if let Some(retained) = cache.entries.get(&(task, operation)) {
-            if !retained.custody.matches_work(work) || retained.token.request() != token.request() {
+            if !retained.1.matches_work(work) || retained.0.request() != token.request() {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                     reason: "native preparation cache raced a different original request" });
             }
-            return Ok(Arc::clone(&retained.token));
+            return Ok(Arc::clone(&retained.0));
         }
         if let Some(custody) = &cache.custody {
             if !custody.matches_work(work) {
@@ -659,7 +658,7 @@ where
         let bytes = std::mem::size_of::<((TaskId, OperationId), CachedNativePreparation)>() as u64;
         io.retain_owned(bytes)?;
         let custody = io.take_native_custody(bytes)?;
-        cache.entries.insert((task, operation), CachedNativePreparation { token: Arc::clone(&token), custody });
+        cache.entries.insert((task, operation), (Arc::clone(&token), custody));
         Ok(token)
     }
 
@@ -1315,7 +1314,7 @@ where
         use crate::wire::ErrorCode;
         let io = None;
         let journal = self.runtime.workflow_journal(task, fence).await?;
-        let latest = journal.observe_latest_record().await?.ok_or_else(|| boundary(
+        let latest = journal.observe_latest_record(None).await?.ok_or_else(|| boundary(
             io, ErrorCode::Unauthorized, "model steering has no committed checkpoint"))?;
         if !latest.transition.commands.iter().any(|command|
             command.operation_id == model_operation && command.kind == MODEL_TASK_COMMAND_KIND)

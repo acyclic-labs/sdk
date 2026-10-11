@@ -1,6 +1,7 @@
 //! Passive, selected inspection over the canonical task owner and content reader.
 
 use super::*;
+use crate::filesystem::PreparationIo;
 use crate::conversation::{FileRef, PrivateDirectoryPage};
 use crate::resources::GenerationRef;
 use crate::runtime::{TaskAdmissionRecord, TaskChildrenPage};
@@ -194,7 +195,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         owner.verify(false).await?;
         let volumes = self.host.observe_volume_snapshots(admission.task_id()).await?;
         owner.verify(false).await?;
-        let reader = ProjectSourceReader::open(self.filesystem.clone(), owner, handle, context.scope().limits(), budget).await?;
+        let io = PreparationIo::from_budget(budget, owner.invocation_cancellation().ok_or_else(||
+            Error::Unauthorized("selected source has no original invocation token".into()))?)?;
+        let reader = ProjectSourceReader::open(self.filesystem.clone(), owner, handle, context.scope().limits(), io).await?;
         Ok(TaskSourceInspection { source: admission, reader: SourceReader::Project(reader), volumes,
             #[cfg(not(target_arch = "wasm32"))]
             _native_metadata_custody: None,
@@ -232,7 +235,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         owner.verify_with_native_work(false, work).await?;
         let volumes = self.host.observe_volume_snapshots_with_native_work(admission.0.task_id(), work).await?;
         owner.verify_with_native_work(false, work).await?;
-        let reader = ProjectSourceReader::open_with_io(
+        let reader = ProjectSourceReader::open(
             self.filesystem.clone(), owner, handle.0, context.scope().limits(), io,
         ).await?;
         Ok(TaskSourceInspection {
