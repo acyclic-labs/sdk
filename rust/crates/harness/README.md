@@ -893,6 +893,12 @@ preparation; each SDK callback prepays its concrete future and typed original
 error slot, then rechecks the same current owner and exact volume grants. READ
 and reconciliation metadata cannot authorize fresh preparation. Logical custody
 covers known Self and deep capacities, not opaque Arc backing or process RSS.
+The private volume selector returns SDK and typed Root publication interfaces
+to the same prepaid concrete Arc, not independent authority or a second
+allocation. Both use one current-owner verifier. Root publication retains the
+original typed error in its funded future rather than extracting or formatting
+an SDK callback denial.
+
 Authenticated history effect queries use
 `HistoryReader.effect(cursor, effect, HistoryReadLimits)`, with qualified identities
 and finite read limits. Native process receipts expose queryable publication

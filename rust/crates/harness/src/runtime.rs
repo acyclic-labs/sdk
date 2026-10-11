@@ -7554,6 +7554,8 @@ pub use native_context::NativeTaskContext;
 mod native_volume_callback;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_volume_callback::NativeVolumeCallbackGuard;
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+pub(crate) use native_volume_callback::{NativeVolumeCallbackPorts, NativeVolumePublicationGuard};
 struct TaskModelSteps {
     counter: AtomicUsize,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

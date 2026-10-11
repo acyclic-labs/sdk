@@ -39,6 +39,17 @@ struct VolumeCallback<P: StreamProvider> {
     custody: NativeAllocation,
 }
 
+pub(crate) struct NativeVolumeCallbackPorts {
+    pub(crate) sdk: Arc<dyn NativeMountCallbackGuard>,
+    pub(crate) publication: Arc<dyn NativeVolumePublicationGuard>,
+}
+
+pub(crate) trait NativeVolumePublicationGuard: Send + Sync {
+    fn check<'a>(
+        &'a self, work: &'a NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>>;
+}
+
 impl NativeTaskContext {
     /// Authenticates the actual SDK-issued fresh-dispatch context before copying
     /// its immutable scope. READ and reconciliation contexts cannot issue this
@@ -83,10 +94,10 @@ impl<P: StreamProvider + 'static> NativeVolumeCallbackGuard<P> {
     /// Per-volume resource views may differ from the metadata allocation view;
     /// their original family must not. The returned callback retains that exact
     /// selected view rather than manufacturing a fresh meter or root allowance.
-    pub fn for_volume(
+    pub(crate) fn for_volume(
         &self, owner: &TaskJournalOwner<P>, volume: &VolumeRef, writable: bool,
         work: &NativeMaterializationWork,
-    ) -> Result<Arc<dyn NativeMountCallbackGuard>> {
+    ) -> Result<NativeVolumeCallbackPorts> {
         self.require_volume_with_native_work(owner, volume, writable, work)?;
         // Includes every inline reference, selected Work and volume header.
         // The canonical reference copier separately admits its deep capacities.
@@ -99,9 +110,10 @@ impl<P: StreamProvider + 'static> NativeVolumeCallbackGuard<P> {
         }
         work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })
             .map_err(native_error)?;
-        Ok(Arc::new(VolumeCallback {
+        let callback = Arc::new(VolumeCallback {
             original: Arc::clone(&self.original), volume, writable, work: work.clone(), custody,
-        }))
+        });
+        Ok(NativeVolumeCallbackPorts { sdk: callback.clone(), publication: callback })
     }
 
     /// Borrows the same declaration checks without allocating a callback that
@@ -139,6 +151,27 @@ fn require_volume<P: StreamProvider>(
     Ok(())
 }
 
+impl<P: StreamProvider + 'static> VolumeCallback<P> {
+    async fn verify_with_native_work(&self, work: &NativeMaterializationWork) -> Result<()> {
+        work.charge(WorkCounters::default()).map_err(native_error)?;
+        if !self.work.shares_allocation_context(work) || !self.custody.matches_work(work) {
+            return Err(denied("native callback differs from its original per-volume work view"));
+        }
+        // Exact declarations precede owner IO; the current full fence is never cached.
+        require_volume(&self.original, &self.volume, self.writable, work)?;
+        self.original.owner.verify_with_native_work(false, work).await?;
+        require_volume(&self.original, &self.volume, self.writable, work)
+    }
+}
+
+impl<P: StreamProvider + 'static> NativeVolumePublicationGuard for VolumeCallback<P> {
+    fn check<'a>(
+        &'a self, work: &'a NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        crate::NativeFutureBundle::new(work, || self.verify_with_native_work(work))
+    }
+}
+
 impl<P: StreamProvider + 'static> NativeMountCallbackGuard for VolumeCallback<P> {
     fn check<'a>(
         &'a self, work: &'a NativeMountMeterWork,
@@ -147,15 +180,7 @@ impl<P: StreamProvider + 'static> NativeMountCallbackGuard for VolumeCallback<P>
         // before building or polling it. No formatter or replacement carrier.
         NativeMountCallbackFuture::new_guarded::<Error, _, _>(work, || async move {
             let work = work.native_materialization_work();
-            work.charge(WorkCounters::default()).map_err(native_error)?;
-            if !self.work.shares_allocation_context(&work) || !self.custody.matches_work(&work) {
-                return Err(denied("native callback differs from its original per-volume work view"));
-            }
-            // Exact grants precede even owner-history reads. Current full-fence
-            // authorization is checked anew before every native SDK action.
-            require_volume(&self.original, &self.volume, self.writable, &work)?;
-            self.original.owner.verify_with_native_work(false, &work).await?;
-            require_volume(&self.original, &self.volume, self.writable, &work)
+            self.verify_with_native_work(&work).await
         })
     }
 }
