@@ -140,8 +140,8 @@ Native executor/provider companions return an admitted `NativeFutureBundle`
 before constructing their future. Custom providers without audited native
 companions reject before their callbacks. SDK request copies use direct typed
 field recipes and retain logical metadata/buffer custody through payload drop.
-Closed model-content copies also share the original history observer for finite
-owned/native work, transferring only their produced deep-storage claim.
+Closed model-content copies and validators share the original history observer
+for finite owned/native work; copies transfer only their produced deep-storage claim.
 Opaque provider internals and physical allocator/RSS overhead are not measured.
 
 Stock output-token budgets are caller-controlled: Rust exposes

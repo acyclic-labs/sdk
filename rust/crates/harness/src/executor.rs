@@ -842,6 +842,7 @@ struct ContextAccounting {
 
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ContextAccounting {
+    fn diagnostic_label_bytes() -> u64 { native_stock::stock_serde_diagnostic_label_bytes() }
     fn maximum_slot_bytes() -> u64 {
         <crate::context::Context as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
             .max(std::mem::size_of::<Self>() as u64)
@@ -3618,10 +3619,7 @@ pub(crate) async fn canonical_checkpoint_for_operation_with_io(
     {
         return Err(stock_boundary(io, crate::wire::ErrorCode::Storage, "checkpoint differs from its committed publication"));
     }
-    if stock_is_native(io) {
-        return Ok(Some(stock_file_copy(reference, io)?));
-    }
-    Ok(Some(clone_preparation(reference, io)?))
+    Ok(Some(crate::model::model_file_clone_with_io(reference, io)?))
 }
 
 /// Materializes only this published checkpoint, never its lifetime chain.

@@ -376,8 +376,38 @@ pub(super) fn stock_tool_definitions(registry: &ToolRegistry, scope: &RuntimeSco
 }
 
 #[cfg(feature = "filesystem")]
+pub(super) const fn stock_serde_diagnostic_label_bytes() -> u64 {
+    const LABEL_BYTES: u64 = {
+        let labels = [
+            "ExecutionEvent", "kind", "started", "context_prepared", "context_compacted",
+            "model_started", "model", "tool_started", "tool_completed", "tool_failed",
+            "request_digest", "step", "projection", "accounting", "compaction", "purpose",
+            "request", "event", "call_id", "invocation", "result", "reason",
+            "ModelPurpose", "response", "summary", "ToolFailureKind", "executor_rejected",
+            "invalid_output", "projection_rejected", "publication_rejected",
+            "TurnInput", "operation_id", "input", "selected_context", "max_steps",
+            "SelectedModelContext", "selection", "messages",
+            "ModelContextSelection", "conversation_revision", "message_ids", "checkpoint",
+            "LeaseFence", "reservation_id", "placement",
+            "CompactionRetention", "roles", "native_media", "CompactionPolicy", "kind",
+            "config", "disabled", "threshold", "ThresholdCompaction", "response_reserve_tokens",
+            "recent_tokens", "retention", "ModelTokenCount", "request_digest", "fixed_tokens",
+            "message_tokens", "ComponentIdentity", "name", "version", "digest",
+            "ContextAccounting", "capacity", "count", "ModelContextCapacity", "context_tokens",
+            "output_tokens",
+        ];
+        let mut bytes = crate::model::model_serde_diagnostic_label_bytes();
+        let mut index = 0;
+        while index < labels.len() { bytes += labels[index].len() as u64 + 4; index += 1; }
+        bytes
+    };
+    LABEL_BYTES
+}
+
+#[cfg(feature = "filesystem")]
 macro_rules! stock_records {
     ($($record:ty),+ $(,)?) => {$(impl PreparationRecord for $record {
+        fn diagnostic_label_bytes() -> u64 { stock_serde_diagnostic_label_bytes() }
         fn maximum_slot_bytes() -> u64 {
             (std::mem::size_of::<Self>() as u64).max(<crate::context::Context as PreparationRecord>::maximum_slot_bytes())
         }

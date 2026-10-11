@@ -22,7 +22,22 @@ use serde_json::Value;
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 
 #[cfg(feature = "filesystem")]
+pub(crate) const fn model_serde_diagnostic_label_bytes() -> u64 {
+    const LABEL_BYTES: u64 = {
+        let labels = ["ModelPrefix", "version", "parent", "binding_digest", "message_digest",
+            "total_messages", "messages", "ModelRequestManifest", "version", "request_digest",
+            "wire_bytes", "binding_digest", "message_digests"];
+        let mut bytes = crate::contract::preparation_serde_diagnostic_label_bytes();
+        let mut index = 0;
+        while index < labels.len() { bytes += labels[index].len() as u64 + 4; index += 1; }
+        bytes
+    };
+    LABEL_BYTES
+}
+
+#[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for Model {
+    fn diagnostic_label_bytes() -> u64 { model_serde_diagnostic_label_bytes() }
     fn maximum_slot_bytes() -> u64 {
         <ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
     }
@@ -30,6 +45,7 @@ impl crate::filesystem::PreparationRecord for Model {
 
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ModelPrefix {
+    fn diagnostic_label_bytes() -> u64 { model_serde_diagnostic_label_bytes() }
     fn maximum_slot_bytes() -> u64 {
         <ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
     }
@@ -37,6 +53,7 @@ impl crate::filesystem::PreparationRecord for ModelPrefix {
 
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for Vec<ModelMessage> {
+    fn diagnostic_label_bytes() -> u64 { model_serde_diagnostic_label_bytes() }
     fn maximum_slot_bytes() -> u64 {
         <ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
     }
@@ -44,6 +61,7 @@ impl crate::filesystem::PreparationRecord for Vec<ModelMessage> {
 
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ToolResultContent {
+    fn diagnostic_label_bytes() -> u64 { model_serde_diagnostic_label_bytes() }
     fn maximum_slot_bytes() -> u64 {
         <ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
             .max(std::mem::size_of::<Self>() as u64)
@@ -52,6 +70,7 @@ impl crate::filesystem::PreparationRecord for ToolResultContent {
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl crate::filesystem::UploadRecord for ToolResultContent {
+    fn diagnostic_label_bytes() -> u64 { model_serde_diagnostic_label_bytes() }
     fn logical_owned_bytes(&self) -> Result<u64> {
         // The converter supplies the root header; this trait reports deep only.
         ToolResultContent::logical_owned_bytes(self)?
@@ -66,6 +85,7 @@ impl crate::filesystem::UploadRecord for ToolResultContent {
 
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for NativeMediaPolicy {
+    fn diagnostic_label_bytes() -> u64 { model_serde_diagnostic_label_bytes() }
     fn maximum_slot_bytes() -> u64 {
         <ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
             .max(std::mem::size_of::<Self>() as u64)
@@ -477,118 +497,113 @@ fn model_invalid(io: Option<&crate::executor::PreparationIo>, reason: &'static s
 fn model_validate_limits_with_io(
     limits: crate::conversation::Limits, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(crate::filesystem::PreparationIo::original_native_work) {
-        return limits.validate_with_native_work(work);
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let mut observer = io.history_io();
+        return limits.validate_with_work(&mut Some(&mut observer));
     }
     let _ = io;
-    limits.validate()
+    limits.validate_with_work(&mut None)
 }
 
-fn model_validate_file_with_io(
-    limits: crate::conversation::Limits, file: &FileRef,
-    io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(crate::filesystem::PreparationIo::original_native_work) {
-        return limits.validate_file_with_native_work(file, work);
-    }
-    let _ = io;
-    limits.validate_file(file)
-}
 
 fn model_validate_file_shape_with_io(
     file: &FileRef, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(crate::filesystem::PreparationIo::original_native_work) {
-        return file.validate_with_native_work(work);
-    }
-    let _ = io;
-    file.validate()
-}
-
-fn model_json_bound_legacy<T: Serialize>(
-    value: &T, maximum: u64, io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        let _bytes;
-        let bytes = io.encode_json(value, maximum, false)?;
-        _bytes = io.guard_owned(bytes.len() as u64)?;
-        return Ok(());
+        let mut observer = io.history_io();
+        return file.validate_with_work(&mut Some(&mut observer));
     }
-    crate::contract::validate_json_byte_bound(value, maximum)
-        .map_err(|_| Error::Invalid("model tool projection exceeds render limit".into()))
+    let _ = io;
+    file.validate_with_work(&mut None)
 }
 
-fn model_value_json_bound(
-    value: &Value, maximum: u64, io: Option<&crate::executor::PreparationIo>,
+fn model_history_step(
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>, items: u64,
 ) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        return io.check_json_byte_bound(value, maximum);
+    if let Some(work) = work.as_deref_mut() {
+        work.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items })?;
     }
-    model_json_bound_legacy(value, maximum, io)
+    Ok(())
 }
 
-fn model_tool_result_json_bound(
-    content: &ToolResultContent, maximum: u64, io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
+fn model_history_invalid(
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>, reason: &'static str,
+) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        let bounds = || -> Result<crate::contract::JsonBounds> {
-            Ok(crate::contract::JsonBounds {
-                maximum_bytes: maximum,
-                maximum_items: io.remaining()?.items_examined,
-                maximum_depth: 256,
-            })
-        };
-        let work = io.original_native_work().expect("native branch");
+    if work.as_deref().is_some_and(|work| work.original_native_work().is_some()) {
+        return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
+    }
+    match work.as_deref_mut() {
+        Some(work) => match work.clone_text(reason) {
+            Ok(message) => Error::Invalid(message), Err(cause) => cause,
+        },
+        None => Error::Invalid(reason.into()),
+    }
+}
+
+fn model_history_bounds(
+    maximum: u64, work: &Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<crate::contract::JsonBounds> {
+    #[cfg(feature = "filesystem")]
+    let maximum_items = match work.as_deref() {
+        Some(work) => work.remaining()?.items_examined, None => u64::MAX,
+    };
+    #[cfg(not(feature = "filesystem"))]
+    let maximum_items = { let _ = work; u64::MAX };
+    Ok(crate::contract::JsonBounds { maximum_bytes: maximum, maximum_items, maximum_depth: 256 })
+}
+
+fn model_json_bound_with_work<T: Serialize>(
+    value: &T, maximum: u64, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<()> {
+    if work.is_none() {
+        return crate::contract::validate_json_byte_bound(value, maximum)
+            .map_err(|_| model_history_invalid(work, "model tool projection exceeds render limit"));
+    }
+    crate::contract::validate_trusted_json_byte_bound_with_work(value, maximum, work)
+}
+
+fn model_value_json_bound_with_work(
+    value: &Value, maximum: u64, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<()> {
+    if work.is_some() {
+        let bounds = model_history_bounds(maximum, work)?;
+        crate::contract::json_owned_value_shape_bounded(value, bounds,
+            crate::contract::JsonValueSchema::None,
+            &mut |next| work.as_deref_mut().expect("observed model value").codec_charge(next))?;
+    }
+    model_json_bound_with_work(value, maximum, work)
+}
+
+fn model_tool_result_json_bound_with_work(
+    content: &ToolResultContent, maximum: u64, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<()> {
+    if work.is_some() {
         match content {
             ToolResultContent::Json { value } => {
-                // Inspect the resident wire Value, including raw JSON payloads,
-                // before the envelope serializer scans it. No conversion graph
-                // or encoded buffer is constructed for this size-only check.
-                crate::contract::json_owned_value_shape_bounded(
-                    value, bounds()?, crate::contract::JsonValueSchema::None,
-                    &mut |next| io.codec_charge(next, false),
-                )?;
+                let bounds = model_history_bounds(maximum, work)?;
+                crate::contract::json_owned_value_shape_bounded(value, bounds,
+                    crate::contract::JsonValueSchema::None,
+                    &mut |next| work.as_deref_mut().expect("observed model result").codec_charge(next))?;
             }
-            ToolResultContent::Parts { parts } => {
-                // validate_limits_with_io has already witnessed each FileRef's
-                // closed metadata through the original native file validator.
-                // The remaining resident strings are text and binding labels.
-                for part in parts {
-                    model_step(Some(io), 1)?;
-                    match part {
-                        ModelDataPart::Text { text } => {
-                            crate::conversation::inspect_native_metadata(work, text.len())?;
-                        }
-                        ModelDataPart::File { policy, .. } => {
-                            if let FileProjectionPolicy::Native(policy) = policy
-                                && let Some(binding) = &policy.configuration
-                            {
-                                crate::conversation::inspect_native_metadata(
-                                    work, binding.source.authority.id.len(),
-                                )?;
-                                crate::conversation::inspect_native_metadata(
-                                    work, binding.configuration.extension.name.len(),
-                                )?;
-                            }
+            ToolResultContent::Parts { parts } => for part in parts {
+                model_history_step(work, 1)?;
+                match part {
+                    ModelDataPart::Text { text } => model_history_step(work, text.len() as u64)?,
+                    ModelDataPart::File { policy, .. } => {
+                        if let FileProjectionPolicy::Native(policy) = policy
+                            && let Some(binding) = &policy.configuration {
+                            model_history_step(work, binding.source.authority.id.len() as u64)?;
+                            model_history_step(work, binding.configuration.extension.name.len() as u64)?;
                         }
                     }
                 }
-            }
+            },
         }
-        return crate::contract::validate_json_byte_bound_native_trusted(
-            content, bounds()?, crate::wire::ErrorCode::Invalid,
-            &mut |next| io.codec_charge(next, false),
-        );
     }
-    model_json_bound_legacy(content, maximum, io)
+    model_json_bound_with_work(content, maximum, work)
 }
 
 fn model_hash(bytes: &[u8], io: Option<&crate::executor::PreparationIo>) -> Result<[u8; 32]> {
@@ -749,111 +764,112 @@ impl ModelContent {
     /// Applies the same byte and part ceilings to direct inputs and selected
     /// history before either can reach a provider or durable request journal.
     pub fn validate_limits(&self, limits: crate::conversation::Limits) -> Result<()> {
-        self.validate_limits_with_io(limits, None)
+        self.validate_limits_with_work(limits, &mut None)
     }
 
     /// Validates content using the original native traversal ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn validate_limits_with_native_work(&self, limits: crate::conversation::Limits, work: &NativeMaterializationWork) -> Result<()> {
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        self.validate_limits_with_io(limits, Some(&io))
+        let mut observer = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.validate_limits_with_work(limits, &mut Some(&mut observer))
     }
 
     pub(crate) fn validate_limits_with_io(
         &self, limits: crate::conversation::Limits,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        model_step(io, 1)?;
-        model_validate_limits_with_io(limits, io)?;
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            let mut observer = io.history_io();
+            return self.validate_limits_with_work(limits, &mut Some(&mut observer));
+        }
+        let _ = io;
+        self.validate_limits_with_work(limits, &mut None)
+    }
+
+    pub(crate) fn validate_limits_with_work(
+        &self, limits: crate::conversation::Limits,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        model_history_step(work, 1)?;
+        limits.validate_with_work(work)?;
         let parts = match self {
-            Self::Text(text) => {
-                return if text.len() as u64 <= limits.render_bytes {
-                    Ok(())
-                } else {
-                    Err(Error::Invalid("model text exceeds render limit".into()))
-                };
-            }
+            Self::Text(text) => return if text.len() as u64 <= limits.render_bytes { Ok(()) }
+                else { Err(model_history_invalid(work, "model text exceeds render limit")) },
             Self::Part(part) => std::slice::from_ref(part),
             Self::Parts(parts) => parts.as_slice(),
         };
         if parts.len() > limits.attachments.saturating_add(1) {
-            return Err(Error::Invalid(
-                "model content exceeds attachment limit".into(),
-            ));
+            return Err(model_history_invalid(work, "model content exceeds attachment limit"));
         }
         for part in parts {
-            model_step(io, 1)?;
+            model_history_step(work, 1)?;
             match part {
-                ModelContentPart::Text { text } if text.len() as u64 > limits.render_bytes => {
-                    return Err(Error::Invalid("model text exceeds render limit".into()));
-                }
-                ModelContentPart::File { file, policy } => {
-                    policy.validate_file_with_io(file, limits, io)?;
-                }
-                ModelContentPart::ToolCall {
-                    name, arguments, ..
-                } => {
-                    model_step(io, name.len() as u64)?;
-                    crate::registry::validate_component_label(name, "tool name")?;
-                    model_value_json_bound(arguments, limits.render_bytes, io)?;
+                ModelContentPart::Text { text } if text.len() as u64 > limits.render_bytes =>
+                    return Err(model_history_invalid(work, "model text exceeds render limit")),
+                ModelContentPart::File { file, policy } => policy.validate_file_with_work(file, limits, work)?,
+                ModelContentPart::ToolCall { name, arguments, .. } => {
+                    model_history_step(work, name.len() as u64)?;
+                    if !crate::contract::is_valid_component_label(name) {
+                        return Err(model_history_invalid(work, "tool name is invalid"));
+                    }
+                    model_value_json_bound_with_work(arguments, limits.render_bytes, work)?;
                 }
                 ModelContentPart::ToolResult { name, content, .. } => {
-                    model_step(io, name.len() as u64)?;
-                    crate::registry::validate_component_label(name, "tool name")?;
-                    content.validate_limits_with_io(limits, io)?;
+                    model_history_step(work, name.len() as u64)?;
+                    if !crate::contract::is_valid_component_label(name) {
+                        return Err(model_history_invalid(work, "tool name is invalid"));
+                    }
+                    content.validate_limits_with_work(limits, work)?;
                 }
                 ModelContentPart::Text { .. } => {}
             }
         }
         let mut references = 0usize;
         self.visit_file_bindings(|_, _| {
-            model_step(io, 1)?;
+            model_history_step(work, 1)?;
             references = references.checked_add(1)
-                .ok_or_else(|| Error::Invalid("model content reference count overflow".into()))?;
+                .ok_or_else(|| model_history_invalid(work, "model content reference count overflow"))?;
             Ok(())
         })?;
         if references > limits.attachments.saturating_add(1) {
-            return Err(Error::Invalid(
-                "model content reference count exceeds attachment limit".into(),
-            ));
+            return Err(model_history_invalid(work, "model content reference count exceeds attachment limit"));
         }
         Ok(())
     }
 
     /// Rejects tool and empty content in a human turn input.
     pub fn validate_user_input(&self) -> Result<()> {
-        self.validate_user_input_engine(None)
+        self.validate_user_input_with_work(&mut None)
     }
 
     /// Applies the same user-input validator without an ordinary callback.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn validate_user_input_with_native_work(&self, work: &NativeMaterializationWork) -> Result<()> {
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        self.validate_user_input_engine(Some(&io))
+        let mut observer = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.validate_user_input_with_work(&mut Some(&mut observer))
     }
 
-    fn validate_user_input_engine(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
-        model_step(io, 1)?;
+    pub(crate) fn validate_user_input_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        model_history_step(work, 1)?;
         let parts = match self {
-            Self::Text(text) => {
-                return if text.is_empty() {
-                    Err(model_invalid(io, "user input is empty"))
-                } else {
-                    Ok(())
-                };
-            }
+            Self::Text(text) => return if text.is_empty() {
+                Err(model_history_invalid(work, "user input is empty"))
+            } else { Ok(()) },
             Self::Part(part) => std::slice::from_ref(part),
             Self::Parts(parts) if !parts.is_empty() => parts.as_slice(),
-            _ => return Err(model_invalid(io, "user input part count is invalid")),
+            _ => return Err(model_history_invalid(work, "user input part count is invalid")),
         };
         for part in parts {
-            model_step(io, 1)?;
+            model_history_step(work, 1)?;
             match part {
                 ModelContentPart::Text { text } if !text.is_empty() => {}
-                ModelContentPart::File { file, .. } => model_validate_file_shape_with_io(file, io)?,
-                _ => {
-                    return Err(model_invalid(io, "user input contains an unsupported part"));
-                }
+                ModelContentPart::File { file, .. } => file.validate_with_work(work)?,
+                _ => return Err(model_history_invalid(work, "user input contains an unsupported part")),
             }
         }
         Ok(())
@@ -1217,7 +1233,7 @@ pub struct NativeMediaPolicy {
 impl NativeMediaPolicy {
     /// Validates declarative bounds before any input or options are read.
     pub fn validate(&self, file: &FileRef, limits: crate::conversation::Limits) -> Result<()> {
-        self.validate_with_io(file, limits, None)
+        self.validate_with_work(file, limits, &mut None)
     }
 
     /// Uses the original native ledger and the same declarative predicates.
@@ -1225,58 +1241,58 @@ impl NativeMediaPolicy {
     pub fn validate_with_native_work(
         &self, file: &FileRef, limits: crate::conversation::Limits, work: &NativeMaterializationWork,
     ) -> Result<()> {
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        self.validate_with_io(file, limits, Some(&io))
+        let mut observer = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.validate_with_work(file, limits, &mut Some(&mut observer))
     }
 
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         model_native_policy_owned_bytes(self)
     }
 
-    fn validate_with_io(
+    fn validate_with_work(
         &self, file: &FileRef, limits: crate::conversation::Limits,
-        io: Option<&crate::executor::PreparationIo>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        let finite = |value: u64| -> Result<()> {
-            model_step(io, 1)?;
+        let finite = |value: u64, work: &mut Option<&mut dyn crate::store::history::HistoryIo>| -> Result<()> {
+            model_history_step(work, 1)?;
             if value == 0 || value > crate::conversation::MAX_EXACT_JS_INTEGER {
-                return Err(model_invalid(io, "native media ceiling must be positive and exactly portable"));
+                return Err(model_history_invalid(work, "native media ceiling must be positive and exactly portable"));
             }
             Ok(())
         };
-        model_validate_file_with_io(limits, file, io)?;
-        finite(self.maximum_bytes)?;
-        finite(self.maximum_work)?;
-        model_step(io, 1)?;
+        limits.validate_file_with_work(file, work)?;
+        finite(self.maximum_bytes, work)?;
+        finite(self.maximum_work, work)?;
+        model_history_step(work, 1)?;
         if file.descriptor().byte_length() > self.maximum_bytes {
-            return Err(model_invalid(io, "native media exceeds byte ceiling"));
+            return Err(model_history_invalid(work, "native media exceeds byte ceiling"));
         }
-        model_step(io, 1)?;
+        model_history_step(work, 1)?;
         match &self.intent {
             NativeMediaIntent::Image { .. } => {}
-            NativeMediaIntent::Audio { maximum_duration_ms } => finite(*maximum_duration_ms)?,
+            NativeMediaIntent::Audio { maximum_duration_ms } => finite(*maximum_duration_ms, work)?,
             NativeMediaIntent::Video { maximum_duration_ms, maximum_frames } => {
-                finite(*maximum_duration_ms)?;
-                model_step(io, 1)?;
+                finite(*maximum_duration_ms, work)?;
+                model_history_step(work, 1)?;
                 if *maximum_frames == 0 || *maximum_frames == u32::MAX {
-                    return Err(model_invalid(io, "native video frame ceiling must be positive and finite"));
+                    return Err(model_history_invalid(work, "native video frame ceiling must be positive and finite"));
                 }
             }
             NativeMediaIntent::Document { maximum_pages } => {
-                model_step(io, 1)?;
+                model_history_step(work, 1)?;
                 if *maximum_pages == 0 || *maximum_pages == u32::MAX {
-                    return Err(model_invalid(io, "native document page ceiling must be positive and finite"));
+                    return Err(model_history_invalid(work, "native document page ceiling must be positive and finite"));
                 }
             }
         }
-        model_step(io, 1)?;
+        model_history_step(work, 1)?;
         if let Some(binding) = &self.configuration {
-            model_validate_file_with_io(limits, &binding.configuration.content, io)?;
-            model_step(io, 1)?;
+            limits.validate_file_with_work(&binding.configuration.content, work)?;
+            model_history_step(work, 1)?;
             if binding.configuration.content.descriptor().media_type() != "application/json"
-                || binding.configuration.content.descriptor().byte_length() > limits.render_bytes
-            {
-                return Err(model_invalid(io, "native options require bounded JSON"));
+                || binding.configuration.content.descriptor().byte_length() > limits.render_bytes {
+                return Err(model_history_invalid(work, "native options require bounded JSON"));
             }
         }
         // Shape/bounds do not authenticate the source, configuration or code.
@@ -1285,50 +1301,18 @@ impl NativeMediaPolicy {
 }
 
 impl FileProjectionPolicy {
-    fn validate_file(&self, file: &FileRef, limits: crate::conversation::Limits) -> Result<()> {
-        if let Self::Native(policy) = self {
-            return policy.validate(file, limits);
-        }
-        limits.validate_file(file)?;
-        match self {
-            Self::BoundedFull if file.descriptor().byte_length() > limits.render_bytes => {
-                Err(Error::Invalid("model file exceeds render limit".into()))
-            }
-            _ => Ok(()),
-        }
-    }
-
-    fn validate_file_with_io(
+    fn validate_file_with_work(
         &self, file: &FileRef, limits: crate::conversation::Limits,
-        io: Option<&crate::executor::PreparationIo>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-            return match self {
-                Self::Native(policy) => policy.validate_with_io(file, limits, Some(io)),
-                Self::Reference | Self::BoundedFull => {
-                    model_validate_file_with_io(limits, file, Some(io))?;
-                    model_step(Some(io), 1)?;
-                    if matches!(self, Self::BoundedFull) && file.descriptor().byte_length() > limits.render_bytes {
-                        Err(model_invalid(Some(io), "model file exceeds render limit"))
-                    } else { Ok(()) }
-                }
-            };
+        if let Self::Native(policy) = self {
+            return policy.validate_with_work(file, limits, work);
         }
-        // Visit all metadata/native option fields before the same declarative
-        // checks; those checks borrow and do not clone the input.
-        #[cfg(not(feature = "filesystem"))]
-        let _ = io;
-        #[cfg(feature = "filesystem")]
-        let _hold;
-        #[cfg(feature = "filesystem")]
-        let _metadata;
-        #[cfg(feature = "filesystem")]
-        if let Some(io) = io {
-            _metadata = io.encode_json(&(file, self), io.remaining()?.bytes_encoded, false)?;
-            _hold = io.guard_owned(_metadata.len() as u64)?;
-        }
-        self.validate_file(file, limits)
+        limits.validate_file_with_work(file, work)?;
+        model_history_step(work, 1)?;
+        if matches!(self, Self::BoundedFull) && file.descriptor().byte_length() > limits.render_bytes {
+            Err(model_history_invalid(work, "model file exceeds render limit"))
+        } else { Ok(()) }
     }
 
     fn append_refs<'a>(&'a self, file: &'a FileRef, files: &mut Vec<&'a FileRef>) {
@@ -1391,41 +1375,48 @@ impl ToolResultContent {
         &self, limits: crate::conversation::Limits,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        model_step(io, 1)?;
-        model_validate_limits_with_io(limits, io)?;
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            let mut observer = io.history_io();
+            return self.validate_limits_with_work(limits, &mut Some(&mut observer));
+        }
+        let _ = io;
+        self.validate_limits_with_work(limits, &mut None)
+    }
+
+    pub(crate) fn validate_limits_with_work(
+        &self, limits: crate::conversation::Limits,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        model_history_step(work, 1)?;
+        limits.validate_with_work(work)?;
         if let Self::Parts { parts } = self {
             if parts.len() > limits.attachments.saturating_add(1) {
-                return Err(model_invalid(io, "tool result exceeds attachment limit"));
+                return Err(model_history_invalid(work, "tool result exceeds attachment limit"));
             }
             let mut references = 0usize;
             for part in parts {
-                model_step(io, 1)?;
+                model_history_step(work, 1)?;
                 match part {
-                    ModelDataPart::Text { text } if text.len() as u64 > limits.render_bytes => {
-                        return Err(model_invalid(io, "tool result text exceeds render limit"));
-                    }
+                    ModelDataPart::Text { text } if text.len() as u64 > limits.render_bytes =>
+                        return Err(model_history_invalid(work, "tool result text exceeds render limit")),
                     ModelDataPart::File { file, policy } => {
-                        policy.validate_file_with_io(file, limits, io)?;
-                        references = references.checked_add(1).ok_or_else(|| {
-                            model_invalid(io, "tool result reference count overflow")
-                        })?;
-                        if matches!(
-                            policy,
-                            FileProjectionPolicy::Native(policy) if policy.configuration.is_some()
-                        ) {
-                            references = references.checked_add(1).ok_or_else(|| {
-                                model_invalid(io, "tool result reference count overflow")
-                            })?;
+                        policy.validate_file_with_work(file, limits, work)?;
+                        references = references.checked_add(1).ok_or_else(||
+                            model_history_invalid(work, "tool result reference count overflow"))?;
+                        if matches!(policy, FileProjectionPolicy::Native(policy) if policy.configuration.is_some()) {
+                            references = references.checked_add(1).ok_or_else(||
+                                model_history_invalid(work, "tool result reference count overflow"))?;
                         }
                     }
                     ModelDataPart::Text { .. } => {}
                 }
             }
             if references > limits.attachments.saturating_add(1) {
-                return Err(model_invalid(io, "tool result reference count exceeds limit"));
+                return Err(model_history_invalid(work, "tool result reference count exceeds limit"));
             }
         }
-        model_tool_result_json_bound(self, limits.render_bytes, io)
+        model_tool_result_json_bound_with_work(self, limits.render_bytes, work)
     }
 }
 
