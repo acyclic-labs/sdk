@@ -844,18 +844,17 @@ async fn read_root_artifact_with_native_work<T: RootArtifact>(
         return Err(Error::NativeBoundary { code: ErrorCode::Invalid,
             reason: "root artifact exceeds original header bounds or media type" });
     }
-    let (value, custody) = context.read_file_with_native_work(reference, work).await?;
-    let bytes = NativeOwned { value, _custody: custody };
+    let bytes = context.read_file_with_native_work(reference, work).await?;
     // Fixed closed typed envelope plus the SDK-issued selected source shape;
     // known nested String/Vec/map logical ownership is dominated by that SDK
     // inventory, not a Pi bytes-to-heap multiplier or claimed physical malloc.
     let maximum_owned = std::mem::size_of::<T>() as u64;
-    let (value, custody) = guarded_pi_decode(&bytes.value, maximum, maximum_owned,
+    let (value, custody) = guarded_pi_decode(bytes.as_ref(), maximum, maximum_owned,
         T::VALUE_SCHEMA, ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES, work)?;
     let decoded = NativeOwned { value, _custody: custody };
     let (value, custody) = guarded_pi_bytes(&decoded.value, maximum, work)?;
     let encoded = NativeOwned { value, _custody: custody };
-    if encoded.value != bytes.value {
+    if encoded.value.as_slice() != bytes.as_ref() {
         return Err(Error::NativeBoundary { code: ErrorCode::Invalid,
             reason: "root artifact is not its immutable first-party encoding" });
     }
@@ -1113,10 +1112,9 @@ pub(crate) async fn read_pi_input_with_native_work<T: DeserializeOwned>(
         return Ok(None);
     };
     let reference = NativeOwned { value: reference, _custody: custody };
-    let (bytes, custody) = context.read_file_with_native_work(&reference.value, work).await?;
-    let bytes = NativeOwned { value: bytes, _custody: custody };
+    let bytes = context.read_file_with_native_work(&reference.value, work).await?;
     let maximum = owner.policy().maximum_payload_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES);
-    let decoded = guarded_pi_decode_with_code(&bytes.value, maximum, maximum_owned_bytes,
+    let decoded = guarded_pi_decode_with_code(bytes.as_ref(), maximum, maximum_owned_bytes,
         ErrorCode::Storage, value_schema, schema_label_bytes, work)?;
     drop(bytes);
     drop(reference);

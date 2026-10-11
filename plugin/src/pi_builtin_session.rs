@@ -18,10 +18,10 @@ impl PiSession {
         let _request_custody = work.retain_owned(request_bytes).map_err(native_error)?;
         let request = builtin_request(caller, event, arguments)?;
         request.validate()?;
-        let host = PiBuiltinHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            &self.resources, native.original_owner(), &self.state, &self.roots, native.clone(), work.clone())?;
         let (value, custody) = if caller == owner.policy().root_task {
             request.require_root_source_read(owner.policy().root_task)?;
+            let host = PiBuiltinHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
+                &self.resources, native.original_owner(), &self.state, &self.roots, native.clone(), work.clone())?;
             let (payload, _payload_custody) = pi_root_provider::guarded_pi_value(&request,
                 MAXIMUM_BUILTIN_BYTES * 2, &work)?;
             let staged = pi_root_provider::stage_pi_input_with_native_work(owner, &self.filesystem,

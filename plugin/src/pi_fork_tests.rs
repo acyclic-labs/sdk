@@ -434,6 +434,7 @@ async fn advancing_actual_parent_authored_head_cannot_replace_retained_fork_inpu
 async fn changed_native_sdk_cut_session_bytes_and_child_identity_never_enter_preparation() {
     let fixture = Fixture::new().await;
     let plan = fixture.plan().await;
+    assert!(plan.request.child.resource_proofs.is_empty());
     for field in 0..3 {
         let mut changed = plan.clone();
         match field {
@@ -446,6 +447,22 @@ async fn changed_native_sdk_cut_session_bytes_and_child_identity_never_enter_pre
         assert!(fixture.runtime.runtime.task_host().observe_admission(plan.preparation.task_id()).await.is_err());
         assert!(fixture.resources.fs.open_workspace(plan.commit.child.scratch.volume.storage_name().unwrap()).await.is_err());
     }
+}
+
+#[tokio::test]
+async fn internally_consistent_child_authority_substitution_cannot_replace_protected_original_plan() {
+    let fixture = Fixture::new().await;
+    let plan = fixture.plan().await;
+    let mut changed = plan.clone();
+    let foreign_write = plan.source.project.capability(VolumeOperation::Write).unwrap();
+    changed.request.child.grants = Capabilities::new(changed.request.child.grants.iter()
+        .chain(std::iter::once(foreign_write.as_str())));
+    changed.preparation.input = serde_json::to_value(&changed.request).unwrap();
+    assert!(fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal, &fixture.fence,
+        &changed, fixture.source.clone(), budget(), CancellationToken::new()).await.is_err());
+    assert!(fixture.runtime.runtime.task_host().observe_admission(plan.preparation.task_id()).await.is_err());
+    assert!(fixture.runtime.runtime.task_host().observe_admission(plan.request.child.task_id()).await.is_err());
+    assert!(fixture.resources.fs.open_workspace(plan.commit.child.scratch.volume.storage_name().unwrap()).await.is_err());
 }
 
 #[tokio::test]
@@ -533,29 +550,20 @@ async fn actual_stream_and_task_registry_restart_reconciles_original_creator_pro
     let runtime = Arc::new(Runtime::open_with_native_work(stream.clone(), fixture.filesystem.clone(),
         &fixture.owner.policy().journal, fixture.owner.authority_with_native_work(&observation_work).unwrap(),
         &observation_work).await.unwrap());
-    let journal = Arc::new(runtime.runtime.task_host().journal_owner(fixture.journal.task_id(), fixture.fence.clone()).await.unwrap());
-    let context = runtime.runtime.task_context(journal.task_id(), fixture.fence.clone()).await.unwrap();
-    let root: PiTaskInput = serde_json::from_value(runtime.runtime.task_host().observe_admission(journal.task_id()).await.unwrap().input).unwrap();
-    let authority = fixture.owner.authority().unwrap();
-    let reader = Arc::new(acyclic_harness::filesystem::FilesystemContentVerifier::new(fixture.filesystem.clone(),
-        authority.verifier.clone(), authority.signed.clone(), fixture.owner.policy().maximum_payload_bytes).unwrap());
-    let writer = Arc::new(acyclic_harness::filesystem::FilesystemContentPublisher::new(fixture.filesystem.clone(),
-        root.binding.scratch.volume, &authority.verifier, &authority.signed, fixture.owner.policy().maximum_payload_bytes).unwrap());
-    let context = context.with_content_bindings(acyclic_harness::runtime::ContentBindings { reader, writer: Some(writer) }).unwrap();
-    let preparation = PiRootPreparation::load(&fixture.private_root, &fixture.relative_session, &runtime,
-        &fixture.filesystem, &fixture.root_request, &observation_work).await.unwrap();
-    let proof = crate::pi_root_provider::prove_root_scratch_allocation_with_native_work(fixture.owner.clone(), &fixture.resources,
-        fixture.filesystem.clone(), stream.clone(), preparation, &observation_work).await.unwrap().unwrap();
-    let (authority, issuer, scope) = fixture.owner.conversation_authority(journal.task_id(), root.binding.agent_id,
-        context.scope().grants().clone()).unwrap();
-    crate::pi_conversation::bind_task_conversation_measured(&stream, &authority, &issuer, scope,
-        &journal, OperationId::from_bytes(proof.operation().into_bytes()), context.scope().limits(),
-        budget(), &CancellationToken::new()).await.unwrap();
-    let coordinator = PiForkCoordinator::new(runtime, fixture.filesystem.clone(), stream, fixture.resources.clone(),
-        fixture.owner.clone()).unwrap();
-    let original = coordinator.load_plan(&context, plan.original, budget(), &CancellationToken::new()).await.unwrap().unwrap();
-    let recovered = fixture.advance_with(&coordinator, &context, &journal, &fixture.fence, &original, fixture.source.clone(),
-        budget(), CancellationToken::new()).await.unwrap().unwrap();
+    let journal = runtime.runtime.task_host().journal_owner_with_native_work(
+        fixture.journal.task_id(), &fixture.fence, &observation_work).await.unwrap()
+        .into_native_shared(&observation_work).unwrap();
+    let context = runtime.runtime.task_context_with_native_work(journal.task_id(), &fixture.fence,
+        &observation_work).await.unwrap();
+    let context = crate::pi_root_provider::bind_root_output_context_with_native_work(context, &journal,
+        fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), stream.clone(),
+        &fixture.root_request, &observation_work).await.unwrap();
+    let coordinator = PiForkCoordinator::new_with_native_work(runtime, fixture.filesystem.clone(), stream,
+        &fixture.resources, fixture.owner.clone(), &observation_work).unwrap();
+    let original = coordinator.load_plan(context.context(), plan.original, observation_work.remaining().unwrap(),
+        observation_work.cancellation()).await.unwrap().unwrap();
+    let recovered = coordinator.advance(&context, &journal, &fixture.fence, &original, fixture.source.clone(),
+        observation_work.remaining().unwrap(), observation_work.cancellation().clone()).await.unwrap().unwrap();
     assert_eq!(first.report, recovered.report);
     assert_eq!(first.admission, recovered.admission);
     assert_eq!(first.binding, recovered.binding);
