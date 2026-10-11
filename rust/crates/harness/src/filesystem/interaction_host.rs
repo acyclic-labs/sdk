@@ -600,8 +600,13 @@ where
         let mut observer = io.map(PreparationIo::history_io);
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
         let value = aggregate.reducer().interaction(&interaction_uuid(id)?)
-            .map(|value| crate::core::native_interaction_state_clone_with_custody(value, &mut work)
-                .map(|(value, _)| value)).transpose()?;
+            .map(|(ticket, resolution)| -> Result<_> {
+                let ticket = crate::core::native_interaction_ticket_clone_with_custody(ticket, &mut work)?.0;
+                let resolution = resolution.as_ref().map(|value|
+                    crate::core::native_interaction_resolution_clone_with_custody(value, &mut work)
+                        .map(|(value, _)| value)).transpose()?;
+                Ok((ticket, resolution))
+            }).transpose()?;
         drop(aggregate);
         drop(aggregate_hold);
         Ok(value)

@@ -26,15 +26,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-fn freeze_retained_bytes(
-    bytes: Vec<u8>, io: Option<&PreparationIo>,
-) -> Result<(OwnedBytes, u64)> {
-    let mut borrowed = io.map(PreparationIo::history_io);
-    let mut work = borrowed.as_mut()
-        .map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-    crate::store::operations::owned_bytes_from_retained_vec(bytes, &mut work)
-}
-
 fn external_read_hold<'a>(
     bytes: &OwnedBytes, io: Option<&'a PreparationIo>,
 ) -> Result<Option<super::DecodeReservation<'a>>> {
@@ -1269,10 +1260,7 @@ where
         };
         let _key;
         let key_bytes = super::fork_preparer_io::clone_bytes(digest.as_bytes(), io)?;
-        let (key_bytes, retained) = freeze_retained_bytes(key_bytes, io)?;
-        _key = if retained == 0 { None } else {
-            io.map(|io| io.guard_owned(retained)).transpose()?
-        };
+        _key = io.map(|io| io.guard_bytes(&key_bytes)).transpose()?.flatten();
         let key = StreamKey::new(key_bytes).map_err(|error| {
             #[cfg(not(target_arch = "wasm32"))]
             if io.is_some() {
@@ -1423,10 +1411,7 @@ where
         };
         let _key;
         let key_bytes = super::fork_preparer_io::clone_bytes(digest.as_bytes(), io)?;
-        let (key_bytes, retained) = freeze_retained_bytes(key_bytes, io)?;
-        _key = if retained == 0 { None } else {
-            io.map(|io| io.guard_owned(retained)).transpose()?
-        };
+        _key = io.map(|io| io.guard_bytes(&key_bytes)).transpose()?.flatten();
         let key = StreamKey::new(key_bytes).map_err(|error| {
             #[cfg(not(target_arch = "wasm32"))]
             if io.is_some() {

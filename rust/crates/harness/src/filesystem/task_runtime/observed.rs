@@ -65,7 +65,7 @@ pub(super) fn digest<T: serde::Serialize>(value: &T, io: Option<&PreparationIo>)
     let Some(io) = io else { return crate::contract::canonical_json_digest(value); };
     let hold;
     let bytes = io.encode_json(value, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
-    hold = io.guard_owned(bytes.capacity() as u64)?;
+    hold = io.guard_bytes(&bytes)?;
     let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
     io.preflight(hash)?;
     let digest = *blake3::hash(&bytes).as_bytes();

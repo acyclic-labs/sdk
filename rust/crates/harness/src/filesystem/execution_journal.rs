@@ -329,7 +329,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         &self, task: crate::TaskId, fence: &crate::scheduler::LeaseFence,
         turn: OperationId, operation: OperationId,
         host: &crate::durable_host::CoordinatorTaskHost<P>,
-    ) -> bool {
+    ) -> bool where P: StreamProvider {
         self.execution.as_ref().is_some_and(|identity|
             identity.0 == operation && identity.1 == turn)
             && self.owner.as_ref().is_some_and(|(owner, bound)|
@@ -431,7 +431,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
     fn require_operation(
         &self, operation: OperationId, io: Option<&PreparationIo>,
     ) -> Result<()> {
-        if self.execution.as_ref().is_some_and(|bound| bound.operation != operation) {
+        if self.execution.as_ref().is_some_and(|bound| bound.0 != operation) {
             return Err(Self::journal_read_boundary(io, crate::wire::ErrorCode::Unauthorized,
                 "journal belongs to another task execution"));
         }
@@ -712,7 +712,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         }
         let key = StreamKey::new(Bytes::copy_from_slice(digest.as_bytes())).map_err(|error| {
             #[cfg(not(target_arch = "wasm32"))]
-            if io.is_some() { return Error::NativeStream { source: error, custody: None }; }
+            if io.is_some() { return Error::NativeStream { code: crate::wire::ErrorCode::Invalid, source: error, custody: None }; }
             Error::Invalid(error.to_string())
         })?;
         let retry_hashing = acyclic_fs::WorkCounters { bytes_hashed: 64, ..Default::default() };
@@ -756,7 +756,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             summary.validate_next_with_io(event, model.as_ref(), limits, io)?;
             let committed = if let Some(owner) = owner {
                 let mut borrowed = io.map(PreparationIo::history_io);
-                owner.append_execution_with_work(operation_id, summary.tail, &key, &bytes, event,
+                owner.append_execution_with_work(operation_id, summary.tail, &key, bytes.clone(), event,
                     &mut borrowed.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo)).await?
             } else {
                 self.append_local_with_io(operation_id, summary.tail, key.clone(), bytes.clone(),
@@ -1900,7 +1900,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                         let _canonical_hold;
                         let canonical = io.encode_json(&parsed.value, self.maximum_payload_bytes, true)?;
                         _canonical_hold = io.guard_bytes(&canonical)?;
-                        if canonical != bytes {
+                        if canonical.as_ref() != bytes {
                             return Err(Self::journal_read_boundary(Some(io), crate::wire::ErrorCode::Storage,
                                 "execution journal JSON is not canonical"));
                         }
@@ -1930,7 +1930,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             return match io {
                 Some(io) => {
                     let mut work = io.history_io();
-                    crate::store::history::HistoryIo::verify_content(&mut work, verifier.as_ref(), reference).await
+                    crate::store::history::HistoryIo::verify_content(&mut work, verifier.as_ref(), reference)?.await
                 }
                 None => verifier.verify(reference).await,
             };
@@ -3015,7 +3015,12 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     let (history, _) = crate::conversation::ConversationState::selected_view_with_work(
         loaded, &mut borrowed.as_mut().map(|work| work as &mut dyn crate::store::history::HistoryIo),
     )?;
-    let selection = super::summary_fork::clone_selection(selection, io)?;
+    let mut message_ids = Vec::new();
+    for id in &selection.message_ids { crate::executor::stock_vec_push(&mut message_ids, *id, io)?; }
+    let selection = crate::conversation::ModelContextSelection {
+        conversation_revision: selection.conversation_revision, message_ids,
+        checkpoint: selection.checkpoint.as_ref().map(|file| super::fork_preparer_io::clone_file(file, io)).transpose()?,
+    };
     let selected = match io {
         Some(io) => {
             let resolver = JournalSelectedResolver {

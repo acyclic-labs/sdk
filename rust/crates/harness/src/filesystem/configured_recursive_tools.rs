@@ -113,7 +113,7 @@ fn canonical_admission<'de, D: serde::Deserializer<'de>>(deserializer: D)
 pub struct ConfiguredRecursiveMerge { pub caller: TaskId, pub source: TaskId, pub notice: ConversationMessage }
 
 /// Existing trusted host-retained original cut, never a model-provided ledger.
-#[derive(Clone, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfiguredRecursiveSourceCheckpoint {
     pub caller: TaskId,
@@ -122,7 +122,7 @@ pub struct ConfiguredRecursiveSourceCheckpoint {
 }
 
 /// Finite trusted configuration shared by native and browser default consumers.
-#[derive(Clone, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfiguredRecursiveToolsConfig {
     pub callers: Vec<ConfiguredRecursiveCaller>,
@@ -367,9 +367,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             Arc::new(FilesystemForkVerifier::new(self.filesystem.clone(), self.limits.file_bytes)?),
             Arc::new(StreamHistoryForkVerifier::new(self.config.stream_provider.clone())?),
         ])?);
-        Ok(aggregate.with_content_verifier(content).with_fork_verifier(forks)
+        aggregate.with_content_verifier(content).with_fork_verifier(forks)
             .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(self.filesystem.clone())))
-            .with_limits(self.limits))
+            .with_limits(self.limits)
     }
 
     async fn aggregate(&self, binding: &ConfiguredRecursiveAuthorityBinding,
@@ -676,7 +676,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             if original.caller != caller || original.request != request {
                 return Err(Error::Unauthorized("trusted original record differs from the sealed preparation request".into()));
             }
-            restored = self.restore_snapshot(&binding.owner, &request, original.snapshot.clone(), cancellation).await?;
+            restored = self.restore_snapshot(&binding.owner, &request, original.snapshot.clone_with_work(&mut None)?, cancellation).await?;
             &restored
         } else {
             aggregate = StreamAggregate::open_at_revision_measured(&self.stream, binding.owner.authority().clone(),
@@ -710,7 +710,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             authority: binding.authority().clone(), after_revision: snapshot.revision - 1, through_revision: snapshot.revision,
         }, HistoryReadLimits { maximum_events: 1, maximum_bytes: self.config.history_limits.maximum_bytes }).await?;
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-        if snapshot.events.last().is_none() || snapshot.events.last() != page.events.last() {
+        if snapshot.events.last().is_none() || snapshot.events.last() != page.page.events.last() {
             return Err(Error::Unauthorized("configured checkpoint head differs from original canonical Stream event".into()));
         }
         Reducer::restore(snapshot, verifier(binding)?, SchemaRegistry::default())
@@ -973,10 +973,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         };
         let page = reader.0.read_page_with_work(&cursor,
             HistoryReadLimits { maximum_events: 1, maximum_bytes: self.config.history_limits.maximum_bytes },
-            &mut observer,
+            true, observer.as_mut().map(|io| &mut **io as &mut dyn crate::store::history::HistoryIo),
         ).await?;
         cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
-        if snapshot.events.last().is_none() || snapshot.events.last() != page.events.last() {
+        if snapshot.events.last().is_none() || snapshot.events.last() != page.page.events.last() {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native checkpoint head differs from immutable canonical Stream event" });
         }
@@ -1193,8 +1193,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let merge = FilesystemProjectMergeVerifier::new_with_native_work(
             Arc::clone(&self.filesystem), &verifier, scope, work,
         )?.into_native_shared(work)?;
-        Ok(aggregate.with_content_verifier(content).with_fork_verifier(forks)
-            .with_merge_verifier(merge).with_limits(self.limits))
+        aggregate.with_content_verifier(content).with_fork_verifier(forks)
+            .with_merge_verifier(merge).with_limits(self.limits)
     }
 
     async fn native_merge_binding(
@@ -1507,7 +1507,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 reason: "native preparation changed its retained sealed Project source" });
         }
         let restored = if let Some(checkpoint) = &preparation.source_checkpoint {
-            let retained = context.read_file_with_native_work(checkpoint, work).await?;
+            let retained = context.context().read_file_with_native_work(checkpoint, work).await?;
             let capture = io.decode_preparation::<SourceCheckpoint>(&retained)?.into_retained();
             if capture.request != request || capture.caller != caller_task {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
