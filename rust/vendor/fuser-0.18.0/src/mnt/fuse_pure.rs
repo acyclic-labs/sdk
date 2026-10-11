@@ -56,38 +56,60 @@ const MOUNT_FUSEFS_BIN: &str = "mount_fusefs";
 pub(crate) struct MountImpl {
     mountpoint: CString,
     auto_unmount_socket: Option<UnixStream>,
-    fuse_device: Arc<DevFuse>,
+    fuse_device: Option<Arc<DevFuse>>,
+    helper: Option<std::process::Child>,
+    retained: bool,
 }
 impl MountImpl {
-    pub(crate) fn new(
-        mountpoint: &Path,
-        options: &[MountOption],
-        acl: SessionACL,
-    ) -> io::Result<(Arc<DevFuse>, MountImpl)> {
-        let mountpoint = mountpoint.canonicalize()?;
-        let (file, sock) = fuse_mount_pure(mountpoint.as_os_str(), options, acl)?;
-        let file = Arc::new(file);
-        Ok((
-            file.clone(),
-            MountImpl {
-                mountpoint: CString::new(mountpoint.as_os_str().as_bytes())?,
-                auto_unmount_socket: sock,
-                fuse_device: file,
-            },
-        ))
+    pub(crate) fn prepare(mountpoint: &Path, retained: bool) -> io::Result<Self> {
+        Ok(Self {
+            mountpoint: CString::new(mountpoint.as_os_str().as_bytes())?,
+            auto_unmount_socket: None,
+            fuse_device: None,
+            helper: None,
+            retained,
+        })
+    }
+
+    pub(crate) fn start(
+        &mut self, mountpoint: &Path, options: &[MountOption], acl: SessionACL,
+    ) -> io::Result<()> {
+        // The entire attempt already belongs to the caller's retained control.
+        // Publish the actual device before waiting on any helper acknowledgement.
+        fuse_mount_pure(self, mountpoint.as_os_str(), options, acl)
+    }
+
+    pub(crate) fn fuse_device(&self) -> Option<&Arc<DevFuse>> {
+        self.fuse_device.as_ref()
     }
 
     /// Native callers retain this exact control and prepare their own bounded
     /// helper before birth; this path never launches an implicit command.
     pub(crate) fn try_umount_impl(&mut self) -> io::Result<()> {
-        if !is_mounted(&self.fuse_device) {
+        let Some(device) = self.fuse_device.as_ref() else {
+            // A spawned helper without a received device has uncertain namespace
+            // birth. Its path alone never authorizes unmounting a foreign mount.
+            return if self.helper.is_some() {
+                Err(io::Error::from_raw_os_error(nix::libc::EBUSY))
+            } else {
+                Ok(())
+            };
+        };
+        if !is_mounted(device) {
             return Ok(());
         }
         crate::mnt::libc_umount(&self.mountpoint).map_err(Into::into)
     }
 
     pub(crate) fn umount_impl(&mut self) -> io::Result<()> {
-        if !is_mounted(&self.fuse_device) {
+        let Some(device) = self.fuse_device.as_ref() else {
+            return if self.helper.is_some() {
+                Err(io::Error::from_raw_os_error(nix::libc::EBUSY))
+            } else {
+                Ok(())
+            };
+        };
+        if !is_mounted(device) {
             // If the filesystem has already been unmounted, avoid unmounting it again.
             // Unmounting it a second time could cause a race with a newly mounted filesystem
             // living at the same mountpoint
@@ -112,13 +134,14 @@ impl MountImpl {
 }
 
 fn fuse_mount_pure(
+    original: &mut MountImpl,
     mountpoint: &OsStr,
     options: &[MountOption],
     acl: SessionACL,
-) -> Result<(DevFuse, Option<UnixStream>), io::Error> {
+) -> Result<(), io::Error> {
     if options.contains(&MountOption::AutoUnmount) {
         // Auto unmount is only supported via fusermount
-        return fuse_mount_fusermount(mountpoint, options, acl);
+        return fuse_mount_fusermount(original, mountpoint, options, acl);
     }
 
     // The direct mount path is currently implemented only for Linux and macOS.
@@ -127,14 +150,17 @@ fn fuse_mount_pure(
     if cfg!(target_os = "linux") || cfg!(target_os = "macos") {
         let res = fuse_mount_sys(mountpoint, options, acl)?;
         match res {
-            Some(file) => return Ok((file, None)),
+            Some(file) => {
+                original.fuse_device = Some(Arc::new(file));
+                return Ok(());
+            }
             None => {
                 // Retry
             }
         }
     }
 
-    fuse_mount_fusermount(mountpoint, options, acl)
+    fuse_mount_fusermount(original, mountpoint, options, acl)
 }
 
 fn fuse_unmount_pure(mountpoint: &CStr) -> io::Result<()> {
@@ -271,20 +297,25 @@ unsafe fn clear_cloexec_in_pre_exec(command: &mut Command, fd: BorrowedFd<'_>) {
 }
 
 fn fuse_mount_fusermount(
+    original: &mut MountImpl,
     mountpoint: &OsStr,
     options: &[MountOption],
     acl: SessionACL,
-) -> Result<(DevFuse, Option<UnixStream>), Error> {
+) -> Result<(), Error> {
     let fusermount_bin = detect_fusermount_bin();
 
     if fusermount_bin.ends_with(MOUNT_FUSEFS_BIN) {
-        return fuse_mount_mount_fusefs(&fusermount_bin, mountpoint, options, acl);
+        return fuse_mount_mount_fusefs(original, &fusermount_bin, mountpoint, options, acl);
     }
 
     let (child_socket, receive_socket) = UnixStream::pair()?;
 
     let mut builder = Command::new(&fusermount_bin);
-    builder.stdout(Stdio::piped()).stderr(Stdio::piped());
+    if original.retained {
+        builder.stdout(Stdio::null()).stderr(Stdio::null());
+    } else {
+        builder.stdout(Stdio::piped()).stderr(Stdio::piped());
+    }
     let mut options_strs: Vec<String> = options.iter().map(option_to_string).collect();
     options_strs.extend(acl.to_mount_option().map(|s| s.to_owned()));
     if !options_strs.is_empty() {
@@ -300,16 +331,24 @@ fn fuse_mount_fusermount(
         clear_cloexec_in_pre_exec(&mut builder, child_socket.as_fd());
     }
 
-    let fusermount_child = builder.spawn()?;
+    original.helper = Some(builder.spawn()?);
 
     drop(child_socket); // close socket in parent
+    original.auto_unmount_socket = Some(receive_socket);
 
-    let file = match receive_fusermount_message(&receive_socket) {
+    let file = match receive_fusermount_message(
+        original.auto_unmount_socket.as_ref().expect("the original receive socket is retained"),
+    ) {
         Ok(f) => f,
-        Err(_) => {
-            // Drop receive socket, since fusermount has exited with an error
-            drop(receive_socket);
-            let output = fusermount_child.wait_with_output().unwrap();
+        Err(cause) => {
+            if original.retained {
+                // Keep the original helper and socket even if reaping itself
+                // fails; this is not evidence that namespace birth never happened.
+                original.helper.as_mut().expect("spawned original helper").wait()?;
+                return Err(cause);
+            }
+            original.auto_unmount_socket.take();
+            let output = original.helper.take().expect("spawned original helper").wait_with_output()?;
             let stderr_string = String::from_utf8_lossy(&output.stderr).to_string();
             return if stderr_string.contains("only allowed if 'user_allow_other' is set") {
                 Err(io::Error::new(ErrorKind::PermissionDenied, stderr_string))
@@ -318,17 +357,25 @@ fn fuse_mount_fusermount(
             };
         }
     };
-    let mut receive_socket = Some(receive_socket);
+    let _ = fcntl(&file, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC));
+    original.fuse_device = Some(Arc::new(file));
 
     if !options.contains(&MountOption::AutoUnmount) {
         // Only close the socket, if auto unmount is not set.
         // fusermount will keep running until the socket is closed, if auto unmount is set
-        drop(mem::take(&mut receive_socket));
-        let output = fusermount_child.wait_with_output()?;
-        debug!("fusermount: {}", String::from_utf8_lossy(&output.stdout));
-        debug!("fusermount: {}", String::from_utf8_lossy(&output.stderr));
-    } else {
-        if let Some(mut stdout) = fusermount_child.stdout {
+        original.auto_unmount_socket.take();
+        if original.retained {
+            let status = original.helper.as_mut().expect("spawned original helper").wait()?;
+            if !status.success() {
+                return Err(ErrorKind::Other.into());
+            }
+        } else {
+            let output = original.helper.take().expect("spawned original helper").wait_with_output()?;
+            debug!("fusermount: {}", String::from_utf8_lossy(&output.stdout));
+            debug!("fusermount: {}", String::from_utf8_lossy(&output.stderr));
+        }
+    } else if !original.retained {
+        if let Some(mut stdout) = original.helper.as_mut().expect("spawned original helper").stdout.take() {
             // TODO: do not ignore error.
             if let Ok(flags) = fcntl(&stdout, FcntlArg::F_GETFL) {
                 let new_flags = OFlag::from_bits_retain(flags) | OFlag::O_NONBLOCK;
@@ -339,7 +386,7 @@ fn fuse_mount_fusermount(
                 debug!("fusermount: {}", String::from_utf8_lossy(&buf[..len]));
             }
         }
-        if let Some(mut stderr) = fusermount_child.stderr {
+        if let Some(mut stderr) = original.helper.as_mut().expect("spawned original helper").stderr.take() {
             // TODO: do not ignore error.
             if let Ok(flags) = fcntl(&stderr, FcntlArg::F_GETFL) {
                 let new_flags = OFlag::from_bits_retain(flags) | OFlag::O_NONBLOCK;
@@ -352,24 +399,28 @@ fn fuse_mount_fusermount(
         }
     }
 
-    // TODO: do not ignore error.
-    let _ = fcntl(&file, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC));
 
-    Ok((file, receive_socket))
+    Ok(())
 }
 
 fn fuse_mount_mount_fusefs(
+    original: &mut MountImpl,
     fusermount_bin: &str,
     mountpoint: &OsStr,
     options: &[MountOption],
     acl: SessionACL,
-) -> Result<(DevFuse, Option<UnixStream>), Error> {
-    let fuse_device = DevFuse::open()?;
+) -> Result<(), Error> {
+    original.fuse_device = Some(Arc::new(DevFuse::open()?));
+    let fuse_device = original.fuse_device.as_ref().expect("original helper device");
 
     let fuse_fd = fuse_device.as_raw_fd();
 
     let mut builder = Command::new(fusermount_bin);
-    builder.stdout(Stdio::piped()).stderr(Stdio::piped());
+    if original.retained {
+        builder.stdout(Stdio::null()).stderr(Stdio::null());
+    } else {
+        builder.stdout(Stdio::piped()).stderr(Stdio::piped());
+    }
     let mut options_strs: Vec<String> = options.iter().map(option_to_string).collect();
     options_strs.extend(acl.to_mount_option().map(|s| s.to_owned()));
     if !options_strs.is_empty() {
@@ -381,15 +432,21 @@ fn fuse_mount_mount_fusefs(
 
     unsafe { clear_cloexec_in_pre_exec(&mut builder, fuse_device.as_fd()) };
 
-    let output = builder.output()?;
-    if !output.status.success() {
-        return Err(io::Error::new(
-            ErrorKind::Other,
-            String::from_utf8_lossy(&output.stderr).to_string(),
-        ));
+    original.helper = Some(builder.spawn()?);
+    if original.retained {
+        if !original.helper.as_mut().expect("spawned original helper").wait()?.success() {
+            return Err(ErrorKind::Other.into());
+        }
+    } else {
+        let output = original.helper.take().expect("spawned original helper").wait_with_output()?;
+        if !output.status.success() {
+            return Err(io::Error::new(
+                ErrorKind::Other,
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
+        }
     }
-
-    Ok((fuse_device, None))
+    Ok(())
 }
 
 // If returned option is none. Then fusermount binary should be tried

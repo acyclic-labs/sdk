@@ -93,6 +93,7 @@ impl MountImpl {
 pub(crate) struct Mount {
     mount_impl: Option<MountImpl>,
     mount_point: PathBuf,
+    retained: bool,
 }
 
 impl Mount {
@@ -103,14 +104,9 @@ impl Mount {
     ) -> io::Result<(Arc<DevFuse>, Mount)> {
         #[cfg(fuser_mount_impl = "pure-rust")]
         {
-            let (dev_fuse, mount) = fuse_pure::MountImpl::new(mountpoint, options, acl)?;
-            Ok((
-                dev_fuse,
-                Mount {
-                    mount_impl: Some(MountImpl::Pure(mount)),
-                    mount_point: mountpoint.to_path_buf(),
-                },
-            ))
+            let mut mount = Self::prepare(mountpoint, false)?;
+            let dev_fuse = mount.start(options, acl)?;
+            Ok((dev_fuse, mount))
         }
         #[cfg(fuser_mount_impl = "libfuse2")]
         {
@@ -120,6 +116,7 @@ impl Mount {
                 Mount {
                     mount_impl: Some(MountImpl::Fuse2(mount)),
                     mount_point: mountpoint.to_path_buf(),
+                    retained: false,
                 },
             ))
         }
@@ -131,6 +128,7 @@ impl Mount {
                 Mount {
                     mount_impl: Some(MountImpl::Fuse3(mount)),
                     mount_point: mountpoint.to_path_buf(),
+                    retained: false,
                 },
             ))
         }
@@ -141,6 +139,40 @@ impl Mount {
                 "Mount is not enabled; this is test-only configuration",
             ))
         }
+    }
+
+    #[cfg(fuser_mount_impl = "pure-rust")]
+    fn prepare(mountpoint: &Path, retained: bool) -> io::Result<Self> {
+        let mount_point = mountpoint.canonicalize()?;
+        let mount = fuse_pure::MountImpl::prepare(&mount_point, retained)?;
+        Ok(Self { mount_impl: Some(MountImpl::Pure(mount)), mount_point, retained })
+    }
+
+    #[cfg(fuser_mount_impl = "pure-rust")]
+    fn start(&mut self, options: &[MountOption], acl: SessionACL) -> io::Result<Arc<DevFuse>> {
+        let Some(MountImpl::Pure(mount)) = self.mount_impl.as_mut() else {
+            return Err(io::Error::from_raw_os_error(nix::libc::EBADF));
+        };
+        mount.start(&self.mount_point, options, acl)?;
+        Ok(Arc::clone(mount.fuse_device().expect("successful mount owns its actual device")))
+    }
+
+    #[cfg(fuser_mount_impl = "pure-rust")]
+    pub(crate) fn fuse_device(&self) -> Option<&Arc<DevFuse>> {
+        match self.mount_impl.as_ref() {
+            Some(MountImpl::Pure(mount)) => mount.fuse_device(),
+            None => None,
+        }
+    }
+
+    #[cfg(fuser_mount_impl = "pure-rust")]
+    pub(crate) fn new_retained_into(
+        mountpoint: &Path, options: &[MountOption], acl: SessionACL,
+        target: &Arc<parking_lot::Mutex<Option<Mount>>>,
+    ) -> io::Result<Arc<DevFuse>> {
+        let mount = Self::prepare(mountpoint, true)?;
+        let mut attempt = RetainedMountStartup { target, mount: Some(mount) };
+        attempt.mount.as_mut().expect("original mount attempt").start(options, acl)
     }
 
     /// Retains the original native backend control on kernel refusal.
@@ -164,8 +196,26 @@ impl Mount {
     }
 }
 
+#[cfg(fuser_mount_impl = "pure-rust")]
+struct RetainedMountStartup<'a> {
+    target: &'a Arc<parking_lot::Mutex<Option<Mount>>>,
+    mount: Option<Mount>,
+}
+
+#[cfg(fuser_mount_impl = "pure-rust")]
+impl Drop for RetainedMountStartup<'_> {
+    fn drop(&mut self) {
+        // No physical IO under this mutex, including during unwinding. The exact
+        // helper/socket/device prefix returns to the preissued retirement handle.
+        *self.target.lock() = self.mount.take();
+    }
+}
+
 impl Drop for Mount {
     fn drop(&mut self) {
+        if self.retained {
+            return;
+        }
         if let Some(mut mount) = self.mount_impl.take() {
             if let Err(err) = mount.umount_impl() {
                 // This is not necessarily an error: may happen if a user called 'umount'.
@@ -219,7 +269,7 @@ fn is_mounted(fuse_device: &DevFuse) -> bool {
             Ok(0) => true,
             Ok(1) => poll_fd
                 .revents()
-                .is_some_and(|r| r.contains(PollFlags::POLLERR)),
+                .is_some_and(|r| !r.contains(PollFlags::POLLERR)),
             Ok(_) => unreachable!(),
             Err(nix::errno::Errno::EINTR) => continue,
             Err(err) => {

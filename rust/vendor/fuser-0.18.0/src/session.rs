@@ -161,23 +161,32 @@ impl<FS: Filesystem> Session<FS> {
         options: &Config,
     ) -> io::Result<Session<FS>> {
         let mut session = None;
-        Self::new_into_inner(filesystem, mountpoint, options, &mut session, true)?;
+        Self::new_into_inner(filesystem, mountpoint, options, &mut session, None, true)?;
         Ok(session.expect("successful session construction retains its session"))
     }
 
     /// Mounts through the same engine while retaining partial session ownership.
     ///
-    /// On handshake failure, `output` still owns the mounted session. This mode
-    /// never implicitly unmounts when the session ends: the caller must retain
-    /// `unmount_callable()` across `run()` and explicitly detach the actual mount.
+    /// `retirement` owns the exact attempt before physical mount birth, including
+    /// a helper that failed before device transfer. A post-device helper failure
+    /// or rejected handshake also leaves the actual session in `output`.
+    /// This mode never implicitly unmounts; retain `retirement` across `run()`
+    /// and explicitly detach. AutoUnmount is incompatible with this contract.
     #[cfg(fuser_mount_impl = "pure-rust")]
     pub fn new_retained_into<P: AsRef<Path>>(
         filesystem: FS,
         mountpoint: P,
         options: &Config,
         output: &mut Option<Self>,
+        retirement: &mut Option<SessionUnmounter>,
     ) -> io::Result<()> {
-        Self::new_into_inner(filesystem, mountpoint, options, output, false)
+        if retirement.is_some() {
+            return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+        }
+        if options.mount_options.contains(&MountOption::AutoUnmount) {
+            return Err(io::Error::from(io::ErrorKind::InvalidInput));
+        }
+        Self::new_into_inner(filesystem, mountpoint, options, output, Some(retirement), false)
     }
 
     fn new_into_inner<P: AsRef<Path>>(
@@ -185,6 +194,7 @@ impl<FS: Filesystem> Session<FS> {
         mountpoint: P,
         options: &Config,
         output: &mut Option<Self>,
+        retirement: Option<&mut Option<SessionUnmounter>>,
         unmount_on_drop: bool,
     ) -> io::Result<()> {
         if output.is_some() {
@@ -206,9 +216,34 @@ impl<FS: Filesystem> Session<FS> {
         }
         let mount_control = Arc::new(Mutex::new(None));
         let config = options.clone();
-        let (file, mount) = Mount::new(mountpoint, &options.mount_options, options.acl)?;
-
-        *mount_control.lock() = Some(mount);
+        #[cfg(fuser_mount_impl = "pure-rust")]
+        let (file, startup_error) = if let Some(retirement) = retirement {
+            *retirement = Some(SessionUnmounter { mount: Arc::clone(&mount_control) });
+            match Mount::new_retained_into(
+                mountpoint, &options.mount_options, options.acl, &mount_control,
+            ) {
+                Ok(file) => (file, None),
+                Err(cause) => {
+                    let file = mount_control.lock().as_ref()
+                        .and_then(Mount::fuse_device).cloned();
+                    match file {
+                        Some(file) => (file, Some(cause)),
+                        None => return Err(cause),
+                    }
+                }
+            }
+        } else {
+            let (file, mount) = Mount::new(mountpoint, &options.mount_options, options.acl)?;
+            *mount_control.lock() = Some(mount);
+            (file, None)
+        };
+        #[cfg(not(fuser_mount_impl = "pure-rust"))]
+        let (file, startup_error) = {
+            let _ = retirement;
+            let (file, mount) = Mount::new(mountpoint, &options.mount_options, options.acl)?;
+            *mount_control.lock() = Some(mount);
+            (file, None::<io::Error>)
+        };
         let ch = Channel::new(file);
 
         *output = Some(Session {
@@ -225,6 +260,9 @@ impl<FS: Filesystem> Session<FS> {
             proto_version: None,
             config,
         });
+        if let Some(cause) = startup_error {
+            return Err(cause);
+        }
 
         output.as_mut().expect("the actual mount is retained before handshake").handshake()
     }

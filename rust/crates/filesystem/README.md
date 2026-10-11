@@ -188,13 +188,19 @@ Linux uses the pinned upstream `fuser` 0.18.0 sources in
 `9c957f74efe715112049298cdf1d601781829c8d`, original license retained).
 The three-file ownership correction adds pure-Rust `try_umount`: kernel refusal
 retains the original mount and join handle instead of consuming them.
-Retained session construction transfers the actual mounted prefix before
-handshake, including a rejected handshake; retained `run` never consumes that
-mount from its destructor. The existing callable owns explicit retirement.
-It launches no implicit helper; native callers must prepare their own bounded
-helper before mount birth. The ordinary helper now propagates spawn and exit
-failures without allocating discarded output buffers. This does not change FUSE
-reply acknowledgement semantics or establish SDK whole-source retirement.
+Retained session construction issues the same retirement control before physical
+birth. It retains the original helper, socket and namespace metadata on an
+uncertain device-transfer failure; that uncertainty never authorizes a path-only
+unmount. The actual received FUSE device is retained before helper wait, so a
+post-device wait failure or rejected handshake preserves the mounted session.
+Retained `run` and last-control Drop never launch implicit retirement helpers;
+AutoUnmount is rejected in retained mode. Native callers prepare explicit
+bounded retirement before birth. The original device terminal predicate treats
+kernel POLLERR as disconnected, not evidence of a still-mounted source.
+The ordinary unmount helper propagates spawn and exit failures without discarded
+output buffers. FUSE reply acknowledgement semantics are unchanged; these
+ownership guarantees alone do not establish SDK whole-source retirement.
+
 Darwin's existing bridge retains an accepted interruption before its SDK instance
 exists. The same mutex orders pre-mount stop checks and instance publication;
 an already accepted stop cannot be lost and followed by an uninterruptible loop.
