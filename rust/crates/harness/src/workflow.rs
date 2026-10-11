@@ -355,6 +355,19 @@ impl MachineRegistry {
         self.validate_checkpoint_with_io(checkpoint, None)
     }
 
+    /// Validates the original guarded checkpoint without copying its state.
+    /// The caller retains its source custody throughout this synchronous call.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn validate_checkpoint_with_native_work(
+        &self, checkpoint: &MachineCheckpoint, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        self.require_native_work(&checkpoint.machine)?;
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let result = self.validate_checkpoint_with_io(checkpoint, Some(&io));
+        let (_, _temporary_custody) = finish_native_io(result, io, 0)?;
+        Ok(())
+    }
+
     pub(crate) fn validate_checkpoint_with_io(
         &self, checkpoint: &MachineCheckpoint, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
