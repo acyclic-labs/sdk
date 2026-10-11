@@ -187,8 +187,8 @@ impl ToolContext {
     }
 
     /// Borrows the actual per-command router for the original policy pipeline.
-    pub(crate) fn native_interactions(&self) -> Option<&Arc<dyn InteractionRouter>> {
-        self.native_interactions.as_ref()
+    pub(crate) fn stock_native_interactions(&self) -> Option<&dyn InteractionRouter> {
+        self.native_interactions.as_deref()
     }
 
     /// Borrows the original shared task without reconstructing its owner.
@@ -596,7 +596,7 @@ mod tests {
         assert_eq!(tool.operation_id(), operation);
         assert_eq!(tool.call_id(), call_id);
         assert!(tool.native_metadata_matches(&original));
-        assert!(tool.native_interactions().is_none());
+        assert!(tool.stock_native_interactions().is_none());
         assert_eq!(Arc::strong_count(&shared), users + 1);
         assert!(original.receipt().bytes_copied >= before.bytes_copied + call_id.len() as u64);
         let held = tool.native_custody.as_ref().expect("genuine SDK tool metadata").bytes();
