@@ -512,6 +512,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             observer.check_cancellation()?;
             observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
         }
+        crate::core::source_metadata_inspection_with_work(
+            &(scope.grants(), &self.input_grants), work,
+        )?;
         if scope.grants() != &self.input_grants || scope.limits() != self.input_limits {
             #[cfg(not(target_arch = "wasm32"))]
             if work.as_ref().is_some_and(|observer| observer.original_native_work().is_some()) {
@@ -533,29 +536,45 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         if !self._native_custody.as_ref().is_some_and(|custody|
             custody.matches_work(work))
-            || scope.grants() != &self.input_grants || scope.limits() != self.input_limits
         {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "mailbox scope differs from its original native admission" });
         }
-        Ok(())
+        let mut observer = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.require_mail_scope_with_work(scope, &mut Some(&mut observer))
     }
-    fn task_context_binding_matches(&self, context: &crate::runtime::TaskContext) -> bool {
+    fn task_context_binding_matches(
+        &self, context: &crate::runtime::TaskContext,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<bool> {
+        if context.durable_task_id() != Some(self.task_id)
+            || context.operation_id() != self.operation_id()
+            || !context.original_host_binding_matches(self.host.as_ref(), self.host.policy.as_deref())
+            || context.scope().limits() != self.input_limits
+            || context.scope().run_limits().deadline_epoch_ms != self.deadline_epoch_ms
+        {
+            return Ok(false);
+        }
         let proofs = self.input_created.as_ref().map_or(&[][..], |access| access.proofs.as_slice());
-        context.durable_task_id() == Some(self.task_id)
-            && context.operation_id() == self.operation_id()
-            && context.original_host_binding_matches(self.host.as_ref(), self.host.policy.as_deref())
-            && context.scope().grants() == &self.input_grants
-            && context.scope().limits() == self.input_limits
+        // Visit only these closed, already-admitted SDK fields. This admits
+        // their finite structure before the unchanged comparisons; no output,
+        // ownership, encoding, or completed memcmp-prefix receipt is invented.
+        crate::core::source_metadata_inspection_with_work(
+            &(context.scope().grants(), &self.input_grants,
+                context.scope().resource_proofs(), proofs,
+                context.scope().extensions(), self.extensions.as_ref()),
+            work,
+        )?;
+        Ok(context.scope().grants() == &self.input_grants
             && context.scope().resource_proofs() == proofs
-            && context.scope().extensions() == self.extensions.as_ref()
-            && context.scope().run_limits().deadline_epoch_ms == self.deadline_epoch_ms
+            && context.scope().extensions() == self.extensions.as_ref())
     }
 
     pub(crate) fn require_task_context_binding(
         &self, context: &crate::runtime::TaskContext,
     ) -> Result<()> {
-        if !self.task_context_binding_matches(context) {
+        if !self.task_context_binding_matches(context, &mut None)? {
             return Err(Error::Unauthorized(
                 "read context differs from its original SDK owner admission".into(),
             ));
@@ -569,8 +588,13 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         context.require_original_native_work(work)?;
-        self.require_mail_scope_with_native_work(context.scope(), work)?;
-        if !self.task_context_binding_matches(context) {
+        if !self._native_custody.as_ref().is_some_and(|custody| custody.matches_work(work)) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native read owner differs from its original admission ledger" });
+        }
+        let mut observer = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        if !self.task_context_binding_matches(context, &mut Some(&mut observer))? {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native read context differs from its original SDK owner admission" });
         }

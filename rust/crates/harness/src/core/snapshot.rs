@@ -49,6 +49,9 @@ struct CloneInventory<'w> {
     depth: u16,
     slots: u64,
     slot_bytes: Option<u64>,
+    // Inspection mode counts actual field/node visits, not clone ownership,
+    // encoded bytes, or an assumed completed string-comparison prefix.
+    metadata_only: bool,
 }
 
 // A zero-allocation serde carrier; recover the original owner/native failure
@@ -75,6 +78,7 @@ impl CloneInventory<'_> {
     }
     fn add(&mut self, bytes: u64) -> std::result::Result<(), InventoryError> {
         self.visit()?;
+        if self.metadata_only { return Ok(()); }
         self.bytes = self.bytes.checked_add(bytes).ok_or(InventoryError)?;
         Ok(())
     }
@@ -114,6 +118,7 @@ impl CloneInventory<'_> {
         maximum as u64
     };
     fn slot(&mut self) -> std::result::Result<(), InventoryError> {
+        if self.metadata_only { return self.visit(); }
         self.slots = self.slots.checked_add(1).ok_or(InventoryError)?;
         self.add(self.slot_bytes.unwrap_or(Self::SLOT))
     }
@@ -211,6 +216,29 @@ pub(crate) fn source_inventory<T: Serialize + ?Sized>(source: &T) -> Result<u64>
     let mut inventory = CloneInventory::default();
     source.serialize(&mut inventory).map_err(|_| Error::Invalid("closed clone inventory rejected".into()))?;
     Ok(inventory.bytes)
+}
+
+/// Inspects the closed SDK admission DTOs before their canonical comparison.
+/// No output, clone, or ownership claim is created. String lengths are O(1);
+/// this visitor does not claim that their contents were scanned or encoded.
+pub(crate) fn source_metadata_inspection_with_work<T: Serialize + ?Sized>(
+    source: &T, work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<()> {
+    if work.is_none() { return Ok(()); }
+    let failure = {
+        let mut inventory = CloneInventory {
+            work: work.as_deref_mut().map(|observer| observer as &mut dyn HistoryIo),
+            metadata_only: true, ..Default::default()
+        };
+        match source.serialize(&mut inventory) {
+            Ok(()) => return Ok(()),
+            Err(_) => inventory.failure.take(),
+        }
+    };
+    match failure {
+        Some(error) => Err(error),
+        None => Err(preparation_inventory_error(work, "closed admission metadata inspection rejected")),
+    }
 }
 pub(crate) fn scope_clone_owned_bytes(scope: &super::Scope) -> Result<u64> { source_inventory(scope) }
 pub(crate) fn fork_seed_clone_reservation(seed: &ForkSeed) -> Result<u64> { source_inventory(seed) }
@@ -1641,6 +1669,48 @@ mod tests {
             items_examined: 4_194_304,
             ..acyclic_fs::WorkBudget::default()
         }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_admission_metadata_inspection_is_finite_without_copying_or_encoding() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
+        let (_, issuer) = fixture();
+        let admitted = issuer.root("original-owner-binding", crate::Capabilities::new([
+            "operation:observe", "operation:declare", "volume:read:original-private",
+        ]));
+        let token = CancellationToken::new();
+        let work = NativeMaterializationWork::new(native_budget(), &token).expect("metadata ledger");
+        let before = work.receipt();
+        let mut io = crate::store::history::native_work_io(&work).expect("original metadata observer");
+        source_metadata_inspection_with_work(&(&admitted, &admitted), &mut Some(&mut io))?;
+        let after = work.receipt();
+        assert!(after.items_examined > before.items_examined);
+        assert_eq!(after.allocation_operations, before.allocation_operations);
+        assert_eq!(after.bytes_copied, before.bytes_copied);
+        assert_eq!(after.bytes_encoded, before.bytes_encoded);
+        assert_eq!(after.bytes_hashed, before.bytes_hashed);
+        assert_eq!(after.backend_read_operations, before.backend_read_operations);
+        assert_eq!(work.live_allocation_bytes(), 0);
+        let denied_token = CancellationToken::new();
+        let denied = NativeMaterializationWork::new(acyclic_fs::WorkBudget {
+            items_examined: 0, ..native_budget()
+        }, &denied_token).expect("denied metadata ledger");
+        let mut denied_io = crate::store::history::native_work_io(&denied).expect("denied observer");
+        assert!(matches!(source_metadata_inspection_with_work(
+            &(&admitted, &admitted), &mut Some(&mut denied_io),
+        ), Err(Error::NativeWork {
+            cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                counter: "items_examined", ..
+            }), ..
+        })));
+        assert_eq!(denied.receipt().allocation_operations, 0);
+        assert_eq!(denied.receipt().backend_read_operations, 0);
+        token.cancel();
+        assert!(matches!(source_metadata_inspection_with_work(
+            &admitted, &mut Some(&mut io),
+        ), Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
+        Ok(())
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

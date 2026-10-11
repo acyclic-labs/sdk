@@ -432,6 +432,33 @@ owner/fence, source task, volume, immutable generation, native snapshot and
 authentic signed purpose. The native copy constructs actual owned fields and
 snapshot values on the original observer; it neither signs a replacement scope
 nor obtains a new source or transcript grant.
+Cold readonly preparation restoration authenticates the exact protected original
+Started reservation and immutable preparation input, then verifies the persisted
+source-purpose MAC and the original caller's Started/admission digest. Its source
+selection is historical evidence: the original creation deadline is not a new
+query grant, and no current head, graph selection, or namespace authority is
+substituted. The current authenticated READ context, original query ledger and
+cancellation remain mandatory; the existing finite query observer contains the
+entire restoration. Subsequent physical reads still require current namespace
+READ. A restored readonly preparation cannot create resources or dispatch work.
+Original-owner native READ contexts install their retained mailbox in the same
+issuance engine before the metadata stamp. That engine checks its task identity,
+authenticates the resumed scope, and verifies original READ access; it does not
+acquire an execution fence or use a post-issuance mailbox setter.
+The original-owner content facade forwards received-copy receipt reads only to
+the exact admitted created-volume reader or the original configured reader,
+never to installed or selected output bindings. The unmintable received witness,
+original owner READ grant and ledger are checked before and after that provider
+read; its FileRef stays paired with its existing custody through the final check.
+Created-volume selection charges the actual metadata items before each
+comparison on that same original observer; borrowed shared readers are not
+claimed as new owned allocations.
+Original owner/context admission comparisons use that same optional observer
+and the existing allocation-free closed-field visitor before their unchanged
+equality checks. Completed counters report actual field/node visits only,
+not UTF-8 bytes, a completed memcmp prefix, or hard CPU/timing limits; existing
+authenticated source-record bounds contain the standard-library comparison.
+Ordinary unobserved comparisons retain their no-walk fast path.
 `TaskJournalOwner::authorize_project_source_with_native_work` invokes the actual
 configured native Root policy before sealing an operation-specific selection.
 `restore_project_source_authorization_with_native_work` authenticates the

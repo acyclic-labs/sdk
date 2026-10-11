@@ -23,7 +23,10 @@ mod snapshot;
 mod native_custody;
 use native_custody::{NativeComponentCustody, NativeComponentKey, NativeComponentRef};
 pub use snapshot::Snapshot;
-pub(crate) use snapshot::{effect_clone_reservation, event_clone_reservation, source_inventory};
+pub(crate) use snapshot::{
+    effect_clone_reservation, event_clone_reservation, source_inventory,
+    source_metadata_inspection_with_work,
+};
 pub(crate) use snapshot::{
     resource_creation_proof_clone_with_custody,
     resource_preparation_owned_bytes,
