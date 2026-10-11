@@ -619,6 +619,58 @@ impl RemoteTool {
         rpc::check_dto(rpc::Dto::CallToolResult, &output.result.value, Some(work))?;
         Ok(output)
     }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn authorize_native_selection(
+        &self,
+        context: &ToolContext,
+        invocation: &ToolInvocation,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        self.supports_native_execution(work)?;
+        if context.operation_id() != invocation.operation_id || context.call_id() != invocation.call_id {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "MCP tool context identity mismatch",
+            });
+        }
+        let examined = (invocation.name.len() as u64)
+            .checked_add(self.server.len() as u64)
+            .and_then(|bytes| bytes.checked_add(self.remote.name.len() as u64))
+            .ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "MCP selected name comparison overflow",
+            })?;
+        work.charge(acyclic_fs::WorkCounters {
+            items_examined: examined, ..Default::default()
+        }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let selected_name = invocation.name.strip_prefix("mcp.")
+            .and_then(|name| name.strip_prefix(self.server.as_str()))
+            .and_then(|name| name.strip_prefix('.'));
+        if selected_name != Some(self.remote.name.as_str()) {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "MCP invocation names another selected remote tool",
+            });
+        }
+        // Compare borrowed canonical grant spelling without building a string.
+        for grant in context.effective_scope().grants().iter() {
+            let bytes = (grant.len() as u64).checked_add(self.server.len() as u64)
+                .ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "MCP grant comparison overflow",
+                })?;
+            work.charge(acyclic_fs::WorkCounters {
+                items_examined: bytes, ..Default::default()
+            }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            if grant.strip_prefix("mcp:call:") == Some(self.server.as_str()) {
+                return Ok(());
+            }
+        }
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "MCP server capability absent",
+        })
+    }
 }
 
 impl ToolExecutor for RemoteTool {
@@ -709,51 +761,10 @@ impl ToolExecutor for RemoteTool {
         invocation: &ToolInvocation,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        self.supports_native_execution(work)?;
-        if context.operation_id() != invocation.operation_id || context.call_id() != invocation.call_id {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "MCP tool context identity mismatch",
-            });
-        }
-        let examined = (invocation.name.len() as u64)
-            .checked_add(self.server.len() as u64)
-            .and_then(|bytes| bytes.checked_add(self.remote.name.len() as u64))
-            .ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "MCP selected name comparison overflow",
-            })?;
-        work.charge(acyclic_fs::WorkCounters {
-            items_examined: examined, ..Default::default()
-        }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let selected_name = invocation.name.strip_prefix("mcp.")
-            .and_then(|name| name.strip_prefix(self.server.as_str()))
-            .and_then(|name| name.strip_prefix('.'));
-        if selected_name != Some(self.remote.name.as_str()) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "MCP invocation names another selected remote tool",
-            });
-        }
-        // Compare borrowed canonical grant spelling without building a string.
-        for grant in context.effective_scope().grants().iter() {
-            let bytes = (grant.len() as u64).checked_add(self.server.len() as u64)
-                .ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "MCP grant comparison overflow",
-                })?;
-            work.charge(acyclic_fs::WorkCounters {
-                items_examined: bytes, ..Default::default()
-            }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            if grant.strip_prefix("mcp:call:") == Some(self.server.as_str()) {
-                return Ok(());
-            }
-        }
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            reason: "MCP server capability absent",
-        })
+        self.authorize_native_selection(context, invocation, work)?;
+        context.validate_native_mcp_context(work)
     }
+
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn execute_with_native_context<'a>(
@@ -780,7 +791,8 @@ impl ToolExecutor for RemoteTool {
         invocation: &'a ToolInvocation,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>> {
-        self.authorize_with_native_context(context, invocation, work)?;
+        self.authorize_native_selection(context, invocation, work)?;
+        context.validate_native_mcp_reconciliation_context(work)?;
         crate::NativeFutureBundle::new(work, || async move {
             // Observe the exact operation only. An unknown outcome is never a
             // reason to call tools/call again.
