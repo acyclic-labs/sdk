@@ -269,10 +269,6 @@ pub struct StreamAggregate<P> {
     extension_migrations: Option<Arc<dyn ExtensionMigrationProvider>>,
     limits: Limits,
     effect_history_limits: HistoryReadLimits,
-    // ROOT binding mutates an empty conversation once. This source custody
-    // drops after the reducer's resident event and operation-index storage.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    native_root_state_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl<P: StreamProvider> StreamAggregate<P> {
@@ -518,43 +514,57 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let mut work = history::HistoryWork::new(budget, cancellation);
         let result = async {
             work.preflight()?;
-            if report.request.parent != *self.reducer.authority() {
-                return Err(Error::Unauthorized("fork report belongs to another parent".into()));
-            }
-            owner.authenticate_fork_parent(self.reducer.authority())?;
-            if scope.agent() != Some(owner.authenticated_fork_agent()?) {
-                return Err(Error::Unauthorized("fork publication scope differs from its admitted caller".into()));
-            }
-            let mut observer: Option<&mut dyn history::HistoryIo> = Some(&mut work);
-            let mut custody = crate::fork::ForkValidationWork::new(&mut observer)?;
-            let seed = report.into_seed_with_work(custody.work())?;
-            let vector_slots = seed.resources.capacity() as u64 * std::mem::size_of::<crate::fork::CapturedResource>() as u64
-                + seed.omissions.capacity() as u64 * std::mem::size_of::<crate::fork::ForkOmission>() as u64;
-            custody.adopt(vector_slots)?;
-            let (key, key_slots) = fork_command_key_with_work("fork-publication:", seed.operation_id, custody.work())?;
-            custody.adopt(key_slots)?;
-            let box_slots = std::mem::size_of::<ForkSeed>() as u64;
-            custody.work().as_deref_mut().ok_or_else(|| Error::Invalid("fork observer disappeared".into()))?
-                .admit_allocation(box_slots)?;
-            let seed = Box::new(seed);
-            custody.retain(box_slots)?;
-            let result = self.execute_guarded_publication_with_work(
-                Command {
-                    operation_id: seed.operation_id,
-                    idempotency_key: key,
-                    expected_revision: seed.parent_revision,
-                    scope,
-                    causal_parent: None,
-                    action: Action::PublishFork { seed },
-                },
-                owner,
-                crate::distributed::JournalWrite::Fresh,
-                false,
-                custody.work(),
-            ).await;
-            result
+            self.publish_fork_report_with_work(
+                report, scope, owner, &mut Some(&mut work)).await
         }.await;
         work.finish(result)
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) async fn publish_fork_report_with_work(
+        &mut self, report: ForkReport, scope: Scope,
+        owner: &crate::durable_host::TaskJournalOwner<P>,
+        work: &mut Option<&mut dyn history::HistoryIo>,
+    ) -> Result<ApplyResult> {
+        if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
+        if report.request.parent != *self.reducer.authority() {
+            return Err(guarded::guarded_boundary(work, guarded::GuardedBoundary::Unauthorized,
+                "fork report belongs to another parent"));
+        }
+        owner.authenticate_fork_parent_with_work(self.reducer.authority(), work)?;
+        if scope.agent() != Some(owner.authenticated_fork_agent_with_work(work)?) {
+            return Err(guarded::guarded_boundary(work, guarded::GuardedBoundary::Unauthorized,
+                "fork publication scope differs from its admitted caller"));
+        }
+        let mut custody = crate::fork::ForkValidationWork::new(work)?;
+        let seed = report.into_seed_with_work(custody.work())?;
+        let vector_slots = seed.resources.capacity() as u64 * std::mem::size_of::<crate::fork::CapturedResource>() as u64
+            + seed.omissions.capacity() as u64 * std::mem::size_of::<crate::fork::ForkOmission>() as u64;
+        custody.adopt(vector_slots)?;
+        let (key, key_slots) = fork_command_key_with_work(
+            "fork-publication:", seed.operation_id, custody.work())?;
+        custody.adopt(key_slots)?;
+        let box_slots = std::mem::size_of::<ForkSeed>() as u64;
+        if let Some(observer) = custody.work().as_deref_mut() {
+            observer.admit_allocation(box_slots)?;
+        }
+        // Fund the original Box before its physical allocation, not afterward.
+        custody.retain(box_slots)?;
+        let seed = Box::new(seed);
+        self.execute_guarded_publication_with_work(
+            Command {
+                operation_id: seed.operation_id,
+                idempotency_key: key,
+                expected_revision: seed.parent_revision,
+                scope,
+                causal_parent: None,
+                action: Action::PublishFork { seed },
+            },
+            owner,
+            crate::distributed::JournalWrite::Fresh,
+            false,
+            custody.work(),
+        ).await
     }
 
     /// Admits a prepared child through the parent, then binds its fresh
@@ -682,69 +692,93 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let mut work = history::HistoryWork::new(budget, cancellation);
         let result = async {
             work.preflight()?;
-            let mut observer: Option<&mut dyn history::HistoryIo> = Some(&mut work);
-            let mut custody = crate::fork::ForkValidationWork::new(&mut observer)?;
-            seed.validate_with_work(custody.work())?;
-            let parent_agent = owner.authenticated_fork_agent()?;
-            owner.authenticate_fork_parent(&seed.parent)?;
-            if parent.reducer.authority() != &seed.parent
-                || parent.reducer.fork(&seed.child) != Some(seed)
-                || self.reducer.authority() != &seed.child
-            {
-                return Err(Error::Unauthorized("child binding has no published parent fork".into()));
-            }
-            if scope.agent() != Some(seed.child_agent) {
-                return Err(Error::Unauthorized("child binding scope belongs to another agent".into()));
-            }
-            let fork_revision = seed.parent_revision.checked_add(1)
-                .ok_or_else(|| Error::Invalid("fork parent revision overflow".into()))?;
-            let fork_event = parent.read_event_at_with_work(fork_revision, custody.work()).await?;
-            if fork_event.revision != fork_revision
-                || fork_event.operation_id != seed.operation_id
-                || fork_event.scope.agent() != Some(parent_agent)
-                || !matches!(&fork_event.payload, crate::core::EventPayload::ForkPublished { seed: published } if published.as_ref() == seed)
-            {
-                return Err(Error::Conflict("parent fork event does not match the child seed".into()));
-            }
-            let (bind_operation, causal_parent) =
-                fork_child_binding_with_work(seed, custody.work())?;
-            custody.adopt(causal_parent.authority.id.capacity() as u64)?;
-            let conversation = self.reducer.conversation()
-                .ok_or_else(|| Error::Invalid("fork child is not a conversation".into()))?;
-            if conversation.agent == Some(seed.child_agent) {
-                let event = self.read_event_at_with_work(1, custody.work()).await?;
-                if event.revision == 1 && event.operation_id == bind_operation
-                    && event.causal_parent.as_ref() == Some(&causal_parent)
-                    && matches!(event.payload, crate::core::EventPayload::ConversationBound { agent } if agent == seed.child_agent)
-                {
-                    owner.verify_dispatch_with_work(custody.work()).await?;
-                    return Ok(());
-                }
-                return Err(Error::Conflict("child conversation was bound outside its published fork".into()));
-            }
-            if self.reducer.revision() != 0 || conversation.agent.is_some() {
-                return Err(Error::Conflict("fork child already has a different history".into()));
-            }
-            let (key, key_slots) = fork_command_key_with_work("fork-child-bind:", seed.operation_id, custody.work())?;
-            custody.adopt(key_slots)?;
-            let result = self.execute_guarded_publication_with_work(
-                Command {
-                    operation_id: bind_operation,
-                    idempotency_key: key,
-                    expected_revision: 0,
-                    scope,
-                    causal_parent: Some(causal_parent),
-                    action: Action::BindConversation { agent: seed.child_agent },
-                },
-                owner,
-                crate::distributed::JournalWrite::Fresh,
-                false,
-                custody.work(),
-            ).await;
-            result?;
-            Ok(())
+            self.bind_published_child_with_work(
+                parent, seed, scope, owner, &mut Some(&mut work)).await
         }.await;
         work.finish(result)
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) async fn bind_published_child_with_work(
+        &mut self, parent: &Self, seed: &ForkSeed, scope: Scope,
+        owner: &crate::durable_host::TaskJournalOwner<P>,
+        work: &mut Option<&mut dyn history::HistoryIo>,
+    ) -> Result<()> {
+        let mut custody = crate::fork::ForkValidationWork::new(work)?;
+        seed.validate_with_work(custody.work())?;
+        let parent_agent = owner.authenticated_fork_agent_with_work(custody.work())?;
+        owner.authenticate_fork_parent_with_work(&seed.parent, custody.work())?;
+        if parent.reducer.authority() != &seed.parent
+            || parent.reducer.fork(&seed.child) != Some(seed)
+            || self.reducer.authority() != &seed.child {
+            return Err(guarded::guarded_boundary(custody.work(), guarded::GuardedBoundary::Unauthorized,
+                "child binding has no published parent fork"));
+        }
+        if scope.agent() != Some(seed.child_agent) {
+            return Err(guarded::guarded_boundary(custody.work(), guarded::GuardedBoundary::Unauthorized,
+                "child binding scope belongs to another agent"));
+        }
+        let fork_revision = seed.parent_revision.checked_add(1).ok_or_else(||
+            guarded::guarded_boundary(custody.work(), guarded::GuardedBoundary::Invalid,
+                "fork parent revision overflow"))?;
+        let (fork_event, fork_event_owned) = parent.read_event_at_with_retained_quota(
+            fork_revision, custody.work()).await?;
+        custody.adopt(fork_event_owned)?;
+        if fork_event.revision != fork_revision
+            || fork_event.operation_id != seed.operation_id
+            || fork_event.scope.agent() != Some(parent_agent)
+            || !matches!(&fork_event.payload, crate::core::EventPayload::ForkPublished { seed: published } if published.as_ref() == seed) {
+            return Err(guarded::guarded_boundary(custody.work(), guarded::GuardedBoundary::Conflict,
+                "parent fork event does not match the child seed"));
+        }
+        let (bind_operation, causal_parent) = fork_child_binding_with_work(seed, custody.work())?;
+        custody.adopt(causal_parent.authority.id.capacity() as u64)?;
+        let conversation = self.reducer.conversation().ok_or_else(||
+            guarded::guarded_boundary(custody.work(), guarded::GuardedBoundary::Invalid,
+                "fork child is not a conversation"))?;
+        if conversation.agent == Some(seed.child_agent) {
+            let (event, event_owned) = self.read_event_at_with_retained_quota(1, custody.work()).await?;
+            custody.adopt(event_owned)?;
+            if event.revision == 1 && event.operation_id == bind_operation
+                && event.causal_parent.as_ref() == Some(&causal_parent)
+                && matches!(event.payload, crate::core::EventPayload::ConversationBound { agent } if agent == seed.child_agent) {
+                owner.verify_dispatch_with_work(custody.work()).await?;
+                drop(event);
+                custody.release(event_owned)?;
+                drop(fork_event);
+                custody.release(fork_event_owned)?;
+                return Ok(());
+            }
+            return Err(guarded::guarded_boundary(custody.work(), guarded::GuardedBoundary::Conflict,
+                "child conversation was bound outside its published fork"));
+        }
+        if self.reducer.revision() != 0 || conversation.agent.is_some() {
+            return Err(guarded::guarded_boundary(custody.work(), guarded::GuardedBoundary::Conflict,
+                "fork child already has a different history"));
+        }
+        let (key, key_slots) = fork_command_key_with_work(
+            "fork-child-bind:", seed.operation_id, custody.work())?;
+        custody.adopt(key_slots)?;
+        let (result, returned_owned) = self.execute_guarded_publication_with_retained_quota(
+            Command {
+                operation_id: bind_operation,
+                idempotency_key: key,
+                expected_revision: 0,
+                scope,
+                causal_parent: Some(causal_parent),
+                action: Action::BindConversation { agent: seed.child_agent },
+            },
+            owner,
+            crate::distributed::JournalWrite::Fresh,
+            false,
+            custody.work(),
+        ).await?;
+        custody.adopt(returned_owned)?;
+        drop(result);
+        custody.release(returned_owned)?;
+        drop(fork_event);
+        custody.release(fork_event_owned)?;
+        Ok(())
     }
 
     /// Opens and replays an aggregate, treating an absent path as empty.
@@ -1144,8 +1178,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
             extension_migrations: None,
             limits: Limits::default(),
             effect_history_limits: default_projection_read_limits(),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_root_state_custody: None,
         })
     }
 

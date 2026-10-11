@@ -409,8 +409,6 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     assert_eq!(aggregate.reducer().conversation().and_then(|state| state.agent), Some(agent));
     assert!(first_custody.bytes() > 0);
     assert!(first_custody.work().shares_ledger(&native));
-    assert!(aggregate.native_root_state_custody.as_ref()
-        .is_some_and(|custody| custody.bytes() > 0 && custody.work().shares_ledger(&native)));
     owner.authenticate_fork_parent(&audience)?;
     let canonical = aggregate.operation_event(command.operation_id).await?
         .ok_or_else(|| Error::NotFound("original canonical ROOT event".into()))?;
@@ -447,8 +445,6 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     assert_eq!(independent_custody.bytes(), dto_owned);
     assert_eq!(independent.receipt().output_bytes, raw_bytes);
     assert_eq!(independent.receipt().items_returned, 1);
-    assert!(aggregate.native_root_state_custody.as_ref()
-        .is_some_and(|custody| custody.work().shares_ledger(&native)));
 
     let mut wrong_actor = command.clone();
     wrong_actor.action = Action::BindConversation { agent: AgentId::from_bytes([125; 16]) };

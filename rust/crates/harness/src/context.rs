@@ -1987,13 +1987,13 @@ impl BorrowedContext<'_> {
             return Err(context_boundary_with_io(io, crate::wire::ErrorCode::Invalid,
                 "context projection exceeded declared bounds"));
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = io.and_then(ContextPreparationIo::original_native_work) {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
             for message in self.messages.first.iter().chain(self.messages.second) {
-                message.content.validate_limits_with_native_work(limits, work)?;
+                validate_context_content_with_io(&message.content, limits, false, Some(io))?;
             }
             if let Some(content) = self.messages.user {
-                content.validate_limits_with_native_work(limits, work)?;
+                validate_context_content_with_io(content, limits, false, Some(io))?;
             }
         }
         validate_context_json_with_io(self, limits.render_bytes, io)
@@ -2025,28 +2025,32 @@ impl ContextInput {
         let input = copy_context_content_with_io(&turn.input, io)?;
         let selected_context = match &turn.selected_context {
             Some(selected) => {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                if let Some(io) = io
-                    && let Some(work) = io.original_native_work()
-                {
+                #[cfg(feature = "filesystem")]
+                if let Some(io) = io {
+                    let mut history = io.history_io();
+                    let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+                    let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, 0)?;
                     let mut message_ids = Vec::new();
-                    let guard = reserve_context_vec_native(&mut message_ids, selected.selection.message_ids.len(), work)?;
-                    io.absorb_native_custody(guard)?;
-                    let copied = selected.selection.message_ids.len().checked_mul(std::mem::size_of::<uuid::Uuid>())
-                        .ok_or_else(|| native_context_boundary(crate::wire::ErrorCode::Invalid,
-                            "context selection copy overflows"))?;
-                    work.charge(acyclic_fs::WorkCounters { bytes_copied: copied as u64,
-                        ..acyclic_fs::WorkCounters::default() }).map_err(native_context_work_error)?;
-                    message_ids.extend_from_slice(&selected.selection.message_ids);
-                    let checkpoint = match &selected.selection.checkpoint {
-                        Some(file) => {
-                            let (file, guard) = clone_file_native(file, work)?;
-                            io.absorb_native_custody(guard)?;
-                            Some(file)
-                        }
-                        None => None,
+                    let copied = (selected.selection.message_ids.len() * std::mem::size_of::<uuid::Uuid>()) as u64;
+                    quota.work().as_deref().expect("observed selection").admit_copy(copied)?;
+                    compaction::reserve_vector_with_work(&mut message_ids, selected.selection.message_ids.len(), quota.work())?;
+                    quota.adopt((message_ids.capacity() * std::mem::size_of::<uuid::Uuid>()) as u64)?;
+                    let result = (|| {
+                        quota.work().as_deref_mut().expect("observed selection").copy_bytes(copied)?;
+                        message_ids.extend_from_slice(&selected.selection.message_ids);
+                        let checkpoint = match &selected.selection.checkpoint {
+                            Some(file) => Some(file.clone_in_quota(&mut quota)?),
+                            None => None,
+                        };
+                        let (messages, claim) = compaction::clone_messages_with_work(&selected.messages, quota.work())?;
+                        quota.adopt(claim)?;
+                        Ok((checkpoint, messages))
+                    })();
+                    let (checkpoint, messages) = match result {
+                        Ok(value) => value,
+                        Err(error) => { drop(message_ids); return Err(error); }
                     };
-                    let messages = copy_context_messages_with_io(&selected.messages, Some(io))?;
+                    quota.transfer();
                     Some(SelectedModelContext {
                         selection: crate::conversation::ModelContextSelection {
                             conversation_revision: selected.selection.conversation_revision,
@@ -2057,7 +2061,7 @@ impl ContextInput {
                 } else {
                     Some(selected.clone())
                 }
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                #[cfg(not(feature = "filesystem"))]
                 { Some(selected.clone()) }
             }
             None => None,
@@ -2066,9 +2070,9 @@ impl ContextInput {
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 pub(crate) type ContextPreparationIo = crate::executor::PreparationIo;
-#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+#[cfg(not(feature = "filesystem"))]
 pub(crate) type ContextPreparationIo = ();
 
 fn context_boundary_with_io(
@@ -2097,9 +2101,10 @@ fn native_context_work_error(cause: acyclic_fs::NativeTreeMaterializationError) 
 }
 
 fn validate_context_limits_with_io(limits: Limits, io: Option<&ContextPreparationIo>) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(ContextPreparationIo::original_native_work) {
-        return limits.validate_with_native_work(work);
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let mut history = io.history_io();
+        return limits.validate_with_work(&mut Some(&mut history));
     }
     let _ = io;
     limits.validate()
@@ -2108,9 +2113,11 @@ fn validate_context_limits_with_io(limits: Limits, io: Option<&ContextPreparatio
 fn validate_context_json_with_io<T: Serialize>(
     value: &T, maximum: u64, io: Option<&ContextPreparationIo>,
 ) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(ContextPreparationIo::original_native_work) {
-        return validate_context_json_native(value, maximum, work);
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let mut history = io.history_io();
+        return crate::contract::validate_trusted_json_byte_bound_with_work(
+            value, maximum, &mut Some(&mut history));
     }
     let _ = io;
     crate::contract::validate_json_byte_bound(value, maximum)
@@ -2127,10 +2134,12 @@ fn validate_context_json_native<T: Serialize>(
 fn validate_context_content_with_io(
     content: &ModelContent, limits: Limits, user: bool, io: Option<&ContextPreparationIo>,
 ) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(ContextPreparationIo::original_native_work) {
-        content.validate_limits_with_native_work(limits, work)?;
-        return if user { content.validate_user_input_with_native_work(work) } else { Ok(()) };
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let mut history = io.history_io();
+        let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+        content.validate_limits_with_work(limits, &mut work)?;
+        return if user { content.validate_user_input_with_work(&mut work) } else { Ok(()) };
     }
     let _ = io;
     content.validate_limits(limits)?;
@@ -2139,9 +2148,10 @@ fn validate_context_content_with_io(
 }
 
 fn validate_context_user_input_with_io(content: &ModelContent, io: Option<&ContextPreparationIo>) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(ContextPreparationIo::original_native_work) {
-        return content.validate_user_input_with_native_work(work);
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let mut history = io.history_io();
+        return content.validate_user_input_with_work(&mut Some(&mut history));
     }
     let _ = io;
     content.validate_user_input()
@@ -2155,63 +2165,52 @@ fn validate_context_selection_with_io(input: &ContextInput, io: Option<&ContextP
 }
 
 fn validate_context_projection_with_io(context: &Context, limits: Limits, io: Option<&ContextPreparationIo>) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(ContextPreparationIo::original_native_work) {
-        return validate_projected_context_native(context, limits, work);
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        return validate_projected_context_with_io(context, limits, Some(io));
     }
     let _ = io;
     validate_projected_context(context, limits)
 }
 
 fn copy_context_content_with_io(content: &ModelContent, io: Option<&ContextPreparationIo>) -> Result<ModelContent> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io
-        && let Some(work) = io.original_native_work()
-    {
-        let (copy, guard) = clone_content_native(content, work)?;
-        io.absorb_native_custody(guard)?;
-        return Ok(copy);
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let mut history = io.history_io();
+        return crate::model::clone_content_with_work(content, &mut Some(&mut history)).map(|(copy, _)| copy);
     }
     let _ = io;
     Ok(content.clone())
 }
 
 fn copy_context_messages_with_io(messages: &[ModelMessage], io: Option<&ContextPreparationIo>) -> Result<Vec<ModelMessage>> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io
-        && let Some(work) = io.original_native_work()
-    {
-        let (copy, guard) = clone_messages_native(messages, work)?;
-        io.absorb_native_custody(guard)?;
-        return Ok(copy);
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let mut history = io.history_io();
+        return compaction::clone_messages_with_work(messages, &mut Some(&mut history)).map(|(copy, _)| copy);
     }
     let _ = io;
     Ok(messages.to_vec())
 }
 
 pub(crate) fn context_clone_with_io(context: &Context, io: Option<&ContextPreparationIo>) -> Result<Context> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io
-        && let Some(work) = io.original_native_work()
-    {
-        let (copy, guard) = clone_context_native(context, work)?;
-        io.absorb_native_custody(guard)?;
-        return Ok(copy);
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let mut history = io.history_io();
+        return compaction::clone_context_with_work(context, &mut Some(&mut history)).map(|(copy, _)| copy);
     }
     let _ = io;
     Ok(context.clone())
 }
 
 fn copy_context_base_messages_with_io(input: &ContextInput, io: Option<&ContextPreparationIo>) -> Result<Vec<ModelMessage>> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io
-        && let Some(work) = io.original_native_work()
-    {
-        let (messages, guard) = clone_base_messages_native(
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let mut history = io.history_io();
+        return compaction::clone_base_messages_with_work(
             input.selected_context.as_ref().map_or(&[], |selected| selected.messages.as_slice()),
-            input.selected_context.is_none().then_some(&input.input), &input.prior_messages, work)?;
-        io.absorb_native_custody(guard)?;
-        return Ok(messages);
+            input.selected_context.is_none().then_some(&input.input), &input.prior_messages,
+            &mut Some(&mut history)).map(|(copy, _)| copy);
     }
     let _ = io;
     let base = input.selected_context.as_ref().map_or_else(
@@ -2256,11 +2255,10 @@ fn reserve_context_vec_native<T>(
 fn reserve_context_messages_with_io(
     messages: &mut Vec<ModelMessage>, capacity: usize, io: Option<&ContextPreparationIo>,
 ) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io
-        && let Some(work) = io.original_native_work()
-    {
-        return io.absorb_native_custody(reserve_context_vec_native(messages, capacity, work)?);
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let mut history = io.history_io();
+        return compaction::reserve_vector_with_work(messages, capacity, &mut Some(&mut history));
     }
     let _ = io;
     messages.reserve(capacity.saturating_sub(messages.len()));
@@ -2273,20 +2271,20 @@ fn append_context_messages_with_io(
     let capacity = first.len().checked_add(second.len()).ok_or_else(||
         context_boundary_with_io(io, crate::wire::ErrorCode::Invalid, "context vector capacity overflows"))?;
     reserve_context_messages_with_io(first, capacity, io)?;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(ContextPreparationIo::original_native_work) {
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let mut history = io.history_io();
         let copied = second.len().checked_mul(std::mem::size_of::<ModelMessage>()).ok_or_else(||
-            native_context_boundary(crate::wire::ErrorCode::Invalid, "context vector copy overflows"))?;
-        work.charge(acyclic_fs::WorkCounters { bytes_copied: copied as u64,
-            ..acyclic_fs::WorkCounters::default() }).map_err(native_context_work_error)?;
+            context_boundary_with_io(Some(io), crate::wire::ErrorCode::Invalid, "context vector copy overflows"))?;
+        use crate::store::history::HistoryIo as _;
+        history.admit_copy(copied as u64)?;
+        history.copy_bytes(copied as u64)?;
     }
     first.append(second);
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io
-        && io.original_native_work().is_some()
-    {
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
         let bytes = second.capacity().checked_mul(std::mem::size_of::<ModelMessage>()).ok_or_else(||
-            native_context_boundary(crate::wire::ErrorCode::Invalid, "context vector capacity overflows"))?;
+            context_boundary_with_io(Some(io), crate::wire::ErrorCode::Invalid, "context vector capacity overflows"))?;
         // The payloads moved, but the drained source vector's backing no longer has a physical user.
         drop(std::mem::take(second));
         io.release(bytes as u64)?;
@@ -2641,24 +2639,33 @@ impl ContextPipeline {
     pub(crate) fn summary_source(
         source: Context, revision: String, io: Option<&ContextPreparationIo>,
     ) -> Result<Self> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(io) = io
-            && let Some(work) = io.original_native_work()
-        {
-            const NAME: &str = "summary-source";
-            let owned = (std::mem::size_of::<Context>() + std::mem::size_of::<SourceStage>()
-                + 4 * std::mem::size_of::<usize>() + NAME.len()) as u64;
-            let guard = work.retain_owned(owned).map_err(native_context_work_error)?;
-            work.charge(acyclic_fs::WorkCounters { allocation_operations: 3,
-                bytes_copied: NAME.len() as u64, ..acyclic_fs::WorkCounters::default() })
-                .map_err(native_context_work_error)?;
-            io.absorb_native_custody(guard)?;
-            let mut stages = Vec::new();
-            let guard = reserve_context_vec_native::<Arc<dyn ContextStage>>(&mut stages, 1, work)?;
-            io.absorb_native_custody(guard)?;
-            let stage: Arc<dyn ContextStage> = Arc::new(SourceStage::new(
-                NAME.to_owned(), revision, Arc::new(source), ContextPlacement::Prepend));
-            stages.push(stage);
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            let mut history = io.history_io();
+            let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+            let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, 0)?;
+            let mut stages: Vec<Arc<dyn ContextStage>> = Vec::new();
+            let made = (|| {
+                let name = quota.work().as_deref_mut().expect("observed summary").clone_text("summary-source")?;
+                quota.adopt(name.capacity() as u64)?;
+                let bytes = std::mem::size_of::<Context>() as u64;
+                quota.work().as_deref_mut().expect("observed summary").admit_allocation(bytes)?;
+                quota.work().as_deref_mut().expect("observed summary").retain_owned(bytes)?;
+                quota.adopt(bytes)?;
+                let source = Arc::new(source);
+                let bytes = std::mem::size_of::<SourceStage>() as u64;
+                quota.work().as_deref_mut().expect("observed summary").admit_allocation(bytes)?;
+                quota.work().as_deref_mut().expect("observed summary").retain_owned(bytes)?;
+                quota.adopt(bytes)?;
+                let stage: Arc<dyn ContextStage> = Arc::new(SourceStage::new(
+                    name, revision, source, ContextPlacement::Prepend));
+                compaction::reserve_vector_with_work(&mut stages, 1, quota.work())?;
+                quota.adopt((stages.capacity() * std::mem::size_of::<Arc<dyn ContextStage>>()) as u64)?;
+                stages.push(stage);
+                Ok(())
+            })();
+            if let Err(error) = made { drop(stages); return Err(error); }
+            quota.transfer();
             return Ok(Self(stages));
         }
         let _ = io;

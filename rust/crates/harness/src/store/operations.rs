@@ -1095,51 +1095,102 @@ pub(crate) async fn find_operation_bounded_with_work<P: StreamProvider>(
     return_event: bool,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<(Option<Event>, u64)> {
+    bounded_operation_with_retained_quota(
+        client, authority, verifier, operation, maximum_bytes, return_event, work,
+    ).await.map(|(event, bytes)| (event.map(|(event, _)| event), bytes))
+}
+
+/// Carries the actual original wire decoder's retained event claim, without
+/// inventorying the returned event again or replacing its source admission.
+pub(crate) async fn bounded_operation_with_retained_quota<P: StreamProvider>(
+    client: &StreamClient<P>,
+    authority: &Authority,
+    verifier: &AuthorityVerifier,
+    operation: OperationId,
+    maximum_bytes: u64,
+    return_event: bool,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<(Option<(Event, u64)>, u64)> {
     verifier.verify_audience_with_work(authority, work)?;
     if maximum_bytes == 0 {
-        return Err(Error::Invalid(
-            "operation lookup byte bound must be positive".into(),
-        ));
+        return Err(message_lookup_error(work, crate::wire::ErrorCode::Invalid,
+            "operation lookup byte bound must be positive"));
     }
-    let path = operation_path(authority, operation)?;
+    let (path, path_owned) = if work.is_none() {
+        (operation_path(authority, operation)?, 0)
+    } else {
+        publication_path_with_work(authority, "harness/v2/aggregate-operations/",
+            Some((&operation, 36)), work)?
+    };
+    let mut location_owned = 0;
+    let mut raw_owned = 0;
+    let mut staged = None;
+    let result = async {
     let Some(index) = one_record_with_work(client, &path, 0, work).await? else {
         return match tail_optional_with_work(client, &path, work).await? {
-            None => Ok((None, 0)),
-            Some(_) => Err(Error::Storage(
-                "operation location is missing before its committed tail".into(),
-            )),
+            None => Ok(0),
+            Some(_) => Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+                "operation location is missing before its committed tail")),
         };
     };
+    raw_owned = index.value.len() as u64;
     let index_bytes = index.value.len() as u64;
     if index_bytes >= maximum_bytes {
-        return Err(Error::Invalid("operation lookup exceeds byte bound".into()));
+        return Err(message_lookup_error(work, crate::wire::ErrorCode::Invalid,
+            "operation lookup exceeds byte bound"));
     }
     if tail_with_work(client, &path, work).await? != 1 {
-        return Err(Error::Storage(
-            "operation location is not a single immutable record".into(),
-        ));
+        return Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+            "operation location is not a single immutable record"));
     }
     let location = decode_location_with_work(&index.value, work)?;
+    location_owned = location.authority.id.capacity() as u64;
     if &location.authority != authority
         || location.operation_id != operation
         || location.revision == 0
     {
-        return Err(Error::Storage(
-            "operation location identity is invalid".into(),
-        ));
+        return Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+            "operation location identity is invalid"));
     }
-    let (event, bytes) = verify_operation_locator_with_work(
+    let ((event, event_owned), bytes) = verify_operation_locator_with_retained_quota(
         client, authority, verifier, &index, &location, maximum_bytes, work,
     ).await?;
-    let location_bytes = location.authority.id.capacity() as u64;
+    staged = Some((event, event_owned));
     drop(location);
-    if let Some(work) = work.as_deref_mut() { work.release_owned(location_bytes)?; }
     drop(index);
-    if let Some(work) = work.as_deref_mut() {
-        if return_event { work.stage_output(bytes - index_bytes, 1)?; }
-        work.release_record(index_bytes)?;
+    Ok(bytes)
+    }.await;
+    drop(path);
+    let released = match work.as_deref_mut() {
+        Some(observer) => {
+            let raw = observer.release_record(raw_owned);
+            let location = observer.release_owned(location_owned);
+            let path = observer.release_owned(path_owned);
+            raw.and(location).and(path)
+        }
+        None => Ok(()),
+    };
+    let result = match result {
+        Ok(bytes) => released.map(|()| bytes),
+        Err(error) => Err(error),
+    };
+    let result = result.and_then(|bytes| {
+        if return_event
+            && staged.is_some()
+            && let Some(observer) = work.as_deref_mut()
+        {
+            observer.stage_output(bytes - raw_owned, 1)?;
+        }
+        Ok(bytes)
+    });
+    match result {
+        Ok(bytes) => Ok((staged, bytes)),
+        Err(error) => {
+            let event_owned = staged.as_ref().map_or(0, |(_, owned)| *owned);
+            drop(staged);
+            release_owned_after_drop(Err(error), event_owned, work)
+        }
     }
-    Ok((Some(event), bytes))
 }
 
 pub(super) async fn verify_operation_locator<P: StreamProvider>(
@@ -1162,7 +1213,21 @@ pub(crate) async fn verify_operation_locator_with_work<P: StreamProvider>(
     maximum_bytes: u64,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<(Event, u64)> {
-    verifier.verify_audience(authority)?;
+    verify_operation_locator_with_retained_quota(
+        client, authority, verifier, index, location, maximum_bytes, work,
+    ).await.map(|((event, _), bytes)| (event, bytes))
+}
+
+pub(super) async fn verify_operation_locator_with_retained_quota<P: StreamProvider>(
+    client: &StreamClient<P>,
+    authority: &Authority,
+    verifier: &AuthorityVerifier,
+    index: &Record,
+    location: &OperationLocation,
+    maximum_bytes: u64,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<((Event, u64), u64)> {
+    verifier.verify_audience_with_work(authority, work)?;
     let index_bytes = index.value.len() as u64;
     if index_bytes >= maximum_bytes {
         return Err(message_lookup_error(work, crate::wire::ErrorCode::Invalid,
@@ -1189,16 +1254,15 @@ pub(crate) async fn verify_operation_locator_with_work<P: StreamProvider>(
             .filter(|bytes| *bytes <= maximum_bytes)
             .ok_or_else(|| message_lookup_error(work, crate::wire::ErrorCode::Invalid,
                 "operation lookup exceeds byte bound"))?;
-        let event = super::history::verify_history_record_with_work(
+        let (event, owned) = super::history::verify_history_record_with_retained_quota(
             verifier, authority, sequence, &record, work)?;
-        let owned = if work.is_some() { crate::core::event_clone_reservation(&event)? } else { 0 };
         if let Err(error) = verify_operation_binding_with_work(
             authority, index, location, &record, &event, work)
         {
             drop(event);
             return release_owned_after_drop(Err(error), owned, work);
         }
-        Ok((event, consumed_bytes))
+        Ok(((event, owned), consumed_bytes))
     })();
     drop(record);
     let released = match work.as_deref_mut() {
@@ -1206,10 +1270,9 @@ pub(crate) async fn verify_operation_locator_with_work<P: StreamProvider>(
         None => Ok(()),
     };
     match result {
-        Ok((event, bytes)) => match released {
-            Ok(()) => Ok((event, bytes)),
+        Ok(((event, owned), bytes)) => match released {
+            Ok(()) => Ok(((event, owned), bytes)),
             Err(error) => {
-                let owned = if work.is_some() { crate::core::event_clone_reservation(&event)? } else { 0 };
                 drop(event);
                 release_owned_after_drop(Err(error), owned, work)
             }
@@ -1709,6 +1772,19 @@ mod native_publication_custody_tests {
         };
         publication.verify(&envelope)?;
         publication.verify_with_work(&envelope, &mut work)?;
+        let mut replay_io = native_work_io(&native).expect("same original replay decoder");
+        let (replayed, consumed) = bounded_operation_with_retained_quota(
+            &client, &authority, &issuer.verifier(), event.operation_id,
+            2 * acyclic_stream::MAX_RECORD_BYTES as u64, false, &mut Some(&mut replay_io),
+        ).await?;
+        let (replayed, replay_paid) = replayed.expect("actual immutable locator resolves original event");
+        assert_eq!(replayed, event);
+        assert!(consumed > publication.bytes.len() as u64);
+        let mut replay_custody = replay_io.into_custody();
+        assert_eq!(replay_custody.bytes(), replay_paid);
+        drop(replayed);
+        replay_custody.release(replay_paid).expect("original decoded event physically dropped");
+        assert_eq!(replay_custody.bytes(), 0);
         if let CommittedMutation::Append(append) = &mut envelope.mutations[0] {
             append.start += 1;
         }

@@ -319,14 +319,53 @@ impl VolumeRef {
         class: VolumeClass,
         owner: VolumeOwner,
     ) -> Result<Self> {
-        let value = Self {
-            provider,
-            id: id.into(),
-            class,
-            owner,
-        };
-        value.validate()?;
+        Self::new_with_work(provider, id.into(), class, owner, &mut None)
+    }
+
+    pub(crate) fn new_with_work(
+        provider: ProviderRef,
+        id: String,
+        class: VolumeClass,
+        owner: VolumeOwner,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        let value = Self { provider, id, class, owner };
+        value.validate_with_work(work)?;
         Ok(value)
+    }
+
+    /// Copies a volume identity under the original native work ledger.
+    ///
+    /// The returned custody covers owned identity text, not authority or grants.
+    /// Keep it alive until after the returned identity is physically dropped.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn new_with_native_work(
+        provider: &ProviderRef,
+        id: &str,
+        class: VolumeClass,
+        owner: &VolumeOwner,
+        native: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        let mut observer = crate::store::history::native_work_io(native)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut work = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
+        Self::validate_fields_with_work(provider, id, owner, &mut work)?;
+        let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
+        let volume = (|| {
+            let provider = crate::core::copy_provider(provider, &mut quota)?;
+            let id = crate::core::copy_text(id, &mut quota)?;
+            let owner = match owner {
+                VolumeOwner::Project(text) =>
+                    VolumeOwner::Project(crate::core::copy_text(text, &mut quota)?),
+                VolumeOwner::Session(text) =>
+                    VolumeOwner::Session(crate::core::copy_text(text, &mut quota)?),
+                VolumeOwner::Agent(agent) => VolumeOwner::Agent(*agent),
+            };
+            Self::new_with_work(provider, id, class, owner, quota.work())
+        })()?;
+        quota.transfer();
+        drop(quota);
+        Ok((volume, observer.into_custody()))
     }
 
     /// Rejects malformed provider and owner identities.
@@ -337,11 +376,18 @@ impl VolumeRef {
     pub(crate) fn validate_with_work(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        if let Some(reason) = self.provider.validation_error() {
+        Self::validate_fields_with_work(&self.provider, &self.id, &self.owner, work)
+    }
+
+    fn validate_fields_with_work(
+        provider: &ProviderRef, id: &str, owner: &VolumeOwner,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(reason) = provider.validation_error() {
             return Err(conversation_boundary(work, reason));
         }
-        validate_label_with_work(&self.id, MAX_LABEL_BYTES, work)?;
-        match &self.owner {
+        validate_label_with_work(id, MAX_LABEL_BYTES, work)?;
+        match owner {
             VolumeOwner::Project(id) | VolumeOwner::Session(id) => {
                 validate_label_with_work(id, MAX_LABEL_BYTES, work)?;
             }
@@ -3513,6 +3559,18 @@ impl ConversationState {
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn native_unclaimed_message_buffer_bytes(&self) -> Result<u64> {
+        if self.native_custody.messages.is_some() { return Ok(0); }
+        native_conversation_buffer_bytes::<ConversationMessage>(self.messages.capacity())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn native_unclaimed_archived_prefix_bytes(&self) -> Result<u64> {
+        if self.native_custody.archive.is_some() { return Ok(0); }
+        self.archived_prefix.as_ref().map_or(Ok(0), |prefix| prefix.checkpoint.logical_owned_bytes())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn install_native_message_buffer(&mut self, allocation: acyclic_fs::NativeAllocation) {
         assert!(self.native_custody.messages.is_none(), "message buffer already has custody");
         self.native_custody.messages = Some(allocation);
@@ -4626,6 +4684,55 @@ mod tests {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
+    fn native_volume_constructor_copies_only_identity_fields_and_retires_failure() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        let provider = ProviderRef::new("acyclic", "filesystem", "2")?;
+        let agent = AgentId::from_bytes([33; 16]);
+        for owner in [VolumeOwner::Project("project-root".into()), VolumeOwner::Session("session-root".into()),
+            VolumeOwner::Agent(agent)] {
+            let token = CancellationToken::new();
+            let budget = native_conversation_budget();
+            let native = NativeMaterializationWork::new(budget, &token).expect("volume constructor ledger");
+            let before = native.receipt();
+            let (volume, custody) = VolumeRef::new_with_native_work(
+                &provider, "scratch", VolumeClass::AgentPrivate, &owner, &native)?;
+            assert_eq!(volume, VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, owner.clone())?);
+            assert_eq!(custody.bytes(), volume.logical_owned_bytes()?);
+            let owner_bytes = match &owner {
+                VolumeOwner::Project(text) | VolumeOwner::Session(text) => text.len() as u64,
+                VolumeOwner::Agent(_) => 0,
+            };
+            assert_eq!(native.receipt().bytes_copied - before.bytes_copied,
+                (provider.namespace().len() + provider.family().len() + provider.version().len() + "scratch".len()) as u64
+                    + owner_bytes);
+            assert_eq!(native.receipt().bytes_encoded + native.receipt().bytes_hashed, 0);
+            drop(volume);
+            drop(custody);
+            native.admit_retained(budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes())
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        }
+        let owner = VolumeOwner::Agent(agent);
+        let token = CancellationToken::new();
+        let budget = native_conversation_budget();
+        let native = NativeMaterializationWork::new(budget, &token).expect("invalid volume ledger");
+        let before = native.receipt();
+        assert!(matches!(VolumeRef::new_with_native_work(
+            &provider, "/bad", VolumeClass::AgentPrivate, &owner, &native), Err(Error::NativeBoundary { .. })));
+        assert_eq!(native.receipt(), before, "original validation rejects before any payload allocation or copy");
+        let token = CancellationToken::new();
+        let mut budget = native_conversation_budget();
+        budget.bytes_copied = provider.namespace().len() as u64;
+        let native = NativeMaterializationWork::new(budget, &token).expect("partial volume ledger");
+        assert!(matches!(VolumeRef::new_with_native_work(
+            &provider, "scratch", VolumeClass::AgentPrivate, &owner, &native), Err(Error::NativeWork { .. })));
+        assert_eq!(native.receipt().bytes_copied, provider.namespace().len() as u64);
+        native.admit_retained(budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
     fn native_message_partial_field_copy_retires_actual_content_and_attachment_buffer() -> Result<()> {
         use acyclic_fs::{CancellationToken, NativeMaterializationWork};
         use crate::store::history::HistoryIo;
@@ -4709,6 +4816,8 @@ mod tests {
         let before = first.receipt().bytes_copied;
         let (held, produced) = source.clone_with_work_and_custody(&mut Some(&mut io))?;
         assert_eq!(held, source);
+        assert_eq!(held.native_unclaimed_message_buffer_bytes()?, 0);
+        assert_eq!(held.native_unclaimed_cache_bytes()?, 0);
         assert_eq!(first.receipt().bytes_copied - before, recipe.1);
         let deep = io.into_custody();
         assert_eq!(deep.bytes(), produced, "only observer-owned deep payload is reported");
@@ -4737,6 +4846,9 @@ mod tests {
         assert!(components.iter().all(|(_, guard)| guard.work().shares_ledger(&second)));
         assert_eq!(first.receipt(), original_receipt, "cancelled source ledger is neither rebound nor absorbed");
         assert_eq!(suffix.history_digest, source.history_digest);
+        assert_eq!(suffix.native_unclaimed_message_buffer_bytes()?, 0);
+        assert_eq!(suffix.native_unclaimed_archived_prefix_bytes()?, 0);
+        assert_eq!(suffix.native_unclaimed_cache_bytes()?, 0);
         drop(suffix);
         drop(components);
         second.admit_retained(budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes())

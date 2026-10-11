@@ -222,11 +222,170 @@ impl Default for CompactionPolicy {
     }
 }
 
+pub(crate) fn clone_context_with_work(
+    context: &Context, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<(Context, u64)> {
+    let (mut copy, claim) = clone_context_prefix_with_work(context, context.messages.len(), work)?;
+    copy.current_input_index = context.current_input_index;
+    Ok((copy, claim))
+}
+
+pub(crate) fn clone_context_prefix_with_work(
+    context: &Context, through: usize,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<(Context, u64)> {
+    let source = context.messages.get(..through)
+        .ok_or_else(|| Error::Invalid("summary extent exceeds source projection".into()))?;
+    if work.is_none() {
+        return Ok((Context { messages: source.to_vec(), metadata: context.metadata.clone(),
+            current_input_index: context.current_input_index.filter(|index| (*index as usize) < through) }, 0));
+    }
+    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let mut result = Context::default();
+    let copied = (|| {
+        let (messages, claim) = clone_messages_with_work(source, quota.work())?;
+        result.messages = messages;
+        quota.adopt(claim)?;
+        let (metadata, claim) = clone_metadata_with_work(&context.metadata, quota.work())?;
+        result.metadata = metadata;
+        quota.adopt(claim)?;
+        result.current_input_index = context.current_input_index.filter(|index| (*index as usize) < through);
+        Ok(())
+    })();
+    if let Err(error) = copied { drop(result); return Err(error); }
+    let claim = quota.retained();
+    quota.transfer();
+    Ok((result, claim))
+}
+
+pub(crate) fn clone_metadata_with_work(
+    metadata: &std::collections::BTreeMap<String, crate::conversation::FileRef>,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<(std::collections::BTreeMap<String, crate::conversation::FileRef>, u64)> {
+    if work.is_none() { return Ok((metadata.clone(), 0)); }
+    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let mut result = std::collections::BTreeMap::new();
+    let copied = (|| {
+        for (key, file) in metadata {
+            let key = quota.work().as_deref_mut().expect("observed metadata").clone_text(key)?;
+            quota.adopt(key.capacity() as u64)?;
+            let file = file.clone_in_quota(&mut quota)?;
+            let bytes = std::mem::size_of::<(String, crate::conversation::FileRef)>() as u64;
+            let io = quota.work().as_deref_mut().expect("observed metadata");
+            io.admit_allocation(bytes)?;
+            io.retain_owned(bytes)?;
+            quota.adopt(bytes)?;
+            result.insert(key, file);
+        }
+        Ok(())
+    })();
+    if let Err(error) = copied { drop(result); return Err(error); }
+    let claim = quota.retained();
+    quota.transfer();
+    Ok((result, claim))
+}
+
+pub(crate) fn clone_messages_with_work(
+    messages: &[crate::model::ModelMessage],
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<(Vec<crate::model::ModelMessage>, u64)> {
+    clone_base_messages_with_work(messages, None, &[], work)
+}
+
+pub(crate) fn clone_base_messages_with_work(
+    first: &[crate::model::ModelMessage], user: Option<&crate::model::ModelContent>,
+    second: &[crate::model::ModelMessage],
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<(Vec<crate::model::ModelMessage>, u64)> {
+    use crate::model::{ModelMessage, ModelRole};
+    if work.is_none() {
+        let mut result = first.to_vec();
+        if let Some(content) = user { result.push(ModelMessage { role: ModelRole::User, content: content.clone() }); }
+        result.extend_from_slice(second);
+        return Ok((result, 0));
+    }
+    let count = first.len().checked_add(second.len()).and_then(|n| n.checked_add(usize::from(user.is_some())))
+        .ok_or_else(|| Error::Invalid("context vector capacity overflows".into()))?;
+    let bytes = count.checked_mul(std::mem::size_of::<ModelMessage>())
+        .ok_or_else(|| Error::Invalid("context vector capacity overflows".into()))? as u64;
+    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let mut result = Vec::new();
+    let copied = (|| {
+        let io = quota.work().as_deref_mut().expect("observed context");
+        io.admit_allocation(bytes)?;
+        io.retain_owned(bytes)?;
+        quota.adopt(bytes)?;
+        result.try_reserve_exact(count).map_err(|cause|
+            quota.work().as_deref().expect("observed context").allocation_failure(cause))?;
+        let actual = (result.capacity() * std::mem::size_of::<ModelMessage>()) as u64;
+        if actual > bytes {
+            let io = quota.work().as_deref_mut().expect("observed context");
+            io.admit_owned(actual - bytes)?;
+            io.retain_owned(actual - bytes)?;
+            quota.adopt(actual - bytes)?;
+        }
+        for (role, content) in first.iter().map(|m| (m.role, &m.content))
+            .chain(user.into_iter().map(|content| (ModelRole::User, content)))
+            .chain(second.iter().map(|m| (m.role, &m.content))) {
+            let slot = std::mem::size_of::<ModelMessage>() as u64;
+            quota.work().as_deref().expect("observed context").admit_copy(slot)?;
+            let (content, claim) = crate::model::clone_content_with_work(content, quota.work())?;
+            quota.adopt(claim)?;
+            quota.work().as_deref_mut().expect("observed context").copy_bytes(slot)?;
+            result.push(ModelMessage { role, content });
+        }
+        Ok(())
+    })();
+    if let Err(error) = copied { drop(result); return Err(error); }
+    let claim = quota.retained();
+    quota.transfer();
+    Ok((result, claim))
+}
+
+pub(crate) fn reserve_vector_with_work<T>(
+    values: &mut Vec<T>, capacity: usize,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<()> {
+    if capacity <= values.capacity() { return Ok(()); }
+    let Some(io) = work.as_deref_mut() else {
+        values.reserve(capacity.saturating_sub(values.len()));
+        return Ok(());
+    };
+    let bytes = capacity.checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| Error::Invalid("context vector capacity overflows".into()))? as u64;
+    let old = (values.capacity() * std::mem::size_of::<T>()) as u64;
+    let copied = (values.len() * std::mem::size_of::<T>()) as u64;
+    io.admit_copy(copied)?;
+    io.admit_allocation(bytes)?;
+    let mut quota = crate::wire_codec::CodecQuota::new(work, bytes)?;
+    quota.work().as_deref_mut().expect("observed vector").copy_bytes(copied)?;
+    if let Err(cause) = values.try_reserve_exact(capacity - values.len()) {
+        return Err(quota.work().as_deref().expect("observed vector").allocation_failure(cause));
+    }
+    let actual = (values.capacity() * std::mem::size_of::<T>()) as u64;
+    let reconciled = (|| {
+        if actual > bytes {
+            let io = quota.work().as_deref_mut().expect("observed vector");
+            io.admit_owned(actual - bytes)?;
+            io.retain_owned(actual - bytes)?;
+            quota.adopt(actual - bytes)?;
+        }
+        quota.work().as_deref_mut().expect("observed vector").release_owned(old)?;
+        Ok(())
+    })();
+    if let Err(error) = reconciled {
+        drop(std::mem::take(values));
+        return Err(error);
+    }
+    quota.transfer();
+    Ok(())
+}
+
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native {
     use super::*;
     use crate::conversation::FileRef;
-    use crate::model::{FileProjectionPolicy, ModelContent, ModelDataPart, ModelMessage, ToolResultContent};
+    use crate::model::{ModelContent, ModelMessage};
     use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
     use std::{collections::BTreeMap, mem::size_of};
 
@@ -249,91 +408,6 @@ mod native {
         fn text(&mut self, text: &str) -> Result<()> { self.add(text.len(), true, !text.is_empty()) }
         fn vector<T>(&mut self, count: usize) -> Result<()> {
             self.add(count.checked_mul(size_of::<T>()).ok_or_else(overflow)?, false, count != 0)
-        }
-        fn file(&mut self, file: &FileRef) -> Result<()> {
-            let (allocations, bytes) = file.clone_work_recipe()?;
-            self.owned = self.owned.checked_add(bytes).ok_or_else(overflow)?;
-            self.copied = self.copied.checked_add(bytes).ok_or_else(overflow)?;
-            self.allocations = self.allocations.checked_add(allocations).ok_or_else(overflow)?;
-            Ok(())
-        }
-        fn json(&mut self, value: &serde_json::Value) -> Result<()> {
-            match value {
-                serde_json::Value::String(text) => self.text(text)?,
-                serde_json::Value::Array(values) => {
-                    self.vector::<serde_json::Value>(values.len())?;
-                    for value in values { self.json(value)?; }
-                }
-                serde_json::Value::Object(values) => {
-                    for (key, value) in values {
-                        self.add(size_of::<(String, serde_json::Value)>(), false, false)?;
-                        self.text(key)?;
-                        self.json(value)?;
-                    }
-                }
-                _ => {}
-            }
-            Ok(())
-        }
-        fn policy(&mut self, policy: &FileProjectionPolicy) -> Result<()> {
-            if let FileProjectionPolicy::Native(policy) = policy {
-                self.add(size_of::<crate::model::NativeMediaPolicy>(), false, true)?;
-                if let Some(binding) = &policy.configuration {
-                    self.text(&binding.source.authority.id)?;
-                    self.text(&binding.configuration.extension.name)?;
-                    self.file(&binding.configuration.content)?;
-                }
-            }
-            Ok(())
-        }
-        fn data(&mut self, part: &ModelDataPart) -> Result<()> {
-            match part {
-                ModelDataPart::Text { text } => self.text(text),
-                ModelDataPart::File { file, policy } => { self.file(file)?; self.policy(policy) }
-            }
-        }
-        fn part(&mut self, part: &ModelContentPart) -> Result<()> {
-            match part {
-                ModelContentPart::Text { text } => self.text(text)?,
-                ModelContentPart::File { file, policy } => { self.file(file)?; self.policy(policy)?; }
-                ModelContentPart::ToolCall { call_id, name, arguments } => {
-                    self.text(call_id)?; self.text(name)?; self.json(arguments)?;
-                }
-                ModelContentPart::ToolResult { call_id, name, content } => {
-                    self.text(call_id)?; self.text(name)?;
-                    match content {
-                        ToolResultContent::Json { value } => self.json(value)?,
-                        ToolResultContent::Parts { parts } => {
-                            self.vector::<ModelDataPart>(parts.len())?;
-                            for part in parts { self.data(part)?; }
-                        }
-                    }
-                }
-            }
-            Ok(())
-        }
-        fn content(&mut self, content: &ModelContent) -> Result<()> {
-            match content {
-                ModelContent::Text(text) => self.text(text),
-                ModelContent::Part(part) => self.part(part),
-                ModelContent::Parts(parts) => {
-                    self.vector::<ModelContentPart>(parts.len())?;
-                    for part in parts { self.part(part)?; }
-                    Ok(())
-                }
-            }
-        }
-        fn messages(&mut self, messages: &[ModelMessage]) -> Result<()> {
-            self.vector::<ModelMessage>(messages.len())?;
-            for message in messages { self.content(&message.content)?; }
-            Ok(())
-        }
-        fn metadata(&mut self, metadata: &BTreeMap<String, FileRef>) -> Result<()> {
-            for (key, file) in metadata {
-                self.add(size_of::<(String, FileRef)>(), false, false)?;
-                self.text(key)?; self.file(file)?;
-            }
-            Ok(())
         }
         fn fund(&self, work: &NativeMaterializationWork) -> Result<NativeAllocation> {
             work.admit(WorkCounters { bytes_copied: self.copied, allocation_operations: self.allocations,
@@ -625,64 +699,50 @@ mod native {
         }
     }
 
+    macro_rules! observer {
+        ($work:expr) => {
+            crate::store::history::native_work_io($work)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?
+        };
+    }
+
     pub(crate) fn clone_file_native(file: &FileRef, work: &NativeMaterializationWork) -> Result<(FileRef, NativeAllocation)> {
-        let mut recipe = CloneRecipe::default(); recipe.file(file)?;
-        let guard = recipe.admit(work)?;
-        Ok((file.clone(), guard))
+        file.clone_with_native_work(work)
     }
     pub(crate) fn clone_content_native(content: &ModelContent, work: &NativeMaterializationWork) -> Result<(ModelContent, NativeAllocation)> {
-        let mut recipe = CloneRecipe::default(); recipe.content(content)?;
-        let guard = recipe.admit(work)?;
-        Ok((content.clone(), guard))
+        let mut io = observer!(work);
+        let (copy, _) = crate::model::clone_content_with_work(content, &mut Some(&mut io))?;
+        Ok((copy, io.into_custody()))
     }
     pub(crate) fn clone_messages_native(messages: &[ModelMessage], work: &NativeMaterializationWork) -> Result<(Vec<ModelMessage>, NativeAllocation)> {
-        let mut recipe = CloneRecipe::default(); recipe.messages(messages)?;
-        let guard = recipe.admit(work)?;
-        Ok((messages.to_vec(), guard))
+        let mut io = observer!(work);
+        let (copy, _) = clone_messages_with_work(messages, &mut Some(&mut io))?;
+        Ok((copy, io.into_custody()))
     }
     pub(crate) fn clone_metadata_native(metadata: &BTreeMap<String, FileRef>, work: &NativeMaterializationWork) -> Result<(BTreeMap<String, FileRef>, NativeAllocation)> {
-        let mut recipe = CloneRecipe::default(); recipe.metadata(metadata)?;
-        let guard = recipe.admit(work)?;
-        Ok((metadata.clone(), guard))
+        let mut io = observer!(work);
+        let (copy, _) = clone_metadata_with_work(metadata, &mut Some(&mut io))?;
+        Ok((copy, io.into_custody()))
     }
     pub(crate) fn clone_context_native(context: &Context, work: &NativeMaterializationWork) -> Result<(Context, NativeAllocation)> {
-        let mut recipe = CloneRecipe::default();
-        recipe.messages(&context.messages)?; recipe.metadata(&context.metadata)?;
-        let guard = recipe.admit(work)?;
-        Ok((context.clone(), guard))
+        let mut io = observer!(work);
+        let (copy, _) = clone_context_with_work(context, &mut Some(&mut io))?;
+        Ok((copy, io.into_custody()))
     }
     pub(crate) fn clone_context_prefix_native(
         context: &Context, through: usize, work: &NativeMaterializationWork,
     ) -> Result<(Context, NativeAllocation)> {
-        let messages = context.messages.get(..through).ok_or_else(|| Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid, reason: "summary extent exceeds source projection",
-        })?;
-        let mut recipe = CloneRecipe::default();
-        recipe.messages(messages)?; recipe.metadata(&context.metadata)?;
-        let guard = recipe.admit(work)?;
-        Ok((Context { messages: messages.to_vec(), metadata: context.metadata.clone(),
-            current_input_index: context.current_input_index.filter(|index| (*index as usize) < through) }, guard))
+        let mut io = observer!(work);
+        let (copy, _) = clone_context_prefix_with_work(context, through, &mut Some(&mut io))?;
+        Ok((copy, io.into_custody()))
     }
-
     pub(crate) fn clone_base_messages_native(
         first: &[ModelMessage], user: Option<&ModelContent>, second: &[ModelMessage],
         work: &NativeMaterializationWork,
     ) -> Result<(Vec<ModelMessage>, NativeAllocation)> {
-        let count = first.len().checked_add(usize::from(user.is_some()))
-            .and_then(|count| count.checked_add(second.len())).ok_or_else(overflow)?;
-        let mut recipe = CloneRecipe::default();
-        for message in first.iter().chain(second) { recipe.content(&message.content)?; }
-        if let Some(content) = user { recipe.content(content)?; }
-        let mut payload = recipe.fund(work)?;
-        let mut result = native_vector::<ModelMessage>(count, work)?;
-        result.1.absorb(&mut payload).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        recipe.begin(work)?;
-        result.0.extend(first.iter().cloned());
-        if let Some(content) = user {
-            result.0.push(ModelMessage { role: crate::model::ModelRole::User, content: content.clone() });
-        }
-        result.0.extend(second.iter().cloned());
-        Ok(result)
+        let mut io = observer!(work);
+        let (copy, _) = clone_base_messages_with_work(first, user, second, &mut Some(&mut io))?;
+        Ok((copy, io.into_custody()))
     }
 
 
@@ -710,6 +770,74 @@ pub(crate) use native::{clone_base_messages_native, clone_content_native, clone_
 mod tests {
     use super::*;
     use crate::model::{ModelContent, ModelMessage, ModelRole, ToolResultContent};
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn partial_field_copy_releases_original_custody_and_cancelled_copy_is_empty() {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(WorkBudget {
+            allocation_operations: 3,
+            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 4096,
+            bytes_copied: 4096,
+            items_examined: 128,
+            ..WorkBudget::default()
+        }, &cancellation).expect("original ledger");
+        let messages = vec![
+            ModelMessage { role: ModelRole::User, content: ModelContent::Text("first".into()) },
+            ModelMessage { role: ModelRole::User, content: ModelContent::Text("second".into()) },
+        ];
+        let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
+        assert!(clone_messages_with_work(&messages, &mut Some(&mut observer)).is_err());
+        assert!(work.receipt().bytes_copied >= 5);
+        let custody = observer.into_custody();
+        assert_eq!(custody.bytes(), 0, "failed partial payload drops before its quota releases");
+        drop(custody);
+        cancellation.cancel();
+        let before = work.receipt();
+        assert!(native::clone_messages_native(&messages, &work).is_err());
+        assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
+    }
+
+    #[test]
+    fn summary_prefix_preserves_ordinary_input_selection() -> Result<()> {
+        let mut context = Context {
+            messages: vec![
+                ModelMessage { role: ModelRole::User, content: ModelContent::Text("first".into()) },
+                ModelMessage { role: ModelRole::Assistant, content: ModelContent::Parts(vec![
+                    ModelContentPart::Text { text: "second".into() },
+                ]) },
+            ],
+            current_input_index: Some(1),
+            ..Context::default()
+        };
+        let (prefix, claim) = clone_context_prefix_with_work(&context, 1, &mut None)?;
+        assert_eq!(prefix.messages, context.messages[..1]);
+        assert_eq!(prefix.current_input_index, None);
+        assert_eq!(claim, 0);
+        context.current_input_index = Some(0);
+        assert_eq!(clone_context_prefix_with_work(&context, 1, &mut None)?.0.current_input_index, Some(0));
+        assert!(clone_context_prefix_with_work(&context, 3, &mut None).is_err());
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn physical_vector_denial_does_not_copy_source_fields() {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(WorkBudget {
+            allocation_operations: 1,
+            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 4096,
+            bytes_copied: 4096,
+            ..WorkBudget::default()
+        }, &cancellation).expect("original ledger");
+        let messages = vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text("original field".into()) }];
+        let before = work.receipt();
+        assert!(native::clone_messages_native(&messages, &work).is_err());
+        assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
+        assert_eq!(messages[0].content, ModelContent::Text("original field".into()));
+    }
 
     #[test]
     fn count_pressure_preserves_instructions_and_complete_exchanges() -> Result<()> {

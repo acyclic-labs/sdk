@@ -78,6 +78,26 @@ impl ProviderRef {
         Ok(value)
     }
 
+    /// Copies a validated identity under the caller's original native work.
+    /// Constructing an identity grants no access to the represented provider.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn new_with_native_work(
+        namespace: &str, family: &str, version: &str,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut observed = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
+        Self::validate_fields_with_work(namespace, family, version, &mut observed)?;
+        let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, 0)?;
+        let namespace = crate::core::copy_text(namespace, &mut quota)?;
+        let family = crate::core::copy_text(family, &mut quota)?;
+        let version = crate::core::copy_text(version, &mut quota)?;
+        quota.transfer();
+        drop(quota);
+        Ok((Self { namespace, family, version }, io.into_custody()))
+    }
+
     pub(crate) fn from_owned_value_with_work(
         value: serde_json::Value,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -111,11 +131,8 @@ impl ProviderRef {
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
-        self.validation_reason().map_or(Ok(()),
-            |reason| Err(resource_validation_error(reason, work)))
+        Self::validate_fields_with_work(&self.namespace, &self.family, &self.version, work)
     }
-
 
     fn validation_reason(&self) -> Option<&'static str> {
         self.parts().into_iter().any(|part| part.is_empty() || part.chars().any(char::is_control))
@@ -124,6 +141,31 @@ impl ProviderRef {
 
     fn parts(&self) -> [&str; 3] {
         [&self.namespace, &self.family, &self.version]
+    }
+
+    fn validate_fields_with_work(
+        namespace: &str, family: &str, version: &str,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        for part in [namespace, family, version] {
+            if let Some(observer) = work.as_deref_mut() {
+                observer.check_cancellation()?;
+                observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            }
+            if part.is_empty() {
+                return Err(resource_validation_error("provider identity is invalid", work));
+            }
+            for character in part.chars() {
+                if let Some(observer) = work.as_deref_mut() {
+                    observer.check_cancellation()?;
+                    observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                }
+                if character.is_control() {
+                    return Err(resource_validation_error("provider identity is invalid", work));
+                }
+            }
+        }
+        Ok(())
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -435,6 +477,10 @@ typed_reference!(
     Workspace,
     "Reference to a mutable Filesystem workspace."
 );
+
+impl WorkspaceRef {
+    pub(crate) fn into_resource(self) -> ResourceRef { self.0 }
+}
 typed_reference!(
     GenerationRef,
     Generation,
@@ -614,25 +660,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn logical_resource_ownership_counts_spare_buffer_capacity() -> Result<()> {
-        let mut namespace = String::with_capacity(128);
-        namespace.push_str("harness");
-        let mut family = String::with_capacity(256);
-        family.push_str("filesystem");
-        let mut version = String::with_capacity(512);
-        version.push_str("v1");
-        let provider = ProviderRef::new(namespace, family, version)?;
-        let provider_bytes = provider.namespace.capacity() + provider.family.capacity()
-            + provider.version.capacity();
-        assert_eq!(provider.logical_owned_bytes()?, provider_bytes as u64);
-        let mut key = Vec::with_capacity(1024);
-        key.extend_from_slice(b"generation");
-        let mut generation_version = String::with_capacity(2048);
-        generation_version.push_str("one");
-        let reference = GenerationRef::new(provider, key, Some(generation_version))?;
-        assert_eq!(reference.logical_owned_bytes()?, (provider_bytes
-            + reference.0.key.capacity()
-            + reference.0.version.as_ref().map_or(0, String::capacity)) as u64);
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn native_provider_creation_preserves_policy_and_partial_copy_custody() -> Result<()> {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::WorkBudget {
+            items_examined: 256, allocation_operations: 3, bytes_copied: 64,
+            peak_allocation_bytes: 256, ..acyclic_fs::WorkBudget::default()
+        };
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .expect("original provider ledger");
+        let (provider, custody) = ProviderRef::new_with_native_work("acyclic", "filesystem", "2", &work)?;
+        assert_eq!(provider, ProviderRef::new("acyclic", "filesystem", "2")?);
+        assert_eq!(custody.bytes(), provider.logical_owned_bytes()?);
+        drop(provider);
+        drop(custody);
+        drop(work.retain_owned(budget.peak_allocation_bytes)
+            .expect("all original provider custody retired"));
+        let invalid = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .expect("invalid provider ledger");
+        assert_eq!(ProviderRef::new_with_native_work("acyclic", "file\nsystem", "2", &invalid)
+            .unwrap_err().code(), crate::wire::ErrorCode::Invalid);
+        assert_eq!(invalid.receipt().allocation_operations, 0);
+        let denied = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget { bytes_copied: 7, ..budget }, &cancellation)
+            .expect("partial provider ledger");
+        assert!(ProviderRef::new_with_native_work("acyclic", "filesystem", "2", &denied).is_err());
+        drop(denied.retain_owned(budget.peak_allocation_bytes)
+            .expect("partial field copies physically retired"));
         Ok(())
     }
 

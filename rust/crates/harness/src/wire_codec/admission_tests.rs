@@ -105,3 +105,55 @@ fn malformed_frame_and_cancel_have_no_original_deserialization_work() -> Result<
     assert_eq!(receipt.work.items_examined, 0);
     Ok(())
 }
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn native_malformed_prost_preserves_original_cause_and_preclaimed_custody() -> Result<()> {
+    use acyclic_fs::NativeMaterializationWork;
+    for bytes in [&[0x00][..], &[0x4a, 0xff], &[0x4a, 0x04, 0x00],
+        &[0x7b, 0x74], &[0x7b; 101]]
+    {
+        let token = CancellationToken::new();
+        let native = NativeMaterializationWork::new(budget(), &token).expect("original native ledger");
+        let mut io = crate::store::history::native_work_io(&native).expect("original observer");
+        let error = admission::decode_quota(bytes, &mut Some(&mut io))
+            .expect_err("original prost framing must reject");
+        let Error::NativeProstDecode { code, source, custody: Some(custody) } = error else {
+            panic!("prost must keep its actual cause and original preclaimed guard");
+        };
+        assert_eq!(code, crate::wire::ErrorCode::Storage);
+        assert!(custody.bytes() > 0);
+        assert!(custody.work().shares_ledger(&native));
+        assert!(native.receipt().items_examined > 0);
+        assert_eq!(native.receipt().authority_bytes_read, 0);
+        assert_eq!(native.receipt().backend_read_operations, 0);
+        assert_eq!(io.into_custody().bytes(), 0);
+        let mut original = bytes;
+        let expected = prost::encoding::decode_key(&mut original).and_then(|(tag, kind)|
+            prost::encoding::skip_field(kind, tag, &mut original, prost::encoding::DecodeContext::default()))
+            .expect_err("same original prost framing cause");
+        assert_eq!(source, expected);
+        // Actual diagnostic data precedes its original guard on destruction.
+        drop(source);
+        drop(custody);
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn native_diagnostic_quota_denies_before_even_malformed_key_decode() -> Result<()> {
+    use acyclic_fs::NativeMaterializationWork;
+    let token = CancellationToken::new();
+    let mut allowance = budget();
+    allowance.peak_allocation_bytes = NativeMaterializationWork::accounting_state_bytes();
+    let native = NativeMaterializationWork::new(allowance, &token).expect("accounting-only ledger");
+    let mut io = crate::store::history::native_work_io(&native).expect("zero-byte original observer");
+    let error = admission::decode_quota(&[0x00], &mut Some(&mut io))
+        .expect_err("diagnostic admission must deny before allocating prost error");
+    assert!(matches!(error, Error::NativeWork { .. }));
+    assert_eq!(native.receipt().items_examined, 0);
+    assert_eq!(native.receipt().backend_read_operations, 0);
+    assert_eq!(native.receipt().authority_bytes_read, 0);
+    Ok(())
+}

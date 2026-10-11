@@ -33,14 +33,21 @@ pub struct SummaryForkSelection {
 impl SummaryForkSelection {
     /// Checks declared bounds before any history or content provider read.
     pub fn validate(&self) -> Result<()> {
-        self.limits.validate()?;
-        self.limits.validate_file(&self.checkpoint)?;
+        self.validate_with_work(&mut None)
+    }
+
+    pub(crate) fn validate_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.limits.validate_with_work(work)?;
+        self.limits.validate_file_with_work(&self.checkpoint, work)?;
         if self.checkpoint.descriptor().media_type() != "application/json"
             || self.checkpoint.descriptor().byte_length() > self.limits.render_bytes
             || self.history_limits.maximum_events == 0
             || self.history_limits.maximum_bytes == 0
         {
-            return Err(Error::Invalid("summary fork selection is invalid".into()));
+            return Err(super::fork_provider_boundary(work, crate::wire::ErrorCode::Invalid,
+                "summary fork selection is invalid"));
         }
         Ok(())
     }

@@ -247,7 +247,6 @@ pub(crate) fn resource_preparation_owned_bytes(
         }
         owned_add!(request.provider.logical_owned_bytes()?);
         owned_add!(request.creation_grant.capacity() as u64);
-        owned_add!(child.operation_id.capacity() as u64);
         for text in [&child.task.name, &child.task.version, &child.machine.name, &child.machine.version] {
             owned_add!(text.capacity() as u64);
         }
@@ -777,14 +776,20 @@ impl Snapshot {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         self.native_custody.allocation = Some(allocation);
-        let bytes = self.projection.conversation.messages.capacity() as u64
-            * std::mem::size_of::<crate::conversation::ConversationMessage>() as u64;
+        self.adopt_unclaimed_native_conversation_custody(work)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn adopt_unclaimed_native_conversation_custody(
+        &mut self, work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        let bytes = self.projection.conversation.native_unclaimed_message_buffer_bytes()?;
         if bytes != 0 {
             let shell = self.native_custody.allocation.as_mut().expect("installed snapshot custody")
                 .split_off(bytes).map_err(|cause| Error::NativeWork { cause, custody: None })?;
             self.projection.conversation.install_native_message_buffer(shell);
         }
-        let archive_bytes = self.projection.conversation.native_archived_prefix_bytes()?;
+        let archive_bytes = self.projection.conversation.native_unclaimed_archived_prefix_bytes()?;
         if archive_bytes != 0 {
             let archive = self.native_custody.allocation.as_mut().expect("installed snapshot custody")
                 .split_off(archive_bytes).map_err(|cause| Error::NativeWork { cause, custody: None })?;
@@ -1276,14 +1281,16 @@ impl Reducer {
         // retry slots are pre-admitted before any original restore constructor.
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if intrinsic && snapshot.native_custody.allocation.is_none() {
-            let required = source_inventory(&snapshot)?
-                .checked_add(snapshot.projection.conversation.native_unclaimed_cache_bytes()?)
-                .ok_or_else(|| Error::Invalid("snapshot input custody overflows".into()))?;
+            let required = snapshot.predecoded_native_owned_bytes()?;
             let observer = work.as_deref_mut().expect("native restoration observer");
             observer.admit_owned(required)?;
             observer.retain_owned(required)?;
             let allocation = observer.take_native_custody(required)?;
             snapshot.install_native_custody(allocation, work)?;
+        }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if intrinsic {
+            snapshot.adopt_unclaimed_native_conversation_custody(work)?;
         }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut metadata_allocation = if intrinsic {
@@ -1312,7 +1319,25 @@ impl Reducer {
             super::native_custody::NativeComponentRef::Base, 0, work)?;
         drop(base.install(&mut restored_custody, work)?);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let retired_vector_bytes = if intrinsic {
+            super::native_custody::owned_sum([
+                super::native_custody::owned_buffer::<(ExtensionDependency, ExtensionConfiguration)>(
+                    snapshot.projection.configured_extensions.capacity())?,
+                super::native_custody::owned_buffer::<(Authority, ForkSeed)>(
+                    snapshot.projection.forks.capacity())?,
+            ])?
+        } else { 0 };
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut allocation = snapshot.native_custody.allocation.take();
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let _retired_vector_backing = if let Some(source) = allocation.as_mut() {
+            // Old A Vec storage overlaps new B map entries. Failure returns the
+            // original claim so it cannot release before the Snapshot data drops.
+            match source.split_off(retired_vector_bytes) {
+                Ok(retired) => Some(retired),
+                Err(cause) => return Err(Error::NativeWork { cause, custody: allocation.take() }),
+            }
+        } else { None };
         let operation_positions = snapshot
             .events
             .iter()
@@ -1359,59 +1384,89 @@ impl Reducer {
 impl Snapshot {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn restoration_metadata_reservation(&self) -> Result<u64> {
-        use super::native_custody::{NativeComponentCustody as Holder, NativeComponentRef as Key};
-        // Newly allocated ownership metadata belongs to the explicit restore
-        // operation, not the original decoded payload's independent ledger.
-        let mut bytes = 0_u64;
-        let mut components = 1_usize; // The separately admitted verifier/schema Base.
-        let mut metadata = |key| -> Result<()> {
-            let key_bytes = match key {
-                Key::ExtensionState(name) => name.len() as u64,
-                Key::ExtensionConfiguration(extension) => extension.name.len() as u64,
-                Key::Fork(authority) => authority.id.len() as u64,
-                Key::Merge(name, operation) => (name.len() as u64).checked_add(operation.len() as u64)
-                    .ok_or_else(|| Error::Invalid("snapshot merge metadata overflows".into()))?,
-                Key::OperationPosition(_) => std::mem::size_of::<(crate::OperationId, u64)>() as u64,
-                _ => 0,
-            };
-            bytes = bytes.checked_add(key_bytes)
-                .ok_or_else(|| Error::Invalid("snapshot restoration metadata overflows".into()))?;
-            components = components.checked_add(1)
-                .ok_or_else(|| Error::Invalid("snapshot restoration component count overflows".into()))?;
-            Ok(())
-        };
-        metadata(Key::Authority)?;
-        for event in &self.events {
-            metadata(Key::Event(event.revision))?;
-            metadata(Key::OperationPosition(event.operation_id))?;
+        // Original operation-position entries and Vec-to-map normalization
+        // allocate known inline payload slots under B before construction.
+        // Holder backing and owned keys use their physical producers separately.
+        super::native_custody::owned_sum([
+            super::native_custody::owned_buffer::<(crate::OperationId, u64)>(self.events.len())?,
+            super::native_custody::owned_buffer::<(ExtensionDependency, ExtensionConfiguration)>(
+                self.projection.configured_extensions.len())?,
+            super::native_custody::owned_buffer::<(Authority, ForkSeed)>(self.projection.forks.len())?,
+        ])
+    }
+
+    /// Pure capacity witness for splitting a predecoded outer DTO's original guard.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn predecoded_native_owned_bytes(&self) -> Result<u64> {
+        use super::native_custody::*;
+        let projection = &self.projection;
+        let mut bytes = owned_sum([
+            self.authority.id.capacity() as u64,
+            owned_vector(&self.events, super::event_owned_bytes)?,
+            owned_vector(&projection.active_extensions, |extension| Ok(extension.name.capacity() as u64))?,
+            owned_vector(&projection.configured_extensions, |(extension, configuration)| {
+                owned_sum([extension.name.capacity() as u64, owned_configuration(configuration)?])
+            })?,
+            owned_vector(&projection.active_configurations, owned_configuration)?,
+            owned_buffer::<EffectId>(projection.indexed_terminal_effects.capacity())?,
+            owned_vector(&projection.forks, |(authority, seed)| {
+                owned_sum([authority.id.capacity() as u64, owned_seed(seed)?])
+            })?,
+            owned_vector(&projection.bindings, |(extension, _)| Ok(extension.name.capacity() as u64))?,
+            projection.conversation.native_unclaimed_message_buffer_bytes()?,
+            projection.conversation.native_unclaimed_archived_prefix_bytes()?,
+            projection.conversation.native_unclaimed_cache_bytes()?,
+        ])?;
+        for (name, (reference, record)) in &projection.extension_states {
+            bytes = owned_sum([bytes,
+                std::mem::size_of::<(String, (EventReference, ExtensionRecord))>() as u64,
+                name.capacity() as u64, reference.authority.id.capacity() as u64, owned_record(record)?])?;
         }
-        metadata(Key::EventBuffer)?;
-        metadata(Key::TerminalEffectBuffer)?;
-        for id in self.projection.effects.keys() {
-            metadata(Key::EffectAction(*id))?;
-            metadata(Key::EffectStatus(*id))?;
-            metadata(Key::EffectAttempts(*id))?;
+        for effect in projection.effects.values() {
+            bytes = owned_sum([bytes, std::mem::size_of::<(EffectId, EffectState)>() as u64,
+                owned_effect(effect)?])?;
         }
-        for name in self.projection.extension_states.keys() { metadata(Key::ExtensionState(name))?; }
-        for (extension, _) in &self.projection.configured_extensions {
-            metadata(Key::ExtensionConfiguration(extension))?;
+        for (name, operation) in &projection.published_merges {
+            bytes = owned_sum([bytes, std::mem::size_of::<(String, Vec<u8>)>() as u64,
+                name.capacity() as u64, operation.capacity() as u64])?;
         }
-        metadata(Key::ActiveExtensions)?;
-        metadata(Key::ActiveConfigurations)?;
-        for (authority, _) in &self.projection.forks { metadata(Key::Fork(authority))?; }
-        for (name, operation) in &self.projection.published_merges {
-            metadata(Key::Merge(name, operation))?;
+        for message in projection.conversation.messages() {
+            bytes = owned_sum([bytes, owned_message(message)?])?;
         }
-        for message in self.projection.conversation.messages() {
-            metadata(Key::ConversationMessage(message.sequence))?;
+        if let Some(file) = &projection.latest_context_checkpoint {
+            bytes = owned_sum([bytes, file.logical_owned_bytes()?])?;
         }
-        if self.projection.latest_context_checkpoint.is_some() { metadata(Key::ContextCheckpoint)?; }
-        for (id, (_, resolution)) in &self.projection.interactions {
-            metadata(Key::InteractionTicket(*id))?;
-            if resolution.is_some() { metadata(Key::InteractionResolution(*id))?; }
+        for (ticket, resolution) in projection.interactions.values() {
+            bytes = owned_sum([bytes,
+                std::mem::size_of::<(uuid::Uuid, (InteractionTicket, Option<InteractionResolution>))>() as u64,
+                owned_ticket(ticket)?,
+                resolution.as_ref().map_or(Ok(0), owned_resolution)?])?;
         }
-        bytes.checked_add(Holder::metadata_bytes(components)?)
-            .ok_or_else(|| Error::Invalid("snapshot restoration metadata buffer overflows".into()))
+        Ok(bytes)
+    }
+
+    /// Adopts a genuine predecoded payload claim without issuing native work.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn adopt_predecoded_native_custody(
+        mut self, allocation: acyclic_fs::NativeAllocation,
+    ) -> Result<Self> {
+        // Install first: even a rejected claim must outlive all decoded fields.
+        let incoming = allocation;
+        if self.native_custody.allocation.is_some() {
+            return Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+                custody: Some(incoming),
+            });
+        }
+        self.native_custody.allocation = Some(incoming);
+        let required = self.predecoded_native_owned_bytes()?;
+        if self.native_custody.allocation.as_ref().expect("installed predecoded custody").bytes() < required {
+            return Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+                custody: self.native_custody.allocation.take(),
+            });
+        }
+        Ok(self)
     }
 
     fn digest_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<[u8; 32]> {

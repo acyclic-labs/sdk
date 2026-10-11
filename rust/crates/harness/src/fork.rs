@@ -249,11 +249,12 @@ pub trait ForkSeedVerifier: acyclic_stream::ProviderPlatform {
             ))
         })
     }
-    /// The concrete returned fence owns its native metadata custody until drop.
+    /// Returns the concrete fence before its allocation guard, which also
+    /// survives the Box's physical deallocation.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn acquire_private_fence_with_native_work<'a>(
         &'a self, _seed: &'a ForkSeed, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, Box<dyn ForkPublicationGuard>>> {
+    ) -> Result<crate::NativeFutureBundle<'a, (Box<dyn ForkPublicationGuard>, acyclic_fs::NativeAllocation)>> {
         unsupported_native_fork(work, "native fork private publication fence is unavailable")
     }
     /// Acquires the original durable fence with its actual SDK receipt.
@@ -277,7 +278,8 @@ pub trait ForkSeedVerifier: acyclic_stream::ProviderPlatform {
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn read_manifest_with_native_work<'a>(
-        &'a self, _manifest: &'a FileRef, work: &'a acyclic_fs::NativeMaterializationWork,
+        &'a self, _seed: &'a ForkSeed, _manifest: &'a FileRef,
+        work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
         unsupported_native_fork(work, "native fork attachment manifest reader is unavailable")
     }
@@ -297,7 +299,8 @@ pub trait ForkSeedVerifier: acyclic_stream::ProviderPlatform {
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn verify_file_with_native_work<'a>(
-        &'a self, _file: &'a FileRef, work: &'a acyclic_fs::NativeMaterializationWork,
+        &'a self, _seed: &'a ForkSeed, _file: &'a FileRef,
+        work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
         unsupported_native_fork(work, "native fork file verifier is unavailable")
     }
@@ -380,6 +383,8 @@ fn fork_provider_boundary(
     let _ = work;
     match code {
         crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
+        crate::wire::ErrorCode::Invalid => Error::Invalid(reason.into()),
+        crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
         _ => Error::Unsupported(reason.into()),
     }
 }
@@ -439,18 +444,20 @@ pub(crate) async fn release_fork_guard_with_work(
 }
 
 macro_rules! fork_provider_dispatcher {
-    ($name:ident, $ordinary:ident, $measured:ident, $native:ident, $input:ident : $input_type:ty, $output:ty) => {
+    ($name:ident, $ordinary:ident, $measured:ident, $native:ident, $input:ident : $input_type:ty, $output:ty $(, $context:ident : $context_type:ty)?) => {
         async fn $name(
             verifier: &dyn ForkSeedVerifier,
+            $($context: &$context_type,)?
             $input: &$input_type,
             work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
         ) -> Result<$output> {
+            $(let _ = $context;)?
             let Some(observer) = work.as_deref_mut() else {
                 return verifier.$ordinary($input).await;
             };
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(native) = observer.original_native_work() {
-                return verifier.$native($input, native)?.await;
+                return verifier.$native($($context,)? $input, native)?.await;
             }
             #[cfg(feature = "filesystem")]
             {
@@ -468,17 +475,69 @@ macro_rules! fork_provider_dispatcher {
     };
 }
 
-fork_provider_dispatcher!(acquire_fork_fence_with_work, acquire_private_fence,
-    acquire_private_fence_measured, acquire_private_fence_with_native_work, seed: ForkSeed, Box<dyn ForkPublicationGuard>);
+pub(crate) struct ObservedForkPublicationGuard {
+    guard: Box<dyn ForkPublicationGuard>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    _allocation: Option<acyclic_fs::NativeAllocation>,
+}
+
+impl ObservedForkPublicationGuard {
+    pub(crate) fn as_ref(&self) -> &dyn ForkPublicationGuard { self.guard.as_ref() }
+}
+
+impl std::ops::Deref for ObservedForkPublicationGuard {
+    type Target = dyn ForkPublicationGuard;
+    fn deref(&self) -> &Self::Target { self.guard.as_ref() }
+}
+
+async fn acquire_fork_fence_with_work(
+    verifier: &dyn ForkSeedVerifier, seed: &ForkSeed,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<ObservedForkPublicationGuard> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(native) = work.as_ref().and_then(|observer| observer.original_native_work()) {
+        let (guard, allocation) = verifier.acquire_private_fence_with_native_work(seed, native)?.await?;
+        if !allocation.work().shares_ledger(native) {
+            drop(guard);
+            return Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+                custody: Some(allocation),
+            });
+        }
+        return Ok(ObservedForkPublicationGuard { guard, _allocation: Some(allocation) });
+    }
+    let guard = if let Some(observer) = work.as_deref_mut() {
+        #[cfg(feature = "filesystem")]
+        {
+            let receipt = verifier.acquire_private_fence_measured(
+                seed, observer.remaining()?, observer.cancellation(),
+            ).await;
+            receive_fork_work(receipt, observer)?
+        }
+        #[cfg(not(feature = "filesystem"))]
+        {
+            let _ = observer;
+            return Err(Error::Unsupported("measured fork publication requires Filesystem".into()));
+        }
+    } else {
+        verifier.acquire_private_fence(seed).await?
+    };
+    Ok(ObservedForkPublicationGuard {
+        guard,
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        _allocation: None,
+    })
+}
 fork_provider_dispatcher!(verify_fork_provider_with_work, verify,
     verify_measured, verify_with_native_work, seed: ForkSeed, ());
 fork_provider_dispatcher!(verify_fork_file_with_work, verify_file,
-    verify_file_measured, verify_file_with_native_work, file: FileRef, ());
+    verify_file_measured, verify_file_with_native_work, file: FileRef, (), seed: ForkSeed);
 fork_provider_dispatcher!(verify_fork_boundary_with_work, verify_boundary,
     verify_boundary_measured, verify_boundary_with_native_work, boundary: AttestedBoundary, ());
 
 async fn read_fork_manifest_with_work(
     verifier: &dyn ForkSeedVerifier,
+    seed: &ForkSeed,
     manifest: &FileRef,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<Vec<u8>> {
@@ -487,7 +546,7 @@ async fn read_fork_manifest_with_work(
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(native) = observer.original_native_work() {
-        let (bytes, custody) = verifier.read_manifest_with_native_work(manifest, native)?.await?;
+        let (bytes, custody) = verifier.read_manifest_with_native_work(seed, manifest, native)?.await?;
         observer.absorb_native_custody(custody)?;
         return Ok(bytes);
     }
@@ -509,36 +568,92 @@ async fn read_fork_manifest_with_work(
 /// provider identity is unbound, even when its envelope is syntactically valid.
 pub struct CompositeForkVerifier {
     providers: BTreeMap<String, std::sync::Arc<dyn ForkSeedVerifier>>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    _native_metadata: Option<acyclic_fs::NativeAllocation>,
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn admit_native_verifier_share(
+    metadata: Option<&acyclic_fs::NativeAllocation>,
+    work: &acyclic_fs::NativeMaterializationWork, inline_bytes: usize,
+) -> Result<()> {
+    if !metadata.is_some_and(|metadata| work.shares_ledger(metadata.work())) {
+        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+            reason: "native verifier sharing requires its original metadata custody" });
+    }
+    // The observed allocation attempt is admitted; Arc control/block internals
+    // are not an observable retained-byte or physical-heap claim.
+    work.admit_retained(inline_bytes as u64)
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    work.charge(acyclic_fs::WorkCounters { allocation_operations: 1,
+        ..acyclic_fs::WorkCounters::default() })
+        .map_err(|cause| Error::NativeWork { cause, custody: None })
 }
 
 impl CompositeForkVerifier {
     /// Rejects duplicate registrations for one exact provider contract.
     pub fn new(verifiers: Vec<std::sync::Arc<dyn ForkSeedVerifier>>) -> Result<Self> {
+        Self::new_with_work(verifiers.into_iter(), &mut None)
+    }
+
+    fn new_with_work(
+        verifiers: impl Iterator<Item = std::sync::Arc<dyn ForkSeedVerifier>>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        let mut owned = ForkValidationWork::new(work)?;
         let mut providers = BTreeMap::new();
         for verifier in verifiers {
-            verifier.provider().validate()?;
-            let key = provider_key(verifier.provider());
-            if providers.insert(key, verifier).is_some() {
-                return Err(Error::Invalid(
-                    "fork provider verifier is registered twice".into(),
-                ));
+            owned.checkpoint()?;
+            verifier.provider().validate_with_work(owned.work())?;
+            let key = provider_key_with_work(verifier.provider(), &mut owned)?;
+            if providers.contains_key(&key) {
+                return Err(owned.invalid("fork provider verifier is registered twice"));
             }
+            owned.slots::<(String, std::sync::Arc<dyn ForkSeedVerifier>)>(1)?;
+            providers.insert(key, verifier);
         }
-        Ok(Self { providers })
+        owned.retained = 0;
+        Ok(Self {
+            providers,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            _native_metadata: None,
+        })
+    }
+
+    /// Registers the same original provider handles on the caller's native ledger.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn new_with_native_work(
+        verifiers: &[std::sync::Arc<dyn ForkSeedVerifier>],
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut verifier = Self::new_with_work(verifiers.iter().cloned(), &mut Some(&mut io))?;
+        verifier._native_metadata = Some(io.into_custody());
+        Ok(verifier)
+    }
+
+    /// Shares original provider registrations, not their authority or private backing.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn into_native_shared(
+        self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<std::sync::Arc<Self>> {
+        admit_native_verifier_share(self._native_metadata.as_ref(), work, std::mem::size_of::<Self>())?;
+        Ok(std::sync::Arc::new(self))
     }
 
     /// Fences the child-private writer, then verifies all selected providers.
     /// The caller must keep the returned guard until Stream reaches a known
     /// committed or rejected result; uncertainty leaves the durable gate held.
     pub async fn activate(&self, seed: &ForkSeed) -> Result<Box<dyn ForkPublicationGuard>> {
-        self.activate_with_work(seed, &mut None).await
+        self.activate_with_work(seed, &mut None).await.map(|observed| observed.guard)
     }
 
     pub(crate) async fn activate_with_work(
         &self,
         seed: &ForkSeed,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Box<dyn ForkPublicationGuard>> {
+    ) -> Result<ObservedForkPublicationGuard> {
         seed.validate_with_work(work)?;
         let private = self.provider_with_work(seed.child_private_volume.provider(), work)?;
         let guard = acquire_fork_fence_with_work(private.as_ref(), seed, work).await?;
@@ -703,7 +818,7 @@ impl CompositeForkVerifier {
             verified_files.insert(capability);
             let verifier = self.provider_with_owned(file.volume().provider(), owned)?;
             reserve_reference_bytes_with_work(reference_bytes, verifier.as_ref(), file, owned)?;
-            verify_fork_file_with_work(verifier.as_ref(), file, owned.work()).await?;
+            verify_fork_file_with_work(verifier.as_ref(), seed, file, owned.work()).await?;
         }
         Ok(())
     }
@@ -726,13 +841,20 @@ impl CompositeForkVerifier {
                 owned.slots::<String>(1)?;
                 verified_files.insert(manifest_capability);
                 reserve_reference_bytes_with_work(reference_bytes, verifier.as_ref(), manifest, owned)?;
-                verify_fork_file_with_work(verifier.as_ref(), manifest, owned.work()).await?;
+                verify_fork_file_with_work(verifier.as_ref(), seed, manifest, owned.work()).await?;
             } else {
                 let capacity = manifest_capability.capacity() as u64;
                 drop(manifest_capability);
                 owned.release(capacity)?;
             }
-            let bytes = read_fork_manifest_with_work(verifier.as_ref(), manifest, owned.work()).await?;
+            let bytes = read_fork_manifest_with_work(verifier.as_ref(), seed, manifest, owned.work()).await?;
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if owned.work().as_ref().and_then(|observer| observer.original_native_work()).is_some() {
+                owned.adopt(bytes.capacity() as u64)?;
+            } else {
+                owned.retain(bytes.capacity() as u64)?;
+            }
+            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
             owned.retain(bytes.capacity() as u64)?;
             let items = decode_fork_manifest_with_work(manifest, &bytes, owned)?;
             manifest_members = manifest_members
@@ -758,7 +880,7 @@ impl CompositeForkVerifier {
                     verified_files.insert(item_capability);
                     let member_verifier = self.provider_with_owned(item.file.volume().provider(), owned)?;
                     reserve_reference_bytes_with_work(reference_bytes, member_verifier.as_ref(), &item.file, owned)?;
-                    verify_fork_file_with_work(member_verifier.as_ref(), &item.file, owned.work()).await?;
+                    verify_fork_file_with_work(member_verifier.as_ref(), seed, &item.file, owned.work()).await?;
                 } else {
                     let capacity = item_capability.capacity() as u64;
                     drop(item_capability);
@@ -1014,17 +1136,17 @@ fn provider_key_with_work(
     let length = provider.namespace().len().checked_add(provider.family().len())
         .and_then(|length| length.checked_add(provider.version().len()))
         .and_then(|length| length.checked_add(2))
-        .ok_or_else(|| Error::Invalid("fork provider identity length overflows".into()))?;
-    owned.retain(length as u64)?;
-    if let Some(observer) = owned.work().as_deref_mut() {
-        observer.copy_bytes(length as u64)?;
-    }
+        .ok_or_else(|| owned.invalid("fork provider identity length overflows"))?;
     let mut key = String::new();
-    key.try_reserve_exact(length).map_err(|error| Error::Invalid(error.to_string()))?;
-    use std::fmt::Write as _;
-    write!(&mut key, "{}\0{}\0{}", provider.namespace(), provider.family(), provider.version())
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-    owned.retain((key.capacity() - length) as u64)?;
+    if let Some(observer) = owned.work().as_deref_mut() {
+        observer.reserve_text(&mut key, length)?;
+    }
+    owned.adopt(key.capacity() as u64)?;
+    for part in [provider.namespace(), "\0", provider.family(), "\0", provider.version()] {
+        if let Some(observer) = owned.work().as_deref_mut() { observer.admit_copy(part.len() as u64)?; }
+        key.push_str(part);
+        if let Some(observer) = owned.work().as_deref_mut() { observer.copy_bytes(part.len() as u64)?; }
+    }
     Ok(key)
 }
 
@@ -1263,7 +1385,8 @@ impl ForkSeedVerifier for ContentForkVerifier {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn read_manifest_with_native_work<'a>(
-        &'a self, manifest: &'a FileRef, native: &'a acyclic_fs::NativeMaterializationWork,
+        &'a self, _seed: &'a ForkSeed, manifest: &'a FileRef,
+        native: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(native, || async move {
             let mut io = crate::store::history::native_work_io(native)
@@ -1275,7 +1398,8 @@ impl ForkSeedVerifier for ContentForkVerifier {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn verify_file_with_native_work<'a>(
-        &'a self, file: &'a FileRef, native: &'a acyclic_fs::NativeMaterializationWork,
+        &'a self, _seed: &'a ForkSeed, file: &'a FileRef,
+        native: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
         crate::NativeFutureBundle::new(native, || async move {
             let mut io = crate::store::history::native_work_io(native)
@@ -1348,6 +1472,8 @@ impl ForkSeedVerifier for ContentForkVerifier {
 /// admission path. `ForkSeed::validate` checks its exact path and revision.
 pub struct StreamHistoryForkVerifier {
     provider: ProviderRef,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl StreamHistoryForkVerifier {
@@ -1359,7 +1485,40 @@ impl StreamHistoryForkVerifier {
                 "history verifier requires a Stream provider".into(),
             ));
         }
-        Ok(Self { provider })
+        Ok(Self {
+            provider,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            _native_metadata: None,
+        })
+    }
+
+    /// Copies only this original provider identity under the native caller's work.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn new_with_native_work(
+        provider: &ProviderRef, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut observed = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
+        let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, 0)?;
+        provider.validate_with_work(quota.work())?;
+        if provider.family() != "stream" {
+            return Err(fork_provider_boundary(quota.work(), crate::wire::ErrorCode::Invalid,
+                "history verifier requires a Stream provider"));
+        }
+        let provider = crate::core::copy_provider(provider, &mut quota)?;
+        quota.transfer();
+        drop(quota);
+        Ok(Self { provider, _native_metadata: Some(io.into_custody()) })
+    }
+
+    /// Shares the same funded provider identity; Arc's private backing is opaque.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn into_native_shared(
+        self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<std::sync::Arc<Self>> {
+        admit_native_verifier_share(self._native_metadata.as_ref(), work, std::mem::size_of::<Self>())?;
+        Ok(std::sync::Arc::new(self))
     }
 
     async fn verify_with_work(
@@ -1493,6 +1652,16 @@ impl ResourceRevision {
 
     /// Checks provider families and the semantic resource class.
     pub fn validate(&self) -> Result<()> {
+        self.validate_with_work(&mut None)
+    }
+
+    pub(crate) fn validate_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(observer) = work.as_deref_mut() {
+            observer.check_cancellation()?;
+            observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+        }
         match self {
             Self::PrivateVolume {
                 volume,
@@ -1502,41 +1671,42 @@ impl ResourceRevision {
                 && generation.as_resource().provider() == volume.provider()
                 && volume.provider().family() == "filesystem" =>
             {
-                volume.validate()?;
-                generation.validate()?;
+                volume.validate_with_work(work)?;
+                generation.validate_with_work(work)?;
                 if paths.len() as u64 > MAX_FORK_RESOURCES as u64 {
-                    return Err(Error::Invalid("too many scratch paths".into()));
+                    return Err(fork_provider_boundary(work, crate::wire::ErrorCode::Invalid,
+                        "too many scratch paths"));
                 }
                 for path in paths {
                     let relative = path
                         .strip_prefix('/')
-                        .ok_or_else(|| Error::Invalid("scratch path must be absolute".into()))?;
-                    crate::conversation::validate_content_path(relative)?;
+                        .ok_or_else(|| fork_provider_boundary(work, crate::wire::ErrorCode::Invalid,
+                            "scratch path must be absolute"))?;
+                    crate::conversation::validate_content_path_with_work(relative, work)?;
                     if relative.split('/').any(|segment| segment == ".system") {
-                        return Err(Error::Unauthorized(
-                            "scratch selection includes reserved runtime state".into(),
-                        ));
+                        return Err(fork_provider_boundary(work, crate::wire::ErrorCode::Unauthorized,
+                            "scratch selection includes reserved runtime state"));
                     }
                 }
                 Ok(())
             }
             Self::History(value) if value.as_resource().provider().family() == "stream" => {
-                value.validate()
+                value.validate_with_work(work)
             }
             Self::Project { volume, generation }
                 if generation.as_resource().provider() == volume.provider()
                     && volume.provider().family() == "filesystem" =>
             {
-                volume.validate()?;
-                generation.validate()
+                volume.validate_with_work(work)?;
+                generation.validate_with_work(work)
             }
-            Self::Context(value) => value.validate(),
+            Self::Context(value) => value.validate_with_work(work),
             Self::Process(value) if value.as_resource().provider().family() == "machines" => {
-                value.validate()
+                value.validate_with_work(work)
             }
-            Self::Artifact(value) => value.validate(),
+            Self::Artifact(value) => value.validate_with_work(work),
             Self::SharedVolume(value) if value.class() == VolumeClass::SessionShared => {
-                value.validate()
+                value.validate_with_work(work)
             }
             Self::Extension {
                 name,
@@ -1548,11 +1718,10 @@ impl ResourceRevision {
                 && *version > 0
                 && *implementation_digest != [0; 32] =>
             {
-                reference.validate()
+                reference.validate_with_work(work)
             }
-            _ => Err(Error::Invalid(
-                "fork resource has an invalid kind or provider".into(),
-            )),
+            _ => Err(fork_provider_boundary(work, crate::wire::ErrorCode::Invalid,
+                "fork resource has an invalid kind or provider")),
         }
     }
 }
@@ -1584,9 +1753,16 @@ pub struct AttestedBoundary {
 impl AttestedBoundary {
     /// Validates an attestation envelope without claiming to verify its proof.
     pub fn validate(&self) -> Result<()> {
-        self.provider.validate()?;
+        self.validate_with_work(&mut None)
+    }
+
+    fn validate_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.provider.validate_with_work(work)?;
         if self.evidence.is_empty() {
-            return Err(Error::Invalid("fork boundary evidence is invalid".into()));
+            return Err(fork_provider_boundary(work, crate::wire::ErrorCode::Invalid,
+                "fork boundary evidence is invalid"));
         }
         Ok(())
     }
@@ -1675,16 +1851,22 @@ pub struct ForkPreparation {
 
 impl ForkPreparation {
     fn validate(&self, child_agent: AgentId) -> Result<()> {
+        self.validate_with_work(child_agent, &mut None)
+    }
+
+    fn validate_with_work(
+        &self, child_agent: AgentId,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
         if let Some(selection) = &self.summary {
-            selection.validate()?;
+            selection.validate_with_work(work)?;
             if self.inherited_through_sequence == 0 {
-                return Err(Error::Invalid(
-                    "summary fork requires a nonempty logical parent cut".into(),
-                ));
+                return Err(fork_provider_boundary(work, crate::wire::ErrorCode::Invalid,
+                    "summary fork requires a nonempty logical parent cut"));
             }
         }
-        self.child_project_volume.validate()?;
-        self.child_private_volume.validate()?;
+        self.child_project_volume.validate_with_work(work)?;
+        self.child_private_volume.validate_with_work(work)?;
         if self.child_private_volume.class() != VolumeClass::AgentPrivate
             || self.child_private_volume.owner() != &VolumeOwner::Agent(child_agent)
             || self.child_project_volume.class() != VolumeClass::Project
@@ -1695,47 +1877,54 @@ impl ForkPreparation {
             || self.maximum_inherited_bytes == 0
             || self.maximum_inherited_references == 0
         {
-            return Err(Error::Invalid("fork preparation is invalid".into()));
+            return Err(fork_provider_boundary(work, crate::wire::ErrorCode::Invalid,
+                "fork preparation is invalid"));
         }
         if let Some(result) = &self.child_result_volume {
-            validate_child_result_volume(result, &self.child_private_volume, child_agent)?;
+            validate_child_result_volume_with_work(result, &self.child_private_volume, child_agent, work)?;
             if result == &self.child_project_volume {
-                return Err(Error::Invalid("fork result aliases project".into()));
+                return Err(fork_provider_boundary(work, crate::wire::ErrorCode::Invalid,
+                    "child result volume cannot alias the project volume"));
             }
         }
         Ok(())
     }
 }
 
-fn validate_child_result_volume(volume: &VolumeRef, scratch: &VolumeRef, child: AgentId) -> Result<()> {
-    volume.validate()?;
-    if volume.class() != VolumeClass::AgentPrivate
-        || volume.owner() != &VolumeOwner::Agent(child)
-        || volume.provider() != scratch.provider()
-        || volume == scratch
+fn validate_child_result_volume_with_work(
+    result: &VolumeRef, scratch: &VolumeRef, child: AgentId,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<()> {
+    result.validate_with_work(work)?;
+    if result.class() != VolumeClass::AgentPrivate
+        || result.owner() != &VolumeOwner::Agent(child)
+        || result.provider() != scratch.provider()
+        || result == scratch
     {
-        return Err(Error::Invalid("fork result must be a distinct child-owned private namespace".into()));
+        return Err(fork_provider_boundary(work, crate::wire::ErrorCode::Invalid,
+            "child result volume must be child-owned and distinct from scratch"));
     }
     Ok(())
 }
 
-fn validate_child_result_generation(
-    volume: Option<&VolumeRef>,
-    generation: Option<&GenerationRef>,
-    scratch: &VolumeRef,
-    child: AgentId,
+fn validate_child_result_generation_with_work(
+    result: Option<&VolumeRef>, generation: Option<&GenerationRef>,
+    scratch: &VolumeRef, child: AgentId,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
-    match (volume, generation) {
+    match (result, generation) {
         (None, None) => Ok(()),
-        (Some(volume), Some(generation)) => {
-            validate_child_result_volume(volume, scratch, child)?;
-            generation.validate()?;
-            if generation.as_resource().provider() != volume.provider() {
-                return Err(Error::Invalid("fork result generation provider mismatch".into()));
+        (Some(result), Some(generation)) => {
+            validate_child_result_volume_with_work(result, scratch, child, work)?;
+            generation.validate_with_work(work)?;
+            if generation.as_resource().provider() != result.provider() {
+                return Err(fork_provider_boundary(work, crate::wire::ErrorCode::Invalid,
+                    "child result generation belongs to another provider"));
             }
             Ok(())
         }
-        _ => Err(Error::Invalid("fork result volume and generation must be paired".into())),
+        _ => Err(fork_provider_boundary(work, crate::wire::ErrorCode::Invalid,
+            "child result volume and generation must be captured together")),
     }
 }
 
@@ -1800,6 +1989,10 @@ impl<'a, 'b> ForkValidationWork<'a, 'b> {
 
     pub(super) fn work(&mut self) -> &mut Option<&'b mut dyn crate::store::history::HistoryIo> {
         self.work
+    }
+
+    fn invalid(&self, reason: &'static str) -> Error {
+        fork_provider_boundary(self.work, crate::wire::ErrorCode::Invalid, reason)
     }
 
     pub(super) fn checkpoint(&mut self) -> Result<()> {
@@ -1999,23 +2192,34 @@ impl ForkRequest {
         if self.attached_agents.len() as u64 > MAX_FORK_AGENTS as u64
             || self.selections.len() as u64 > MAX_FORK_RESOURCES as u64
         {
-            return Err(Error::Invalid(
-                "fork request exceeds protocol limits".into(),
-            ));
+            return Err(work.invalid("fork request exceeds protocol limits"));
         }
         if self.parent == self.child {
-            return Err(Error::Invalid("fork child cannot equal its parent".into()));
+            return Err(work.invalid("fork child cannot equal its parent"));
         }
         if self.parent.kind != crate::core::AggregateKind::Conversation
             || self.child.kind != crate::core::AggregateKind::Conversation
         {
-            return Err(Error::Invalid(
-                "fork must link parent and child conversations".into(),
-            ));
+            return Err(work.invalid("fork must link parent and child conversations"));
         }
         let parent_path = work.stream_path(&self.parent)?;
         let _child_path = work.stream_path(&self.child)?;
-        self.preparation.validate(self.child_agent)?;
+        self.preparation.validate_with_work(self.child_agent, work.work())?;
+        if let Some(source) = &self.authorized_source {
+            source.validate_with_work(work.work())?;
+            if source.operation_id != self.operation_id
+                || !self.selections.iter().any(|selection| matches!(
+                    &selection.revision,
+                    ResourceRevision::Project { volume, generation }
+                        if volume == &source.project && generation == &source.generation))
+                || (source.source_task != source.caller_task
+                    && (self.preparation.inherited_through_sequence != 0
+                        || self.preparation.summary.is_some()))
+            {
+                return Err(fork_provider_boundary(work.work(), crate::wire::ErrorCode::Unauthorized,
+                    "authorized source must select its exact project and history-free cross-task fork"));
+            }
+        }
         work.slots::<AgentId>(self.attached_agents.len())?;
         if let Some(source) = &self.authorized_source {
             source.validate()?;
@@ -2031,7 +2235,7 @@ impl ForkRequest {
         }
         let attached: BTreeSet<_> = self.attached_agents.iter().copied().collect();
         if attached.len() != self.attached_agents.len() || attached.contains(&self.child_agent) {
-            return Err(Error::Invalid("fork attached agents are not unique".into()));
+            return Err(work.invalid("fork attached agents are not unique"));
         }
         work.slots::<Vec<u8>>(self.selections.len())?;
         let mut selected = BTreeSet::new();
@@ -2042,12 +2246,10 @@ impl ForkRequest {
         let mut processes = 0_usize;
         for selection in &self.selections {
             work.checkpoint()?;
-            selection.revision.validate()?;
+            selection.revision.validate_with_work(work.work())?;
             let identity = work.canonical(&selection.revision)?;
             if !selected.insert(identity) {
-                return Err(Error::Invalid(
-                    "fork resource is selected more than once".into(),
-                ));
+                return Err(work.invalid("fork resource is selected more than once"));
             }
             match &selection.revision {
                 ResourceRevision::History(reference) => {
@@ -2060,9 +2262,7 @@ impl ForkRequest {
                             .and_then(|version| version.parse::<u64>().ok())
                             != Some(self.parent_revision)
                     {
-                        return Err(Error::Invalid(
-                            "fork history is not the required exact parent prefix".into(),
-                        ));
+                        return Err(work.invalid("fork history is not the required exact parent prefix"));
                     }
                 }
                 ResourceRevision::Project { volume, .. }
@@ -2078,9 +2278,7 @@ impl ForkRequest {
                         || volume == destination
                         || volume.provider() != destination.provider()
                     {
-                        return Err(Error::Invalid(
-                            "fork selected volume does not match child allocation".into(),
-                        ));
+                        return Err(work.invalid("fork selected volume does not match child allocation"));
                     }
                 }
                 ResourceRevision::Context(_) => contexts += 1,
@@ -2089,12 +2287,10 @@ impl ForkRequest {
             }
         }
         if histories != 1 || projects != 1 || private != 1 || contexts > 1 || processes > 1 {
-            return Err(Error::Invalid(
-                "fork requires one history, project and scratch selection".into(),
-            ));
+            return Err(work.invalid("fork requires one history, project and scratch selection"));
         }
         if let Some(boundary) = &self.boundary {
-            boundary.validate()?;
+            boundary.validate_with_work(work.work())?;
         }
         Ok(())
     }
@@ -2326,6 +2522,12 @@ impl ForkReport {
     ) -> Result<()> {
         self.request.validate_with_work(work)?;
         let mut work = ForkValidationWork::new(work)?;
+        if self.child_result_volume != self.request.preparation.child_result_volume {
+            return Err(work.invalid("fork report changed the child result allocation"));
+        }
+        validate_child_result_generation_with_work(
+            self.child_result_volume.as_ref(), self.child_result_generation.as_ref(),
+            &self.child_private_volume, self.request.child_agent, work.work())?;
         if self.summary.as_ref().map(|capture| &capture.selection)
             != self.request.preparation.summary.as_ref()
         {
@@ -2412,8 +2614,6 @@ impl ForkReport {
         if self.child_result_volume != self.request.preparation.child_result_volume {
             return Err(Error::Invalid("fork report changed result allocation".into()));
         }
-        validate_child_result_generation(self.child_result_volume.as_ref(),
-            self.child_result_generation.as_ref(), &self.child_private_volume, self.request.child_agent)?;
         for file in &self.inherited_context {
             work.checkpoint()?;
             file.validate()?;
@@ -2498,6 +2698,7 @@ impl ForkReport {
             operation_id: self.request.operation_id,
             parent: self.request.parent,
             parent_revision: self.request.parent_revision,
+            authorized_source: self.request.authorized_source,
             child: self.request.child,
             child_agent: self.request.child_agent,
             attached_agents: self.request.attached_agents,
@@ -2507,7 +2708,7 @@ impl ForkReport {
             child_private_generation: self.child_private_generation,
             child_result_volume: self.child_result_volume,
             child_result_generation: self.child_result_generation,
-            authorized_source: self.request.authorized_source,
+
             inherited_context: self.inherited_context,
             summary: self.summary,
             inherited_through_sequence: self.inherited_through_sequence,
@@ -2633,18 +2834,21 @@ impl ForkSeed {
                 "fork private volume is not child owned".into(),
             ));
         }
-        validate_child_result_generation(self.child_result_volume.as_ref(),
-            self.child_result_generation.as_ref(), &self.child_private_volume, self.child_agent)?;
+        validate_child_result_generation_with_work(
+            self.child_result_volume.as_ref(), self.child_result_generation.as_ref(),
+            &self.child_private_volume, self.child_agent, work.work())?;
         if let Some(source) = &self.authorized_source {
-            source.validate()?;
+            source.validate_with_work(work.work())?;
             if source.operation_id != self.operation_id
-                || !self.resources.iter().any(|resource| matches!(&resource.source,
+                || !self.resources.iter().any(|capture| matches!(
+                    &capture.source,
                     ResourceRevision::Project { volume, generation }
                         if volume == &source.project && generation == &source.generation))
                 || (source.source_task != source.caller_task
                     && (self.inherited_through_sequence != 0 || self.summary.is_some()))
             {
-                return Err(Error::Unauthorized("fork seed changed authorized source".into()));
+                return Err(fork_provider_boundary(work.work(), crate::wire::ErrorCode::Unauthorized,
+                    "authorized source must select its exact project and history-free cross-task fork"));
             }
         }
         let mut history = 0;
@@ -3173,6 +3377,8 @@ mod physical_clones {
         Ok(ForkPreparation {
             child_project_volume: volume(&source.child_project_volume, quota)?,
             child_private_volume: volume(&source.child_private_volume, quota)?,
+            child_result_volume: source.child_result_volume.as_ref()
+                .map(|value| volume(value, quota)).transpose()?,
             inherited_through_sequence: source.inherited_through_sequence,
             maximum_inherited_messages: source.maximum_inherited_messages,
             maximum_inherited_bytes: source.maximum_inherited_bytes,
@@ -3214,6 +3420,17 @@ mod physical_clones {
         Ok(value)
     }
 
+    fn source_authorization(
+        source: Option<&crate::source_authorization::ProjectSourceAuthorization>,
+        quota: &mut CodecQuota<'_, '_>,
+    ) -> Result<Option<crate::source_authorization::ProjectSourceAuthorization>> {
+        source.map(|source| {
+            let (value, retained) = source.clone_with_work_and_custody(quota.work())?;
+            quota.adopt(retained)?;
+            Ok(value)
+        }).transpose()
+    }
+
     fn request(source: &ForkRequest, quota: &mut CodecQuota<'_, '_>) -> Result<ForkRequest> {
         let parent = authority(&source.parent, quota)?;
         let child = authority(&source.child, quota)?;
@@ -3234,6 +3451,7 @@ mod physical_clones {
             preparation,
             selections,
             boundary: source.boundary.as_ref().map(|value| boundary(value, quota)).transpose()?,
+            authorized_source: source_authorization(source.authorized_source.as_ref(), quota)?,
         })
     }
 
@@ -3250,6 +3468,11 @@ mod physical_clones {
             child_private_volume: volume(&source.child_private_volume, quota)?,
             child_private_generation: GenerationRef::from_resource_with_work(
                 resource(source.child_private_generation.as_resource(), quota)?, quota.work())?,
+            child_result_volume: source.child_result_volume.as_ref()
+                .map(|value| volume(value, quota)).transpose()?,
+            child_result_generation: source.child_result_generation.as_ref()
+                .map(|value| GenerationRef::from_resource_with_work(
+                    resource(value.as_resource(), quota)?, quota.work())).transpose()?,
             inherited_context: files(&source.inherited_context, quota)?,
             summary: source.summary.as_ref().map(|value| summary_capture(value, quota)).transpose()?,
             inherited_through_sequence: source.inherited_through_sequence,
@@ -3281,6 +3504,7 @@ mod physical_clones {
             operation_id: source.operation_id,
             parent,
             parent_revision: source.parent_revision,
+            authorized_source: source_authorization(source.authorized_source.as_ref(), quota)?,
             child,
             child_agent: source.child_agent,
             attached_agents,
@@ -3289,6 +3513,11 @@ mod physical_clones {
             child_private_volume: volume(&source.child_private_volume, quota)?,
             child_private_generation: GenerationRef::from_resource_with_work(
                 resource(source.child_private_generation.as_resource(), quota)?, quota.work())?,
+            child_result_volume: source.child_result_volume.as_ref()
+                .map(|value| volume(value, quota)).transpose()?,
+            child_result_generation: source.child_result_generation.as_ref()
+                .map(|value| GenerationRef::from_resource_with_work(
+                    resource(value.as_resource(), quota)?, quota.work())).transpose()?,
             inherited_context: files(&source.inherited_context, quota)?,
             summary: source.summary.as_ref().map(|value| summary_capture(value, quota)).transpose()?,
             inherited_through_sequence: source.inherited_through_sequence,
@@ -3482,6 +3711,30 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn child_result_capture_rejects_alias_partial_and_foreign_generation() -> Result<()> {
+        let mut seed: ForkSeed = serde_json::from_str(
+            include_str!("../fixtures/v2/fork-seed.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let provider = seed.child_private_volume.provider().clone();
+        seed.child_result_volume = Some(VolumeRef::new(
+            provider.clone(), "independent-child-result", VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(seed.child_agent))?);
+        seed.child_result_generation = Some(GenerationRef::new(provider.clone(), [73; 32], None)?);
+        seed.validate()?;
+        let mut mutation = seed.clone();
+        mutation.child_result_generation = None;
+        assert_eq!(mutation.validate().unwrap_err().code(), crate::wire::ErrorCode::Invalid);
+        mutation = seed.clone();
+        mutation.child_result_volume = Some(seed.child_private_volume.clone());
+        assert_eq!(mutation.validate().unwrap_err().code(), crate::wire::ErrorCode::Invalid);
+        mutation = seed;
+        mutation.child_result_generation = Some(GenerationRef::new(
+            ProviderRef::new(provider.family(), "foreign-result-provider")?, [73; 32], None)?);
+        assert_eq!(mutation.validate().unwrap_err().code(), crate::wire::ErrorCode::Invalid);
+        Ok(())
+    }
+
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn physical_fork_clone_budget() -> acyclic_fs::WorkBudget {
         acyclic_fs::WorkBudget {
@@ -3508,6 +3761,8 @@ mod tests {
             captures: seed.resources.iter().cloned().map(Capture::Captured).collect(),
             child_private_volume: seed.child_private_volume.clone(),
             child_private_generation: seed.child_private_generation.clone(),
+            child_result_volume: seed.child_result_volume.clone(),
+            child_result_generation: seed.child_result_generation.clone(),
             inherited_context: seed.inherited_context.clone(),
             summary: seed.summary.clone(),
             inherited_through_sequence: seed.inherited_through_sequence,
@@ -3767,6 +4022,9 @@ mod tests {
             child_result_generation: None,
             summary: None,
             history_witness: None,
+            authorized_source: None,
+            child_result_volume: None,
+            child_result_generation: None,
             operation_id: OperationId::from_bytes([1; 16]),
             parent,
             parent_revision: 3,
@@ -3988,6 +4246,7 @@ mod tests {
                 operation_id: seed.operation_id,
                 parent: seed.parent.clone(),
                 parent_revision: seed.parent_revision,
+                authorized_source: seed.authorized_source.clone(),
                 child: seed.child.clone(),
                 child_agent: seed.child_agent,
                 attached_agents: Vec::new(),
@@ -3999,6 +4258,7 @@ mod tests {
                         _ => unreachable!("fixture includes the child project"),
                     },
                     child_private_volume: seed.child_private_volume.clone(),
+                    child_result_volume: seed.child_result_volume.clone(),
                     inherited_through_sequence: 0,
                     maximum_inherited_messages: MAX_FORK_INHERITED_MESSAGES,
                     maximum_inherited_bytes: MAX_FORK_INHERITED_BYTES,
@@ -4029,6 +4289,8 @@ mod tests {
                 .collect(),
             child_private_volume: seed.child_private_volume.clone(),
             child_private_generation: seed.child_private_generation.clone(),
+            child_result_volume: seed.child_result_volume.clone(),
+            child_result_generation: seed.child_result_generation.clone(),
             inherited_context: Vec::new(),
             shared_grants: Vec::new(),
             reference_grants: Vec::new(),

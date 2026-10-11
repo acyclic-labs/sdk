@@ -158,7 +158,7 @@ async fn verified_with_work<P: StreamProvider>(
     record: &Record,
     maximum_bytes: u64,
     work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<(Event, u64)> {
+) -> Result<((Event, u64), u64)> {
     if record.value.len() as u64 >= maximum_bytes {
         return Err(Error::Invalid("effect lookup exceeds byte bound".into()));
     }
@@ -167,7 +167,7 @@ async fn verified_with_work<P: StreamProvider>(
         if location.effect_id != effect || location.location.effect_position != Some(record.sequence) {
             return Err(Error::Storage("effect locator identity differs".into()));
         }
-        operations::verify_operation_locator_with_work(
+        operations::verify_operation_locator_with_retained_quota(
             client,
             authority,
             verifier,
@@ -180,13 +180,26 @@ async fn verified_with_work<P: StreamProvider>(
     }.await;
     let location_capacity = location.location.authority.id.capacity() as u64;
     drop(location);
-    let (event, bytes) = operations::release_owned_after_drop(result, location_capacity, work)?;
-    if crate::core::event_effect_id(&event.payload) != Some(effect) {
-        return Err(Error::Storage(
-            "effect locator targets another canonical transition".into(),
-        ));
+    let released = match work.as_deref_mut() {
+        Some(observer) => observer.release_owned(location_capacity),
+        None => Ok(()),
+    };
+    let ((event, owned), bytes) = match result {
+        Ok(value) => value,
+        Err(error) => return Err(error),
+    };
+    let verified = released.and_then(|()| {
+        if crate::core::event_effect_id(&event.payload) != Some(effect) {
+            Err(Error::Storage("effect locator targets another canonical transition".into()))
+        } else { Ok(()) }
+    });
+    match verified {
+        Ok(()) => Ok(((event, owned), bytes)),
+        Err(error) => {
+            drop(event);
+            operations::release_owned_after_drop(Err(error), owned, work)
+        }
     }
-    Ok((event, bytes))
 }
 
 pub(super) async fn add_publication_index<P: StreamProvider>(
@@ -235,10 +248,16 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
                 ).await;
                 let record_bytes = record.value.len() as u64;
                 drop(record);
-                let (prior, _) = release_record_after_drop(prior, record_bytes, work)?;
-                if prior.revision > reducer.revision() {
-                    return Err(Error::Conflict("effect index is ahead of this reducer".into()));
-                }
+                let released = match work.as_deref_mut() {
+                    Some(observer) => observer.release_record(record_bytes),
+                    None => Ok(()),
+                };
+                let ((prior, owned), _) = prior?;
+                let valid = if prior.revision > reducer.revision() {
+                    Err(Error::Conflict("effect index is ahead of this reducer".into()))
+                } else { released };
+                drop(prior);
+                operations::release_owned_after_drop(valid, owned, work)?;
                 count
             };
             publication.set_effect_position_with_work(expected, work)?;
@@ -292,7 +311,19 @@ pub(super) async fn read_with_work<P: StreamProvider>(
     limits: HistoryReadLimits,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Vec<Event>> {
-    verifier.verify_audience(&cursor.authority)?;
+    read_with_retained_quota(client, verifier, cursor, effect, limits, work)
+        .await.map(|(events, _)| events)
+}
+
+pub(super) async fn read_with_retained_quota<P: StreamProvider>(
+    client: &StreamClient<P>,
+    verifier: &AuthorityVerifier,
+    cursor: &HistoryCursor,
+    effect: EffectId,
+    limits: HistoryReadLimits,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<(Vec<Event>, u64)> {
+    verifier.verify_audience_with_work(&cursor.authority, work)?;
     if limits.maximum_events == 0
         || limits.maximum_bytes == 0
         || cursor.after_revision > cursor.through_revision
@@ -302,7 +333,7 @@ pub(super) async fn read_with_work<P: StreamProvider>(
         ));
     }
     if cursor.through_revision == 0 {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), 0));
     }
     let (canonical_path, canonical_capacity) = canonical_path_with_work(&cursor.authority, work)?;
     let canonical_tail = tail_with_work(client, &canonical_path, work).await;
@@ -324,7 +355,7 @@ pub(super) async fn read_with_work<P: StreamProvider>(
     )
     .await?;
     let Some(head) = selected.head else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), 0));
     };
     let count = head
         .position
@@ -337,6 +368,8 @@ pub(super) async fn read_with_work<P: StreamProvider>(
     }
     let (path, path_capacity) = path_with_work(&cursor.authority, effect, work)?;
     let mut events = Vec::new();
+    let mut event_claims = 0_u64;
+    let mut staged = None;
     let result = async {
         let mut used = selected.consumed_bytes;
         let mut previous_revision = 0;
@@ -350,9 +383,11 @@ pub(super) async fn read_with_work<P: StreamProvider>(
                 .await?
                 .ok_or_else(|| Error::Storage("effect transition index is incomplete".into()))?;
             let result = async {
-                let (event, bytes) = verified_with_work(
+                let ((event, owned), bytes) = verified_with_work(
                     client, &cursor.authority, verifier, effect, &record, remaining, work,
                 ).await?;
+                staged = Some((event, owned));
+                let event = &staged.as_ref().expect("original authenticated event").0;
                 used = used.checked_add(bytes)
                     .ok_or_else(|| Error::Invalid("effect history byte count overflows".into()))?;
                 if event.revision <= previous_revision {
@@ -372,17 +407,32 @@ pub(super) async fn read_with_work<P: StreamProvider>(
                         observer.reserve_events(&mut events, limits.maximum_events as usize)?;
                     }
                 }
-                Ok(event)
+                Ok(())
             }.await;
             let record_bytes = record.value.len() as u64;
             drop(record);
-            events.push(release_record_after_drop(result, record_bytes, work)?);
+            release_record_after_drop(result, record_bytes, work)?;
+            let (event, owned) = staged.take().expect("original authenticated output event");
+            event_claims += owned;
+            events.push(event);
         }
         Ok(())
     }.await;
     drop(path);
-    operations::release_owned_after_drop(result, path_capacity, work)?;
-    Ok(events)
+    let staged_claim = staged.as_ref().map_or(0, |(_, owned)| *owned);
+    drop(staged);
+    let vector_claim = if work.is_some() {
+        events.capacity() as u64 * std::mem::size_of::<Event>() as u64
+    } else { 0 };
+    let released_path = operations::release_owned_after_drop(result, path_capacity, work);
+    let result = operations::release_owned_after_drop(released_path, staged_claim, work);
+    match result {
+        Ok(()) => Ok((events, event_claims + vector_claim)),
+        Err(error) => {
+            drop(events);
+            operations::release_owned_after_drop(Err(error), event_claims + vector_claim, work)
+        }
+    }
 }
 
 /// Proves retirement against an already authenticated canonical record. The
@@ -637,6 +687,89 @@ mod native_source_custody_tests {
                     acyclic_fs::WorkError::BudgetExceeded { counter: "bytes_copied", .. }), ..
             })));
         assert_eq!(io.into_custody().bytes(), 0);
+        Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod native_effect_paid_point_tests {
+    use super::*;
+    use super::super::{checkpoints, history::native_work_io};
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+    use acyclic_stream::{IdempotencyKey, MemoryStream};
+    use crate::{
+        Capabilities, IdempotencyKey as CommandKey, OperationId,
+        conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
+        core::{Action, AggregateKind, ApplyResult, AuthorityIssuer, Command, EffectGuarantee, SchemaRegistry},
+        resources::ProviderRef,
+    };
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn original_effect_point_returns_actual_decoder_and_vector_paid_claim() -> Result<()> {
+        let authority = Authority { kind: AggregateKind::Agent, id: "paid-effect-point".into() };
+        let issuer = AuthorityIssuer::new("paid-effect-point", [7; 32], authority.clone());
+        let reducer = Reducer::new(authority.clone(), issuer.verifier(), SchemaRegistry::new());
+        let volume = VolumeRef::new(
+            ProviderRef::new("test", "filesystem", "2")?, "effect-volume",
+            VolumeClass::AgentPrivate, VolumeOwner::Agent(crate::AgentId::from_bytes([8; 16])),
+        )?;
+        let request = FileRef::new(volume.clone(), "effects/request.json", "generation-1",
+            FileDescriptor::from_bytes(b"{}", "application/json")?, "request.json")?;
+        let schema = FileRef::new(volume, "effects/schema.json", "generation-1",
+            FileDescriptor::from_bytes(br#"{"type":"object"}"#, "application/schema+json")?, "schema.json")?;
+        let effect = EffectId::from_bytes([91; 16]);
+        let command = Command {
+            operation_id: OperationId::from_bytes([92; 16]),
+            idempotency_key: CommandKey::new("paid-effect-point")?,
+            expected_revision: 0,
+            scope: issuer.root("effects", Capabilities::new([
+                "effect:run", "effect:plan", "effect:provider:test.effects",
+            ])),
+            causal_parent: None,
+            action: Action::PlanEffect {
+                effect_id: effect, provider: "test.effects".into(),
+                guarantee: EffectGuarantee::IdempotentRetry, effect_kind: "test.write".into(),
+                request, result_schema: schema,
+            },
+        };
+        let ApplyResult::Applied { event } = reducer.plan(&command)? else {
+            panic!("fresh original effect plan");
+        };
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let publication = checkpoints::publication(&client, &reducer, &event).await?;
+        let request = publication.request(&client,
+            IdempotencyKey::new(Bytes::from_static(b"paid-effect-point"))?).await?;
+        let acyclic_stream::CommitOutcome::Committed(envelope) = client.commit(request).await? else {
+            panic!("original atomic effect publication");
+        };
+        publication.verify(&envelope)?;
+        drop(envelope);
+        drop(publication);
+
+        let cancellation = CancellationToken::new();
+        let native = NativeMaterializationWork::new(WorkBudget {
+            authority_records_read: 64, authority_bytes_read: 1_048_576,
+            backend_read_operations: 64, source_bytes_read: 1_048_576,
+            bytes_copied: 1_048_576, bytes_encoded: 1_048_576, bytes_hashed: 1_048_576,
+            output_bytes: 1_048_576, items_returned: 64, items_examined: 1_048_576,
+            allocation_operations: 1_048_576, peak_allocation_bytes: 1_048_576,
+            ..WorkBudget::default()
+        }, &cancellation).expect("same original finite effect point ledger");
+        let mut io = native_work_io(&native).expect("original point decoder source custody");
+        let cursor = HistoryCursor { authority, after_revision: 0, through_revision: 1 };
+        let (events, paid) = read_with_retained_quota(
+            &client, &issuer.verifier(), &cursor, effect,
+            HistoryReadLimits { maximum_events: 8, maximum_bytes: 1_048_576 },
+            &mut Some(&mut io),
+        ).await?;
+        assert_eq!(events, vec![event]);
+        let mut custody = io.into_custody();
+        assert_eq!(custody.bytes(), paid);
+        assert!(paid >= events.capacity() as u64 * std::mem::size_of::<Event>() as u64);
+        drop(events);
+        custody.release(paid).expect("original event vector physically dropped before paid retirement");
+        assert_eq!(custody.bytes(), 0);
         Ok(())
     }
 }
