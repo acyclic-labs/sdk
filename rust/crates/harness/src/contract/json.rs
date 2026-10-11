@@ -100,6 +100,8 @@ pub enum JsonValueSchema {
     ToolTaskCommand,
     /// Stock task admission command's input only.
     TaskAdmitCommand,
+    /// Prepared task admission's nested input and input/output schemas.
+    PreparedTaskAdmitCommand,
     /// Stock model input and selected-context message content.
     ModelTaskCommand,
     /// Native process request's optional MCP stdio params only.

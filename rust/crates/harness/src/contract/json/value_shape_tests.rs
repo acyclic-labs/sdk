@@ -731,6 +731,7 @@ fn stock_command_profiles_select_only_the_actual_closed_value_fields() {
     let fixtures = [
         (JsonValueSchema::ToolTaskCommand, format!(r#"{{"arguments":{raw},"name":"n","revision":"1"}}"#), 1),
         (JsonValueSchema::TaskAdmitCommand, format!(r#"{{"input":{raw},"name":"n","version":"1"}}"#), 1),
+        (JsonValueSchema::PreparedTaskAdmitCommand, format!(r#"{{"ad\u006dission":{{"input":{raw},"input_schema":{raw},"output_schema":{raw}}}}}"#), 3),
         (JsonValueSchema::ModelTaskCommand, format!(r#"{{"input":{part},"selected_context":{{"messages":[{{"content":{part}}}]}},"max_steps":1}}"#), 2),
         (JsonValueSchema::NativeProcessRequest, format!(r#"{{"mcp_stdio":{{"params":{raw}}}}}"#), 1),
     ];
@@ -750,6 +751,7 @@ fn stock_command_profiles_select_only_the_actual_closed_value_fields() {
     for (schema, document) in [
         (JsonValueSchema::ToolTaskCommand, format!(r#"{{"input":{hidden},"schema":{hidden}}}"#)),
         (JsonValueSchema::TaskAdmitCommand, format!(r#"{{"arguments":{hidden},"input_schema":{hidden}}}"#)),
+        (JsonValueSchema::PreparedTaskAdmitCommand, format!(r#"{{"input":{hidden},"admission":{{"arguments":{hidden},"resource_proofs":[],"extensions":null,"execution":null}}}}"#)),
         (JsonValueSchema::ModelTaskCommand, format!(r#"{{"input":{{"kind":"file","file":{hidden}}},"selected_context":{{"selection":{hidden}}}}}"#)),
         (JsonValueSchema::NativeProcessRequest, format!(r#"{{"mcp_stdio":null,"params":{hidden},"view":{{"params":{hidden}}}}}"#)),
     ] {
@@ -1305,6 +1307,122 @@ mod native {
         // A real closed public Deserialize fixture, not provider validation or
         // authentication: the empty resources intentionally are not validated.
         serde_json::to_value(request).unwrap()
+    }
+
+    fn prepared_admission_document(payload: &str) -> String {
+        let mut admission = consuming_request_source(Value::Null).as_object_mut().unwrap()
+            .remove("child").unwrap();
+        for field in ["input", "input_schema", "output_schema"] {
+            admission.as_object_mut().unwrap().insert(field.into(), Value::Null);
+        }
+        let command = crate::filesystem::PreparedTaskAdmitCommand {
+            admission: serde_json::from_value(admission).unwrap(),
+        };
+        let mut document = serde_json::to_string(&command).unwrap();
+        for field in ["input", "input_schema", "output_schema"] {
+            let original = format!("\"{field}\":null");
+            assert!(document.contains(&original), "real admission field must be serialized");
+            document = document.replacen(&original, &format!("\"{field}\":{}", raw_document(payload)), 1);
+        }
+        document
+    }
+
+    #[test]
+    fn prepared_command_uses_real_preparation_decoder_and_original_output_custody() {
+        let document = prepared_admission_document(
+            r#"{"z":[18446744073709551615,-9223372036854775808,-0.0,"\n😀"],"a":1,"a":2}"#,
+        );
+        for document in [document.clone(), document.replacen("\"admission\"", r#""ad\u006dission""#, 1)] {
+            let expected: crate::filesystem::PreparedTaskAdmitCommand = serde_json::from_str(&document).unwrap();
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
+                allocation_operations: 1, peak_allocation_bytes: 8 * 1024 * 1024,
+                ..acyclic_fs::WorkBudget::default()
+            }, &cancellation).unwrap();
+            let baseline = work.live_allocation_bytes();
+            let io = crate::filesystem::PreparationIo::from_native_work(&work).unwrap();
+            let decoded = io.decode_preparation_with_code::<crate::filesystem::PreparedTaskAdmitCommand>(
+                document.as_bytes(), crate::wire::ErrorCode::Invalid,
+            ).unwrap();
+            assert_eq!(decoded.value, expected);
+            assert_eq!(shape(document.as_bytes(), JsonValueSchema::PreparedTaskAdmitCommand).raw_frames, 3);
+            let (actual, original) = decoded.into_native_parts().unwrap();
+            let held = original.bytes();
+            assert!(held > 0, "real closed-record preparse quota is held, not a fabricated receipt");
+            assert_eq!(work.live_allocation_bytes(), baseline + held);
+            assert_eq!(crate::contract::canonical_json_bytes(&actual).unwrap(),
+                crate::contract::canonical_json_bytes(&expected).unwrap());
+            assert_eq!(work.receipt().allocation_operations, 0,
+                "schema reservations are logical; opaque serde allocations are not SDK reserve observations");
+            drop(io);
+            cancellation.cancel();
+            assert_eq!(work.live_allocation_bytes(), baseline + held, "original guard survives IO owner/cancellation");
+            drop(actual);
+            drop(original);
+            assert_eq!(work.live_allocation_bytes(), baseline, "payload physically drops before its original quota");
+        }
+    }
+
+    #[test]
+    fn prepared_command_hidden_limits_and_malformed_value_keep_real_producer_boundary() {
+        for depth in [128, 256] {
+            let document = prepared_admission_document(&format!("{}0{}", "[".repeat(depth), "]".repeat(depth)));
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
+                items_examined: document.len() as u64 * 8 + 4096,
+                allocation_operations: 1, peak_allocation_bytes: 8 * 1024 * 1024,
+                ..acyclic_fs::WorkBudget::default()
+            }, &cancellation).unwrap();
+            let baseline = work.live_allocation_bytes();
+            let io = crate::filesystem::PreparationIo::from_native_work(&work).unwrap();
+            let error = io.decode_preparation_with_code::<crate::filesystem::PreparedTaskAdmitCommand>(
+                document.as_bytes(), crate::wire::ErrorCode::Invalid,
+            ).err().unwrap();
+            assert!(matches!(error, Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. }),
+                "real preparation aggregate semantic depth denies before serde, not incidental work exhaustion");
+            assert_eq!(work.receipt().allocation_operations, 0);
+            assert_eq!(work.live_allocation_bytes(), baseline, "denied shape never retains typed output quota");
+            drop(io);
+        }
+
+        let document = prepared_admission_document(&format!("[{}0]", "0,".repeat(1024)));
+        let mut admitted = false;
+        let error = json_from_slice_bounded_native_trusted::<crate::filesystem::PreparedTaskAdmitCommand, _>(
+            document.as_bytes(), JsonBounds { maximum_items: lexical_items(document.as_bytes()) + 16, ..LIMITS },
+            0, crate::wire::ErrorCode::Invalid, JsonValueSchema::PreparedTaskAdmitCommand, &mut |event| {
+                admitted |= matches!(event, JsonCodecCharge::Admission { .. });
+                Ok(())
+            },
+        ).err().unwrap();
+        assert!(!admitted, "original lexical items fit but selected hidden items fail before typed growth");
+        assert!(matches!(error, Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. }));
+
+        let document = prepared_admission_document("[0,]");
+        let expected = serde_json::from_str::<crate::filesystem::PreparedTaskAdmitCommand>(&document).err().unwrap();
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
+            allocation_operations: 1, peak_allocation_bytes: 8 * 1024 * 1024,
+            ..acyclic_fs::WorkBudget::default()
+        }, &cancellation).unwrap();
+        let baseline = work.live_allocation_bytes();
+        let io = crate::filesystem::PreparationIo::from_native_work(&work).unwrap();
+        let error = io.decode_preparation_with_code::<crate::filesystem::PreparedTaskAdmitCommand>(
+            document.as_bytes(), crate::wire::ErrorCode::Invalid,
+        ).err().unwrap();
+        let Error::NativeDecode { source, code: crate::wire::ErrorCode::Invalid, custody: Some(original) } = error else {
+            panic!("real preparation decoder must retain its original serde error and funded diagnostic custody");
+        };
+        assert_eq!(source.classify(), expected.classify());
+        assert_eq!(source.line(), expected.line());
+        assert_eq!(source.column(), expected.column());
+        assert_eq!(source.to_string(), expected.to_string());
+        assert!(original.bytes() > 0);
+        let error = Error::NativeDecode { source, code: crate::wire::ErrorCode::Invalid, custody: Some(original) };
+        drop(io);
+        cancellation.cancel();
+        assert!(work.live_allocation_bytes() > baseline, "diagnostic stays paid after owner/cancellation");
+        drop(error);
+        assert_eq!(work.live_allocation_bytes(), baseline);
     }
 
     #[test]

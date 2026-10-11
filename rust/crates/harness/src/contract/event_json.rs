@@ -272,12 +272,17 @@ const PREPARATION_DIAGNOSTIC_LABELS: &[&str] = &[
     "peakAllocationBytes", "materializations", "path string", "an array of length 16",
     // Actual stock command wrappers and SelectedModelContext; their nested
     // model/context/ref graphs are the concrete declarations covered above.
-    "TimerTaskCommand", "TaskObserveCommand", "TaskAdmitCommand", "ModelTaskCommand",
+    "TimerTaskCommand", "TaskObserveCommand", "TaskAdmitCommand", "PreparedTaskAdmitCommand",
+    "TaskCancelCommand", "ModelTaskCommand",
     "ToolTaskCommand", "MailSendTaskCommand", "MailReceiveTaskCommand", "SelectedModelContext",
     "deadline_unix_ms", "admission_operation", "name", "version", "input",
     "selected_context", "max_steps", "max_output_tokens", "revision", "arguments",
     // Model output selection is a typed VolumeRef, not another Value field.
     "selected_output_volume",
+    // The retained mailbox operation is a typed OperationId, not a Value.
+    "mailbox_operation", "admission",
+    // Actual committed-mail envelope and its ref-only scheduler InboxItem.
+    "CommittedMailResult", "InboxItem", "task_id", "message_id",
     "recipient", "payload", "after", "selection", "messages",
     "Outcome", "Succeeded", "Failed", "Cancelled", "Indeterminate", "message", "operation_id",
 ];

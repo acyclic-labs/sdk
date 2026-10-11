@@ -5,7 +5,7 @@ use super::{AdmissionFailure, JsonBounds, JsonCodecCharge, JsonValueSchema, Json
 
 const RAW_KEY: &[u8] = b"$serde_json::private::RawValue";
 // Literal SDK field/tag names only; this is not a public selector language.
-const KEYS: [&[u8]; 75] = [
+const KEYS: [&[u8]; 76] = [
     RAW_KEY, b"type", b"schema", b"response_schema", b"result", b"question", b"form",
     b"kind", b"interaction_resolved", b"resolution", b"outcome", b"events",
     b"payload", b"projection", b"interactions", b"messages", b"content", b"context",
@@ -20,7 +20,7 @@ const KEYS: [&[u8]; 75] = [
     b"selected_context", b"mcp_stdio", b"params",
     b"authorized_source", b"native_snapshot", b"read_authorization", b"intent", b"report",
     b"commands", b"seed", b"fork_published", b"forks", b"project_merge_published",
-    b"snapshot", b"merge",
+    b"snapshot", b"merge", b"admission",
 ];
 const _: () = assert!(KEYS.len() < u128::BITS as usize);
 const FRAMES: usize = 258 + usize::BITS as usize;
@@ -42,7 +42,7 @@ enum Node {
     SchedulerEvent, OperationSpec, EntrypointRef, Orchestration,
     InteractionResponse, RecursiveForkToolPlan, RecursivePlan, RecursiveInitialPlan,
     RecursiveState, RecursiveReceipt, ValueOutcome, ProjectMergeReceipt, ProviderProof,
-    ToolTaskCommand, TaskAdmitCommand, ModelTaskCommand,
+    ToolTaskCommand, TaskAdmitCommand, PreparedTaskAdmitCommand, ModelTaskCommand,
     NativeProcessRequest, McpStdioRequest,
     ProjectSourceAuthorization, ForkRequest, ForkReport, ForkSeed, RecursiveForkSourceIntent,
     RecursiveSourcePin, ForkPreparationCommandResults, ForkPreparationCommands,
@@ -289,6 +289,7 @@ impl ValueInspector {
             Some(JsonValueSchema::ProjectMergeReceipt) => Node::ProjectMergeReceipt,
             Some(JsonValueSchema::ToolTaskCommand) => Node::ToolTaskCommand,
             Some(JsonValueSchema::TaskAdmitCommand) => Node::TaskAdmitCommand,
+            Some(JsonValueSchema::PreparedTaskAdmitCommand) => Node::PreparedTaskAdmitCommand,
             Some(JsonValueSchema::ModelTaskCommand) => Node::ModelTaskCommand,
             Some(JsonValueSchema::NativeProcessRequest) => Node::NativeProcessRequest,
             Some(JsonValueSchema::ProjectSourceAuthorization) => Node::ProjectSourceAuthorization,
@@ -451,6 +452,7 @@ impl ValueInspector {
             }
             (Node::ToolTaskCommand, b"arguments") => (Node::Value, scope),
             (Node::TaskAdmitCommand, b"input") => (Node::Value, scope),
+            (Node::PreparedTaskAdmitCommand, b"admission") => (Node::TaskAdmissionRecord, scope),
             (Node::ModelTaskCommand, b"input") => (Node::ModelContent, scope),
             (Node::ModelTaskCommand, b"selected_context") => (Node::Context, scope),
             (Node::NativeProcessRequest, b"mcp_stdio") => (Node::McpStdioRequest, scope),
