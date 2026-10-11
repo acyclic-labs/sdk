@@ -43,7 +43,6 @@ mod headless;
 pub use headless::TaskVolumeSnapshot;
 #[cfg(feature = "filesystem")]
 mod source_authorization;
-#[cfg(feature = "filesystem")]
 mod mail;
 
 /// Exact canonical send acknowledgement, authenticated by the atomic mail receipt.
@@ -554,7 +553,6 @@ pub struct TaskJournalOwner<P> {
     task_id: TaskId,
     fence: crate::scheduler::LeaseFence,
     original_admission_digest: [u8; 32],
-    invocation_cancellation: Option<acyclic_fs::CancellationToken>,
     workflow: crate::workflow::WorkflowAdmission,
     maximum_payload_bytes: u64,
     output_schema: Value,
@@ -1229,7 +1227,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 reason: "workflow proof requires original native work",
             })?;
             self.host.machines.require_native_work(&record.prior.machine)?;
-            let input = crate::executor::clone_preparation(&record.input, Some(io))?;
+            let mut history = io.history_io();
+            let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+            let mut quota = crate::wire_codec::CodecQuota::new(&mut observer, 0)?;
+            let input = crate::core::copy_value(&record.input, &mut quota)?;
+            quota.transfer();
             let (next, transition, custody) = self.host.machines.step_with_native_work(
                 &record.prior, input, work,
             )?;
@@ -3118,7 +3120,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             return Err(Error::Unauthorized("custom parcel requires recipient file authority".into()));
         }
         if !self.observe_mail_location(
-            event.sender, receiver, event.message_id, &record.value, Some(record.sequence),
+            event.sender, receiver, event.message_id, &record.value, Some(record.sequence), None
         ).await? {
             return Err(Error::Unauthorized("parcel has no original atomic receipt".into()));
         }
@@ -5937,48 +5939,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok((stream, if work.is_some() { owned } else { 0 }))
     }
 
-    async fn mail_bytes(
-        &self,
-        sender: TaskId,
-        recipient: TaskId,
-        message_id: OperationId,
-        payload: FileRef,
-    ) -> Result<OwnedBytes> {
-        #[cfg(feature = "filesystem")]
-        {
-            return self.mail_bytes_with_io(sender, recipient, message_id, payload, None).await;
-        }
-        #[cfg(not(feature = "filesystem"))]
-        {
-        payload.validate()?;
-        let sender_admission = self
-            .admission_with_work(OperationId::from_bytes(sender.into_bytes()), &mut None)
-            .await?;
-        let recipient_admission = self
-            .admission_with_work(OperationId::from_bytes(recipient.into_bytes()), &mut None)
-            .await?;
-        let direct = Self::authorize_mail_route(sender, &sender_admission, recipient, &recipient_admission)?;
-        recipient_admission.limits.validate_file(&payload)?;
-        if !direct && !read_granted(&recipient_admission.grants, &payload)? {
-            return Err(Error::Unauthorized(
-                "recipient cannot read the mailed file".into(),
-            ));
-        }
-        sender_admission.limits.validate_file(&payload)?;
-        if !read_granted(&sender_admission.grants, &payload)? {
-            return Err(Error::Unauthorized("mail donor cannot read its payload".into()));
-        }
-        let event = MailEvent {
-            sender,
-            recipient,
-            message_id,
-            schema_revision: MAIL_SCHEMA_REVISION,
-            route_revision: MAIL_ROUTE_REVISION,
-            payload,
-        };
-        event.encode(acyclic_stream::MAX_RECORD_BYTES as u64).map(OwnedBytes::from)
-        }
-    }
+
 
     fn mail_location_path(
         sender: TaskId,
@@ -5989,69 +5950,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         ))?)
     }
 
-    async fn observe_mail_location(
-        &self,
-        sender: TaskId,
-        recipient: TaskId,
-        message: OperationId,
-        bytes: &[u8],
-        expected_sequence: Option<u64>,
-    ) -> Result<bool> {
-        let location = self
-            .stream
-            .stream(Self::mail_location_path(sender, message)?.as_str())?;
-        let records = match location.read(0, 2).await {
-            Ok(records) => records.try_collect::<Vec<_>>().await?,
-            Err(StreamError::NotFound) => return Ok(false),
-            Err(error) => return Err(error.into()),
-        };
-        let [record] = records.as_slice() else {
-            return Err(Error::Storage(
-                "mail location must contain one record".into(),
-            ));
-        };
-        if record.sequence != 0 || record.value.len() > MAX_MAIL_LOCATION_BYTES {
-            return Err(Error::Storage(
-                "mail location exceeds its bounded format".into(),
-            ));
-        }
-        let retained: MailLocation = crate::contract::json_from_slice(&record.value)
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        if retained.sender != sender
-            || retained.message_id != message
-            || retained.schema_revision != MAIL_SCHEMA_REVISION
-            || retained.route_revision != MAIL_ROUTE_REVISION
-            || crate::contract::canonical_json_bytes(&retained)?.as_slice() != record.value.as_ref()
-        {
-            return Err(Error::Storage("mail location identity differs".into()));
-        }
-        if expected_sequence.is_some_and(|sequence| sequence != retained.sequence) {
-            return Err(Error::Storage(
-                "inbox record differs from its atomic location".into(),
-            ));
-        }
-        let mailbox = self.mailbox(retained.recipient)?;
-        let original = mailbox
-            .read(retained.sequence, 1)
-            .await?
-            .try_collect::<Vec<_>>()
-            .await?;
-        let [original] = original.as_slice() else {
-            return Err(Error::Storage("mail location source is absent".into()));
-        };
-        if original.sequence != retained.sequence
-            || original.commit_id != record.commit_id
-            || blake3::hash(&original.value).as_bytes() != &retained.value_digest
-        {
-            return Err(Error::Storage(
-                "mail location differs from its atomic source".into(),
-            ));
-        }
-        if retained.recipient != recipient || original.value.as_ref() != bytes {
-            return Err(Error::Conflict("mail identity reused".into()));
-        }
-        Ok(true)
-    }
+
 
     fn mail_location(
         sender: TaskId,
@@ -6074,159 +5973,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok((location, encoded))
     }
 
-    #[cfg(not(feature = "filesystem"))]
-    fn mail_commit_key(
-        location: &MailLocation,
-        fence: &Option<crate::scheduler::LeaseFence>,
-        conditions: &[acyclic_stream::CommitCondition],
-    ) -> Result<StreamKey> {
-        use acyclic_stream::CommitCondition;
-        let physical = crate::contract::canonical_json_bytes(&(
-            location,
-            fence,
-            conditions
-                .iter()
-                .map(|condition| match condition {
-                    CommitCondition::Tail { path, expected } => (path.as_str(), Some(*expected)),
-                    CommitCondition::Absent { path } => (path.as_str(), None),
-                })
-                .collect::<Vec<_>>(),
-        ))?;
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"acyclic.harness.mail-publication.v2\0");
-        hash.update(&physical);
-        Ok(StreamKey::new(OwnedBytes::copy_from_slice(
-            hash.finalize().as_bytes(),
-        ))?)
-    }
 
-    async fn publish_mail(
-        &self,
-        sender: TaskId,
-        recipient: TaskId,
-        message: OperationId,
-        bytes: OwnedBytes,
-        fence: Option<crate::scheduler::LeaseFence>,
-    ) -> Result<()> {
-        #[cfg(feature = "filesystem")]
-        {
-            return self.publish_mail_with_io(
-                sender, recipient, message, bytes, fence.as_ref(), None, None,
-            ).await;
-        }
-        #[cfg(not(feature = "filesystem"))]
-        {
-        use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, CommitRequest};
-        let mailbox = self.mailbox(recipient)?;
-        let location_path = Self::mail_location_path(sender, message)?;
-        let mut source_verified = false;
-        loop {
-            if let Some(fence) = &fence {
-                self.verify_owner_with_work(sender, fence, false, &mut None).await?;
-            }
-            if self
-                .observe_mail_location(sender, recipient, message, &bytes, None)
-                .await?
-            {
-                if let Some(fence) = &fence {
-                    self.verify_owner_with_work(sender, fence, false, &mut None).await?;
-                }
-                return Ok(());
-            }
-            if !source_verified {
-                let event: MailEvent = crate::contract::json_from_slice(&bytes)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
-                if event.sender != sender || event.message_id != message {
-                    return Err(Error::Storage("mail publication identity differs".into()));
-                }
-                let admission = self.admission_with_work(OperationId::from_bytes(sender.into_bytes()), &mut None).await?;
-                self.read_mail_source(&admission, &event.payload).await?;
-                source_verified = true;
-            }
-            let (tail, target) = match mailbox.bounds().await {
-                Ok(bounds) => (
-                    bounds.tail,
-                    CommitCondition::Tail {
-                        path: mailbox.path().clone(),
-                        expected: bounds.tail,
-                    },
-                ),
-                Err(StreamError::NotFound) => (
-                    0,
-                    CommitCondition::Absent {
-                        path: mailbox.path().clone(),
-                    },
-                ),
-                Err(error) => return Err(error.into()),
-            };
-            let (location, location_bytes) =
-                Self::mail_location(sender, recipient, message, tail, &bytes)?;
-            let conditions = vec![
-                target,
-                CommitCondition::Absent {
-                    path: location_path.clone(),
-                },
-            ];
-            #[cfg(feature = "filesystem")]
-            let conditions = {
-                let mut conditions = conditions;
-                if let Some(fence) = &fence {
-                    conditions.push(
-                        self.coordinator
-                            .lock()
-                            .await
-                            .journal_condition(
-                                &self.owner,
-                                &self.owner_scope,
-                                &self.verifier,
-                                OperationId::from_bytes(sender.into_bytes()),
-                                fence,
-                                crate::distributed::JournalWrite::Fresh, &mut None
-                            )
-                            .await?,
-                    );
-                }
-                conditions
-            };
-            #[cfg(not(feature = "filesystem"))]
-            if fence.is_some() {
-                return Err(Error::Unsupported(
-                    "owned mail publication is not bound".into(),
-                ));
-            }
-            let key = Self::mail_commit_key(&location, &fence, &conditions)?;
-            let request = CommitRequest {
-                conditions,
-                mutations: vec![
-                    CommitMutation::Append {
-                        path: mailbox.path().clone(),
-                        records: vec![bytes.clone()],
-                    },
-                    CommitMutation::Append {
-                        path: location_path.clone(),
-                        records: vec![location_bytes],
-                    },
-                ],
-                idempotency_key: key,
-            };
-            match crate::distributed::commit_keyed(&self.stream, request, message).await? {
-                CommitOutcome::Conflict(_) => continue,
-                CommitOutcome::Committed(_) => {
-                    if !self
-                        .observe_mail_location(sender, recipient, message, &bytes, None)
-                        .await?
-                    {
-                        return Err(Error::Storage("committed mail receipt is absent".into()));
-                    }
-                    if let Some(fence) = &fence {
-                        self.verify_owner_with_work(sender, fence, false, &mut None).await?;
-                    }
-                    return Ok(());
-                }
-            }
-        }
-        }
-    }
+
+
 
     async fn timer_state_with_work(
         &self, task: TaskId, operation: OperationId, deadline_unix_ms: u64,
@@ -6931,8 +6680,8 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             {
                 return Err(Error::Unauthorized("unfenced custom mail requires explicit mail and file grants".into()));
             }
-            let bytes = self.mail_bytes(sender, recipient, message_id, payload).await?;
-            self.publish_mail(sender, recipient, message_id, bytes, None)
+            let bytes = self.mail_bytes(sender, recipient, message_id, payload, None).await?;
+            self.publish_mail(sender, recipient, message_id, bytes, None, None, None)
                 .await
         })
     }
@@ -6943,91 +6692,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         after: u64,
         limit: usize,
     ) -> BoxFuture<'a, Result<Vec<InboxItem>>> {
-        Box::pin(async move {
-            #[cfg(feature = "filesystem")]
-            {
-                return self.inbox_with_io(task_id, after, limit, None).await;
-            }
-            #[cfg(not(feature = "filesystem"))]
-            {
-            if limit == 0 {
-                return Err(Error::Invalid("inbox page bound is invalid".into()));
-            }
-            let recipient_admission = self
-                .admission_with_work(OperationId::from_bytes(task_id.into_bytes()), &mut None)
-                .await?;
-            let mailbox = self.mailbox(task_id)?;
-            let bounds = match mailbox.bounds().await {
-                Ok(bounds) => bounds,
-                Err(StreamError::NotFound) => return Ok(Vec::new()),
-                Err(error) => return Err(Error::Storage(error.to_string())),
-            };
-            if after > bounds.tail {
-                return Err(Error::Invalid("inbox cursor is beyond the tail".into()));
-            }
-            let page_limit = u32::try_from(limit.min(acyclic_stream::MAX_ITEMS))
-                .map_err(|_| Error::Invalid("inbox page bound is invalid".into()))?;
-            let page = match mailbox.read(after, page_limit).await {
-                Ok(records) => records.try_collect::<Vec<_>>().await?,
-                Err(StreamError::NotFound) => return Ok(Vec::new()),
-                Err(error) => return Err(Error::Storage(error.to_string())),
-            };
-            if page.len() > limit {
-                return Err(Error::Storage("inbox page exceeds requested limit".into()));
-            }
-            let mut expected = after;
-            let mut items = Vec::with_capacity(page.len());
-            for record in page {
-                if record.sequence != expected {
-                    return Err(Error::Storage("inbox replay sequence differs".into()));
-                }
-                expected = expected
-                    .checked_add(1)
-                    .ok_or_else(|| Error::Storage("inbox sequence exhausted".into()))?;
-
-                let event = MailEvent::decode(&record.value, task_id)?;
-                event.payload.validate()?;
-                recipient_admission.limits.validate_file(&event.payload)?;
-                let sender_admission = self
-                    .admission_with_work(OperationId::from_bytes(event.sender.into_bytes()), &mut None)
-                    .await?;
-                let direct = Self::authorize_mail_route(
-                    event.sender, &sender_admission, task_id, &recipient_admission,
-                )?;
-                if !direct && !read_granted(&recipient_admission.grants, &event.payload)? {
-                    return Err(Error::Unauthorized("custom mail history contains an unreadable payload".into()));
-                }
-                sender_admission.limits.validate_file(&event.payload)?;
-                if !read_granted(&sender_admission.grants, &event.payload)? {
-                    return Err(Error::Unauthorized("mail source cannot read its payload".into()));
-                }
-                if !self
-                    .observe_mail_location(
-                        event.sender,
-                        task_id,
-                        event.message_id,
-                        &record.value,
-                        Some(record.sequence),
-                    )
-                    .await?
-                {
-                    return Err(Error::Unsupported(
-                        "unindexed mail format is not supported".into(),
-                    ));
-                }
-                items.push(InboxItem {
-                    task_id,
-                    sequence: record
-                        .sequence
-                        .checked_add(1)
-                        .ok_or_else(|| Error::Storage("inbox sequence exhausted".into()))?,
-                    message_id: event.message_id.to_string(),
-                    payload: event.payload,
-                });
-            }
-            Ok(items)
-            }
-        })
+        Box::pin(self.inbox_page(task_id, after, limit, None))
     }
 
     fn wait_until<'a>(
@@ -7571,7 +7236,7 @@ pub(crate) mod tests {
             };
             let bytes = OwnedBytes::from(crate::contract::canonical_json_bytes(&altered)?);
             assert!(matches!(
-                host.publish_mail(sender, recipient, message, bytes, None).await,
+                host.publish_mail(sender, recipient, message, bytes, None, None, None).await,
                 Err(Error::Conflict(_))
             ));
         }
@@ -7608,7 +7273,7 @@ pub(crate) mod tests {
                 value["message_id"] = serde_json::json!(operation);
             }
             let bytes = OwnedBytes::from(crate::contract::canonical_json_bytes(&value)?);
-            host.publish_mail(sender, recipient, operation, bytes, None).await?;
+            host.publish_mail(sender, recipient, operation, bytes, None, None, None).await?;
             assert!(matches!(
                 host.inbox(recipient, 1 + index as u64, 1).await,
                 Err(Error::Storage(_))

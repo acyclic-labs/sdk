@@ -104,7 +104,7 @@ async fn native_mail_sdk_cursor_atomic_lost_ack_and_multi_recipient_are_original
     let retry = fixture.send(1, operation, &io).await?;
     assert_eq!(retry, ack);
     assert_eq!(fixture.sdk.io_snapshot().records, committed);
-    assert!(fixture.runtime.task_host().reconcile_sent_mail_with_io(fixture.tasks[0].0, &fixture.tasks[0].1,
+    assert!(fixture.runtime.task_host().reconcile_sent_mail(fixture.tasks[0].0, &fixture.tasks[0].1,
         fixture.tasks[1].0, operation, fixture.payload.clone_with_io(&io)?, Some(&io)).await?);
     assert_eq!(fixture.sdk.io_snapshot().records, committed);
     let rejected = fixture.send(2, operation, &io).await;

@@ -234,12 +234,25 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
             drop(observer);
             drop(history);
-            let selected = crate::executor::clone_preparation(snapshot, Some(&io))?;
+            let selected = {
+                let mut history = io.history_io();
+                let mut observer: Option<&mut dyn HistoryIo> = Some(&mut history);
+                let project = snapshot.project.clone_with_work(&mut observer)?;
+                let generation = super::headless::copy_generation(&snapshot.generation, &mut observer)?;
+                let mut quota = crate::wire_codec::CodecQuota::new(&mut observer, 0)?;
+                let native_snapshot = snapshot.native_snapshot.as_ref()
+                    .map(|value| crate::core::copy_value(value, &mut quota)).transpose()?;
+                quota.transfer();
+                ProjectSourceSnapshot { project, generation, native_snapshot }
+            };
             let owner = {
                 let mut history = io.history_io();
                 history.clone_authority(&self.host.owner)?
             };
-            let caller_fence = crate::executor::clone_preparation(&self.fence, Some(&io))?;
+            let caller_fence = {
+                let mut history = io.history_io();
+                self.fence.clone_with_work(&mut Some(&mut history))?
+            };
             let mut authorization = ProjectSourceAuthorization {
                 owner, caller_task: self.task_id, caller_admission_digest: self.original_admission_digest,
                 caller_fence, operation_id, source_task, project: selected.project,

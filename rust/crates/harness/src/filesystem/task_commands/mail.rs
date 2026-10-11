@@ -124,7 +124,7 @@ where
         if command.kind == MAIL_SEND_TASK_COMMAND_KIND {
             let input: MailSendTaskCommand = decode_command(payload, io)?;
             let message = message_identity(task, command.operation_id, io)?;
-            self.runtime.task_host().reconcile_sent_mail_with_io(task, fence, input.recipient, message, input.payload, io).await?;
+            self.runtime.task_host().reconcile_sent_mail(task, fence, input.recipient, message, input.payload, io).await?;
         }
         reconciled(io)
     }
