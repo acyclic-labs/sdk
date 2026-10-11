@@ -2279,7 +2279,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         drop(key_custody);
         let outcome = match appended {
             Ok(outcome) => outcome,
-            Err(StreamError::IdempotencyMismatch) => {
+            Err(error) if matches!(error.source(), StreamError::IdempotencyMismatch) => {
                 self.refresh_with_work(request.work()).await?;
                 if self.session_intent_with_work(&keys, &events, request.work()).await? {
                     return Ok(CoordinatorApply::Replayed);
