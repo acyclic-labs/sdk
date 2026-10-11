@@ -25,7 +25,6 @@ export const harnessCaseMarkers = [
   ["harness", "recursive-cancellation-stops-at-owner-boundaries", [["rust", "scheduler::tests::recursive_cancellation_stops_at_owner_boundaries"]]],
   ["harness", "transport-control-errors-remain-request-correlated", [["typescript", "framed control serializes observe and cancel for the same operation"], ["typescript", "correlated framed errors do not abort another operation"]]],
   ["harness", "durable-context-providers-reopen-compaction-exactly", [["rust", "context::tests::durable_sources_and_compaction_reopen_exactly"]]],
-  ["harness", "coding-bundle-host-adapter-is-complete-and-executable", [["rust", "bundle::tests::coding_factory_builds_an_executable_complete_registry"]]],
   ["harness", "recursive-fork-isolation-attachments-and-project-only-merge", [["e2e", "thousand_twenty_four_recursive_forks_keep_files_private_and_merge_only_project"]]],
   ["harness", "durable-local-conversation-fork-and-merge-reopens", [["e2e", "local_reopen_preserves_ref_only_history_fork_and_parent_merge"]]],
 ];

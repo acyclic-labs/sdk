@@ -35,7 +35,7 @@ test("the provider pass must also occur in the complete Rust package transcript"
 });
 
 // Registration is checked before Map construction so neither side can hide duplicates.
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { harnessCaseMarkers, registerCases, requireExecutedCase } from "./harness-conformance-cases.mjs";
 const suite = { cases: [{ name: "a", family: "harness" }, { name: "b", family: "harness" }] };
 const registrations = [["harness", "a", [["rust", "test_a"]]], ["harness", "b", [["e2e", "test_b"]]]];
@@ -43,6 +43,8 @@ const registrations = [["harness", "a", [["rust", "test_a"]]], ["harness", "b", 
 test("locked Harness inventory owns exactly the executed requirements for every case", () => {
   const locked = JSON.parse(readFileSync(new URL("../conformance/vectors/core.json", import.meta.url), "utf8"));
   const cases = locked.cases.filter(item => item.family === "harness");
+  const mirror = JSON.parse(readFileSync(new URL("../rust/crates/conformance/vectors/harness.json", import.meta.url), "utf8"));
+  assert.deepEqual(mirror.cases, locked.cases);
   assert.deepEqual(harnessCaseMarkers.map(([, name]) => name), cases.map(item => item.name));
   const registered = registerCases(locked, "harness", harnessCaseMarkers);
   assert.deepEqual(registered.cases, cases);
@@ -57,6 +59,22 @@ test("locked Harness inventory owns exactly the executed requirements for every 
       executed[runtime].delete(missing);
       assert.throws(() => requireExecutedCase(name, required, executed), /missing/);
       executed[runtime].add(missing);
+    }
+  }
+});
+
+test("Rust evidence requirements refer to current Harness test functions", () => {
+  const root = new URL("../rust/crates/harness/src/", import.meta.url);
+  const files = readdirSync(root, { recursive: true }).filter(path => path.endsWith(".rs"));
+  for (const [, , requirements] of harnessCaseMarkers) {
+    for (const [runtime, name] of requirements) {
+      if (runtime !== "rust") continue;
+      const parts = name.split("::");
+      const source = files.filter(path => {
+        const normalized = path.replaceAll("\\", "/");
+        return normalized === `${parts[0]}.rs` || normalized.startsWith(`${parts[0]}/`);
+      }).map(path => readFileSync(new URL(path.replaceAll("\\", "/"), root), "utf8")).join("\n");
+      assert.ok(new RegExp(`\\bfn\\s+${parts.at(-1)}\\s*(?:\\(|<)`).test(source), name);
     }
   }
 });
