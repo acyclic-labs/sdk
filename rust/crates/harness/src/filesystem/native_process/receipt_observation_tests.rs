@@ -66,6 +66,62 @@ fn lexical_receipt_failure_retains_its_original_diagnostic_admission() {
 }
 
 #[test]
+fn receipt_codec_slot_denial_precedes_lexing_and_keeps_prefix() {
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(WorkBudget {
+        allocation_operations: 1,
+        peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes(),
+        ..WorkBudget::UNCHARGED
+    }, &cancellation).unwrap();
+    let mut custody = Some(work.retain_owned(0).unwrap());
+    let before = work.receipt();
+    let error = decode(b"{", Some(&work), &mut custody, OperationId::from_bytes([4; 16]))
+        .err().expect("the actual codec cause box requires admission");
+    assert!(matches!(error, NativeReceiptError::Owner(Error::NativeWork { custody: None, .. })));
+    assert_eq!(work.receipt(), before);
+    assert!(custody.is_some());
+}
+
+#[test]
+fn prepaid_codec_box_preserves_foreign_cause_custody_after_cancellation() {
+    let box_cancellation = CancellationToken::new();
+    let cause_cancellation = CancellationToken::new();
+    let box_work = NativeMaterializationWork::new(
+        WorkBudget::UNBOUNDED, &box_cancellation,
+    ).unwrap();
+    let cause_work = NativeMaterializationWork::new(
+        WorkBudget::UNBOUNDED, &cause_cancellation,
+    ).unwrap();
+    let box_baseline = box_work.live_allocation_bytes();
+    let cause_baseline = cause_work.live_allocation_bytes();
+    let slot = NativeReceiptCodecSlot::new(&box_work).unwrap();
+    let message = String::from("original owned codec failure");
+    let original_pointer = message.as_ptr();
+    let cause_custody = cause_work.retain_owned(message.capacity() as u64).unwrap();
+    box_cancellation.cancel();
+    cause_cancellation.cancel();
+    let box_prefix = box_work.receipt();
+    let cause_prefix = cause_work.receipt();
+    let failure = slot.retain(Error::Storage(message), Some(cause_custody));
+    let NativeReceiptError::Codec { code, source, custody: Some(custody) } = failure else {
+        panic!("the prepaid slot must retain its actual codec cause");
+    };
+    assert_eq!(code, crate::wire::ErrorCode::Storage);
+    let Error::Storage(message) = source.source().unwrap().downcast_ref::<Error>().unwrap() else {
+        panic!("the original typed cause must remain reachable");
+    };
+    assert_eq!(message.as_ptr(), original_pointer);
+    assert_eq!(box_work.receipt(), box_prefix);
+    assert_eq!(cause_work.receipt(), cause_prefix);
+    assert!(cause_work.live_allocation_bytes() > cause_baseline);
+    drop(source);
+    assert_eq!(cause_work.live_allocation_bytes(), cause_baseline);
+    assert_eq!(box_work.live_allocation_bytes(), box_baseline + custody.bytes());
+    drop(custody);
+    assert_eq!(box_work.live_allocation_bytes(), box_baseline);
+}
+
+#[test]
 fn effect_extraction_keeps_original_custody_and_retires_other_receipt_data() {
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();

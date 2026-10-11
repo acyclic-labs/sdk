@@ -146,6 +146,7 @@ pub(super) async fn bind_original<P: StreamProvider + 'static>(
     view: Option<Arc<dyn NativeProcessView<P>>>, approval: InteractionId,
     authority: NativeProcessAuthority, work: Option<&NativeMaterializationWork>,
 ) -> Result<NativeProcessProvider<P>> {
+    let codec_slot = work.map(NativeReceiptCodecSlot::new).transpose()?;
     let io = work.map(PreparationIo::from_native_work).transpose()?;
     let plan = match plan {
         Cow::Owned(plan) => plan,
@@ -182,7 +183,10 @@ pub(super) async fn bind_original<P: StreamProvider + 'static>(
                 Some(io) => { let retained = io.owned_bytes()?; Some(io.into_native_custody(retained)?) }
                 None => None,
             };
-            Err(super::finite_dispatch::root_error(NativeReceiptError::Codec { source, custody }))
+            Err(match codec_slot {
+                Some(slot) => super::finite_dispatch::root_error(slot.retain(source, custody)),
+                None => source,
+            })
         }
     }
 }
@@ -372,6 +376,7 @@ mod tests {
         let input = format!("{{\"{field}\":0}}").into_bytes();
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+        let slot = NativeReceiptCodecSlot::new(&work).unwrap();
         let io = PreparationIo::from_native_work(&work).unwrap();
         let bytes = crate::contract::audited_serde_diagnostic_bytes(
             input.len() as u64, NATIVE_SERDE_LABELS.len() as u64).unwrap();
@@ -384,14 +389,21 @@ mod tests {
         let alias = work.retain_owned(0).unwrap();
         let before = work.receipt();
         cancellation.cancel();
-        let error = super::super::finite_dispatch::root_error(NativeReceiptError::Codec {
-            source, custody: Some(custody),
-        });
-        let Error::NativeDecode { code, source, custody: Some(custody) } = error else {
-            panic!("native trusted decoder must move the original typed cause");
+        let error = super::super::finite_dispatch::root_error(slot.retain(source, Some(custody)));
+        let Error::NativeCodec { code, source, custody: Some(box_custody) } = error else {
+            panic!("native decoder must retain the original prepaid codec envelope");
         };
         assert_eq!(code, crate::wire::ErrorCode::Invalid);
-        assert!(source.is_data());
+        let cause = source.source().unwrap().downcast_ref::<Error>().unwrap();
+        let Error::NativeDecode { code, source: decode, custody: Some(inner) } = cause else {
+            panic!("the original typed native decode cause must not be flattened");
+        };
+        assert_eq!(*code, crate::wire::ErrorCode::Invalid);
+        assert!(decode.is_data());
+        assert!(inner.shares_ledger(&alias));
+        let envelope = source.downcast_ref::<NativeReceiptCodecCause>().unwrap();
+        let custody = envelope._custody.as_ref().unwrap();
+        assert!(box_custody.shares_ledger(&alias));
         assert!(custody.bytes() >= bytes);
         assert!(custody.shares_ledger(&alias));
         assert_eq!(work.receipt(), before);

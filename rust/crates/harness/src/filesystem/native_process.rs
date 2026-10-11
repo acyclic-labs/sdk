@@ -177,6 +177,7 @@ enum NativeCapturePhase {
     Spawning,
     Running,
     Drained,
+    Recorded,
     Uncertain,
 }
 
@@ -344,12 +345,14 @@ pub enum NativeReceiptError {
         /// Original logical diagnostic admission until the cause is dropped.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
-    /// Original lexical JSON failure and its scoped logical admission.
+    /// Original canonical codec cause in its preadmitted owned error slot.
     #[error("{source}")]
     Codec {
-        /// Original canonical codec failure.
-        source: Error,
-        /// Original logical diagnostic admission until the cause is dropped.
+        /// Original cause classification.
+        code: crate::wire::ErrorCode,
+        /// Original canonical codec failure, including intrinsic custody.
+        source: Box<dyn std::error::Error + Send + Sync>,
+        /// Original allocation covering the error box until physical deallocation.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// A malformed or unavailable original receipt.
@@ -358,6 +361,55 @@ pub enum NativeReceiptError {
     /// The original owned supervisor task failed to finish.
     #[error(transparent)]
     Supervisor(tokio::task::JoinError),
+}
+
+#[derive(Debug)]
+struct NativeReceiptCodecCause {
+    cause: Option<Error>,
+    _custody: Option<acyclic_fs::NativeAllocation>,
+}
+
+impl std::fmt::Display for NativeReceiptCodecCause {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(
+            self.cause.as_ref().expect("native codec slot contains its original cause"),
+            formatter,
+        )
+    }
+}
+
+impl std::error::Error for NativeReceiptCodecCause {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.cause.as_ref().map(|cause| cause as &(dyn std::error::Error + 'static))
+    }
+}
+
+struct NativeReceiptCodecSlot {
+    source: Box<NativeReceiptCodecCause>,
+    custody: acyclic_fs::NativeAllocation,
+}
+
+impl NativeReceiptCodecSlot {
+    fn new(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
+        let custody = work.claim(std::mem::size_of::<NativeReceiptCodecCause>() as u64)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(Self {
+            source: Box::new(NativeReceiptCodecCause { cause: None, _custody: None }),
+            custody,
+        })
+    }
+
+    fn retain(
+        self,
+        cause: Error,
+        custody: Option<acyclic_fs::NativeAllocation>,
+    ) -> NativeReceiptError {
+        let code = cause.code();
+        let Self { mut source, custody: box_custody } = self;
+        source.cause = Some(cause);
+        source._custody = custody;
+        NativeReceiptError::Codec { code, source, custody: Some(box_custody) }
+    }
 }
 
 impl NativeReceiptError {
@@ -511,33 +563,7 @@ where
             return Err(NativeReceiptError::Record("native stop wait requires a finite original work allowance"));
         }
         crate::NativeFutureBundle::new(work, || async { Ok(async {
-            self.signal_stop(attempt, work, cleanup_cancellation).await?;
-            let poll_ms = match &self.admission {
-                NativeAdmission::Executable { request, .. } => request.cancellation_poll_ms,
-                NativeAdmission::ReceiptOnly => return Err(NativeReceiptError::Record("receipt-only recovery owns no original supervisor")),
-            };
-            let phase = loop {
-                let notified = self.supervisor.completion.notified();
-                tokio::pin!(notified);
-                notified.as_mut().enable();
-                cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)
-                    .map_err(NativeReceiptError::Native)?;
-                work.charge(acyclic_fs::WorkCounters {
-                    items_examined: 1, ..acyclic_fs::WorkCounters::default()
-                }).map_err(NativeReceiptError::Native)?;
-                let (completed, phase) = self.supervisor.snapshot(attempt)?;
-                if completed {
-                    if !matches!(phase, NativeCapturePhase::Pending | NativeCapturePhase::Drained | NativeCapturePhase::Recorded) {
-                        self.owner.verify_with_native_work(true, work).await?;
-                        self.supervisor.settle_process_with_native_work(work)?;
-                    }
-                    break self.supervisor.snapshot(attempt)?.1;
-                }
-                tokio::select! {
-                    () = &mut notified => {},
-                    () = tokio::time::sleep(Duration::from_millis(u64::from(poll_ms))) => {},
-                }
-            };
+            let phase = self.wait_for_original_collection(attempt, work, cleanup_cancellation).await?;
             let receipt = self.receipt_with_native_work(attempt, work).await?
                 .ok_or(NativeReceiptError::Record("original supervisor completed without a retained launch receipt"))?;
             if !receipt.observed {
@@ -548,6 +574,43 @@ where
             }
             Ok(receipt)
         }.await) }).map_err(NativeReceiptError::Owner)?.await.map_err(NativeReceiptError::Owner)?
+    }
+
+    async fn wait_for_original_collection(
+        &self,
+        attempt: crate::EffectAttemptId,
+        work: &acyclic_fs::NativeMaterializationWork,
+        cleanup_cancellation: &acyclic_fs::CancellationToken,
+    ) -> std::result::Result<NativeCapturePhase, NativeReceiptError> {
+        self.signal_stop(attempt, work, cleanup_cancellation).await?;
+        let poll_ms = match &self.admission {
+            NativeAdmission::Executable { request, .. } => request.cancellation_poll_ms,
+            NativeAdmission::ReceiptOnly => return Err(NativeReceiptError::Record(
+                "receipt-only recovery owns no original supervisor",
+            )),
+        };
+        loop {
+            let notified = self.supervisor.completion.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)
+                .map_err(NativeReceiptError::Native)?;
+            work.charge(acyclic_fs::WorkCounters {
+                items_examined: 1, ..acyclic_fs::WorkCounters::default()
+            }).map_err(NativeReceiptError::Native)?;
+            let (completed, phase) = self.supervisor.snapshot(attempt)?;
+            if completed {
+                if !matches!(phase, NativeCapturePhase::Pending | NativeCapturePhase::Drained | NativeCapturePhase::Recorded) {
+                    self.owner.verify_with_native_work(true, work).await?;
+                    self.supervisor.settle_process_with_native_work(work)?;
+                }
+                return Ok(self.supervisor.snapshot(attempt)?.1);
+            }
+            tokio::select! {
+                () = &mut notified => {},
+                () = tokio::time::sleep(Duration::from_millis(u64::from(poll_ms))) => {},
+            }
+        }
     }
 
     /// Queries the same fenced launch/observation journal used by reconciliation.
