@@ -19,7 +19,6 @@ runs:
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        "CARGO_INCREMENTAL=0" >> $env:GITHUB_ENV
         .\scripts\windows-rust-setup.ps1 -Phase start
 
     # Core and full runs compile different invocations (tests, packaging,
@@ -36,6 +35,9 @@ runs:
           [[ "$RUNNER_OS" != Windows ]] || size=3G
         fi
         echo "scope=$scope" >> "$GITHUB_OUTPUT"
+        # Ephemeral target directories cannot reuse incremental state, and
+        # incremental Rust invocations bypass sccache.
+        echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
         echo "SCCACHE_DIR=${RUNNER_TEMP}/sccache" >> "$GITHUB_ENV"
         echo "SCCACHE_CACHE_SIZE=$size" >> "$GITHUB_ENV"
 
