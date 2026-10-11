@@ -10230,7 +10230,7 @@ where
         let expected = checkout.authority_head
             .ok_or_else(|| E::from(FsError::WritableCheckoutRequiresHead))?;
         let publication = checkout.publish_pending_against_guarded(
-            operation_id, self.operation_context, None, permit, expected,
+            operation_id, self.operation_context, None, None, permit, expected,
             accounting.remaining().map_err(E::from)?, cancellation,
             self.before_publication, None, producer_custody,
         ).await;
@@ -10242,6 +10242,9 @@ where
 struct NativeLivePublication<'original, 'guard, F> {
     original: &'original crate::NativeMaterializationWork,
     before_publication: &'guard mut F,
+    operation_context: Option<Digest>,
+    operation_evidence: Option<acyclic_stream::OwnedBytes>,
+    original_fingerprint_permit: Option<PublicationPermit>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -10268,8 +10271,15 @@ where
             return Err(E::from(crate::NativeTreeMaterializationError::InvalidLayout.into()));
         }
         let mut before_publication = (*self.before_publication).clone();
+        if let Some(outcome) = checkout.retry_stale_commit_guarded_with_native_work(
+            operation_id, permit, self.original, cancellation, &mut before_publication,
+            producer_custody, self.operation_context, self.operation_evidence.clone(), self.original_fingerprint_permit,
+        ).await? {
+            return Ok(outcome);
+        }
         checkout.publish_pending_with_native_work(
-            operation_id, None, None, permit, self.original, cancellation,
+            operation_id, self.operation_context, self.operation_evidence.clone(), self.original_fingerprint_permit,
+            permit, self.original, cancellation,
             &mut before_publication, producer_custody,
         ).await
     }
@@ -11547,6 +11557,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         cancellation: &CancellationToken,
         before_publication: &mut F,
         producer_custody: Option<&Arc<crate::kernel::ProofDataCustody>>,
+        operation_context: Option<Digest>,
+        operation_evidence: Option<acyclic_stream::OwnedBytes>,
+        original_fingerprint_permit: Option<PublicationPermit>,
     ) -> Result<(LiveMutationOutcome, crate::NativeAllocation), E>
     where
         E: From<FsError> + Send + 'static,
@@ -11574,7 +11587,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             Some(_) => {}
             None => self.live_operation_id = Some(operation_id),
         }
-        let mut publication = NativeLivePublication { original, before_publication };
+        let mut publication = NativeLivePublication {
+            original, before_publication, operation_context, operation_evidence, original_fingerprint_permit,
+        };
         let (outcome, allocation) = self.publish_live_with_accounting(
             operation_id, maximum_attempts, maximum_conflicts, permit,
             &mut accounting, cancellation, &mut publication, producer_custody,
@@ -16076,13 +16091,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + Send,
     {
         self.commit_with_optional_context_with_permit_guarded(
-            operation_id, None, None, permit, budget, cancellation, before_publication,
+            operation_id, None, None, None, permit, budget, cancellation, before_publication,
         ).await
     }
 
     pub(crate) async fn commit_with_optional_context_with_permit_guarded<E, F, Fut>(
         &mut self, operation_id: OperationId, operation_context: Option<Digest>,
         operation_evidence: Option<acyclic_stream::OwnedBytes>,
+        original_fingerprint_permit: Option<PublicationPermit>,
         permit: PublicationPermit, budget: WorkBudget, cancellation: &CancellationToken,
         mut before_publication: F,
     ) -> crate::MeasuredResult<FsReceipt<CheckoutCommitOutcome>, E>
@@ -16110,7 +16126,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     return Err(OperationFailure::before_work(E::from(FsError::MutationNotAllowed)));
                 }
                 self.publish_pending_with_permit_guarded(
-                    operation_id, operation_context, operation_evidence, permit, budget, cancellation, &mut before_publication,
+                    operation_id, operation_context, operation_evidence, original_fingerprint_permit,
+                    permit, budget, cancellation, &mut before_publication,
                 ).await
             }, budget, cancellation, E::from(FsError::Cancelled(crate::CancellationError)), None, |error| E::from(FsError::from(error))),
         )
@@ -16166,7 +16183,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             let expected = self.authority_head
                 .ok_or_else(|| OperationFailure::before_work(E::from(FsError::WritableCheckoutRequiresHead)))?;
             self.publish_pending_against_guarded(
-                operation_id, None, None, permit, expected, budget, cancellation,
+                operation_id, None, None, None, permit, expected, budget, cancellation,
                 before_publication, None, producer_custody,
             ).await
         }, budget, cancellation, E::from(FsError::Cancelled(crate::CancellationError)), None, |error| E::from(FsError::from(error))).await
@@ -16227,7 +16244,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         cancellation: &CancellationToken,
     ) -> FsResult<CheckoutCommitOutcome> {
         self.publish_pending_with_permit_guarded(
-            operation_id, operation_context, None, permit, budget, cancellation,
+            operation_id, operation_context, None, None, permit, budget, cancellation,
             &mut |_| async { Ok(FsReceipt { value: (), work: WorkCounters::UNCHARGED }) },
         ).await
     }
@@ -16237,6 +16254,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         operation_id: OperationId,
         operation_context: Option<Digest>,
         operation_evidence: Option<acyclic_stream::OwnedBytes>,
+        original_fingerprint_permit: Option<PublicationPermit>,
         permit: PublicationPermit,
         budget: WorkBudget,
         cancellation: &CancellationToken,
@@ -16261,6 +16279,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             operation_id,
             operation_context,
             operation_evidence,
+            original_fingerprint_permit,
             permit,
             expected,
             budget,
@@ -16282,7 +16301,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         cancellation: &CancellationToken,
     ) -> FsResult<CheckoutCommitOutcome> {
         self.publish_pending_against_guarded(
-            operation_id, operation_context, None, permit, expected, budget, cancellation,
+            operation_id, operation_context, None, None, permit, expected, budget, cancellation,
             &mut |_| async { Ok(FsReceipt { value: (), work: WorkCounters::UNCHARGED }) },
             None,
             None,
@@ -16294,6 +16313,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         operation_id: OperationId,
         operation_context: Option<Digest>,
         operation_evidence: Option<acyclic_stream::OwnedBytes>,
+        original_fingerprint_permit: Option<PublicationPermit>,
         permit: PublicationPermit,
         expected: Head,
         budget: WorkBudget,
@@ -16364,7 +16384,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 &self.volume.fs.inner.authority,
                 request,
                 PublicationIntent::guarded(operation_context, permit)
-                    .with_original_evidence(operation_evidence.clone()),
+                    .with_original_evidence(operation_evidence.clone())
+                    .with_original_fingerprint_permit(original_fingerprint_permit),
                 closure_limits(self.volume.config),
                 publication_budget,
                 cancellation,
@@ -16411,7 +16432,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
         self.commit_with_optional_context_with_permit_guarded_with_native_work(
-            operation_id, None, None, permit, original, cancellation, before_publication,
+            operation_id, None, None, None, permit, original, cancellation, before_publication,
         ).await
     }
 
@@ -16419,6 +16440,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     pub(crate) async fn commit_with_optional_context_with_permit_guarded_with_native_work<'a, E, F, Fut>(
         &mut self, operation_id: OperationId, operation_context: Option<Digest>,
         operation_evidence: Option<acyclic_stream::OwnedBytes>,
+        original_fingerprint_permit: Option<PublicationPermit>,
         permit: PublicationPermit, original: &'a crate::NativeMaterializationWork,
         cancellation: &CancellationToken, mut before_publication: F,
     ) -> Result<CheckoutCommitOutcome, E>
@@ -16431,7 +16453,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             return Err(E::from(FsError::MutationNotAllowed));
         }
         self.publish_pending_with_native_work(
-            operation_id, operation_context, operation_evidence, permit, original, cancellation, &mut before_publication, None,
+            operation_id, operation_context, operation_evidence, original_fingerprint_permit,
+            permit, original, cancellation, &mut before_publication, None,
         ).await
     }
 
@@ -16445,6 +16468,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         cancellation: &CancellationToken,
         before_publication: &mut F,
         producer_custody: Option<&Arc<crate::kernel::ProofDataCustody>>,
+        operation_context: Option<Digest>,
+        operation_evidence: Option<acyclic_stream::OwnedBytes>,
+        original_fingerprint_permit: Option<PublicationPermit>,
     ) -> Result<CheckoutCommitOutcome, E>
     where
         E: From<FsError> + Send + 'static,
@@ -16456,7 +16482,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         let expected = self.authority_head.ok_or_else(|| E::from(FsError::WritableCheckoutRequiresHead))?;
         self.publish_pending_against_guarded_with_native_work(
-            operation_id, None, None, permit, expected, original, cancellation,
+            operation_id, operation_context, operation_evidence, original_fingerprint_permit,
+            permit, expected, original, cancellation,
             before_publication, None, producer_custody,
         ).await
     }
@@ -16467,6 +16494,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         operation_id: OperationId,
         operation_context: Option<Digest>,
         operation_evidence: Option<acyclic_stream::OwnedBytes>,
+        original_fingerprint_permit: Option<PublicationPermit>,
         permit: PublicationPermit,
         original: &'a crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
@@ -16488,7 +16516,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         let expected = self.authority_head.ok_or_else(|| E::from(FsError::WritableCheckoutRequiresHead))?;
         self.publish_pending_against_guarded_with_native_work(
-            operation_id, operation_context, operation_evidence, permit, expected, original, cancellation,
+            operation_id, operation_context, operation_evidence, original_fingerprint_permit,
+            permit, expected, original, cancellation,
             before_publication, None, producer_custody,
         ).await
     }
@@ -16499,6 +16528,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         operation_id: OperationId,
         operation_context: Option<Digest>,
         operation_evidence: Option<acyclic_stream::OwnedBytes>,
+        original_fingerprint_permit: Option<PublicationPermit>,
         permit: PublicationPermit,
         expected: Head,
         original: &'a crate::NativeMaterializationWork,
@@ -16515,7 +16545,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         cancellation.check().map_err(FsError::from).map_err(E::from)?;
         let mut frame_custody = None;
         let create = || self.publish_pending_against_guarded_with_native_work_inner(
-            operation_id, operation_context, operation_evidence, permit, expected, original, cancellation,
+            operation_id, operation_context, operation_evidence, original_fingerprint_permit,
+            permit, expected, original, cancellation,
             before_publication, resolved, producer_custody,
         );
         let (mut future, _) = crate::heap_future::in_heap_admitted(
@@ -16538,6 +16569,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         operation_id: OperationId,
         operation_context: Option<Digest>,
         operation_evidence: Option<acyclic_stream::OwnedBytes>,
+        original_fingerprint_permit: Option<PublicationPermit>,
         permit: PublicationPermit,
         expected: Head,
         original: &'a crate::NativeMaterializationWork,
@@ -16582,7 +16614,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             crate::kernel::publish_generation_async_guarded_with_native_work(
                 &self.volume.fs.inner.objects, &self.volume.fs.inner.authority,
                 request, PublicationIntent::guarded(operation_context, permit)
-                    .with_original_evidence(operation_evidence.clone()),
+                    .with_original_evidence(operation_evidence.clone())
+                    .with_original_fingerprint_permit(original_fingerprint_permit),
                 closure_limits(self.volume.config), original, cancellation,
                 before_publication, resolved, Some(&mut prepare_roots),
             ).await?
@@ -16611,6 +16644,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         producer_custody: Option<&Arc<crate::kernel::ProofDataCustody>>,
         operation_context: Option<Digest>,
         operation_evidence: Option<acyclic_stream::OwnedBytes>,
+        original_fingerprint_permit: Option<PublicationPermit>,
     ) -> Result<Option<CheckoutCommitOutcome>, E>
     where
         E: From<FsError> + Send + 'static,
@@ -16630,7 +16664,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             epoch: commit.epoch, sequence: Sequence::new(previous_sequence), digest: commit.previous_digest,
         };
         self.publish_pending_against_guarded_with_native_work(
-            operation_id, operation_context, operation_evidence, permit, expected, original, cancellation,
+            operation_id, operation_context, operation_evidence, original_fingerprint_permit,
+            permit, expected, original, cancellation,
             before_publication, Some(commit), producer_custody,
         ).await.map(Some)
     }
@@ -16760,6 +16795,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         producer_custody: Option<&Arc<crate::kernel::ProofDataCustody>>,
         operation_context: Option<Digest>,
         operation_evidence: Option<acyclic_stream::OwnedBytes>,
+        original_fingerprint_permit: Option<PublicationPermit>,
     ) -> crate::MeasuredResult<FsReceipt<Option<CheckoutCommitOutcome>>, E>
     where
         E: From<FsError> + Send,
@@ -16804,6 +16840,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     operation_id,
                     operation_context,
                     operation_evidence,
+                    original_fingerprint_permit,
                     permit,
                     expected,
                     remaining(resolved.work, budget).map_err(|failure| failure.map_error(E::from))?,

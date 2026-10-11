@@ -228,6 +228,7 @@ pub use lazy_workspace::{
     LazyOverlayId, LazySeekTarget, LazyShadow, LazyShadowId, LazySnapshotId, LazySnapshotRef,
     LazyStat, LazyWorkspace, LazyWorkspaceError, LazyWorkspaceState, LazyWorkspaceStore,
     MemoryLazyWorkspaceStore, SelectedImportPlan,
+    OriginalQualifiedSnapshot, NativePublicationSnapshot,
 };
 pub use lineage::{
     MemoryWorkspaceLineageStore, MemoryWorkspaceLineageStoreError, WorkspaceGraph,
@@ -317,7 +318,8 @@ pub use native_mount::{
     NativeMountRecoveryOwner, NativeMountRequest, NativeMountSession, NativeMountWork,
     NativeMountSessionIsolation, NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
     NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
-    NativeWorkingSet, SharedCheckout, SharedCheckoutState,
+    NativeWorkingSet, NativeMountDrainProof, NativeSourceIoLease, SharedCheckout, SharedCheckoutState,
+    OwnedNativeMountOriginalWorkScope,
     initialize_native_mount_services,
     detach_native_mount_destination_after_crash, materialize_checkout,
     materialize_checkout_host_path, materialize_checkout_path, materialize_checkout_paths,

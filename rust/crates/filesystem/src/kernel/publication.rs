@@ -9,7 +9,7 @@ use crate::foundation::{
     AuthorityId, Digest, Epoch, Head, OperationId, ProposedCommit, VolumeId, usize_to_u64,
 };
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
-use crate::storage::{AppendOutcome, AuthorityStoreError, ObjectId, ObjectKind, PublicationPermit};
+use crate::storage::{AppendOutcome, AuthorityStoreError, GuardedAppend, ObjectId, ObjectKind, PublicationPermit};
 use bytes::Bytes;
 use thiserror::Error;
 
@@ -197,6 +197,7 @@ pub struct PublishGenerationRequest {
 pub(crate) struct PublicationIntent {
     pub(crate) operation_context: Option<Digest>,
     pub(crate) original_evidence: Option<acyclic_stream::OwnedBytes>,
+    fingerprint_permit: Option<PublicationPermit>,
     pub(crate) permit: PublicationPermit,
 }
 
@@ -205,6 +206,7 @@ impl PublicationIntent {
         Self {
             operation_context,
             original_evidence: None,
+            fingerprint_permit: None,
             permit: PublicationPermit::Unrestricted,
         }
     }
@@ -216,12 +218,20 @@ impl PublicationIntent {
         Self {
             operation_context,
             original_evidence: None,
+            fingerprint_permit: None,
             permit,
         }
     }
 
     pub(crate) fn with_original_evidence(mut self, evidence: Option<acyclic_stream::OwnedBytes>) -> Self {
         self.original_evidence = evidence;
+        self
+    }
+
+    /// Original fingerprint data supplied only by trusted, authenticated
+    /// canonical evidence ingress. This never changes current CAS authority.
+    pub(crate) fn with_original_fingerprint_permit(mut self, original_permit: Option<PublicationPermit>) -> Self {
+        self.fingerprint_permit = original_permit;
         self
     }
 }
@@ -695,18 +705,19 @@ where
             expected: request.volume_id, actual: output.proof.root.volume_id,
         })));
     }
+    let fingerprint_permit = intent.fingerprint_permit.unwrap_or(intent.permit);
     let operation_context = match accounting {
         PublicationAccounting::Standalone { work, budget, .. } => {
             let mut allocations = super::allocation::AllocationLedger::default();
             let mut binding = super::allocation::KernelAccounting::borrowed_standalone(
                 &mut allocations, work, *budget, cancellation,
             );
-            permit_context_with_accounting(intent.operation_context, intent.permit, &mut binding)
+            permit_context_with_accounting(intent.operation_context, fingerprint_permit, &mut binding)
         }
         #[cfg(not(target_arch = "wasm32"))]
         PublicationAccounting::Native(original) => {
             let mut binding = super::allocation::KernelAccounting::native(original, cancellation);
-            permit_context_with_accounting(intent.operation_context, intent.permit, &mut binding)
+            permit_context_with_accounting(intent.operation_context, fingerprint_permit, &mut binding)
         }
     }.map_err(E::from)?;
     let commit = prepare_publication_commit(

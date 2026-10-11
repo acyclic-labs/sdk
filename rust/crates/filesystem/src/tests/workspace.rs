@@ -5285,6 +5285,7 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
     transaction.write("/original", Bytes::from_static(b"original generation")).await?;
     let committed = transaction.commit_with_context_with_permit_measured_guarded(
         context, acyclic_stream::OwnedBytes::from_static(original_evidence),
+        crate::PublicationPermit::Unrestricted,
         crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation,
         |_| std::future::ready(Ok::<_, crate::OperationFailure<WorkspaceError>>(
             crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED },
@@ -5322,5 +5323,128 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
     assert!(workspace.operation_generation_record_measured(
         IdempotencyKey::new(), WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_changed_data()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("original-fingerprint-current-reservation").await?;
+    let cancellation = CancellationToken::new();
+    let key = IdempotencyKey::new();
+    let context = crate::Digest::from_bytes([0xc8; 32]);
+    let evidence = acyclic_stream::OwnedBytes::from_static(b"the original frozen SDK witness");
+    let historical_permit = crate::PublicationPermit::Unrestricted;
+    let mut transaction = workspace.begin_transaction(key).await?;
+    transaction.write("/original", Bytes::from_static(b"original content")).await?;
+    let first = workspace.reserve_publication(IdempotencyKey::new().operation_id()).await?;
+    let current_permit = crate::PublicationPermit::Reservation {
+        operation_id: first.operation_id.into_bytes(), gate_tail: first.gate_tail, expected: first.expected,
+    };
+    let mut allow = |_| std::future::ready(Ok::<_, crate::OperationFailure<WorkspaceError>>(
+        crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED },
+    ));
+    let committed = transaction.commit_with_context_with_permit_measured_guarded(
+        context, evidence.clone(), historical_permit, current_permit,
+        WorkBudget::UNBOUNDED, &cancellation, &mut allow,
+    ).await?;
+    let generation = match committed.value {
+        TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
+        _ => return Err("the current genuine reservation did not authorize publication".into()),
+    };
+    let (_, record) = workspace.operation_generation_record_measured(
+        key, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.ok_or("the original publication disappeared")?;
+    let mut work = crate::WorkCounters::UNCHARGED;
+    let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+    let mut accounting = crate::kernel::allocation::KernelAccounting::borrowed_standalone(
+        &mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation,
+    );
+    let publication = crate::kernel::decode_publication_evidence_with_accounting(
+        &record.payload, 4 * 1024, &mut accounting,
+    )?;
+    let request = crate::kernel::PublishGenerationRequest {
+        authority_id: workspace.authority_id(), volume_id: workspace.volume.id,
+        epoch: record.epoch,
+        expected: crate::Head {
+            epoch: record.epoch,
+            sequence: crate::Sequence::new(record.sequence.get().checked_sub(1).ok_or("missing original predecessor")?),
+            digest: record.previous_digest,
+        },
+        operation_id: key.operation_id(),
+        generation_root: publication.publication.generation_root,
+    };
+    let historical_fingerprint = crate::kernel::contextual_publication_fingerprint_from_payload_with_accounting(
+        request, context, &record.payload, &mut accounting,
+    )?;
+    assert_eq!(record.fingerprint, historical_fingerprint);
+    drop(accounting);
+    drop(record);
+    workspace.release_publication(first).await?;
+    let rotated = workspace.reserve_publication(IdempotencyKey::new().operation_id()).await?;
+    let rotated_permit = crate::PublicationPermit::Reservation {
+        operation_id: rotated.operation_id.into_bytes(), gate_tail: rotated.gate_tail, expected: rotated.expected,
+    };
+    assert_ne!(rotated_permit, current_permit);
+    let recovered = transaction.checkout.retry_stale_commit_guarded(
+        key.operation_id(), rotated_permit, WorkBudget::UNBOUNDED, &cancellation,
+        &mut allow, None, Some(context), Some(evidence.clone()), Some(historical_permit),
+    ).await?;
+    assert!(matches!(recovered.value, Some(crate::CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. })
+        if generation_id == generation.id()));
+    let changed_evidence = transaction.checkout.retry_stale_commit_guarded(
+        key.operation_id(), rotated_permit, WorkBudget::UNBOUNDED, &cancellation,
+        &mut allow, None, Some(context),
+        Some(acyclic_stream::OwnedBytes::from_static(b"a changed SDK witness")), Some(historical_permit),
+    ).await?;
+    assert!(matches!(changed_evidence.value, Some(crate::CheckoutCommitOutcome::IdempotencyConflict { .. })));
+    transaction.write("/original", Bytes::from_static(b"changed candidate content")).await?;
+    let changed_payload = transaction.checkout.retry_stale_commit_guarded(
+        key.operation_id(), rotated_permit, WorkBudget::UNBOUNDED, &cancellation,
+        &mut allow, None, Some(context), Some(evidence), Some(historical_permit),
+    ).await?;
+    assert!(matches!(changed_payload.value, Some(crate::CheckoutCommitOutcome::IdempotencyConflict { .. })));
+    assert_eq!(workspace.head().await?.id(), generation.id());
+    workspace.release_publication(rotated).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn original_fingerprint_metadata_never_authorizes_a_foreign_current_reservation()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("original-fingerprint-current-target").await?;
+    let foreign = fs.create_workspace("original-fingerprint-foreign-current-grant").await?;
+    let cancellation = CancellationToken::new();
+    let original_head = workspace.head().await?;
+    let key = IdempotencyKey::new();
+    let mut transaction = workspace.begin_transaction(key).await?;
+    transaction.write("/value", Bytes::from_static(b"the genuine candidate")).await?;
+    let target_reservation = workspace.reserve_publication(IdempotencyKey::new().operation_id()).await?;
+    let foreign_reservation = foreign.reserve_publication(IdempotencyKey::new().operation_id()).await?;
+    let foreign_permit = crate::PublicationPermit::Reservation {
+        operation_id: foreign_reservation.operation_id.into_bytes(),
+        gate_tail: foreign_reservation.gate_tail, expected: foreign_reservation.expected,
+    };
+    let rejected = transaction.commit_with_context_with_permit_measured_guarded(
+        crate::Digest::from_bytes([0xc9; 32]),
+        acyclic_stream::OwnedBytes::from_static(b"valid original opaque SDK witness"),
+        crate::PublicationPermit::Unrestricted, foreign_permit,
+        WorkBudget::UNBOUNDED, &cancellation,
+        |_| std::future::ready(Ok::<_, crate::OperationFailure<WorkspaceError>>(
+            crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED },
+        )),
+    ).await.err().ok_or("historical fingerprint metadata authorized a foreign current grant")?;
+    assert!(matches!(rejected.error,
+        WorkspaceError::Filesystem(crate::FsError::Authority(crate::AuthorityStoreError::RejectedStatic(_)))));
+    assert!(rejected.work.bytes_hashed > 0);
+    assert_eq!(rejected.work.authority_records_appended, 0);
+    assert_eq!(workspace.head().await?.id(), original_head.id());
+    assert!(workspace.operation_generation_record_measured(
+        key, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.is_none());
+    workspace.release_publication(target_reservation).await?;
+    foreign.release_publication(foreign_reservation).await?;
     Ok(())
 }

@@ -140,8 +140,8 @@ pub use closure::{
     ClosureError, ClosureLimits, GenerationProof, GenerationProofFailure, prove_generation_closure,
     prove_generation_closure_async,
 };
-pub use codec::{CanonicalDecodeError, CanonicalInvariant, DecodeLimits};
-pub(crate) use codec::{Decoder, Encoder};
+pub use codec::{CanonicalDecodeError, DecodeLimits};
+pub(crate) use codec::{CanonicalInvariant, Decoder, Encoder};
 pub use historical_evidence::{
     HistoricalGenerationEvidence, HistoricalGenerationProjection,
     decode_historical_generation_evidence, encode_original_generation_evidence,

@@ -4888,14 +4888,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         Fut: Future<Output = crate::MeasuredResult<crate::OperationReceipt<()>, E>> + Send,
     {
         self.commit_with_optional_context_with_permit_measured_guarded(
-            None, None, permit, budget, cancellation, before_publication,
+            None, None, None, permit, budget, cancellation, before_publication,
         ).await
     }
 
     /// Retains the original opaque operation witness through the same authority
     /// publication; neither the context nor its evidence grants authority.
+    /// The original permit binds fingerprint data only; the current `permit`
+    /// remains the authority for the actual publication.
     pub(crate) async fn commit_with_context_with_permit_measured_guarded<E, F, Fut>(
         &mut self, context: crate::Digest, operation_evidence: acyclic_stream::OwnedBytes,
+        original_fingerprint_permit: crate::PublicationPermit,
         permit: crate::PublicationPermit,
         budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
         before_publication: F,
@@ -4906,13 +4909,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         Fut: Future<Output = crate::MeasuredResult<crate::OperationReceipt<()>, E>> + Send,
     {
         self.commit_with_optional_context_with_permit_measured_guarded(
-            Some(context), Some(operation_evidence), permit, budget, cancellation, before_publication,
+            Some(context), Some(operation_evidence), Some(original_fingerprint_permit),
+            permit, budget, cancellation, before_publication,
         ).await
     }
 
     async fn commit_with_optional_context_with_permit_measured_guarded<E, F, Fut>(
         &mut self, context: Option<crate::Digest>,
-        operation_evidence: Option<acyclic_stream::OwnedBytes>, permit: crate::PublicationPermit,
+        operation_evidence: Option<acyclic_stream::OwnedBytes>,
+        original_fingerprint_permit: Option<crate::PublicationPermit>, permit: crate::PublicationPermit,
         budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
         mut before_publication: F,
     ) -> crate::MeasuredResult<crate::OperationReceipt<TransactionCommit<A, O>>, E>
@@ -4945,6 +4950,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
                             None,
                             context,
                             operation_evidence,
+                            original_fingerprint_permit,
                         )
                         .await
                         ?;
@@ -4977,6 +4983,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
                         self.idempotency_key.operation_id(),
                         context,
                         operation_evidence,
+                        original_fingerprint_permit,
                         permit,
                         budget,
                         cancellation,
@@ -5087,14 +5094,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
         self.commit_with_optional_context_with_permit_guarded_with_native_work(
-            None, None, permit, original, cancellation, before_publication,
+            None, None, None, permit, original, cancellation, before_publication,
         ).await
     }
 
     /// Moves the already-funded witness into the original native publication.
+    /// Historical permit metadata never replaces the current publication grant.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn commit_with_context_with_permit_guarded_with_native_work<'a, E, F, Fut>(
         &mut self, context: crate::Digest, operation_evidence: acyclic_stream::OwnedBytes,
+        original_fingerprint_permit: crate::PublicationPermit,
         permit: crate::PublicationPermit,
         original: &'a crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken, before_publication: &mut F,
@@ -5105,14 +5114,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
         self.commit_with_optional_context_with_permit_guarded_with_native_work(
-            Some(context), Some(operation_evidence), permit, original, cancellation, before_publication,
+            Some(context), Some(operation_evidence), Some(original_fingerprint_permit),
+            permit, original, cancellation, before_publication,
         ).await
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     async fn commit_with_optional_context_with_permit_guarded_with_native_work<'a, E, F, Fut>(
         &mut self, context: Option<crate::Digest>,
-        operation_evidence: Option<acyclic_stream::OwnedBytes>, permit: crate::PublicationPermit,
+        operation_evidence: Option<acyclic_stream::OwnedBytes>,
+        original_fingerprint_permit: Option<crate::PublicationPermit>, permit: crate::PublicationPermit,
         original: &'a crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken, before_publication: &mut F,
     ) -> Result<TransactionCommit<A, O>, E>
@@ -5124,11 +5135,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         let outcome = if self.requires_rebase {
             self.checkout.retry_stale_commit_guarded_with_native_work(
                 self.idempotency_key.operation_id(), permit, original, cancellation,
-                before_publication, None, context, operation_evidence,
+                before_publication, None, context, operation_evidence, original_fingerprint_permit,
             ).await?
         } else {
             Some(self.checkout.commit_with_optional_context_with_permit_guarded_with_native_work(
-                self.idempotency_key.operation_id(), context, operation_evidence, permit, original, cancellation,
+                self.idempotency_key.operation_id(), context, operation_evidence,
+                original_fingerprint_permit, permit, original, cancellation,
                 (*before_publication).clone(),
             ).await?)
         };
