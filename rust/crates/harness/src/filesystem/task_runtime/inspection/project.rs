@@ -285,6 +285,43 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         self.path(&selected.project, "", relative, &selected.generation)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_binding_with_io<D, S>(
+        &self, lazy: &LazyWorkspace<A, O, D, S>, frozen: LazySnapshotRef,
+        path: &str, io: &PreparationIo,
+    ) -> Result<()>
+    where D: DemandSource + 'static, S: LazyWorkspaceStore {
+        let selected = self.authorization();
+        let native = selected.native_snapshot.as_ref().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "selection has no native source proof",
+        })?;
+        // Compare exact canonical SDK proof bytes under the original observer.
+        // No unobserved serde decoder or temporary hydrated Value is needed.
+        let mut observer = io.history_io();
+        let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
+        let expected = crate::contract::canonical_json_digest_with_work(
+            native, selected.maximum_bytes, &mut observed,
+        )?;
+        let actual = crate::contract::canonical_json_digest_with_work(
+            &frozen, selected.maximum_bytes, &mut observed,
+        )?;
+        if actual != expected || lazy.workspace().id() != self.workspace_id
+            || frozen.workspace_id != self.workspace_id
+            || frozen.authored_generation != self.generation.id()
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native backend or frozen source selection differs",
+            });
+        }
+        let relative = path.strip_prefix('/').ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            reason: "native selected path must be absolute",
+        })?;
+        self.path(&selected.project, "", relative, &selected.generation)
+    }
+
     pub(super) async fn finish_native<T>(&self,
         result: acyclic_fs::MeasuredResult<OperationReceipt<T>, acyclic_fs::LazyWorkspaceError>,
     ) -> acyclic_fs::MeasuredResult<OperationReceipt<T>, Error> {
@@ -315,6 +352,66 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         match &self.reader {
             SourceReader::Project(reader) => Ok(reader),
             SourceReader::Caller(_) => Err(Error::Unauthorized("native source inspection requires operation-bound authorization".into())),
+        }
+    }
+
+    /// Reads the immutable selected native source under the supplied original
+    /// ledger. The actual returned allocation guard must outlive the bytes.
+    /// This does not derive a new allowance from a measured receipt.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn read_native_path_with_native_work<D, S>(
+        &self, lazy: &LazyWorkspace<A, O, D, S>, frozen: LazySnapshotRef,
+        path: &str, maximum_bytes: u64, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(bytes::Bytes, acyclic_fs::NativeAllocation)>
+    where D: DemandSource + 'static, S: LazyWorkspaceStore {
+        work.remaining()?;
+        let reader = match &self.reader {
+            SourceReader::Project(reader) => reader,
+            SourceReader::Caller(_) => return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native source inspection requires operation-bound authorization",
+            }),
+        };
+        if reader.io.cancellation.is_cancelled() {
+            return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
+        }
+        reader.owner.verify_project_source_read_with_native_work(&reader.handle, work).await?;
+        if maximum_bytes == 0 || maximum_bytes > reader.limits.file_bytes
+            || maximum_bytes > reader.authorization().maximum_bytes
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "native selected read exceeds original caller limits",
+            });
+        }
+        let _serial = reader.serial.lock().await;
+        reader.owner.verify_project_source_read_with_native_work(&reader.handle, work).await?;
+        if reader.io.cancellation.is_cancelled() {
+            return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
+        }
+        let io = PreparationIo::from_native_work(work)?;
+        reader.native_binding_with_io(lazy, frozen, path, &io)?;
+        let cancellation = reader.owner.invocation_cancellation().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "selected source has no original invocation token",
+        })?;
+        let result = lazy.read_at_snapshot_with_work(
+            frozen, path, maximum_bytes, work, cancellation,
+        ).await;
+        match result {
+            Ok(owned) => {
+                // Keep bytes and custody together if the final fence rejects.
+                reader.owner.verify_project_source_read_with_native_work(&reader.handle, work).await?;
+                if reader.io.cancellation.is_cancelled() {
+                    return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
+                }
+                Ok(owned)
+            }
+            Err((acyclic_fs::LazyWorkspaceError::NativeWork(cause), custody)) =>
+                Err(Error::NativeWork { cause, custody }),
+            Err((acyclic_fs::LazyWorkspaceError::Cancelled, custody)) =>
+                Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody }),
+            Err((source, custody)) => Err(Error::NativeSource { source, custody }),
         }
     }
 

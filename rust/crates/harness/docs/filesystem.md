@@ -342,6 +342,15 @@ it neither clones the owner's scope nor reacquires a lease. The ordinary
 `inspect_project_source` and frozen `WorkBudget` methods remain separate measured
 interfaces; their receipts do not claim original-native output custody.
 
+`TaskSourceInspection::read_native_path_with_native_work` reads through the
+trusted host's configured lazy workspace and exact frozen SDK snapshot. It
+revalidates the original owner and sealed source authorization at SDK boundaries
+and compares the snapshot's canonical proof under that same observer. Its
+`(Bytes, NativeAllocation)` result retains actual output custody; consumers must
+drop the bytes before the guard, including while encoding a response. Native
+work/cancellation causes and source failures move into their typed Harness error
+carriers with existing custody, without formatting a new diagnostic after denial.
+
 `ForkPreparation.child_result_volume` optionally declares one distinct
 child-owned unmounted result namespace. Its report and seed retain the paired
 original allocation generation; it is neither scratch nor a merge destination.

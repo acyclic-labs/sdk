@@ -186,6 +186,29 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 reason: "selected project read lacks its current original owner",
             });
         }
+        self.verify_project_source_read_with_native_work(handle, work).await
+    }
+
+    /// Revalidates the sealed reader already captured by the original owner.
+    /// This is not a constructor and cannot install a grant or task context.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn verify_project_source_read_with_native_work(
+        &self, handle: &ProjectSourceReadHandle, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        work.remaining()?;
+        let cancellation = self.invocation_cancellation.as_ref().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "selected project read requires actual invocation cancellation",
+        })?;
+        if cancellation.is_cancelled() {
+            return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
+        }
+        if handle.authorization().caller_admission_digest != self.original_admission_digest {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "selected project read differs from its original admission",
+            });
+        }
         self.verify_with_native_work(false, work).await?;
         self.host.verify_project_source_authorization_with_native_work(
             handle.authorization(), self.task_id, work,
