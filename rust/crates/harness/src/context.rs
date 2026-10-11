@@ -839,13 +839,13 @@ impl DurableContextProvider {
         }
         let payload = self.content_verifier.read_with_native_work(
             &stored.context, stored.context.descriptor().byte_length(), work)?.await?;
-        stored.context.descriptor().verify_with_work(&payload.0, &mut Some(&mut observer))?;
-        let context = io.decode_preparation::<Context>(&payload.0)
+        stored.context.descriptor().verify_with_work(payload.as_ref(), &mut Some(&mut observer))?;
+        let context = io.decode_preparation::<Context>(payload.as_ref())
             .map_err(native_context_decode_storage)?.into_retained();
         let context_canonical_guard;
         let context_canonical = io.encode_json(&context, limits.render_bytes, true)?;
         context_canonical_guard = io.guard_owned(context_canonical.capacity() as u64)?;
-        if context_canonical != payload.0 {
+        if context_canonical.as_slice() != payload.as_ref() {
             return Err(native_context_boundary(crate::wire::ErrorCode::Storage,
                 "context payload is not canonical"));
         }

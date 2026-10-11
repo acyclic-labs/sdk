@@ -1490,14 +1490,13 @@ async fn read_native_projection_value<'io, R: AttachmentListResolver + ?Sized>(
         return Err(projection_invalid(Some(io), "tool artifact type or rendering limit is invalid"));
     }
     let work = io.original_native_work().expect("native projection source");
-    let (bytes, custody) = resolver.read_with_native_work(file, maximum_bytes, work)?.await?;
-    let source = NativeProjectionSource { value: bytes, custody };
-    if source.value.len() as u64 > maximum_bytes {
+    let source = resolver.read_with_native_work(file, maximum_bytes, work)?.await?;
+    if source.len() as u64 > maximum_bytes {
         return Err(projection_invalid(Some(io), "resolved tool artifact exceeds rendering limit"));
     }
-    file.descriptor().verify_with_native_work(&source.value, work)?;
+    file.descriptor().verify_with_native_work(source.as_ref(), work)?;
     let parsed = io.decode_preparation_with_code::<serde_json::Value>(
-        &source.value, crate::wire::ErrorCode::Invalid,
+        source.as_ref(), crate::wire::ErrorCode::Invalid,
     )?;
     validate_model_json_numbers_with_io(&parsed.value, Some(io))?;
     Ok(parsed)
