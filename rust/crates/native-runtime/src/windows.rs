@@ -1436,10 +1436,10 @@ mod tests {
         let native = if overlapped {
             // SAFETY: the fixture transfers its freshly opened, sole-owned
             // overlapped handle before any completion-port attachment.
-            unsafe { crate::NativeFile::from_overlapped_file_measured_owned_unchecked(file, meter)? }
+            unsafe { crate::NativeFile::from_overlapped_file_measured_owned_unchecked(file, meter) }
         } else {
-            crate::NativeFile::from_file_measured_owned(file, meter)?
-        };
+            crate::NativeFile::from_file_measured_owned(file, meter)
+        }.map_err(|(error, file)| { drop(file); error })?;
         Ok(native.file)
     }
 
