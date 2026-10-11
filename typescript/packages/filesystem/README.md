@@ -42,6 +42,15 @@ acquisition work comes from the actual Rust receipt; unnamed volumes are not
 cast into unrelated workspace generations. Cold restoration passes the same
 opened native filesystem engine to `restoreNativeDirectoryCapture`.
 
+Before publishing an imported replacement, checkpoint and persist its actual
+candidate ID. Reopen that authenticated candidate with `workspace.generation`
+and use native `restoreGeneration(candidate, originalHead, originalKey)` for
+the same conditional publication on retry. Resolve `operationGeneration(key)`
+before any reconstruction after a lost ACK: it returns the original published
+generation even after later head changes. Re-importing new files is not an
+exact retry and may allocate different identities. Preserve all restoration
+outcomes, including stale/fenced/key-conflict; never substitute the current head.
+
 Retain the original operation ID and private `stateRoot`. After restart,
 `restoreNativeDirectoryCapture` and `exportNativeDirectoryArchive` reopen the
 original receipt and immutable logical generation, never recapture later

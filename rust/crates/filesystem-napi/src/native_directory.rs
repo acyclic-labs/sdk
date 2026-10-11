@@ -1,5 +1,5 @@
 //! Native-only held-root capture, immutable archive bytes and original-fenced apply.
-use crate::{NativeCheckout, NativeGeneration, NativeOperationWindowLease, NapiU32, bigint_u64, boundary_budget, fixed_16, napi_error, native_generation_buffer, native_path, publication_permit};
+use crate::{NativeCheckout, NativeGeneration, NativeOperationWindowLease, NativeWorkspace, NapiU32, bigint_u64, boundary_budget, fixed_16, napi_error, native_generation_buffer, native_path, publication_permit};
 use acyclic_fs::kernel::FileKind;
 use acyclic_fs::materializer::{MaterializationPhase, MaterializationRecovery};
 use acyclic_fs::native_apply::{self, NativeDirectoryApplyReceipt as CoreApplyReceipt};
@@ -14,7 +14,37 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[napi]
-impl crate::NativeWorkspace {
+impl NativeWorkspace {
+    /// Resolve the actual generation published under one original operation key.
+    #[napi]
+    pub async fn operation_generation(&self, idempotency_key: Buffer) -> Result<Option<NativeGeneration>> {
+        let key = crate::native_idempotency_key(Some(idempotency_key))?;
+        self.inner.operation_generation(key).await
+            .map(|generation| generation.map(|inner| NativeGeneration { inner }))
+            .map_err(napi_error)
+    }
+    /// Publish an exact retained candidate against its original observed head.
+    #[napi]
+    pub async fn restore_generation(&self, generation: &NativeGeneration, if_current: Buffer, idempotency_key: Buffer, lease: Option<&NativeOperationWindowLease>) -> Result<NativeWorkspaceRestoreResult> {
+        let current = acyclic_fs::GenerationId::new(crate::Digest::from_bytes(crate::fixed_32(&if_current, "generation identity")?));
+        let key = crate::native_idempotency_key(Some(idempotency_key))?;
+        let outcome = self.inner.restore_generation_with_permit(&generation.inner, current, key, publication_permit(lease)?).await.map_err(napi_error)?;
+        use acyclic_fs::workspace::WorkspaceRestore;
+        let (kind, generation) = match outcome {
+            WorkspaceRestore::Restored(generation) => ("restored", Some(generation)),
+            WorkspaceRestore::AlreadyRestored(generation) => ("already-restored", Some(generation)),
+            WorkspaceRestore::Current(generation) => ("current", Some(generation)),
+            WorkspaceRestore::Stale(generation) => ("stale", Some(generation)),
+            WorkspaceRestore::Fenced => ("fenced", None),
+            WorkspaceRestore::IdempotencyConflict => ("idempotency-conflict", None),
+        };
+        Ok(NativeWorkspaceRestoreResult {
+            kind: kind.to_owned(),
+            generation_id: generation.map(|generation| native_generation_buffer(generation.id())),
+        })
+    }
+
+
     /// Open a genuine checkout of this same workspace, retaining its measured work.
     #[napi]
     pub async fn checkout(&self, options: crate::NativeCheckoutOptions, generation_id: Option<Buffer>) -> Result<NativeCheckout> {
@@ -34,6 +64,15 @@ impl crate::NativeWorkspace {
             cancellation, acquisition_work: receipt.work })
     }
 }
+/// Canonical semantic outcome of restoring one exact immutable generation.
+#[napi(object, object_from_js = false)]
+pub struct NativeWorkspaceRestoreResult {
+    /// `restored`, `already-restored`, `current`, `stale`, `fenced`, or `idempotency-conflict`.
+    pub kind: String,
+    /// Actual restored/current/stale generation; absent for fencing or key conflict.
+    pub generation_id: Option<Buffer>,
+}
+
 
 /// Immutable actual native archive bytes, retained independently of its capture.
 #[napi]

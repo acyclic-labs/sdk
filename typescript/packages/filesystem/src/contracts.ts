@@ -913,6 +913,9 @@ export interface NativeWorkspaceMount {
 }
 
 export interface NativeFsWorkspace extends FsWorkspace {
+  /** Exact published generation for an original operation, never the current head. */
+  operationGeneration(idempotencyKey: Uint8Array): Promise<FsGeneration | undefined>;
+  restoreGeneration(generation: FsGeneration, ifCurrent: Uint8Array, idempotencyKey: Uint8Array, lease?: OperationWindowLease): Promise<NativeWorkspaceRestoreResult>;
   joinInto(target: FsWorkspace, options: JoinOptions): Promise<ResolvableFsJoinPlan>;
   mount(destination: string, options: NativeWorkspaceMountOptions): Promise<NativeWorkspaceMount>;
   sourceState(): Promise<SourceResult>;
@@ -920,6 +923,8 @@ export interface NativeFsWorkspace extends FsWorkspace {
   rescanSource(): Promise<SourceResult>;
   seal(): Promise<FsGeneration>;
 }
+
+export type NativeWorkspaceRestoreResult = NativeBoundary<NativeBinding.NativeWorkspaceRestoreResult>;
 
 export interface NativeSourceOptions {
   readonly mode: "pinned" | "tracking";

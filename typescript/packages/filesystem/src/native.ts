@@ -39,6 +39,7 @@ import type {
   NativeRawSourceResult,
   NativeRawWorkspace,
   NativeRawWorkspaceMount,
+  NativeWorkspaceRestoreResult,
   NativeRawWatcher,
   NativeRawWatchBatch,
   NativeWatcher,
@@ -927,6 +928,18 @@ function adaptWorkspace(
       value => scope.adaptGeneration(nativeBoundary<Parameters<typeof scope.adaptGeneration>[0]>(value)),
       value => parseWorkspaceRebaseResult(nativeBoundary<WasmRawJoinResult>(value)),
     ),
+    async operationGeneration(idempotencyKey: Uint8Array): Promise<FsGeneration | undefined> {
+      requireIdentity(idempotencyKey, "idempotency key");
+      const generation = await raw.operationGeneration(copyBytes(idempotencyKey));
+      return generation == null ? undefined : scope.adaptGeneration(generation);
+    },
+    async restoreGeneration(generation: FsGeneration, ifCurrent: Uint8Array, idempotencyKey: Uint8Array, lease?: OperationWindowLease): Promise<NativeWorkspaceRestoreResult> {
+      requireIdentity(idempotencyKey, "idempotency key");
+      return raw.restoreGeneration(
+        nativeBoundary<NativeRawGeneration>(scope.rawGeneration(generation)),
+        copyBytes(ifCurrent), copyBytes(idempotencyKey), lease,
+      );
+    },
     async sourceState(): Promise<SourceResult> {
       return parseSourceResult(await raw.sourceState());
     },

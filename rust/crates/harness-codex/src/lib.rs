@@ -30,6 +30,7 @@ pub mod process;
 pub mod exec_server;
 pub mod proxy;
 
+pub use codex_exec_server_protocol as exec_server_protocol;
 pub use config::HomeConfig;
 pub use events::{CodexEvent, CodexItem, CodexUsage, ItemKind, Transcript};
 pub use executor::{CodexConfig, CodexExecutor, CodexObserver, Upstream};
