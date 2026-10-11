@@ -286,6 +286,14 @@ Preparation requests decode from borrowed retained input using the existing
 audited preparation codec, bind the complete original command/input digest and
 reject omitted or changed fields on retries; their returned retained extent
 remains held until the request is dropped or transferred.
+Native mailbox facades retain the original task/fence and admitted grants.
+`send_with_native_work` borrows the input reference; its single funded provider
+callback copies it on the original ledger and transfers that custody into the
+exact retained ACK. Native inbox and received-parcel reads return payload before
+its allocation guard. Received bytes remain tied to the original receive
+operation, not a general grant to the donor's namespace. Native publication-lease
+verification and owned-fence copying also use the original ledger; ordinary-only
+custom providers reject before callback allocation rather than falling back.
 
 The filesystem task runtime enforces the originally admitted absolute deadline
 through the host's current clock and native or browser-worker timers. Expiry

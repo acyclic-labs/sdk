@@ -469,7 +469,26 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.verify(true).await
     }
     pub(crate) fn require_mail_scope(&self, scope: &RuntimeScope) -> Result<()> {
+        self.require_mail_scope_with_work(scope, &mut None)
+    }
+
+    fn require_mail_scope_with_work(
+        &self,
+        scope: &RuntimeScope,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(observer) = work.as_deref_mut() {
+            observer.check_cancellation()?;
+            observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+        }
         if scope.grants() != &self.input_grants || scope.limits() != self.input_limits {
+            #[cfg(not(target_arch = "wasm32"))]
+            if work.as_ref().is_some_and(|observer| observer.original_native_work().is_some()) {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "mailbox scope differs from retained admission",
+                });
+            }
             return Err(Error::Unauthorized("mailbox scope differs from retained admission".into()));
         }
         Ok(())
@@ -558,24 +577,17 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "tool workflow belongs to another original metadata ledger" });
         }
-        let expected = (std::mem::size_of::<Value>() as u64)
-            .checked_add(crate::core::value_clone_owned_bytes(&tool.definition.output_schema)?)
-            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "tool output schema custody overflows" })?;
-        let mut schema_custody = work.retain_owned(expected)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        use crate::store::history::HistoryIo as _;
         let mut io = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        crate::core::begin_clone_work(
-            crate::core::value_clone_work(&tool.definition.output_schema)?, &mut Some(&mut io),
-        )?;
-        let schema = tool.definition.output_schema.clone();
-        let actual = (std::mem::size_of::<Value>() as u64)
-            .checked_add(crate::core::value_owned_bytes(&schema)?)
-            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "tool output schema custody overflows" })?;
-        schema_custody.reconcile_capacity(actual)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut observed = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
+        let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, 0)?;
+        quota.retain(std::mem::size_of::<Value>() as u64)?;
+        let schema = crate::core::copy_value(&tool.definition.output_schema, &mut quota)?;
+        quota.transfer();
+        drop(quota);
+        drop(observed);
+        let mut schema_custody = io.into_custody();
         let custody = self._native_custody.as_mut().expect("authenticated native owner custody");
         custody.absorb(&mut workflow.1)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;

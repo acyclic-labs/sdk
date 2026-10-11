@@ -6279,6 +6279,58 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
     fn read_received<'a>(
         &'a self, receive_operation: OperationId, item: &'a InboxItem,
     ) -> BoxFuture<'a, Result<Vec<u8>>>;
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn validate_scope_with_native_work(
+        &self,
+        _scope: &RuntimeScope,
+        _work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "owned mailbox has no original native-ledger scope verifier",
+        })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn send_with_native_work<'a>(
+        &'a self,
+        _recipient: TaskId,
+        _operation: OperationId,
+        _payload: &'a FileRef,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (crate::durable_host::MailSendAck, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "owned mailbox has no original native-ledger sender",
+        })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn inbox_with_native_work<'a>(
+        &'a self,
+        _after: u64,
+        _maximum: usize,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Vec<InboxItem>, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "owned mailbox has no original native-ledger inbox",
+        })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn read_received_with_native_work<'a>(
+        &'a self,
+        _receive_operation: OperationId,
+        _item: &'a InboxItem,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "owned mailbox has no original native-ledger received parcel reader",
+        })
+    }
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -7835,6 +7887,60 @@ impl TaskContext {
             .ok_or_else(|| Error::Unauthorized("inbox requires a retained task mailbox owner".into()))?;
         mailbox.validate_scope(&self.scope)?;
         mailbox.inbox(after, limit).await
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn native_mailbox(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<&Arc<dyn OwnedTaskMailbox>> {
+        self.owned_task_binding_with_native_work(work)?;
+        self.owned_mailbox.as_ref().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "mail requires an original native task mailbox owner",
+        })
+    }
+
+    /// Sends the same exact parcel with the original native owner and work.
+    /// The copied input reference's custody moves into the returned ACK.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn send_with_native_work<'a>(
+        &'a self,
+        recipient: TaskId,
+        message_id: OperationId,
+        payload: &'a FileRef,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (crate::durable_host::MailSendAck, acyclic_fs::NativeAllocation)>> {
+        self.native_mailbox(work)?.send_with_native_work(recipient, message_id, payload, work)
+    }
+
+    /// Reads one exact retained parcel selection on that same native ledger.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn read_received_mail_with_native_work<'a>(
+        &'a self,
+        receive_operation: OperationId,
+        item: &'a InboxItem,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+        self.native_mailbox(work)?.read_received_with_native_work(receive_operation, item, work)
+    }
+
+    /// Reads a bounded original-owner inbox page without rebuilding a scope.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn inbox_with_native_work<'a>(
+        &'a self,
+        after: u64,
+        limit: usize,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Vec<InboxItem>, acyclic_fs::NativeAllocation)>> {
+        let mailbox = self.native_mailbox(work)?;
+        if limit == 0 {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "inbox page bound is invalid",
+            });
+        }
+        mailbox.inbox_with_native_work(after, limit, work)
     }
 
     /// Waits at a recorded absolute boundary or the actual live executor timer.

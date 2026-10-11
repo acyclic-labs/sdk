@@ -661,14 +661,24 @@ impl CreatedResourceAccess {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn has_native_custody(&self) -> bool { self.native_custody.is_some() }
     pub(crate) fn current_content(&self) -> Result<Option<&CreatedContentBinding>> {
-        let Some(binding) = self.content.iter().find(|binding| binding.default_writer)
-        else { return Ok(None); };
-        if binding.volume.class() != crate::conversation::VolumeClass::AgentPrivate
-            || !matches!(binding.volume.owner(), crate::conversation::VolumeOwner::Agent(_))
-        {
-            return Err(Error::Unauthorized("current created scratch is not agent-owned private content".into()));
+        self.current_content_with_work(&mut None)
+    }
+
+    pub(crate) fn current_content_with_work(
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Option<&CreatedContentBinding>> {
+        for binding in &self.content {
+            created_access_step(work)?;
+            if !binding.default_writer { continue; }
+            if binding.volume.class() != crate::conversation::VolumeClass::AgentPrivate
+                || !matches!(binding.volume.owner(), crate::conversation::VolumeOwner::Agent(_))
+            {
+                return Err(created_access_error(work, "current created scratch is not agent-owned private content"));
+            }
+            return Ok(Some(binding));
         }
-        Ok(Some(binding))
+        Ok(None)
     }
 
     pub(crate) fn consume(
@@ -1042,4 +1052,26 @@ fn created_access_canonical_capability<T: Serialize + ?Sized>(
 pub(crate) trait CreatedTaskLease: acyclic_stream::ProviderPlatform {
     fn verify(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<()>>;
     fn fence(&self) -> Result<crate::scheduler::LeaseFence>;
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn verify_with_native_work<'a>(
+        &'a self,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "created publication lease has no original native-ledger verifier",
+        })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn fence_with_native_work(
+        &self,
+        _work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(crate::scheduler::LeaseFence, acyclic_fs::NativeAllocation)> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "created publication lease has no original native-ledger fence",
+        })
+    }
 }
