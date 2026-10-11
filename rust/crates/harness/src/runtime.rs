@@ -216,15 +216,93 @@ impl<I, O> TaskDefinition<I, O> {
 
     /// Declares a dependency available at admission.
     pub fn requires(mut self, requirement: impl Into<String>) -> Result<Self> {
-        let requirement = requirement.into();
-        if requirement.is_empty() || requirement.chars().any(char::is_whitespace) {
-            return Err(Error::Invalid("task requirement is invalid".into()));
-        }
-        self.requirements.insert(requirement);
+        self.requires_with_io(std::borrow::Cow::Owned(requirement.into()), None)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         { self.native_definition_source = None; }
-        self.refresh_digest()?;
         Ok(self)
+    }
+
+    /// Adds a borrowed requirement before native registration, preserving the
+    /// actual constructor custody rather than adopting an ordinary builder.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn requires_with_native_work(
+        self, requirement: &str, metadata_custody: acyclic_fs::NativeAllocation,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        let mut input = (self, metadata_custody);
+        let source = input.0.native_definition_source.as_ref().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "task requirement builder has no native constructor receipt",
+        })?;
+        if input.0.native_schema_custody.is_none()
+            || input.0.native_metadata_custody.is_some()
+            || !source.work.shares_ledger(work)
+            || !input.1.work().shares_ledger(work)
+            || input.1.bytes() < source.bytes
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "task requirement custody differs from its original constructor",
+            });
+        }
+        match &input.0.implementation {
+            TaskImplementation::Resumable(machine) => {
+                machine.identity_with_native_work(work)?;
+            }
+            TaskImplementation::Live(_) => return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "live task has no native requirement builder",
+            }),
+        }
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let result = input.0.requires_with_io(std::borrow::Cow::Borrowed(requirement), Some(&io));
+        let retained = result.as_ref().copied().unwrap_or(0);
+        let (_, mut additional) = crate::workflow::finish_native_io(result, io, retained)?;
+        input.1.absorb(&mut additional).map_err(|cause| Error::NativeWork {
+            cause, custody: Some(additional),
+        })?;
+        if let Some(source) = input.0.native_definition_source.as_mut() {
+            source.bytes = input.1.bytes();
+        }
+        Ok(input)
+    }
+
+    fn requires_with_io(
+        &mut self, requirement: std::borrow::Cow<'_, str>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<u64> {
+        inspect_task_metadata(io, 1)?;
+        if requirement.is_empty() || requirement.chars().any(char::is_whitespace) {
+            return Err(task_workflow_error(task_original_work(io)?,
+                crate::wire::ErrorCode::Invalid, "task requirement is invalid"));
+        }
+        let requirement = match requirement {
+            std::borrow::Cow::Owned(requirement) => Some(requirement),
+            std::borrow::Cow::Borrowed(requirement) => {
+                inspect_task_metadata(io, 1)?;
+                if self.requirements.contains(requirement) {
+                    None
+                } else {
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    if let Some(io) = io {
+                        // A known logical element, not an opaque BTree allocation.
+                        io.retain_owned(std::mem::size_of::<String>() as u64)?;
+                        let mut history = io.history_io();
+                        Some(crate::store::history::HistoryIo::clone_text(&mut history, requirement)?)
+                    } else {
+                        Some(requirement.to_owned())
+                    }
+                    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                    { Some(requirement.to_owned()) }
+                }
+            }
+        };
+        if let Some(requirement) = requirement {
+            self.requirements.insert(requirement);
+        }
+        let retained = crate::workflow::workflow_owned_bytes(io)?;
+        self.refresh_digest_with_io(io)?;
+        Ok(retained)
     }
 
     fn refresh_digest(&mut self) -> Result<()> {
