@@ -718,14 +718,16 @@ impl PiNativeCommandHost {
     /// Durable subtree intent first. The return value is effect observation,
     /// never an assertion that the process exited or its namespace was disposed.
     pub(crate) async fn cancel_child(&self, task: TaskId) -> Result<Option<(EffectStatus, NativeAllocation)>> {
-        self.child_admission(task).await?;
-        self.runtime.runtime.task_host().cancel(task).await?;
-        let Some(entry) = self.find_entry(task) else { return Ok(None); };
+        self.runtime.verify_owner(&self.protected)?;
+        let entry = self.entry(task);
+        let meter = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(),
+            &entry.cleanup_cancellation).map_err(native_construction)?;
+        let _admission = self.child_admission_with_work(task, &meter).await?;
+        self.runtime.runtime.task_host().cancel_with_native_work(task, &meter).await?;
         let effect = entry.handles.lock().await.effect.clone();
         match effect {
             Some(effect) => {
-                let meter = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(),
-                    &entry.cleanup_cancellation).map_err(native_construction)?;
+                // Keep the same original cancellation span through settlement.
                 let outcome = effect.owner.outcome_with_native_work(&meter).await?;
                 if outcome.0.is_some() {
                     let receipt = effect.runner.receipt_with_native_work(&meter).await.map_err(receipt_error)?;
@@ -838,7 +840,7 @@ impl PiNativeCommandHost {
     ) -> Result<()> {
         async {
             self.child_admission_with_work(task, meter).await?;
-            self.runtime.runtime.task_host().cancel(task).await?;
+            self.runtime.runtime.task_host().cancel_with_native_work(task, meter).await?;
             let entry = self.find_entry(task).ok_or_else(|| unauthorized("Pi rollback has no original live preparation"))?;
             entry.operation_cancellation.cancel();
             let _run = entry.run.lock().await;
