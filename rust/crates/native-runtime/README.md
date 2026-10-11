@@ -138,6 +138,11 @@ including failures after spawn; physical reap/configuration retirement releases
 its byte storage before its original allocation guards. The frame grants no
 command authority. As with ordinary closed spawn, trusted host code must not
 mutate the native environment concurrently with its snapshot.
+`ProcessTree::TERMINATION_TIMEOUT` and `TERMINATION_POLL_INTERVAL` expose the
+same five-second observation window and one-millisecond polling delay used by
+physical termination and group-reaping loops. Native birth-credit plans reuse
+this policy rather than copying it. Finite credit still gates every real call;
+timeouts and exhausted credit retain genuine ownership, not proof of absence.
 `wait_with_input_observed` uses the same collector and borrows the caller's
 literal input. It writes nonblocking prefixes, closes stdin after the last byte
 (including an explicitly empty input), and waits for normal child completion.
