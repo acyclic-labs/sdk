@@ -387,6 +387,39 @@ impl ToolContext {
         work: &NativeMaterializationWork,
     ) -> Result<()> {
         self.validate_native_mcp_context(work)?;
+        self.validate_native_mcp_process_fields(
+            task, owner_fence, operation, server, remote_name, work,
+        )
+    }
+
+    /// Checks that same approved invocation under the SDK's genuine
+    /// reconciliation source. This cannot prepare or dispatch another process.
+    #[allow(clippy::too_many_arguments, reason = "one exact approved MCP invocation binding")]
+    pub(crate) fn validate_native_mcp_process_reconciliation_binding(
+        &self,
+        task: crate::TaskId,
+        owner_fence: &crate::scheduler::LeaseFence,
+        operation: crate::OperationId,
+        server: &str,
+        remote_name: Option<&str>,
+        work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        self.validate_native_mcp_reconciliation_context(work)?;
+        self.validate_native_mcp_process_fields(
+            task, owner_fence, operation, server, remote_name, work,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "one exact approved MCP invocation binding")]
+    fn validate_native_mcp_process_fields(
+        &self,
+        task: crate::TaskId,
+        owner_fence: &crate::scheduler::LeaseFence,
+        operation: crate::OperationId,
+        server: &str,
+        remote_name: Option<&str>,
+        work: &NativeMaterializationWork,
+    ) -> Result<()> {
         if !self.task().original_task_binding_matches(task, owner_fence)
             || self.operation_id() != operation
         {
@@ -554,9 +587,15 @@ mod tests {
         assert!(matches!(tool.validate_native_mcp_process_binding(
             fixture.root, &fence, operation, "example", Some("echo"), &original,
         ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+        assert!(matches!(tool.validate_native_mcp_process_reconciliation_binding(
+            fixture.root, &fence, operation, "example", Some("echo"), &original,
+        ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
         assert_eq!(original.receipt(), before);
         cancellation.cancel();
         assert!(matches!(tool.validate_native_mcp_process_binding(
+            fixture.root, &fence, operation, "example", Some("echo"), &original,
+        ), Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
+        assert!(matches!(tool.validate_native_mcp_process_reconciliation_binding(
             fixture.root, &fence, operation, "example", Some("echo"), &original,
         ), Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
         assert_eq!(original.receipt(), before);

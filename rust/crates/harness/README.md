@@ -205,6 +205,9 @@ Approved native MCP process bindings additionally match the original owner fence
 operation and canonical call ID, then check server/tool grants through
 `effective_scope`. The call-ID comparison uses a fixed stack buffer and grant
 matching borrows existing strings; it allocates no replacement capability labels.
+
+Approved process reconciliation uses its distinct reconciliation binding entry;
+the optional remote tool name never selects or upgrades the context's purpose.
 The SDK stock worker may retain its original per-command journal interaction
 router in tool-local metadata without replacing the shared task or its policy.
 This override is not a public custom-executor setter; its producer and policy
