@@ -111,6 +111,18 @@ pub trait EffectProvider: acyclic_stream::ProviderPlatform {
     ) -> Result<BoxFuture<'a,Result<Option<(EffectObservation,acyclic_fs::NativeAllocation)>>>> {
         Err(Error::NativeBoundary { code:crate::wire::ErrorCode::Unsupported, reason:"effect provider has no native reconciliation observer" })
     }
+
+    /// Tests the pinned guarantee without constructing an unbounded catalog.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_guarantee_with_native_work(
+        &self, _effect_kind: &str, _guarantee: EffectGuarantee,
+        _work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<bool> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "effect provider has no native guarantee observer",
+        })
+    }
 }
 
 /// Explicit registry; no ambient or process-global provider catalog exists.
@@ -118,6 +130,13 @@ pub trait EffectProvider: acyclic_stream::ProviderPlatform {
 pub struct EffectRegistry {
     providers: BTreeMap<String, Arc<dyn EffectProvider>>,
     result_resolver: Option<Arc<dyn ContentResidencyVerifier>>,
+}
+
+/// The provider observation is dropped before its original allocation custody.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+struct NativeEffectObservation {
+    observation: EffectObservation,
+    custody: acyclic_fs::NativeAllocation,
 }
 
 /// Single admission check for a pinned successful JSON result.
@@ -173,25 +192,47 @@ impl EffectRegistry {
 
     /// Resolves and validates the provider-owned guarantee pinned by durable state.
     pub fn resolve(&self, effect: &EffectState) -> Result<&Arc<dyn EffectProvider>> {
-        let provider = self
-            .providers
-            .get(&effect.provider)
-            .ok_or_else(|| Error::Unsupported(format!("effect provider {}", effect.provider)))?;
-        if !provider
-            .guarantees(&effect.effect_kind)
-            .contains(&effect.guarantee)
-        {
+        self.resolve_with_work(effect, &mut None)
+    }
+
+    pub(crate) fn resolve_with_work(
+        &self, effect: &EffectState,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<&Arc<dyn EffectProvider>> {
+        let provider = self.providers.get(&effect.provider).ok_or_else(||
+            crate::effect_host::effect_error(work, crate::wire::ErrorCode::Unsupported,
+                "effect provider is not registered"))?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
+            if !provider.supports_guarantee_with_native_work(
+                &effect.effect_kind, effect.guarantee, native)?
+            {
+                return Err(crate::effect_host::effect_error(
+                    work, crate::wire::ErrorCode::Unsupported,
+                    "effect provider does not support the pinned guarantee"));
+            }
+            if effect.guarantee == EffectGuarantee::ExactlyOnce
+                && !provider.linearizable_reconciliation()
+            {
+                return Err(crate::effect_host::effect_error(work,
+                    crate::wire::ErrorCode::Unsupported,
+                    "exactly-once requires linearizable provider reconciliation"));
+            }
+            return Ok(provider);
+        }
+        if work.is_some() {
+            return Err(Error::Unsupported("effect observer has no original native ledger".into()));
+        }
+        if !provider.guarantees(&effect.effect_kind).contains(&effect.guarantee) {
             return Err(Error::Unsupported(format!(
                 "provider {} does not support {:?} for {}",
-                effect.provider, effect.guarantee, effect.effect_kind
-            )));
+                effect.provider, effect.guarantee, effect.effect_kind)));
         }
         if effect.guarantee == EffectGuarantee::ExactlyOnce
             && !provider.linearizable_reconciliation()
         {
             return Err(Error::Unsupported(
-                "exactly-once requires linearizable provider reconciliation".into(),
-            ));
+                "exactly-once requires linearizable provider reconciliation".into()));
         }
         Ok(provider)
     }
@@ -203,17 +244,21 @@ impl EffectRegistry {
         effect: &EffectState,
         observation: &EffectObservation,
     ) -> Result<()> {
-        self.resolve(effect)?;
-        if observation.provider != effect.provider
-            || observation.effect_id != effect_id
+        self.validate_observation_with_work(effect_id, effect, observation, &mut None)
+    }
+
+    fn validate_observation_with_work(
+        &self, effect_id: EffectId, effect: &EffectState, observation: &EffectObservation,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.resolve_with_work(effect, work)?;
+        if observation.provider != effect.provider || observation.effect_id != effect_id
             || effect.attempts.last() != Some(&observation.attempt_id)
             || observation.request_digest != effect.request_digest
-            || observation.guarantee != effect.guarantee
-            || !observation.status.is_terminal()
+            || observation.guarantee != effect.guarantee || !observation.status.is_terminal()
         {
-            return Err(Error::Conflict(
-                "effect observation does not match durable dispatch".into(),
-            ));
+            return Err(crate::effect_host::effect_error(work, crate::wire::ErrorCode::Conflict,
+                "effect observation does not match durable dispatch"));
         }
         Ok(())
     }
@@ -226,11 +271,58 @@ impl EffectRegistry {
         effect: &EffectState,
         dispatch: EffectDispatch,
     ) -> Result<EffectAttestation> {
-        let provider = self.resolve(effect)?;
-        self.validate_dispatch(effect_id, effect, &dispatch)?;
+        self.dispatch_and_attest_with_work(issuer, effect_id, effect, dispatch, &mut None).await
+    }
+
+    pub(crate) async fn dispatch_state_and_attest_with_work(
+        &self, issuer: &AuthorityIssuer, effect_id: EffectId, effect: &EffectState,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<EffectAttestation> {
+        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+        if effect.status != EffectStatus::Dispatched {
+            return Err(crate::effect_host::effect_error(custody.work(),
+                crate::wire::ErrorCode::Conflict, "effect is not awaiting dispatch"));
+        }
+        let attempt_id = effect.attempts.last().copied().ok_or_else(||
+            crate::effect_host::effect_error(custody.work(), crate::wire::ErrorCode::Conflict,
+                "effect has no durable dispatch attempt"))?;
+        let provider = match custody.work().as_deref_mut() {
+            Some(io) => io.clone_text(&effect.provider)?, None => effect.provider.clone(),
+        };
+        custody.adopt(provider.capacity() as u64)?;
+        let effect_kind = match custody.work().as_deref_mut() {
+            Some(io) => io.clone_text(&effect.effect_kind)?, None => effect.effect_kind.clone(),
+        };
+        custody.adopt(effect_kind.capacity() as u64)?;
+        let request = crate::effect_host::clone_file_with_work(&effect.request, custody.work())?;
+        custody.adopt(request.logical_owned_bytes()?)?;
+        let dispatch = EffectDispatch {
+            provider, effect_id, attempt_id, effect_kind, request,
+            guarantee: effect.guarantee, request_digest: effect.request_digest,
+        };
+        self.dispatch_and_attest_with_work(issuer, effect_id, effect, dispatch, custody.work()).await
+    }
+
+    async fn dispatch_and_attest_with_work(
+        &self, issuer: &AuthorityIssuer, effect_id: EffectId, effect: &EffectState,
+        dispatch: EffectDispatch,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<EffectAttestation> {
+        let provider = self.resolve_with_work(effect, work)?;
+        self.validate_dispatch_with_work(effect_id, effect, &dispatch, work)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
+            let future = provider.dispatch_with_native_work(dispatch, native)?;
+            let (observation, custody) = future.await?;
+            return self.attest_native_observation(issuer, effect_id, effect,
+                NativeEffectObservation { observation, custody }, work).await;
+        }
+        if work.is_some() {
+            return Err(Error::Unsupported("effect observer has no original native ledger".into()));
+        }
         let observation = provider.dispatch(dispatch).await?;
-        self.attest_provider_observation(issuer, effect_id, effect, observation)
-            .await
+        self.attest_provider_observation_with_work(
+            issuer, effect_id, effect, observation, work).await
     }
 
     /// Reconciles through the pinned provider without redispatching the attempt.
@@ -240,65 +332,132 @@ impl EffectRegistry {
         effect_id: EffectId,
         effect: &EffectState,
     ) -> Result<Option<EffectAttestation>> {
-        let provider = self.resolve(effect)?;
-        let attempt_id = effect
-            .attempts
-            .last()
-            .copied()
-            .ok_or_else(|| Error::Conflict("effect has no durable dispatch attempt".into()))?;
+        self.reconcile_and_attest_with_work(issuer, effect_id, effect, &mut None).await
+    }
+
+    pub(crate) async fn reconcile_and_attest_with_work(
+        &self, issuer: &AuthorityIssuer, effect_id: EffectId, effect: &EffectState,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Option<EffectAttestation>> {
+        let provider = self.resolve_with_work(effect, work)?;
+        let attempt_id = effect.attempts.last().copied().ok_or_else(||
+            crate::effect_host::effect_error(work, crate::wire::ErrorCode::Conflict,
+                "effect has no durable dispatch attempt"))?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
+            let future = provider.reconcile_with_native_work(attempt_id, native)?;
+            return match future.await? {
+                Some((observation, custody)) => Ok(Some(self.attest_native_observation(
+                    issuer, effect_id, effect, NativeEffectObservation { observation, custody },
+                    work).await?)),
+                None => Ok(None),
+            };
+        }
+        if work.is_some() {
+            return Err(Error::Unsupported("effect observer has no original native ledger".into()));
+        }
         match provider.reconcile(attempt_id).await? {
-            Some(observation) => Ok(Some(
-                self.attest_provider_observation(issuer, effect_id, effect, observation)
-                    .await?,
-            )),
+            Some(observation) => Ok(Some(self.attest_provider_observation_with_work(
+                issuer, effect_id, effect, observation, work).await?)),
             None => Ok(None),
         }
     }
 
-    fn validate_dispatch(
-        &self,
-        effect_id: EffectId,
-        effect: &EffectState,
-        dispatch: &EffectDispatch,
-    ) -> Result<()> {
-        if dispatch.provider != effect.provider
-            || dispatch.effect_id != effect_id
-            || effect.attempts.last() != Some(&dispatch.attempt_id)
-            || dispatch.effect_kind != effect.effect_kind
-            || dispatch.request != effect.request
-            || dispatch.request_digest != effect.request_digest
-            || dispatch.guarantee != effect.guarantee
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    async fn attest_native_observation(
+        &self, issuer: &AuthorityIssuer, effect_id: EffectId, effect: &EffectState,
+        incoming: NativeEffectObservation,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<EffectAttestation> {
+        if !work.as_deref().and_then(|io| io.original_native_work())
+            .is_some_and(|native| incoming.custody.work().shares_ledger(native))
         {
-            return Err(Error::Conflict(
-                "effect dispatch does not match durable state".into(),
-            ));
+            let NativeEffectObservation { observation, custody } = incoming;
+            drop(observation);
+            return Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+                custody: Some(custody),
+            });
+        }
+        let NativeEffectObservation { observation, custody } = incoming;
+        let result = self.attest_provider_observation_with_work(
+            issuer, effect_id, effect, observation, work).await;
+        match result {
+            Ok(attestation) => {
+                work.as_deref_mut().expect("original observer").absorb_native_custody(custody)?;
+                Ok(attestation)
+            },
+            Err(error) => {
+                drop(custody);
+                Err(error)
+            },
+        }
+    }
+
+
+    fn validate_dispatch_with_work(
+        &self, effect_id: EffectId, effect: &EffectState, dispatch: &EffectDispatch,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if dispatch.provider != effect.provider || dispatch.effect_id != effect_id
+            || effect.attempts.last() != Some(&dispatch.attempt_id)
+            || dispatch.effect_kind != effect.effect_kind || dispatch.request != effect.request
+            || dispatch.request_digest != effect.request_digest || dispatch.guarantee != effect.guarantee
+        {
+            return Err(crate::effect_host::effect_error(work, crate::wire::ErrorCode::Conflict,
+                "effect dispatch does not match durable state"));
         }
         Ok(())
     }
 
-    async fn attest_provider_observation(
-        &self,
-        issuer: &AuthorityIssuer,
-        effect_id: EffectId,
-        effect: &EffectState,
+    async fn attest_provider_observation_with_work(
+        &self, issuer: &AuthorityIssuer, effect_id: EffectId, effect: &EffectState,
         observation: EffectObservation,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<EffectAttestation> {
-        self.validate_observation(effect_id, effect, &observation)?;
+        self.validate_observation_with_work(effect_id, effect, &observation, work)?;
         if let EffectStatus::Succeeded { result } = &observation.status {
-            let resolver = self.result_resolver.as_ref().ok_or_else(|| {
-                Error::Unsupported("effect result content resolver is not bound".into())
-            })?;
-            let bytes = resolver.read(result).await?;
-            let schema_bytes = resolver.read(&effect.result_schema).await?;
-            let schema = validate_schema_bytes(&effect.result_schema, &schema_bytes)?;
-            validate_result_bytes(&schema, result, &bytes)?;
+            let resolver = self.result_resolver.as_ref().ok_or_else(||
+                crate::effect_host::effect_error(work, crate::wire::ErrorCode::Unsupported,
+                    "effect result content resolver is not bound"))?;
+            if work.is_some() {
+                let mut content = crate::wire_codec::CodecQuota::new(work, 0)?;
+                let bytes = content.work().as_deref_mut().expect("observer")
+                    .read_content(resolver.as_ref(), result).await?;
+                content.adopt(bytes.capacity() as u64)?;
+                let schema_bytes = content.work().as_deref_mut().expect("observer")
+                    .read_content(resolver.as_ref(), &effect.result_schema).await?;
+                content.adopt(schema_bytes.capacity() as u64)?;
+                if result.descriptor().media_type() != "application/json"
+                    || effect.result_schema.descriptor().media_type() != "application/schema+json"
+                {
+                    return Err(crate::effect_host::effect_error(content.work(),
+                        crate::wire::ErrorCode::Invalid, "effect result or schema media type differs"));
+                }
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                {
+                    result.descriptor().verify_with_work(&bytes, content.work())?;
+                    effect.result_schema.descriptor().verify_with_work(&schema_bytes, content.work())?;
+                    let io = content.work().as_deref_mut().expect("observer");
+                    let native = io.original_native_work().ok_or_else(||
+                        Error::Unsupported("effect result observer has no original native ledger".into()))?;
+                    let decode = crate::filesystem::PreparationIo::from_native_work(native)?;
+                    let schema = decode.decode_preparation::<Value>(&schema_bytes)?;
+                    let value = decode.decode_preparation::<Value>(&bytes)?;
+                    crate::contract::validate_json_schema_value_with_io(
+                        &schema, &value, "effect result", Some(&decode))?;
+                }
+                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                return Err(Error::Unsupported("native effect content is unavailable".into()));
+            } else {
+                let bytes = resolver.read(result).await?;
+                let schema_bytes = resolver.read(&effect.result_schema).await?;
+                let schema = validate_schema_bytes(&effect.result_schema, &schema_bytes)?;
+                validate_result_bytes(&schema, result, &bytes)?;
+            }
         }
-        issuer.attest_effect(
-            effect_id,
-            effect,
-            observation.attempt_id,
-            observation.status,
-        )
+        issuer.attest_effect_with_work(
+            effect_id, effect, observation.attempt_id, observation.status, work)
     }
 }
 

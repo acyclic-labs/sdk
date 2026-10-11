@@ -1036,7 +1036,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     #[allow(clippy::too_many_arguments, reason = "one original restore engine with optional exact cut and observer")]
-    async fn open_inner(
+    pub(crate) async fn open_inner(
         client: &StreamClient<P>,
         authority: Authority,
         authority_verifier: AuthorityVerifier,
