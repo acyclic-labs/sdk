@@ -515,15 +515,20 @@ receipts are `pi-doctor-review-negative-control.*` and
 plan/approval, and canonical created-child content binding. Its native view is
 the SDK's actual `NativeVolumeView`: one immutable mixed declaration contains
 the existing lazy Project mount and materialized Scratch before the original
-preparation is Applied. The authenticated factory first retains a bounded,
-creator-witnessed root seed, mounts the existing lazy workspace under that root,
-then captures the SDK's sealed existing-lazy reference and prepares the whole
-mixed view once. It adds no generic view mixer, project materializer,
-physical-root watcher, journal or process runner. The root seed remains with its
-owner on every fallible mixed-preparation path; pre-journal cleanup independently
-requires its exact creator witness, fresh Created-child Write authority, and
-actual source-owner drain before bounded deletion. A missing journal is never
-evidence that a physical namespace is absent.
+preparation is Applied. The factory constructs and retains its funded root seed
+before any physical IO. Its SDK creator packet keeps actual per-directory
+acknowledgements and held identities, including bounded intermediate-parent
+progress; unknown acknowledged identities remain indeterminate. Shared existing
+ancestors are borrowed, never cleanup-owned. Only completed real creation
+receipts may produce the preparation witness. The existing lazy workspace is
+then mounted under that root, captured by the SDK's sealed existing-lazy
+reference, and included in the whole mixed preparation once. No generic view
+mixer, project materializer, physical-root watcher, journal or process runner is
+added. The entire packet remains retained on every failure and after successful
+view construction. Pre-launch cleanup requires fresh Created-child Write
+authority, real source-owner drainage and, if a preparation is recorded, an
+actual RolledBack receipt with identical original and physical allocation IDs.
+A missing journal is never evidence that a physical namespace is absent.
 Per-volume lazy snapshots remain explicit in approval. Native processes are
 trusted effects, not confinement. Native children have a separately created,
 unmounted private result volume; results are never stored inside a native view.
@@ -593,15 +598,17 @@ admits the compiled future frame before its builder runs, without a Pi wrapper
 or second ledger. SDK mount, scratch-view and provider payload guards reside
 inside the actual Arc-backed values, so every clone retains their custody.
 Logical SDK byte accounting excludes opaque Arc/allocator headers and process RSS.
-The protected conversation scope and verifier are funded before construction;
-their owned tuple transfers into the live mixed-view project binding with its
-original custody guard, rather than an external host cache. The separate
-filesystem mount source never derives task authority from that accounting guard.
-The current SDK-issued `NativeTaskContext` creates one opaque
-`NativeVolumeCallbackGuard` for each exact selected binding; preparation checks
-the ordered guard slice, and project mounting obtains its source Arc only through
-the guard's original owner/volume/fence verification. Pi does not implement a
-second callback-authority engine or convert a cold read context into dispatch.
+The protected conversation scope and verifier are funded before construction
+and borrowed through preparation; their original metadata custody is not
+absorbed into a different volume resource. The actual SDK-issued
+`NativeTaskContext::volume_callback_guard_with_native_work` captures the
+original dispatch owner and scope. Preparation checks its ordered guard slice;
+mounting obtains the source Arc through `for_volume` with the exact owner,
+volume, fence and preseeded volume work. Each Project receives its original
+per-volume ceiling before mount startup. Mount, snapshot, source IO and cleanup
+retain that same volume resource; sealed capture receives root metadata work
+separately, and never retags an existing mount. Pi does not implement another
+callback-authority engine or convert a cold read context into dispatch.
 Task-backed scratch and project sources install their actual retained task
 owner, current fence and exact volume READ/WRITE purpose before preparation,
 source capture or watch startup. Every callback verifies that authority on the

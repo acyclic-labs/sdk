@@ -190,8 +190,7 @@ impl Fixture {
             acyclic_fs::OperationId::from_bytes(command.into_bytes()), &work, &cancellation, &CancellationToken::new()).await?;
         let namespace = NativeVolumeNamespace::MaterializedDirectory;
         let scratch_verifier = issuer.verifier_with_native_work(&work)?;
-        let callback_guard = context.mount_callback_guard_with_native_work(
-            owner.clone(), &scratch, &scratch_verifier.0, &scope, true, &work)?.await?;
+        let callback_guard = context.volume_callback_guard_with_native_work(&owner, &work).await?;
         let callback_guards = [callback_guard];
         let view = prepare_scratch_with_work(owner.as_ref(), &callback_guards, &allocation.0, &NativeViewOptions { root: native.clone(), maximum_volumes: 1, work_per_volume: budget },
             &[BorrowedNativeVolumeBinding { host: files.as_ref(), volume: &scratch, generation: &selected.generation, path: "scratch", writable: true,
@@ -479,9 +478,7 @@ async fn required_pinned_pi_native_denies_forged_owner_request_approval_and_chan
         super::super::native_root_source::budget(), &CancellationToken::new()).await;
     assert!(failed.is_err(), "changed retry bytes reused the original actual upload operation");
     let original = fixture.runner().await?;
-    let callback_verifier = fixture.issuer.verifier_with_native_work(&fixture.work)?;
-    let sealed_guard = fixture.context.mount_callback_guard_with_native_work(
-        fixture.owner.clone(), &fixture.binding.scratch.volume, &callback_verifier.0, &fixture.scope, false, &fixture.work)?.await?;
+    let sealed_guard = fixture.context.volume_callback_guard_with_native_work(&fixture.owner, &fixture.work).await?;
     let callback_guard = sealed_guard.for_volume(&fixture.owner, &fixture.binding.scratch.volume, false, &fixture.work)?;
     let original_header = fixture.work.native_mount_work();
     acyclic_fs::native_mount::NativeMountCallbackGuard::check(callback_guard.as_ref(), &original_header)

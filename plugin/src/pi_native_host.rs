@@ -148,13 +148,20 @@ struct PreparedNative {
     frozen_source: LazySnapshotRef,
     native_lazy: LazySnapshotRef,
     workspace: Arc<LocalLazyWorkspace>,
+    _metadata_custody: [Option<NativeAllocation>; 4],
+    _container_custody: NativeAllocation,
 }
 
-impl From<PreparedPiFork> for PreparedNative {
-    fn from(prepared: PreparedPiFork) -> Self {
-        Self { binding: prepared.binding, report: prepared.report, admission: prepared.admission,
+impl TryFrom<PreparedPiFork> for PreparedNative {
+    type Error = Error;
+    fn try_from(prepared: PreparedPiFork) -> Result<Self> {
+        let original = prepared.original_work()?.clone();
+        let container = original.claim(std::mem::size_of::<Self>() as u64).map_err(native_error)?;
+        let workspace = prepared.workspace.into_arc_with_native_work(&original)
+            .map_err(crate::pi_lazy_capture::native_lazy_error)?;
+        Ok(Self { binding: prepared.binding, report: prepared.report, admission: prepared.admission,
             source: prepared.source, frozen_source: prepared.frozen_source, native_lazy: prepared.native_lazy,
-            workspace: Arc::new(prepared.workspace) }
+            workspace, _metadata_custody: prepared._metadata_custody, _container_custody: container })
     }
 }
 
@@ -191,6 +198,7 @@ struct LiveHandles {
     // if that validation fails; a failed bind is not permission to drop a mount.
     project: Option<Arc<LocalSingleMount>>,
     project_allocation: Option<acyclic_fs::NativeAllocation>,
+    project_work: Option<NativeMaterializationWork>,
     project_startup_owner: Option<NativeMountSession>,
     effect: Option<Arc<BoundEffect>>,
     scratch_gate: NativeGate,
@@ -203,11 +211,12 @@ struct LiveHandles {
 }
 
 impl LiveHandles {
-    fn stop_startup_mount(&mut self, work: &NativeMaterializationWork,
+    fn stop_startup_mount(&mut self, _work: &NativeMaterializationWork,
         command: OperationId,
     ) -> Result<()> {
         if let Some(session) = self.project_startup_owner.as_mut() {
-            let stopped = session.stop_with_meter(&work.native_mount_work())
+            let volume_work = self.project_work.as_ref().ok_or(Error::Indeterminate(command))?;
+            let stopped = session.stop_with_meter(&volume_work.native_mount_work())
                 .map_err(|cause| pi_native::native_view_error(
                     acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
             if !stopped || !session.cleanup_state().cleanup_complete {
@@ -331,7 +340,7 @@ impl PiNativeCommandHost {
             }
             return Ok(());
         }
-        *retained = Some(Arc::new(prepared.into()));
+        *retained = Some(Arc::new(PreparedNative::try_from(prepared)?));
         Ok(())
     }
 
@@ -850,6 +859,7 @@ impl PiNativeCommandHost {
                     && handles.scratch_gate.reservation.is_none() && handles.scratch_gate.cleanup.is_none()
                     && handles.scratch_gate.unwitnessed.is_none()
                     && handles.project_startup_owner.is_none()
+                    && handles.root_seed.is_none()
                 {
                     return Ok(());
                 }
@@ -940,14 +950,44 @@ impl PiNativeCommandHost {
         if let Some(bound) = &handles.effect
             && bound.runner.receipt_with_native_work(meter).await.map_err(receipt_error)?.is_some()
         { return Err(Error::Indeterminate(command)); }
+        let creator = owner.child_scratch_creation_proof()?;
+        creator.authorize_settlement_with_native_work(&owner, meter).await?;
         handles.stop_startup_mount(meter, command)?;
         if let Some(project) = handles.project.as_ref() {
-            project.abandon_with_work(&meter.native_mount_work()).map_err(pi_native::native_view_error)?;
+            creator.authorize_settlement_with_native_work(&owner, meter).await?;
+            let volume_work = handles.project_work.as_ref().ok_or(Error::Indeterminate(command))?;
+            project.abandon_with_work(&volume_work.native_mount_work()).map_err(pi_native::native_view_error)?;
             handles.project = None;
         }
-        let allocation = self.original_allocation(&owner, command, meter).await?;
-        let _cleanup_receipt = acyclic_harness::filesystem::NativeVolumeView::<LocalAuthorityBackend, LocalObjectBackend>
-            ::cleanup_preparation_with_native_work(&owner, &allocation.0, meter)?.await?;
+        if let Some(seed) = handles.root_seed.as_ref() {
+            let _cleanup_receipt = if let Some(allocation) = seed.preparation_root() {
+                let recorded = NativeVolumeView::<LocalAuthorityBackend, LocalObjectBackend>
+                    ::inspect_preparation_with_native_work(&owner, allocation, meter)?.await?;
+                if recorded.is_some() {
+                    NativeVolumeView::<LocalAuthorityBackend, LocalObjectBackend>
+                        ::cleanup_preparation_with_native_work(&owner, allocation, meter)?.await?
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let LiveHandles { root_seed, project_startup_owner, project_work, .. } = &mut *handles;
+            let no_mounts: [&LocalSingleMount; 0] = [];
+            root_seed.as_mut().ok_or(Error::Indeterminate(command))?
+                .cleanup_unprepared_with_work(&owner, &creator, &no_mounts, project_startup_owner,
+                    project_work.as_ref(), meter).await?;
+            *root_seed = None;
+        } else {
+            let allocation = self.original_allocation(&owner, command, meter).await?;
+            let _cleanup_receipt = NativeVolumeView::<LocalAuthorityBackend, LocalObjectBackend>
+                ::cleanup_preparation_with_native_work(&owner, &allocation.0, meter)?.await?;
+            let LiveHandles { scratch, project_startup_owner, project_work, .. } = &mut *handles;
+            let no_mounts: [&LocalSingleMount; 0] = [];
+            scratch.as_mut().ok_or(Error::Indeterminate(command))?
+                .cleanup_unstarted_rollback_with_work(&owner, context.context(), &creator, &no_mounts,
+                    project_startup_owner, project_work.as_ref(), meter).await?;
+        }
         *entry.view.write().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         handles.project_allocation = None;
         handles.scratch = None;
@@ -1075,7 +1115,7 @@ impl PiNativeCommandHost {
         {
             let handles = entry.handles.lock().await;
             if handles.effect.is_some() || handles.preparation_owner.is_some()
-                || handles.scratch.is_some() || handles.project.is_some()
+                || handles.scratch.is_some() || handles.root_seed.is_some() || handles.project.is_some()
                 || handles.project_allocation.is_some() || handles.project_startup_owner.is_some()
                 || handles.scratch_gate.reservation.is_some() || handles.scratch_gate.cleanup.is_some()
                 || handles.scratch_gate.unwitnessed.is_some()
@@ -1322,9 +1362,8 @@ impl PiNativeCommandHost {
                     handles.session = Some(intent.publish_session_with_work(scratch_context.context(),
                         command.operation_id, work).await?);
                 }
-                let session = &handles.session.as_ref()
-                    .ok_or_else(|| unauthorized("Pi session has no original publication custody"))?.0;
-                let generation = generation(session)?;
+                let generation = generation(&handles.session.as_ref()
+                    .ok_or_else(|| unauthorized("Pi session has no original publication custody"))?.0)?;
                 let mut conversation = self.protected.conversation_authority_with_native_work(owner.task_id(),
                     input.binding.agent_id, context.scope().grants(), work)?;
                 let mut verifier = conversation.0.1.verifier_with_native_work(work)?;
@@ -1343,14 +1382,27 @@ impl PiNativeCommandHost {
                 let options = pi_native::native_view_options_with_work(&self.resources, root_session,
                     owner.task_id(), 2, view_volume_share(budget, 2)?, work)?;
                 if handles.root_seed.is_none() {
+                    let session = &handles.session.as_ref()
+                        .ok_or_else(|| unauthorized("Pi session has no original publication custody"))?.0;
                     handles.root_seed = Some(pi_native::native_root_seed_with_work(&self.resources, root_session,
                         &self.protected, &owner, &shared, &prepared.binding, &options.0, intent, session,
                         &[BorrowedNativeVolumeBinding { host: &self.filesystem, volume: &prepared.binding.scratch.volume,
                             generation: &generation, path: "scratch", writable: true, verifier: &authority.0, scope: &authority.1,
                             publication: scratch_permit, namespace: &namespace }], work).await?);
                 }
-                handles.root_seed.as_mut().ok_or(Error::Indeterminate(command.operation_id))?
-                    .create_directories_into_with_work(&owner, work).await?;
+                {
+                    let LiveHandles { root_seed, session, .. } = &mut *handles;
+                    let session = &session.as_ref()
+                        .ok_or_else(|| unauthorized("Pi session has no original publication custody"))?.0;
+                    root_seed.as_mut().ok_or(Error::Indeterminate(command.operation_id))?
+                        .create_directories_into_with_work(&owner, &shared, &prepared.binding, &options.0, intent, session,
+                            &[BorrowedNativeVolumeBinding { host: &self.filesystem, volume: &prepared.binding.scratch.volume,
+                                generation: &generation, path: "scratch", writable: true, verifier: &authority.0, scope: &authority.1,
+                                publication: scratch_permit, namespace: &namespace }], work).await?;
+                }
+                if handles.project_work.is_none() {
+                    handles.project_work = Some(work.native_volume_work(options.0.work_per_volume).map_err(native_error)?);
+                }
                 let (root_key, project) = prepared.binding.project_volumes.iter().next()
                     .ok_or_else(|| unauthorized("Pi actual fork has no selected project"))?;
                 let project_generation = GenerationRef::new_with_native_work(project.provider(),
@@ -1362,12 +1414,13 @@ impl PiNativeCommandHost {
                     work, cancellation, &entry.cleanup_cancellation, existing_only).await?;
                 let project_capture = {
                     let LiveHandles { root_seed, project: retained_mount, project_allocation,
-                        project_startup_owner, .. } = &mut *handles;
+                        project_startup_owner, project_work, .. } = &mut *handles;
                     let seed = root_seed.as_ref().ok_or(Error::Indeterminate(command.operation_id))?;
                     seed.mount_project_with_work(&owner, &shared, &prepared.binding, root_key,
                         &prepared.workspace, self.filesystem.clone(), &project_generation.0, &authority,
                         project_permit, writable, retained_mount, project_allocation,
-                        project_startup_owner, work, cancellation).await?
+                        project_startup_owner, project_work.as_ref().ok_or(Error::Indeterminate(command.operation_id))?,
+                        work, cancellation).await?
                 };
                 let route = project_capture.0.path.strip_prefix(&options.0.root)
                     .map_err(|_| Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
@@ -1382,8 +1435,7 @@ impl PiNativeCommandHost {
                         generation: &project_generation.0, path: route, writable, verifier: &authority.0, scope: &authority.1,
                         publication: project_permit, namespace: &project_capture.0.namespace },
                 ];
-                let scratch_guard = shared.mount_callback_guard_with_native_work(owner.clone(),
-                    &prepared.binding.scratch.volume, &authority.0, &authority.1, true, work)?.await?;
+                let scratch_guard = shared.volume_callback_guard_with_native_work(&owner, work).await?;
                 let guards = [scratch_guard, project_capture.2];
                 let existing_lazy = [None, Some(&project_capture.1)];
                 handles.scratch = Some(PiNativeRootSeed::into_prepared_mixed_with_work(
