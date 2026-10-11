@@ -5105,7 +5105,7 @@ mod tests {
     fn prepared_metadata_task(
         file: File, meter: Arc<dyn NativeReadMeter>,
     ) -> io::Result<BlockingIoTask<io::Result<u64>>> {
-        let operation = OwnedNativeOperationReservation::new(
+        let mut operation = OwnedNativeOperationReservation::new(
             Arc::clone(&meter), NativeOperationKind::Read, 1,
         )?;
         prepare_blocking_io_measured(move || {
