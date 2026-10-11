@@ -689,7 +689,7 @@ pub trait MountOpenFile: Send + Sync + 'static {
             let destination = offset.checked_add(span.relative_offset).ok_or_else(|| {
                 MountSourceError::Invalid("sparse span offset overflows".to_owned())
             })?;
-            self.write_range(destination, span.bytes.clone())?;
+            self.write_range(destination, Bytes::copy_from_slice(span.bytes.as_ref()))?;
         }
         Ok(())
     }
@@ -1192,7 +1192,7 @@ pub(crate) fn native_materialization_failure_is_fatal(
         | crate::NativeTreeMaterializationError::Cancelled
         | crate::NativeTreeMaterializationError::AllocationFailed(_)
         | crate::NativeTreeMaterializationError::IndeterminatePreparation
-        | crate::NativeTreeMaterializationError::ExternalMutation(_)
+        | crate::NativeTreeMaterializationError::ExternalMutation(..)
         | crate::NativeTreeMaterializationError::AllocationChanged { .. })
 }
 
@@ -1458,6 +1458,8 @@ pub(crate) struct NativeMountMeterActivation {
     prior_capture_origin: Option<std::sync::Weak<crate::demand::CaptureTransientCustody>>,
     invocation: Option<std::sync::Weak<crate::materializer::NativeInvocationView>>,
     prior_invocation: Option<std::sync::Weak<crate::materializer::NativeInvocationView>>,
+    execution: Option<std::sync::Weak<crate::materializer::NativeSourceExecutionView>>,
+    prior_execution: Option<std::sync::Weak<crate::materializer::NativeSourceExecutionView>>,
     depth: u64,
     generation: u64,
 }
@@ -1473,8 +1475,12 @@ impl NativeMountMeterActivation {
             Some(invocation) => Some(invocation.upgrade()?),
             None => None,
         };
+        let execution = match self.execution.as_ref() {
+            Some(execution) => Some(execution.upgrade()?),
+            None => None,
+        };
         Some(NativeMountMeterWork {
-            meter, resource_allowance, capture_origin: self.capture_origin.clone(), invocation,
+            meter, resource_allowance, capture_origin: self.capture_origin.clone(), invocation, execution,
         })
     }
 
@@ -1488,6 +1494,11 @@ impl NativeMountMeterActivation {
             && match (&self.capture_origin, &work.capture_origin) {
                 (None, None) => true,
                 (Some(left), Some(right)) => left.ptr_eq(right),
+                _ => false,
+            }
+            && match (&self.execution, &work.execution) {
+                (None, None) => true,
+                (Some(left), Some(right)) => left.as_ptr() == Arc::as_ptr(right),
                 _ => false,
             }
             && match (&self.invocation, &work.invocation) {
@@ -1516,6 +1527,9 @@ impl NativeMountMeterActivation {
             self.prior_invocation = std::mem::replace(
                 &mut self.invocation, work.invocation.as_ref().map(Arc::downgrade),
             );
+            self.prior_execution = std::mem::replace(
+                &mut self.execution, work.execution.as_ref().map(Arc::downgrade),
+            );
             self.generation = generation;
         }
         self.depth = depth;
@@ -1533,6 +1547,7 @@ impl NativeMountMeterActivation {
             self.resource_allowance = std::mem::take(&mut self.prior_resource_allowance);
             self.capture_origin = std::mem::take(&mut self.prior_capture_origin);
             self.invocation = std::mem::take(&mut self.prior_invocation);
+            self.execution = std::mem::take(&mut self.prior_execution);
         }
     }
 }
@@ -4524,7 +4539,7 @@ impl NativeMountSession {
                 let stopped = if owner.is_stopped() { Ok(false) } else {
                     match &work {
                         NativeSessionStopWork::Meter(meter) => owner.stop_with_meter(meter),
-                        NativeSessionStopWork::AcceptedWait(wait) => owner.stop_with_cleanup_wait(wait),
+                        NativeSessionStopWork::AcceptedWait(wait) => owner.stop_with_cleanup_wait(wait).map_err(NativeMountError::from),
                     }
                 };
                 if owner.is_stopped() {
@@ -5129,7 +5144,10 @@ impl MountDestinationGuard {
         let directory = crate::native_host::open_root_directory_with_work(recovery_parent.unwrap_or(destination), work)?;
         if !allow_nonempty {
             let (mut reader, allocation) = crate::native_host::read_dir_held_with_work(&directory, work)?;
+            #[cfg(unix)]
             let result = reader.next_with_work(work);
+            #[cfg(windows)]
+            let result = reader.next_wide_with_work(work);
             drop(reader);
             work.release(allocation)?;
             match result? {
@@ -5404,7 +5422,7 @@ impl MountDestinationGuard {
                 Ok(()) => Ok(()),
                 Err(crate::NativeTreeMaterializationError::Io(error))
                     if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(error.into()),
+                Err(error) => Err(NativeMountError::from(error)),
             }
         })?;
         Ok(())
