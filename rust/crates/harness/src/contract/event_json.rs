@@ -142,7 +142,7 @@ const fn diagnostic_label_bytes() -> u64 {
 }
 const DIAGNOSTIC_LABEL_BYTES: u64 = diagnostic_label_bytes();
 
-// Finite stock PreparationRecord graphs plus registered recursive/resource/task,
+// Finite stock record/command graphs plus registered recursive/resource/task,
 // configured Snapshot/conversation and native process/MCP stdio graphs below.
 // Concrete owners supply the actual declaration/custom-static literal closure.
 // Event labels stay a separate scope so ordinary Event admission is unchanged.
@@ -270,11 +270,18 @@ const PREPARATION_DIAGNOSTIC_LABELS: &[&str] = &[
     "bytesHashed", "bytesCopied", "bytesEncoded", "sourceBytesRead", "sourcePathComponents",
     "sourceEntriesVisited", "outputBytes", "itemsExamined", "itemsReturned", "allocationOperations",
     "peakAllocationBytes", "materializations", "path string", "an array of length 16",
+    // Actual stock command wrappers and SelectedModelContext; their nested
+    // model/context/ref graphs are the concrete declarations covered above.
+    "TimerTaskCommand", "TaskObserveCommand", "TaskAdmitCommand", "ModelTaskCommand",
+    "ToolTaskCommand", "MailSendTaskCommand", "MailReceiveTaskCommand", "SelectedModelContext",
+    "deadline_unix_ms", "admission_operation", "name", "version", "input",
+    "selected_context", "max_steps", "max_output_tokens", "revision", "arguments",
+    "recipient", "payload", "after", "selection", "messages",
 ];
 
 /// Compile-time label/punctuation upper bound for the concrete preparation
-/// graphs listed above: stock records, recursive/resource/task DTOs, configured
-/// Snapshot/conversation, native process/MCP stdio, refs and reached Event/SourceAuth.
+/// graphs listed above: stock records/commands, recursive/resource/task DTOs,
+/// configured Snapshot/conversation, native process/MCP, refs and Event/SourceAuth.
 /// Covers their actual derived type/variant/field names and audited moving ref
 /// constructors' static errors, not arbitrary custom Deserialize/Display code.
 /// Other private/external DTOs add their actual manifest. No authority is granted.
