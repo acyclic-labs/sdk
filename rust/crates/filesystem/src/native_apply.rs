@@ -227,7 +227,8 @@ mod tests {
     use crate::native_archive::{capture_native_directory_archive, restore_native_directory_capture};
     use crate::native_capture::{CaptureOptions, CapturePolicy};
     use crate::native_host::HostRoot;
-    use crate::{CheckoutMode, GenerationSelector, IdempotencyKey, LocalAuthorityBackend, LocalObjectBackend, LocalOptions, PublicationPermit, TransactionCommit};
+    use crate::model::{CheckoutMode, GenerationSelector};
+    use crate::{IdempotencyKey, LocalAuthorityBackend, LocalObjectBackend, LocalOptions, PublicationPermit, TransactionCommit};
     use std::path::PathBuf;
 
     struct Fixture {
