@@ -19,7 +19,7 @@ fn boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
 }
 
 fn same_work(left: &NativeMaterializationWork, right: &NativeMaterializationWork) -> bool {
-    left.shares_ledger(right)
+    left.shares_allocation_context(right)
 }
 
 fn validate_scope_attenuation(
@@ -49,7 +49,7 @@ impl TaskContext {
     ) -> Result<()> {
         work.charge(WorkCounters::default())
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        if !custody.work().shares_ledger(work) {
+        if !custody.matches_work(work) {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "issued task metadata custody belongs to another original ledger"));
         }
@@ -65,7 +65,7 @@ impl TaskContext {
         work.charge(WorkCounters::default())
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         if !self.native_metadata_source.as_ref()
-            .is_some_and(|source| source.work.shares_ledger(work))
+            .is_some_and(|source| source.work.shares_allocation_context(work))
         {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "task context differs from its original native metadata source"));
@@ -81,11 +81,6 @@ impl TaskContext {
                 "native task metadata was not issued for fresh dispatch"));
         }
         Ok(())
-    }
-    pub(crate) fn original_host_binding_matches(
-        &self, host: &dyn super::DurableTaskHost, policy: Option<&dyn super::ToolPolicy>,
-    ) -> bool {
-        self.harness.original_host_binding_matches(host, policy)
     }
 
 
@@ -139,7 +134,10 @@ impl TaskContext {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "task context metadata custody differs from its original source"));
         }
-        let mut slot = match work.claim(std::mem::size_of::<NativeTaskContext>() as u64) {
+        // The source already owns TaskContext's logical Self and deep fields.
+        // Sharing adds only this wrapper's custody field and one SDK Arc attempt.
+        let extra = (std::mem::size_of::<NativeTaskContext>() - std::mem::size_of::<TaskContext>()) as u64;
+        let mut slot = match work.claim(extra) {
             Ok(slot) => slot,
             Err(cause) => {
                 let NativeTaskContext { context, custody } = payload;
@@ -157,6 +155,40 @@ impl NativeTaskContext {
     /// Borrows the same issued context used by the native command and provider.
     #[must_use]
     pub const fn context(&self) -> &TaskContext { &self.context }
+
+    /// Installs the original SDK-created root result destination once on this
+    /// same issued context. The opaque source is reauthenticated before use;
+    /// this method neither creates a resource nor issues a volume grant.
+    #[cfg(feature = "native-execution")]
+    pub async fn bind_root_output_context_with_native_work(
+        &self,
+        source: crate::filesystem::NativeRootOutputSource,
+        work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        self.context.require_original_native_dispatch(work)?;
+        let installed = self.context.native_root_output.get();
+        if installed.is_some_and(|installed| !installed.source.same_identity(&source)) {
+            return Err(boundary(crate::wire::ErrorCode::Conflict,
+                "root result destination differs from its original binding"));
+        }
+        source.verify_context_with_native_work(&self.context, work).await?;
+        if installed.is_some() { return Ok(()); }
+        let source = source.into_native_shared(work)?;
+        let binding = super::NativeRootOutputBinding {
+            content: source.retained_content_binding(),
+            source,
+        };
+        if let Err(binding) = self.context.native_root_output.set(binding) {
+            if self.context.native_root_output.get()
+                .is_some_and(|installed| installed.source.same_identity(&binding.source))
+            {
+                return Ok(());
+            }
+            return Err(boundary(crate::wire::ErrorCode::Conflict,
+                "root result destination was bound to another original resource"));
+        }
+        Ok(())
+    }
 
     /// Borrows the original metadata ledger without granting resource authority.
     pub(crate) const fn native_work(&self) -> &NativeMaterializationWork {

@@ -1237,3 +1237,89 @@ async fn canonical_root_preparation_witness_has_no_fabricated_scratch() -> Resul
     assert_eq!(work.live_allocation_bytes(), 0);
     Ok(())
 }
+
+fn native_registered_root_input(
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+    use crate::store::history::HistoryIo;
+    #[derive(Serialize)]
+    struct Input<'a> { payload: &'a str }
+    let mut io = crate::store::history::native_work_io(work)
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    let value = crate::contract::json_value_bounded_native_trusted(
+        &Input { payload: "original registered root" },
+        crate::contract::JsonBounds {
+            maximum_bytes: 4096, maximum_items: 64, maximum_depth: 8,
+        },
+        crate::wire::ErrorCode::Invalid,
+        &mut |charge| io.codec_charge(charge),
+    )?;
+    Ok((value, io.into_custody()))
+}
+
+#[tokio::test]
+async fn registered_native_root_keeps_configured_scope_and_same_ack_identity() -> Result<()> {
+    let fixture = CreationFixture::new().await?;
+    let machine = Arc::new(CreatedControlMachine {
+        identity: fixture.machine.clone(), schema: fixture.schema.clone(),
+    });
+    let definition = TaskDefinition::<Value, Value>::resumable(
+        machine, fixture.schema.clone(), fixture.schema.clone(),
+    )?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        creation_control_budget(), &cancellation,
+    ).map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+    let operation = OperationId::from_bytes([220; 16]);
+    let expected = TaskId::from_bytes(operation.into_bytes());
+    for _ in 0..2 {
+        let record = fixture.harness.registered_root_admission_with_native_work(
+            operation, &definition, native_registered_root_input(&work)?, &work,
+        )?;
+        assert!(record.0.parent.is_none());
+        assert_eq!(record.0.task, fixture.task);
+        assert_eq!(record.0.grants, *fixture.root_scope.grants());
+        assert_eq!(record.0.run_limits, fixture.root_scope.run_limits());
+        let (admitted, custody) = fixture.host.admit_with_native_work(record, &work)?.await?;
+        assert!(matches!(admitted, Admission::Accepted(task) if task == expected));
+        assert!(custody.matches_work(&work));
+        assert_eq!(custody.bytes(), std::mem::size_of::<Admission<TaskId>>() as u64);
+        drop(admitted);
+        drop(custody);
+    }
+    assert_eq!(work.live_allocation_bytes(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn registered_native_root_rejects_foreign_input_and_child_without_fence_before_io() -> Result<()> {
+    let fixture = CreationFixture::new().await?;
+    let definition = TaskDefinition::<Value, Value>::resumable(
+        Arc::new(CreatedControlMachine { identity: fixture.machine.clone(), schema: fixture.schema.clone() }),
+        fixture.schema.clone(), fixture.schema.clone(),
+    )?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        creation_control_budget(), &cancellation,
+    ).map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+    let foreign = acyclic_fs::NativeMaterializationWork::new(
+        creation_control_budget(), &cancellation,
+    ).map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+    let before = foreign.receipt();
+    assert!(matches!(fixture.harness.registered_root_admission_with_native_work(
+        OperationId::from_bytes([221; 16]), &definition, native_registered_root_input(&work)?, &foreign,
+    ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert_eq!(foreign.receipt().backend_read_operations, before.backend_read_operations);
+    assert_eq!(foreign.receipt().backend_write_operations, before.backend_write_operations);
+    let mut record = fixture.harness.registered_root_admission_with_native_work(
+        OperationId::from_bytes([221; 16]), &definition, native_registered_root_input(&work)?, &work,
+    )?;
+    record.0.parent = Some(fixture.root);
+    let before = work.receipt();
+    assert!(matches!(fixture.host.admit_with_native_work(record, &work),
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
+    assert_eq!(work.receipt().backend_write_operations, before.backend_write_operations);
+    assert_eq!(work.live_allocation_bytes(), 0);
+    Ok(())
+}

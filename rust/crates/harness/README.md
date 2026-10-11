@@ -586,3 +586,17 @@ Protected preparation bootstrap uses a private coordinator-issued READ witness.
 Its task and admission come from authenticated canonical history; roots carry
 no fabricated child scratch proof. The witness cannot publish or acquire a new
 reservation, and foreign-ledger use rejects before IO.
+
+Registered native root admission consumes the original guarded JSON input and
+the exact configured task definition and scope. It uses the ordinary durable
+declaration/configuration/idempotency engine; children still require their
+original parent's fence. Admission results transfer only their actual output
+custody, not the history reader's caches or other retained packets.
+
+An issued native task context has one immutable root output installation slot.
+Only the SDK's sealed successful creation association, protected root binding,
+and original current task's exact volume WRITE authorization can install it.
+An exact repeated association is idempotent; a foreign replacement is rejected.
+The source retains its original provider handles and custody without retaining
+the context itself. Native source and owned metadata qualifications compare the
+original root ledger and resource allowance, not merely the shared root counter.

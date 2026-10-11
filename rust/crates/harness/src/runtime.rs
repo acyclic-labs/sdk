@@ -633,7 +633,7 @@ fn task_workflow_error(
 fn native_task_open_value<T>(
     value: T, custody: acyclic_fs::NativeAllocation, work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<TaskOpenValue<T>> {
-    if !custody.work().shares_ledger(work) {
+    if !custody.matches_work(work) {
         drop(value);
         return Err(Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
@@ -817,7 +817,7 @@ impl ResumableTaskSession {
         })?;
         if !context.native_metadata_matches(work)
             || self.native_metadata_custody.as_ref().is_none_or(|held| {
-                !held.work().shares_ledger(work)
+                !held.matches_work(work)
             })
         {
             return Err(Error::NativeBoundary {
@@ -1528,6 +1528,16 @@ impl TaskRegistry {
         parent: TaskId, scope: &RuntimeScope,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<TaskAdmissionRecord> {
+        self.registered_admission_with_work(
+            operation, name, version, input, Some(parent), None, scope, work,
+        )
+    }
+
+    fn registered_admission_with_work(
+        &self, operation: OperationId, name: &str, version: &str, input: Value,
+        parent: Option<TaskId>, expected_digest: Option<[u8; 32]>, scope: &RuntimeScope,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<TaskAdmissionRecord> {
         let entry = if work.is_none() {
             self.0.get(&(name.to_owned(), version.to_owned()))
         } else {
@@ -1556,7 +1566,15 @@ impl TaskRegistry {
             }; }
             Error::Unsupported("live task cannot be a durable command".into())
         })?;
-        let mut descendant = false;
+        if expected_digest.is_some_and(|digest| digest != entry.identity.digest) {
+            #[cfg(not(target_arch = "wasm32"))]
+            if work.is_some() { return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Conflict,
+                reason: "root definition differs from the registered task",
+            }); }
+            return Err(Error::Conflict("root definition differs from the registered task".into()));
+        }
+        let mut descendant = parent.is_none();
         for grant in scope.grants().iter() {
             if let Some(io) = work.as_deref_mut() {
                 io.charge(crate::WorkCounters { items_examined: 1, ..Default::default() })?;
@@ -1575,7 +1593,7 @@ impl TaskRegistry {
             }); }
             require_descendant_grant(scope.grants(), &entry.identity)?;
         }
-        if scope.extensions().is_some() || entry.requirements.iter().any(|requirement| requirement.starts_with("extension:")) {
+        if parent.is_some() && (scope.extensions().is_some() || entry.requirements.iter().any(|requirement| requirement.starts_with("extension:"))) {
             #[cfg(not(target_arch = "wasm32"))]
             if work.is_some() { return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported, reason: "stock child extension runner is not composed",
@@ -1585,8 +1603,8 @@ impl TaskRegistry {
         if work.is_none() {
             return TaskAdmissionRecord::from_parts(
                 operation, name, version, input, entry.input_schema.clone(), entry.output_schema.clone(),
-                &entry.requirements, &machine.digest, Some(parent), scope.grants().clone(),
-                scope.limits(), scope.run_limits(), None, None, None,
+                &entry.requirements, &machine.digest, parent, scope.grants().clone(),
+                scope.limits(), scope.run_limits(), scope.extensions().cloned(), None, None,
             ).and_then(|record| record.with_resource_proofs(scope.resource_proofs().to_vec()));
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -1609,8 +1627,10 @@ impl TaskRegistry {
             };
             let input_schema = clone_child_schema_with_work(&entry.input_schema, work)?;
             let output_schema = clone_child_schema_with_work(&entry.output_schema, work)?;
-            let mut grants = scope.grants().clone_with_native_work(&native)?;
-            work.as_deref_mut().expect("native child source").absorb_native_custody(grants.1)?;
+            let (grants, grant_custody) = Capabilities::new_with_native_work(
+                scope.grants().iter().chain(entry.requirements.iter().map(String::as_str)), &native,
+            )?;
+            work.as_deref_mut().expect("native admission source").absorb_native_custody(grant_custody)?;
             let (allocations, copied) = RuntimeScope::native_proof_clone_recipe(scope.resource_proofs(), &native)?;
             let slots = scope.resource_proofs().len()
                 .checked_mul(std::mem::size_of::<crate::resource_preparation::ResourceCreationProofRef>())
@@ -1619,10 +1639,29 @@ impl TaskRegistry {
             work.as_deref_mut().expect("native child source").retain_owned(proof_bytes)?;
             crate::core::begin_clone_work((allocations, copied), work)?;
             let resource_proofs = scope.resource_proofs().to_vec();
+            let extensions = match scope.extensions() {
+                None => None,
+                Some(extension) => {
+                    let recipe = extension.clone_work_recipe()?;
+                    let slots = extension.selected().len()
+                        .checked_mul(std::mem::size_of::<crate::core::ExtensionDependency>())
+                        .and_then(|bytes| extension.configurations().len()
+                            .checked_mul(std::mem::size_of::<crate::core::ExtensionConfiguration>())
+                            .and_then(|configured| bytes.checked_add(configured)))
+                        .ok_or_else(RuntimeScope::native_metadata_overflow)? as u64;
+                    let owned = slots.checked_add(recipe.1)
+                        .ok_or_else(RuntimeScope::native_metadata_overflow)?;
+                    let io = work.as_deref_mut().expect("native admission source");
+                    io.admit_owned(owned)?;
+                    io.retain_owned(owned)?;
+                    crate::core::begin_clone_work(recipe, work)?;
+                    Some(extension.clone())
+                }
+            };
             let record = TaskAdmissionRecord {
                 operation_id: operation, task, machine, input, input_schema, output_schema,
-                parent: Some(parent), resource_proofs, grants: grants.0, limits: scope.limits(),
-                run_limits: scope.run_limits(), policy: None, extensions: None, execution: None,
+                parent, resource_proofs, grants, limits: scope.limits(),
+                run_limits: scope.run_limits(), policy: None, extensions, execution: None,
             };
             record.validate_with_work(work)?;
             return Ok(record);
@@ -5739,6 +5778,8 @@ impl AgentHarness {
                         owned_interactions: None,
                         owned_mailbox: None,
                         output_content: None,
+                        #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+                        native_root_output: std::sync::OnceLock::new(),
                         model_steps: Arc::new(TaskModelSteps::ordinary()),
                         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                         native_metadata_source: None,
@@ -5918,7 +5959,7 @@ impl AgentHarness {
         input: (Value, acyclic_fs::NativeAllocation), parent: TaskId, scope: &RuntimeScope,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(TaskAdmissionRecord, acyclic_fs::NativeAllocation)> {
-        if !input.1.work().shares_ledger(work) {
+        if !input.1.matches_work(work) {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "child input belongs to another original metadata ledger" });
         }
@@ -5933,6 +5974,52 @@ impl AgentHarness {
             .checked_add(record.logical_owned_bytes()?)
             .ok_or_else(RuntimeScope::native_metadata_overflow)?;
         let custody = crate::store::history::HistoryIo::take_native_custody(&mut io, bytes)?;
+        Ok((record, custody))
+    }
+    /// Builds a registered root admission from an already guarded native input.
+    ///
+    /// The configured scope and exact registered definition remain authoritative;
+    /// this does not accept a caller-selected scope or create a parent binding.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn registered_root_admission_with_native_work<I, O>(
+        &self, operation: OperationId, definition: &Arc<TaskDefinition<I, O>>,
+        input: (Value, acyclic_fs::NativeAllocation),
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(TaskAdmissionRecord, acyclic_fs::NativeAllocation)> {
+        work.charge(Default::default())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        if !input.1.matches_work(work) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "root input belongs to another original resource ledger" });
+        }
+        self.assert_durable_policy_bindings_with_native_work(work)?;
+        if self.execution.is_some() {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                reason: "native root admission requires the configured local durable host" });
+        }
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        use crate::store::history::HistoryIo as _;
+        let (value, custody) = input;
+        io.absorb_native_custody(custody)?;
+        let identity = definition.identity();
+        let mut record = self.tasks.registered_admission_with_work(
+            operation, &identity.name, &identity.version, value, None, Some(identity.digest),
+            &self.scope, &mut Some(&mut io),
+        )?;
+        record.policy = match self.policy_identity.as_ref() {
+            None => None,
+            Some(identity) => Some(ComponentIdentity {
+                name: io.clone_text(&identity.name)?,
+                version: io.clone_text(&identity.version)?,
+                digest: identity.digest,
+            }),
+        };
+        record.validate_with_work(&mut Some(&mut io))?;
+        let bytes = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
+            .checked_add(record.logical_owned_bytes()?)
+            .ok_or_else(RuntimeScope::native_metadata_overflow)?;
+        let custody = io.take_native_custody(bytes)?;
         Ok((record, custody))
     }
 
@@ -6296,7 +6383,7 @@ impl AgentHarness {
                 let mut admitted = host.resume_scope_with_native_work(
                     task, operation, work,
                 )?.await?;
-                if !admitted.1.work().shares_ledger(work) {
+                if !admitted.1.matches_work(work) {
                     return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                         reason: "resumed scope differs from its original metadata ledger" });
                 }
@@ -6322,6 +6409,8 @@ impl AgentHarness {
             harness: Arc::clone(self), task_id: operation, durable_task: Some(task),
             descendants, scope, policy_overrides: Vec::new(), owned_interactions: None,
             owned_mailbox, output_content: None, model_steps,
+            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+            native_root_output: std::sync::OnceLock::new(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_metadata_source: None,
         };
@@ -6585,6 +6674,13 @@ impl std::ops::Deref for TaskModelSteps {
     fn deref(&self) -> &Self::Target { &self.counter }
 }
 
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+#[derive(Clone)]
+struct NativeRootOutputBinding {
+    source: Arc<crate::filesystem::NativeRootOutputSource>,
+    content: ContentBindings,
+}
+
 /// Capability-scoped context passed to live task code.
 // Cloning ordinary contexts must not duplicate a native producer receipt.
 pub struct TaskContext {
@@ -6597,6 +6693,8 @@ pub struct TaskContext {
     owned_interactions: Option<Arc<dyn InteractionRouter>>,
     owned_mailbox: Option<Arc<dyn OwnedTaskMailbox>>,
     output_content: Option<ContentBindings>,
+    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+    native_root_output: std::sync::OnceLock<NativeRootOutputBinding>,
     model_steps: Arc<TaskModelSteps>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     native_metadata_source: Option<native_context::NativeMetadataSource>,
@@ -6614,6 +6712,8 @@ impl Clone for TaskContext {
             owned_interactions: self.owned_interactions.clone(),
             owned_mailbox: self.owned_mailbox.clone(),
             output_content: self.output_content.clone(),
+            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+            native_root_output: self.native_root_output.clone(),
             model_steps: Arc::clone(&self.model_steps),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_metadata_source: None,
@@ -6738,6 +6838,12 @@ impl TaskContext {
     #[must_use]
     pub const fn durable_task_id(&self) -> Option<TaskId> {
         self.durable_task
+    }
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn original_host_binding_matches(
+        &self, host: &dyn DurableTaskHost, policy: Option<&dyn ToolPolicy>,
+    ) -> bool {
+        self.harness.original_host_binding_matches(host, policy)
     }
 
     /// Returns the exact effective authority and bounds.
@@ -7066,7 +7172,21 @@ impl TaskContext {
         })
     }
 
+    fn installed_root_output_content(&self) -> Option<&ContentBindings> {
+        #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+        {
+            return self.native_root_output.get().map(|binding| &binding.content);
+        }
+        #[cfg(not(all(feature = "native-execution", not(target_arch = "wasm32"))))]
+        None
+    }
+
     fn content_binding(&self, volume: Option<&VolumeRef>) -> Option<&ContentBindings> {
+        if let Some(binding) = self.installed_root_output_content() {
+            if volume.is_none_or(|volume| binding.writer.as_ref().is_some_and(|writer| writer.volume() == volume)) {
+                return Some(binding);
+            }
+        }
         self.output_content.as_ref().filter(|binding| {
             volume.is_none_or(|volume| binding.writer.as_ref().is_some_and(|writer|
                 writer.volume() == volume))
@@ -7138,7 +7258,7 @@ impl TaskContext {
             let output = reader.read_with_native_work(
                 file,self.scope.limits.file_bytes,work,
             )?.await?;
-            if !output.1.work().shares_ledger(work)
+            if !output.1.matches_work(work)
                 || output.1.bytes() < output.0.capacity() as u64
             {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
@@ -7573,7 +7693,10 @@ impl TaskContext {
         display_name: &str,
     ) -> Result<FileRef> {
         self.stage_bound_file(
-            self.scope.created_artifact_content().or_else(|| self.scope.created_content(None)).or(self.harness.artifacts.as_ref()),
+            self.installed_root_output_content()
+                .or_else(|| self.scope.created_artifact_content())
+                .or_else(|| self.scope.created_content(None))
+                .or(self.harness.artifacts.as_ref()),
             operation_id,
             path,
             bytes,
@@ -10833,6 +10956,8 @@ mod tests {
             owned_interactions: None,
             owned_mailbox: None,
             output_content: None,
+            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+            native_root_output: std::sync::OnceLock::new(),
             model_steps: Arc::new(TaskModelSteps::ordinary()),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_metadata_source: None,
@@ -11229,6 +11354,8 @@ mod tests {
             owned_interactions: None,
             owned_mailbox: None,
             output_content: None,
+            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+            native_root_output: std::sync::OnceLock::new(),
             model_steps: Arc::new(TaskModelSteps::ordinary()),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_metadata_source: None,
@@ -12471,6 +12598,8 @@ mod tests {
             owned_interactions: None,
             owned_mailbox: None,
             output_content: None,
+            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+            native_root_output: std::sync::OnceLock::new(),
             model_steps: Arc::new(TaskModelSteps::ordinary()),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_metadata_source: None,
