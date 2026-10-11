@@ -323,6 +323,86 @@ impl FileTool {
 }
 
 impl ToolExecutor for FileTool {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_execution(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        work.remaining()?;
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn authorize_with_native_context(
+        &self, context: &ToolContext, invocation: &ToolInvocation,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        native::context(context, invocation, work)?;
+        native::bound(&invocation.arguments, context.task().scope().limits().file_bytes, work)?;
+        match self {
+            Self::Write => {
+                let input = super::decode_with_native_work::<WriteFileInput>(&invocation.arguments, work)?;
+                native::public_path(&input.0.path, work)?;
+                if input.0.path.len() > context.task().scope().limits().path_bytes {
+                    return Err(native::invalid("file path exceeds original task bound"));
+                }
+                context.task().authorize_content_publication_with_native_work(None, work)
+            }
+            _ => {
+                let value = invocation.arguments.get("file")
+                    .ok_or_else(|| native::invalid("file tool requires an original source reference"))?;
+                // Edit/patch DTOs include extra fields; decode only the pinned ref.
+                let file = super::decode_with_native_work::<FileRef>(value, work)?;
+                native::public_path(file.0.path(), work)?;
+                context.task().authorize_file_read_with_native_work(&file.0, work)?;
+                if let Self::Read = self {
+                    let maximum = context.task().scope().limits().render_bytes
+                        .min(context.task().scope().limits().file_bytes);
+                    if maximum == 0 || maximum == u64::MAX
+                        || file.0.descriptor().byte_length() > maximum
+                    {
+                        return Err(native::invalid("file exceeds text rendering bound"));
+                    }
+                    Ok(())
+                } else {
+                    context.task().authorize_content_publication_with_native_work(Some(&file.0), work)
+                }
+            }
+        }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn execute_with_native_context<'a>(
+        &'a self, context: &'a ToolContext, invocation: &'a ToolInvocation,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            self.run_native(context, invocation, work).await
+        })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn reconcile_with_native_context<'a>(
+        &'a self, context: &'a ToolContext, invocation: &'a ToolInvocation,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            self.authorize_with_native_context(context, invocation, work)?;
+            if let Self::Read = self {
+                let result = self.run_native(context, invocation, work).await?;
+                return Ok((Some(result.0), result.1));
+            }
+            // Never redispatch an uncertain publication. The original owner
+            // receipt, not an edited reconstruction, supplies reconciliation.
+            let receipt = context.task().observe_staged_file_once_with_native_work(
+                invocation.operation_id, work,
+            )?.await?;
+            match &receipt.0 {
+                Some(file) => {
+                    let encoded = super::value_with_native_work(&native::BorrowedFileResult { file }, work)?;
+                    Ok((Some(ToolResult { value: encoded.0 }), encoded.1))
+                }
+                None => Ok((None, receipt.1)),
+            }
+        })
+    }
     fn authorize(&self, scope: Option<&RuntimeScope>, invocation: &ToolInvocation) -> Result<()> {
         self.authorize_scope(scope, invocation)?;
         Err(Error::Unauthorized(
@@ -408,6 +488,24 @@ impl FileResultProjection {
 }
 
 impl ToolProjection for FileResultProjection {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_projection(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        work.remaining()?;
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn project_with_native_work(
+        &self, _: &ToolInvocation, result: &ToolResult, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+        let value = super::decode_with_native_work::<FileResult>(&result.value, work)?;
+        match self.0 {
+            super::schema::ProjectionMode::Full => super::schema::project_json_with_native_work(&value.0, work),
+            super::schema::ProjectionMode::Reference => super::schema::project_reference_with_native_work(&value.0.file,
+                "File publication completed. The original output reference, workspace and content identity remain in the canonical tool result. Body bytes are omitted from this model projection.", work),
+        }
+    }
+
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
         let value: FileResult = decode(&result.value)?;
         match self.0 {
@@ -433,6 +531,39 @@ impl ReadFileProjection {
 }
 
 impl ToolProjection for ReadFileProjection {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_projection(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        work.remaining()?;
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn project_with_native_work(
+        &self, invocation: &ToolInvocation, result: &ToolResult,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+        let text = super::decode_with_native_work::<native::ReadText>(&result.value, work)?;
+        match self.0 {
+            super::schema::ProjectionMode::Full => super::schema::project_json_with_native_work(&text.0, work),
+            super::schema::ProjectionMode::Reference => {
+                use sha2::Digest as _;
+                let input = super::decode_with_native_work::<ReadFileInput>(&invocation.arguments, work)?;
+                work.charge(acyclic_fs::WorkCounters {
+                    bytes_hashed: text.0.0.len() as u64, ..Default::default()
+                }).map_err(super::edit::native_error)?;
+                if input.0.file.descriptor().byte_length() != text.0.0.len() as u64
+                    || input.0.file.descriptor().sha256() != &<[u8; 32]>::from(sha2::Sha256::digest(text.0.0.as_bytes()))
+                {
+                    return Err(native::invalid("file descriptor differs from exact text result"));
+                }
+                native::summary_reference(&input.0.file, 160, format_args!(
+                    "Read {} UTF-8 bytes. The exact text is retained in the canonical tool result and omitted from this model projection.",
+                    text.0.0.len()
+                ), work)
+            }
+        }
+    }
+
     fn project(&self, invocation: &ToolInvocation, result: &ToolResult) -> Result<Value> {
         let text: String = decode(&result.value)?;
         match self.0 {
@@ -453,6 +584,25 @@ impl ToolProjection for ReadFileProjection {
 }
 
 impl ToolProjection for FileTool {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_projection(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        work.remaining()?;
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn project_with_native_work(
+        &self, invocation: &ToolInvocation, result: &ToolResult,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+        match self {
+            Self::Read => ReadFileProjection(super::schema::ProjectionMode::Full)
+                .project_with_native_work(invocation, result, work),
+            _ => FileResultProjection(super::schema::ProjectionMode::Full)
+                .project_with_native_work(invocation, result, work),
+        }
+    }
+
     fn project(&self, invocation: &ToolInvocation, result: &ToolResult) -> Result<Value> {
         match self {
             Self::Read => {
@@ -464,6 +614,189 @@ impl ToolProjection for FileTool {
             }
         }
     }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl FileTool {
+    async fn run_native(
+        &self, context: &ToolContext, invocation: &ToolInvocation,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(ToolResult, acyclic_fs::NativeAllocation)> {
+        self.authorize_with_native_context(context, invocation, work)?;
+        let task = context.task();
+        match self {
+            Self::Read => {
+                let input = super::decode_with_native_work::<ReadFileInput>(&invocation.arguments, work)?;
+                let mut read = task.read_file_with_native_work(&input.0.file, work)?.await?;
+                read.1.resize_retained(read.1.bytes() + std::mem::size_of::<ToolResult>() as u64)
+                    .map_err(super::edit::native_error)?;
+                let text = String::from_utf8(std::mem::take(&mut read.0))
+                    .map_err(|_| native::invalid("file read requires UTF-8 content"))?;
+                Ok((ToolResult { value: Value::String(text) }, read.1))
+            }
+            Self::Write => {
+                let input = super::decode_with_native_work::<WriteFileInput>(&invocation.arguments, work)?;
+                let file = task.stage_file_once_with_native_work(
+                    invocation.operation_id, &input.0.path, input.0.text.as_bytes(),
+                    &input.0.media_type, &input.0.display_name, work,
+                )?.await?;
+                let encoded = super::value_with_native_work(&native::BorrowedFileResult { file: &file.0 }, work)?;
+                Ok((ToolResult { value: encoded.0 }, encoded.1))
+            }
+            Self::Edit => {
+                let input = super::decode_with_native_work::<EditFileInput>(&invocation.arguments, work)?;
+                let read = task.read_file_with_native_work(&input.0.file, work)?.await?;
+                let source = std::str::from_utf8(&read.0)
+                    .map_err(|_| native::invalid("exact text edit requires UTF-8 content"))?;
+                let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<String>())?;
+                let edited = super::edit::exact_replace_engine(
+                    source, &input.0.old_text, &input.0.new_text,
+                    task.scope().limits().file_bytes, &mut allocation,
+                )?;
+                let file = task.stage_file_at_with_native_work(
+                    invocation.operation_id, &input.0.file, edited.as_bytes(), work,
+                )?.await?;
+                let encoded = super::value_with_native_work(&native::BorrowedFileResult { file: &file.0 }, work)?;
+                Ok((ToolResult { value: encoded.0 }, encoded.1))
+            }
+            Self::Patch { maximum_work, maximum_hunks } => {
+                let input = super::decode_with_native_work::<PatchFileInput>(&invocation.arguments, work)?;
+                let limits = super::patch::PatchLimits {
+                    maximum_bytes: task.scope().limits().file_bytes,
+                    maximum_work: *maximum_work, maximum_hunks: *maximum_hunks,
+                };
+                if input.0.file.descriptor().byte_length() > limits.maximum_bytes
+                    || input.0.diff.len() as u64 > limits.maximum_bytes
+                {
+                    return Err(native::invalid("patch input exceeds original task file bound"));
+                }
+                let read = task.read_file_with_native_work(&input.0.file, work)?.await?;
+                let source = std::str::from_utf8(&read.0)
+                    .map_err(|_| native::invalid("patch editing requires UTF-8 content"))?;
+                let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<String>())?;
+                let edited = super::patch::apply_update_engine(source, &input.0.diff, limits, &mut allocation)?;
+                let file = task.stage_file_at_with_native_work(
+                    invocation.operation_id, &input.0.file, edited.as_bytes(), work,
+                )?.await?;
+                let encoded = super::value_with_native_work(&native::BorrowedFileResult { file: &file.0 }, work)?;
+                Ok((ToolResult { value: encoded.0 }, encoded.1))
+            }
+        }
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(super) mod native {
+    use super::*;
+
+    pub(super) fn invalid(reason: &'static str) -> Error {
+        Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason }
+    }
+
+    pub(super) fn context(
+        context: &ToolContext, invocation: &ToolInvocation, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        work.remaining()?;
+        if context.operation_id() != invocation.operation_id || context.call_id() != invocation.call_id {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "file/text tool requires its exact admitted call context",
+            });
+        }
+        if !crate::contract::is_valid_component_label(&invocation.name)
+            || invocation.call_id.is_empty()
+            || invocation.call_id.len() as u64 > crate::COMPONENT_LABEL_MAX_BYTES as u64
+            || invocation.call_id.chars().any(char::is_control)
+            || invocation.call_id.contains('/') || invocation.call_id.contains('\\')
+            || invocation.call_id == "." || invocation.call_id == ".."
+        {
+            return Err(invalid("tool call identity is invalid"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn public_path(path: &str, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        crate::conversation::validate_content_path_with_native_work(path, work)?;
+        if crate::conversation::is_internal_path(path) {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized, reason: "file tools cannot access internal storage",
+            });
+        }
+        Ok(())
+    }
+
+    pub(super) fn bound<T: Serialize>(value: &T, maximum: u64, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let encoded = io.encode(value, maximum)?;
+        drop(encoded);
+        Ok(())
+    }
+
+
+    pub(super) fn summary_reference(
+        file: &FileRef, maximum: usize, arguments: std::fmt::Arguments<'_>,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+        use std::fmt::Write as _;
+        let mut allocation = super::super::edit::AlgorithmWork::native(work, std::mem::size_of::<String>())?;
+        let mut text = String::new();
+        allocation.reserve_string(&mut text, maximum)?;
+        struct FixedText<'a> {
+            text: &'a mut String,
+            work: &'a super::super::edit::AlgorithmWork,
+            denial: Option<Error>,
+        }
+        impl std::fmt::Write for FixedText<'_> {
+            fn write_str(&mut self, value: &str) -> std::fmt::Result {
+                if value.len() > self.text.capacity() - self.text.len() {
+                    self.denial = Some(invalid("file summary exceeds its preclaimed capacity"));
+                    return Err(std::fmt::Error);
+                }
+                if let Err(error) = self.work.copy(value.len()) {
+                    self.denial = Some(error);
+                    return Err(std::fmt::Error);
+                }
+                self.text.push_str(value);
+                Ok(())
+            }
+        }
+        let mut writer = FixedText { text: &mut text, work: &allocation, denial: None };
+        if writer.write_fmt(arguments).is_err() {
+            return Err(writer.denial.take().unwrap_or_else(|| invalid("file summary formatting failed")));
+        }
+        super::super::schema::project_reference_with_native_work(file, &text, work)
+    }
+
+    #[derive(Serialize)]
+    pub(super) struct BorrowedFileResult<'a> { pub(super) file: &'a FileRef }
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(transparent)]
+    pub(super) struct ReadText(pub(super) String);
+
+    impl crate::filesystem::UploadRecord for ReadText {
+        fn logical_owned_bytes(&self) -> Result<u64> {
+            Ok((std::mem::size_of::<Self>() + self.0.capacity()) as u64)
+        }
+    }
+
+    macro_rules! record {
+        ($ty:ty, $value:ident, $($bytes:expr),+ $(,)?) => {
+            impl crate::filesystem::UploadRecord for $ty {
+                fn logical_owned_bytes(&$value) -> Result<u64> {
+                    let mut bytes = std::mem::size_of::<Self>() as u64;
+                    $(bytes = bytes.checked_add($bytes as u64)
+                        .ok_or_else(|| invalid("file tool DTO ownership overflow"))?;)+
+                    Ok(bytes)
+                }
+            }
+        };
+    }
+    record!(ReadFileInput, self, self.file.logical_owned_bytes()?);
+    record!(WriteFileInput, self, self.path.capacity(), self.text.capacity(), self.media_type.capacity(), self.display_name.capacity());
+    record!(EditFileInput, self, self.file.logical_owned_bytes()?, self.old_text.capacity(), self.new_text.capacity());
+    record!(PatchFileInput, self, self.file.logical_owned_bytes()?, self.diff.capacity());
+    record!(FileResult, self, self.file.logical_owned_bytes()?);
 }
 
 #[cfg(test)]

@@ -2,6 +2,7 @@
 
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
+use super::edit::AlgorithmWork;
 
 fn finite(value: u64, field: &str) -> Result<()> {
     if value == 0 || value > crate::conversation::MAX_EXACT_JS_INTEGER {
@@ -73,29 +74,44 @@ pub struct TextSelection {
 /// No implicit rounding, truncation or normalization changes the request.
 pub fn read_range(source: &str, range: TextRange, options: ReadOptions) -> Result<TextSelection> {
     options.validate()?;
+    read_range_engine(source, range, options, &mut AlgorithmWork::ordinary())
+}
+
+pub(super) fn read_range_engine(
+    source: &str, range: TextRange, options: ReadOptions, work: &mut AlgorithmWork,
+) -> Result<TextSelection> {
+    if options.maximum_input_bytes == 0
+        || options.maximum_input_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
+        || options.maximum_text_bytes == 0
+        || options.maximum_text_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
+    {
+        return Err(work.invalid("read byte bounds must be positive and exactly representable"));
+    }
     let source_bytes = source.len() as u64;
     let selected = range
         .end
         .checked_sub(range.start)
-        .ok_or_else(|| Error::Invalid("read range is reversed".into()))?;
+        .ok_or_else(|| work.invalid("read range is reversed"))?;
     if source_bytes > options.maximum_input_bytes
         || range.end > source_bytes
         || selected > options.maximum_text_bytes
     {
-        return Err(Error::Invalid(
-            "read range exceeds its explicit byte bounds".into(),
-        ));
+        return Err(work.invalid("read range exceeds its explicit byte bounds"));
     }
     let start = usize::try_from(range.start)
-        .map_err(|_| Error::Invalid("read start cannot be represented".into()))?;
+        .map_err(|_| work.invalid("read start cannot be represented"))?;
     let end = usize::try_from(range.end)
-        .map_err(|_| Error::Invalid("read end cannot be represented".into()))?;
+        .map_err(|_| work.invalid("read end cannot be represented"))?;
     let text = source
         .get(start..end)
-        .ok_or_else(|| Error::Invalid("read range splits a UTF-8 character".into()))?;
+        .ok_or_else(|| work.invalid("read range splits a UTF-8 character"))?;
+    let mut selected_text = String::new();
+    work.reserve_string(&mut selected_text, text.len())?;
+    work.copy(text.len())?;
+    selected_text.push_str(text);
     Ok(TextSelection {
         range,
-        text: text.to_owned(),
+        text: selected_text,
         omitted_before: range.start,
         omitted_after: source_bytes - range.end,
     })
@@ -166,13 +182,27 @@ pub struct SearchMatches {
 /// returns an explicit error, never an incomplete result reported as complete.
 pub fn literal_search(source: &str, query: &str, options: SearchOptions) -> Result<SearchMatches> {
     options.validate()?;
+    literal_search_engine(source, query, options, &mut AlgorithmWork::ordinary())
+}
+
+pub(super) fn literal_search_engine(
+    source: &str, query: &str, options: SearchOptions, work: &mut AlgorithmWork,
+) -> Result<SearchMatches> {
+    if options.maximum_input_bytes == 0
+        || options.maximum_input_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
+        || options.maximum_query_bytes == 0
+        || options.maximum_query_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
+        || options.maximum_work == 0
+        || options.maximum_work > crate::conversation::MAX_EXACT_JS_INTEGER
+        || options.maximum_matches == 0 || options.maximum_matches == u32::MAX
+    {
+        return Err(work.invalid("search allowances must be positive and finite"));
+    }
     if source.len() as u64 > options.maximum_input_bytes
         || query.is_empty()
         || query.len() as u64 > options.maximum_query_bytes
     {
-        return Err(Error::Invalid(
-            "search input or query exceeds its byte contract".into(),
-        ));
+        return Err(work.invalid("search input or query exceeds its byte contract"));
     }
     let mut result = SearchMatches {
         matches: Vec::new(),
@@ -192,14 +222,13 @@ pub fn literal_search(source: &str, query: &str, options: SearchOptions) -> Resu
         let candidate = source
             .as_bytes()
             .get(offset..end)
-            .ok_or_else(|| Error::Invalid("search range cannot be represented".into()))?;
+            .ok_or_else(|| work.invalid("search range cannot be represented"))?;
         let mut matched = true;
         for (actual, expected) in candidate.iter().zip(query.as_bytes()) {
             if result.work >= options.maximum_work {
-                return Err(Error::Invalid(
-                    "search exhausted its comparison allowance".into(),
-                ));
+                return Err(work.invalid("search exhausted its comparison allowance"));
             }
+            work.examine(1)?;
             result.work += 1;
             if actual != expected {
                 matched = false;
@@ -211,6 +240,8 @@ pub fn literal_search(source: &str, query: &str, options: SearchOptions) -> Resu
             if result.matches.len() as u64 >= u64::from(options.maximum_matches) {
                 result.omitted_matches += 1;
             } else {
+                let length = result.matches.len() + 1;
+                work.reserve_vec(&mut result.matches, length)?;
                 result.matches.push(TextRange {
                     start: offset as u64,
                     end: end as u64,

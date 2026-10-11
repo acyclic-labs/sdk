@@ -90,6 +90,27 @@ impl ReadProjection {
 }
 
 impl ToolProjection for ReadProjection {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_projection(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        work.remaining()?;
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn project_with_native_work(
+        &self, _: &ToolInvocation, result: &ToolResult, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+        let value = super::decode_with_native_work::<ReadResult>(&result.value, work)?;
+        match self.0 {
+            ProjectionMode::Full => super::schema::project_json_with_native_work(&value.0, work),
+            ProjectionMode::Reference => super::files::native::summary_reference(&value.0.file, 400, format_args!(
+                "Read bytes {}..{}; {} source bytes omitted before and {} after. Selected text is retained in the canonical tool result and omitted from this model projection.",
+                value.0.selection.range.start, value.0.selection.range.end,
+                value.0.selection.omitted_before, value.0.selection.omitted_after,
+            ), work),
+        }
+    }
+
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
         let value: ReadResult = decode(&result.value)?;
         match self.0 {
@@ -119,6 +140,27 @@ impl SearchProjection {
 }
 
 impl ToolProjection for SearchProjection {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_projection(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        work.remaining()?;
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn project_with_native_work(
+        &self, _: &ToolInvocation, result: &ToolResult, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+        let value = super::decode_with_native_work::<SearchResult>(&result.value, work)?;
+        match self.0 {
+            ProjectionMode::Full => super::schema::project_json_with_native_work(&value.0, work),
+            ProjectionMode::Reference => super::files::native::summary_reference(&value.0.file, 480, format_args!(
+                "Literal search completed: {} total matches, {} retained positions, {} positions omitted from the canonical result, {} byte comparisons. Query and retained positions are retained in the canonical tool result and omitted from this model projection.",
+                value.0.matches.total_matches, value.0.matches.matches.len(),
+                value.0.matches.omitted_matches, value.0.matches.work,
+            ), work),
+        }
+    }
+
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
         let value: SearchResult = decode(&result.value)?;
         match self.0 {
@@ -354,6 +396,72 @@ impl TextTool {
 }
 
 impl ToolExecutor for TextTool {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_execution(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        work.remaining()?;
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn authorize_with_native_context(
+        &self, context: &ToolContext, invocation: &ToolInvocation,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        use super::files::native;
+        native::context(context, invocation, work)?;
+        let scope = context.task().scope();
+        native::bound(&invocation.arguments, scope.limits().file_bytes, work)?;
+        let maximum = self.maximum_result_bytes.min(scope.limits().file_bytes);
+        match self.kind {
+            TextKind::Read(options) => {
+                let input = super::decode_with_native_work::<ReadInput>(&invocation.arguments, work)?;
+                let length = input.0.range.end.checked_sub(input.0.range.start)
+                    .ok_or_else(|| native::invalid("read range is reversed"))?;
+                if input.0.file.descriptor().byte_length() > options.maximum_input_bytes
+                    || input.0.range.end > input.0.file.descriptor().byte_length()
+                    || length > options.maximum_text_bytes.min(maximum)
+                {
+                    return Err(native::invalid("read exceeds its admitted byte bounds"));
+                }
+                native::public_path(input.0.file.path(), work)?;
+                context.task().authorize_file_read_with_native_work(&input.0.file, work)
+            }
+            TextKind::Search(options) => {
+                let input = super::decode_with_native_work::<SearchInput>(&invocation.arguments, work)?;
+                if input.0.file.descriptor().byte_length() > options.maximum_input_bytes
+                    || input.0.query.is_empty()
+                    || input.0.query.len() as u64 > options.maximum_query_bytes
+                    || u64::from(options.maximum_matches) * std::mem::size_of::<TextRange>() as u64 > maximum
+                {
+                    return Err(native::invalid("search exceeds its admitted input or retained-position bounds"));
+                }
+                native::public_path(input.0.file.path(), work)?;
+                context.task().authorize_file_read_with_native_work(&input.0.file, work)
+            }
+        }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn execute_with_native_context<'a>(
+        &'a self, context: &'a ToolContext, invocation: &'a ToolInvocation,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            self.run_native(context, invocation, work).await
+        })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn reconcile_with_native_context<'a>(
+        &'a self, context: &'a ToolContext, invocation: &'a ToolInvocation,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            let result = self.run_native(context, invocation, work).await?;
+            Ok((Some(result.0), result.1))
+        })
+    }
+
     fn authorize(&self, scope: Option<&RuntimeScope>, invocation: &ToolInvocation) -> Result<()> {
         let scope = scope.ok_or_else(|| {
             Error::Unauthorized("text tool requires original runtime scope".into())
@@ -406,6 +514,78 @@ impl ToolExecutor for TextTool {
     ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
         // Immutable reads have no publication effect; retry uses the same pinned source.
         Box::pin(async move { self.run(context, invocation).await.map(Some) })
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl TextTool {
+    async fn run_native(
+        &self, context: &ToolContext, invocation: &ToolInvocation,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(ToolResult, acyclic_fs::NativeAllocation)> {
+        use super::files::native;
+        self.authorize_with_native_context(context, invocation, work)?;
+        let maximum = self.maximum_result_bytes.min(context.task().scope().limits().file_bytes);
+        match self.kind {
+            TextKind::Read(options) => {
+                let input = super::decode_with_native_work::<ReadInput>(&invocation.arguments, work)?;
+                let read = context.task().read_file_with_native_work(&input.0.file, work)?.await?;
+                let source = std::str::from_utf8(&read.0)
+                    .map_err(|_| native::invalid("text tool requires UTF-8 content"))?;
+                let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<TextSelection>())?;
+                let value = ReadResult {
+                    selection: super::text::read_range_engine(source, input.0.range, options, &mut allocation)?,
+                    file: input.0.file,
+                };
+                native::bound(&value, maximum, work)?;
+                let encoded = super::value_with_native_work(&value, work)?;
+                Ok((ToolResult { value: encoded.0 }, encoded.1))
+            }
+            TextKind::Search(options) => {
+                let input = super::decode_with_native_work::<SearchInput>(&invocation.arguments, work)?;
+                let read = context.task().read_file_with_native_work(&input.0.file, work)?.await?;
+                let source = std::str::from_utf8(&read.0)
+                    .map_err(|_| native::invalid("text tool requires UTF-8 content"))?;
+                let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<SearchMatches>())?;
+                let value = SearchResult {
+                    matches: super::text::literal_search_engine(source, &input.0.query, options, &mut allocation)?,
+                    file: input.0.file, query: input.0.query,
+                };
+                native::bound(&value, maximum, work)?;
+                let encoded = super::value_with_native_work(&value, work)?;
+                Ok((ToolResult { value: encoded.0 }, encoded.1))
+            }
+        }
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod native_records {
+    use super::*;
+    use crate::filesystem::UploadRecord;
+
+    fn total<T>(file: &FileRef, additional: usize) -> Result<u64> {
+        file.logical_owned_bytes()?.checked_add(std::mem::size_of::<T>() as u64)
+            .and_then(|n| n.checked_add(additional as u64))
+            .ok_or_else(|| super::super::files::native::invalid("text tool DTO ownership overflow"))
+    }
+
+    impl UploadRecord for ReadInput {
+        fn logical_owned_bytes(&self) -> Result<u64> { total::<Self>(&self.file, 0) }
+    }
+    impl UploadRecord for SearchInput {
+        fn logical_owned_bytes(&self) -> Result<u64> { total::<Self>(&self.file, self.query.capacity()) }
+    }
+    impl UploadRecord for ReadResult {
+        fn logical_owned_bytes(&self) -> Result<u64> { total::<Self>(&self.file, self.selection.text.capacity()) }
+    }
+    impl UploadRecord for SearchResult {
+        fn logical_owned_bytes(&self) -> Result<u64> {
+            let positions = self.matches.matches.capacity().checked_mul(std::mem::size_of::<TextRange>())
+                .and_then(|n| n.checked_add(self.query.capacity()))
+                .ok_or_else(|| super::super::files::native::invalid("search result ownership overflow"))?;
+            total::<Self>(&self.file, positions)
+        }
     }
 }
 

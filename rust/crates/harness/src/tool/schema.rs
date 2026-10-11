@@ -46,6 +46,13 @@ pub(crate) fn project_json<T: Serialize>(value: T) -> Result<Value> {
         .map_err(|error| Error::Invalid(error.to_string()))
 }
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn project_json_with_native_work<T: Serialize>(
+    value: &T, work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+    super::value_with_native_work(&JsonProjection::Json { value }, work)
+}
+
 /// Explicit model representation, independent of the retained canonical result.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -67,38 +74,50 @@ enum ReferencePolicy {
 
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum ReferencePart {
+enum ReferencePart<'a> {
     Text {
-        text: String,
+        text: &'a str,
     },
     File {
-        file: Box<crate::conversation::FileRef>,
+        file: &'a crate::conversation::FileRef,
         policy: ReferencePolicy,
     },
 }
 
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum ReferenceProjection {
-    Parts { parts: [ReferencePart; 2] },
+enum ReferenceProjection<'a> {
+    Parts { parts: [ReferencePart<'a>; 2] },
 }
 
 /// Complete schema of the actual reference-only parts serializer.
 pub fn reference_projection() -> Result<Value> {
-    output::<ReferenceProjection>()
+    output::<ReferenceProjection<'_>>()
 }
 
 pub(crate) fn project_reference(file: crate::conversation::FileRef, text: String) -> Result<Value> {
     serde_json::to_value(ReferenceProjection::Parts {
         parts: [
-            ReferencePart::Text { text },
+            ReferencePart::Text { text: &text },
             ReferencePart::File {
-                file: Box::new(file),
+                file: &file,
                 policy: ReferencePolicy::Reference,
             },
         ],
     })
     .map_err(|error| Error::Invalid(error.to_string()))
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn project_reference_with_native_work(
+    file: &crate::conversation::FileRef, text: &str, work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+    super::value_with_native_work(&ReferenceProjection::Parts {
+        parts: [
+            ReferencePart::Text { text },
+            ReferencePart::File { file, policy: ReferencePolicy::Reference },
+        ],
+    }, work)
 }
 
 #[cfg(test)]
