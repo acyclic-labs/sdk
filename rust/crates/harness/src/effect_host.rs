@@ -620,6 +620,8 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                 scope, causal_parent: None, action: copied_action,
             };
             match aggregate.execute_task_command_with_work(command, owner, custody.work()).await {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                Err(error) if error.is_native_failure() => return Err(error),
                 Err(error) if error.code() == crate::wire::ErrorCode::Conflict => {
                     if aggregate.reducer().operation_revision(operation_id).is_some() {
                         return Err(effect_error(custody.work(), crate::wire::ErrorCode::Conflict,
@@ -703,6 +705,8 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             };
             drop(command_custody);
             match result {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                Err(error) if error.is_native_failure() => return Err(error),
                 Ok(_) => return clone_status_with_work(&attestation.status, retained.work()),
                 Err(error) if error.code() == crate::wire::ErrorCode::Conflict => continue,
                 Err(error) => return Err(error),
