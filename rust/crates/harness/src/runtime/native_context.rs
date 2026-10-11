@@ -553,9 +553,18 @@ mod tests {
             "native-mcp-control", &original,
         )?;
         let before = original.receipt();
-        mcp_tool.validate_native_mcp_context(&original)?;
-        mcp_tool.validate_native_mcp_reconciliation_context(&original)?;
+        // The genuine public native context producer is READ-only and supplies
+        // no owner mailbox; funding it cannot promote dispatch or reconciliation.
+        assert!(matches!(mcp_tool.validate_native_mcp_context(&original),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+        assert!(matches!(mcp_tool.validate_native_mcp_reconciliation_context(&original),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
         assert_eq!(original.receipt(), before);
+        let foreign = work(&cancellation)?;
+        let foreign_before = foreign.receipt();
+        assert!(matches!(mcp_tool.validate_native_mcp_reconciliation_context(&foreign),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+        assert_eq!(foreign.receipt(), foreign_before);
         let unqualified = mcp_tool.clone();
         assert!(matches!(unqualified.validate_native_mcp_context(&original),
             Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
