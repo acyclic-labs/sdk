@@ -115,7 +115,30 @@ impl Default for Limits {
 impl Limits {
     /// Checks each independent budget against its numeric wire representation.
     pub fn validate(&self) -> Result<()> {
-        if self.file_bytes == 0
+        if self.invalid_numeric_limits() {
+            return Err(Error::Invalid("harness limits are invalid".into()));
+        }
+        Ok(())
+    }
+
+    /// Checks the same numeric limits without allocating a native denial message.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn validate_with_native_work(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        work.remaining_budget().map_err(Error::from)?;
+        if self.invalid_numeric_limits() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "harness limits are invalid",
+            });
+        }
+        Ok(())
+    }
+
+    fn invalid_numeric_limits(&self) -> bool {
+        self.file_bytes == 0
             || self.file_bytes > MAX_LIMIT_FILE_BYTES
             || self.path_bytes == 0
             || self.path_bytes as u64 > MAX_PATH_BYTES as u64
@@ -131,10 +154,6 @@ impl Limits {
             || self.tool_calls_per_step as u64 > MAX_LIMIT_TOOL_CALLS_PER_STEP as u64
             || self.context_messages == 0
             || self.context_messages as u64 > MAX_LIMIT_CONTEXT_MESSAGES as u64
-        {
-            return Err(Error::Invalid("harness limits are invalid".into()));
-        }
-        Ok(())
     }
 
     /// Checks one immutable version against this runtime's tighter limits.

@@ -836,6 +836,16 @@ pub enum Error {
         /// Existing custody, released after the original cause is dropped.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
+    /// An original SDK filesystem failure without a diagnostic projection.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("{source}")]
+    NativeFilesystem {
+        /// The complete filesystem cause, including any existing payload custody.
+        #[source]
+        source: acyclic_fs::FsError,
+        /// Existing additional diagnostic custody, released after the cause.
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
     /// A native view failure, including any retained physical cleanup owner.
     #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
     #[error("{cause}")]
@@ -915,7 +925,8 @@ impl Error {
             Self::NativeConstruction { .. }
             | Self::NativeSupervisor { .. }
             | Self::NativeSource { .. }
-            | Self::NativeWorkspace { .. } => ErrorCode::Storage,
+            | Self::NativeWorkspace { .. }
+            | Self::NativeFilesystem { .. } => ErrorCode::Storage,
             #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
             Self::NativeView { .. } | Self::NativePublication { .. }
             | Self::NativeWorkspacePublication { .. }
@@ -973,7 +984,8 @@ impl Error {
             | Self::NativeMcpIncomplete { .. }
             | Self::NativeSupervisor { .. }
             | Self::NativeSource { .. }
-            | Self::NativeWorkspace { .. } => true,
+            | Self::NativeWorkspace { .. }
+            | Self::NativeFilesystem { .. } => true,
             #[cfg(feature = "mcp-http")]
             Self::NativeMcpHttp { .. } => true,
             #[cfg(feature = "native-execution")]
