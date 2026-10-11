@@ -197,7 +197,7 @@ impl WorkspaceNameAccounting<'_> {
             }
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native(original) => {
-                let (excess, verified) = original.record_completed_allocation(bytes);
+                let (excess, verified) = original.record_completed_allocation(bytes, None);
                 let mut excess = WorkspaceNameAllocation::Native(excess);
                 allocation.absorb(&mut excess)?;
                 return verified.map_err(WorkspaceError::from);

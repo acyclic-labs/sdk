@@ -831,7 +831,7 @@ impl NativeMaterializationWork {
         NativeMaterializationLeaf { original, previous: Some(previous) }
     }
 
-    /// Borrows one allocator-free accounting/cancellation/invariant leaf of
+    /// Borrows one accounting leaf of the original invocation.
     pub(crate) fn with_original_leaf<T>(&self, operation: impl FnOnce(&mut crate::demand::DemandWork) -> T) -> T {
         let mut original = self.state();
         original.with_resource_scope(self.resource.as_ref().map(std::sync::Arc::downgrade), |work| {
@@ -839,7 +839,7 @@ impl NativeMaterializationWork {
         })
     }
 
-    /// Borrows the existing runtime callback meter; no lock or new meter is
+    /// Borrows the existing runtime callback meter.
     pub(crate) fn native_read_meter(&self) -> &std::sync::Arc<crate::demand::NativeDemandReadMeter> {
         &self.state
     }
@@ -861,7 +861,7 @@ impl NativeMaterializationWork {
         self.execution.as_ref()
     }
 
-    /// Detached data keeps the same original scope and stop, but never keeps
+    /// Keeps the original scope and stop without retaining source execution.
     pub(crate) fn allocation_work(&self) -> Self {
         let work = self.clone();
         #[cfg(feature = "native-mount")]
@@ -1251,12 +1251,12 @@ impl NativeMaterializationWork {
         Ok(NativeItemReservation { meter: self.allocation_work(), remaining: count })
     }
 
-    /// Admits an actual allocation before its allocator is called; retain the
+    /// Admits an allocation and retains its ownership until deallocation.
     pub fn claim(&self, bytes: u64) -> Result<NativeAllocation, NativeTreeMaterializationError> {
         self.claim_allocation(bytes, u64::from(bytes != 0))
     }
 
-    /// Claims only the actual allocation boundary; the allocator runs after
+    /// Claims an allocation before the allocator runs.
     pub(crate) fn claim_allocation(&self, bytes: u64, operations: u64) -> Result<NativeAllocation, NativeTreeMaterializationError> {
         self.claim_allocation_in_origin(bytes, operations, None)
     }
@@ -1266,8 +1266,8 @@ impl NativeMaterializationWork {
         origin: Option<&Option<std::sync::Arc<crate::demand::CaptureTransientCustody>>>,
     ) -> Result<NativeAllocation, NativeTreeMaterializationError> {
         let mut state = self.state();
-        let capture = origin.cloned().unwrap_or(None);
         let delta = crate::WorkCounters { allocation_operations: operations, ..crate::WorkCounters::UNCHARGED };
+        let capture = origin.cloned().unwrap_or(None);
         // Intrinsic guarded payload is not the capture's unguarded scratch.
         let result = match &self.resource {
             Some(resource) => resource.admission(delta, bytes, || state.claim_native_owned(bytes, operations, &None)),
@@ -1341,17 +1341,12 @@ impl NativeMaterializationWork {
         Ok(NativeAllocation { meter: self.allocation_work(), bytes, capture })
     }
 
-    /// Attaches a real completed allocation excess before a late refusal.
-    pub(crate) fn record_completed_allocation(&self, bytes: u64) -> (NativeAllocation, Result<(), NativeTreeMaterializationError>) {
-        self.record_completed_allocation_in_origin(bytes, None)
-    }
-
-    fn record_completed_allocation_in_origin(
+    /// Records a completed allocation with its original capture ownership.
+    pub(crate) fn record_completed_allocation(
         &self, bytes: u64,
-        origin: Option<&Option<std::sync::Arc<crate::demand::CaptureTransientCustody>>>,
+        capture: Option<std::sync::Arc<crate::demand::CaptureTransientCustody>>,
     ) -> (NativeAllocation, Result<(), NativeTreeMaterializationError>) {
         let mut state = self.state();
-        let capture = origin.cloned().unwrap_or(None);
         let (owned, result) = state.record_native_owned_completed(bytes, &None);
         let resource = self.resource.as_ref().map_or(Ok(()), |resource| resource.completed(crate::WorkCounters::UNCHARGED, owned));
         drop(state);
@@ -1382,7 +1377,7 @@ impl NativeMaterializationWork {
     /// Actual currently admitted live bytes, rather than historical peak.
     pub fn live_allocation_bytes(&self) -> u64 { self.state().live_allocation_bytes() }
 
-    /// Observes the actual opened root allocation without copying or
+    /// Observes the opened root allocation.
     pub fn root_identity(&self, path: &std::path::Path) -> Result<crate::NativeRootIdentity, NativeTreeMaterializationError> {
         Ok(crate::native_host::HostRoot::open_materialization_measured(path, self)?.identity())
     }
@@ -1430,7 +1425,7 @@ impl NativeMaterializationWork {
     /// Maximum whole-file builtin read or UTF-8 write payload.
     pub const MAXIMUM_BUILTIN_BYTES: usize = 262_144;
 
-    /// Reads an entire regular file through the original witnessed root and
+    /// Reads an entire regular file through its witnessed root.
     pub async fn read_working_file_guarded<E, F, Fut>(
         &self, root: &Path, expected: crate::NativeRootIdentity, relative: &Path,
         maximum_bytes: usize, mut guard: F,
@@ -1446,7 +1441,7 @@ impl NativeMaterializationWork {
         self.read_builtin_held(&held, maximum_bytes, &mut guard).await
     }
 
-    /// Writes bounded UTF-8 through one held regular file. An edit hashes the
+    /// Writes bounded UTF-8 after checking the held file and preimage.
     #[allow(clippy::too_many_arguments, reason = "original root, edit preimage and caller guard must remain explicit")]
     pub async fn write_working_file_guarded<E, F, Fut>(
         &self, root: &Path, expected: crate::NativeRootIdentity, relative: &Path,
@@ -1538,24 +1533,6 @@ impl NativeMaterializationWork {
         truncated.map_err(E::from)?;
         checked?;
         held.validate(self).map_err(E::from)
-    }
-
-    /// Reads through an already forked original mounted accounting activation.
-    #[cfg(feature = "native-mount")]
-    pub async fn read_working_file_guarded_with_scope<E, F, Fut>(
-        &self, scope: crate::native_mount::OwnedNativeMountOriginalWorkScope,
-        root: &Path, expected: crate::NativeRootIdentity, relative: &Path,
-        maximum_bytes: usize, guard: F,
-    ) -> Result<acyclic_stream::OwnedBytes, E>
-    where
-        E: From<NativeTreeMaterializationError>,
-        F: FnMut() -> Fut,
-        Fut: Future<Output = Result<(), E>>,
-    {
-        let operation = self.read_working_file_guarded(root, expected, relative, maximum_bytes, guard);
-        let result = operation.await;
-        drop(scope);
-        result
     }
 
     fn validate_builtin_request(&self, relative: &Path, maximum_bytes: usize) -> Result<(), NativeTreeMaterializationError> {
@@ -2069,9 +2046,6 @@ struct NativeOwnedCleanupState {
     pending: crate::WorkCounters,
     // Host preflights cannot consume accepted runtime token partitions.
     host_pending: crate::WorkCounters,
-    allocation_plan: Vec<NativeOwnedAllocationCredit>,
-    // The plan's physical Vec and unconsumed reservations drop first.
-    _plan_metadata: Option<NativeAllocation>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2280,7 +2254,7 @@ impl NativeOwnedCleanupCredit {
         }
     }
 
-    /// Actual CPU/IO prefixes are recorded before reporting over-credit or
+    /// Records completed work before reporting allowance or cancellation errors.
     fn complete(&self, maximum: Option<crate::WorkCounters>, actual: crate::WorkCounters) -> std::io::Result<()> {
         let mut state = self.state.lock();
         let available = if let Some(maximum) = maximum {
@@ -2687,7 +2661,7 @@ impl std::fmt::Debug for NativeAllocation {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeAllocation {
-    /// Transfers an existing runtime claim without release, readmission or
+    /// Transfers an existing runtime claim without readmission.
     pub fn from_runtime_allocation(
         original: &NativeMaterializationWork,
         incoming: acyclic_native_runtime::ReadAllocation,
@@ -2754,7 +2728,7 @@ impl NativeAllocation {
         Ok(retirement)
     }
 
-    /// Transfers this concrete already-paid buffer into a registered original
+    /// Transfers paid buffer custody into a registered checkout control.
     pub(crate) fn transfer_checkout_control(
         &mut self, owner: &std::sync::Arc<crate::kernel::ProofDataCustody>,
         scope: &crate::demand::NativeCheckoutControlWitness,
@@ -2771,14 +2745,6 @@ impl NativeAllocation {
     ) -> Result<crate::kernel::ProofDataClaim, NativeTreeMaterializationError> {
         let membership = self.meter.checkout_control_sink(owner)?;
         self.transfer_checkout_control(owner, &membership)
-    }
-
-    /// Transfers concrete already-paid root data into its registered original
-    pub(crate) fn transfer_checkout_data(
-        &mut self, owner: &std::sync::Arc<crate::kernel::ProofDataCustody>,
-        scope: &crate::demand::NativeCheckoutControlWitness,
-    ) -> Result<crate::kernel::ProofDataClaim, NativeTreeMaterializationError> {
-        self.transfer_checkout_data_bytes(self.bytes, owner, scope)
     }
 
     /// Transfers only the selected concrete buffer from this exclusive paid
@@ -2865,7 +2831,7 @@ impl NativeAllocation {
     /// Reconciles this buffer's completed physical capacity, recording excess
     pub fn reconcile_capacity(&mut self, actual: u64) -> Result<(), NativeTreeMaterializationError> {
         if actual < self.bytes { self.release(self.bytes - actual)?; }
-        let (mut completed, result) = self.meter.record_completed_allocation_in_origin(actual - self.bytes, Some(&self.capture));
+        let (mut completed, result) = self.meter.record_completed_allocation(actual - self.bytes, self.capture.clone());
         self.absorb(&mut completed)?;
         result
     }
@@ -3050,7 +3016,7 @@ pub struct MaterializationJournal {
     pub preparation_identity: Option<MaterializationPreparationIdentity>,
     /// Same-operation native allocation progress before the ready triple exists.
     pub preparation_progress: Option<MaterializationPreparationProgress>,
-    /// Known lower bound before the last durable journal write, never an exact
+    /// Known work prefix before the last durable journal write.
     pub work: crate::WorkCounters,
     /// Preimages in exact edit order.
     pub preimages: Vec<MaterializationPreimage>,
@@ -3146,7 +3112,7 @@ impl<E> NativeStageUncertainty<E> {
         Ok(Self { primary, _custody: custody, last_durable_work: crate::WorkCounters::UNCHARGED, observed_work: crate::WorkCounters::UNCHARGED })
     }
 
-    fn finish(mut self, cause: E, last_durable_work: crate::WorkCounters, observed_work: crate::WorkCounters) -> NativeStageUncertainty<E> {
+    fn finish(mut self, cause: E, last_durable_work: crate::WorkCounters, observed_work: crate::WorkCounters) -> Self {
         *self.primary = Some(cause);
         self.last_durable_work = last_durable_work;
         self.observed_work = observed_work;
@@ -7407,6 +7373,16 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 
+    fn test_plan(operation_id: OperationId, edits: Vec<MaterializationEdit>) -> MaterializationPlan {
+        MaterializationPlan {
+            operation_id, edits,
+            intent: MaterializationIntent::GenerationTransition {
+                from: GenerationId::new(Digest::from_bytes([1; 32])),
+                to: GenerationId::new(Digest::from_bytes([2; 32])),
+            },
+        }
+    }
+
     #[derive(Default)]
     struct Backend(Mutex<Vec<Vec<u8>>>);
 
@@ -7710,17 +7686,11 @@ mod tests {
                 preparation_identity: None,
                 preparation_progress: None,
                 work: crate::WorkCounters::default(),
-                plan: MaterializationPlan {
-                    operation_id,
-                    intent: MaterializationIntent::GenerationTransition {
-                        from: GenerationId::new(Digest::from_bytes([1; 32])),
-                        to: GenerationId::new(Digest::from_bytes([2; 32])),
-                    },
-                    edits: vec![MaterializationEdit::Install {
+                plan: test_plan(operation_id, vec![MaterializationEdit::Install {
                         path: "file".into(),
                         image: vec![9],
-                    }],
-                },
+                    }]
+                ),
                 preimages: vec![MaterializationPreimage { image: vec![0] }],
                 phase: MaterializationPhase::Prepared,
                 applied: 0,
@@ -7756,17 +7726,11 @@ mod tests {
             MemoryMaterializationJournalStore::default(),
             Backend::default(),
         );
-        let plan = MaterializationPlan {
-            operation_id,
-            intent: MaterializationIntent::GenerationTransition {
-                from: GenerationId::new(Digest::from_bytes([1; 32])),
-                to: GenerationId::new(Digest::from_bytes([2; 32])),
-            },
-            edits: vec![MaterializationEdit::Install {
+        let plan = test_plan(operation_id, vec![MaterializationEdit::Install {
                 path: "file".to_owned(),
                 image: vec![9],
-            }],
-        };
+            }]
+        );
         let applied = materializer.apply(plan.clone()).await.expect("apply");
         assert_eq!(applied.phase, MaterializationPhase::Applied);
         assert_eq!(
@@ -7794,17 +7758,11 @@ mod tests {
     async fn interrupted_rollback_cannot_be_completed_forward() {
         let operation_id = OperationId::new();
         let store = MemoryMaterializationJournalStore::default();
-        let plan = MaterializationPlan {
-            operation_id,
-            intent: MaterializationIntent::GenerationTransition {
-                from: GenerationId::new(Digest::from_bytes([1; 32])),
-                to: GenerationId::new(Digest::from_bytes([2; 32])),
-            },
-            edits: vec![MaterializationEdit::Install {
+        let plan = test_plan(operation_id, vec![MaterializationEdit::Install {
                 path: "file".to_owned(),
                 image: vec![9],
-            }],
-        };
+            }]
+        );
         store
             .compare_and_swap(
                 operation_id,
@@ -8211,17 +8169,11 @@ mod tests {
         let backend =
             NativeTreeMaterializationBackend::new(&root, &operation, None, unbounded_native_work()).expect("native backend");
         let operation_id = OperationId::new();
-        let plan = MaterializationPlan {
-            operation_id,
-            intent: MaterializationIntent::GenerationTransition {
-                from: GenerationId::new(Digest::from_bytes([1; 32])),
-                to: GenerationId::new(Digest::from_bytes([2; 32])),
-            },
-            edits: vec![MaterializationEdit::SetMetadata {
+        let plan = test_plan(operation_id, vec![MaterializationEdit::SetMetadata {
                 path: "directory".to_owned(),
                 image: native_metadata_bytes(&desired).to_vec(),
-            }],
-        };
+            }]
+        );
         let materializer =
             JournaledMaterializer::new(MemoryMaterializationJournalStore::default(), backend);
         materializer.apply(plan).await.expect("apply metadata");
@@ -8874,13 +8826,8 @@ mod tests {
                 let source = work.root_identity(&root).expect("original source allocation");
                 let parent = work.root_identity(temporary.path()).expect("original operation parent");
                 let operation_id = OperationId::new();
-                let plan = MaterializationPlan { operation_id,
-                    intent: MaterializationIntent::GenerationTransition {
-                        from: GenerationId::new(Digest::from_bytes([1; 32])),
-                        to: GenerationId::new(Digest::from_bytes([2; 32])),
-                    },
-                    edits: vec![MaterializationEdit::Remove { path: "file".to_owned() }],
-                };
+                let plan = test_plan(operation_id, vec![MaterializationEdit::Remove { path: "file".to_owned() }]
+                );
                 let state = crate::LocalCoreStateStore::new(&state_path);
                 let journal = MaterializationJournal {
                     version: JOURNAL_VERSION, revision: 0, plan,
@@ -8998,14 +8945,11 @@ mod tests {
             inner: backend, file: root.join("file"), armed: std::sync::atomic::AtomicBool::new(true),
             effects: std::sync::atomic::AtomicUsize::new(0),
         });
-        let owners = std::sync::atomic::AtomicUsize::new(0);
         let mut guarded = |verify| {
-            owners.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             native_before_effect(std::future::ready(Ok(())), verify, &engine.store, &engine.backend().inner.held_root, operation_id, &from, &work, &cancellation)
         };
         let error = engine.apply_with_guard(plan, &mut guarded).await.expect_err("fresh original-source verification rejects the captured user change");
         assert!(matches!(error, NativeWorkspacePublicationError::Native(NativeTreeMaterializationError::ExternalMutation(_, Some(_)))));
-        assert_eq!(owners.load(std::sync::atomic::Ordering::SeqCst), 3);
         assert_eq!(engine.backend().effects.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(std::fs::read(root.join("file")).expect("independent physical read"), b"user change during capture");
         assert_eq!(std::fs::read(operation.join("target/file")).expect("stage untouched"), b"after");

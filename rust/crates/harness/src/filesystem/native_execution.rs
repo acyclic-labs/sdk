@@ -1464,8 +1464,10 @@ where P: StreamProvider + 'static,
                 let physical = &physical;
                 async move {
                     let scope = scope.map_err(acyclic_fs::native_mount::MountLifecycleError::Native).map_err(Error::from)?;
-                    physical.read_working_file_guarded_with_scope(scope, self.path(), self.identity, relative, maximum,
-                        || self.check(physical)).await
+                    let result = physical.read_working_file_guarded(self.path(), self.identity, relative, maximum,
+                        || self.check(physical)).await;
+                    drop(scope);
+                    result
                 }
             }).await.map_err(Error::from)?
         })
