@@ -437,6 +437,12 @@ impl<P> NativeProcessProvider<P>
 where
     P: StreamProvider + 'static,
 {
+    /// Borrows the immutable plan retained for this original native operation.
+    /// Observation and recovery do not duplicate its admitted payload custody.
+    pub fn original_plan(&self) -> &TaskEffectPlan {
+        &self.plan
+    }
+
     /// Signal only this original owned supervisor. No process joins occur here;
     /// lifecycle callers can signal every job before awaiting any one of them.
     pub async fn signal_stop(
