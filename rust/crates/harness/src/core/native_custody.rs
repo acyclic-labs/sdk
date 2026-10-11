@@ -270,7 +270,7 @@ fn copy_interaction_state(
 }
 physical_clone_factory!(native_interaction_state_clone_with_custody,
     (InteractionTicket, Option<InteractionResolution>), copy_interaction_state);
-pub(super) fn copy_capabilities(
+pub(crate) fn copy_capabilities(
     source: &Capabilities, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<Capabilities> {
     if quota.work().is_none() { return Ok(source.clone()); }

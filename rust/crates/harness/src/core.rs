@@ -30,7 +30,7 @@ pub(crate) use snapshot::{
 };
 pub(crate) use native_custody::{
     copy_iter, copy_copy_vector, reserve_copy_vector, copy_text, copy_authority, copy_provider,
-    copy_file, copy_vector, copy_boxed, copy_dependency, copy_configuration, copy_value,
+    copy_file, copy_vector, copy_boxed, copy_dependency, copy_configuration, copy_value, copy_capabilities,
     copy_extension_record, copy_status, copy_effect, copy_reference,
     native_effect_clone_with_custody, native_event_reference_clone_with_custody,
     native_extension_configuration_clone_with_custody, native_extension_record_clone_with_custody,
