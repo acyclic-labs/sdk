@@ -590,6 +590,11 @@ Bounded receipt queries use the original journal and actual history/codec
 ledger; original capture/publication work is never charged again. An authentic
 terminal outcome allows read-only cleanup observation, not a new publication
 or deletion lease.
+The runner's drain method delegates to the concrete SDK provider with the same
+retained canonical mixed-view Arc and original SDK-derived effect attempt. Its
+opaque SDK `NativeProcessDrainProof` retains the view and original allocation
+families; a diagnostic boolean, manifest, PID or path cannot mint that proof.
+Cold recovery without the genuine held SDK view remains uncertain.
 
 The lazy mount guard receives the SDK's actual shared native invocation carrier.
 Original owner/grant IO, native callbacks and publication retain that same

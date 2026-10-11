@@ -15,7 +15,7 @@ use acyclic_harness::{
     filesystem::{
         BorrowedNativeVolumeBinding, EFFECT_TASK_COMMAND_KIND, FilesystemHost,
         NATIVE_PROCESS_EFFECT_KIND, NativePreparationReceipt, NativePreparationRoot,
-        NativeProcessAuthority, NativeProcessProvider, NativeProcessReceipt, NativeReceiptError,
+        NativeProcessAuthority, NativeProcessDrainProof, NativeProcessProvider, NativeProcessReceipt, NativeReceiptError,
         NativeProcessRequest, NativeProcessView, NativeViewManifest, NativeViewOptions,
         NativeViewOwner, NativeVolumeNamespace, NativeVolumeView,
         NativeVolumeMapping, NativeExistingLazyVolume,
@@ -1169,6 +1169,22 @@ impl<P: StreamProvider + 'static> PiNativeRunner<P> {
     ) -> std::result::Result<NativeProcessReceipt, NativeReceiptError> {
         let attempt = self.original_attempt_with_native_work(work).map_err(NativeReceiptError::Owner)?;
         self.provider.request_stop(attempt, work, cleanup_cancellation).await
+    }
+
+    /// Keep the actual SDK view and its allocation families alive through
+    /// physical drainage. Missing cold views remain uncertain; no namespace is
+    /// reconstructed from a manifest, path, process ID or diagnostic boolean.
+    /// Await outside the actor so native child RPCs can finish while draining.
+    pub(crate) fn drain_with_native_work<'a, A, O>(
+        &'a self, view: &'a Arc<NativeVolumeView<A, O>>,
+        work: &'a NativeMaterializationWork, cleanup_cancellation: &'a CancellationToken,
+    ) -> Result<NativeFutureBundle<'a, NativeProcessDrainProof>>
+    where
+        A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
+        O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
+    {
+        let attempt = self.original_attempt_with_native_work(work)?;
+        self.provider.drain_with_native_work(attempt, view, work, cleanup_cancellation)
     }
 
 
