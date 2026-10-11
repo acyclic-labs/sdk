@@ -1523,4 +1523,59 @@ mod native {
         assert!(matches!(error, Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, .. }),
             "changed/output-cap denial has no boxed std-IO marker source");
     }
+
+    #[test]
+    fn native_identity_preserves_legacy_deep_value_bytes_without_weakening_finite_entry_points() {
+        // This already resident migration-style Value is NOT untrusted wire.
+        // Its private-looking map key must stay an ordinary literal identity.
+        let mut value = serde_json::json!({
+            "z": [u64::MAX, i64::MIN, -0.0, 0.1],
+            "$serde_json::private::RawValue": "[0,1]",
+            "a": "\0\n😀\"\\"
+        });
+        for _ in 0..300 { value = Value::Array(vec![value]); }
+        let expected = canonical_json_bytes_trusted(&value).unwrap();
+        assert_eq!(expected, serde_json::to_vec(&value).unwrap());
+        let mut trace = Vec::new();
+        let mut retained = 0u64;
+        let bytes = canonical_json_bytes_identity_native_trusted(&value,
+            crate::wire::ErrorCode::Storage, &mut |event| {
+                match event {
+                    JsonCodecCharge::Retain { bytes } => retained += bytes,
+                    JsonCodecCharge::Release { bytes } => retained -= bytes,
+                    JsonCodecCharge::Admission { .. } | JsonCodecCharge::Read { .. } =>
+                        panic!("resident identity is not a second parser or raw-key reinterpretation"),
+                    _ => {}
+                }
+                trace.push(event);
+                Ok(())
+            }).unwrap();
+        assert_eq!(bytes, expected);
+        assert_eq!(retained, bytes.capacity() as u64, "only genuine output capacity is transferred");
+        drop(bytes);
+        let finite_error = canonical_json_bytes_bounded_native_trusted(&value, JsonBounds::IDENTITY,
+            crate::wire::ErrorCode::Storage, &mut |_| Ok(())).unwrap_err();
+        assert!(matches!(finite_error, Error::NativeBoundary { .. }),
+            "the explicit identity companion does not remove the finite codec's depth ceiling");
+        let cancellable = trace.iter().filter(|event| !matches!(event, JsonCodecCharge::Release { .. })).count();
+        for denied in [0, cancellable / 2, cancellable - 1] {
+            let cause = Uuid::new_v4();
+            let mut callbacks = 0;
+            let mut retained = 0u64;
+            let failure = canonical_json_bytes_identity_native_trusted(&value,
+                crate::wire::ErrorCode::Storage, &mut |event| {
+                    if let JsonCodecCharge::Release { bytes } = event {
+                        retained -= bytes;
+                        return Ok(()); // unconditional after physical drop
+                    }
+                    let current = callbacks;
+                    callbacks += 1;
+                    if current == denied { return Err(Error::Indeterminate(cause)); }
+                    if let JsonCodecCharge::Retain { bytes } = event { retained += bytes; }
+                    Ok(())
+                }).unwrap_err();
+            assert!(matches!(failure, Error::Indeterminate(id) if id == cause));
+            assert_eq!(retained, 0, "failure drops actual temporary tree/output before cleanup");
+        }
+    }
 }

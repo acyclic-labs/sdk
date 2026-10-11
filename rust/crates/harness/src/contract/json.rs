@@ -919,6 +919,18 @@ pub(crate) fn canonical_json_bytes_bounded_native_trusted<T: Serialize + ?Sized,
     encode(value, JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds }, Some(code), charge)
 }
 
+/// Native carrier for the legacy identity policy, restricted to an already
+/// paid, trusted resident Value. Uses the SAME encoder and exact IDENTITY bounds
+/// without the bounded entry points' 256-depth clamp. Legacy recursive-callstack
+/// risk remains: finite work custody is not a universal stack/RSS guarantee.
+/// Untrusted wire must pass its actual finite admission before this operation.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn canonical_json_bytes_identity_native_trusted<F: FnMut(JsonCodecCharge) -> Result<()>>(
+    value: &Value, code: crate::wire::ErrorCode, charge: &mut F,
+) -> Result<Vec<u8>> {
+    encode(value, JsonBounds::IDENTITY, Some(code), charge)
+}
+
 /// Produces the SAME canonical encoder's owned Value directly, without an
 /// encoded buffer, parsing roundtrip or unchecked initial serde_json::to_value.
 /// Encoded bytes (including duplicate entries), items and depth are admitted
