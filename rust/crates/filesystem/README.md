@@ -195,6 +195,23 @@ It launches no implicit helper; native callers must prepare their own bounded
 helper before mount birth. The ordinary helper now propagates spawn and exit
 failures without allocating discarded output buffers. This does not change FUSE
 reply acknowledgement semantics or establish SDK whole-source retirement.
+Darwin's existing bridge retains an accepted interruption before its SDK instance
+exists. The same mutex orders pre-mount stop checks and instance publication;
+an already accepted stop cannot be lost and followed by an uninterruptible loop.
+The private run result distinguishes a genuinely never-mounted session from a
+started session that still requires physical unmount and callback retirement.
+SDK loop termination uses atomic state, and constructor failure destroys its
+channel instead of retaining a stopped but allocated channel. The exact compiled
+bridge-session size is admitted before its real calloc; its original guard retires
+only after SDK free. These guarantees do not claim opaque allocator backing or
+infer namespace retirement merely from an interrupted return.
+
+Readonly snapshot qualification uses the same mounted source checks and immutable
+SDK snapshot engine. It returns the actual generation, decoding configuration and
+complete source cut with no fabricated publication operation. The readonly path
+rejects stale sources rather than rebinding or writing a companion. Ordinary
+snapshot calls retain their existing rebinding behavior. Qualification is DATA:
+callers still authenticate current Project READ before and after selecting it.
 
 Concurrent native read observers share the checkout's semantic proof but admit
 and report their own completed name/path DATA. Weak custody metadata follows
