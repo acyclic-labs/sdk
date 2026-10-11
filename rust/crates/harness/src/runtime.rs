@@ -1046,6 +1046,29 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
         })
     }
 
+    /// Native execution support is an allocation-free preflight, not authority.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_execution(
+        &self,
+        _work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
+    /// Verifies the original retained execution lease without copying its fence.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn verify_execution_owner_with_native_work<'a>(
+        &'a self,
+        _task: TaskId,
+        _fence: &'a crate::scheduler::LeaseFence,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "durable host has no original-ledger execution verifier",
+        })
+    }
+
     /// Charges one exact durable model attempt under the current task owner.
     /// The host derives ceilings from its retained admission; callers cannot
     /// choose or reset usage. Uncertain claims remain charged.
@@ -1061,6 +1084,23 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
             Err(Error::Unsupported(
                 "durable model accounting is not bound".into(),
             ))
+        })
+    }
+
+    /// Claims the same durable model attempt on its original native ledger.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn claim_model_dispatch_with_native_work<'a>(
+        &'a self,
+        _task: TaskId,
+        _attempt: OperationId,
+        _step: u32,
+        _request_digest: [u8; 32],
+        _fence: &'a crate::scheduler::LeaseFence,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "durable host has no original-ledger model claim",
         })
     }
 
@@ -1084,6 +1124,19 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
             Err(Error::Unsupported(
                 "full durable admission observation is not bound".into(),
             ))
+        })
+    }
+
+    /// Observes the original admission with custody of its owned metadata.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn observe_admission_with_native_work<'a>(
+        &'a self,
+        _task: TaskId,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (TaskAdmissionRecord, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "durable host has no original-ledger admission observer",
         })
     }
 
@@ -1204,6 +1257,19 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
     /// Observes a previously admitted task without re-executing it. `None`
     /// means ordinary pending work, never an unknown external outcome.
     fn outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>>;
+
+    /// Observes a terminal value while retaining its original native allocation.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn outcome_with_native_work<'a>(
+        &'a self,
+        _task: TaskId,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Option<Outcome<Value>>, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "durable host has no original-ledger outcome observer",
+        })
+    }
     /// Waits for a terminal observation. Hosts with completion notification
     /// can override this bounded-poll fallback without changing task handles.
     fn wait_outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Outcome<Value>>> {
@@ -1312,6 +1378,19 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
         &'a self,
         task_id: TaskId,
     ) -> BoxFuture<'a, Result<TaskAdmissionRecord>>;
+
+    /// Native admission observation must preserve its original metadata custody.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn observe_admission_with_native_work<'a>(
+        &'a self,
+        _task: TaskId,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (TaskAdmissionRecord, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "task state has no original-ledger admission observer",
+        })
+    }
     /// Discovers direct owner-retained children with revision-checked pagination.
     fn children<'a>(
         &'a self,
@@ -1334,6 +1413,19 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
     ) -> BoxFuture<'a, Result<RuntimeScope>>;
     /// Observes a terminal result or ordinary pending state without dispatch.
     fn outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>>;
+
+    /// Native terminal observation never re-executes the admitted task.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn outcome_with_native_work<'a>(
+        &'a self,
+        _task: TaskId,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Option<Outcome<Value>>, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "task state has no original-ledger outcome observer",
+        })
+    }
     /// Waits for a terminal result; providers may override polling.
     fn wait_outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Outcome<Value>>> {
         Box::pin(async move {
@@ -1436,6 +1528,14 @@ impl TaskStateProvider for HostTaskState {
     ) -> BoxFuture<'a, Result<TaskAdmissionRecord>> {
         self.0.observe_admission(task_id)
     }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn observe_admission_with_native_work<'a>(
+        &'a self,
+        task: TaskId,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (TaskAdmissionRecord, acyclic_fs::NativeAllocation)>> {
+        self.0.observe_admission_with_native_work(task, work)
+    }
     fn children<'a>(
         &'a self,
         parent: TaskId,
@@ -1455,6 +1555,14 @@ impl TaskStateProvider for HostTaskState {
     }
     fn outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
         self.0.outcome(task_id)
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn outcome_with_native_work<'a>(
+        &'a self,
+        task: TaskId,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Option<Outcome<Value>>, acyclic_fs::NativeAllocation)>> {
+        self.0.outcome_with_native_work(task, work)
     }
     fn wait_outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Outcome<Value>>> {
         self.0.wait_outcome(task_id)
