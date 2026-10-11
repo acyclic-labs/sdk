@@ -386,7 +386,7 @@ pub(crate) async fn build_writeback_generations<'a, P: StreamProvider + 'static>
     let (from, candidate) = match result {
         Ok(generations) => generations,
         Err(source) => return Err(cause.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take().unwrap_or_else(|| Error::NativeSource { source, custody: None })),
+            .take().unwrap_or_else(|| crate::pi_lazy_capture::native_lazy_error(source))),
     };
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
     Ok(acyclic_fs::OperationReceipt { value: PiWritebackGenerations {
@@ -974,7 +974,7 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'sta
         match result {
             Ok(value) => value,
             Err(source) => return Err(cause.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take().unwrap_or_else(|| Error::NativeSource { source, custody: None })),
+                .take().unwrap_or_else(|| crate::pi_lazy_capture::native_lazy_error(source))),
         }
     };
     Ok(acyclic_fs::OperationReceipt { value, work })

@@ -17,14 +17,28 @@ fn native_query_work() -> acyclic_fs::NativeMaterializationWork {
     ).unwrap()
 }
 
-async fn prepare_service(data: &Path, reserve: bool) -> (ServiceResources, AdapterState) {
-    let (resources, sessions) = ServiceResources::open(data.to_path_buf()).await.unwrap();
+async fn open_service_resources(data: PathBuf) -> (ServiceResources, BTreeMap<String, SessionController>, crate::service_process::ServiceLock) {
+    let service_lock = crate::service_process::acquire_service_lock(&data).unwrap().unwrap();
+    let work = native_query_work();
+    let root = acyclic_fs::materializer::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
+        &data, &work,
+    ).unwrap();
+    let (resources, sessions) = ServiceResources::open(data, root, &work).await.unwrap();
+    (resources, sessions, service_lock)
+}
+
+async fn prepare_service(data: &Path, reserve: bool) -> (ServiceResources, AdapterState, crate::service_process::ServiceLock) {
+    let service_lock = crate::service_process::acquire_service_lock(data).unwrap().unwrap();
+    let native_work = native_query_work();
+    let private_root = acyclic_fs::materializer::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
+        data, &native_work,
+    ).unwrap();
+    let (resources, sessions) = ServiceResources::open(data.to_path_buf(), private_root, &native_work).await.unwrap();
     assert!(sessions.is_empty());
     let directory = resources.session_directory("pi-root-input");
     fs::create_dir_all(&directory).unwrap();
     let (owner, filesystem, request, raw) =
         root_input_fixture_on_fs(&directory, resources.fs.clone(), |_| {}).await;
-    let native_work = native_query_work();
     let command = stage_root_command(&owner, &filesystem, &request, &native_work)
         .await
         .unwrap();
@@ -106,7 +120,7 @@ async fn prepare_service(data: &Path, reserve: bool) -> (ServiceResources, Adapt
     save_state(&directory, &state, Survives::PowerLoss).unwrap();
     drop(runtime);
     drop(raw);
-    (resources, state)
+    (resources, state, service_lock)
 }
 
 fn status_request(cwd: PathBuf, command: ControlCommand) -> ControlRequest {
@@ -125,7 +139,8 @@ async fn pi_service_actor_cold_reopens_original_pending_and_reserved_tasks_witho
     for reserved in [false, true] {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("service");
-        let (resources, state) = prepare_service(&data, reserved).await;
+        let (resources, state, _service_lock) = prepare_service(&data, reserved).await;
+        let private_root = resources.private_state_root.clone();
         let session = resources.session_directory(&state.root_session_id);
         let controller = SessionController::open(session.clone(), &resources, &native_query_work())
             .await
@@ -175,7 +190,7 @@ async fn pi_service_actor_cold_reopens_original_pending_and_reserved_tasks_witho
             serde_json::to_value(load_saved_state(&session).unwrap()).unwrap(),
             serde_json::to_value(&state).unwrap()
         );
-        let reopened = ConcurrentServiceControl::open(data).await.unwrap();
+        let reopened = ConcurrentServiceControl::open(data, private_root, &native_query_work()).await.unwrap();
         let handle = reopened.session(&state.root_session_id).await.unwrap();
         let mut original_native_work = None;
         let status = handle.dispatch(status_request(
@@ -204,7 +219,8 @@ async fn pi_service_actor_cold_reopens_original_pending_and_reserved_tasks_witho
 async fn pi_service_deactivation_cancels_original_task_before_persisting_inactive_state() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path().join("service");
-    let (resources, state) = prepare_service(&data, true).await;
+    let (resources, state, _service_lock) = prepare_service(&data, true).await;
+    let private_root = resources.private_state_root.clone();
     let session = resources.session_directory(&state.root_session_id);
     let controller = SessionController::open(session.clone(), &resources, &native_query_work())
         .await
@@ -217,7 +233,7 @@ async fn pi_service_deactivation_cancels_original_task_before_persisting_inactiv
     service.shutdown().await.unwrap();
     let saved = load_saved_state(&session).unwrap();
     assert!(!saved.active);
-    let (resources, sessions) = ServiceResources::open(data).await.unwrap();
+    let (resources, sessions) = ServiceResources::open(data, private_root, &native_query_work()).await.unwrap();
     assert!(sessions.is_empty());
     let mut controller = SessionController::open(session, &resources, &native_query_work()).await.unwrap();
     let status = controller.dispatch(status_request(
@@ -243,7 +259,7 @@ async fn pi_service_deactivation_cancels_original_task_before_persisting_inactiv
 async fn pi_service_recovery_refuses_missing_original_storage_without_recreating_it() {
     for missing in ["pi-owner.v1", "stream"] {
         let directory = tempfile::tempdir().unwrap();
-        let (resources, state) = prepare_service(directory.path(), false).await;
+        let (resources, state, _service_lock) = prepare_service(directory.path(), false).await;
         let session = resources.session_directory(&state.root_session_id);
         let original = session.join(missing);
         fs::rename(&original, session.join(format!("withheld-{missing}"))).unwrap();
@@ -275,7 +291,7 @@ async fn pi_registration_failure_releases_catalog_reservation_without_replacing_
     let selected = directory.path().join("selected");
     fs::create_dir(&selected).unwrap();
     fs::write(selected.join("user-file"), b"native original").unwrap();
-    let (resources, sessions) = ServiceResources::open(directory.path().join("service")).await.unwrap();
+    let (resources, sessions, _service_lock) = open_service_resources(directory.path().join("service")).await;
     assert!(sessions.is_empty());
     let session = resources.session_directory("pi-corrupt-original");
     fs::create_dir_all(&session).unwrap();
@@ -300,8 +316,8 @@ async fn pi_registration_failure_releases_catalog_reservation_without_replacing_
 #[tokio::test]
 async fn pi_service_recovery_rejects_another_valid_owner_with_matching_route_ids() {
     let directory = tempfile::tempdir().unwrap();
-    let (resources, state) = prepare_service(&directory.path().join("original"), true).await;
-    let (foreign, foreign_state) = prepare_service(&directory.path().join("foreign"), false).await;
+    let (resources, state, _service_lock) = prepare_service(&directory.path().join("original"), true).await;
+    let (foreign, foreign_state, _foreign_service_lock) = prepare_service(&directory.path().join("foreign"), false).await;
     assert_eq!(
         serde_json::to_value(&state.task_binding).unwrap(),
         serde_json::to_value(&foreign_state.task_binding).unwrap()
@@ -319,7 +335,9 @@ async fn pi_service_recovery_rejects_another_valid_owner_with_matching_route_ids
     fs::write(&owner_path, foreign_bytes).unwrap();
     // The replacement is a valid protected policy with the same route IDs;
     // only the original task admission can distinguish its signing key.
-    let replacement = crate::pi_owner::PiOwnerConfig::load(&session).unwrap();
+    let replacement = crate::pi_owner::PiOwnerConfig::load_readonly_with_native_work(
+        &resources.private_state_root, resources.private_session_data(&session).unwrap(), &native_query_work(),
+    ).unwrap();
     let PluginTaskBinding::Pi(binding) = &state.task_binding else {
         unreachable!()
     };
@@ -360,7 +378,7 @@ async fn pi_original_root_registration_precedes_selected_allocation_and_reuses_a
     let project = directory.path().join("project");
     fs::create_dir(&project).unwrap();
     fs::write(project.join("user.txt"), b"unchanged native content").unwrap();
-    let (resources, existing) = ServiceResources::open(directory.path().join("service")).await.unwrap();
+    let (resources, existing, _service_lock) = open_service_resources(directory.path().join("service")).await;
     assert!(existing.is_empty());
     let prepared = pi_registration::register(&resources, "pi-registered-root", project.clone(), None, &native_query_work()).await.unwrap();
     let before = prepared.state().clone();
@@ -409,7 +427,7 @@ async fn interrupted_pi_registration_never_regenerates_missing_original_owner() 
     let directory = tempfile::tempdir().unwrap();
     let selected = directory.path().join("selected");
     fs::create_dir(&selected).unwrap();
-    let (resources, sessions) = ServiceResources::open(directory.path().join("service")).await.unwrap();
+    let (resources, sessions, _service_lock) = open_service_resources(directory.path().join("service")).await;
     assert!(sessions.is_empty());
     let session = resources.session_directory("pi-interrupted-original");
     fs::create_dir_all(&session).unwrap();
@@ -511,12 +529,15 @@ fn pi_native_session_source_preserves_value_before_guard_destruction_order() {
     assert!(original_mail_work.contains("if caller == owner.policy().root_task"));
     let child_mail_work = original_mail_work.split("} else {").nth(1).unwrap();
     assert!(child_mail_work.contains("invocation_work(caller).await"));
+    assert!(child_mail_work.contains("native_host_with_native_work(query_work)?"));
     assert!(!child_mail_work.contains("NativeMaterializationWork::new"));
     let send = session.split("async fn send_control(").nth(1).unwrap()
         .split("fn authorize_subtree(").next().unwrap();
-    assert!(send.contains(".with_work(work).control_command_with_native_work(command).await"));
-    assert!(send.contains("let (command, _command_custody) = pi_mail::stage_send("));
-    assert!(send.contains("let (command, _command_custody) = pi_mail::prepare_send("));
+    assert!(send.contains(".with_work(work).control_command_with_native_work(command.0).await"));
+    assert!(send.contains("let command = pi_mail::stage_send("));
+    assert!(send.contains("let command = pi_mail::prepare_send("));
+    assert!(send.contains("fence, command.0, &work)"));
+    assert!(!send.contains("_command_custody"));
     assert!(send.find("work.retain_owned(message.len()").unwrap()
         < send.find("message: message.to_owned()").unwrap());
     let operator = include_str!("pi_operator_session.rs");
@@ -533,6 +554,12 @@ fn pi_native_session_source_preserves_value_before_guard_destruction_order() {
     assert!(!operator.contains("NativeMaterializationWork::new"));
     assert!(!original_mail_work.contains("NativeMaterializationWork::new"));
     assert!(!operator.contains(".map_err(display)"));
+    assert!(operator.contains("native_host_with_native_work(&work)?"));
+    assert!(operator.contains("let protected = native.original_owner()"));
+    assert!(!operator.contains("owner.clone()"));
+    assert!(operator.contains("PiSelectedHost::new_with_native_work("));
+    assert!(operator.contains("&self.resources, Arc::clone(&protected), &self.state, &self.roots, native, &work"));
+    assert!(!session.contains(".native_host(") && !operator.contains(".native_host("));
     assert!(operator.contains("&self.state.root_session_id, &self.binding(caller)?.native_session_id,"),
         "passive status must forward its genuine native binding, not the Root alias");
     let passive = operator.split("async fn writeback_status(").nth(1).unwrap();
@@ -556,8 +583,9 @@ fn pi_native_session_source_preserves_value_before_guard_destruction_order() {
     assert!(!session.contains("PiRootIntent::from_state("));
     assert!(!session.contains("binding: binding.as_ref().clone()"),
         "Root preparation must move the admitted DTO under its real decoder custody");
-    assert_eq!(session.matches(
-        "original_native_work.cancellation().clone(), original_native_work,").count(), 2);
+    assert_eq!(session.matches("preparation, original_native_work,").count(), 2);
+    assert_eq!(session.matches(".into_native_shared(original_native_work)?").count(), 2);
+    assert!(!session.contains("owner.clone()"));
     assert!(session.contains("readonly_task_context_with_native_work("));
     assert!(session.contains("Some(Arc::clone(read_context)), original_native_work"));
     assert!(session.contains("guard_created_root_source_with_native_work("));
@@ -611,7 +639,8 @@ fn pi_native_session_source_preserves_value_before_guard_destruction_order() {
     assert!(!session.contains("pi_caller::issue(") && !session.contains("pi_caller::verify("));
     assert!(!session.contains(".verify_owner(") && !operator.contains(".verify_owner("));
     assert!(!session.contains("PiOwnerConfig::load(") && !operator.contains("PiOwnerConfig::load("));
-    assert_eq!(session.matches("PiOwnerConfig::load_with_native_work(").count(), 4);
+    assert_eq!(session.matches("PiOwnerConfig::load_with_native_work(").count(), 3);
+    assert_eq!(session.matches("PiOwnerConfig::load_readonly_with_native_work(").count(), 1);
     assert_eq!(operator.matches("PiOwnerConfig::load_with_native_work(").count(), 2);
     assert!(session.contains("Scope::from_value_with_native_work(value, &query_work)"));
     assert!(session.contains("if let Some((scope, _custody)) = &caller"));
@@ -646,6 +675,25 @@ fn pi_native_session_source_preserves_value_before_guard_destruction_order() {
         .split("pub(crate) async fn close(").next().unwrap();
     assert!(attach.contains("let mut owned = (self, custody)"));
     assert!(attach.contains("existing.absorb(&mut owned.1)"));
+    assert!(session.contains("adapter_state::load_state_with_native_work("));
+    assert!(session.contains("&resources.private_state_root, relative_directory, work,"));
+    assert!(session.contains("relative_directory: PathBuf"));
+    assert!(session.contains("work.copy_path(relative_directory)"));
+    assert!(session.contains("original_session_directory_matches(relative_directory, &state.root_session_id, work)?"));
+    assert!(!session.contains("directory != resources.session_directory(&state.root_session_id)"));
+    assert!(session.contains("service_resources_with_native_work(resources, work)?"));
+    assert!(!session.contains("resources: resources.clone()"));
+    assert!(!session.contains("self.resources.clone()") && !operator.contains("self.resources.clone()"));
+    assert!(!session.contains("load_state(&directory)"));
+    assert_eq!(session.matches("self.slots.save_with_native_work(").count(), 2);
+    assert!(!session.contains("self.slots.save("));
+    let open = session.split("impl SessionController {").nth(1).unwrap()
+        .split("pub(crate) fn state(").next().unwrap();
+    assert!(open.find("drop(loaded.0)").unwrap() < open.find("drop(loaded.1)").unwrap());
+    assert!(open.find("loaded.0.0, loaded.0.1, resources, work).await?").unwrap()
+        < open.find("custody.absorb(&mut loaded.1)").unwrap());
+    assert!(open.find("retain_owned(std::mem::size_of::<PiSession>()").unwrap()
+        < open.find("Self::Pi(Box::new(session))").unwrap());
 }
 
 #[test]
@@ -681,4 +729,8 @@ fn pi_service_fixture_retains_original_staged_command_through_native_admission()
         < fixture.find("drop(command.1)").unwrap());
     assert!(fixture.find("drop(admission.0)").unwrap()
         < fixture.find("drop(admission.1)").unwrap());
+    assert!(fixture.find("acquire_service_lock(data)").unwrap()
+        < fixture.find("bootstrap_configured_with_native_work(").unwrap());
+    assert!(fixture.contains("ServiceResources::open(data.to_path_buf(), private_root, &native_work)"));
+    assert!(fixture.contains("(resources, state, service_lock)"));
 }

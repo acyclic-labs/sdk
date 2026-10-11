@@ -181,7 +181,7 @@ impl<'a> PiSelectedHost<'a> {
         drop(encoded);
         result
     }
-    pub(crate) async fn selected(&self, context: &TaskContext, owner: &Arc<TaskJournalOwner<LocalStream>>,
+    pub(crate) async fn selected(&self, context: &TaskContext, native_context: Option<&Arc<NativeTaskContext>>, owner: &Arc<TaskJournalOwner<LocalStream>>,
         task: TaskId, requested: Option<&str>, pinned: Option<LazySnapshotRef>, operation: OperationId, cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork) -> Result<(String, VolumeRef, Arc<crate::LocalLazyWorkspace>, LazySnapshotRef,
         TaskSourceInspection<LocalStream, crate::LocalAuthorityBackend, crate::LocalObjectBackend>)> { authorize_selected_source(&self.runtime.runtime, self.protected.policy().root_task,
         context, owner, task, self.protected.policy().session_limits.depth, work).await?;
@@ -195,8 +195,12 @@ impl<'a> PiSelectedHost<'a> {
     let frozen = if let Some(pinned) = pinned { pinned } else if task == self.protected.policy().root_task {
         let actual = self.roots.get(&key).ok_or_else(|| denied("selected Root allocation unavailable"))?;
         if owner.task_id() == task {
-            consume_root(work, crate::pi_lazy_capture::freeze_root_source(task, context, owner, &actual.physical,
-                &workspace, work.remaining().map_err(native_error)?, cancellation).await)?
+            let shared = native_context.ok_or_else(|| denied("Root capture requires its actual native command context"))?;
+            let (snapshot, custody) = crate::pi_fork_host::freeze_created_root_source(
+                Arc::clone(&self.protected), self.resources, Arc::clone(&self.filesystem),
+                self.stream.clone(), shared, owner, input, &key, actual, work).await?;
+            drop(custody);
+            snapshot
         } else { *self.root_source_cut.and_then(|cut| cut.snapshots.get(&key))
             .ok_or_else(|| denied("foreign Root source needs its original observe-source ACK"))? }
     } else {
@@ -240,10 +244,10 @@ impl<'a> PiSelectedHost<'a> {
         work: &acyclic_fs::NativeMaterializationWork) -> Result<TaskCommandProgress> {
         let caller_custody = self.native_caller(context.context(), fence, work).await?;
         let (owner, caller, _) = &caller_custody;
-        self.run_bound(context.context(), Some(context.as_ref()), owner, caller, command, payload, reconcile,
+        self.run_bound(context.context(), Some(&context), owner, caller, command, payload, reconcile,
             work.cancellation(), work).await
     }
-    async fn run_bound(&self, context: &TaskContext, native_context: Option<&NativeTaskContext>, owner: &Arc<TaskJournalOwner<LocalStream>>,
+    async fn run_bound(&self, context: &TaskContext, native_context: Option<&Arc<NativeTaskContext>>, owner: &Arc<TaskJournalOwner<LocalStream>>,
         caller: &PiTaskInput, command: WorkflowCommand, payload: Value, reconcile: bool,
         cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork)
         -> Result<TaskCommandProgress> {
@@ -287,7 +291,7 @@ impl<'a> PiSelectedHost<'a> {
             self.read_import_intent(&context, import_operation, cancellation, work).await?
         } else { None };
         let pinned = pinned.or_else(|| prior_import.as_ref().map(|(intent, _)| intent.source_snapshot));
-        let (key, volume, workspace, frozen, inspection) = self.selected(&context, &owner, input.source,
+        let (key, volume, workspace, frozen, inspection) = self.selected(&context, native_context, &owner, input.source,
             input.root.as_deref(), pinned, operation, cancellation, work).await?;
         if cursor.is_some_and(|cursor| cursor.root != key) {
             return Err(denied("selected cursor changed its actual resolved source root"));
@@ -310,7 +314,7 @@ impl<'a> PiSelectedHost<'a> {
                 let baseline = self.native.frozen_source(input.source).ok_or_else(|| denied("diff requires the child's actual ORIGINAL frozen source"))?;
                 let source_task = self.native.selected_source_task(input.source)
                     .ok_or_else(|| denied("diff lost the original authorized selected source task"))?;
-                let (before_key, before_volume, before_workspace, before_frozen, before_inspection) = self.selected(&context, &owner,
+                let (before_key, before_volume, before_workspace, before_frozen, before_inspection) = self.selected(&context, native_context, &owner,
                     source_task, Some(&key), Some(baseline), operation, cancellation, work).await?;
                 let before = PiNativeSelectedSource::select(&before_inspection, source_task, input.caller,
                     &before_volume, &before_workspace, before_frozen, work)?;
@@ -476,7 +480,7 @@ impl<'a> From<&'a PiSelectedImportReceipt> for PiSelectedImportReceiptRef<'a> {
 }
 
 impl PiSelectedHost<'_> {
-    async fn publish_selection(&self, context: &TaskContext, native_context: Option<&NativeTaskContext>, owner: &Arc<TaskJournalOwner<LocalStream>>,
+    async fn publish_selection(&self, context: &TaskContext, native_context: Option<&Arc<NativeTaskContext>>, owner: &Arc<TaskJournalOwner<LocalStream>>,
         binding: &PiTaskBinding, input: &PiSelectedCommand, key: &str,
         selected: &PiNativeSelectedSource<'_, crate::LocalAuthorityBackend, crate::LocalObjectBackend,
             crate::LocalLazySource, crate::LocalCoreStateStore>,
@@ -514,7 +518,7 @@ impl PiSelectedHost<'_> {
     let destination_live = if destination != input.caller {
         Some(self.native.live_source(destination, work).await?.ok_or_else(|| denied("explicit destination has no ORIGINAL live owner"))?)
     } else { None };
-    let destination_context = destination_live.as_ref().map_or(context, |live| &live.context);
+    let destination_context = destination_live.as_ref().map_or(context, |live| live.context.context());
     let destination_owner = destination_live.as_ref().map_or(owner, |live| &live.owner);
     let child_workspace = if destination == self.protected.policy().root_task { None } else {
         Some(self.native.live_workspace(destination).ok_or_else(|| denied("destination child lost actual creator workspace"))?)
@@ -547,8 +551,13 @@ impl PiSelectedHost<'_> {
         if reconcile { return Ok(TaskCommandProgress::Pending); }
         let destination_snapshot = if destination == self.protected.policy().root_task {
             let root = self.roots.get(key).ok_or_else(|| denied("actual original Root unavailable"))?;
-            consume_root(work, crate::pi_lazy_capture::freeze_root_source(input.caller, context, owner, &root.physical,
-                &workspace, work.remaining().map_err(native_error)?, cancellation).await)?
+            let shared = native_context.ok_or_else(|| denied("Root import capture requires its actual native command context"))?;
+            let root_input = self.admission_input(input.caller, work).await?;
+            let (snapshot, custody) = crate::pi_fork_host::freeze_created_root_source(
+                Arc::clone(&self.protected), self.resources, Arc::clone(&self.filesystem),
+                self.stream.clone(), shared, owner, &root_input.0, key, root, work).await?;
+            drop(custody);
+            snapshot
         } else {
             let view = self.native.live_view(destination).ok_or_else(|| denied("destination original native view unavailable"))?;
             let (snapshot, custody) = crate::pi_lazy_capture::freeze_child_source(
@@ -587,7 +596,7 @@ impl PiSelectedHost<'_> {
                 return Ok(TaskCommandProgress::Pending);
             }
         }
-        result.map_err(|source| Error::NativeSource { source, custody: None })?
+        result.map_err(crate::pi_lazy_capture::native_lazy_error)?
     };
     let imported = if let Some(imported) = completed { imported } else {
         if reconcile || resuming_import { return Ok(TaskCommandProgress::Pending); }
@@ -629,7 +638,7 @@ impl PiSelectedHost<'_> {
             acyclic_harness::JsonValueSchema::None, SELECTED_DIAGNOSTIC_LABEL_BYTES, context, work).await
     }
     #[allow(clippy::too_many_arguments, reason = "original owner, frozen evidence and prepared approval are independent")]
-    async fn writeback(&self, context: &TaskContext, native_context: &NativeTaskContext, owner: &Arc<TaskJournalOwner<LocalStream>>,
+    async fn writeback(&self, context: &TaskContext, native_context: &Arc<NativeTaskContext>, owner: &Arc<TaskJournalOwner<LocalStream>>,
         input: &PiSelectedCommand, key: &str, volume: &VolumeRef, source_volume: &VolumeRef, imported: LazySnapshotRef,
         operation: OperationId, publication: acyclic_fs::PublicationPermit,
         verifier: &acyclic_harness::core::AuthorityVerifier, scope: &acyclic_harness::core::Scope,

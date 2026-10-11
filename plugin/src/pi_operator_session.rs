@@ -8,7 +8,9 @@ impl PiSession {
         original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>,
     ) -> acyclic_harness::Result<ControlDispatchResponse> {
         let work = Self::query_work(original_native_work)?;
-        let owner = pi_owner::PiOwnerConfig::load_with_native_work(&self.directory, &work)?;
+        let owner = pi_owner::PiOwnerConfig::load_with_native_work(
+            &self.resources.private_state_root, &self.relative_directory, &work,
+        )?;
         self.runtime.verify_owner_with_native_work(&owner, &work)?;
         let cancellation = work.cancellation();
         let request = pi_operator::PiOperatorRequest::from_value_with_native_work(arguments, &work)?;
@@ -26,23 +28,26 @@ impl PiSession {
         if self.roots.is_empty() { self.restore_root_sources(&work).await?; }
         let command = pi_operator_host::stage_operator_command(&self.runtime, &owner, &self.filesystem, &request.0, &work)
             .await?;
-        let native = self.native_host()?;
+        let native = self.native_host_with_native_work(&work)?;
+        let protected = native.original_owner();
         let fork = pi_fork_host::PiForkHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            self.resources.clone(), owner.clone(), &self.state, &self.roots, native.clone()).with_work(work.clone());
-        let selected = pi_selected_host::PiSelectedHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            self.resources.clone(), owner.clone(), &self.state, &self.roots, native)?
+            &self.resources, Arc::clone(&protected), &self.state, &self.roots, native.clone());
+        let selected = pi_selected_host::PiSelectedHost::new_with_native_work(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
+            &self.resources, Arc::clone(&protected), &self.state, &self.roots, native, &work)?
             .with_work(work.clone()).with_invocation_cancellation(cancellation);
         let operator = pi_operator_host::PiOperatorHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            owner, self.resources.clone(), &self.state.root_session_id, &selected, work.clone())?;
-        pi_workflow::PiWorkflowHost::new(&self.directory, self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            self.resources.clone(), &self.state).with_controls(&fork, &operator).with_work(work).control_command_with_native_work(command).await
+            protected, &self.resources, &self.state.root_session_id, &selected, work.clone())?;
+        pi_workflow::PiWorkflowHost::new(&self.relative_directory, self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
+            &self.resources, &self.state).with_controls(&fork, &operator).with_work(work).control_command_with_native_work(command).await
             .map(|(value, allocation)| (value, Some(allocation)))
     }
 
     pub(super) async fn writeback_status(&self, caller: TaskId, arguments: &Value,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<ControlDispatchResponse> {
-        let owner = pi_owner::PiOwnerConfig::load_with_native_work(&self.directory, work)?;
+        let owner = pi_owner::PiOwnerConfig::load_with_native_work(
+            &self.resources.private_state_root, &self.relative_directory, work,
+        )?;
         self.runtime.verify_owner_with_native_work(&owner, work)?;
         if caller != owner.policy().root_task { return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "writeback status requires its original Root caller" }); }
         let operation = arguments.get("operation").and_then(Value::as_str)

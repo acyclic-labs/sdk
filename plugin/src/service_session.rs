@@ -41,18 +41,27 @@ impl SessionController {
         resources: &ServiceResources,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<Self> {
-        let (state, slots) = load_state(&directory).map_err(RootError::Storage)?;
-        match &state.task_binding {
-            PluginTaskBinding::HostManaged => resources
-                .open_session_directory(directory)
-                .await
-                .map(Self::from).map_err(RootError::Storage),
+        let relative_directory = resources.private_session_data(&directory)?;
+        let mut loaded = crate::adapter_state::load_state_with_native_work(
+            &resources.private_state_root, relative_directory, work,
+        )?;
+        match &loaded.0.0.task_binding {
+            PluginTaskBinding::HostManaged => {
+                let host = resources.open_session_directory(directory).await.map_err(RootError::Storage)?;
+                drop(loaded.0);
+                drop(loaded.1);
+                Ok(Self::from(host))
+            }
             PluginTaskBinding::Pi(_) => {
                 // Admit the existing actor box payload before Box::new. This
                 // logical ownership claim is not a fabricated SDK allocator event.
-                let custody = work.retain_owned(std::mem::size_of::<PiSession>() as u64)
+                let mut custody = work.retain_owned(std::mem::size_of::<PiSession>() as u64)
                     .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
-                let session = PiSession::open(directory, state, slots, resources, work).await?;
+                let session = PiSession::open(directory, loaded.0.0, loaded.0.1, resources, work).await?;
+                // The original state was moved, not copied: transfer its
+                // exclusive claim into the actor while every field is live.
+                custody.absorb(&mut loaded.1)
+                    .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
                 Self::Pi(Box::new(session)).retain_original_input(custody)
             }
         }
@@ -129,6 +138,7 @@ impl SessionController {
 
 pub(crate) struct PiSession {
     directory: PathBuf,
+    relative_directory: PathBuf,
     state: AdapterState,
     slots: StateSlots,
     runtime: Arc<PiRuntime>,
@@ -272,10 +282,15 @@ impl PiSession {
         let PluginTaskBinding::Pi(binding) = &state.task_binding else {
             return Err(RootError::Invalid("Pi session has no original task binding".to_owned()));
         };
-        if directory != resources.session_directory(&state.root_session_id) {
-            return Err(RootError::Invalid("Pi session directory differs from its original identity".to_owned()));
+        let relative_directory = resources.private_session_data(&directory)?;
+        if !resources.original_session_directory_matches(relative_directory, &state.root_session_id, work)? {
+            return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi session directory differs from its original identity" });
         }
-        let owner = pi_owner::PiOwnerConfig::load_with_native_work(&directory, work)?;
+        let relative_directory = work.copy_path(relative_directory)
+            .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
+        let owner = pi_owner::PiOwnerConfig::load_with_native_work(
+            &resources.private_state_root, &relative_directory.0, work,
+        )?;
         owner.validate_root(binding)?;
         // Recovery never bootstraps a missing task provider. Original admission
         // authentication below still rejects an empty or unrelated history.
@@ -298,19 +313,26 @@ impl PiSession {
             .await?;
         drop(observations);
         drop(custody);
-        Ok(Self {
+        let resources = pi_root_provider::service_resources_with_native_work(resources, work)?;
+        let mut owned = (Self {
             directory,
+            relative_directory: relative_directory.0,
             state,
             slots,
             runtime: Arc::new(runtime),
             filesystem,
             stream,
-            resources: resources.clone(),
+            resources: resources.0,
             roots: BTreeMap::new(),
             native: None,
             native_jobs: BTreeMap::new(),
-            native_startup_custody: None,
-        })
+            native_startup_custody: Some(relative_directory.1),
+        }, resources.1);
+        owned.0.native_startup_custody.as_mut()
+            .ok_or(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi actor lost its original relative source custody" })?
+            .absorb(&mut owned.1)
+            .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
+        Ok(owned.0)
     }
 
     /// Drives the original allocation command, then activates only its signed,
@@ -326,21 +348,23 @@ impl PiSession {
     async fn prepare_root_with_allocation(&mut self, allow_allocation: bool,
         original_native_work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<()> {
-        let owner = pi_owner::PiOwnerConfig::load_with_native_work(&self.directory, original_native_work)?;
+        let owner = pi_owner::PiOwnerConfig::load_with_native_work(
+            &self.resources.private_state_root, &self.relative_directory, original_native_work,
+        )?
+            .into_native_shared(original_native_work)?;
         self.runtime.verify_owner_with_native_work(&owner, original_native_work)?;
         let PluginTaskBinding::Pi(binding) = &self.state.task_binding else {
             return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root has no original task binding" });
         };
         let preparation = pi_root_inputs::PiRootPreparation::load_native_from_state(
-            &self.directory, self.runtime.as_ref(), &self.filesystem, &self.state,
+            &self.resources.private_state_root, &self.relative_directory, self.runtime.as_ref(), &self.filesystem, &self.state,
             None, original_native_work,
         ).await?;
         // Restore the original completed creator before running any Root
         // checkpoint: a cold Root may already be waiting on a child command.
         let observed = pi_root_provider::observe_root_allocation(
-            owner.clone(), self.resources.clone(), self.filesystem.clone(), self.stream.clone(),
-            preparation, pi_root_provider::allocation_budget(),
-            original_native_work.cancellation().clone(), original_native_work,
+            Arc::clone(&owner), &self.resources, self.filesystem.clone(), self.stream.clone(),
+            preparation, original_native_work,
         ).await?;
         let mut handles = BTreeMap::new();
         let mut allocation = match observed {
@@ -350,8 +374,8 @@ impl PiSession {
                     return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi Root source has no original successful allocation to restore" });
                 }
                 let driver = pi_workflow::PiWorkflowHost::new(
-                    &self.directory, self.runtime.clone(), self.filesystem.clone(),
-                    self.stream.clone(), self.resources.clone(), &self.state,
+                    &self.relative_directory, self.runtime.clone(), self.filesystem.clone(),
+                    self.stream.clone(), &self.resources, &self.state,
                 ).with_work(original_native_work.clone());
                 let progress = driver.drive_root().await?;
                 let unresolved = match progress.0 {
@@ -376,13 +400,12 @@ impl PiSession {
                     allocation
                 } else {
                 let preparation = pi_root_inputs::PiRootPreparation::load_native_from_state(
-                    &self.directory, self.runtime.as_ref(), &self.filesystem, &self.state,
+                    &self.resources.private_state_root, &self.relative_directory, self.runtime.as_ref(), &self.filesystem, &self.state,
                     None, original_native_work,
                 ).await?;
                 let Some(allocation) = pi_root_provider::observe_root_allocation(
-                    owner, self.resources.clone(), self.filesystem.clone(), self.stream.clone(),
-                    preparation, pi_root_provider::allocation_budget(),
-                    original_native_work.cancellation().clone(), original_native_work,
+                    owner, &self.resources, self.filesystem.clone(), self.stream.clone(),
+                    preparation, original_native_work,
                 ).await? else {
                     return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root has no authenticated successful allocation output" });
                 };
@@ -401,7 +424,7 @@ impl PiSession {
         ).await?;
         let read_owner = &read_authority.0;
         let read_context = &read_authority.1;
-        let proof_directory = &self.directory;
+        let proof_directory = &self.relative_directory;
         let proof_runtime = self.runtime.as_ref();
         let proof_filesystem = &self.filesystem;
         let proof_stream = &self.stream;
@@ -426,14 +449,14 @@ impl PiSession {
                     &root.path, SharedRootAdmission::Resume(expected), original_native_work,
                     || async move {
                         let preparation = pi_root_inputs::PiRootPreparation::load_native_from_state(
-                            proof_directory, proof_runtime, proof_filesystem, proof_state,
+                            &proof_resources.private_state_root, proof_directory, proof_runtime, proof_filesystem, proof_state,
                             Some(Arc::clone(read_context)), original_native_work,
                         ).await?;
-                        let owner = pi_owner::PiOwnerConfig::load_with_native_work(
-                            proof_directory, original_native_work,
-                        )?;
+                        let owner = pi_owner::PiOwnerConfig::load_readonly_with_native_work(
+                            &proof_resources.private_state_root, proof_directory, original_native_work,
+                        )?.into_native_shared(original_native_work)?;
                         pi_root_provider::guard_created_root_source_with_native_work(
-                            owner, proof_resources.clone(), Arc::clone(proof_filesystem),
+                            owner, proof_resources, Arc::clone(proof_filesystem),
                             proof_stream.clone(), preparation, read_owner, key,
                             expected_allocation, original_native_work,
                         ).await
@@ -486,7 +509,7 @@ impl PiSession {
         for (key, creation) in allocation.0.1.roots {
             self.state.roots.get_mut(&key).ok_or(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi allocated root disappeared" })?.allocation = RootAllocation::Created(creation);
         }
-        self.slots.save(&self.directory, &self.state, Survives::PowerLoss).map_err(RootError::Storage)?;
+        self.slots.save_with_native_work(&self.resources.private_state_root, &self.relative_directory, &self.state, Survives::PowerLoss, original_native_work)?;
         let distributed = DistributedFs::new(self.resources.fs.clone(), self.resources.store.clone());
         let PluginTaskBinding::Pi(binding) = &self.state.task_binding else {
             return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root binding changed during allocation" });
@@ -557,7 +580,7 @@ impl PiSession {
         // resident in their real physical handles, not a Pi retention map.
         drop(allocation.0.0);
         drop(allocation.1);
-        self.slots.save(&self.directory, &self.state, Survives::PowerLoss).map_err(RootError::Storage)
+        self.slots.save_with_native_work(&self.resources.private_state_root, &self.relative_directory, &self.state, Survives::PowerLoss, original_native_work)
     }
 
     fn binding(&self, task: TaskId) -> acyclic_harness::Result<&PiTaskBinding> {
@@ -702,7 +725,7 @@ impl PiSession {
         if caller == owner.policy().root_task {
             Ok(query_work.clone())
         } else {
-            self.native_host()?.invocation_work(caller).await
+            self.native_host_with_native_work(query_work)?.invocation_work(caller).await
         }
     }
 
@@ -724,13 +747,13 @@ impl PiSession {
             .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
         let envelope = pi_mail::PiMailEnvelope { kind, message: message.to_owned() };
         if caller == owner.policy().root_task {
-            let (command, _command_custody) = pi_mail::stage_send(
+            let command = pi_mail::stage_send(
                 owner, &self.filesystem, operation, caller, recipient, envelope, &work,
             ).await?;
             return pi_workflow::PiWorkflowHost::new(
-                &self.directory, self.runtime.clone(), self.filesystem.clone(),
-                self.stream.clone(), self.resources.clone(), &self.state,
-            ).with_work(work).control_command_with_native_work(command).await;
+                &self.relative_directory, self.runtime.clone(), self.filesystem.clone(),
+                self.stream.clone(), &self.resources, &self.state,
+            ).with_work(work).control_command_with_native_work(command.0).await;
         }
         let binding = self.binding(caller)?;
         let host = self.runtime.runtime.task_host();
@@ -744,12 +767,12 @@ impl PiSession {
         let fence = acyclic_harness::scheduler::LeaseFence::from(&lease.reservation);
         let journal_owner = host.journal_owner(binding.task_id, fence.clone()).await?;
         let context = self.runtime.runtime.task_context(caller, fence.clone()).await?;
-        let (command, _command_custody) = pi_mail::prepare_send(
+        let command = pi_mail::prepare_send(
             &context, &journal_owner, owner, &self.filesystem, operation, recipient, envelope,
             |sender, destination| self.authorize_mail(sender, destination),
             &work,
         ).await?;
-        match pi_mail::execute_send(&self.runtime.runtime, context, &journal_owner, fence, command, &work)
+        match pi_mail::execute_send(&self.runtime.runtime, context, &journal_owner, fence, command.0, &work)
             .await?
         {
             acyclic_harness::filesystem::TaskCommandProgress::ReadyWithNativeCustody { value, custody } =>
@@ -798,7 +821,9 @@ impl PiSession {
             }
             let session = request.arguments.get("session_id").and_then(Value::as_str)
                 .ok_or(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi control requires its original session identity" })?;
-            let owner = pi_owner::PiOwnerConfig::load_with_native_work(&self.directory, &query_work)?;
+            let owner = pi_owner::PiOwnerConfig::load_with_native_work(
+                &self.resources.private_state_root, &self.relative_directory, &query_work,
+            )?;
             self.runtime.verify_owner_with_native_work(&owner, &query_work)?;
             let caller = request.arguments.get("caller")
                 .map(|value| acyclic_harness::core::Scope::from_value_with_native_work(value, &query_work))
