@@ -127,6 +127,7 @@ async fn merge_plan(fixture: &Fixture, effect: OperationId) -> Result<(Recursive
         caller: TaskId::from_bytes([8; 16]), operation_id: effect, destination: fixture.parent.reducer().authority().clone(),
         source: Authority { kind: AggregateKind::Conversation, id: "recursive-default-child".into() }, source_project: fixture.source.clone(),
         source_generation: fixture.source_generation.clone(), target_project: fixture.project.clone(), expected_target_generation: fixture.host.generation_ref_id(inspected.target_head())?,
+        authorized_source: None,
         notice: ConversationMessage { id: uuid::Uuid::from_bytes([30; 16]), sequence: 1, kind: MessageKind::Merge,
             content: file, attachments: Vec::new().into(), reply_to: None, tool_call_id: None, extensions: BTreeMap::new() } };
     let command_payload = fixture.host.put_content(&fixture.private, &write, "merge/command.json", &crate::contract::canonical_json_bytes(&plan)?, "application/json", "command.json", 65536, &IdempotencyKey::new("merge-command")?).await?;

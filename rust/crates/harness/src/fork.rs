@@ -1969,6 +1969,30 @@ pub trait ForkCaptureProvider: acyclic_stream::ProviderPlatform {
         request: &'a ForkRequest,
         selection: &'a ForkSelection,
     ) -> BoxFuture<'a, Result<Option<Capture>>>;
+
+    /// Captures the same immutable selection on the supplied original native
+    /// ledger. The returned allocation stays after the capture through physical
+    /// drop; rejection happens before constructing any provider future.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn capture_with_native_work<'a>(
+        &'a self, _request: &'a ForkRequest, _selection: &'a ForkSelection,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Capture, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+            reason: "fork capture provider has no original native callback" })
+    }
+
+    /// Reconciles the original capture operation without repeating uncertain
+    /// effects or replacing its pinned selection. Ordinary custom adapters do
+    /// not implicitly acquire a native execution guarantee.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn reconcile_with_native_work<'a>(
+        &'a self, _request: &'a ForkRequest, _selection: &'a ForkSelection,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Option<Capture>, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+            reason: "fork capture provider has no original native reconciliation callback" })
+    }
 }
 
 // Logical key/value slots and owned identity buffers, not allocator/node overhead.

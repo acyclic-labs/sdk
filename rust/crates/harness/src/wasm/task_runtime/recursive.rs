@@ -145,12 +145,13 @@ impl WasmTaskRuntime {
         let snapshot = parent.reducer().snapshot_with_event_limit(1).map_err(js_error)?;
         let arguments: ForkToolArguments = from_js(arguments)?;
         let operation = OperationId::parse(&operation).map_err(js_error)?;
+        let owner = Arc::new(self.runtime.task_host().journal_owner(caller, context.owned_task_fence().map_err(js_error)?).await.map_err(js_error)?
+            .with_invocation_cancellation(&cancellation));
+        let resolver = context.content_residency_verifier(owner.clone()).map_err(js_error)?;
         let source_read = if let Some(selected) = arguments.source.filter(|selected| *selected != caller) {
             let policy = self.project_source_policy.as_ref().ok_or_else(|| js_error(Error::Unauthorized("foreign source lacks configured RootService policy".into())))?;
             let selected_project = config.selected_project.ok_or_else(|| js_error(Error::Invalid("foreign source requires exact project snapshot metadata".into())))?;
             let policy_limits = config.source_policy_limits.ok_or_else(|| js_error(Error::Invalid("foreign source requires explicit finite policy limits".into())))?;
-            let owner = Arc::new(self.runtime.task_host().journal_owner(caller, context.owned_task_fence().map_err(js_error)?).await.map_err(js_error)?
-                .with_invocation_cancellation(&cancellation));
             Some(owner.authorize_project_source(&context, &self.service_issuer, policy.as_ref(), selected,
                 operation, selected_project, policy_limits.work, policy_limits.bytes).await.map_err(js_error)?)
         } else {
@@ -166,7 +167,7 @@ impl WasmTaskRuntime {
                 child_private: config.child_private, child_result_volume: config.child_result_volume,
                 limits, inherited_messages: config.inherited_messages,
                 inherited_bytes: config.inherited_bytes, inherited_references: config.inherited_references,
-                history_limits: config.history_limits }, source_read, &cancellation).await.map_err(js_error)?;
+                history_limits: config.history_limits }, source_read, resolver, &cancellation).await.map_err(js_error)?;
         Ok(WasmRecursiveForkSource { binding, filesystem: self.filesystem.clone(), caller, snapshot })
     }
 
@@ -200,14 +201,15 @@ impl WasmTaskRuntime {
             return Err(js_error(Error::Unauthorized("original fork source head differs from canonical Stream".into())));
         }
         let request: ForkRequest = from_js(request)?;
+        let owner = Arc::new(self.runtime.task_host().journal_owner(caller, context.owned_task_fence().map_err(js_error)?).await.map_err(js_error)?
+            .with_invocation_cancellation(&cancellation));
+        let resolver = context.content_residency_verifier(owner.clone()).map_err(js_error)?;
         let source_read: Option<ProjectSourceReadHandle> = if let Some(authorization) = &request.authorized_source {
-            let owner = Arc::new(self.runtime.task_host().journal_owner(caller, context.owned_task_fence().map_err(js_error)?).await.map_err(js_error)?
-                .with_invocation_cancellation(&cancellation));
             Some(owner.restore_project_source_authorization(&context, authorization).await.map_err(js_error)?)
         } else { None };
         let binding = restore_recursive_fork_source(self.filesystem.clone(), &self.stream,
             &original_owner.reducer, original_owner.issuer.verifier(), signed, source.project,
-            from_js(stream_provider)?, request, history_limits, source_read, &cancellation).await.map_err(js_error)?;
+            from_js(stream_provider)?, request, history_limits, source_read, resolver, &cancellation).await.map_err(js_error)?;
         Ok(WasmRecursiveForkSource { binding, filesystem: self.filesystem.clone(), caller, snapshot })
     }
 

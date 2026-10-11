@@ -281,6 +281,23 @@ standard-library allocator backing is not an RSS claim. Custody membership is
 not authority: the original scope MAC, parent agent, provider and history cut
 are still verified before filesystem work.
 
+`recursive_fork_source_with_native_work`,
+`restore_recursive_fork_source_with_native_work`, and
+`fork_preparation_request_with_native_work` expose the same configured recursive
+source, protected request and ordinary preparation machine on the original
+native ledger. A new child agent ID, intended child task, preparation task and
+original effect remain distinct. The default source is the actual current task;
+an explicit foreign Project uses its immutable operation-specific sealed handle,
+never a replacement caller scope or a transcript grant. Native custom capture
+providers must implement the funded capture/reconciliation callbacks.
+
+The recursive invocation's local cancellation view shares the original resource
+ledger, but owns its separate stop token. Dropping that invocation stops later
+SDK activity without canceling the borrowed task/root token or claiming that an
+already accepted backend effect stopped. A successful returned payload transfers
+its actual custody into the original work before the local stop guard drops, so
+the receiving task can still verify the response under its original allowance.
+
 An optional explicit child result volume uses the same original fork, protected
 allocation claims and admission proofs. Its mandatory `Result` role creates an
 empty, unmounted private volume with READ/WRITE custody; it is never inferred

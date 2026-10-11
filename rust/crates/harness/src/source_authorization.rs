@@ -66,6 +66,12 @@ pub trait RootProjectSourceProvider: acyclic_stream::ProviderPlatform {
         snapshot: &'a ProjectSourceSnapshot,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>;
 
+    /// Advertises genuine original-ledger project verification, never ordinary
+    /// verification hidden inside a funded frame. Custom ordinary policies remain
+    /// usable without advertising a native selected-source route.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_source(&self) -> bool { false }
+
     /// Authenticates that same exact selection on the supplied original native
     /// ledger. Implementations admit their concrete callback future before
     /// boxing it and use native observed backend operations, not an ordinary

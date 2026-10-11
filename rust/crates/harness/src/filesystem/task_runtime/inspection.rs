@@ -20,7 +20,9 @@ pub struct TaskSourceInspection<P, A, O> {
     volumes: Vec<crate::durable_host::TaskVolumeSnapshot>,
     reader: SourceReader<P, A, O>,
     #[cfg(not(target_arch = "wasm32"))]
-    _native_metadata_custody: Option<(acyclic_fs::NativeAllocation, acyclic_fs::NativeAllocation)>,
+    _native_metadata_custody: Option<(
+        acyclic_fs::NativeAllocation, acyclic_fs::NativeAllocation, acyclic_fs::NativeAllocation,
+    )>,
 }
 
 impl<P, A, O> TaskSourceInspection<P, A, O>
@@ -188,27 +190,35 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     /// Opens the same sealed selected-project reader under the original native
     /// ledger. Returned source metadata stays in that ledger's custody until
     /// its physical drop; caller authority is neither cloned nor broadened.
+    /// Consumes the authenticated handle together with its original native
+    /// allocation. That guard remains after the reader and metadata fields,
+    /// including on rejected selection or a failed opening boundary.
     #[cfg(not(target_arch = "wasm32"))]
     #[allow(clippy::too_many_arguments, reason = "original owner, exact selection and native work are explicit")]
     pub async fn inspect_project_source_with_native_work(
         &self, context: &TaskContext, owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
-        handle: crate::source_authorization::ProjectSourceReadHandle,
+        handle: (crate::source_authorization::ProjectSourceReadHandle, acyclic_fs::NativeAllocation),
         operation: OperationId, source: TaskId,
         snapshot: &crate::source_authorization::ProjectSourceSnapshot,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<TaskSourceInspection<P, A, O>> {
+        work.remaining()?;
+        if !handle.1.matches_work(work) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "selected source handle custody belongs to another original work" });
+        }
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        handle.require_selection_with_native_work(
+        handle.0.require_selection_with_native_work(
             operation, source, &snapshot.project, &snapshot.generation,
             snapshot.native_snapshot.as_ref(), work,
         )?;
         io.remaining()?.verify(crate::filesystem::finite_budget(
-            handle.authorization().maximum_work, handle.authorization().maximum_bytes,
+            handle.0.authorization().maximum_work, handle.0.authorization().maximum_bytes,
         )).map_err(|_| Error::NativeBoundary {
             code: crate::wire::ErrorCode::Invalid,
             reason: "selected native inspection exceeds its original source allowances",
         })?;
-        owner.verify_project_source_handle_with_native_work(context, &handle, work).await?;
+        owner.verify_project_source_handle_with_native_work(context, &handle.0, work).await?;
         // Keep each payload and its guard together across fallible boundaries.
         // Tuple field order drops the payload before its allocation custody.
         let admission = self.host.observe_admission_with_native_work(source, work).await?;
@@ -216,11 +226,11 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let volumes = self.host.observe_volume_snapshots_with_native_work(admission.0.task_id(), work).await?;
         owner.verify_with_native_work(false, work).await?;
         let reader = ProjectSourceReader::open_with_io(
-            self.filesystem.clone(), owner, handle, context.scope().limits(), io,
+            self.filesystem.clone(), owner, handle.0, context.scope().limits(), io,
         ).await?;
         Ok(TaskSourceInspection {
             source: admission.0, volumes: volumes.0, reader: SourceReader::Project(reader),
-            _native_metadata_custody: Some((admission.1, volumes.1)),
+            _native_metadata_custody: Some((admission.1, volumes.1, handle.1)),
         })
     }
 }

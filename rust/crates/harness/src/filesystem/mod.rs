@@ -107,6 +107,11 @@ pub use recursive::{
     RecursiveSourceSnapshot, RecursiveForkConfig, RetainedSourceBinding,
     recursive_fork_source, restore_recursive_fork_source,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use recursive::{
+    fork_preparation_request_with_native_work, recursive_fork_source_with_native_work,
+    restore_recursive_fork_source_with_native_work,
+};
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_execution::{
     BorrowedNativeVolumeBinding, NativePreparationReceipt, NativePreparationRoot,

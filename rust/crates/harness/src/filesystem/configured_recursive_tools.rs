@@ -23,6 +23,8 @@ use acyclic_stream::{BoxProviderFuture, StreamClient, StreamProvider};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock, Weak};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::store::history::HistoryIo;
 
 type Owner<P, A, O> = RecursiveToolOwner<P, A, O>;
 type ForkBinding<P, A, O> = RecursiveForkToolBinding<P, A, O>;
@@ -30,13 +32,41 @@ type MergeBinding<P, A, O> = RecursiveMergeToolBinding<P, A, O>;
 
 /// Host-owned conversation signing credentials and its exact signed actor.
 /// These are configuration, never model arguments or a foreign scope import.
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone)]
 pub struct ConfiguredRecursiveAuthorityBinding {
-    pub authority: Authority,
-    pub issuer: String,
-    pub key: [u8; 32],
+    issuer: AuthorityIssuer,
     pub scope: Scope,
+}
+
+impl ConfiguredRecursiveAuthorityBinding {
+    /// Retains the original installed signer; setup authenticates its scope
+    /// through the same configured source validation used for wire bindings.
+    #[must_use]
+    pub fn new(issuer: AuthorityIssuer, scope: Scope) -> Result<Self> { Ok(Self { issuer, scope }) }
+
+    #[must_use]
+    pub fn authority(&self) -> &Authority { self.issuer.audience() }
+
+    #[must_use]
+    pub const fn issuer(&self) -> &AuthorityIssuer { &self.issuer }
+}
+
+impl<'de> Deserialize<'de> for ConfiguredRecursiveAuthorityBinding {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D)
+        -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct WireBinding {
+            authority: Authority,
+            issuer: String,
+            key: [u8; 32],
+            scope: Scope,
+        }
+        let wire = WireBinding::deserialize(deserializer)?;
+        // Move the already decoded finite credential fields into their original
+        // issuer. Deserialization neither verifies nor mints a replacement scope.
+        Ok(Self { issuer: AuthorityIssuer::new(wire.issuer, wire.key, wire.authority), scope: wire.scope })
+    }
 }
 
 /// Explicit root binding or descendant binding checked against real admission.
@@ -120,6 +150,70 @@ pub struct ConfiguredRecursiveToolsConfig {
 #[serde(deny_unknown_fields)]
 struct SourceCheckpoint { snapshot: Snapshot, request: ForkRequest, caller: TaskId, arguments: ForkToolArguments }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl crate::filesystem::PreparationRecord for SourceCheckpoint {
+    fn maximum_slot_bytes() -> u64 {
+        [
+            crate::filesystem::preparation_slot_bytes::<Self>(),
+            std::mem::size_of::<crate::fork::ForkRequest>() as u64,
+            std::mem::size_of::<crate::fork::ForkSelection>() as u64,
+            std::mem::size_of::<crate::fork::ResourceRevision>() as u64,
+            std::mem::size_of::<crate::source_authorization::ProjectSourceAuthorization>() as u64,
+            std::mem::size_of::<crate::core::Scope>() as u64,
+            std::mem::size_of::<crate::conversation::FileRef>() as u64,
+        ].into_iter().max().unwrap_or(0)
+    }
+
+    fn diagnostic_label_bytes() -> u64 {
+        const LABELS: &str = concat!(
+            "SourceCheckpoint snapshot request caller arguments ForkToolArguments id msg source ",
+            "Snapshot Projection ConversationStateWire ArchivedConversationPrefix ",
+            "format_version authority revision events projection state_digest attestation ",
+            "lifecycle active_extensions active_extension_revision extension_states ",
+            "configured_extensions active_configurations effects indexed_terminal_effects ",
+            "effects_archived forks published_merges conversation latest_context_checkpoint ",
+            "interactions bindings capabilities issuer intent_digest scope causal_parent ",
+            "messages archived_prefix through_sequence history_digest ",
+            "archived conversation prefix is unbound conversation order or identity is invalid ",
+            "message identity is nil message sequence must start at one ",
+            "extension key must be namespaced tool linkage does not match message kind ",
+            "file or volume label is invalid checkpoint snapshot is invalid ",
+        );
+        crate::contract::preparation_serde_diagnostic_label_bytes() + LABELS.len() as u64 + 4
+    }
+
+    fn json_value_schema() -> crate::contract::JsonValueSchema {
+        crate::contract::JsonValueSchema::ConfiguredRecursiveSourceCheckpoint
+    }
+
+    fn decode_owned_allowance(
+        shape: crate::contract::JsonValueShape, codec_scratch: u64, input_bytes: u64,
+        native_code: Option<crate::wire::ErrorCode>,
+    ) -> Result<u64> {
+        let overflow = || match native_code {
+            Some(code) => Error::NativeBoundary { code,
+                reason: "configured source checkpoint ownership overflows" },
+            None => Error::Invalid("configured source checkpoint ownership overflows".into()),
+        };
+        // The original sealed shape covers all Snapshot caches, its one live
+        // canonical history converter, and the selected Value/Raw payloads.
+        let snapshot = crate::contract::snapshot_json_ownership(
+            shape, 128, native_code,
+        )?;
+        // These are the containing DTO/ForkRequest's actual typed and Content
+        // containers and strings, not a second generic Value/Raw allowance.
+        let outer = shape.lexical_items().checked_mul(10)
+            .and_then(|items| items.checked_mul(Self::maximum_slot_bytes()))
+            .and_then(|bytes| input_bytes.checked_mul(4).and_then(|strings| bytes.checked_add(strings)))
+            .and_then(|bytes| bytes.checked_add(codec_scratch.max(input_bytes)))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>() as u64))
+            .ok_or_else(overflow)?;
+        snapshot.maximum_owned_bytes.checked_sub(snapshot.diagnostic_bytes)
+            .and_then(|bytes| bytes.checked_add(crate::contract::sdk_json_diagnostic_bytes()))
+            .and_then(|bytes| bytes.checked_add(outer)).ok_or_else(overflow)
+    }
+}
+
 /// Portable source factory using the runtime's actual Filesystem and Stream.
 pub struct ConfiguredRecursiveToolSource<P, A, O> {
     config: ConfiguredRecursiveToolsConfig,
@@ -189,7 +283,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             original.request.validate()?;
             let caller = config.callers.iter().find(|caller| caller.task == original.caller)
                 .ok_or_else(|| Error::Unauthorized("original source lacks its actual configured caller".into()))?;
-            if original.request.parent != caller.owner.authority
+            if &original.request.parent != caller.owner.authority()
                 || original.snapshot.authority != original.request.parent
                 || original.snapshot.revision != original.request.parent_revision
                 || config.original_sources[..index].iter().any(|prior| prior.request.operation_id == original.request.operation_id) {
@@ -227,15 +321,19 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             .ok_or_else(|| Error::Unauthorized("task has no explicit signed configured source binding".into()))
     }
 
-    async fn authenticate_caller(&self, context: &ToolContext, require_project_read: bool) -> Result<ConfiguredRecursiveCaller> {
+    async fn authenticate_caller<'a>(&'a self, context: &ToolContext, require_project_read: bool) -> Result<&'a ConfiguredRecursiveCaller> {
         let task = context.durable_task_id().ok_or_else(|| Error::Unauthorized("configured tool has no admitted caller".into()))?;
         let caller = self.caller(task)?;
         let runtime = self.runtime()?;
         let admission = runtime.task_host().observe_admission(task).await?;
         if admission.parent.is_some() {
             let inspection = runtime.inspect_source(task, task).await?;
-            if inspection.agent()? != caller.owner.scope.agent().ok_or_else(|| Error::Unauthorized("configured caller has no signed agent".into()))?
-                || inspection.project()?.volume != caller.project || inspection.private_volume()?.volume != caller.private_volume {
+            if inspection.project()?.volume != caller.project
+                || context.scope().current_created_authority()? != Some(caller.owner.authority())
+                || context.scope().current_created_private_volume()? != Some(&caller.private_volume)
+                || inspection.volumes().iter().filter(|snapshot| snapshot.volume == caller.private_volume).count() != 1
+                || caller.result_volume.as_ref().is_some_and(|result|
+                    inspection.volumes().iter().filter(|snapshot| &snapshot.volume == result).count() != 1) {
                 return Err(Error::Unauthorized("configured descendant is not its actual admitted source allocation".into()));
             }
         }
@@ -248,18 +346,23 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             }
             ContentGrant::verify(&verifier, &caller.owner.scope, volume, VolumeOperation::Read)?;
         }
-        let mut caller = caller.clone();
-        // The real task owner authenticated these effective grants at admission,
-        // including exact inherited ReadFile proofs. Retain the configured
-        // conversation authority and agent, never another task's scope.
-        caller.owner = effective_owner(&caller.owner, context.scope().grants())?;
         Ok(caller)
     }
 
     fn bind_aggregate(&self, binding: &ConfiguredRecursiveAuthorityBinding,
         aggregate: StreamAggregate<P>) -> Result<StreamAggregate<P>> {
-        let verifier = verifier(binding)?;
-        let content = Arc::new(FilesystemContentVerifier::new(self.filesystem.clone(), verifier, binding.scope.clone(), self.limits.file_bytes)?);
+        self.bind_aggregate_reader(binding, &binding.scope, aggregate, None)
+    }
+
+    fn bind_aggregate_reader(
+        &self, binding: &ConfiguredRecursiveAuthorityBinding, scope: &Scope,
+        aggregate: StreamAggregate<P>, content: Option<Arc<dyn crate::conversation::ContentResidencyVerifier>>,
+    ) -> Result<StreamAggregate<P>> {
+        let content = match content {
+            Some(content) => content,
+            None => Arc::new(FilesystemContentVerifier::new(self.filesystem.clone(), verifier(binding)?,
+                scope.clone(), self.limits.file_bytes)?),
+        };
         let forks = Arc::new(CompositeForkVerifier::new(vec![
             Arc::new(FilesystemForkVerifier::new(self.filesystem.clone(), self.limits.file_bytes)?),
             Arc::new(StreamHistoryForkVerifier::new(self.config.stream_provider.clone())?),
@@ -272,10 +375,22 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     async fn aggregate(&self, binding: &ConfiguredRecursiveAuthorityBinding,
         cancellation: &CancellationToken) -> Result<StreamAggregate<P>> {
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-        let aggregate = StreamAggregate::open_with_read_limits(&self.stream, binding.authority.clone(),
+        let aggregate = StreamAggregate::open_with_read_limits(&self.stream, binding.authority().clone(),
             verifier(binding)?, SchemaRegistry::default(), self.config.history_limits).await?;
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
         self.bind_aggregate(binding, aggregate)
+    }
+
+    async fn publication_aggregate(
+        &self, binding: &ConfiguredRecursiveAuthorityBinding, scope: &Scope,
+        content: Option<Arc<dyn crate::conversation::ContentResidencyVerifier>>,
+        cancellation: &CancellationToken,
+    ) -> Result<StreamAggregate<P>> {
+        cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
+        let aggregate = StreamAggregate::open_with_read_limits(&self.stream, binding.authority().clone(),
+            verifier(binding)?, SchemaRegistry::default(), self.config.history_limits).await?;
+        cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
+        self.bind_aggregate_reader(binding, scope, aggregate, content)
     }
 
     fn allocation(&self, caller: TaskId, arguments: &ForkToolArguments) -> Result<&ConfiguredRecursiveFork> {
@@ -303,7 +418,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             if !crate::runtime::read_granted(context.scope().grants(), file)? {
                 return Err(Error::Unauthorized("current caller cannot delegate the configured exact launch file".into()));
             }
-            ContentGrant::verify_read(&verifier(&caller.owner)?, &caller.owner.scope, file)?;
+            context.task().authorize_file_read(file)?;
             let grant = file.read_capability()?;
             grants.push(grant.clone());
             scoped.push(grant);
@@ -315,19 +430,19 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             if !crate::runtime::read_granted(context.scope().grants(), &reference.file)? {
                 return Err(Error::Unauthorized("current caller cannot delegate this exact inherited file".into()));
             }
-            ContentGrant::verify_read(&verifier(&caller.owner)?, &caller.owner.scope, &reference.file)?;
+            context.task().authorize_file_read(&reference.file)?;
             if let Some(manifest) = &reference.attachment_manifest {
                 if !crate::runtime::read_granted(context.scope().grants(), manifest)? {
                     return Err(Error::Unauthorized("current caller cannot delegate the authenticated attachment manifest".into()));
                 }
-                ContentGrant::verify_read(&verifier(&caller.owner)?, &caller.owner.scope, manifest)?;
+                context.task().authorize_file_read(manifest)?;
             }
             let grant = reference.capability()?;
             grants.push(grant.clone());
             scoped.push(grant);
         }
         child.grants = Capabilities::new(grants);
-        let scope = AuthorityIssuer::new(&allocation.child.issuer, allocation.child.key, allocation.child.authority.clone())
+        let scope = allocation.child.issuer()
             .root_for_agent(arguments.id, allocation.child.scope.id(), Capabilities::new(scoped));
         Ok((child, scope))
     }
@@ -364,13 +479,13 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 task: caller.task, project: caller.project.clone(), project_generation: project,
                 private_volume: caller.private_volume.clone(), private_generation: private,
             }, self.config.stream_provider.clone(), context.operation_id(), arguments, RecursiveForkConfig {
-                child: allocation.child.authority.clone(), child_project: allocation.project.clone(), child_private: allocation.private_volume.clone(),
+                child: allocation.child.authority().clone(), child_project: allocation.project.clone(), child_private: allocation.private_volume.clone(),
                 child_result_volume: allocation.result_volume.clone(),
                 limits: context.scope().limits(), inherited_messages: self.config.inherited_messages,
                 inherited_bytes: context.scope().limits().file_bytes, inherited_references: self.config.inherited_references,
                 history_limits: self.config.history_limits,
-            }, source_read, cancellation).await?;
-        let (child, scope) = self.child_claims(context, &caller, allocation, arguments, &source).await?;
+            }, source_read, self.ordinary_resolver(context.task(), cancellation).await?, cancellation).await?;
+        let (child, scope) = self.child_claims(context, caller, allocation, arguments, &source).await?;
         Ok(RecursiveForkSourceIntent {
             arguments: arguments.clone(), caller: caller.task, source_task: arguments.source.unwrap_or(caller.task),
             child_operation_id: child.operation_id, allocation_digest: allocation_digest(allocation, &child, &scope)?,
@@ -388,8 +503,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         if intent.arguments != *arguments || intent.caller != caller.task
             || intent.source_task != arguments.source.unwrap_or(caller.task)
             || intent.child_operation_id != allocation.admission.operation_id
-            || intent.request.operation_id != context.operation_id() || intent.request.parent != caller.owner.authority
-            || intent.request.child != allocation.child.authority || intent.request.child_agent != arguments.id
+            || intent.request.operation_id != context.operation_id() || &intent.request.parent != caller.owner.authority()
+            || &intent.request.child != allocation.child.authority() || intent.request.child_agent != arguments.id
             || intent.request.preparation.child_project_volume != allocation.project
             || intent.request.preparation.child_private_volume != allocation.private_volume
             || intent.request.preparation.child_result_volume != allocation.result_volume {
@@ -407,7 +522,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         // The durable workflow has already committed this intent. Reconstruct
         // only its authoritative cut, never the current conversation tail.
-        let pinned = StreamAggregate::open_at_revision_measured(&self.stream, caller.owner.authority.clone(),
+        let pinned = StreamAggregate::open_at_revision_measured(&self.stream, caller.owner.authority().clone(),
             verifier(&caller.owner)?, SchemaRegistry::default(), intent.request.parent_revision,
             self.config.history_limits, self.config.content_budget, cancellation).await.map_err(|failure| failure.error)?;
         let mut content_work = pinned.work;
@@ -415,8 +530,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let source_read = self.restore_intent_source(context.task(), &intent.request, cancellation).await?;
         let pinned_source = restore_recursive_fork_source(self.filesystem.clone(), &self.stream, pinned.reducer(),
             verifier(&caller.owner)?, caller.owner.scope.clone(), caller.project.clone(), self.config.stream_provider.clone(),
-            intent.request.clone(), self.config.history_limits, source_read.clone(), cancellation).await?;
-        let (child, child_scope) = self.child_claims(context, &caller, allocation, arguments, &pinned_source).await?;
+            intent.request.clone(), self.config.history_limits, source_read.clone(),
+            self.ordinary_resolver(context.task(), cancellation).await?, cancellation).await?;
+        let (child, child_scope) = self.child_claims(context, caller, allocation, arguments, &pinned_source).await?;
         if allocation_digest(allocation, &child, &child_scope)? != intent.allocation_digest {
             return Err(Error::Unauthorized("configured producer claims changed after source selection".into()));
         }
@@ -452,7 +568,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let reducer = self.restore_snapshot(&caller.owner, &capture.request, capture.snapshot, cancellation).await?;
         let source = restore_recursive_fork_source(self.filesystem.clone(), &self.stream, &reducer,
             verifier(&caller.owner)?, caller.owner.scope.clone(), caller.project.clone(), self.config.stream_provider.clone(),
-            capture.request, self.config.history_limits, source_read, cancellation).await?;
+            capture.request, self.config.history_limits, source_read,
+            self.ordinary_resolver(context.task(), cancellation).await?, cancellation).await?;
         for file in &allocation.input_files {
             let remaining = content_work.remaining(self.config.content_budget).map_err(work_error)?;
             let read = context.read_file_measured(file, remaining, cancellation).await.map_err(|failure| failure.error)?;
@@ -460,7 +577,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         Ok(ForkBinding { source, source_checkpoint, child, child_message_pointer: allocation.child_message_pointer.clone(),
             child_message_file_pointer: allocation.child_message_file_pointer.clone(), input_files: allocation.input_files.clone(),
-            parent: self.aggregate(&caller.owner, cancellation).await?, child_conversation: self.aggregate(&allocation.child, cancellation).await?,
+            parent: self.publication_aggregate(&caller.owner, &caller.owner.scope,
+                Some(self.ordinary_resolver(context.task(), cancellation).await?), cancellation).await?,
+            child_conversation: self.publication_aggregate(&allocation.child, &child_scope, None, cancellation).await?,
             parent_scope: caller.owner.scope.clone(), child_scope, limits: allocation.limits })
     }
 
@@ -473,22 +592,44 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             .ok_or_else(|| Error::Unauthorized("configured merge has no explicit notice binding".into()))?;
         let runtime = self.runtime()?;
         let inspected = runtime.inspect_source(caller.task, arguments.source).await?;
-        if inspected.agent()? != source_owner.owner.scope.agent().ok_or_else(|| Error::Unauthorized("configured source has no signed agent".into()))?
-            || inspected.project()?.volume != source_owner.project {
+        if inspected.project()?.volume != source_owner.project
+            || inspected.volumes().iter().filter(|snapshot| snapshot.volume == source_owner.private_volume).count() != 1
+            || source_owner.result_volume.as_ref().is_some_and(|result|
+                inspected.volumes().iter().filter(|snapshot| &snapshot.volume == result).count() != 1) {
             return Err(Error::Unauthorized("configured merge source is not its admitted project".into()));
         }
         let (project, generation, notice) = if let Some(original) = original {
-            if original.caller != caller.task || original.arguments != *arguments || original.destination != caller.owner.authority
-                || original.source != source_owner.owner.authority || original.target_project != caller.project || original.source_project != source_owner.project {
+            if original.caller != caller.task || original.arguments != *arguments || &original.destination != caller.owner.authority()
+                || &original.source != source_owner.owner.authority() || original.target_project != caller.project || original.source_project != source_owner.project {
                 return Err(Error::Unauthorized("configured merge retry changed original owners".into()));
             }
             (original.source_project.clone(), original.source_generation.clone(), original.notice.clone())
         } else { (inspected.project()?.volume.clone(), inspected.project()?.generation.clone(), allocation.notice.clone()) };
+        let source_read = if let Some(authorization) = original.and_then(|plan| plan.authorized_source.as_ref()) {
+            let owner = Arc::new(runtime.task_host().journal_owner(caller.task, context.task().owned_task_fence()?).await?
+                .with_invocation_cancellation(cancellation));
+            let handle = owner.restore_project_source_authorization(context.task(), authorization).await?;
+            handle.require_selection(context.operation_id(), arguments.source, &project, &generation,
+                source_owner.native_snapshot.as_ref())?;
+            Some(handle)
+        } else if original.is_none() && arguments.source != caller.task
+            && !context.scope().grants().contains(&project.capability(VolumeOperation::Read)?) {
+            let (issuer, provider) = self.project_policy.get().ok_or_else(||
+                Error::Unauthorized("foreign merge lacks an explicit RootService Project policy".into()))?;
+            let owner = Arc::new(runtime.task_host().journal_owner(caller.task, context.task().owned_task_fence()?).await?
+                .with_invocation_cancellation(cancellation));
+            Some(owner.authorize_project_source(context.task(), issuer, provider.as_ref(), arguments.source,
+                context.operation_id(), ProjectSourceSnapshot { project: project.clone(), generation: generation.clone(),
+                    native_snapshot: source_owner.native_snapshot.clone() },
+                self.config.content_budget.items_examined, self.config.history_limits.maximum_bytes).await?)
+        } else { None };
         context.read_file_measured(&notice.content, self.config.content_budget, cancellation)
             .await.map_err(|failure| failure.error)?;
-        Ok(MergeBinding { filesystem: self.filesystem.clone(), destination: self.aggregate(&caller.owner, cancellation).await?, verifier: verifier(&caller.owner)?,
-            scope: caller.owner.scope.clone(), project: caller.project.clone(), source: source_owner.owner.authority.clone(), source_project: project,
-            source_generation: generation, notice })
+        Ok(MergeBinding { filesystem: self.filesystem.clone(), destination: self.publication_aggregate(
+            &caller.owner, &caller.owner.scope, Some(self.ordinary_resolver(context.task(), cancellation).await?),
+            cancellation).await?, verifier: verifier(&caller.owner)?,
+            scope: caller.owner.scope.clone(), project: caller.project.clone(), source: source_owner.owner.authority().clone(), source_project: project,
+            source_generation: generation, source_read, notice })
     }
 
     async fn restore_intent_source(&self, context: &TaskContext, request: &ForkRequest,
@@ -506,7 +647,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let preparation = token.request();
         preparation.validate()?;
         let caller = preparation.child.parent.ok_or_else(|| Error::Unauthorized("configured preparation has no original caller".into()))?;
-        let mut binding = self.caller(caller)?.clone();
+        let binding = self.caller(caller)?;
         if reader.durable_task_id() != Some(token.origin().preparation_task)
             || token.origin().parent_task != caller {
             return Err(Error::Unauthorized("source restore lacks the actual sealed helper and original caller".into()));
@@ -515,17 +656,18 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let admitted = runtime.task_host().observe_admission(caller).await?;
         if admitted.parent.is_some() {
             let actual = runtime.inspect_source(caller, caller).await?;
-            if actual.agent()? != binding.owner.scope.agent().ok_or_else(|| Error::Unauthorized("original caller lacks signed actor".into()))?
-                || actual.project()?.volume != binding.project || actual.private_volume()?.volume != binding.private_volume {
+            if actual.project()?.volume != binding.project
+                || actual.volumes().iter().filter(|snapshot| snapshot.volume == binding.private_volume).count() != 1
+                || binding.result_volume.as_ref().is_some_and(|result|
+                    actual.volumes().iter().filter(|snapshot| &snapshot.volume == result).count() != 1) {
                 return Err(Error::Unauthorized("restored descendant cannot reuse another caller's source volumes".into()));
             }
         }
-        binding.owner = effective_owner(&binding.owner, reader.scope().grants())?;
         let request: ForkRequest = serde_json::from_value(preparation.payload.clone()).map_err(invalid_json)?;
         let restored;
         let aggregate;
         let reducer = if let Some(checkpoint) = &preparation.source_checkpoint {
-            ContentGrant::verify_read(&verifier(&binding.owner)?, &binding.owner.scope, checkpoint)?;
+            reader.authorize_file_read(checkpoint)?;
             let receipt = reader.read_file_measured(checkpoint, self.config.content_budget, cancellation)
                 .await.map_err(|failure| failure.error)?;
             let capture: SourceCheckpoint = serde_json::from_slice(&receipt.value).map_err(invalid_json)?;
@@ -541,24 +683,35 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             restored = self.restore_snapshot(&binding.owner, &request, original.snapshot.clone(), cancellation).await?;
             &restored
         } else {
-            aggregate = StreamAggregate::open_at_revision_measured(&self.stream, binding.owner.authority.clone(),
+            aggregate = StreamAggregate::open_at_revision_measured(&self.stream, binding.owner.authority().clone(),
                 verifier(&binding.owner)?, SchemaRegistry::default(), request.parent_revision,
                 self.config.history_limits, self.config.content_budget, cancellation).await.map_err(|failure| failure.error)?.value;
             aggregate.reducer()
         };
         restore_recursive_fork_source(self.filesystem.clone(), &self.stream, reducer, verifier(&binding.owner)?,
             binding.owner.scope.clone(), binding.project.clone(), self.config.stream_provider.clone(), request, self.config.history_limits,
-            token.project_source().cloned(), cancellation).await
+            token.project_source().cloned(), self.ordinary_resolver(reader, cancellation).await?, cancellation).await
+    }
+
+    async fn ordinary_resolver(
+        &self, context: &TaskContext, cancellation: &CancellationToken,
+    ) -> Result<Arc<dyn crate::conversation::ContentResidencyVerifier>> {
+        let task = context.durable_task_id().ok_or_else(||
+            Error::Unauthorized("recursive source has no original admitted reader".into()))?;
+        let owner = Arc::new(self.runtime()?.task_host()
+            .journal_owner(task, context.owned_task_fence()?).await?
+            .with_invocation_cancellation(cancellation));
+        context.content_residency_verifier(owner)
     }
 
     async fn restore_snapshot(&self, binding: &ConfiguredRecursiveAuthorityBinding, request: &ForkRequest, snapshot: Snapshot,
         cancellation: &CancellationToken) -> Result<Reducer> {
-        if snapshot.authority != request.parent || snapshot.revision != request.parent_revision || snapshot.authority != binding.authority || snapshot.revision == 0 {
+        if snapshot.authority != request.parent || snapshot.revision != request.parent_revision || &snapshot.authority != binding.authority() || snapshot.revision == 0 {
             return Err(Error::Unauthorized("configured checkpoint is not original authenticated caller cut".into()));
         }
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-        let page = HistoryReader::new(&self.stream, &binding.authority, verifier(binding)?)?.read_page(&HistoryCursor {
-            authority: binding.authority.clone(), after_revision: snapshot.revision - 1, through_revision: snapshot.revision,
+        let page = HistoryReader::new(&self.stream, binding.authority(), verifier(binding)?)?.read_page(&HistoryCursor {
+            authority: binding.authority().clone(), after_revision: snapshot.revision - 1, through_revision: snapshot.revision,
         }, HistoryReadLimits { maximum_events: 1, maximum_bytes: self.config.history_limits.maximum_bytes }).await?;
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
         if snapshot.events.last().is_none() || snapshot.events.last() != page.events.last() {
@@ -568,28 +721,887 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl<P, A, O> ConfiguredRecursiveToolSource<P, A, O>
+where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {
+    fn native_runtime(&self) -> Result<Arc<FilesystemTaskRuntime<P, A, O>>> {
+        self.runtime.get().and_then(Weak::upgrade).ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "native recursive source has no original runtime",
+        })
+    }
+
+    fn native_caller(&self, task: TaskId, work: &acyclic_fs::NativeMaterializationWork)
+        -> Result<&ConfiguredRecursiveCaller> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let mut history = io.history_io();
+        for caller in &self.config.callers {
+            history.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 16, items: 1 })?;
+            if caller.task == task { return Ok(caller); }
+        }
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+            reason: "native recursive caller has no installed source binding" })
+    }
+
+    fn native_allocation(&self, caller: TaskId, arguments: &ForkToolArguments,
+        work: &acyclic_fs::NativeMaterializationWork) -> Result<&ConfiguredRecursiveFork> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let mut history = io.history_io();
+        for allocation in &self.config.forks {
+            history.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 32, items: 1 })?;
+            if allocation.caller == caller && allocation.child.scope.agent() == Some(arguments.id) {
+                return Ok(allocation);
+            }
+        }
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+            reason: "native recursive child has no installed allocation" })
+    }
+
+    async fn native_source_owner(&self, context: &TaskContext,
+        cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork)
+        -> Result<Arc<crate::durable_host::TaskJournalOwner<P>>> {
+        let (task, fence) = context.owned_task_binding_with_native_work(work)?;
+        let owner = self.native_runtime()?.task_host()
+            .journal_owner_with_native_work(task, fence, work).await?
+            .with_invocation_cancellation(cancellation);
+        owner.require_mail_scope_with_native_work(context.scope(), work)?;
+        owner.into_native_shared(work)
+    }
+
+    async fn authenticate_native_caller<'a>(&'a self, context: &TaskContext,
+        owner: &crate::durable_host::TaskJournalOwner<P>, require_project_read: bool,
+        work: &acyclic_fs::NativeMaterializationWork) -> Result<&'a ConfiguredRecursiveCaller> {
+        let (task, fence) = context.owned_task_binding_with_native_work(work)?;
+        owner.require_mail_scope_with_native_work(context.scope(), work)?;
+        if owner.task_binding() != (task, fence) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native source owner differs from original context" });
+        }
+        let caller = self.native_caller(task, work)?;
+        if owner.authenticated_binding_agent_with_native_work(work)? != caller.owner.scope.agent() {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native source actor differs from admitted current creator" });
+        }
+        let runtime = self.native_runtime()?;
+        let admission = runtime.task_host().observe_admission_with_native_work(task, work).await?;
+        if admission.0.parent.is_some() {
+            let snapshots = runtime.task_host().observe_volume_snapshots_with_native_work(task, work).await?;
+            let mut project = 0_usize;
+            let mut scratch = 0_usize;
+            let mut result = 0_usize;
+            let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+            let mut history = io.history_io();
+            for snapshot in &snapshots.0 {
+                history.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                project += usize::from(snapshot.volume == caller.project);
+                scratch += usize::from(snapshot.volume == caller.private_volume);
+                result += usize::from(caller.result_volume.as_ref() == Some(&snapshot.volume));
+            }
+            if project != 1 || scratch != 1 || (caller.result_volume.is_some() && result != 1)
+                || context.scope().current_created_authority()? != Some(caller.owner.authority())
+                || context.scope().current_created_private_volume()? != Some(&caller.private_volume) {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "native source binding differs from authenticated current allocation" });
+            }
+        }
+        owner.require_volume_grant_with_native_work(&caller.private_volume, VolumeOperation::Read, work)?;
+        if require_project_read {
+            owner.require_volume_grant_with_native_work(&caller.project, VolumeOperation::Read, work)?;
+        }
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let mut history = io.history_io();
+        let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+        let verifier = caller.owner.issuer().verifier_with_work(&mut observer)?;
+        verifier.verify_scope_for_with_work(caller.owner.authority(), &caller.owner.scope, &mut observer)?;
+        Ok(caller)
+    }
+
+    async fn native_open_aggregate(
+        &self, binding: &ConfiguredRecursiveAuthorityBinding, cut: Option<u64>,
+        cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(StreamAggregate<P>, acyclic_fs::NativeAllocation)> {
+        cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let aggregate = {
+            let mut history = io.history_io();
+            let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+            let verifier = binding.issuer().verifier_with_work(&mut observer)?;
+            verifier.verify_scope_for_with_work(binding.authority(), &binding.scope, &mut observer)?;
+            let authority = observer.as_deref_mut().expect("native aggregate observer").clone_authority(binding.authority())?;
+            match cut {
+                Some(revision) => StreamAggregate::open_at_revision_with_work(
+                    &self.stream, authority, verifier, SchemaRegistry::new(), revision,
+                    self.config.history_limits, &mut observer,
+                ).await?,
+                None => StreamAggregate::open_with_read_limits_with_work(
+                    &self.stream, authority, verifier, SchemaRegistry::new(),
+                    self.config.history_limits, &mut observer,
+                ).await?,
+            }
+        };
+        cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
+        let retained = io.owned_bytes()?;
+        Ok((aggregate, io.into_native_custody(retained)?))
+    }
+
+    fn require_native_effective_volume(
+        &self, context: &ToolContext, volume: &VolumeRef, operation: VolumeOperation,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let capability = volume.capability_with_native_work(operation, work)?;
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let mut history = io.history_io();
+        history.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+        if !context.effective_scope().grants().contains(&capability.0) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native recursive tool effective scope denies its selected volume operation" });
+        }
+        Ok(())
+    }
+
+    fn native_fork_request(
+        &self, context: &ToolContext, caller: &ConfiguredRecursiveCaller,
+        allocation: &ConfiguredRecursiveFork, arguments: &ForkToolArguments,
+        parent: &Reducer, project_generation: &crate::resources::GenerationRef,
+        private_generation: &crate::resources::GenerationRef,
+        source_read: Option<&ProjectSourceReadHandle>,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(ForkRequest, acyclic_fs::NativeAllocation)> {
+        if parent.authority() != caller.owner.authority()
+            || parent.conversation().and_then(|conversation| conversation.agent) != caller.owner.scope.agent() {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native fork history is not the admitted current caller" });
+        }
+        super::recursive::recursive_fork_request_with_native_work(
+            parent, super::recursive::RecursiveForkSourceView {
+                caller: caller.task, scope: &caller.owner.scope, project: &caller.project,
+                project_generation, private_volume: &caller.private_volume, private_generation,
+            }, super::recursive::RecursiveForkAllocationView {
+                child: allocation.child.authority(), project: &allocation.project,
+                private_volume: &allocation.private_volume, result_volume: allocation.result_volume.as_ref(),
+                limits: context.effective_scope().limits(), inherited_messages: self.config.inherited_messages,
+                inherited_bytes: context.effective_scope().limits().file_bytes,
+                inherited_references: self.config.inherited_references,
+            }, &self.config.stream_provider, context.operation_id(), arguments, source_read, work,
+        )
+    }
+
+    fn native_resolver(
+        &self, context: &ToolContext, owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Arc<dyn crate::conversation::ContentResidencyVerifier>> {
+        context.native_task().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "native recursive source requires its original native task context",
+        })?.content_residency_verifier_with_native_work(owner, work)
+    }
+
+    async fn native_restore_source(
+        &self, context: &ToolContext, caller: &ConfiguredRecursiveCaller,
+        owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
+        request: (ForkRequest, acyclic_fs::NativeAllocation),
+        restored: Option<Reducer>,
+        cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)> {
+        let selected = match &request.0.authorized_source {
+            Some(authorization) => Some(owner.restore_project_source_authorization_with_native_work(
+                context.task(), authorization, work,
+            )?.await?),
+            None => None,
+        };
+        let mut _pinned_custody = None;
+        let reducer = match restored {
+            Some(reducer) => reducer,
+            None => {
+                let pinned = self.native_open_aggregate(
+                    &caller.owner, Some(request.0.parent_revision), cancellation, work,
+                ).await?;
+                _pinned_custody = Some(pinned.1);
+                pinned.0.into_reducer()
+            }
+        };
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let verifier = {
+            let mut history = io.history_io();
+            let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+            caller.owner.issuer().verifier_with_work(&mut observer)?
+        };
+        let resolver = self.native_resolver(context, owner, work)?;
+        super::recursive::restore_recursive_fork_source_with_native_work(
+            Arc::clone(&self.filesystem), &self.stream, reducer, &verifier, &caller.owner.scope,
+            &caller.project, &self.config.stream_provider, request, self.config.history_limits,
+            selected.as_ref().map(|selected| &selected.0), resolver, cancellation, work,
+        ).await
+    }
+
+    async fn native_restore_snapshot(
+        &self, binding: &ConfiguredRecursiveAuthorityBinding, request: &ForkRequest,
+        snapshot: Snapshot, snapshot_custody: Option<acyclic_fs::NativeAllocation>,
+        cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Reducer> {
+        let snapshot = match snapshot_custody {
+            Some(custody) => snapshot.adopt_predecoded_native_custody(custody)?,
+            None => snapshot,
+        };
+        if snapshot.authority != request.parent || snapshot.revision != request.parent_revision
+            || &snapshot.authority != binding.authority() || snapshot.revision == 0 {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "configured native checkpoint differs from original caller cut" });
+        }
+        cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let mut history = io.history_io();
+        let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+        let verifier = binding.issuer().verifier_with_work(&mut observer)?;
+        let reader = HistoryReader::new_with_native_work(&self.stream, binding.authority(), &verifier, work)?;
+        let cursor = HistoryCursor {
+            authority: observer.as_deref_mut().expect("native source checkpoint observer").clone_authority(binding.authority())?,
+            after_revision: snapshot.revision - 1, through_revision: snapshot.revision,
+        };
+        let page = reader.0.read_page_with_work(&cursor,
+            HistoryReadLimits { maximum_events: 1, maximum_bytes: self.config.history_limits.maximum_bytes },
+            &mut observer,
+        ).await?;
+        cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
+        if snapshot.events.last().is_none() || snapshot.events.last() != page.events.last() {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native checkpoint head differs from immutable canonical Stream event" });
+        }
+        Reducer::restore_with_work(snapshot, verifier, SchemaRegistry::new(), &mut observer)
+    }
+
+    async fn native_child_claims(
+        &self, context: &ToolContext, caller: &ConfiguredRecursiveCaller,
+        allocation: &ConfiguredRecursiveFork, arguments: &ForkToolArguments,
+        source: &RetainedSourceBinding<A, O>, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<((TaskAdmissionRecord, Scope), acyclic_fs::NativeAllocation)> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let copied = allocation.admission.clone_with_native_work(work)?;
+        io.absorb_native_custody(copied.1)?;
+        let mut child = copied.0;
+        if child.parent != Some(caller.task) || allocation.child.scope.agent() != Some(arguments.id) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native child allocation differs from original caller or agent" });
+        }
+        let references = source.preparer.required_reference_grants_with_native_work(
+            &source.request, work,
+        )?.await?;
+        let mut grants = Vec::new();
+        let mut scoped = Vec::new();
+        let append = |values: &mut Vec<String>, value: &str| -> Result<()> {
+            let mut history = io.history_io();
+            if values.len() == values.capacity() {
+                let old = values.capacity();
+                let target = old.checked_mul(2).unwrap_or(usize::MAX).max(4);
+                let bytes = target.checked_sub(old).and_then(|slots|
+                    slots.checked_mul(std::mem::size_of::<String>())).ok_or(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Invalid, reason: "native child claim slots overflow",
+                    })? as u64;
+                history.admit_owned(bytes)?;
+                history.admit_allocation(bytes)?;
+                values.try_reserve_exact(target - values.len()).map_err(|cause| history.allocation_failure(cause))?;
+                history.retain_owned((values.capacity() - old) as u64 * std::mem::size_of::<String>() as u64)?;
+            }
+            values.push(history.clone_text(value)?);
+            Ok(())
+        };
+        for grant in child.grants.iter() { append(&mut grants, grant)?; }
+        for grant in allocation.child.scope.capabilities().iter() { append(&mut scoped, grant)?; }
+        for volume in [&allocation.project, &allocation.private_volume].into_iter().chain(allocation.result_volume.as_ref()) {
+            for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+                let grant = volume.capability_with_native_work(operation, work)?;
+                append(&mut grants, &grant.0)?;
+                append(&mut scoped, &grant.0)?;
+            }
+        }
+        for file in &allocation.input_files {
+            context.authorize_file_read_with_native_work(file, work)?;
+            let grant = super::fork_preparer::bounded_io::reference_key(file, Some(&io))?;
+            append(&mut grants, &grant)?;
+            append(&mut scoped, &grant)?;
+            let bytes = grant.capacity() as u64;
+            drop(grant);
+            io.release(bytes)?;
+        }
+        for reference in &references.0 {
+            if reference.reader != arguments.id {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "native inherited reference targets another child reader" });
+            }
+            context.authorize_file_read_with_native_work(&reference.file, work)?;
+            if let Some(manifest) = &reference.attachment_manifest {
+                context.authorize_file_read_with_native_work(manifest, work)?;
+            }
+            let grant = super::fork_preparer::bounded_io::reference_key(&reference.file, Some(&io))?;
+            append(&mut grants, &grant)?;
+            append(&mut scoped, &grant)?;
+            let bytes = grant.capacity() as u64;
+            drop(grant);
+            io.release(bytes)?;
+        }
+        drop(append);
+        let grant_slots = grants.capacity() as u64 * std::mem::size_of::<String>() as u64;
+        let scoped_slots = scoped.capacity() as u64 * std::mem::size_of::<String>() as u64;
+        let mut history = io.history_io();
+        history.admit_owned(grants.len() as u64 * std::mem::size_of::<String>() as u64)?;
+        history.retain_owned(grants.len() as u64 * std::mem::size_of::<String>() as u64)?;
+        history.admit_owned(scoped.len() as u64 * std::mem::size_of::<String>() as u64)?;
+        history.retain_owned(scoped.len() as u64 * std::mem::size_of::<String>() as u64)?;
+        let old_grants_bytes = child.grants.logical_owned_bytes()?;
+        if !grants.is_empty() {
+            history.admit_allocation(grants.len() as u64 * std::mem::size_of::<String>() as u64)?;
+        }
+        let old_grants = std::mem::replace(&mut child.grants, Capabilities::new(grants));
+        drop(old_grants);
+        history.release_owned(old_grants_bytes)?;
+        history.release_owned(grant_slots)?;
+        if !scoped.is_empty() {
+            history.admit_allocation(scoped.len() as u64 * std::mem::size_of::<String>() as u64)?;
+        }
+        let capabilities = Capabilities::new(scoped);
+        history.release_owned(scoped_slots)?;
+        let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+        let scope = allocation.child.issuer().root_for_agent_with_work(
+            arguments.id, allocation.child.scope.id(), &capabilities, &mut observer,
+        )?;
+        let temporary = capabilities.logical_owned_bytes()?;
+        drop(capabilities);
+        observer.as_deref_mut().expect("native child issuer observer").release_owned(temporary)?;
+        child.validate_with_work(&mut observer)?;
+        drop(observer);
+        drop(history);
+        let retained = io.owned_bytes()?;
+        Ok(((child, scope), io.into_native_custody(retained)?))
+    }
+
+    async fn native_select_source(
+        &self, context: &ToolContext, arguments: &ForkToolArguments,
+        cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(RecursiveForkSourceIntent, acyclic_fs::NativeAllocation)> {
+        cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
+        let owner = self.native_source_owner(context.task(), cancellation, work).await?;
+        let caller = self.authenticate_native_caller(context.task(), owner.as_ref(),
+            arguments.source.is_none_or(|task| Some(task) == context.durable_task_id()), work).await?;
+        self.require_native_effective_volume(context, &caller.private_volume, VolumeOperation::Read, work)?;
+        if arguments.source.is_none_or(|source| source == caller.task) {
+            self.require_native_effective_volume(context, &caller.project, VolumeOperation::Read, work)?;
+        }
+        let allocation = self.native_allocation(caller.task, arguments, work)?;
+        let parent = self.native_open_aggregate(&caller.owner, None, cancellation, work).await?;
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let current_project = super::fork_preparer::bounded_io::content_workspace(
+            caller.project.provider(), &caller.project, Some(&io),
+        )?;
+        let current_private = super::fork_preparer::bounded_io::content_workspace(
+            caller.private_volume.provider(), &caller.private_volume, Some(&io),
+        )?;
+        let project = super::fork_preparer::bounded_io::resolve(&self.filesystem, &current_project, Some(&io)).await?;
+        let private = super::fork_preparer::bounded_io::resolve(&self.filesystem, &current_private, Some(&io)).await?;
+        cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
+        let selected_task = arguments.source.unwrap_or(caller.task);
+        let selected = if selected_task != caller.task {
+            let (issuer, policy) = self.project_policy.get().ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "foreign native Project selection has no configured original Root policy",
+            })?;
+            let chosen = self.native_caller(selected_task, work)?;
+            let chosen_workspace = super::fork_preparer::bounded_io::content_workspace(
+                chosen.project.provider(), &chosen.project, Some(&io),
+            )?;
+            let generation = super::fork_preparer::bounded_io::resolve(
+                &self.filesystem, &chosen_workspace, Some(&io),
+            ).await?;
+            let snapshot = ProjectSourceSnapshot {
+                project: {
+                    let mut history = io.history_io();
+                    chosen.project.clone_with_work(&mut Some(&mut history))?
+                },
+                generation: crate::executor::clone_preparation(&generation.generation, Some(&io))?,
+                native_snapshot: match &chosen.native_snapshot {
+                    Some(value) => Some(crate::executor::clone_preparation(value, Some(&io))?),
+                    None => None,
+                },
+            };
+            Some(owner.authorize_project_source_with_native_work(context.task(), issuer, policy.as_ref(),
+                selected_task, context.operation_id(), &snapshot, allocation.limits.work, allocation.limits.bytes, work,
+            )?.await?)
+        } else { None };
+        let request = self.native_fork_request(context, caller, allocation, arguments, parent.0.reducer(),
+            &project.generation, &private.generation, selected.as_ref().map(|selected| &selected.0), work)?;
+        let resolver = self.native_resolver(context, Arc::clone(&owner), work)?;
+        let verifier = {
+            let mut history = io.history_io();
+            let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+            caller.owner.issuer().verifier_with_work(&mut observer)?
+        };
+        let source = super::recursive::restore_recursive_fork_source_with_native_work(
+            Arc::clone(&self.filesystem), &self.stream, parent.0.into_reducer(), &verifier, &caller.owner.scope,
+            &caller.project, &self.config.stream_provider, request, self.config.history_limits,
+            selected.as_ref().map(|selected| &selected.0), resolver, cancellation, work,
+        ).await?;
+        let _parent_custody = parent.1;
+        let claims = self.native_child_claims(context, caller, allocation, arguments, &source.0, work).await?;
+        let allocation_digest = allocation_digest_with_native_work(allocation, &claims.0.0, &claims.0.1, work)?;
+        let retained_arguments = crate::executor::clone_preparation(arguments, Some(&io))?;
+        let mut history = io.history_io();
+        history.absorb_native_custody(source.1)?;
+        drop(history);
+        let retained = io.owned_bytes()?;
+        Ok((RecursiveForkSourceIntent {
+            arguments: retained_arguments, caller: caller.task, source_task: selected_task,
+            child_operation_id: claims.0.0.operation_id, allocation_digest, request: source.0.request,
+        }, io.into_native_custody(retained)?))
+    }
+
+    fn native_bind_aggregate(
+        &self, binding: &ConfiguredRecursiveAuthorityBinding, scope: &Scope,
+        aggregate: StreamAggregate<P>, content: Option<Arc<dyn crate::conversation::ContentResidencyVerifier>>,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<StreamAggregate<P>> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let verifier = {
+            let mut history = io.history_io();
+            binding.issuer().verifier_with_work(&mut Some(&mut history))?
+        };
+        let content = match content {
+            Some(content) => content,
+            None => FilesystemContentVerifier::new_with_native_work(
+                Arc::clone(&self.filesystem), &verifier, scope, self.limits.file_bytes, work,
+            )?.into_native_shared(work)?,
+        };
+        let filesystem: Arc<dyn crate::fork::ForkSeedVerifier> = FilesystemForkVerifier::new_with_native_work(
+            Arc::clone(&self.filesystem), self.limits.file_bytes, &verifier, scope, work,
+        )?.into_native_shared(work)?;
+        let history: Arc<dyn crate::fork::ForkSeedVerifier> = StreamHistoryForkVerifier::new_with_native_work(
+            &self.config.stream_provider, work,
+        )?.into_native_shared(work)?;
+        let forks = CompositeForkVerifier::new_with_native_work(&[filesystem, history], work)?.into_native_shared(work)?;
+        let merge = FilesystemProjectMergeVerifier::new_with_native_work(
+            Arc::clone(&self.filesystem), &verifier, scope, work,
+        )?.into_native_shared(work)?;
+        Ok(aggregate.with_content_verifier(content).with_fork_verifier(forks)
+            .with_merge_verifier(merge).with_limits(self.limits))
+    }
+
+    async fn native_merge_binding(
+        &self, context: &ToolContext, arguments: &MergeToolArguments,
+        original: Option<&RecursiveMergeToolPlan>, cancellation: &CancellationToken,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(MergeBinding<P, A, O>, acyclic_fs::NativeAllocation)> {
+        cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
+        let owner = self.native_source_owner(context.task(), cancellation, work).await?;
+        let caller = self.authenticate_native_caller(context.task(), owner.as_ref(), true, work).await?;
+        self.require_native_effective_volume(context, &caller.project, VolumeOperation::Read, work)?;
+        self.require_native_effective_volume(context, &caller.project, VolumeOperation::Write, work)?;
+        let source_owner = self.native_caller(arguments.source, work)?;
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let allocation = {
+            let mut history = io.history_io();
+            let mut found = None;
+            for merge in &self.config.merges {
+                history.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 32, items: 1 })?;
+                if merge.caller == caller.task && merge.source == arguments.source {
+                    found = Some(merge);
+                    break;
+                }
+            }
+            found.ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native merge has no configured original notice binding" })?
+        };
+        let runtime = self.native_runtime()?;
+        let snapshots = runtime.task_host().observe_volume_snapshots_with_native_work(arguments.source, work).await?;
+        let selected = {
+            let mut history = io.history_io();
+            let mut found = None;
+            for snapshot in &snapshots.0 {
+                history.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                if snapshot.volume == source_owner.project {
+                    if found.is_some() {
+                        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                            reason: "native merge repeats its authenticated Project selection" });
+                    }
+                    found = Some(snapshot);
+                }
+            }
+            found.ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native merge selected source has no authenticated created Project" })?
+        };
+        if let Some(original) = original {
+            if original.caller != caller.task || original.arguments != *arguments
+                || &original.destination != caller.owner.authority()
+                || &original.source != source_owner.owner.authority()
+                || original.target_project != caller.project || original.source_project != selected.volume {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "native merge retry changed original source or destination" });
+            }
+        }
+        let generation = crate::executor::clone_preparation(
+            original.map_or(&selected.generation, |original| &original.source_generation), Some(&io),
+        )?;
+        let notice = crate::executor::clone_preparation(
+            original.map_or(&allocation.notice, |original| &original.notice), Some(&io),
+        )?;
+        let source_read = if let Some(authorization) = original.and_then(|plan| plan.authorized_source.as_ref()) {
+            Some(owner.restore_project_source_authorization_with_native_work(
+                context.task(), authorization, work,
+            )?.await?)
+        } else {
+            let capability = selected.volume.capability_with_native_work(VolumeOperation::Read, work)?;
+            if context.effective_scope().grants().contains(&capability.0) { None }
+            else if original.is_some() {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "retained ambient merge no longer has original Project read authority" });
+            } else {
+                let (issuer, policy) = self.project_policy.get().ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "foreign native merge has no original RootService Project policy",
+                })?;
+                let snapshot = ProjectSourceSnapshot {
+                    project: {
+                        let mut history = io.history_io();
+                        selected.volume.clone_with_work(&mut Some(&mut history))?
+                    },
+                    generation: crate::executor::clone_preparation(&generation, Some(&io))?,
+                    native_snapshot: source_owner.native_snapshot.as_ref()
+                        .map(|value| crate::executor::clone_preparation(value, Some(&io))).transpose()?,
+                };
+                Some(owner.authorize_project_source_with_native_work(context.task(), issuer, policy.as_ref(),
+                    arguments.source, context.operation_id(), &snapshot,
+                    self.config.content_budget.items_examined, self.config.history_limits.maximum_bytes, work,
+                )?.await?)
+            }
+        };
+        if let Some(handle) = &source_read {
+            let authorization = handle.0.authorization();
+            handle.0.require_selection_with_native_work(context.operation_id(), arguments.source,
+                &selected.volume, &generation, authorization.native_snapshot.as_ref(), work)?;
+        }
+        context.read_file_with_native_work(&notice.content, work).await?;
+        let destination = self.native_open_aggregate(&caller.owner, None, cancellation, work).await?;
+        let (verifier, scope, project, source, source_project) = {
+            let mut history = io.history_io();
+            let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+            (caller.owner.issuer().verifier_with_work(&mut observer)?,
+                caller.owner.scope.clone_with_work(&mut observer)?, caller.project.clone_with_work(&mut observer)?,
+                observer.as_deref_mut().expect("native merge observer").clone_authority(source_owner.owner.authority())?,
+                selected.volume.clone_with_work(&mut observer)?)
+        };
+        let aggregate = self.native_bind_aggregate(&caller.owner, &scope, destination.0,
+            Some(self.native_resolver(context, Arc::clone(&owner), work)?), work)?;
+        {
+            let mut history = io.history_io();
+            history.absorb_native_custody(destination.1)?;
+        }
+        let source_read = match source_read {
+            Some((handle, guard)) => {
+                io.absorb_native_custody(guard)?;
+                Some(handle)
+            }
+            None => None,
+        };
+        let retained = io.owned_bytes()?;
+        Ok((MergeBinding { filesystem: Arc::clone(&self.filesystem), destination: aggregate,
+            verifier, scope, project, source, source_project, source_generation: generation, source_read, notice,
+        }, io.into_native_custody(retained)?))
+    }
+
+    async fn native_fork_binding(
+        &self, context: &ToolContext, arguments: &ForkToolArguments,
+        intent: &RecursiveForkSourceIntent, original: Option<&RecursiveForkToolPlan>,
+        cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(ForkBinding<P, A, O>, acyclic_fs::NativeAllocation)> {
+        use std::fmt::Write;
+        cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
+        let owner = self.native_source_owner(context.task(), cancellation, work).await?;
+        let caller = self.authenticate_native_caller(context.task(), owner.as_ref(),
+            arguments.source.is_none_or(|task| Some(task) == context.durable_task_id()), work).await?;
+        self.require_native_effective_volume(context, &caller.private_volume, VolumeOperation::Read, work)?;
+        if arguments.source.is_none_or(|source| source == caller.task) {
+            self.require_native_effective_volume(context, &caller.project, VolumeOperation::Read, work)?;
+        }
+        let allocation = self.native_allocation(caller.task, arguments, work)?;
+        if intent.arguments != *arguments || intent.caller != caller.task
+            || intent.source_task != arguments.source.unwrap_or(caller.task)
+            || intent.child_operation_id != allocation.admission.operation_id
+            || intent.request.operation_id != context.operation_id() || &intent.request.parent != caller.owner.authority()
+            || &intent.request.child != allocation.child.authority() || intent.request.child_agent != arguments.id
+            || intent.request.preparation.child_project_volume != allocation.project
+            || intent.request.preparation.child_private_volume != allocation.private_volume
+            || intent.request.preparation.child_result_volume != allocation.result_volume {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native fork changed committed source or original child allocation" });
+        }
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        if let Some(original) = original {
+            let retained = io.value_decode_preparation::<ForkRequest>(&original.request.payload, crate::wire::ErrorCode::Storage)?;
+            if original.caller != caller.task || original.arguments != *arguments || retained.value != intent.request
+                || original.request.child.operation_id != intent.child_operation_id
+                || original.request.input_files != allocation.input_files
+                || original.child_message_pointer != allocation.child_message_pointer
+                || original.child_message_file_pointer != allocation.child_message_file_pointer {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "native fork retry changed retained original plan" });
+            }
+        }
+        let retained_request = {
+            let mut history = io.history_io();
+            intent.request.clone_with_work_and_custody(&mut Some(&mut history))?
+        };
+        let retained_guard = io.take_native_custody(retained_request.1)?;
+        let pinned_source = self.native_restore_source(context, caller, Arc::clone(&owner),
+            (retained_request.0, retained_guard), None, cancellation, work).await?;
+        let claims = self.native_child_claims(context, caller, allocation, arguments, &pinned_source.0, work).await?;
+        if allocation_digest_with_native_work(allocation, &claims.0.0, &claims.0.1, work)? != intent.allocation_digest {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native child claims changed after immutable source choice" });
+        }
+        let checkpoint = match original {
+            Some(original) => Some(crate::executor::clone_preparation(&original.source_checkpoint, Some(&io))?),
+            None => {
+                let observed = context.observe_staged_file_once_with_native_work(
+                    checkpoint_operation(context.operation_id()), work,
+                ).await?;
+                io.absorb_native_custody(observed.1)?;
+                observed.0
+            }
+        };
+        let source_checkpoint = match checkpoint {
+            Some(checkpoint) => checkpoint,
+            None => {
+                let pinned = self.native_open_aggregate(&caller.owner, Some(intent.request.parent_revision), cancellation, work).await?;
+                let request = {
+                    let mut history = io.history_io();
+                    intent.request.clone_with_work_and_custody(&mut Some(&mut history))?.0
+                };
+                let capture = SourceCheckpoint {
+                    snapshot: pinned.0.reducer().snapshot_native(1, work)?,
+                    request, caller: caller.task, arguments: crate::executor::clone_preparation(arguments, Some(&io))?,
+                };
+                let bytes = io.encode_json(&capture, context.effective_scope().limits().file_bytes, false)?;
+                let bytes_guard = io.guard_owned(bytes.capacity() as u64)?;
+                let mut path = String::new();
+                {
+                    let mut history = io.history_io();
+                    let length = "recursive-tools/".len() + 36 + "/source-checkpoint.json".len();
+                    history.reserve_text(&mut path, length)?;
+                    history.admit_copy(length as u64)?;
+                    write!(&mut path, "recursive-tools/{}/source-checkpoint.json", context.operation_id())
+                        .map_err(|_| Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                            reason: "native checkpoint path formatting failed" })?;
+                    history.copy_bytes(path.len() as u64)?;
+                }
+                let staged = context.stage_file_once_with_native_work(checkpoint_operation(context.operation_id()),
+                    &path, &bytes, "application/json", "source-checkpoint.json", work).await?;
+                io.absorb_native_custody(staged.1)?;
+                drop(bytes);
+                drop(bytes_guard);
+                staged.0
+            }
+        };
+        let retained = context.read_file_with_native_work(&source_checkpoint, work).await?;
+        let capture = io.decode_preparation::<SourceCheckpoint>(&retained.0)?.into_retained();
+        if capture.caller != caller.task || capture.arguments != *arguments || capture.request != intent.request {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native published checkpoint differs from immutable source intent" });
+        }
+        let snapshot_bytes = capture.snapshot.predecoded_native_owned_bytes()?;
+        let snapshot_guard = io.take_native_custody(snapshot_bytes)?;
+        let restored = self.native_restore_snapshot(&caller.owner, &capture.request,
+            capture.snapshot, Some(snapshot_guard), cancellation, work).await?;
+        let copied_request = {
+            let mut history = io.history_io();
+            capture.request.clone_with_work_and_custody(&mut Some(&mut history))?
+        };
+        let request_guard = io.take_native_custody(copied_request.1)?;
+        let source = self.native_restore_source(context, caller, Arc::clone(&owner),
+            (copied_request.0, request_guard), Some(restored), cancellation, work).await?;
+        for file in &allocation.input_files { context.read_file_with_native_work(file, work).await?; }
+        let parent = self.native_open_aggregate(&caller.owner, None, cancellation, work).await?;
+        let child = self.native_open_aggregate(&allocation.child, None, cancellation, work).await?;
+        let scope = {
+            let mut history = io.history_io();
+            caller.owner.scope.clone_with_work(&mut Some(&mut history))?
+        };
+        let parent_aggregate = self.native_bind_aggregate(&caller.owner, &scope, parent.0,
+            Some(self.native_resolver(context, owner, work)?), work)?;
+        let child_aggregate = self.native_bind_aggregate(&allocation.child, &claims.0.1, child.0, None, work)?;
+        io.absorb_native_custody(parent.1)?;
+        io.absorb_native_custody(child.1)?;
+        io.absorb_native_custody(claims.1)?;
+        io.absorb_native_custody(source.1)?;
+        let child_message_pointer = crate::executor::clone_preparation(&allocation.child_message_pointer, Some(&io))?;
+        let child_message_file_pointer = crate::executor::clone_preparation(&allocation.child_message_file_pointer, Some(&io))?;
+        let input_files = crate::executor::clone_preparation(&allocation.input_files, Some(&io))?;
+        let retained = io.owned_bytes()?;
+        Ok((ForkBinding {
+            source: source.0, source_checkpoint, child: claims.0.0, child_message_pointer,
+            child_message_file_pointer, input_files, parent: parent_aggregate, child_conversation: child_aggregate,
+            parent_scope: scope, child_scope: claims.0.1, limits: allocation.limits,
+        }, io.into_native_custody(retained)?))
+    }
+
+    async fn native_preparation_source(
+        &self, context: &TaskContext, token: &TaskResourcePreparation,
+        cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)> {
+        cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
+        context.owned_task_binding_with_native_work(work)?;
+        token.verify_creation_with_native_work(work)?.await?;
+        let preparation = token.request();
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        {
+            let mut history = io.history_io();
+            preparation.validate_with_work(&mut Some(&mut history))?;
+        }
+        let caller_task = preparation.child.parent.ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "native recursive preparation has no original caller",
+        })?;
+        let caller = self.native_caller(caller_task, work)?;
+        let request = io.value_decode_preparation::<ForkRequest>(&preparation.payload, crate::wire::ErrorCode::Storage)?
+            .into_retained();
+        let runtime = self.native_runtime()?;
+        let admission = runtime.task_host().observe_admission_with_native_work(caller_task, work).await?;
+        if admission.0.parent.is_some() {
+            let snapshots = runtime.task_host().observe_volume_snapshots_with_native_work(caller_task, work).await?;
+            let mut history = io.history_io();
+            let mut project = 0;
+            let mut scratch = 0;
+            for snapshot in &snapshots.0 {
+                history.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                project += usize::from(snapshot.volume == caller.project);
+                scratch += usize::from(snapshot.volume == caller.private_volume);
+            }
+            if project != 1 || scratch != 1 {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "native restored preparation differs from original caller allocation" });
+            }
+        }
+        if request.authorized_source.as_ref() != token.project_source().map(ProjectSourceReadHandle::authorization) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native preparation changed its retained sealed Project source" });
+        }
+        let restored = if let Some(checkpoint) = &preparation.source_checkpoint {
+            let retained = context.read_file_with_native_work(checkpoint, work).await?;
+            let capture = io.decode_preparation::<SourceCheckpoint>(&retained.0)?.into_retained();
+            if capture.request != request || capture.caller != caller_task {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "native preparation checkpoint changed original caller or request" });
+            }
+            let snapshot_bytes = capture.snapshot.predecoded_native_owned_bytes()?;
+            let snapshot_guard = io.take_native_custody(snapshot_bytes)?;
+            self.native_restore_snapshot(&caller.owner, &request, capture.snapshot, Some(snapshot_guard), cancellation, work).await?
+        } else if let Some(original) = self.config.original_sources.iter()
+            .find(|original| original.request.operation_id == request.operation_id) {
+            if original.caller != caller_task || original.request != request {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "native trusted original source record differs from sealed preparation" });
+            }
+            let snapshot = original.snapshot.clone_native(work)?;
+            self.native_restore_snapshot(&caller.owner, &request, snapshot, None, cancellation, work).await?
+        } else {
+            let original = self.native_open_aggregate(&caller.owner, Some(request.parent_revision), cancellation, work).await?;
+            io.absorb_native_custody(original.1)?;
+            original.0.into_reducer()
+        };
+        let owner = self.native_source_owner(context, cancellation, work).await?;
+        let resolver = context.content_residency_verifier_with_native_work(owner, work)?;
+        let verifier = {
+            let mut history = io.history_io();
+            caller.owner.issuer().verifier_with_work(&mut Some(&mut history))?
+        };
+        let copied_request = {
+            let mut history = io.history_io();
+            request.clone_with_work_and_custody(&mut Some(&mut history))?
+        };
+        let request_guard = io.take_native_custody(copied_request.1)?;
+        let source = super::recursive::restore_recursive_fork_source_with_native_work(
+            Arc::clone(&self.filesystem), &self.stream, restored, &verifier, &caller.owner.scope,
+            &caller.project, &self.config.stream_provider, (copied_request.0, request_guard),
+            self.config.history_limits, token.project_source(), resolver, cancellation, work,
+        ).await?;
+        token.verify_creation_with_native_work(work)?.await?;
+        cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
+        Ok(source)
+    }
+}
+
 impl<P, A, O> RecursiveDefaultToolSource<P, A, O> for ConfiguredRecursiveToolSource<P, A, O>
 where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn supports_native_source(&self) -> bool {
+        self.project_policy.get().is_none_or(|(_, provider)| provider.supports_native_source())
+    }
+
     fn owner<'a>(&'a self, context: &'a ToolContext, tool: &'a ResumableTool, invocation: &'a ToolInvocation,
         cancellation: &'a CancellationToken) -> BoxProviderFuture<'a, Result<Owner<P, A, O>>> {
         Box::pin(async move { self.authenticate_caller(context, false).await?; self.runtime()?.recursive_tool_owner(context, tool, invocation, cancellation).await })
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn owner_with_native_work<'a>(&'a self, context: &'a ToolContext,
+        tool: &'a ResumableTool, invocation: &'a ToolInvocation,
+        cancellation: &'a CancellationToken, work: &'a acyclic_fs::NativeMaterializationWork)
+        -> Result<crate::NativeFutureBundle<'a, (Owner<P, A, O>, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            let runtime = self.native_runtime()?;
+            let owner = runtime.recursive_tool_owner_with_native_work(
+                context, tool, invocation, cancellation, work,
+            ).await?;
+            self.authenticate_native_caller(
+                context.task(), owner.0.journal_owner.as_ref(), false, work,
+            ).await?;
+            Ok(owner)
+        })
+    }
     fn select<'a>(&'a self, context: &'a ToolContext, arguments: &'a ForkToolArguments, cancellation: &'a CancellationToken)
         -> BoxProviderFuture<'a, Result<RecursiveForkSourceIntent>> {
         Box::pin(self.select_source(context, arguments, cancellation))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn select_with_native_work<'a>(&'a self, context: &'a ToolContext,
+        arguments: &'a ForkToolArguments, cancellation: &'a CancellationToken,
+        work: &'a acyclic_fs::NativeMaterializationWork)
+        -> Result<crate::NativeFutureBundle<'a, (RecursiveForkSourceIntent, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || self.native_select_source(context, arguments, cancellation, work))
     }
     fn fork<'a>(&'a self, context: &'a ToolContext, arguments: &'a ForkToolArguments,
         intent: &'a RecursiveForkSourceIntent, original: Option<&'a RecursiveForkToolPlan>, cancellation: &'a CancellationToken)
         -> BoxProviderFuture<'a, Result<ForkBinding<P, A, O>>> {
         Box::pin(self.fork_binding(context, arguments, intent, original, cancellation))
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn fork_with_native_work<'a>(&'a self, context: &'a ToolContext,
+        arguments: &'a ForkToolArguments, intent: &'a RecursiveForkSourceIntent,
+        original: Option<&'a RecursiveForkToolPlan>, cancellation: &'a CancellationToken,
+        work: &'a acyclic_fs::NativeMaterializationWork)
+        -> Result<crate::NativeFutureBundle<'a, (ForkBinding<P, A, O>, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || self.native_fork_binding(context, arguments, intent, original, cancellation, work))
+    }
     fn preparation<'a>(&'a self, context: &'a TaskContext, token: &'a TaskResourcePreparation,
         cancellation: &'a CancellationToken) -> BoxProviderFuture<'a, Result<RetainedSourceBinding<A, O>>> {
         Box::pin(self.restore_preparation_source(context, token, cancellation))
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn preparation_with_native_work<'a>(&'a self, context: &'a TaskContext,
+        token: &'a TaskResourcePreparation, cancellation: &'a CancellationToken,
+        work: &'a acyclic_fs::NativeMaterializationWork)
+        -> Result<crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || self.native_preparation_source(context, token, cancellation, work))
+    }
     fn merge<'a>(&'a self, context: &'a ToolContext, arguments: &'a MergeToolArguments, original: Option<&'a RecursiveMergeToolPlan>,
         cancellation: &'a CancellationToken) -> BoxProviderFuture<'a, Result<MergeBinding<P, A, O>>> {
         Box::pin(self.merge_binding(context, arguments, original, cancellation))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn merge_with_native_work<'a>(&'a self, context: &'a ToolContext,
+        arguments: &'a MergeToolArguments, original: Option<&'a RecursiveMergeToolPlan>,
+        cancellation: &'a CancellationToken, work: &'a acyclic_fs::NativeMaterializationWork)
+        -> Result<crate::NativeFutureBundle<'a, (MergeBinding<P, A, O>, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || self.native_merge_binding(context, arguments, original, cancellation, work))
     }
 }
 
@@ -604,38 +1616,53 @@ fn validate_result_volume(result: &VolumeRef, private: &VolumeRef, agent: crate:
 }
 
 fn verifier(binding: &ConfiguredRecursiveAuthorityBinding) -> Result<AuthorityVerifier> {
-    let verifier = AuthorityIssuer::new(&binding.issuer, binding.key, binding.authority.clone()).verifier();
+    let verifier = binding.issuer().verifier();
     verifier.verify(&binding.scope)?;
     Ok(verifier)
 }
 
-fn effective_owner(binding: &ConfiguredRecursiveAuthorityBinding, admitted: &Capabilities) -> Result<ConfiguredRecursiveAuthorityBinding> {
-    verifier(binding)?;
-    let agent = binding.scope.agent().ok_or_else(|| Error::Unauthorized("configured owner has no authenticated agent".into()))?;
-    let grants = binding.scope.capabilities().iter().chain(admitted.iter()).map(str::to_owned);
-    let mut owner = binding.clone();
-    owner.scope = AuthorityIssuer::new(&binding.issuer, binding.key, binding.authority.clone())
-        .root_for_agent(agent, binding.scope.id(), Capabilities::new(grants));
-    Ok(owner)
-}
 fn allocation_digest(allocation: &ConfiguredRecursiveFork, child: &TaskAdmissionRecord, scope: &Scope) -> Result<[u8; 32]> {
     // Creation proofs are bound later to the engine's actual preparation
     // identity. All independently selected admission/reader claims are fixed
     // here, without hashing signed token bytes or random mint metadata.
     let mut admission = child.clone();
     admission.resource_proofs.clear();
-    crate::contract::canonical_json_digest(&serde_json::json!({
-        "contract": "harness.configured-recursive-allocation.v2",
-        "admission": admission.canonical_value(),
-        "authority": allocation.child.authority,
-        "issuer": allocation.child.issuer,
-        "agent": scope.agent(),
-        "grants": scope.capabilities(),
-        "message_pointer": allocation.child_message_pointer,
-        "message_file_pointer": allocation.child_message_file_pointer,
-        "input_files": allocation.input_files,
-        "limits": allocation.limits,
-    }))
+    crate::contract::canonical_json_digest(&allocation_descriptor(allocation, &admission, scope))
+}
+
+fn allocation_descriptor<'a>(
+    allocation: &'a ConfiguredRecursiveFork, child: &'a TaskAdmissionRecord, scope: &'a Scope,
+) -> impl Serialize + 'a {
+    #[derive(Serialize)]
+    struct Descriptor<'a, T: Serialize> {
+        contract: &'static str, admission: T, authority: &'a Authority, issuer: &'a str,
+        agent: Option<crate::AgentId>, grants: &'a Capabilities, message_pointer: &'a str,
+        message_file_pointer: Option<&'a str>, input_files: &'a [crate::conversation::FileRef],
+        limits: ForkPreparationLimits,
+    }
+    Descriptor {
+        contract: "harness.configured-recursive-allocation.v2", admission: child.canonical_payload(),
+        authority: allocation.child.authority(), issuer: allocation.child.issuer().id(),
+        agent: scope.agent(), grants: scope.capabilities(), message_pointer: &allocation.child_message_pointer,
+        message_file_pointer: allocation.child_message_file_pointer.as_deref(),
+        input_files: &allocation.input_files, limits: allocation.limits,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn allocation_digest_with_native_work(
+    allocation: &ConfiguredRecursiveFork, child: &TaskAdmissionRecord, scope: &Scope,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<[u8; 32]> {
+    let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+    let mut admission = crate::executor::clone_preparation(child, Some(&io))?;
+    admission.resource_proofs.clear();
+    let mut history = io.history_io();
+    let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+    crate::contract::canonical_json_digest_with_work(
+        &allocation_descriptor(allocation, &admission, scope),
+        acyclic_stream::MAX_RECORD_BYTES as u64, &mut observer,
+    )
 }
 fn checkpoint_operation(effect: OperationId) -> OperationId {
     let mut hash = blake3::Hasher::new();
