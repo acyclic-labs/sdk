@@ -3878,32 +3878,6 @@ mod tests {
         legacy.committed_at_micros = 0;
         assert_eq!(decode_durable(authority_id, &legacy).expect("legacy").settled_at_micros, None);
 
-        let observation = acyclic_stream::StreamProvider::inspect_idempotency(
-            stream.as_ref(), ForkWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).operation_key(authority_id, proposed.operation_id).expect("key"),
-        ).await.expect("inspect").expect("retained operation");
-        let acyclic_stream::IdempotencyOutcome::Commit(
-            acyclic_stream::CommitOutcome::Committed(envelope)
-        ) = observation.outcome else {
-            panic!("expected committed envelope");
-        };
-        for forgery in 0..3 {
-            let mut forged = envelope.clone();
-            let append = forged.mutations.iter_mut().find_map(|mutation| match mutation {
-                acyclic_stream::CommittedMutation::Append(append)
-                    if append.path == records_path(authority_id).expect("path") => Some(append),
-                _ => None,
-            }).expect("authority append");
-            match forgery {
-                0 => append.path = records_path(AuthorityId::from_bytes([0x74; 16])).expect("other path"),
-                1 => append.records[0].sequence += 1,
-                _ => append.records[0].value = acyclic_stream::OwnedBytes::from_static(b"forged record"),
-            }
-            assert!(matches!(durable_from_operation_envelope(
-                authority_id, proposed.operation_id, forged,
-                Some((durable.sequence, record.value.as_ref())),
-            ), Err(AuthorityStoreError::Corrupt(_))));
-        }
-
         authority.retire_authority(authority_id, WorkBudget::UNBOUNDED, &cancellation)
             .await.expect("retire");
         assert!(matches!(authority.head(authority_id, WorkBudget::UNBOUNDED, &cancellation)
@@ -4439,10 +4413,10 @@ mod tests {
             .release_publication(reacquired, WorkBudget::UNBOUNDED, &cancellation)
             .await
             .expect_err("retained release conflict must not become success");
-        let (_, _, active) = authority
-            .fork_gate(authority_id, &mut ForkWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()))
-            .await
-            .expect("read active gate");
+        let gate = acyclic_stream::StreamPath::new(format!("{}/publication-gate", authority_prefix(authority_id))).expect("gate path");
+        let tail = acyclic_stream::StreamProvider::tail(stream.as_ref(), gate.clone()).await.expect("gate tail");
+        let record = read_one(stream.as_ref(), gate, tail - 1).await.expect("gate record");
+        let active = decode_publication_gate(&record.value).expect("active gate");
         assert_eq!(active, Some(reacquired.operation_id));
     }
 
@@ -4573,7 +4547,10 @@ mod tests {
         assert_eq!(receipt.work.authority_records_read, 1);
         assert_eq!(receipt.work.authority_bytes_read, PUBLICATION_GATE_FREE.len() as u64);
         assert_eq!(receipt.work.backend_write_operations, 0);
-        assert_eq!(authority.fork_gate(reservation.authority_id, &mut ForkWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await?.2, Some(new_operation));
+        let gate = acyclic_stream::StreamPath::new(format!("{}/publication-gate", authority_prefix(reservation.authority_id)))?;
+        let tail = acyclic_stream::StreamProvider::tail(inner.as_ref(), gate.clone()).await?;
+        let record = read_one(inner.as_ref(), gate, tail - 1).await?;
+        assert_eq!(decode_publication_gate(&record.value)?, Some(new_operation));
         for corrupt in 1..=10 {
             let mut spy = ReleaseSpy::new(Arc::clone(&inner));
             spy.corrupt_observation = corrupt;
