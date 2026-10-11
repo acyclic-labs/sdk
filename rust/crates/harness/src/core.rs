@@ -4034,15 +4034,29 @@ impl Reducer {
         seed: &mut ForkSeed,
         history: &ConversationState,
     ) -> Result<()> {
+        self.attest_fork_history_with_work(seed, history, &mut None)
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn attest_fork_history_with_work(
+        &self, seed: &mut ForkSeed, history: &ConversationState,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
         if seed.parent != self.authority || seed.parent_revision != self.revision
             || history.agent != self.conversation.agent
             || history.resident_after_sequence() != 0
             || history.logical_revision() != seed.inherited_through_sequence
         {
+            #[cfg(not(target_arch = "wasm32"))]
+            if work.as_deref().is_some_and(|observer| observer.original_native_work().is_some()) {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
+                    reason: "fork archive differs from its original parent cut" });
+            }
             return Err(Error::Conflict("fork archive differs from its original parent cut".into()));
         }
-        self.validate_fork_reference_ownership_using_with_work(seed, history, &mut None)?;
-        seed.history_witness = Some(self.authority_verifier.fork_history_proof(seed)?);
+        self.validate_fork_reference_ownership_using_with_work(seed, history, work)?;
+        seed.history_witness = Some(self.authority_verifier.fork_history_proof_with_work(seed, work)?);
         Ok(())
     }
 
@@ -4056,6 +4070,11 @@ impl Reducer {
     ) -> Result<()> {
         if let Some(proof) = seed.history_witness {
             if proof != self.authority_verifier.fork_history_proof_with_work(seed, work)? {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                if work.as_deref().is_some_and(|observer| observer.original_native_work().is_some()) {
+                    return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                        reason: "fork archive witness differs from its exact seed" });
+                }
                 return Err(Error::Unauthorized("fork archive witness differs from its exact seed".into()));
             }
             return Ok(());
