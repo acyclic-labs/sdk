@@ -875,13 +875,31 @@ impl AuthorityVerifier {
 
     /// Rejects accidental pairing with another aggregate authority.
     pub fn verify_audience(&self, authority: &Authority) -> Result<()> {
-        if &self.audience == authority {
-            Ok(())
-        } else {
-            Err(Error::Unauthorized(
-                "authority verifier belongs to another aggregate".into(),
-            ))
+        self.verify_audience_engine(authority, false)
+    }
+
+    fn verify_audience_engine(&self, authority: &Authority, native: bool) -> Result<()> {
+        if &self.audience == authority { return Ok(()); }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if native {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "authority verifier belongs to another aggregate",
+            });
         }
+        let _ = native;
+        Err(Error::Unauthorized("authority verifier belongs to another aggregate".into()))
+    }
+
+    /// Verifies the same pinned audience before native storage effects, without
+    /// copying metadata or allocating a mismatch diagnostic.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn verify_audience_with_native_work(
+        &self, authority: &Authority, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        work.charge(acyclic_fs::WorkCounters::default())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.verify_audience_engine(authority, true)
     }
 
     fn verify_effect(&self, observation: &EffectAttestation) -> Result<()> {

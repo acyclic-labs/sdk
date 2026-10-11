@@ -710,14 +710,32 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         verifier: &AuthorityVerifier,
         maximum_payload_bytes: u64,
     ) -> Result<()> {
+        self.validate_storage_with_work(verifier, maximum_payload_bytes, &mut None)
+    }
+
+    fn validate_storage_with_work(
+        &self, verifier: &AuthorityVerifier, maximum_payload_bytes: u64,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         if verifier.audience() != &self.host.owner
-            || maximum_payload_bytes > self.maximum_payload_bytes
-        {
-            return Err(Error::Unauthorized(
-                "journal storage exceeds admitted task authority or limits".into(),
+            || maximum_payload_bytes > self.maximum_payload_bytes {
+            return Err(CoordinatorTaskHost::<P>::admission_boundary(
+                work, crate::wire::ErrorCode::Unauthorized,
+                "journal storage exceeds admitted task authority or limits",
             ));
         }
         Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn validate_storage_with_native_work(
+        &self, verifier: &AuthorityVerifier, maximum_payload_bytes: u64,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.validate_storage_with_work(verifier, maximum_payload_bytes, &mut Some(&mut io))
     }
 
     /// Returns the initial workflow identity derived from the retained task
@@ -828,6 +846,15 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
 
     pub(crate) fn stream(&self) -> StreamClient<P> {
         self.stream.clone()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn stream_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<&StreamClient<P>> {
+        work.charge(acyclic_fs::WorkCounters::default())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(&self.stream)
     }
 
     pub(crate) fn operation_id(&self) -> OperationId {
