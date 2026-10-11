@@ -6,6 +6,68 @@ use std::path::{Component, Path};
 
 pub(crate) const PI_BUILTIN_COMMAND_KIND: &str = "acyclic.pi.builtin";
 pub(crate) const MAXIMUM_BUILTIN_BYTES: u64 = 262_144;
+pub(crate) const PI_BUILTIN_TOOL_REVISION: &str = "1.1.0";
+
+/// Static contracts are decoded by the original guarded SDK constructor, not
+/// assembled as unobserved JSON values and adopted after allocation.
+pub(crate) fn builtin_tool_definition_with_native_work(
+    work: &NativeMaterializationWork,
+) -> Result<(acyclic_harness::tool::ToolDefinition, NativeAllocation)> {
+    acyclic_harness::tool::ToolDefinition::new_with_native_work(
+        PI_BUILTIN_COMMAND_KIND, PI_BUILTIN_TOOL_REVISION,
+        "Pi builtin IO through the original task's declared SOURCE, PROJECT or SCRATCH",
+        r#"{
+          "type":"object","additionalProperties":false,
+          "required":["caller","sdk_operation","path","io"],
+          "properties":{
+            "caller":{"type":"string","minLength":1,"maxLength":128},
+            "sdk_operation":{"type":"string","minLength":1,"maxLength":512},
+            "path":{"type":"string","minLength":1,"maxLength":4096},
+            "io":{"oneOf":[
+              {"type":"object","additionalProperties":false,"required":["kind","maximum_bytes"],
+               "properties":{"kind":{"const":"read"},
+                 "maximum_bytes":{"type":"integer","minimum":1,"maximum":262144},
+                 "variants":{"type":"array","maxItems":4,
+                   "items":{"type":"string","minLength":1,"maxLength":4096}}}},
+              {"type":"object","additionalProperties":false,"required":["kind","content"],
+               "properties":{"kind":{"const":"write"},"content":{"type":"string","maxLength":262144}}},
+              {"type":"object","additionalProperties":false,"required":["kind","maximum_bytes"],
+               "properties":{"kind":{"const":"edit_read"},
+                 "maximum_bytes":{"type":"integer","minimum":1,"maximum":262144}}},
+              {"type":"object","additionalProperties":false,"required":["kind","content","expected_sha256"],
+               "properties":{"kind":{"const":"edit_write"},"content":{"type":"string","maxLength":262144},
+                 "expected_sha256":{"type":"string","pattern":"^[0-9a-fA-F]{64}$"}}}
+            ]}
+          }
+        }"#,
+        r#"{
+          "oneOf":[
+            {"type":"object","additionalProperties":false,"required":["content_base64","sha256","path","volume_role"],
+             "properties":{"content_base64":{"type":"string","maxLength":349528},
+               "sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+               "path":{"type":"string","minLength":1,"maxLength":4096},
+               "volume_role":{"enum":["SOURCE","PROJECT","SCRATCH"]}}},
+            {"type":"object","additionalProperties":false,"required":["written","path","volume_role"],
+             "properties":{"written":{"const":true},"path":{"type":"string","minLength":1,"maxLength":4096},
+               "volume_role":{"enum":["PROJECT","SCRATCH"]}}}
+          ]
+        }"#,
+        r#"{
+          "type":"object","additionalProperties":false,"required":["kind","value"],
+          "properties":{"kind":{"const":"json"},"value":{"oneOf":[
+            {"type":"object","additionalProperties":false,"required":["content_base64","sha256","path","volume_role"],
+             "properties":{"content_base64":{"type":"string","maxLength":349528},
+               "sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+               "path":{"type":"string","minLength":1,"maxLength":4096},
+               "volume_role":{"enum":["SOURCE","PROJECT","SCRATCH"]}}},
+            {"type":"object","additionalProperties":false,"required":["written","path","volume_role"],
+             "properties":{"written":{"const":true},"path":{"type":"string","minLength":1,"maxLength":4096},
+               "volume_role":{"enum":["PROJECT","SCRATCH"]}}}
+          ]}}
+        }"#,
+        16_384, work,
+    )
+}
 const BUILTIN_DIAGNOSTIC_LABEL_BYTES: u64 =
     acyclic_harness::preparation_serde_diagnostic_label_bytes()
     + crate::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
@@ -162,13 +224,6 @@ fn strip_native_prefix<'a>(path: &'a Path, root: &Path) -> Option<&'a Path> {
     Some(selected.as_path())
 }
 
-pub(crate) fn accept<T>(work: &NativeMaterializationWork,
-    result: acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<T>, Error>) -> Result<T> {
-    match result {
-        Ok(receipt) => { work.spent(receipt.work).map_err(native_error)?; Ok(receipt.value) }
-        Err(failure) => { work.spent(failure.work).map_err(native_error)?; Err(failure.error) }
-    }
-}
 
 pub(crate) fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
     Error::NativeWork { cause, custody: None }
@@ -302,6 +357,10 @@ impl<'a> PiBuiltinHost<'a> {
         let _request_custody = decoded.1;
         let request = decoded.0;
         request.validate()?;
+        request.require_root_source_read(self.protected.policy().root_task)?;
+        if context.context().durable_task_id() != Some(request.caller) {
+            return Err(denied("builtin command differs from its original native task actor"));
+        }
         if command.kind != PI_BUILTIN_COMMAND_KIND
             || command.operation_id != request.operation(self.protected.policy().root_task) {
             return Err(denied("builtin command changed its original SDK operation"));

@@ -520,6 +520,9 @@ it adds no project materializer, physical-root watcher, journal or process runne
 Per-volume lazy snapshots remain explicit in approval. Native processes are
 trusted effects, not confinement. Native children have a separately created,
 unmounted private result volume; results are never stored inside a native view.
+The native path planner returns references with their original allocation guard;
+it funds each owned path before copying and preserves the canonical session/task
+layout. Those paths create nothing and prove no admission, namespace or launch.
 
 The original root SDK supplies Pi 1.1.0, an absolute executable/CLI and installed
 extension, and the complete cleared environment once. These immutable host

@@ -31,6 +31,7 @@ struct Fixture {
     startup: NativeMaterializationWork,
     // Data destroys the genuine worker lease before its original native guard.
     _lease_custody: NativeAllocation,
+    _service_lock: crate::ServiceLock,
 }
 
 impl Fixture {
@@ -40,7 +41,12 @@ impl Fixture {
         std::fs::create_dir(&native).unwrap();
         std::fs::write(native.join("untouched.txt"), b"original native bytes").unwrap();
         let native = native.canonicalize().unwrap();
-        let (resources, sessions) = ServiceResources::open(directory.path().join("service")).await.unwrap();
+        let data = directory.path().join("service");
+        let (service_lock, configured, private_root, startup) =
+            crate::tests::configured_test_service_bootstrap(&data).await.unwrap();
+        assert_eq!(budget, startup.budget());
+        assert!(!cancellation.is_cancelled());
+        let (resources, sessions) = ServiceResources::open(data, configured, private_root, &startup).await.unwrap();
         assert!(sessions.is_empty());
         let session = resources.session_directory("root-provider");
         std::fs::create_dir_all(&session).unwrap();
@@ -73,7 +79,6 @@ impl Fixture {
         let intent = if scratch_only { PiRootIntent::ScratchOnly {} } else { PiRootIntent::Project {
             context_id: [114; 16], root_id: root, paths: BTreeMap::from([(hex::encode(root), native.to_str().unwrap().to_owned())]) } };
         let request = PiRootRequest { binding, root: intent };
-        let startup = NativeMaterializationWork::new(budget, &cancellation).unwrap();
         drop(owner);
         let owner = PiOwnerConfig::load_with_native_work(&resources.private_state_root,
             session.strip_prefix(&resources.data).unwrap(), &startup).unwrap()
@@ -108,7 +113,7 @@ impl Fixture {
         let provider = root_provider(owner.clone(), &resources, filesystem.clone(), stream.clone(), preparation,
             journal_owner, context, startup.clone()).unwrap();
         Self { directory, session, native, resources, filesystem, stream, owner, runtime,
-            request, lease, provider, startup, _lease_custody: lease_custody }
+            request, lease, provider, startup, _lease_custody: lease_custody, _service_lock: service_lock }
     }
 
     fn effects(&self) -> Result<Arc<acyclic_harness::effect_host::ConversationEffectHost<LocalStream>>> {

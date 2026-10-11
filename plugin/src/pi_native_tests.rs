@@ -743,3 +743,24 @@ async fn native_callback_preserves_the_whole_original_root_cause_and_denies_befo
         Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
     assert_eq!(work.receipt(), before);
 }
+
+#[test]
+fn funded_native_root_routes_preserve_the_original_canonical_layout_without_path_authority() {
+    let cancellation = CancellationToken::new();
+    let work = pi_meter(super::super::native_root_source::budget(), &cancellation).unwrap();
+    let root = acyclic_fs::WorkspaceRootId::from_bytes([0xaf; 16]);
+    let key = super::super::root_key(root);
+    let baseline = work.live_allocation_bytes();
+    let route = native_root_route_with_work(&key, &work).unwrap();
+    assert_eq!(route.0, super::super::route_name(root));
+    assert!(route.1.work().shares_ledger(&work));
+    assert_eq!(work.live_allocation_bytes(), baseline + route.1.bytes());
+    assert!(native_root_route_with_work(&key.to_uppercase(), &work).is_err());
+    drop(route);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    cancellation.cancel();
+    let before = work.receipt();
+    assert!(matches!(native_root_route_with_work(&key, &work),
+        Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
+    assert_eq!(work.receipt(), before);
+}

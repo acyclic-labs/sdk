@@ -77,6 +77,38 @@ struct SpawnObservation<'a, E: Serialize> {
     outcome: &'a Option<Outcome<Value>>,
 }
 
+#[derive(Serialize)]
+#[serde(tag = "kind", content = "binding", rename_all = "snake_case")]
+enum SpawnBorrowedBinding<'a> { Pi(&'a PiTaskBinding) }
+
+struct SpawnBorrowedRoot<'a> { key: &'a str, root: RouteRoot }
+impl Serialize for SpawnBorrowedRoot<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(1))?;
+        map.serialize_entry(self.key, &self.root)?;
+        map.end()
+    }
+}
+
+#[derive(Serialize)]
+struct SpawnBorrowedRoute<'a> {
+    task_binding: SpawnBorrowedBinding<'a>, agent_id: &'a str, turn_id: &'a str,
+    context_id: [u8; 16], root_id: [u8; 16], parent_agent_id: &'a str,
+    roots: SpawnBorrowedRoot<'a>, mount_path: &'a Path, lifecycle: RouteLifecycle,
+}
+
+const SPAWN_ROUTE_DIAGNOSTIC_LABEL_BYTES: u64 =
+    pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES
+    + pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
+        "Route", "task_binding", "agent_id", "turn_id", "context_id", "root_id",
+        "parent_agent_id", "roots", "mount_path", "lifecycle", "RouteRoot",
+        "repository_workspace_id", "published_generation", "RouteLifecycle",
+        "mounting", "active", "stop_requested", "frozen", "PluginTaskBinding",
+        "kind", "binding", "pi", "host_managed", "a string", "path string",
+        "an array of length 16", "an array of length 32",
+    ]);
+
 impl PiSession {
     pub(super) async fn spawn_commit(
         &mut self, caller: TaskId, arguments: &Value, owner: &pi_owner::PiOwnerConfig,
@@ -122,7 +154,7 @@ impl PiSession {
         }
         let pending = self.state.pending.iter().find(|pending| pending.fork_key == operations.fork.into_bytes());
         if let Some(pending) = pending {
-            self.spawn_validate_pending(pending, &commit, operations)?;
+            self.spawn_validate_pending(pending, &commit, operations, &work)?;
             if plan.is_none() {
                 return Err(acyclic_harness::Error::Invalid("Pi admitted preparation lost its original immutable fork plan".to_owned()));
             }
@@ -139,7 +171,7 @@ impl PiSession {
             None
         } else {
             let live = native.live_source(caller, &work).await?.ok_or_else(|| acyclic_harness::Error::Invalid("Pi recursive spawn requires its actual running caller owner".to_owned()))?;
-            if live.binding != *self.binding(caller).map_err(acyclic_harness::Error::Invalid)? || live.context.context().durable_task_id() != Some(caller) {
+            if live.binding != *self.binding(caller)? || live.context.context().durable_task_id() != Some(caller) {
                 return Err(acyclic_harness::Error::Invalid("Pi recursive spawn changed its original caller binding".to_owned()));
             }
             let cwd = Path::new(&commit.launch.source.parent_cwd);
@@ -173,7 +205,7 @@ impl PiSession {
                 let (command, command_custody) = self.spawn_command(owner, operation, pi_fork_host::PI_OBSERVE_SOURCE_COMMAND_KIND,
                     &input, &work).await?;
                 let (acknowledgement, pending, _) = self.spawn_root_step(owner, native.clone(), command, false, None, &work).await?;
-                if !pending.is_empty() {
+                if pending.is_some() {
                     return Err(acyclic_harness::Error::Invalid("Pi Root source observer unexpectedly admitted a child".to_owned()));
                 }
                 spawn_retain_custody(&mut retained_custody, command_custody)?;
@@ -220,8 +252,11 @@ impl PiSession {
                         drop(admission_custody);
                         return Err(acyclic_harness::Error::Invalid("Pi original preparation admission was substituted".to_owned()));
                     }
-                    let reservation = self.spawn_reservation(&commit, operations)?;
-                    self.spawn_save_pending(vec![reservation], &commit, operations)?;
+                    let reservation = pi_fork_host::PiForkHost::new(self.runtime.clone(), self.filesystem.clone(),
+                        self.stream.clone(), &self.resources, native.original_owner(), &self.state, &self.roots, native.clone())
+                        .reservation_with_native_work(plan, &work)?;
+                    let reservation = spawn_pending_batch(reservation, &work)?;
+                    self.spawn_save_pending(Some(reservation), &commit, operations, &work)?;
                     drop(admission);
                     drop(admission_custody);
                 }
@@ -233,8 +268,8 @@ impl PiSession {
         } else {
             self.spawn_root_step(owner, native.clone(), command.clone(), false, Some(task), &work).await?
         };
-        let newly_saved = !pending.is_empty();
-        self.spawn_save_pending(pending, &commit, operations)?;
+        let newly_saved = pending.is_some();
+        self.spawn_save_pending(pending, &commit, operations, &work)?;
         let (acknowledgement, prepared) = if prepared.is_some() {
             (acknowledgement, prepared)
         } else if newly_saved || (saved_pending && acknowledgement.is_none()) {
@@ -245,12 +280,12 @@ impl PiSession {
                 spawn_retain_custody(&mut retained_custody, custody)?;
             }
             let (acknowledgement, pending, prepared) = if let Some(live) = &live {
-                live.owner.verify_dispatch().await?;
+                live.owner.verify_with_native_work(false, &work).await?;
                 self.spawn_child_step(owner, native.clone(), &live.context, command, true, task, &work, &payload).await?
             } else {
                 self.spawn_root_step(owner, native.clone(), command, true, Some(task), &work).await?
             };
-            self.spawn_save_pending(pending, &commit, operations)?;
+            self.spawn_save_pending(pending, &commit, operations, &work)?;
             (acknowledgement, prepared)
         } else {
             (acknowledgement, prepared)
@@ -286,8 +321,8 @@ impl PiSession {
             drop(acknowledgement);
             spawn_retain_custody(&mut retained_custody, custody)?;
         }
-        if let Some(live) = &live { live.owner.verify_dispatch().await?; }
-        self.spawn_save_created(&commit, operations, &prepared)?;
+        if let Some(live) = &live { live.owner.verify_with_native_work(false, &work).await?; }
+        self.spawn_save_created(&commit, operations, &prepared, &work)?;
         native.register_prepared(prepared).await?;
         // The stock task/effect future may block on native SessionStart, tools
         // and mail RPC. It must never hold the session actor during that wait.
@@ -307,16 +342,16 @@ impl PiSession {
         {
             return Err(acyclic_harness::Error::Invalid("Pi spawn requires bounded original tool and child alias identities".to_owned()));
         }
-        let caller_binding = self.binding(caller).map_err(acyclic_harness::Error::Invalid)?;
+        let caller_binding = self.binding(caller)?;
         let source_task = match arguments.get("source") {
             None | Some(Value::Null) => caller,
-            Some(Value::String(alias)) => self.alias_task(alias).map_err(acyclic_harness::Error::Invalid)?,
+            Some(Value::String(alias)) => self.alias_task(alias)?,
             _ => return Err(acyclic_harness::Error::Invalid("Pi workspace source must be a registered agent identity".to_owned())),
         };
         if source_task != caller && !owner.policy().grants.contains("pi:source:select") {
             return Err(acyclic_harness::Error::Invalid("Pi original root policy does not authorize selected-source reads".to_owned()));
         }
-        let source = self.binding(source_task).map_err(acyclic_harness::Error::Invalid)?;
+        let source = self.binding(source_task)?;
         let root_key = match arguments.get("root") {
             Some(Value::String(key)) => source.project_volumes.get_key_value(key)
                 .map(|(key, _)| key.clone()).ok_or_else(|| acyclic_harness::Error::Invalid("Pi selected root is not an original source project".to_owned()))?,
@@ -430,7 +465,7 @@ impl PiSession {
             authority.signed, maximum)?;
         let (bytes, bytes_custody) = reader.read_with_native_work(&reference, maximum, work).await?;
         let bytes = bytes;
-        let owned = (bytes.len() as u64).checked_mul(4).ok_or_else(|| acyclic_harness::Error::Invalid("Pi retained input ownership bound overflow".to_owned()))?;
+        let owned = std::mem::size_of::<T>() as u64;
         let (value, custody) = pi_root_provider::guarded_pi_decode(
             &bytes, maximum, owned, acyclic_harness::JsonValueSchema::None,
             T::DIAGNOSTIC_LABEL_BYTES, work)?;
@@ -453,7 +488,7 @@ impl PiSession {
     async fn spawn_root_step(
         &self, owner: &pi_owner::PiOwnerConfig, native: Arc<pi_native_host::PiNativeCommandHost>,
         command: WorkflowCommand, wake_pending: bool, task: Option<TaskId>, work: &NativeMaterializationWork,
-    ) -> acyclic_harness::Result<(Option<(Value, NativeAllocation)>, Vec<PendingSpawn>, Option<pi_fork::PreparedPiFork>)> {
+    ) -> acyclic_harness::Result<(Option<(Value, NativeAllocation)>, Option<(Vec<PendingSpawn>, NativeAllocation)>, Option<pi_fork::PreparedPiFork>)> {
         let fork = pi_fork_host::PiForkHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
             &self.resources, native.original_owner(), &self.state, &self.roots, native.clone());
         let selected = pi_selected_host::PiSelectedHost::new_with_native_work(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
@@ -470,7 +505,7 @@ impl PiSession {
         &self, owner: &pi_owner::PiOwnerConfig, native: Arc<pi_native_host::PiNativeCommandHost>,
         context: &Arc<NativeTaskContext>, command: WorkflowCommand, reconcile: bool, task: TaskId,
         work: &NativeMaterializationWork, input: &pi_fork_host::PiForkCommand,
-    ) -> acyclic_harness::Result<(Option<(Value, NativeAllocation)>, Vec<PendingSpawn>, Option<pi_fork::PreparedPiFork>)> {
+    ) -> acyclic_harness::Result<(Option<(Value, NativeAllocation)>, Option<(Vec<PendingSpawn>, NativeAllocation)>, Option<pi_fork::PreparedPiFork>)> {
         let fork = pi_fork_host::PiForkHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
             &self.resources, native.original_owner(), &self.state, &self.roots, native);
         let fence = context.context().owned_task_fence()?;
@@ -507,47 +542,76 @@ impl PiSession {
         }).ok_or_else(|| acyclic_harness::Error::Invalid("Pi original caller has no retained route alias".to_owned()))
     }
 
-    fn spawn_reservation(&self, commit: &pi_fork::RetainedSpawnCommit, operations: pi_fork::PiForkOperations) -> acyclic_harness::Result<PendingSpawn> {
-        let (key, project) = commit.child.project_volumes.iter().next().ok_or_else(|| acyclic_harness::Error::Invalid("Pi child project disappeared".to_owned()))?;
-        let paths = pi_native::planned_native_paths(&self.resources, &self.state.root_session_id, commit.child.task_id, Some(key))?;
-        Ok(PendingSpawn { task_binding: PluginTaskBinding::Pi(Box::new(commit.child.clone())), agent_id: Some(commit.alias.clone()),
-            parent_agent_id: self.spawn_parent_alias(commit.caller)?.to_owned(), tool_use_id: commit.sdk_operation.clone(),
-            active_root_id: Some(decode_fixed(key).map_err(acyclic_harness::Error::Invalid)?), expires_at_millis: now_millis().saturating_add(2 * 60 * 1000),
-            workspace_name: project.storage_name()?, fork_key: operations.fork.into_bytes(),
-            roots: BTreeMap::new(), mount_path: paths.view_root, lifecycle: PendingSpawnLifecycle::Preparing })
-    }
 
     fn spawn_validate_pending(&self, pending: &PendingSpawn, commit: &pi_fork::RetainedSpawnCommit,
-        operations: pi_fork::PiForkOperations) -> acyclic_harness::Result<()> {
+        operations: pi_fork::PiForkOperations, work: &NativeMaterializationWork) -> acyclic_harness::Result<()> {
         let (key, project) = commit.child.project_volumes.iter().next().ok_or_else(|| acyclic_harness::Error::Invalid("Pi original pending lost its selected project".to_owned()))?;
-        let paths = pi_native::planned_native_paths(&self.resources, &self.state.root_session_id,
-            commit.child.task_id, Some(key))?;
+        let (paths, paths_custody) = pi_native::planned_native_paths_with_native_work(
+            &self.resources, &self.state.root_session_id, commit.child.task_id, Some(key), work)?;
+        let paths = paths;
+        let (workspace, workspace_custody) = project.storage_name_with_native_work(work)?;
+        let workspace = workspace;
         if !matches!(&pending.task_binding, PluginTaskBinding::Pi(binding) if binding.as_ref() == &commit.child)
             || pending.agent_id.as_deref() != Some(commit.alias.as_str())
             || pending.parent_agent_id != self.spawn_parent_alias(commit.caller)?
             || pending.tool_use_id != commit.sdk_operation || pending.active_root_id != Some(decode_fixed(key).map_err(acyclic_harness::Error::Invalid)?)
-            || pending.workspace_name != project.storage_name()? || pending.fork_key != operations.fork.into_bytes()
+            || pending.workspace_name != workspace || pending.fork_key != operations.fork.into_bytes()
             || pending.mount_path != paths.view_root || !pending.roots.is_empty()
             || pending.lifecycle != PendingSpawnLifecycle::Preparing || pending.expires_at_millis <= now_millis()
         {
             return Err(acyclic_harness::Error::Invalid("Pi retry changed or expired its original Preparing child catalog record".to_owned()));
         }
+        drop(workspace);
+        drop(workspace_custody);
+        drop(paths);
+        drop(paths_custody);
         Ok(())
     }
 
-    fn spawn_save_pending(&mut self, pending: Vec<PendingSpawn>, commit: &pi_fork::RetainedSpawnCommit,
-        operations: pi_fork::PiForkOperations) -> acyclic_harness::Result<()> {
-        if pending.is_empty() { return Ok(()); }
-        for reservation in &pending { self.spawn_validate_pending(reservation, commit, operations)?; }
+    fn spawn_save_pending(&mut self, pending: Option<(Vec<PendingSpawn>, NativeAllocation)>,
+        commit: &pi_fork::RetainedSpawnCommit, operations: pi_fork::PiForkOperations,
+        work: &NativeMaterializationWork) -> acyclic_harness::Result<()> {
+        let Some((pending, custody)) = pending else { return Ok(()); };
+        let pending = pending;
         if pending.len() != 1 || self.state.pending.iter().any(|saved| saved.fork_key == operations.fork.into_bytes()) {
-            return Err(acyclic_harness::Error::Invalid("Pi preparation returned a duplicate or unrelated original reservation".to_owned()));
+            return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid,
+                reason: "Pi preparation returned a duplicate or unrelated original reservation" });
         }
+        self.spawn_validate_pending(&pending[0], commit, operations, work)?;
+        self.prepare_native_catalog_slot(work)?;
         let original_length = self.state.pending.len();
-        self.state.pending.extend(pending);
-        if let Err(error) = self.slots.save(&self.directory, &self.state, Survives::PowerLoss) {
-            self.state.pending.truncate(original_length);
-            return Err(acyclic_harness::Error::Storage(error));
+        if self.state.pending.capacity() == original_length {
+            let capacity = original_length.checked_add(1)
+                .ok_or_else(|| native_error(acyclic_fs::WorkError::Overflow.into()))?;
+            let bytes = capacity.checked_mul(std::mem::size_of::<PendingSpawn>())
+                .ok_or_else(|| native_error(acyclic_fs::WorkError::Overflow.into()))? as u64;
+            let backing = work.claim(bytes).map_err(native_error)?;
+            work.charge(acyclic_fs::WorkCounters { bytes_copied:
+                (original_length * std::mem::size_of::<PendingSpawn>()) as u64,
+                ..acyclic_fs::WorkCounters::UNCHARGED }).map_err(native_error)?;
+            let mut replacement = std::collections::VecDeque::with_capacity(capacity);
+            replacement.append(&mut self.state.pending);
+            let old = std::mem::replace(&mut self.state.pending, replacement);
+            let old_custody = self.replace_native_pending_backing_custody(backing);
+            drop(old);
+            drop(old_custody);
         }
+        self.state.pending.extend(pending);
+        let old_custody = self.install_native_catalog_custody(commit.child.task_id,
+            crate::service_session::NativeCatalogComponent::Pending, custody);
+        if let Err(error) = self.slots.save_with_native_work(&self.resources.private_state_root,
+            &self.relative_directory, &self.state, Survives::PowerLoss, work) {
+            self.state.pending.truncate(original_length);
+            let removed = self.take_native_catalog_custody(commit.child.task_id,
+                crate::service_session::NativeCatalogComponent::Pending);
+            drop(removed);
+            if let Some(custody) = old_custody {
+                self.install_native_catalog_custody(commit.child.task_id,
+                    crate::service_session::NativeCatalogComponent::Pending, custody);
+            }
+            return Err(error);
+        }
+        drop(old_custody);
         Ok(())
     }
 
@@ -608,10 +672,11 @@ impl PiSession {
     }
 
     fn spawn_save_created(&mut self, commit: &pi_fork::RetainedSpawnCommit, operations: pi_fork::PiForkOperations,
-        prepared: &pi_fork::PreparedPiFork) -> acyclic_harness::Result<()> {
+        prepared: &pi_fork::PreparedPiFork, work: &NativeMaterializationWork) -> acyclic_harness::Result<()> {
         let index = self.state.pending.iter().position(|pending| pending.fork_key == operations.fork.into_bytes()).ok_or_else(|| acyclic_harness::Error::Invalid("Pi actual creator has no durably saved original Preparing record".to_owned()))?;
+        self.prepare_native_catalog_slot(work)?;
         let pending = &self.state.pending[index];
-        self.spawn_validate_pending(pending, commit, operations)?;
+        self.spawn_validate_pending(pending, commit, operations, work)?;
         let key = commit.child.project_volumes.keys().next().ok_or_else(|| acyclic_harness::Error::Invalid("Pi child has no selected root".to_owned()))?;
         let binding = &prepared.binding;
         if binding.task_id != commit.child.task_id || binding.agent_id != commit.child.agent_id
@@ -627,22 +692,61 @@ impl PiSession {
         }
         prepared.report.validate()?;
         binding.validate(None, [key.as_str()], false)?;
-        let route = Route { task_binding: PluginTaskBinding::Pi(Box::new(binding.clone())), agent_id: commit.alias.clone(),
-            turn_id: commit.sdk_operation.clone(), context_id: operations.fork.into_bytes(),
-            root_id: pending.active_root_id.ok_or_else(|| acyclic_harness::Error::Invalid("Pi original reservation lost its selected root".to_owned()))?,
-            parent_agent_id: pending.parent_agent_id.clone(),
-            roots: BTreeMap::from([(key.clone(), RouteRoot { root_id: decode_fixed(key).map_err(acyclic_harness::Error::Invalid)?,
+        let route = SpawnBorrowedRoute { task_binding: SpawnBorrowedBinding::Pi(binding), agent_id: &commit.alias,
+            turn_id: &commit.sdk_operation, context_id: operations.fork.into_bytes(),
+            root_id: pending.active_root_id.ok_or_else(|| acyclic_harness::Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi original reservation lost its selected root" })?,
+            parent_agent_id: &pending.parent_agent_id,
+            roots: SpawnBorrowedRoot { key, root: RouteRoot {
+                root_id: decode_fixed(key).map_err(acyclic_harness::Error::Invalid)?,
                 repository_workspace_id: prepared.workspace.workspace().id().into_bytes(),
-                published_generation: prepared.native_lazy.authored_generation.digest().into_bytes() })]),
-            mount_path: pending.mount_path.clone(), lifecycle: RouteLifecycle::Mounting };
+                published_generation: prepared.native_lazy.authored_generation.digest().into_bytes() } },
+            mount_path: &pending.mount_path, lifecycle: RouteLifecycle::Mounting };
         if self.state.routes.contains_key(&commit.alias) { return Err(acyclic_harness::Error::Invalid("Pi created alias was already registered".to_owned())); }
-        let consumed = self.state.pending.remove(index).ok_or_else(|| acyclic_harness::Error::Invalid("Pi original pending disappeared".to_owned()))?;
-        self.state.routes.insert(commit.alias.clone(), route);
-        if let Err(error) = self.slots.save(&self.directory, &self.state, Survives::PowerLoss) {
-            self.state.routes.remove(&commit.alias);
-            self.state.pending.insert(index, consumed);
-            return Err(acyclic_harness::Error::Storage(error));
+        let (bytes, bytes_custody) = pi_root_provider::canonical_pi_value_with_native_work(
+            &(commit.alias.as_str(), &route), MAXIMUM_ADAPTER_STATE_BYTES, work)?;
+        let bytes = bytes;
+        let ((route_key, route), mut route_custody): ((String, Route), NativeAllocation) =
+            pi_root_provider::guarded_pi_decode(&bytes, MAXIMUM_ADAPTER_STATE_BYTES,
+                std::mem::size_of::<(String, Route)>() as u64,
+                acyclic_harness::JsonValueSchema::None, SPAWN_ROUTE_DIAGNOSTIC_LABEL_BYTES, work)?;
+        let (route_key, route) = (route_key, route);
+        drop(bytes);
+        drop(bytes_custody);
+        let mut slot_custody = work.claim(std::mem::size_of::<(String, Route)>() as u64).map_err(native_error)?;
+        if let Err(cause) = route_custody.absorb(&mut slot_custody) {
+            drop(route);
+            drop(route_key);
+            return Err(acyclic_harness::Error::NativeWork { cause, custody: Some(slot_custody) });
         }
+        let consumed_custody = self.take_native_catalog_custody(commit.child.task_id,
+            crate::service_session::NativeCatalogComponent::Pending);
+        let consumed = self.state.pending.remove(index).ok_or_else(|| acyclic_harness::Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi original pending disappeared" })?;
+        self.state.routes.insert(route_key, route);
+        let old_route_custody = self.install_native_catalog_custody(commit.child.task_id,
+            crate::service_session::NativeCatalogComponent::Route, route_custody);
+        if let Err(error) = self.slots.save_with_native_work(&self.resources.private_state_root,
+            &self.relative_directory, &self.state, Survives::PowerLoss, work) {
+            let removed = self.state.routes.remove_entry(&commit.alias);
+            drop(removed);
+            let removed_custody = self.take_native_catalog_custody(commit.child.task_id,
+                crate::service_session::NativeCatalogComponent::Route);
+            drop(removed_custody);
+            self.state.pending.insert(index, consumed);
+            if let Some(custody) = consumed_custody {
+                self.install_native_catalog_custody(commit.child.task_id,
+                    crate::service_session::NativeCatalogComponent::Pending, custody);
+            }
+            if let Some(custody) = old_route_custody {
+                self.install_native_catalog_custody(commit.child.task_id,
+                    crate::service_session::NativeCatalogComponent::Route, custody);
+            }
+            return Err(error);
+        }
+        drop(consumed);
+        drop(consumed_custody);
+        drop(old_route_custody);
         Ok(())
     }
 
@@ -700,6 +804,19 @@ impl PiSession {
         }
         Ok((value, custody))
     }
+}
+
+fn spawn_pending_batch((pending, mut custody): (PendingSpawn, NativeAllocation),
+    work: &NativeMaterializationWork) -> acyclic_harness::Result<(Vec<PendingSpawn>, NativeAllocation)> {
+    let pending = pending;
+    let mut backing = work.claim(std::mem::size_of::<PendingSpawn>() as u64).map_err(native_error)?;
+    let mut records = Vec::with_capacity(1);
+    records.push(pending);
+    if let Err(cause) = custody.absorb(&mut backing) {
+        drop(records);
+        return Err(acyclic_harness::Error::NativeWork { cause, custody: Some(backing) });
+    }
+    Ok((records, custody))
 }
 
 fn spawn_retain_custody(retained: &mut Option<NativeAllocation>, mut custody: NativeAllocation) -> acyclic_harness::Result<()> {

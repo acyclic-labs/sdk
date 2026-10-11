@@ -29,11 +29,13 @@ fn session(fixture: &Fixture) -> PiSession {
         ..AdapterState::default()
     };
     let directory = fixture.resources.session_directory(&state.root_session_id);
+    let relative_directory = fixture.resources.private_session_data(&directory).unwrap().to_path_buf();
     let mut slots = StateSlots::read(&directory).unwrap().0;
     slots.save(&directory, &state, Survives::PowerLoss).unwrap();
-    PiSession { directory, state, slots, runtime: fixture.runtime.clone(), filesystem: fixture.filesystem.clone(),
+    PiSession { directory, relative_directory, state, slots, runtime: fixture.runtime.clone(), filesystem: fixture.filesystem.clone(),
         stream: fixture.stream.clone(), resources: fixture.resources.clone(), roots: BTreeMap::new(),
-        native: None, native_jobs: BTreeMap::new() }
+        native: None, native_jobs: BTreeMap::new(), native_startup_custody: None,
+        native_pending_backing_custody: None, native_catalog_custody: Vec::new(), native_catalog_backing_custody: None }
 }
 
 fn arguments(session: &PiSession, fixture: &Fixture) -> Value {
@@ -116,8 +118,20 @@ async fn original_creator_catalog_barriers_and_duplicate_observation_do_not_disp
     assert!(source_owned > source_baseline);
     fixture.coordinator().admit_preparation(&fixture.context, &fixture.journal,
         fixture.fence.clone(), &plan).await.unwrap();
-    let reservation = session.spawn_reservation(&commit, operations).unwrap();
-    session.spawn_save_pending(vec![reservation], &commit, operations).unwrap();
+    let catalog_work = NativeMaterializationWork::new(pi_root_provider::allocation_budget(), &CancellationToken::new()).unwrap();
+    let native = session.native_host_with_native_work(&catalog_work).unwrap();
+    let catalog_host = pi_fork_host::PiForkHost::new(fixture.runtime.clone(), fixture.filesystem.clone(),
+        fixture.stream.clone(), &fixture.resources, fixture.owner.clone(), &session.state, &session.roots,
+        native);
+    let reservation = catalog_host.reservation_with_native_work(&plan, &catalog_work).unwrap();
+    let reservation = spawn_pending_batch(reservation, &catalog_work).unwrap();
+    drop(catalog_host);
+    session.spawn_save_pending(Some(reservation), &commit, operations, &catalog_work).unwrap();
+    let pending_custody = session.take_native_catalog_custody(commit.child.task_id,
+        crate::service_session::NativeCatalogComponent::Pending).unwrap();
+    assert!(pending_custody.bytes() > 0 && pending_custody.work().shares_ledger(&catalog_work));
+    assert!(session.install_native_catalog_custody(commit.child.task_id,
+        crate::service_session::NativeCatalogComponent::Pending, pending_custody).is_none());
     assert_eq!(source_work.live_allocation_bytes(), source_owned);
     let (preparing, _) = load_state(&session.directory).unwrap();
     assert_eq!(preparing.pending.len(), 1);
@@ -143,7 +157,14 @@ async fn original_creator_catalog_barriers_and_duplicate_observation_do_not_disp
     let source_cut = prepared.frozen_source;
     let native_cut = prepared.native_lazy;
     assert_eq!(prepared.workspace.read("/observed.txt", 64).await.unwrap().as_ref(), b"original");
-    session.spawn_save_created(&commit, operations, &prepared).unwrap();
+    session.spawn_save_created(&commit, operations, &prepared, &catalog_work).unwrap();
+    assert!(session.take_native_catalog_custody(commit.child.task_id,
+        crate::service_session::NativeCatalogComponent::Pending).is_none());
+    let route_custody = session.take_native_catalog_custody(commit.child.task_id,
+        crate::service_session::NativeCatalogComponent::Route).unwrap();
+    assert!(route_custody.bytes() > 0 && route_custody.work().shares_ledger(&catalog_work));
+    assert!(session.install_native_catalog_custody(commit.child.task_id,
+        crate::service_session::NativeCatalogComponent::Route, route_custody).is_none());
     // Actual decoded source metadata stays in original custody across creator
     // await and both PowerLoss catalog barriers, without resetting work.
     assert_eq!(source_work.live_allocation_bytes(), source_owned);
@@ -160,7 +181,7 @@ async fn original_creator_catalog_barriers_and_duplicate_observation_do_not_disp
     assert_eq!(route.turn_id, commit.sdk_operation);
     assert_eq!(route.context_id, operations.fork.into_bytes());
     assert_eq!(route.roots.values().next().unwrap().repository_workspace_id, workspace.into_bytes());
-    assert!(session.native.is_none());
+    assert!(session.native.is_some());
     assert!(session.native_jobs.is_empty());
     let generations = session.slots.last_generation;
     let query_work = NativeMaterializationWork::new(pi_root_provider::allocation_budget(), &CancellationToken::new()).unwrap();

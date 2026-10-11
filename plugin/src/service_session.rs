@@ -153,6 +153,16 @@ pub(crate) struct PiSession {
     // Declaration order keeps startup-owned data alive before its actual guard
     // is released, including cancellation/error destruction of the actor.
     native_startup_custody: Option<acyclic_fs::NativeAllocation>,
+    native_pending_backing_custody: Option<acyclic_fs::NativeAllocation>,
+    // Incremental DTOs belong to their original commands, not startup's ledger.
+    native_catalog_custody: Vec<(TaskId, NativeCatalogComponent, acyclic_fs::NativeAllocation)>,
+    native_catalog_backing_custody: Option<acyclic_fs::NativeAllocation>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum NativeCatalogComponent {
+    Pending,
+    Route,
 }
 
 /// Public observations contain task identities and outcomes, never execution
@@ -327,12 +337,77 @@ impl PiSession {
             native: None,
             native_jobs: BTreeMap::new(),
             native_startup_custody: Some(relative_directory.1),
+            native_pending_backing_custody: None,
+            native_catalog_custody: Vec::new(),
+            native_catalog_backing_custody: None,
         }, resources.1);
         owned.0.native_startup_custody.as_mut()
             .ok_or(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi actor lost its original relative source custody" })?
             .absorb(&mut owned.1)
             .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
         Ok(owned.0)
+    }
+
+    pub(super) fn replace_native_pending_backing_custody(
+        &mut self, custody: acyclic_fs::NativeAllocation,
+    ) -> Option<acyclic_fs::NativeAllocation> {
+        self.native_pending_backing_custody.replace(custody)
+    }
+
+    pub(super) fn prepare_native_catalog_slot(
+        &mut self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> acyclic_harness::Result<()> {
+        if self.native_catalog_custody.len() < self.native_catalog_custody.capacity() {
+            return Ok(());
+        }
+        let capacity = self.native_catalog_custody.capacity().checked_mul(2)
+            .and_then(|capacity| capacity.checked_add(1))
+            .ok_or(RootError::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Invalid,
+                reason: "Pi native catalog capacity overflow",
+            })?;
+        let bytes = capacity.checked_mul(std::mem::size_of::<(
+            TaskId, NativeCatalogComponent, acyclic_fs::NativeAllocation,
+        )>()).ok_or(RootError::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Invalid,
+            reason: "Pi native catalog backing allowance overflow",
+        })?;
+        // The real new backing is funded in full before its allocation attempt.
+        // Its ledger can differ from the old backing and every resident DTO.
+        let custody = work.claim(bytes as u64)
+            .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
+        let replacement = Vec::with_capacity(capacity);
+        let old = (
+            std::mem::replace(&mut self.native_catalog_custody, replacement),
+            self.native_catalog_backing_custody.replace(custody),
+        );
+        self.native_catalog_custody.extend(old.0);
+        // extend consumes and physically frees the old Vec before this guard.
+        drop(old.1);
+        Ok(())
+    }
+
+    pub(super) fn install_native_catalog_custody(
+        &mut self, key: TaskId, component: NativeCatalogComponent,
+        custody: acyclic_fs::NativeAllocation,
+    ) -> Option<acyclic_fs::NativeAllocation> {
+        if let Some(entry) = self.native_catalog_custody.iter_mut()
+            .find(|entry| entry.0 == key && entry.1 == component)
+        {
+            return Some(std::mem::replace(&mut entry.2, custody));
+        }
+        assert!(self.native_catalog_custody.len() < self.native_catalog_custody.capacity(),
+            "Pi native catalog slot must be funded before inserting its DTO");
+        self.native_catalog_custody.push((key, component, custody));
+        None
+    }
+
+    pub(super) fn take_native_catalog_custody(
+        &mut self, key: TaskId, component: NativeCatalogComponent,
+    ) -> Option<acyclic_fs::NativeAllocation> {
+        let index = self.native_catalog_custody.iter()
+            .position(|entry| entry.0 == key && entry.1 == component)?;
+        Some(self.native_catalog_custody.swap_remove(index).2)
     }
 
     /// Drives the original allocation command, then activates only its signed,

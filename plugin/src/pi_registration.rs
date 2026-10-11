@@ -1,4 +1,6 @@
 //! Original Pi admission, before any selected native root is opened.
+//! New immutable owners receive only the SDK's explicit Pi built-in call grant;
+//! reopening never upgrades an existing credential's persisted policy.
 
 use super::*;
 use acyclic_harness::{
@@ -119,6 +121,7 @@ pub(crate) async fn register(
         "task:spawn:acyclic.pi@1", "effect:plan", "effect:run", "fork:publish", "conversation:bind",
         "interaction:route", "interaction:open", "interaction:observe", "pi:source:select",
         "mail:send", "mail:read", "task:spawn:acyclic.fork_preparation@1",
+        "tool:call:acyclic.pi.builtin",
     ];
     let native_error = |cause| acyclic_harness::Error::NativeWork { cause, custody: None };
     let grants = [
