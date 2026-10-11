@@ -547,7 +547,7 @@ pub trait WorkflowJournal: acyclic_stream::ProviderPlatform {
         _after: u64,
         _maximum: u32,
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<BoxFuture<'a, Result<(Vec<WorkflowRecord>, acyclic_fs::NativeAllocation)>>> {
+    ) -> Result<crate::NativeFutureBundle<'a, (Vec<WorkflowRecord>, acyclic_fs::NativeAllocation)>> {
         Err(native_workflow_unsupported("journal has no native replay callback"))
     }
 
@@ -559,7 +559,7 @@ pub trait WorkflowJournal: acyclic_stream::ProviderPlatform {
         _idempotency_key: IdempotencyKey,
         _record: WorkflowRecord,
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<BoxFuture<'a, Result<(WorkflowCommitOutcome, acyclic_fs::NativeAllocation)>>> {
+    ) -> Result<crate::NativeFutureBundle<'a, (WorkflowCommitOutcome, acyclic_fs::NativeAllocation)>> {
         Err(native_workflow_unsupported("journal has no native commit callback"))
     }
 }
