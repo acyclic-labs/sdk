@@ -67,6 +67,7 @@ pub(crate) use closure::{
 };
 pub(crate) use codec::{EncodeAllocationStep, ReadAllocationStep};
 pub(crate) use file_read::{OriginalReadAccounting, ReadDecodeError, read_object_with_accounting};
+pub(crate) use file_read::owned_read_bytes;
 pub(crate) use file_table::encode_file_table_leaf_records_with_accounting;
 pub(crate) use file_table::encode_file_table_page_with_accounting;
 pub(crate) use file_table::encode_file_record_with_accounting;
@@ -99,6 +100,7 @@ pub(crate) use regular_mutation::apply_regular_mutation_with_accounting;
 pub(crate) use retention::encode_retention_created_with_accounting;
 pub(crate) use search::binary_search_with_accounting;
 pub(crate) use tree::encode_tree_page_with_accounting;
+pub(crate) use types::lowercase_unicode_with_accounting;
 pub(crate) use volume::{decode_volume_created_with_steps, encode_volume_created_with_accounting};
 
 pub use attribute::{
