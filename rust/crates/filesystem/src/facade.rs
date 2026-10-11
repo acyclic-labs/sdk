@@ -9418,7 +9418,7 @@ async fn list_directory_to_file_root_with_accounting<A: AsyncAuthorityStore, O: 
         if record.kind != FileKind::Directory { return Err(FsError::NotDirectory); }
         crate::kernel::list_tree_entries_async_with_accounting(
             &volume.fs.inner.objects, entries, after, maximum_entries, DecodeLimits::for_volume(volume.config),
-            accounting, cancellation, None,
+            accounting, cancellation.clone(), None,
         ).await
     }.await;
     let retained = match &result {
@@ -16517,7 +16517,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 } else {
                     crate::kernel::list_tree_entries_async_with_accounting(
                         &this.volume.fs.inner.objects, entries, after, maximum_entries,
-                        DecodeLimits::for_volume(this.volume.config), accounting, cancellation,
+                        DecodeLimits::for_volume(this.volume.config), accounting, cancellation.clone(),
                         Some(&this.dependencies.data_custody),
                     ).await?
                 };
