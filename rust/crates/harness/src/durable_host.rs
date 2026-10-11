@@ -320,6 +320,21 @@ impl<P: StreamProvider> crate::resource_preparation::CreatedTaskLease
             Error::Conflict("created resource task has no execution reservation".into())
         })
     }
+    #[cfg(feature = "filesystem")]
+    fn verify_with_io<'a>(
+        &'a self, io: &'a crate::filesystem::PreparationIo,
+    ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.original_native_work() {
+            return self.verify_with_native_work(work)
+                .map(crate::store::history::HistoryContentFuture::Native);
+        }
+        io.history_future(|| async move {
+            let mut observer = io.history_io();
+            self.verify_with_work(&mut Some(&mut observer)).await
+        })
+    }
+
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn verify_with_native_work<'a>(
         &'a self, work: &'a acyclic_fs::NativeMaterializationWork,

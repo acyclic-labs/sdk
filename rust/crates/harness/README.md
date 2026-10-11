@@ -271,6 +271,10 @@ creator receipt verifier, rather than fabricating child preparation provenance.
 Root writers retain the same existing coordinator-only publication lease;
 callbacks never retain a host/context cycle, and a terminal historical READ
 cannot acquire a fresh write lease.
+Measured publication checks borrow that same original preparation observer.
+Their guarded callback refreshes the canonical coordinator and verifies the
+actual running fence, cancellation and deadline before namespace IO; it never
+calls ordinary unmetered verification or reconstructs a remaining-work budget.
 
 Original succeeded-result reads return the descriptor-verified canonical
 `OwnedBytes`, not a reserialized `Value`. Byte custody is intrinsic through the

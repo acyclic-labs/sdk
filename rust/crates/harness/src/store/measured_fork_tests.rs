@@ -509,6 +509,34 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         "created-owner", [80; 32], owner.root_bootstrap_owner().clone(),
     );
     owner.authenticate_root_bootstrap_creator_with_native_work(&creator.verifier(), &native).await?;
+    let publication = owner.root_bootstrap_publication_lease_with_native_work(&native).await?;
+    let native_io = crate::filesystem::PreparationIo::from_native_work(&native)?;
+    let verified = publication.verify_with_io(&native_io)?;
+    assert!(matches!(&verified, crate::store::history::HistoryContentFuture::Native(_)));
+    verified.await?;
+    let ordinary_io = crate::filesystem::PreparationIo::from_budget(
+        guarded_publication_budget(), &cancellation,
+    )?;
+    let verified = publication.verify_with_io(&ordinary_io)?;
+    let frame_bytes = match &verified {
+        crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } => *frame_bytes,
+        _ => panic!("ordinary measured verification must retain its actual compiled frame"),
+    };
+    verified.await?;
+    ordinary_io.release(frame_bytes)?;
+    assert!(ordinary_io.receipt().backend_read_operations > 0);
+    let denied_io = crate::filesystem::PreparationIo::from_budget(
+        WorkBudget { backend_read_operations: 0, ..guarded_publication_budget() }, &cancellation,
+    )?;
+    let denied = publication.verify_with_io(&denied_io)?;
+    let denied_frame = match &denied {
+        crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } => *frame_bytes,
+        _ => panic!("ordinary denied verification uses the same compiled frame"),
+    };
+    assert!(denied.await.is_err());
+    denied_io.release(denied_frame)?;
+    assert_eq!(denied_io.receipt().backend_read_operations, 0);
+    drop(publication);
     let wrong_creator = crate::core::AuthorityIssuer::new(
         "created-owner", [81; 32], owner.root_bootstrap_owner().clone(),
     );
