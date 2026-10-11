@@ -267,8 +267,9 @@ impl<'a> PiForkHost<'a> {
                     return Err(unauthorized("Pi live source substituted its actual creator workspace"));
                 }
                 let (snapshot, custody) = crate::pi_lazy_capture::freeze_child_source(
-                    live.context.context(), &live.owner, &live.view, &source, work).await?;
+                    live.context.context(), &live.owner, &live.view, &source, &live.original_work).await?;
                 source_custody = Some(custody);
+                owner.verify_with_native_work(false, work).await?;
                 snapshot
             } else {
                 let frozen = self.native.source_frozen(command.commit.source_task)
