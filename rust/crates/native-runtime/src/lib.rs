@@ -459,31 +459,70 @@ impl NativeFile {
     /// admitting its actual identity probe and owned registration buffers.
     /// Initialize shared control with `initialize_native_io_services` first;
     /// this bounded entry never performs lazy resource-limit probes.
-    pub fn from_file_measured(file: File, meter: &dyn NativeReadMeter) -> io::Result<Self> {
-        meter.check()?;
+    /// Failure returns the original held file without closing it. The caller
+    /// retires that file before projecting the original cause; an implicit
+    /// standard-library handle drop is not a fabricated native meter operation.
+    pub fn from_file_measured(
+        file: File, meter: &dyn NativeReadMeter,
+    ) -> Result<Self, (io::Error, File)> {
+        Self::from_file_measured_inner(file, meter, None)
+    }
+
+    fn from_file_measured_inner(
+        file: File, meter: &dyn NativeReadMeter, owner: Option<&Arc<dyn NativeReadMeter>>,
+    ) -> Result<Self, (io::Error, File)> {
+        if let Err(error) = meter.check() { return Err((error, file)); }
         #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
         if FILE_HEALTH.get().is_none() {
-            return Err(io::ErrorKind::NotConnected.into());
+            return Err((io::ErrorKind::NotConnected.into(), file));
         }
+        #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
+        if owner.is_some() { return Err((io::ErrorKind::Unsupported.into(), file)); }
         let file_bytes = arc_allocation_bytes::<NativeFilePayload>();
-        meter.allocate(file_bytes as u64)?;
-        let file = Arc::new(NativeFilePayload::unmetered(file));
+        let allocation = if let Some(owner) = owner {
+            match ReadAllocation::new(owner, file_bytes) {
+                Ok(allocation) => Some(allocation),
+                Err(error) => return Err((error, file)),
+            }
+        } else {
+            if let Err(error) = meter.allocate(file_bytes as u64) { return Err((error, file)); }
+            None
+        };
+        let file = Arc::new(NativeFilePayload { file, _allocation: allocation });
         #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
         let health = match shared_file_health_measured(&file, Some(meter)) {
             Ok(health) => health,
             Err(error) => {
-                drop(file);
-                meter.release(file_bytes as u64);
-                return Err(error);
+                // No capability or queued payload has observed this Arc.
+                // Destroy its actual control allocation, but return the held
+                // OS handle for the caller's preaccepted close boundary.
+                let payload = match Arc::try_unwrap(file) {
+                    Ok(payload) => payload,
+                    Err(_) => unreachable!("unpublished native file import is uniquely owned"),
+                };
+                let NativeFilePayload { file, _allocation } = payload;
+                if _allocation.is_none() { meter.release(file_bytes as u64); }
+                drop(_allocation);
+                return Err((error, file));
             }
         };
         #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
         let (tail, uncertain) = (Arc::clone(&health.tail), Arc::clone(&health.uncertain));
         #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
         let (tail, uncertain) = {
-            meter.allocate(arc_allocation_bytes::<Mutex<Option<Arc<OperationFence>>>>() as u64)?;
+            if let Err(error) = meter.allocate(arc_allocation_bytes::<Mutex<Option<Arc<OperationFence>>>>() as u64) {
+                let payload = Arc::try_unwrap(file).ok().expect("unpublished native file import");
+                meter.release(file_bytes as u64);
+                return Err((error, payload.file));
+            }
             let tail = Arc::new(Mutex::new(None));
-            meter.allocate(arc_allocation_bytes::<AtomicBool>() as u64)?;
+            if let Err(error) = meter.allocate(arc_allocation_bytes::<AtomicBool>() as u64) {
+                drop(tail);
+                meter.release(arc_allocation_bytes::<Mutex<Option<Arc<OperationFence>>>>() as u64);
+                let payload = Arc::try_unwrap(file).ok().expect("unpublished native file import");
+                meter.release(file_bytes as u64);
+                return Err((error, payload.file));
+            }
             (tail, Arc::new(AtomicBool::new(false)))
         };
         Ok(Self {
@@ -499,29 +538,12 @@ impl NativeFile {
     /// The same physical Arc owns the claim through queued IO, observer Drop,
     /// and uncertain-IO quarantine; no caller performs a manual early release.
     /// Shared IO services must already have been explicitly initialized.
-    pub fn from_file_measured_owned(file: File, meter: Arc<dyn NativeReadMeter>) -> io::Result<Self> {
-        meter.check()?;
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        if FILE_HEALTH.get().is_none() {
-            return Err(io::ErrorKind::NotConnected.into());
-        }
-        let allocation = ReadAllocation::new(&meter, arc_allocation_bytes::<NativeFilePayload>())?;
-        let file = Arc::new(NativeFilePayload { file, _allocation: Some(allocation) });
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        let health = shared_file_health_measured(&file, Some(meter.as_ref()))?;
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        let (tail, uncertain) = (Arc::clone(&health.tail), Arc::clone(&health.uncertain));
-        #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-        let (tail, uncertain) = {
-            return Err(io::ErrorKind::Unsupported.into());
-        };
-        Ok(Self {
-            file, tail, uncertain,
-            #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-            _health: health,
-            #[cfg(windows)]
-            overlapped: false,
-        })
+    /// Failure returns the held file after retiring only unpublished runtime
+    /// metadata; the caller remains responsible for the file's actual lifetime.
+    pub fn from_file_measured_owned(
+        file: File, meter: Arc<dyn NativeReadMeter>,
+    ) -> Result<Self, (io::Error, File)> {
+        Self::from_file_measured_inner(file, meter.as_ref(), Some(&meter))
     }
 
     /// Logical handle storage owned by this capability, excluding the shared
@@ -565,7 +587,7 @@ impl NativeFile {
     pub unsafe fn from_overlapped_file_measured_unchecked(
         file: File,
         meter: &dyn NativeReadMeter,
-    ) -> io::Result<Self> {
+    ) -> Result<Self, (io::Error, File)> {
         let mut native = Self::from_file_measured(file, meter)?;
         native.overlapped = true;
         Ok(native)
@@ -580,7 +602,7 @@ impl NativeFile {
     #[allow(unsafe_code, reason = "the caller transfers sole overlapped-handle ownership")]
     pub unsafe fn from_overlapped_file_measured_owned_unchecked(
         file: File, meter: Arc<dyn NativeReadMeter>,
-    ) -> io::Result<Self> {
+    ) -> Result<Self, (io::Error, File)> {
         let mut native = Self::from_file_measured_owned(file, meter)?;
         native.overlapped = true;
         Ok(native)
@@ -5100,7 +5122,7 @@ mod tests {
     fn prepared_metadata_task(
         file: File, meter: Arc<dyn NativeReadMeter>,
     ) -> io::Result<BlockingIoTask<io::Result<u64>>> {
-        let operation = OwnedNativeOperationReservation::new(
+        let mut operation = OwnedNativeOperationReservation::new(
             Arc::clone(&meter), NativeOperationKind::Read, 1,
         )?;
         prepare_blocking_io_measured(move || {
@@ -5299,6 +5321,38 @@ mod tests {
 
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
     #[test]
+    fn denied_file_import_returns_original_handle_without_fabricated_io() -> io::Result<()> {
+        initialize_native_io_services()?;
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("retained-import-denial");
+        std::fs::write(&path, b"original")?;
+        for owned in [false, true] {
+            let mut policy = ReadBudgetMeter::new(16, 8);
+            policy.memory_limit = 0;
+            let observer = Arc::new(policy);
+            let file = File::open(&path)?;
+            let result = if owned {
+                let meter: Arc<dyn NativeReadMeter> = observer.clone();
+                NativeFile::from_file_measured_owned(file, meter)
+            } else { NativeFile::from_file_measured(file, observer.as_ref()) };
+            let (error, mut file) = match result {
+                Err(failure) => failure,
+                Ok(_) => panic!("actual zero-memory import admission must refuse"),
+            };
+            assert_eq!(error.kind(), io::ErrorKind::Other);
+            let mut original = [0_u8; 8];
+            std::io::Read::read_exact(&mut file, &mut original)?;
+            assert_eq!(&original, b"original");
+            assert_eq!(observer.operations.load(Ordering::Acquire), 0);
+            assert_eq!(observer.memory.load(Ordering::Acquire), 0);
+            drop(file);
+            assert_eq!(observer.operations.load(Ordering::Acquire), 0);
+        }
+        Ok(())
+    }
+
+    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+    #[test]
     fn owned_native_file_claim_follows_physical_last_arc_not_capability_drop() -> io::Result<()> {
         initialize_native_io_services()?;
         let temporary = tempfile::tempdir()?;
@@ -5306,7 +5360,8 @@ mod tests {
         std::fs::write(&path, b"x")?;
         let observer = Arc::new(ReadBudgetMeter::new(16, 1));
         let meter: Arc<dyn NativeReadMeter> = observer.clone();
-        let native = NativeFile::from_file_measured_owned(File::open(&path)?, meter)?;
+        let native = NativeFile::from_file_measured_owned(File::open(&path)?, meter)
+            .map_err(|(error, file)| { drop(file); error })?;
         let bytes = native.logical_owned_bytes();
         let retained = Arc::clone(&native.file);
         let weak = Arc::downgrade(&retained);
@@ -5329,7 +5384,8 @@ mod tests {
         std::fs::write(&path, b"x")?;
         let observer = Arc::new(ReadBudgetMeter::new(16, 1));
         let meter: Arc<dyn NativeReadMeter> = observer.clone();
-        let native = NativeFile::from_file_measured_owned(File::open(&path)?, meter.clone())?;
+        let native = NativeFile::from_file_measured_owned(File::open(&path)?, meter.clone())
+            .map_err(|(error, file)| { drop(file); error })?;
         let file_bytes = native.logical_owned_bytes();
         let weak = Arc::downgrade(&native.file);
         let (started, start) = mpsc::sync_channel(1);

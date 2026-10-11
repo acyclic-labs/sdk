@@ -61,6 +61,14 @@ custody until their payload or file is dropped, rather than until an observer
 stops awaiting. Capacity reconciliation records completed SDK-owned capacity
 before evaluating a late cancellation or quota refusal.
 
+All measured `NativeFile` imports return `(io::Error, File)` on refusal, through
+one canonical importer. No denied import silently closes its incoming handle.
+Owned imports retire their unpublished original-ledger metadata before returning
+the intact file. Callers drop that file before projecting the original cause.
+Implicit standard-library handle destruction is an opaque OS tail, not a counted
+SDK read or write. Explicit SDK-managed namespace/driver close operations instead
+consume their original prebirth close credit immediately before the actual close.
+
 `ReadAllocationReservation` withholds one known allocation and its logical bytes
 before accepting work that can create it. A pending credit is neither a reported
 allocator attempt nor a retained payload. Consuming it immediately before the
