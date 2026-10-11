@@ -1,16 +1,15 @@
 //! Browser persistence and WebAssembly bindings for the canonical Rust engine.
-
-#[cfg(any(test, target_arch = "wasm32"))]
-mod authority_codec;
-
-#[cfg(target_arch = "wasm32")]
-mod indexed_db;
+//!
+//! Installed bindings use the single `acyclic_fs::browser` IndexedDB provider
+//! and its portable authority protocol controls. OPFS remains an explicit,
+//! authenticated object-storage profile; it never substitutes a native backend.
+//! Browser-owned allocations are not native physical-quota guarantees.
 
 #[cfg(target_arch = "wasm32")]
 mod opfs;
 
 #[cfg(target_arch = "wasm32")]
-pub use indexed_db::{IndexedDbAuthorityStore, IndexedDbObjectStore, IndexedDbOpenError};
+pub use acyclic_fs::browser::{IndexedDbAuthorityStore, IndexedDbObjectStore, IndexedDbOpenError};
 
 #[cfg(target_arch = "wasm32")]
 pub use opfs::{OpfsAcceleratedObjectStore, OpfsOpenError};
@@ -3758,7 +3757,7 @@ mod bindings {
             bytes: Vec<u8>,
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
             let object_id = decode_object_id(&object_id)?;
-            let bytes = bytes::Bytes::from(bytes);
+            let bytes = acyclic_stream::OwnedBytes::from(bytes);
             let cancellation = CancellationToken::default();
             let receipt = match self.engine.as_ref().ok_or_else(closed_error)? {
                 BrowserEngine::IndexedDb(fs) => fs
@@ -3869,7 +3868,7 @@ mod bindings {
             let objects = serde_wasm_bindgen::from_value::<Vec<serde_bytes::ByteBuf>>(objects)
                 .map_err(js_error)?
                 .into_iter()
-                .map(|object| bytes::Bytes::from(object.into_vec()))
+                .map(|object| acyclic_stream::OwnedBytes::from(object.into_vec()))
                 .collect::<Vec<_>>();
             let cancellation = CancellationToken::default();
             let receipt = match self.engine.as_ref().ok_or_else(closed_error)? {

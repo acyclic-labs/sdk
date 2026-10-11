@@ -1,4 +1,9 @@
 //! Authoritative origin-private immutable object storage.
+//!
+//! Rust byte carriers keep their allocation ownership across reads and clones.
+//! Bounded concurrent windows admit logical buffer, handle, and future-frame
+//! retention before materialization; browser-owned storage allocations are not
+//! native physical-quota guarantees.
 
 use acyclic_fs::storage::ObjectWrite;
 use acyclic_fs::{
@@ -6,7 +11,7 @@ use acyclic_fs::{
     ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectReceipt, ObjectResult,
     ObjectStoreError, WorkBudget, WorkCounters, object_digest,
 };
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use futures::future::join_all;
 use js_sys::Uint8Array;
 use thiserror::Error;
@@ -103,7 +108,7 @@ impl OpfsAcceleratedObjectStore {
     async fn write(
         &self,
         object_id: ObjectId,
-        bytes: &Bytes,
+        bytes: &OwnedBytes,
         cancellation: &CancellationToken,
     ) -> Result<(), ObjectStoreError> {
         cancellation
@@ -148,18 +153,18 @@ impl OpfsAcceleratedObjectStore {
             .map_err(|_| ObjectStoreError::Cancelled)
     }
 
-    async fn read_exact(
+    async fn prepare_read(
         &self,
         object_id: ObjectId,
         maximum_bytes: u64,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> ObjectResult<ObjectRead> {
+    ) -> ObjectResult<(Blob, u64)> {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        let key_bytes = u64::try_from(Self::key(object_id).len()).unwrap_or(u64::MAX);
-        let mut work = WorkCounters {
+        let key_bytes = 66;
+        let work = WorkCounters {
             object_probes: 1,
             backend_read_operations: 2,
             allocation_operations: 1,
@@ -193,29 +198,26 @@ impl OpfsAcceleratedObjectStore {
                 work,
             ));
         }
-        let copied = length
-            .checked_mul(2)
-            .ok_or_else(|| ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), work))?;
-        work = work
-            .checked_add(WorkCounters {
-                backend_read_operations: 1,
-                object_bytes_read: length,
-                bytes_hashed: length.saturating_add(OBJECT_DIGEST_ENVELOPE_BYTES),
-                bytes_copied: copied,
-                allocation_operations: 2 * u64::from(length != 0),
-                peak_allocation_bytes: copied,
-                ..WorkCounters::default()
-            })
-            .map_err(|error| ObjectFailure::new(error.into(), work))?;
-        work.verify(budget)
-            .map_err(|error| ObjectFailure::new(error.into(), work))?;
+        Ok(ObjectReceipt {
+            value: (blob, length),
+            work,
+        })
+    }
+
+    async fn materialize_read(
+        object_id: ObjectId,
+        blob: Blob,
+        length: u64,
+        work: WorkCounters,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<ObjectRead> {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::new(ObjectStoreError::Cancelled, work))?;
         let buffer = JsFuture::from(blob.array_buffer())
             .await
             .map_err(|error| ObjectFailure::new(rejected(&error), work))?;
-        let bytes = Bytes::from(Uint8Array::new(&buffer).to_vec());
+        let bytes = OwnedBytes::from(Uint8Array::new(&buffer).to_vec());
         if u64::try_from(bytes.len()).ok() != Some(length)
             || object_digest(object_id.kind, &bytes) != object_id.digest
         {
@@ -231,13 +233,33 @@ impl OpfsAcceleratedObjectStore {
             work,
         })
     }
+
+    async fn read_exact(
+        &self,
+        object_id: ObjectId,
+        maximum_bytes: u64,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<ObjectRead> {
+        let prepared = self
+            .prepare_read(object_id, maximum_bytes, budget, cancellation)
+            .await?;
+        let (blob, length) = prepared.value;
+        let work = prepared.work
+            .checked_add(materialize_work(length)
+                .map_err(|error| ObjectFailure::new(error.into(), prepared.work))?)
+            .map_err(|error| ObjectFailure::new(error.into(), prepared.work))?;
+        work.verify(budget)
+            .map_err(|error| ObjectFailure::new(error.into(), prepared.work))?;
+        Self::materialize_read(object_id, blob, length, work, cancellation).await
+    }
 }
 
 impl AsyncObjectStore for OpfsAcceleratedObjectStore {
     async fn put(
         &self,
         object_id: ObjectId,
-        bytes: Bytes,
+        bytes: OwnedBytes,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
@@ -251,12 +273,12 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
                 maximum: self.maximum_object_bytes,
             }));
         }
-        if object_digest(object_id.kind, &bytes) != object_id.digest {
-            return Err(ObjectFailure::before_work(ObjectStoreError::DigestMismatch));
-        }
         let work = put_work(&bytes);
         work.verify(budget)
             .map_err(|error| ObjectFailure::before_work(error.into()))?;
+        if object_digest(object_id.kind, &bytes) != object_id.digest {
+            return Err(ObjectFailure::new(ObjectStoreError::DigestMismatch, work));
+        }
         self.write(object_id, &bytes, cancellation)
             .await
             .map_err(|error| ObjectFailure::new(error, work))?;
@@ -278,23 +300,34 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
         for window in writes.chunks(MAX_BATCH_CONCURRENCY) {
             let mut admitted = WorkCounters::default();
             for write in window {
-                admitted = admitted
-                    .checked_add(put_work(&write.bytes))
+                admitted = combine_parallel_window(admitted, put_work(&write.bytes))
                     .map_err(|error| ObjectFailure::new(error.into(), total))?;
             }
-            let next = combine_parallel_window(total, admitted)
+            let mut futures = window.iter().map(|write| {
+                self.put(write.object_id, write.bytes.clone(), put_work(&write.bytes), cancellation)
+            });
+            let first = futures.next().ok_or_else(|| ObjectFailure::new(
+                ObjectStoreError::Rejected("OPFS write window is empty".to_owned()), total,
+            ))?;
+            let frames = join_frames_bytes(&first, window.len())
+                .and_then(|bytes| bytes.checked_add(allocation_bytes::<ObjectResult<()>>(window.len())?)
+                    .ok_or(acyclic_fs::WorkError::Overflow))
+                .map_err(|error| ObjectFailure::new(error.into(), total))?;
+            admitted.peak_allocation_bytes = admitted.peak_allocation_bytes.checked_add(frames)
+                .ok_or_else(|| ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total))?;
+            let frame_work = WorkCounters {
+                allocation_operations: 2,
+                peak_allocation_bytes: admitted.peak_allocation_bytes,
+                ..WorkCounters::default()
+            };
+            let next = total.checked_add(frame_work)
+                .and_then(|work| work.checked_add(admitted))
                 .map_err(|error| ObjectFailure::new(error.into(), total))?;
             next.verify(budget)
                 .map_err(|error| ObjectFailure::new(error.into(), total))?;
-            let results = join_all(window.iter().map(|write| {
-                self.put(
-                    write.object_id,
-                    write.bytes.clone(),
-                    put_work(&write.bytes),
-                    cancellation,
-                )
-            }))
-            .await;
+            total = total.checked_add(frame_work)
+                .map_err(|error| ObjectFailure::new(error.into(), total))?;
+            let results = join_all(std::iter::once(first).chain(futures)).await;
             total = fold_unit_results(total, results, budget)?;
         }
         Ok(ObjectReceipt {
@@ -325,47 +358,110 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
                 "object read batch is empty".to_owned(),
             )));
         }
-        let mut total = WorkCounters::default();
+        let vector_bytes = allocation_bytes::<ObjectRead>(requests.len())
+            .map_err(|error| ObjectFailure::before_work(error.into()))?;
+        let mut total = WorkCounters {
+            allocation_operations: 1,
+            peak_allocation_bytes: vector_bytes,
+            ..WorkCounters::default()
+        };
+        total.verify(budget)
+            .map_err(|error| ObjectFailure::before_work(error.into()))?;
         let mut values = Vec::new();
         values.try_reserve_exact(requests.len()).map_err(|_| {
-            ObjectFailure::before_work(ObjectStoreError::Rejected(
+            ObjectFailure::new(ObjectStoreError::Rejected(
                 "object batch result allocation failed".to_owned(),
-            ))
+            ), total)
         })?;
+        let mut retained = vector_bytes;
         for window in requests.chunks(MAX_BATCH_CONCURRENCY) {
-            let remaining = total
-                .remaining(budget)
+            // Fetch file handles and lengths before any ArrayBuffer allocation.
+            // Prior output carriers remain live throughout the next window.
+            let handles_bytes = allocation_bytes::<(ObjectId, Blob, u64)>(window.len())
                 .map_err(|error| ObjectFailure::new(error.into(), total))?;
-            let results = join_all(window.iter().map(|request| {
-                self.read_exact(
-                    request.object_id,
-                    request.maximum_bytes,
-                    remaining,
-                    cancellation,
-                )
-            }))
-            .await;
+            let results_bytes = allocation_bytes::<ObjectResult<ObjectRead>>(window.len())
+                .map_err(|error| ObjectFailure::new(error.into(), total))?;
+            let live = retained.checked_add(handles_bytes)
+                .and_then(|value| value.checked_add(results_bytes))
+                .ok_or_else(|| ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total))?;
+            let prospective = total.checked_add(WorkCounters {
+                allocation_operations: 2,
+                peak_allocation_bytes: live,
+                ..WorkCounters::default()
+            }).map_err(|error| ObjectFailure::new(error.into(), total))?;
+            prospective.verify(budget)
+                .map_err(|error| ObjectFailure::new(error.into(), total))?;
+            total = prospective;
+            let mut handles = Vec::new();
+            handles.try_reserve_exact(window.len()).map_err(|_| {
+                ObjectFailure::new(ObjectStoreError::Rejected(
+                    "OPFS batch handle allocation failed".to_owned(),
+                ), total)
+            })?;
+            for request in window {
+                let mut remaining = total.remaining(budget)
+                    .map_err(|error| ObjectFailure::new(error.into(), total))?;
+                remaining.peak_allocation_bytes = remaining.peak_allocation_bytes.saturating_sub(live);
+                let prepared = self.prepare_read(
+                    request.object_id, request.maximum_bytes, remaining, cancellation,
+                ).await.map_err(|failure| {
+                    let mut failed = *failure.work;
+                    failed.peak_allocation_bytes = live.saturating_add(failed.peak_allocation_bytes);
+                    let spent = total.checked_add(failed).unwrap_or(total);
+                    ObjectFailure::new(failure.error, spent)
+                })?;
+                let mut work = prepared.work;
+                work.peak_allocation_bytes = live.checked_add(work.peak_allocation_bytes)
+                    .ok_or_else(|| ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total))?;
+                total = total.checked_add(work)
+                    .map_err(|error| ObjectFailure::new(error.into(), total))?;
+                let (blob, length) = prepared.value;
+                handles.push((request.object_id, blob, length));
+            }
             let mut window_work = WorkCounters::default();
+            let mut window_retained = 0_u64;
+            for (_, _, length) in &handles {
+                window_work = combine_parallel_window(window_work, materialize_work(*length)
+                    .map_err(|error| ObjectFailure::new(error.into(), total))?)
+                    .map_err(|error| ObjectFailure::new(error.into(), total))?;
+                window_retained = window_retained.checked_add(*length)
+                    .ok_or_else(|| ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total))?;
+            }
+            let mut futures = handles.into_iter().map(|(object_id, blob, length)| {
+                Self::materialize_read(object_id, blob, length, WorkCounters::default(), cancellation)
+            });
+            let first = futures.next().ok_or_else(|| ObjectFailure::new(
+                ObjectStoreError::Rejected("OPFS read window is empty".to_owned()), total,
+            ))?;
+            let frames = join_frames_bytes(&first, window.len())
+                .map_err(|error| ObjectFailure::new(error.into(), total))?;
+            window_work.allocation_operations = window_work.allocation_operations.checked_add(1)
+                .ok_or_else(|| ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total))?;
+            window_work.peak_allocation_bytes = window_work.peak_allocation_bytes.checked_add(frames)
+                .ok_or_else(|| ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total))?;
+            window_work.peak_allocation_bytes = live.checked_add(window_work.peak_allocation_bytes)
+                .ok_or_else(|| ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total))?;
+            let admitted = total.checked_add(window_work)
+                .map_err(|error| ObjectFailure::new(error.into(), total))?;
+            admitted.verify(budget)
+                .map_err(|error| ObjectFailure::new(error.into(), total))?;
+            let results = join_all(std::iter::once(first).chain(futures)).await;
+            // Every future has completed, including after a corrupt/failed blob.
+            // Preserve the admitted window's live buffers and all performed work.
+            total = admitted;
+            let mut first_error = None;
             for result in results {
                 match result {
-                    Ok(receipt) => {
-                        window_work = combine_parallel_window(window_work, receipt.work)
-                            .map_err(|error| ObjectFailure::new(error.into(), total))?;
-                        values.push(receipt.value);
-                    }
-                    Err(failure) => {
-                        let spent = combine_parallel_window(window_work, *failure.work)
-                            .and_then(|work| combine_sequential(total, work))
-                            .unwrap_or(total);
-                        return Err(ObjectFailure::new(failure.error, spent));
-                    }
+                    Ok(receipt) => values.push(receipt.value),
+                    Err(failure) if first_error.is_none() => first_error = Some(failure.error),
+                    Err(_) => {}
                 }
             }
-            total = combine_sequential(total, window_work)
-                .map_err(|error| ObjectFailure::new(error.into(), total))?;
-            total
-                .verify(budget)
-                .map_err(|error| ObjectFailure::new(error.into(), total))?;
+            if let Some(error) = first_error {
+                return Err(ObjectFailure::new(error, total));
+            }
+            retained = retained.checked_add(window_retained)
+                .ok_or_else(|| ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total))?;
         }
         Ok(ObjectReceipt {
             value: values,
@@ -412,6 +508,7 @@ fn fold_unit_results(
     budget: WorkBudget,
 ) -> Result<WorkCounters, ObjectFailure> {
     let mut window = WorkCounters::default();
+    let mut first_error = None;
     for result in results {
         match result {
             Ok(receipt) => {
@@ -419,10 +516,11 @@ fn fold_unit_results(
                     .map_err(|error| ObjectFailure::new(error.into(), total))?;
             }
             Err(failure) => {
-                let spent = combine_parallel_window(window, *failure.work)
-                    .and_then(|work| combine_sequential(total, work))
-                    .unwrap_or(total);
-                return Err(ObjectFailure::new(failure.error, spent));
+                window = combine_parallel_window(window, *failure.work)
+                    .map_err(|error| ObjectFailure::new(error.into(), total))?;
+                if first_error.is_none() {
+                    first_error = Some(failure.error);
+                }
             }
         }
     }
@@ -431,6 +529,9 @@ fn fold_unit_results(
     total
         .verify(budget)
         .map_err(|error| ObjectFailure::new(error.into(), total))?;
+    if let Some(error) = first_error {
+        return Err(ObjectFailure::new(error, total));
+    }
     Ok(total)
 }
 
@@ -456,7 +557,36 @@ fn combine_sequential(
     left.checked_add(right)
 }
 
-fn put_work(bytes: &Bytes) -> WorkCounters {
+fn allocation_bytes<T>(count: usize) -> Result<u64, acyclic_fs::WorkError> {
+    count.checked_mul(size_of::<T>())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(acyclic_fs::WorkError::Overflow)
+}
+
+fn join_frames_bytes<F: Future>(
+    _future: &F,
+    count: usize,
+) -> Result<u64, acyclic_fs::WorkError> {
+    // Windows stay below join_all's small-array threshold. Its pinned
+    // MaybeDone slots retain the real future frames and completed outputs.
+    allocation_bytes::<futures::future::MaybeDone<F>>(count)
+}
+
+fn materialize_work(length: u64) -> Result<WorkCounters, acyclic_fs::WorkError> {
+    let copied = length.checked_mul(2).ok_or(acyclic_fs::WorkError::Overflow)?;
+    Ok(WorkCounters {
+        backend_read_operations: 1,
+        object_bytes_read: length,
+        bytes_hashed: length.checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
+            .ok_or(acyclic_fs::WorkError::Overflow)?,
+        bytes_copied: copied,
+        allocation_operations: 2 * u64::from(length != 0),
+        peak_allocation_bytes: copied,
+        ..WorkCounters::default()
+    })
+}
+
+fn put_work(bytes: &OwnedBytes) -> WorkCounters {
     let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
     WorkCounters {
         backend_write_operations: 1,
@@ -526,8 +656,8 @@ mod tests {
 
     wasm_bindgen_test_configure!(run_in_browser);
 
-    fn object(bytes: &'static [u8]) -> (ObjectId, Bytes) {
-        let bytes = Bytes::from_static(bytes);
+    fn object(bytes: &'static [u8]) -> (ObjectId, OwnedBytes) {
+        let bytes = OwnedBytes::from(bytes.to_vec());
         (
             ObjectId {
                 kind: ObjectKind::BlobChunk,
@@ -575,7 +705,7 @@ mod tests {
         assert_eq!(read.value.bytes, bytes);
 
         reopened
-            .write(object_id, &Bytes::from_static(b"corrupt"), &cancellation)
+            .write(object_id, &OwnedBytes::from(b"corrupt".to_vec()), &cancellation)
             .await
             .unwrap_or_else(|error| unreachable!("corruption setup failed: {error}"));
         let failure = AsyncObjectStore::read(
@@ -630,5 +760,62 @@ mod tests {
             .map(|(_, bytes)| bytes.clone())
             .collect();
         assert_eq!(actual, expected);
+    }
+
+    #[wasm_bindgen_test]
+    async fn opfs_batch_admits_retained_carriers_before_materializing_next_window() {
+        let name = unique_namespace("acyclic-fs-opfs-retained-carriers-v1");
+        let store = OpfsAcceleratedObjectStore::open(&name, 1_024)
+            .await
+            .unwrap_or_else(|error| unreachable!("OPFS open failed: {error}"));
+        let writes: Vec<_> = (0_u8..32).map(|index| {
+            let bytes = OwnedBytes::from(vec![index; 1_024]);
+            ObjectWrite {
+                object_id: ObjectId {
+                    kind: ObjectKind::BlobChunk,
+                    digest: object_digest(ObjectKind::BlobChunk, &bytes),
+                },
+                bytes,
+            }
+        }).collect();
+        let requests: Vec<_> = writes.iter().map(|write| ObjectReadRequest {
+            object_id: write.object_id,
+            maximum_bytes: 1_024,
+        }).collect();
+        let cancellation = CancellationToken::new();
+        store.put_many(&writes, WorkBudget::UNBOUNDED, &cancellation).await
+            .unwrap_or_else(|failure| unreachable!("OPFS setup failed: {}", failure.error));
+        let read = store.read_many(&requests, WorkBudget::UNBOUNDED, &cancellation).await
+            .unwrap_or_else(|failure| unreachable!("OPFS read failed: {}", failure.error));
+        let required = allocation_bytes::<ObjectRead>(requests.len())
+            .unwrap_or_else(|error| unreachable!("vector size failed: {error}"))
+            + allocation_bytes::<(ObjectId, Blob, u64)>(16)
+                .unwrap_or_else(|error| unreachable!("handle size failed: {error}"))
+            + allocation_bytes::<ObjectResult<ObjectRead>>(16)
+                .unwrap_or_else(|error| unreachable!("result size failed: {error}"))
+            + 16 * 1_024 + 16 * 2 * 1_024;
+        assert!(read.work.peak_allocation_bytes >= required);
+        let required = read.work.peak_allocation_bytes;
+        let cloned = read.value[0].bytes.clone();
+        drop(read);
+        assert_eq!(cloned.as_ref(), writes[0].bytes.as_ref());
+        let denied = store.read_many(&requests, WorkBudget {
+            peak_allocation_bytes: required - 1,
+            ..WorkBudget::UNBOUNDED
+        }, &cancellation).await
+            .err().unwrap_or_else(|| unreachable!("retained carriers escaped admission"));
+        assert_eq!(denied.work.object_bytes_read, 16 * 1_024);
+        assert!(matches!(denied.error, ObjectStoreError::Work(_)));
+
+        // Corrupt the first item in the second concurrent window. All sibling
+        // reads still complete, and their work/live allocation peak is retained
+        // in the failure receipt rather than stopping at the first failed item.
+        store.write(writes[16].object_id, &OwnedBytes::from(vec![255; 1_024]), &cancellation)
+            .await.unwrap_or_else(|error| unreachable!("corruption setup failed: {error}"));
+        let corrupt = store.read_many(&requests, WorkBudget::UNBOUNDED, &cancellation).await
+            .err().unwrap_or_else(|| unreachable!("corrupt OPFS body was accepted"));
+        assert!(matches!(corrupt.error, ObjectStoreError::Corrupt));
+        assert_eq!(corrupt.work.object_bytes_read, 32 * 1_024);
+        assert!(corrupt.work.peak_allocation_bytes >= required);
     }
 }
