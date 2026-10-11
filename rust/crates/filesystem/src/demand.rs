@@ -8781,13 +8781,3 @@ pub(crate) fn native_demand_error(error: std::io::Error) -> crate::DemandError {
 pub(crate) use native_io_meter::{
     NativeDemandReadWork, native_demand_error, native_demand_read_error,
 };
-  } else {
-        crate::DemandError::Io(error)
-    }
-}
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use native_io_meter::{
-    NativeDemandReadWork, native_demand_error, native_demand_read_error,
-};
