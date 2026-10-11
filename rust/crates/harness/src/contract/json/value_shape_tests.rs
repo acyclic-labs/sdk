@@ -529,6 +529,150 @@ fn recursive_wire_and_owned_profiles_follow_every_literal_container_gate() {
     }
 }
 
+fn source_authorization_document(native_snapshot: &str) -> String {
+    // Real public DTO metadata, including a genuine serialized Scope. This
+    // fixture exercises Deserialize, not authorization/provider verification.
+    let owner = crate::core::Authority {
+        kind: crate::core::AggregateKind::Task, id: "source-owner".into(),
+    };
+    let issuer = crate::core::AuthorityIssuer::new("source-issuer", [7; 32], owner.clone());
+    let provider = crate::resources::ProviderRef::new("acyclic", "filesystem", "2").unwrap();
+    let project = crate::conversation::VolumeRef::new(
+        provider.clone(), "project", crate::conversation::VolumeClass::Project,
+        crate::conversation::VolumeOwner::Project("source-owner".into()),
+    ).unwrap();
+    let generation = crate::resources::GenerationRef::new(provider, [8; 32], None).unwrap();
+    let id = "00000000-0000-0000-0000-000000000001";
+    let metadata = serde_json::json!({
+        "owner": owner, "caller_task": id, "caller_admission_digest": vec![0u8; 32],
+        "caller_fence": {"reservation_id": "lease", "placement": "worker"},
+        "operation_id": id, "source_task": id, "project": project,
+        "generation": generation, "native_snapshot": null, "graph_root": id,
+        "maximum_work": 4096, "maximum_bytes": 65536,
+        "policy_scope": issuer.root("source-read", crate::Capabilities::new(["read"]))
+    });
+    serde_json::to_string(&metadata).unwrap()
+        .replace("\"native_snapshot\":null", &format!("\"native_snapshot\":{native_snapshot}"))
+}
+
+#[test]
+fn real_source_authorization_serde_selects_private_raw_and_exact_item_admission() {
+    let payload = r#"{"z":[0,1],"a":"snapshot"}"#;
+    let document = source_authorization_document(&raw_document(payload));
+    let expected: crate::source_authorization::ProjectSourceAuthorization =
+        serde_json::from_str(&document).unwrap();
+    assert_eq!(expected.native_snapshot, Some(serde_json::from_str(payload).unwrap()));
+    let selected = shape(document.as_bytes(), JsonValueSchema::ProjectSourceAuthorization);
+    assert_eq!(selected.raw_frames, 1);
+    assert_eq!(selected.raw_bytes, payload.len() as u64);
+    assert_eq!(selected.virtual_items, lexical_items(payload.as_bytes()));
+    let exact = selected.lexical_items + selected.virtual_items;
+    let mut inspected = 0;
+    let mut admitted = false;
+    let actual = json_from_slice_seed_bounded_trusted(
+        std::marker::PhantomData::<crate::source_authorization::ProjectSourceAuthorization>,
+        document.as_bytes(), JsonBounds { maximum_items: exact, ..LIMITS },
+        65536, JsonValueSchema::ProjectSourceAuthorization, &mut |event| {
+            if let JsonCodecCharge::Inspect { items } = event { inspected += items; }
+            admitted |= matches!(event, JsonCodecCharge::Admission { .. });
+            Ok(())
+        },
+    ).unwrap();
+    assert_eq!(actual, expected);
+    assert!(admitted);
+    assert_eq!(inspected, selected.raw_bytes);
+    admitted = false;
+    assert!(json_from_slice_seed_bounded_trusted(
+        std::marker::PhantomData::<crate::source_authorization::ProjectSourceAuthorization>,
+        document.as_bytes(), JsonBounds { maximum_items: exact - 1, ..LIMITS },
+        65536, JsonValueSchema::ProjectSourceAuthorization, &mut |event| {
+            admitted |= matches!(event, JsonCodecCharge::Admission { .. });
+            Ok(())
+        },
+    ).is_err());
+    assert!(!admitted);
+    let absent = source_authorization_document("null");
+    assert!(serde_json::from_str::<crate::source_authorization::ProjectSourceAuthorization>(&absent)
+        .unwrap().native_snapshot.is_none());
+    assert_eq!(shape(absent.as_bytes(), JsonValueSchema::ProjectSourceAuthorization).raw_frames, 0);
+}
+
+#[test]
+fn source_authorization_composites_preserve_wire_and_owned_map_order() {
+    let raw = raw_document("[0]");
+    let authorization = format!(r#"{{"native_\u0073napshot":{raw}}}"#);
+    let request = format!(r#"{{"authorized_\u0073ource":{authorization}}}"#);
+    let report = format!(r#"{{"request":{request}}}"#);
+    let seed = format!(r#"{{"authorized_source":{authorization}}}"#);
+    let intent = format!(r#"{{"request":{request}}}"#);
+    let fork_event = format!(r#"{{"seed":{seed},"kind":"fork_pu\u0062lished"}}"#);
+    let merge_event = format!(r#"{{"receipt":{{"provider_proof":{{"statement":{raw}}}}},"kind":"project_merge_published"}}"#);
+    let snapshot = format!(r#"{{"events":[{{"payload":{fork_event}}},{{"payload":{merge_event}}}],"projection":{{"forks":[[{{"kind":"task","id":"parent"}},{seed}]],"published_merges":[["operation",[0]]]}}}}"#);
+    for (schema, document, selected) in [
+        (JsonValueSchema::ProjectSourceAuthorization, authorization.clone(), 1),
+        (JsonValueSchema::ForkRequest, request.clone(), 1),
+        (JsonValueSchema::ForkReport, report.clone(), 1),
+        (JsonValueSchema::ForkSeed, seed, 1),
+        (JsonValueSchema::RecursiveForkSourceIntent, intent.clone(), 1),
+        (JsonValueSchema::RecursiveSourcePin, format!(r#"{{"intent":{intent}}}"#), 1),
+        (JsonValueSchema::ForkPreparationCommandResults, format!(r#"{{"commands":[{{"value":{{"Succ\u0065eded":{report}}}}}]}}"#), 1),
+        (JsonValueSchema::ResourcePreparationRequest, format!(r#"{{"read_authorization":{authorization}}}"#), 1),
+        (JsonValueSchema::RecursiveState, format!(r#"{{"intent":{intent},"phase":"source_pinned"}}"#), 1),
+        (JsonValueSchema::RecursiveState, format!(r#"{{"report":{report},"phase":"waiting"}}"#), 1),
+        (JsonValueSchema::EventPayload, fork_event, 1),
+        (JsonValueSchema::EventPayload, merge_event, 1),
+        (JsonValueSchema::Snapshot, snapshot.clone(), 3),
+        (JsonValueSchema::ConfiguredRecursiveSourceCheckpoint, format!(r#"{{"snapshot":{snapshot},"request":{request}}}"#), 4),
+    ] {
+        // Literal graph controls for the joined source carriers/private DTOs:
+        // omitted required fields make these explicitly NOT producer E2E.
+        let wire = shape(document.as_bytes(), schema);
+        assert_eq!(wire.raw_frames, selected, "{schema:?}");
+        assert_eq!(wire.raw_bytes, selected * 3, "{schema:?}");
+        assert_eq!(wire.virtual_items, selected * 2, "{schema:?}");
+        let reordered = document.replace(&raw, &format!(r#"{{"z":0,"{RAW}":"[0]"}}"#));
+        assert_eq!(shape(reordered.as_bytes(), schema).raw_frames, 0, "{schema:?}");
+        let resident: Value = serde_json::from_str(&reordered).unwrap();
+        let mut inspected = 0;
+        let owned = json_owned_value_shape_bounded(&resident, LIMITS, schema, &mut |event| {
+            assert!(!matches!(event, JsonCodecCharge::Read { .. }));
+            if let JsonCodecCharge::Inspect { items } = event { inspected += items; }
+            Ok(())
+        }).unwrap();
+        assert_eq!(owned.raw_frames, selected, "{schema:?}");
+        assert_eq!(owned.raw_bytes, selected * 3, "{schema:?}");
+        assert!(inspected >= owned.raw_bytes, "{schema:?}");
+        assert!(json_owned_value_conversion_additional_bytes(owned).unwrap() >= owned.raw_bytes);
+    }
+}
+
+#[test]
+fn authorization_names_dormant_variants_and_failed_outcomes_remain_ordinary() {
+    let hidden = raw_document(&format!("{}0{}", "[".repeat(1024), "]".repeat(1024)));
+    let authorization = format!(r#"{{"native_snapshot":{hidden}}}"#);
+    let request = format!(r#"{{"authorized_source":{authorization}}}"#);
+    for (schema, document) in [
+        (JsonValueSchema::ProjectSourceAuthorization, format!(r#"{{"project":{{"native_snapshot":{hidden}}},"owner":{{"native_snapshot":{hidden}}}}}"#)),
+        (JsonValueSchema::ForkRequest, format!(r#"{{"native_snapshot":{hidden},"unknown":{{"authorized_source":{authorization}}}}}"#)),
+        (JsonValueSchema::ForkReport, format!(r#"{{"authorized_source":{authorization}}}"#)),
+        (JsonValueSchema::ForkSeed, format!(r#"{{"request":{request}}}"#)),
+        (JsonValueSchema::RecursiveForkSourceIntent, format!(r#"{{"authorized_source":{authorization}}}"#)),
+        (JsonValueSchema::RecursiveSourcePin, format!(r#"{{"request":{request}}}"#)),
+        (JsonValueSchema::ResourcePreparationRequest, format!(r#"{{"native_snapshot":{hidden},"command":{{"read_authorization":{authorization}}}}}"#)),
+        (JsonValueSchema::RecursiveState, format!(r#"{{"intent":{{"request":{request}}},"report":{{"request":{request}}},"phase":"ready"}}"#)),
+        (JsonValueSchema::EventPayload, format!(r#"{{"seed":{{"authorized_source":{authorization}}},"receipt":{{"provider_proof":{{"statement":{hidden}}}}},"kind":"interaction_resolved"}}"#)),
+        (JsonValueSchema::Snapshot, format!(r#"{{"projection":{{"forks":[[{{"authorized_source":{authorization}}},null]],"published_merges":[["operation",{hidden}]]}}}}"#)),
+        (JsonValueSchema::ForkPreparationCommandResults, format!(r#"{{"commands":[{{"value":{{"Failed":{{"request":{request},"message":{}}}}}}}]}}"#, serde_json::to_string(&hidden).unwrap())),
+        (JsonValueSchema::ForkPreparationCommandResults, format!(r#"{{"commands":[{{"value":{{"succeeded":{{"request":{request}}}}}}}]}}"#)),
+    ] {
+        let admitted = inspect(document.as_bytes(), Some(schema), JsonBounds {
+            maximum_items: 256, maximum_depth: 16, ..LIMITS
+        }, &mut |_| Ok(())).unwrap_or_else(|_| panic!("ordinary or dormant source path: {schema:?}"));
+        assert_eq!(admitted.raw_frames, 0, "{schema:?}");
+        assert_eq!(admitted.virtual_items, 0, "{schema:?}");
+    }
+}
+
 #[test]
 fn portable_selected_seed_matches_pinned_hidden_value_and_exact_structural_cap() {
     let document = format!("[{}]", raw_document("[0,1]"));
@@ -650,6 +794,82 @@ mod native {
         bytes: &[u8], bounds: JsonBounds, charge: &mut F,
     ) -> Result<Value> {
         json_from_slice_bounded_native_trusted(bytes, bounds, 0, crate::wire::ErrorCode::Storage, JsonValueSchema::Root, charge)
+    }
+
+    #[test]
+    fn native_real_authorization_hidden_nodes_deny_before_original_dto_admission() {
+        let payload = format!("[{}0]", "0,".repeat(999_999));
+        let document = source_authorization_document(&raw_document(&payload));
+        let mut admitted = false;
+        let mut inspected = 0;
+        let failure = json_from_slice_bounded_native_trusted::<
+            crate::source_authorization::ProjectSourceAuthorization, _,
+        >(
+            document.as_bytes(), JsonBounds { maximum_items: 256, ..LIMITS },
+            65536, crate::wire::ErrorCode::Storage, JsonValueSchema::ProjectSourceAuthorization,
+            &mut |event| {
+                admitted |= matches!(event, JsonCodecCharge::Admission { .. });
+                if let JsonCodecCharge::Inspect { items } = event { inspected += items; }
+                Ok(())
+            },
+        ).unwrap_err();
+        assert!(!admitted);
+        assert!(inspected <= payload.len() as u64);
+        assert!(matches!(failure, Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. }));
+    }
+
+    #[test]
+    fn native_fork_authorization_preserves_aggregate_depth_and_first_owned_cause() {
+        // Literal joined ForkRequest reachability, not an omitted-field
+        // producer DTO claim. The public authorization DTO is tested above.
+        let document = format!(r#"{{"authorized_source":{{"native_snapshot":{}}}}}"#, raw_document("[0]"));
+        let ordinary = format!(r#"{{"authorized_source":{{"native_snapshot":{{"ordinary":"[0]"}}}}}}"#);
+        assert!(inspect(ordinary.as_bytes(), Some(JsonValueSchema::ForkRequest),
+            JsonBounds { maximum_depth: 3, ..LIMITS }, &mut |_| Ok(())).is_ok());
+        let selected = shape(document.as_bytes(), JsonValueSchema::ForkRequest);
+        for bounds in [
+            JsonBounds { maximum_depth: 3, ..LIMITS },
+            JsonBounds { maximum_items: selected.lexical_items + selected.virtual_items - 1, ..LIMITS },
+        ] {
+            let mut admitted = false;
+            let failure = json_from_slice_bounded_native_trusted::<Value, _>(
+                document.as_bytes(), bounds, 0, crate::wire::ErrorCode::Storage,
+                JsonValueSchema::ForkRequest, &mut |event| {
+                    admitted |= matches!(event, JsonCodecCharge::Admission { .. });
+                    Ok(())
+                },
+            ).unwrap_err();
+            assert!(!admitted, "cumulative ancestry/hidden nodes precede original parser");
+            assert!(matches!(failure, Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. }));
+        }
+        let expected: Value = serde_json::from_str(&document).unwrap();
+        let actual = json_from_slice_bounded_native_trusted::<Value, _>(
+            document.as_bytes(), JsonBounds { maximum_depth: 4, ..LIMITS }, 0,
+            crate::wire::ErrorCode::Storage, JsonValueSchema::ForkRequest, &mut |_| Ok(()),
+        ).unwrap();
+        assert_eq!(actual, expected);
+        for deny_inspection in [true, false] {
+            let cause = Uuid::new_v4();
+            let mut denied = false;
+            let mut admitted = false;
+            let failure = json_from_slice_bounded_native_trusted::<Value, _>(
+                document.as_bytes(), LIMITS, 0, crate::wire::ErrorCode::Storage,
+                JsonValueSchema::ForkRequest, &mut |event| {
+                    if matches!(event, JsonCodecCharge::Release { .. }) { return Ok(()); }
+                    assert!(!denied, "no checkpoint after the first owned cause");
+                    admitted |= matches!(event, JsonCodecCharge::Admission { .. });
+                    if (deny_inspection && matches!(event, JsonCodecCharge::Inspect { .. }))
+                        || (!deny_inspection && matches!(event, JsonCodecCharge::Admission { .. })) {
+                        denied = true;
+                        return Err(Error::Indeterminate(cause));
+                    }
+                    Ok(())
+                },
+            ).unwrap_err();
+            assert!(denied);
+            assert_eq!(admitted, !deny_inspection);
+            assert!(matches!(failure, Error::Indeterminate(id) if id == cause));
+        }
     }
 
     #[test]

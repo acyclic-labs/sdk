@@ -5,7 +5,7 @@ use super::{AdmissionFailure, JsonBounds, JsonCodecCharge, JsonValueSchema, Json
 
 const RAW_KEY: &[u8] = b"$serde_json::private::RawValue";
 // Literal SDK field/tag names only; this is not a public selector language.
-const KEYS: [&[u8]; 63] = [
+const KEYS: [&[u8]; 74] = [
     RAW_KEY, b"type", b"schema", b"response_schema", b"result", b"question", b"form",
     b"kind", b"interaction_resolved", b"resolution", b"outcome", b"events",
     b"payload", b"projection", b"interactions", b"messages", b"content", b"context",
@@ -18,8 +18,11 @@ const KEYS: [&[u8]; 63] = [
     b"ready", b"source_pinned", b"waiting", b"receipt", b"phase", b"fork", b"plan",
     b"request", b"preparation", b"provider_proof", b"statement", b"Succeeded", b"complete",
     b"selected_context", b"mcp_stdio", b"params",
+    b"authorized_source", b"native_snapshot", b"read_authorization", b"intent", b"report",
+    b"commands", b"seed", b"fork_published", b"forks", b"project_merge_published",
+    b"snapshot",
 ];
-const _: () = assert!(KEYS.len() < u64::BITS as usize);
+const _: () = assert!(KEYS.len() < u128::BITS as usize);
 const FRAMES: usize = 258 + usize::BITS as usize;
 const LAYERS: usize = usize::BITS as usize + 1;
 const ITEM_LIMIT: &str = "JSON item limit exceeded";
@@ -41,6 +44,10 @@ enum Node {
     RecursiveState, RecursiveReceipt, ValueOutcome, ProjectMergeReceipt, ProviderProof,
     ToolTaskCommand, TaskAdmitCommand, ModelTaskCommand,
     NativeProcessRequest, McpStdioRequest,
+    ProjectSourceAuthorization, ForkRequest, ForkReport, ForkSeed, RecursiveForkSourceIntent,
+    RecursiveSourcePin, ForkPreparationCommandResults, ForkPreparationCommands,
+    ForkPreparationCommandResult, ForkReportOutcome, Forks, ForkTuple,
+    ConfiguredRecursiveSourceCheckpoint,
 }
 #[derive(Clone, Copy)]
 struct Selection { node: Node, scope: Scope }
@@ -73,7 +80,7 @@ impl Stats {
 }
 
 #[derive(Clone, Copy)]
-struct Match { candidates: u64, length: usize }
+struct Match { candidates: u128, length: usize }
 impl Match {
     const fn new() -> Self { Self { candidates: (1 << KEYS.len()) - 1, length: 0 } }
     fn push(&mut self, byte: u8) {
@@ -282,6 +289,14 @@ impl ValueInspector {
             Some(JsonValueSchema::TaskAdmitCommand) => Node::TaskAdmitCommand,
             Some(JsonValueSchema::ModelTaskCommand) => Node::ModelTaskCommand,
             Some(JsonValueSchema::NativeProcessRequest) => Node::NativeProcessRequest,
+            Some(JsonValueSchema::ProjectSourceAuthorization) => Node::ProjectSourceAuthorization,
+            Some(JsonValueSchema::ForkRequest) => Node::ForkRequest,
+            Some(JsonValueSchema::ForkReport) => Node::ForkReport,
+            Some(JsonValueSchema::ForkSeed) => Node::ForkSeed,
+            Some(JsonValueSchema::RecursiveForkSourceIntent) => Node::RecursiveForkSourceIntent,
+            Some(JsonValueSchema::RecursiveSourcePin) => Node::RecursiveSourcePin,
+            Some(JsonValueSchema::ForkPreparationCommandResults) => Node::ForkPreparationCommandResults,
+            Some(JsonValueSchema::ConfiguredRecursiveSourceCheckpoint) => Node::ConfiguredRecursiveSourceCheckpoint,
         };
         let mut layers = [Layer::EMPTY; LAYERS];
         layers[0].root = Selection { node, scope: if node == Node::Unknown { Scope::Unknown } else { Scope::Value } };
@@ -323,6 +338,8 @@ impl ValueInspector {
                 | (Node::ModelEvent, b"tool_call") | (Node::Status, b"completed") => 1,
             (Node::Interaction, b"form") | (Node::Part, b"tool_result")
                 | (Node::ModelEvent, b"completed") => 2,
+            (Node::EventPayload, b"fork_published") => 2,
+            (Node::EventPayload, b"project_merge_published") => 4,
             (Node::SchedulerEvent, b"declared") | (Node::Orchestration, b"reduce") => 1,
             (Node::SchedulerEvent, b"orchestrated") => 2,
             (Node::InteractionResponse, b"question" | b"form") | (Node::RecursivePlan, b"fork") => 1,
@@ -345,12 +362,17 @@ impl ValueInspector {
             (Node::Interaction, b"schema") => (Node::Value, gate(1)),
             (Node::ControlResponse, b"result") => (Node::Value, scope),
             (Node::EventPayload, b"resolution") => (Node::Resolution, gate(0)),
+            (Node::EventPayload, b"seed") => (Node::ForkSeed, gate(1)),
+            (Node::EventPayload, b"receipt") => (Node::ProjectMergeReceipt, gate(2)),
             (Node::Resolution, b"outcome") => (Node::Value, scope),
             (Node::Snapshot, b"events") => (Node::Events, scope),
             (Node::Snapshot, b"projection") => (Node::Projection, scope),
             (Node::Events, _) if !frame.object => (Node::Event, scope),
             (Node::Event, b"payload") => (Node::EventPayload, scope),
             (Node::Projection, b"interactions") => (Node::Resolutions, scope),
+            (Node::Projection, b"forks") => (Node::Forks, scope),
+            (Node::Forks, _) if !frame.object => (Node::ForkTuple, scope),
+            (Node::ForkTuple, _) if !frame.object && frame.array_index == 1 => (Node::ForkSeed, scope),
             (Node::Resolutions, _) if frame.object => (Node::ResolutionTuple, scope),
             (Node::ResolutionTuple, _) if !frame.object && frame.array_index == 1 => (Node::Resolution, scope),
             (Node::Context, b"messages") => (Node::Messages, scope),
@@ -379,6 +401,7 @@ impl ValueInspector {
             (Node::WorkflowAdmission, b"initial") => (Node::StateRecord, scope),
             (Node::ResourcePreparationRequest, b"payload") => (Node::Value, scope),
             (Node::ResourcePreparationRequest, b"child") => (Node::TaskAdmissionRecord, scope),
+            (Node::ResourcePreparationRequest, b"read_authorization") => (Node::ProjectSourceAuthorization, scope),
             (Node::TaskAdmissionRecord, b"input" | b"input_schema" | b"output_schema") => (Node::Value, scope),
             (Node::SchedulerEvent, b"spec") => (Node::OperationSpec, gate(0)),
             (Node::SchedulerEvent, b"reducer") => (Node::EntrypointRef, gate(1)),
@@ -392,6 +415,8 @@ impl ValueInspector {
             (Node::RecursivePlan, b"plan") => (Node::RecursiveForkToolPlan, gate(0)),
             (Node::RecursiveInitialPlan, b"plan") => (Node::RecursivePlan, scope),
             (Node::RecursiveState, b"arguments") => (Node::Value, gate(0)),
+            (Node::RecursiveState, b"intent") => (Node::RecursiveForkSourceIntent, gate(0)),
+            (Node::RecursiveState, b"report") => (Node::ForkReport, gate(1)),
             (Node::RecursiveState, b"plan") => (Node::RecursivePlan, gate(1)),
             (Node::RecursiveState, b"receipt") => (Node::ProjectMergeReceipt, gate(1)),
             (Node::RecursiveState, b"value") => (Node::Value, gate(2)),
@@ -399,6 +424,16 @@ impl ValueInspector {
             (Node::ValueOutcome, b"Succeeded") => (Node::Value, scope),
             (Node::ProjectMergeReceipt, b"provider_proof") => (Node::ProviderProof, scope),
             (Node::ProviderProof, b"statement") => (Node::Value, scope),
+            (Node::ProjectSourceAuthorization, b"native_snapshot") => (Node::Value, scope),
+            (Node::ForkRequest | Node::ForkSeed, b"authorized_source") => (Node::ProjectSourceAuthorization, scope),
+            (Node::ForkReport | Node::RecursiveForkSourceIntent, b"request") => (Node::ForkRequest, scope),
+            (Node::RecursiveSourcePin, b"intent") => (Node::RecursiveForkSourceIntent, scope),
+            (Node::ForkPreparationCommandResults, b"commands") => (Node::ForkPreparationCommands, scope),
+            (Node::ForkPreparationCommands, _) if !frame.object => (Node::ForkPreparationCommandResult, scope),
+            (Node::ForkPreparationCommandResult, b"value") => (Node::ForkReportOutcome, scope),
+            (Node::ForkReportOutcome, b"Succeeded") => (Node::ForkReport, scope),
+            (Node::ConfiguredRecursiveSourceCheckpoint, b"snapshot") => (Node::Snapshot, scope),
+            (Node::ConfiguredRecursiveSourceCheckpoint, b"request") => (Node::ForkRequest, scope),
             (Node::ToolTaskCommand, b"arguments") => (Node::Value, scope),
             (Node::TaskAdmitCommand, b"input") => (Node::Value, scope),
             (Node::ModelTaskCommand, b"input") => (Node::ModelContent, scope),

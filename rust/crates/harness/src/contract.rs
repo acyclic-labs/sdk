@@ -74,7 +74,7 @@ pub(crate) use event_json::{
     EventPayloadJsonAdmission, audited_serde_diagnostic_bytes, event_payload_json_admission,
 };
 mod snapshot_json;
-pub(crate) use snapshot_json::{SnapshotJsonAdmission, snapshot_json_admission};
+pub(crate) use snapshot_json::{SnapshotJsonAdmission, snapshot_json_admission, snapshot_json_ownership};
 pub use json::{
     JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape,
     canonical_json_bytes_bounded, json_bytes_bounded_trusted,

@@ -47,9 +47,9 @@ pub enum JsonValueSchema {
     Interaction,
     /// The control reply's optional result field only.
     ControlResponse,
-    /// interaction_resolved.resolution.outcome's custom Value decoder.
+    /// Interaction outcomes, fork source snapshots, and merge proof statements.
     EventPayload,
-    /// Event payloads and retained interaction-resolution outcomes.
+    /// Event payloads and retained interaction/fork projections.
     Snapshot,
     /// Conversation messages' model content.
     Context,
@@ -73,7 +73,7 @@ pub enum JsonValueSchema {
     ProjectedToolInvocation,
     /// Tool-result JSON value, gated by its kind.
     ToolResultContent,
-    /// Resource request payload and its child admission input/schema values.
+    /// Resource payload, child admission schemas and source native snapshot.
     ResourcePreparationRequest,
     /// Declared/orchestrated reducer and entrypoint result schemas.
     SchedulerEvent,
@@ -101,6 +101,22 @@ pub enum JsonValueSchema {
     ModelTaskCommand,
     /// Native process request's optional MCP stdio params only.
     NativeProcessRequest,
+    /// Source authorization's optional native snapshot.
+    ProjectSourceAuthorization,
+    /// Fork request's optional authorized-source native snapshot.
+    ForkRequest,
+    /// Fork report's request and its authorized-source native snapshot.
+    ForkReport,
+    /// Fork seed's optional authorized-source native snapshot.
+    ForkSeed,
+    /// Recursive source intent's nested fork request.
+    RecursiveForkSourceIntent,
+    /// Recursive source pin's intent and its nested fork request.
+    RecursiveSourcePin,
+    /// Fork preparation commands' externally successful ForkReport values.
+    ForkPreparationCommandResults,
+    /// Configured recursive checkpoint's Snapshot and source fork request.
+    ConfiguredRecursiveSourceCheckpoint,
 }
 
 /// Copied data issued by an SDK source pass or borrowed resident-tree inspection.

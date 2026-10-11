@@ -118,6 +118,9 @@ const DIAGNOSTIC_LABELS: &[&str] = &[
     "pending", "active", "waiting", "completed", "failed", "cancelled", "conversation", "session", "agent", "turn", "task",
     "file_bytes", "path_bytes", "attachments", "render_bytes", "model_steps", "model_events_per_step", "tool_calls_per_step",
     "context_messages", "maximum_events", "maximum_bytes",
+    "authorized_source", "native_snapshot", "caller_task", "caller_admission_digest", "caller_fence",
+    "source_task", "graph_root", "maximum_work", "policy_scope", "capabilities", "issuer", "agent",
+    "parent_proof", "ProjectSourceAuthorization", "Scope", "LeaseFence", "reservation_id", "placement",
     "read", "write", "list", "fork", "merge", "EventPayload", "ForkSeed", "ProjectMergeReceipt", "ConversationMessage",
     "ResourceRevision", "VolumeOwner", "ReferencedAttachmentsWire", "EffectStatus", "FileRefWire", "ProviderRefWire", "ResourceRefWire",
     "unknown variant ``, expected one of ", "unknown field ``, expected one of ", "duplicate field ``", "missing field ``",
@@ -444,7 +447,7 @@ mod tests {
     fn raw_inspection_and_quota_callbacks_keep_original_first_cause() -> Result<()> {
         let bytes = raw_event_bytes(r#"{"kind":"approved"}"#)?;
         for stop_at_admission in [false, true] {
-            let original = Error::Conflict("original Raw callback cancellation".into());
+            let mut original = Some(Error::Conflict("original Raw callback cancellation".into()));
             let mut reached = false;
             let mut reserved = false;
             let result = event_payload_json_admission(&bytes, bounds(&bytes), &mut |event| {
@@ -453,12 +456,12 @@ mod tests {
                 if (stop_at_admission && admission)
                     || (!stop_at_admission && matches!(event, JsonCodecCharge::Inspect { .. })) {
                     reached = true;
-                    return Err(original.clone());
+                    return Err(original.take().expect("original cause moves once"));
                 }
                 Ok(())
             });
             assert!(reached);
-            assert_eq!(result.unwrap_err(), original);
+            assert!(matches!(result.unwrap_err(), Error::Conflict(message) if message == "original Raw callback cancellation"));
             assert_eq!(reserved, stop_at_admission);
         }
         Ok(())
