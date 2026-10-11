@@ -72,7 +72,10 @@ pub(crate) use json::{
 mod event_json;
 pub(crate) use event_json::{
     EventPayloadJsonAdmission, audited_serde_diagnostic_bytes, event_payload_json_admission,
+    event_payload_ownership,
+    audited_preparation_diagnostic_bytes,
 };
+pub use event_json::{json_typed_diagnostic_owned_bytes, preparation_serde_diagnostic_label_bytes};
 mod snapshot_json;
 pub(crate) use snapshot_json::{SnapshotJsonAdmission, snapshot_json_admission, snapshot_json_ownership};
 pub use json::{
@@ -86,12 +89,12 @@ pub use json::{
 pub use json::{
     json_from_slice_bounded_native_trusted, json_value_bounded_native_trusted,
     json_from_value_bounded_native_trusted, json_from_value_owned_bounded_native_trusted,
+    canonical_json_bytes_bounded_native_trusted, json_bytes_bounded_native_trusted,
 };
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use json::{
     validate_json_byte_bound_native_trusted,
     json_from_slice_seed_bounded_native_trusted,
-    canonical_json_bytes_bounded_native_trusted, json_bytes_bounded_native_trusted,
     canonical_json_bytes_identity_native_trusted,
     canonical_json_value_into_prepaid_native_trusted,
 };

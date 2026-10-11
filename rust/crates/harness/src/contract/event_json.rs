@@ -142,6 +142,85 @@ const fn diagnostic_label_bytes() -> u64 {
 }
 const DIAGNOSTIC_LABEL_BYTES: u64 = diagnostic_label_bytes();
 
+// Additional labels of the finite stock PreparationRecord graphs in bounded_io:
+// Context/checkpoint/compaction, response projection, model content/request/event,
+// inherited prefix, extension configuration, refs/attachments and workflow DTOs.
+// Event labels stay a separate scope so ordinary Event admission is unchanged.
+// Private DTO owners supply their own additional manifest, not a generic-T guess.
+const PREPARATION_DIAGNOSTIC_LABELS: &[&str] = &[
+    "Model", "ModelMessage", "ModelRole", "ModelContent", "ModelContentPart",
+    "FileProjectionPolicy", "ModelDataPart", "ToolResultContent", "NativeConfigurationBinding",
+    "ImageDetail", "NativeMediaIntent", "NativeMediaPolicy", "ModelRequest", "ModelEvent",
+    "ToolDefinition", "EventReference", "ExtensionDependency", "ExtensionConfiguration",
+    "Context", "CanonicalContextCheckpoint", "CompactionReference", "CompactionRetention",
+    "ContextSummary", "ResponseProjection", "InheritedConversationPrefix", "ModelContextSelection",
+    "WorkflowCommand", "MachineIdentity", "MachineStatus", "MachineTransition",
+    "MachineCheckpoint", "WorkflowRecord", "WorkflowAdmission", "FileDescriptorWire",
+    "ResourceKind", "workspace", "generation", "artifact", "sandbox", "checkpoint", "stream", "context", "run",
+    "model", "messages", "tools", "options", "max_output_tokens", "role", "text", "file",
+    "policy", "call_id", "callId", "arguments", "json", "parts", "metadata", "delta", "reasoning",
+    "input_schema", "output_schema", "projection_schema", "description", "configuration",
+    "intent", "image", "audio", "video", "document", "auto", "low", "high",
+    "maximum_duration_ms", "maximum_frames", "maximum_pages", "bounded_full", "native",
+    "format_version", "parent_agent", "through_sequence", "message_digest",
+    "current_input_index", "source_digest", "maximum_messages", "retention", "retained",
+    "roles", "native_media", "step", "source_messages", "output", "canonical", "compaction",
+    "machine", "digest", "commands", "suspended", "idempotency_key", "input_digest",
+    "prior", "input", "transition", "next", "initial", "state", "value", "Capabilities",
+    "file byte length exceeds cross-language precision", "media type is invalid",
+    "file or volume label is invalid", "volume-relative path is invalid",
+    "data did not match any variant of untagged enum ModelContent",
+    "struct ", "struct variant ", "tuple variant ", "newtype variant ", "unit variant ",
+];
+
+/// Compile-time label/punctuation upper bound for the fixed stock preparation
+/// graphs listed above, refs/attachments and reached Event/SourceAuth schemas.
+/// Covers their derived type/variant/field names and the audited moving ref
+/// constructors' static errors, not arbitrary custom Deserialize/Display code.
+/// A private/external containing DTO adds its own actual static manifest. This
+/// pure scalar inventory grants no permission and constructs no source shape.
+pub const fn preparation_serde_diagnostic_label_bytes() -> u64 {
+    let mut result = DIAGNOSTIC_LABEL_BYTES;
+    let mut index = 0;
+    while index < PREPARATION_DIAGNOSTIC_LABELS.len() {
+        result += PREPARATION_DIAGNOSTIC_LABELS[index].len() as u64 + 4;
+        index += 1;
+    }
+    result
+}
+
+/// Diagnostic capacity for the finite stock SDK preparation graphs above.
+/// Owners of private records add their actual field/type/custom-static manifest.
+/// No unknown custom Deserialize/Display message is supported by this inventory.
+pub(crate) fn audited_preparation_diagnostic_bytes(
+    input_bytes: u64, native_code: Option<crate::wire::ErrorCode>,
+) -> Result<u64> {
+    diagnostic_capacity_bytes(input_bytes, preparation_serde_diagnostic_label_bytes(), native_code)
+}
+
+/// Pure quota arithmetic for an SDK-issued shape and an audited closed DTO.
+/// `schema_label_bytes` MUST cover actual field/discriminator/type names, list
+/// punctuation and custom STATIC diagnostics. Arbitrary custom Deserialize or
+/// Display messages are unsupported. The shape grants no authority and this is
+/// not an allocator/RSS, generic serde heap, CPU or stack theorem.
+/// Slice input bytes or resident UTF-8 payload plus visited nodes/keys bound the
+/// actual source interpolation. Both overlapping formatter buffers include
+/// conservative capacity growth. None preserves ordinary Invalid; Some(code)
+/// selects the inline native carrier at the actual native entry.
+pub fn json_typed_diagnostic_owned_bytes(
+    shape: JsonValueShape, schema_label_bytes: u64, native_code: Option<crate::wire::ErrorCode>,
+) -> Result<u64> {
+    diagnostic_capacity_bytes(shape.input_bytes(), schema_label_bytes, native_code)
+}
+
+fn diagnostic_capacity_bytes(
+    input_bytes: u64, schema_label_bytes: u64, native_code: Option<crate::wire::ErrorCode>,
+) -> Result<u64> {
+    // Existing six-byte debug expansion and two overlapping formatters, with
+    // another factor two for their geometric String capacities, not fake ops.
+    multiply_with_code(diagnostic_bytes(input_bytes, schema_label_bytes, native_code)?, 2, native_code)
+}
+
 const COMMON_DIAGNOSTIC_TEXT: &str = concat!(
     "unknown variant ``, expected one of unknown field ``, expected one of ",
     "duplicate field ``missing field ``invalid type: , expected ",
@@ -209,7 +288,7 @@ pub(crate) fn event_payload_json_admission<F: FnMut(JsonCodecCharge) -> Result<(
 // The Snapshot schema contains these same concrete payloads, potentially many
 // times. Reuse their audited tagged buffers/Value/string/error overlap without
 // rerunning the lexer or issuing a second quota reservation.
-pub(super) fn event_payload_ownership(
+pub(crate) fn event_payload_ownership(
     shape: JsonValueShape, maximum_depth: u32, native_code: Option<crate::wire::ErrorCode>,
 ) -> Result<EventPayloadJsonAdmission> {
     let multiply = |value, factor| multiply_with_code(value, factor, native_code);
@@ -505,6 +584,48 @@ mod tests {
         assert!(matches!(serde_json::from_slice::<EventPayload>(bytes)
             .map_err(|error| Error::Storage(error.to_string()))?,
             EventPayload::LifecycleTransitioned { .. }));
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn typed_diagnostic_capacity_reuses_real_model_errors_and_original_admission() -> Result<()> {
+        let labels = preparation_serde_diagnostic_label_bytes();
+        assert!(labels > DIAGNOSTIC_LABEL_BYTES, "stock graph labels extend, not replace, the Event inventory");
+        for source in [
+            serde_json::json!({ "kind": "\0\n\"\\😀".repeat(4096) }),
+            serde_json::json!({ "kind": "text", "text": "ok", ("\0\n\"\\😀".repeat(4096)): true }),
+        ] {
+            let issued = super::super::json::json_owned_value_shape_bounded(
+                &source, JsonBounds { maximum_bytes: 1024 * 1024, maximum_items: 1024 * 1024, maximum_depth: 256 },
+                JsonValueSchema::None, &mut |_| Ok(()),
+            )?;
+            let expected = audited_serde_diagnostic_bytes(issued.input_bytes(), labels)?.checked_mul(2).unwrap();
+            let mut admitted = 0;
+            let error = super::super::json::json_from_value_bounded_native_trusted::<crate::model::ModelContentPart, _>(
+                &source, JsonBounds { maximum_bytes: 1024 * 1024, maximum_items: 1024 * 1024, maximum_depth: 256 },
+                0, crate::wire::ErrorCode::Invalid, JsonValueSchema::ModelContentPart, &mut |event| {
+                    if let JsonCodecCharge::Admission { value_shape, .. } = event {
+                        admitted = json_typed_diagnostic_owned_bytes(value_shape, labels,
+                            Some(crate::wire::ErrorCode::Invalid))?;
+                    }
+                    Ok(())
+                },
+            ).unwrap_err();
+            assert_eq!(admitted, expected, "same issued source shape, no second parser or formatter recipe");
+            let Error::NativeDecode { source: actual, .. } = error else { panic!("original typed serde source") };
+            let oracle = <crate::model::ModelContentPart as serde::Deserialize>::deserialize(&source).unwrap_err();
+            assert_eq!(actual.to_string(), oracle.to_string());
+            // Test-only Display observes the original message, not opaque
+            // formatter capacities or a fabricated allocation operation.
+            assert!(admitted >= actual.to_string().len() as u64);
+            assert_eq!(audited_preparation_diagnostic_bytes(issued.input_bytes(),
+                Some(crate::wire::ErrorCode::Invalid))?, expected);
+            assert!(matches!(json_typed_diagnostic_owned_bytes(issued, u64::MAX, None), Err(Error::Invalid(_))));
+            assert!(matches!(json_typed_diagnostic_owned_bytes(issued, u64::MAX,
+                Some(crate::wire::ErrorCode::Storage)),
+                Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, .. })));
+        }
         Ok(())
     }
 }

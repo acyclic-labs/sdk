@@ -935,9 +935,12 @@ pub fn canonical_json_bytes_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCha
     encode(value, JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds }, None, charge)
 }
 
-/// SDK-private native carrier for the SAME bounded canonical byte encoder.
+/// Trusted native carrier for the SAME bounded canonical byte encoder.
+/// Requires the same funded closed source and callback custody as the portable
+/// encoder. Genuine serde sources need their original preclaimed diagnostic
+/// guard; arbitrary custom Serialize internals/messages are not heap bounded.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn canonical_json_bytes_bounded_native_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
+pub fn canonical_json_bytes_bounded_native_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &T, bounds: JsonBounds, code: crate::wire::ErrorCode, charge: &mut F,
 ) -> Result<Vec<u8>> {
     encode(value, JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds }, Some(code), charge)
@@ -1335,9 +1338,12 @@ pub fn json_bytes_bounded_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharg
     bytes_output(value, bounds, None, charge)
 }
 
-/// SDK-private native carrier for the SAME deterministic two-pass byte writer.
+/// Trusted native carrier for the SAME deterministic two-pass byte writer.
+/// The closed serializer must be deterministic and already funded. Caller-owned
+/// diagnostic custody covers its audited serde errors, not arbitrary custom
+/// Serialize allocation/CPU or global allocator/RSS effects.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn json_bytes_bounded_native_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
+pub fn json_bytes_bounded_native_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &T, bounds: JsonBounds, code: crate::wire::ErrorCode, charge: &mut F,
 ) -> Result<Vec<u8>> {
     bytes_output(value, bounds, Some(code), charge)
