@@ -1,0 +1,218 @@
+use super::*;
+use crate::{pi_caller, pi_fork::tests::Fixture};
+use acyclic_harness::{core::Scope, filesystem::FilesystemExecutionJournal,
+    executor::ExecutionJournal, interaction::{Interaction, InteractionResponse}, tool::ToolApprovalVerifier,
+    InteractionId};
+
+fn work() -> NativeMaterializationWork {
+    NativeMaterializationWork::new(pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()
+}
+
+#[test]
+fn operator_cli_requires_explicit_original_operation_and_decision() {
+    let args = |items: &[&str]| items.iter().map(|item| (*item).to_owned()).collect::<Vec<_>>();
+    assert!(parse_cli(&args(&["approvals", "--session", "root", "--operation", "sdk", "--json"])).is_ok());
+    assert!(parse_cli(&args(&["approvals", "--session", "root", "--operation", "sdk"])).is_err());
+    assert!(parse_cli(&args(&["approve", "--session", "root", "--operation", "sdk", "--digest", &"a".repeat(64), "--decision", "approve"])).is_ok());
+    assert!(parse_cli(&args(&["approve", "--session", "root", "--operation", "sdk", "--digest", &"a".repeat(64)])).is_err());
+    assert!(parse_cli(&args(&["approve", "--session", "root", "--operation", "sdk", "--digest", "bad", "--decision", "approve"])).is_err());
+    assert!(parse_cli(&args(&["approvals", "--session", "root", "--session", "foreign", "--operation", "sdk", "--json"])).is_err());
+    let metadata = parse_cli(&args(&["approvals", "--session", "root", "--operation", "sdk", "--json"])).unwrap();
+    assert!(!metadata.project_files);
+    let evidence = parse_cli(&args(&["approvals", "--session", "root", "--operation", "sdk", "--json",
+        "--project-files", "--file", "selected.txt", "--offset", "262144", "--maximum-bytes", "4096"])).unwrap();
+    assert!(evidence.project_files);
+    assert_eq!(evidence.offset, 262_144);
+    assert_eq!(evidence.maximum_bytes, 4096);
+    assert!(parse_cli(&args(&["approvals", "--session", "root", "--operation", "sdk", "--json",
+        "--file", "selected.txt"])).is_err());
+    assert!(parse_cli(&args(&["approvals", "--session", "root", "--operation", "sdk", "--json",
+        "--project-files", "--file", "selected.txt", "--maximum-bytes", "262145"])).is_err());
+}
+
+#[test]
+fn prepared_descriptor_admission_fails_before_typed_growth_without_fake_allocation_work() {
+    let original_work = work();
+    let mut existing_custody = original_work.retain_owned(0).unwrap();
+    existing_custody.resize_retained(original_work.remaining().unwrap().peak_allocation_bytes).unwrap();
+    let before = original_work.receipt();
+    // A bare object would fail the typed schema if serde were reached. Native
+    // custody must reject its opaque parse allowance first, on the same work.
+    let result = decode_prepared_approval(b"{}", &original_work);
+    assert!(matches!(&result, Err(Error::NativeWork {
+        cause: acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::BudgetExceeded { .. }),
+        custody: Some(_),
+    })));
+    if let Err(Error::NativeWork { custody: Some(custody), .. }) = &result {
+        assert!(custody.shares_ledger(&existing_custody));
+    }
+    assert_eq!(original_work.receipt().allocation_operations, before.allocation_operations);
+    assert_eq!(original_work.receipt().bytes_copied, before.bytes_copied);
+}
+
+#[test]
+fn prepared_descriptor_schema_error_keeps_original_decoder_and_custody() {
+    let original_work = work();
+    let original_custody = original_work.retain_owned(0).unwrap();
+    let result = decode_prepared_approval(b"{}", &original_work);
+    let Err(Error::NativeDecode { code, source, custody: Some(custody) }) = &result else {
+        panic!("expected the original typed decoder error with its admitted custody");
+    };
+    assert_eq!(*code, acyclic_harness::wire::ErrorCode::Invalid);
+    assert_eq!(source.classify(), serde_json::error::Category::Data);
+    assert!(custody.bytes() > 0);
+    assert!(custody.shares_ledger(&original_custody));
+}
+
+#[tokio::test]
+async fn real_root_operator_rejects_pi_caller_forgery_foreign_operation_and_foreign_owner() {
+    let fixture = Fixture::new().await;
+    let state = crate::AdapterState { root_session_id: fixture.root_request.binding.native_session_id.clone(),
+        root_agent_id: "fork-root".into(), task_binding: crate::PluginTaskBinding::Pi(Box::new(fixture.root_request.binding.clone())),
+        ..crate::AdapterState::default() };
+    let body = PiOperatorBody::Inspect { session: state.root_session_id.clone(), operation: "original-sdk-writeback".into(),
+        project_files: false, file_evidence: None };
+    let original_work = work();
+    let request_custody;
+    let request;
+    (request, request_custody) = build_control_request(&fixture.owner, std::env::current_dir().unwrap(), body, &original_work).unwrap();
+    let parsed_custody;
+    let parsed_request;
+    (parsed_request, parsed_custody) = PiOperatorRequest::from_value_with_native_work(&request.arguments, &original_work).unwrap();
+    assert!(parsed_custody.shares_ledger(&request_custody));
+    drop(request);
+    drop(request_custody);
+    let mut request = parsed_request;
+    verify_request(&fixture.owner, &state.root_session_id, &request, &original_work).unwrap();
+    let caller = pi_caller::issue(&fixture.owner, &state.root_session_id, &fixture.root_request.binding).unwrap();
+    let original = request.operator.clone();
+    request.operator = caller;
+    assert!(verify_request(&fixture.owner, &state.root_session_id, &request, &original_work).is_err());
+    request.operator = original;
+    let PiOperatorBody::Inspect { project_files, .. } = &mut request.body else { unreachable!() };
+    *project_files = true;
+    assert!(verify_request(&fixture.owner, &state.root_session_id, &request, &original_work).is_err());
+    request.body = PiOperatorBody::Inspect { session: state.root_session_id.clone(), operation: "foreign-sdk-operation".into(),
+        project_files: false, file_evidence: None };
+    assert!(verify_request(&fixture.owner, &state.root_session_id, &request, &original_work).is_err());
+    let foreign = Fixture::new().await;
+    assert!(verify_request(&foreign.owner, &state.root_session_id, &request, &original_work).is_err());
+    let scope: Scope = fixture.owner.authority().unwrap().issuer.root_for_agent(fixture.commit.child.agent_id,
+        request.operator.id(), request.operator.capabilities().clone());
+    request.operator = scope;
+    assert!(verify_request(&fixture.owner, &state.root_session_id, &request, &original_work).is_err());
+    drop(request);
+    drop(parsed_custody);
+}
+
+/// Production LocalStream, Filesystem and admitted Root conversation. Losing the
+/// host response never creates a replacement interaction or a new SDK operation.
+#[tokio::test]
+async fn original_root_interaction_rejects_wrong_digest_foreign_operation_and_decline_survives_reopen() {
+    let fixture = Fixture::new().await;
+    fixture.journal.verify_dispatch().await.unwrap();
+    let root = fixture.owner.policy().root_task;
+    let operation = crate::pi_fork::derived(crate::pi_fork::original_operation(root, root, "writeback-sdk"), "selected-writeback");
+    let grants = Capabilities::new(fixture.owner.policy().grants.iter().map(str::to_owned).chain([
+        "interaction:open".into(), "interaction:resolve".into(), "interaction:observe".into(),
+    ]));
+    let (_, issuer, scope) = fixture.owner.conversation_authority(root, fixture.owner.policy().agent, grants).unwrap();
+    let make_journal = || FilesystemExecutionJournal::new(fixture.stream.clone(), fixture.filesystem.clone(),
+        fixture.root_request.binding.scratch.volume.clone(), issuer.verifier(), scope.clone(), fixture.owner.policy().maximum_payload_bytes).unwrap();
+    let approval = InteractionId::from_bytes([211; 16]);
+    let digest = *blake3::hash(b"exact-original-root-selected-writeback-input").as_bytes();
+    let journal = make_journal();
+    journal.open_interaction(approval, Interaction::approval("Exact Root writeback", operation, digest).unwrap()).await.unwrap();
+    let (_, _, responder) = fixture.owner.conversation_authority(root, fixture.owner.policy().agent,
+        Capabilities::new(["interaction:resolve".into(), format!("interaction:respond:{approval}")])).unwrap();
+    journal.resolve_interaction(approval, InteractionResponse::Approval { approved: false, reason: None }, &responder).await.unwrap();
+    drop(journal); // Host ACK was not retained by the client.
+    let reopened = make_journal();
+    assert!(ToolApprovalVerifier::verify(&reopened, approval, operation, digest).await.is_err());
+    reopened.resolve_interaction(approval, InteractionResponse::Approval { approved: false, reason: None }, &responder).await.unwrap();
+    assert!(reopened.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &responder).await.is_err());
+    let approved = InteractionId::from_bytes([212; 16]);
+    reopened.open_interaction(approved, Interaction::approval("Another exact original Root writeback", operation, digest).unwrap()).await.unwrap();
+    let (_, _, responder) = fixture.owner.conversation_authority(root, fixture.owner.policy().agent,
+        Capabilities::new(["interaction:resolve".into(), format!("interaction:respond:{approved}")])).unwrap();
+    reopened.resolve_interaction(approved, InteractionResponse::Approval { approved: true, reason: None }, &responder).await.unwrap();
+    drop(reopened);
+    let reopened = make_journal();
+    ToolApprovalVerifier::verify(&reopened, approved, operation, digest).await.unwrap();
+    assert!(ToolApprovalVerifier::verify(&reopened, approved, operation, [213; 32]).await.is_err());
+    assert!(ToolApprovalVerifier::verify(&reopened, approved, OperationId::from_bytes([214; 16]), digest).await.is_err());
+    fixture.journal.verify_dispatch().await.unwrap();
+}
+
+#[tokio::test]
+async fn actual_admitted_child_cannot_read_root_only_operator_proof_or_upgrade_its_caller() {
+    use acyclic_harness::{filesystem::{TaskWorkerAttempt, TaskWorkerOutcome},
+        distributed::Worker, scheduler::{LeaseFence, ResourceSnapshot}};
+    let fixture = Fixture::new().await;
+    let plan = fixture.plan().await;
+    let child = fixture.coordinator().advance(&fixture.context, &fixture.journal, fixture.fence.clone(),
+        &plan, fixture.source.clone(), pi_root_provider::allocation_budget(), acyclic_fs::CancellationToken::new())
+        .await.unwrap().unwrap();
+    let worker = Worker { id: "operator-private-child".into(), available: ResourceSnapshot::default(),
+        labels: Default::default() };
+    let attempt = fixture.runtime.runtime.run_operation(&worker, child.binding.task_id,
+        &fixture.runtime.runtime.commands(), 1).await.unwrap().unwrap();
+    let TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease }) = attempt else {
+        panic!("actual admitted child command lease");
+    };
+    let child_context = fixture.runtime.runtime.task_context(child.binding.task_id,
+        LeaseFence::from(&lease.reservation)).await.unwrap();
+    let session = &fixture.root_request.binding.native_session_id;
+    let work = work();
+    let request_custody;
+    let request;
+    (request, request_custody) = build_control_request(&fixture.owner, std::env::current_dir().unwrap(),
+        PiOperatorBody::Inspect { session: session.clone(), operation: "original-operator-inspection".into(),
+            project_files: false, file_evidence: None }, &work).unwrap();
+    let parsed_custody;
+    let parsed_request;
+    (parsed_request, parsed_custody) = PiOperatorRequest::from_value_with_native_work(&request.arguments, &work).unwrap();
+    assert!(parsed_custody.shares_ledger(&request_custody));
+    drop(request);
+    drop(request_custody);
+    let mut request = parsed_request;
+    let operation = crate::pi_fork::derived(crate::pi_fork::original_operation(fixture.owner.policy().root_task,
+        fixture.owner.policy().root_task, request.body.operation()), "selected-writeback-publish");
+    let private = accept(&work, pi_root_provider::stage_pi_operator_input(&fixture.owner, &fixture.filesystem,
+        operation, "operator-proof-isolation", &request, work.remaining().unwrap(), work.cancellation()).await).unwrap();
+    assert!(private.path().starts_with(crate::pi_root_provider::OPERATOR_INPUT_DIRECTORY));
+    assert!(!child_context.scope().grants().contains(&fixture.owner.policy().journal.directory_read_capability(
+        crate::pi_root_provider::OPERATOR_INPUT_DIRECTORY).unwrap()));
+    assert!(matches!(child_context.read_file(&private).await, Err(Error::Unauthorized(_))));
+    request.operator = pi_caller::issue(&fixture.owner, session, &child.binding).unwrap();
+    assert!(verify_request(&fixture.owner, session, &request, &work).is_err());
+    drop(request);
+    drop(parsed_custody);
+}
+
+#[tokio::test]
+async fn passive_original_operation_pending_encodes_own_rpc_identity_without_task_graph() {
+    let fixture = Fixture::new().await;
+    let session = "original-passive-rpc-session";
+    let native_session = &fixture.root_request.binding.native_session_id;
+    let caller = fixture.owner.policy().root_task;
+    let root = fixture.root_request.binding.project_volumes.keys().next().unwrap();
+    let paths = vec!["observed.txt".to_owned()];
+    let original_work = work();
+    let custody;
+    let value;
+    (value, custody) = crate::pi_operator_host::passive_status(&fixture.runtime, &fixture.filesystem, &fixture.stream,
+        &fixture.resources, &fixture.owner, session, native_session, caller, "original-sdk-pending-writeback",
+        fixture.commit.child.task_id, root, &paths, &original_work).await.unwrap();
+    assert_eq!(value["session"], session);
+    assert_eq!(value["native_session"], serde_json::Value::String(native_session.clone()));
+    assert_eq!(value["current_task"], serde_json::to_value(caller).unwrap());
+    assert_eq!(value["operation"], "original-sdk-pending-writeback");
+    assert_eq!(value["status"], "pending");
+    assert!(value.get("tasks").is_none());
+    assert!(value.get("operator").is_none());
+    assert!(custody.bytes() > 0);
+    fixture.journal.verify_dispatch().await.unwrap();
+    drop(value);
+    drop(custody);
+}

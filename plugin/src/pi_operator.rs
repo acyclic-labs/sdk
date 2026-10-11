@@ -1,0 +1,433 @@
+//! Host-only Pi operator transport. Signing material never enters a native caller scope.
+use crate::{ControlCommand, ControlRequest, pi_owner::PiOwnerConfig,
+    pi_selected_host::PiSelectedCommand, pi_root_provider};
+use acyclic_fs::{GenerationId, LazySnapshotRef, MaterializationJournal, NativeAllocation, NativeMaterializationWork,
+    WorkCounters};
+use acyclic_harness::{Capabilities, OperationId, Result, Error, JsonBounds, JsonCodecCharge,
+    json_from_slice_bounded_native_trusted, json_from_value_bounded_native_trusted, core::Scope, conversation::VolumeRef};
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PiPreparedApproval {
+    pub(crate) version: u32,
+    pub(crate) session: String,
+    pub(crate) command: PiSelectedCommand,
+    pub(crate) operation: OperationId,
+    pub(crate) approval_digest: String,
+    pub(crate) private_volume: VolumeRef,
+    /// Original Root baseline inherited by the child; canonical digest tuple[10].
+    pub(crate) source_snapshot: LazySnapshotRef,
+    /// Child snapshot sealed by the actual selected import, not its native mount.
+    pub(crate) selected_snapshot: LazySnapshotRef,
+    pub(crate) imported: GenerationId,
+    pub(crate) import_receipt: crate::pi_selected_host::PiSelectedImportReceipt,
+    pub(crate) journal: MaterializationJournal,
+    pub(crate) canonical_digest_input: String,
+    pub(crate) root_path: String,
+    pub(crate) source_path: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PiOperatorDecision { Approve, Decline }
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PiOperatorFileCursor {
+    pub(crate) operation: String,
+    pub(crate) root: String,
+    pub(crate) generation: GenerationId,
+    pub(crate) path: String,
+    pub(crate) offset: u64,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PiOperatorFileEvidence {
+    pub(crate) path: String,
+    pub(crate) cursor: Option<PiOperatorFileCursor>,
+    pub(crate) maximum_bytes: u32,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum PiOperatorBody {
+    Inspect { session: String, operation: String, project_files: bool, file_evidence: Option<PiOperatorFileEvidence> },
+    Approval { prepared: PiPreparedApproval, digest: String, decision: PiOperatorDecision },
+}
+impl PiOperatorBody {
+    pub(crate) fn session(&self) -> &str {
+        match self { Self::Inspect { session, .. } => session, Self::Approval { prepared, .. } => &prepared.session }
+    }
+    pub(crate) fn operation(&self) -> &str {
+        match self { Self::Inspect { operation, .. } => operation,
+            Self::Approval { prepared, .. } => &prepared.command.sdk_operation }
+    }
+}
+#[derive(Serialize)]
+pub(crate) struct PiOperatorRequest {
+    pub(crate) session_id: String,
+    pub(crate) body: PiOperatorBody,
+    pub(crate) operator: Scope,
+}
+
+impl PiOperatorRequest {
+    pub(crate) fn from_value_with_native_work(value: &serde_json::Value, work: &NativeMaterializationWork)
+        -> Result<(Self, NativeAllocation)> {
+        let invalid = |reason| Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason };
+        let fields = value.as_object().ok_or_else(|| invalid("operator request must be an object"))?;
+        if fields.len() != 3 || fields.keys().any(|key| !matches!(key.as_str(), "session_id" | "body" | "operator")) {
+            return Err(invalid("operator request must contain only its exact original fields"));
+        }
+        let session = fields.get("session_id").and_then(serde_json::Value::as_str)
+            .filter(|session| !session.is_empty() && session.len() <= 512)
+            .ok_or_else(|| invalid("operator request requires its bounded original session"))?;
+        let body_value = fields.get("body").ok_or_else(|| invalid("operator request body is missing"))?;
+        let scope_value = fields.get("operator").ok_or_else(|| invalid("operator request scope is missing"))?;
+        let remaining = work.remaining().map_err(native_error)?;
+        let bounds = JsonBounds { maximum_bytes: crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
+            maximum_items: remaining.items_examined, maximum_depth: 64 };
+        let mut custody = work.retain_owned(0).map_err(native_error)?;
+        let decoded = json_from_value_bounded_native_trusted(body_value, bounds, 0,
+            acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None,
+            &mut |charge| operator_decode_charge(charge, work, &mut custody));
+        let body: PiOperatorBody = match decoded {
+            Ok(body) => body,
+            Err(error) => return Err(operator_decode_error(error, custody)),
+        };
+        let session_bytes = session.len() as u64;
+        work.admit(WorkCounters { bytes_copied: session_bytes, ..WorkCounters::default() }).map_err(native_error)?;
+        let session_custody = work.claim(session_bytes).map_err(native_error)?;
+        let mut session_id = String::new();
+        session_id.try_reserve_exact(session.len())
+            .map_err(|cause| native_error(acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause)))?;
+        work.charge(WorkCounters { bytes_copied: session_bytes, ..WorkCounters::default() }).map_err(native_error)?;
+        session_id.push_str(session);
+        custody.absorb(session_custody).map_err(native_error)?;
+        let scope_custody;
+        let operator;
+        (operator, scope_custody) = Scope::from_value_with_native_work(scope_value, work)?;
+        custody.absorb(scope_custody).map_err(native_error)?;
+        Ok((Self { session_id, body, operator }, custody))
+    }
+}
+
+
+fn invalid(message: impl Into<String>) -> Error { Error::Invalid(message.into()) }
+fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error { Error::NativeWork { cause, custody: None } }
+pub(crate) fn accept<T>(work: &NativeMaterializationWork,
+    result: acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<T>, Error>) -> Result<T> {
+    match result {
+        Ok(receipt) => { work.spent(receipt.work).map_err(native_error)?; Ok(receipt.value) }
+        Err(failure) => { work.spent(*failure.work).map_err(native_error)?;
+            Err(failure.error) }
+    }
+}
+pub(crate) fn body_hash(body: &PiOperatorBody, work: &NativeMaterializationWork) -> Result<String> {
+    if body.session().is_empty() || body.session().len() > 512 || body.operation().is_empty()
+        || body.operation().len() > 512 { return Err(invalid("operator requires its bounded original session and SDK operation")); }
+    canonical_hash(body, work)
+}
+fn canonical_hash<T: Serialize>(body: &T, work: &NativeMaterializationWork) -> Result<String> {
+    let mut budget = work.remaining().map_err(native_error)?;
+    budget.bytes_encoded = budget.bytes_encoded.min(crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64);
+    accept(work, pi_root_provider::digest_pi_value(body, budget, work.cancellation()))
+}
+pub(crate) fn approval_body_hash(prepared: &PiPreparedApproval, digest: &str,
+    decision: PiOperatorDecision, work: &NativeMaterializationWork) -> Result<String> {
+    #[derive(Serialize)]
+    struct BorrowedApproval<'a> {
+        action: &'static str, prepared: &'a PiPreparedApproval, digest: &'a str, decision: PiOperatorDecision,
+    }
+    canonical_hash(&BorrowedApproval { action: "approval", prepared, digest, decision }, work)
+}
+fn capability(body: &PiOperatorBody, hash: &str) -> String { format!("pi:operator:{}:{hash}", body.session()) }
+
+pub(crate) fn build_control_request(owner: &PiOwnerConfig, cwd: PathBuf,
+    body: PiOperatorBody, work: &NativeMaterializationWork) -> Result<(ControlRequest, acyclic_fs::NativeAllocation)> {
+    let hash = body_hash(&body, work)?;
+    let authority = owner.authority()?;
+    let operator = authority.issuer.root_for_agent(owner.policy().agent,
+        format!("pi:operator:{}:{hash}", body.session()), Capabilities::new([capability(&body, &hash)]));
+    let session_id = body.session().to_owned();
+    let event = match &body { PiOperatorBody::Inspect { .. } => "OperatorInspect", PiOperatorBody::Approval { .. } => "OperatorApproval" };
+    let request = PiOperatorRequest { session_id, body, operator };
+    let custody;
+    let arguments;
+    (arguments, custody) = pi_root_provider::guarded_pi_value(&request,
+        crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8, work)?;
+    drop(request);
+    Ok((ControlRequest { version: 1, command: ControlCommand::Hook, cwd, argv: Vec::new(),
+        name: format!("pi:{event}"), arguments }, custody))
+}
+
+pub(crate) fn verify_request(owner: &PiOwnerConfig, session: &str, request: &PiOperatorRequest,
+    work: &NativeMaterializationWork) -> Result<()> {
+    owner.authority()?.verifier.verify(&request.operator)?;
+    let hash = body_hash(&request.body, work)?;
+    if request.session_id != session || request.body.session() != session
+        || request.operator.agent() != Some(owner.policy().agent)
+        || request.operator.id() != format!("pi:operator:{session}:{hash}")
+        || request.operator.capabilities() != &Capabilities::new([capability(&request.body, &hash)]) {
+        return Err(Error::Unauthorized("operator response differs from its original protected Root and exact body".into()));
+    }
+    Ok(())
+}
+
+pub(crate) struct PiOperatorCli {
+    pub(crate) session: String,
+    pub(crate) operation: String,
+    pub(crate) approval: Option<(String, PiOperatorDecision)>,
+    pub(crate) project_files: bool,
+    pub(crate) file: Option<String>,
+    pub(crate) offset: u64,
+    pub(crate) maximum_bytes: u32,
+}
+pub(crate) fn parse_cli(args: &[String]) -> std::result::Result<PiOperatorCli, String> {
+    let command = args.first().map(String::as_str).ok_or("Pi operator command is missing")?;
+    if !matches!(command, "approvals" | "approve") { return Err("unknown Pi operator command".into()); }
+    let mut session = None; let mut operation = None; let mut digest = None; let mut decision = None; let mut json = false;
+    let mut project_files = false; let mut file = None; let mut offset = None; let mut maximum_bytes = None;
+    let mut index = 1;
+    while index < args.len() {
+        let flag = args[index].as_str(); index += 1;
+        if flag == "--json" { if json { return Err("duplicate --json".into()); } json = true; continue; }
+        if flag == "--project-files" {
+            if project_files { return Err("duplicate --project-files".into()); }
+            project_files = true; continue;
+        }
+        let value = args.get(index).ok_or_else(|| format!("{flag} requires a value"))?.clone(); index += 1;
+        let slot = match flag { "--session" => &mut session, "--operation" => &mut operation,
+            "--digest" => &mut digest, "--decision" => &mut decision, "--file" => &mut file,
+            "--offset" => &mut offset, "--maximum-bytes" => &mut maximum_bytes,
+            _ => return Err(format!("unknown Pi operator argument {flag}")) };
+        if slot.replace(value).is_some() { return Err(format!("duplicate {flag}")); }
+    }
+    let session = session.filter(|value| !value.is_empty() && value.len() <= 512).ok_or("--session requires the original Root native session")?;
+    let operation = operation.filter(|value| !value.is_empty() && value.len() <= 512).ok_or("--operation requires the original SDK tool ID")?;
+    let approval = if command == "approve" {
+        let digest = digest.ok_or("--digest is required")?;
+        parse_digest(&digest).map_err(|error| error.to_string())?;
+        let decision = match decision.as_deref() { Some("approve") => PiOperatorDecision::Approve,
+            Some("decline") => PiOperatorDecision::Decline, _ => return Err("--decision must be approve or decline".into()) };
+        Some((digest, decision))
+    } else { if digest.is_some() || decision.is_some() || !json { return Err("approvals requires --json and accepts no decision".into()); } None };
+    if (file.is_some() || offset.is_some() || maximum_bytes.is_some()) && !project_files {
+        return Err("file evidence requires --project-files".into());
+    }
+    if project_files && approval.is_some() { return Err("approve accepts no file projection arguments".into()); }
+    if (offset.is_some() || maximum_bytes.is_some()) && file.is_none() {
+        return Err("file offsets and bounds require --file".into());
+    }
+    if file.as_deref().is_some_and(|path| path.is_empty() || path.len() > 4096) {
+        return Err("--file requires a bounded selected relative path".into());
+    }
+    let offset = offset.map(|value| value.parse::<u64>().map_err(|_| "--offset must be an unsigned byte offset"))
+        .transpose()?.unwrap_or(0);
+    let maximum_bytes = maximum_bytes.map(|value| value.parse::<u32>().map_err(|_| "--maximum-bytes must be unsigned"))
+        .transpose()?.unwrap_or(262_144);
+    if !(1..=262_144).contains(&maximum_bytes) { return Err("--maximum-bytes must be 1..262144".into()); }
+    Ok(PiOperatorCli { session, operation, approval, project_files, file, offset, maximum_bytes })
+}
+pub(crate) fn parse_digest(digest: &str) -> Result<[u8; 32]> {
+    if digest.len() != 64 { return Err(invalid("approval requires the exact 64-character prepared digest")); }
+    let mut bytes = [0; 32];
+    hex::decode_to_slice(digest, &mut bytes).map_err(|_| invalid("approval digest must be hexadecimal"))?;
+    Ok(bytes)
+}
+
+/// Audited closed operator DTO quota, including its internally tagged body and
+/// adjacent VolumeOwner content. Logical admission is not physical allocation.
+fn operator_owned_quota(items: u64, input_bytes: u64, scratch: u64) -> Result<u64> {
+    // The SDK's audited serde diagnostic convention: two overlapping error
+    // buffers, debug escaping at six bytes per input byte, plus schema labels.
+    const DIAGNOSTIC_LABELS: &str = concat!(
+        "PiPreparedApproval PiSelectedCommand PiSelectedImportReceipt VolumeRefWire ProviderRefWire VolumeOwner ",
+        "PiOperatorBody PiOperatorFileEvidence PiOperatorFileCursor action inspect approval prepared digest decision ",
+        "session_id operator project_files file_evidence offset maximum_bytes approve decline ",
+        "MaterializationJournal MaterializationPlan MaterializationEdit MaterializationIntent ",
+        "MaterializationPreparationIdentity MaterializationPreparationProgress MaterializationPreparationAllocation ",
+        "MaterializationPreparationSelection MaterializationPreimage LazySnapshotRef SourceReference WorkCounters ",
+        "version session command operation approval_digest private_volume source_snapshot selected_snapshot imported ",
+        "import_receipt journal canonical_digest_input root_path source_path caller sdk_operation source root directory ",
+        "cursor maximum_entries destination paths confirm import_operation destination_snapshot provider id class owner ",
+        "namespace family kind project agent session project agent_private session_shared ",
+        "revision plan root_identity preparation_identity preparation_progress work preimages phase applied restored ",
+        "operation_id intent edits GenerationTransition NativePreparation from to selection original provider_identity ",
+        "volume generation Install Remove Rename SetMetadata path image target backup parent pending Operation Target Backup ",
+        "Preparing Prepared Applying Applied RollingBack RolledBack workspace_id authored_generation identity epoch overlay shadows ",
+        "authorityRecordsRead authorityRecordsAppended authorityBytesRead authorityBytesWritten objectProbes ",
+        "backendReadOperations backendWriteOperations durabilityOperations pageReads pageWrites objectBytesRead objectBytesWritten ",
+        "bytesHashed bytesCopied bytesEncoded sourceBytesRead sourcePathComponents sourceEntriesVisited outputBytes ",
+        "itemsExamined itemsReturned allocationOperations peakAllocationBytes materializations ",
+        "provider identity is invalid file or volume label is invalid ",
+        "unknown variant ``, expected one of unknown field ``, expected one of duplicate field ``missing field ``",
+        "invalid type: , expected invalid value: , expected invalid length , expected  at line  column ",
+        "a sequence a map a string a byte array an integer an array of length 16 an array of length 32 a valid UUID string ",
+        "invalid request: storage failure: ",
+    );
+    let diagnostic_static_bytes = 4 * (5 * DIAGNOSTIC_LABELS.len() as u64 + 2 * u64::from(usize::BITS));
+    // Cargo.lock pins serde 1.0.229; use its actual Content/map-pair layout,
+    // not Value's unrelated layout, for the adjacent VolumeOwner tag.
+    let content_slot = std::mem::size_of::<serde::__private229::de::Content<'static>>()
+        .max(std::mem::size_of::<(
+            serde::__private229::de::Content<'static>,
+            serde::__private229::de::Content<'static>,
+        )>()) as u64;
+    let maximum_slot = [
+        std::mem::size_of::<acyclic_fs::MaterializationEdit>(),
+        std::mem::size_of::<acyclic_fs::MaterializationPreparationSelection>(),
+        std::mem::size_of::<acyclic_fs::MaterializationPreimage>(),
+        std::mem::size_of::<String>(),
+        std::mem::size_of::<u8>(),
+        // These are the complete dynamic element types of the typed DTO.
+    ].into_iter().max().expect("nonempty approval schema") as u64;
+    // Every nonempty Vec and element contributes an item. Ten slots cover
+    // geometric/minimum growth; the two tagged Content layers are independent
+    // from typed storage. Four input lengths cover strings; twenty-four cover
+    // escaped diagnostics, their overlapping buffers and geometric capacity.
+    items.checked_mul(10).and_then(|slots| slots.checked_mul(maximum_slot + 2 * content_slot))
+        .and_then(|slots| input_bytes.checked_mul(28).and_then(|strings| slots.checked_add(strings)))
+        .and_then(|owned| owned.checked_add(diagnostic_static_bytes))
+        .and_then(|owned| owned.checked_add(scratch))
+        .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow))
+        .map_err(native_error)
+}
+
+fn decode_prepared_approval(bytes: &[u8], work: &NativeMaterializationWork)
+    -> Result<(PiPreparedApproval, NativeAllocation)> {
+    let remaining = work.remaining().map_err(native_error)?;
+    let bounds = JsonBounds {
+        maximum_bytes: crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
+        maximum_items: remaining.items_examined,
+        maximum_depth: 64,
+    };
+    let mut custody = work.retain_owned(0).map_err(native_error)?;
+    let decoded = json_from_slice_bounded_native_trusted(bytes, bounds, 0,
+        acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None,
+        &mut |charge| operator_decode_charge(charge, work, &mut custody));
+    match decoded {
+        Ok(prepared) => Ok((prepared, custody)),
+        Err(error) => Err(operator_decode_error(error, custody)),
+    }
+}
+
+fn operator_decode_error(error: Error, custody: NativeAllocation) -> Error {
+    match error {
+        Error::NativeWork { cause, custody: None } => Error::NativeWork { cause, custody: Some(custody) },
+        Error::NativeDecode { code, source, custody: None } => Error::NativeDecode { code, source, custody: Some(custody) },
+        error => error,
+    }
+}
+
+fn operator_decode_charge(charge: JsonCodecCharge, work: &NativeMaterializationWork,
+    custody: &mut NativeAllocation) -> Result<()> {
+    let result = match charge {
+        JsonCodecCharge::Work { bytes, items } => work.charge(WorkCounters {
+            bytes_encoded: bytes, items_examined: items, ..WorkCounters::default() }),
+        JsonCodecCharge::Read { bytes } => work.charge(WorkCounters {
+            source_bytes_read: bytes, ..WorkCounters::default() }),
+        JsonCodecCharge::Inspect { items } => work.charge(WorkCounters {
+            items_examined: items, ..WorkCounters::default() }),
+        JsonCodecCharge::CopyAdmission { bytes } => work.admit(WorkCounters {
+            bytes_copied: bytes, ..WorkCounters::default() }),
+        JsonCodecCharge::Copy { bytes } => work.charge(WorkCounters {
+            bytes_copied: bytes, ..WorkCounters::default() }),
+        JsonCodecCharge::AllocationOperation { .. } => work.charge(WorkCounters {
+            allocation_operations: 1, ..WorkCounters::default() }),
+        JsonCodecCharge::Retain { bytes } => {
+            let retained = custody.bytes().checked_add(bytes)
+                .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow))
+                .map_err(native_error)?;
+            custody.resize_retained(retained)
+        }
+        JsonCodecCharge::Release { bytes } => custody.release(bytes),
+        JsonCodecCharge::Admission { maximum_owned_bytes: scratch, value_shape } => {
+            // Resident shape bytes are a payload/node lower bound, not encoded
+            // bytes. Fixed scalar formatting is a quota, never a reported read.
+            let items = value_shape.lexical_items();
+            let input_bytes = items.checked_mul(64).and_then(|scalars| scalars.checked_add(value_shape.input_bytes()))
+                .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow))
+                .map_err(native_error)?;
+            let quota = work.retain_owned(operator_owned_quota(items, input_bytes, scratch)?).map_err(native_error)?;
+            custody.absorb(quota)
+        }
+    };
+    result.map_err(native_error)
+}
+
+/// The only path loading operator credentials: a trusted host CLI action, not a hook supplied by an agent.
+pub(crate) async fn run_cli(data: &Path, cwd: PathBuf, args: &[String])
+    -> std::result::Result<(serde_json::Value, NativeAllocation), crate::service_process::ControlRequestError> {
+    use crate::service_process::ControlRequestError;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = NativeMaterializationWork::new(pi_root_provider::allocation_budget(), &cancellation)
+        .map_err(|(cause, work)| ControlRequestError::NativeWork(Error::NativeConstruction { cause, work }))?;
+    let cli = parse_cli(args).map_err(ControlRequestError::Response)?;
+    let directory = crate::service::session_directory(data, &cli.session);
+    let owner = PiOwnerConfig::load(&directory).map_err(ControlRequestError::NativeWork)?;
+    // Declare custody before its payload so every early-return path destroys
+    // the original request Value before releasing its SDK allocation.
+    let inspect_custody;
+    let inspect;
+    (inspect, inspect_custody) = build_control_request(&owner, cwd.clone(), PiOperatorBody::Inspect {
+        session: cli.session.clone(), operation: cli.operation.clone(), project_files: false, file_evidence: None },
+        &work).map_err(ControlRequestError::NativeWork)?;
+    let envelope = crate::ControlEnvelope::new(inspect);
+    let reply_custody;
+    let result;
+    (result, reply_custody) = crate::service_process::send_control_envelope_with_native_work(
+        data, &envelope, &work).await?;
+    drop(envelope);
+    drop(inspect_custody);
+    if cli.approval.is_none() && !cli.project_files { return Ok((result, reply_custody)); }
+    let descriptor = result.get("prepared").ok_or_else(||
+        ControlRequestError::Response("original operation has no prepared approval".into()))?;
+    let bytes_custody;
+    let bytes;
+    (bytes, bytes_custody) = crate::service_process::encode_native_control_value(descriptor, &work)
+        .map_err(ControlRequestError::NativeWork)?;
+    let prepared_custody;
+    let prepared;
+    (prepared, prepared_custody) = decode_prepared_approval(&bytes, &work)
+        .map_err(ControlRequestError::NativeWork)?;
+    drop(bytes);
+    drop(bytes_custody);
+    if prepared.session != cli.session || prepared.command.sdk_operation != cli.operation {
+        return Err(ControlRequestError::Response(
+            "operator decision does not match the original prepared session and operation".into()));
+    }
+    let body = if let Some((digest, decision)) = cli.approval {
+        PiOperatorBody::Approval { prepared, digest, decision }
+    } else {
+        let file_evidence = cli.file.map(|path| {
+            let cursor = if cli.offset == 0 { None } else { Some(PiOperatorFileCursor {
+                operation: cli.operation.clone(),
+                root: prepared.command.root.clone().ok_or_else(||
+                    ControlRequestError::Response("prepared operation has no original Root".into()))?,
+                generation: prepared.imported, path: path.clone(), offset: cli.offset,
+            }) };
+            Ok::<_, ControlRequestError>(PiOperatorFileEvidence { path, cursor, maximum_bytes: cli.maximum_bytes })
+        }).transpose()?;
+        drop(prepared);
+        PiOperatorBody::Inspect { session: cli.session, operation: cli.operation, project_files: true, file_evidence }
+    };
+    let request_custody;
+    let request;
+    (request, request_custody) = build_control_request(&owner, cwd, body, &work)
+        .map_err(ControlRequestError::NativeWork)?;
+    // The borrowed descriptor, decoded approval, and source reply stay on their
+    // original ledger through construction of the exact signed request.
+    drop(prepared_custody);
+    drop(result);
+    drop(reply_custody);
+    let envelope = crate::ControlEnvelope::new(request);
+    let response = crate::service_process::send_control_envelope_with_native_work(data, &envelope, &work).await;
+    drop(envelope);
+    drop(request_custody);
+    response
+}
+#[cfg(test)]
+#[path = "pi_operator_tests.rs"]
+mod tests;
