@@ -1238,7 +1238,7 @@ fn native_backend(
     let mut operation_custody = operation_custody;
     let operation = operation;
     custody.absorb(&mut operation_custody).expect("same original allocation context");
-    NativeTreeMaterializationBackend::new_owned_with_work(root, operation, custody, work.clone())
+    NativeTreeMaterializationBackend::new(root, operation, Some(custody), work.clone())
         .expect("real original-resource backend")
 }
 

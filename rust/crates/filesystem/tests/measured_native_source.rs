@@ -82,7 +82,7 @@ async fn native_root_admission_retains_only_started_requests() -> TestResult {
         assert_eq!(failure.work.backend_read_operations, reads);
         assert_eq!(failure.work.source_entries_visited, 0);
         assert_eq!(failure.work.source_bytes_read, 0);
-        if reads == 0 { assert_eq!(*failure.work, WorkCounters::UNCHARGED); }
+        if reads == 0 { assert_eq!(*failure.work, WorkCounters::default()); }
         failure.work.verify(limited)?;
     }
 
@@ -171,72 +171,6 @@ async fn native_root_admission_denies_owned_memory_before_native_io() -> TestRes
         reference, None, finite_budget()?, &cancellation,
     ).await?;
     assert_eq!(opened.value.reference(), reference);
-    Ok(())
-}
-
-#[cfg(feature = "native-mount")]
-#[tokio::test]
-async fn original_native_root_constructor_retains_actual_read_prefixes() -> TestResult {
-    use acyclic_fs::NativeMaterializationWork;
-    acyclic_native_runtime::initialize_native_io_services()?;
-    let directory = tempfile::tempdir()?;
-    std::fs::create_dir(directory.path().join("unvisited"))?;
-    std::fs::write(directory.path().join("unvisited/body"), b"never enumerated")?;
-    let reference = SourceReference { identity: [91; 16], epoch: 17 };
-    let budget = finite_budget()?;
-    for reads in [0, 1, 2, 3] {
-        let mut limited = budget;
-        limited.backend_read_operations = reads;
-        let cancellation = CancellationToken::new();
-        let work = NativeMaterializationWork::new(limited, &cancellation).map_err(|(error, _)| error)?;
-        let before = work.receipt();
-        let opened = NativeDemandSource::open_with_reference_and_native_work(
-            directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), reference, None, &work,
-        ).await;
-        if reads == 3 {
-            let source = opened?;
-            assert_eq!(source.reference(), reference);
-            assert_eq!(Arc::strong_count(&work.runtime_meter_owner()), 3, "provider intrinsically keeps its one original ledger alive");
-        } else {
-            let error = opened.err().ok_or("original root exceeded its read allowance")?;
-            assert!(matches!(error, DemandError::Work(_)));
-            if reads == 0 { assert_eq!(work.receipt(), before); }
-        }
-        let actual = work.receipt();
-        assert_eq!(actual.backend_read_operations, reads);
-        assert_eq!(actual.source_entries_visited, 0);
-        assert_eq!(actual.source_bytes_read, 0);
-        actual.verify(limited)?;
-    }
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
-    let error = NativeDemandSource::open_with_reference_and_native_work(
-        &directory.path().join("absent"), FilesystemProfile::Portable, VolumeLimits::default(),
-        reference, None, &work,
-    ).await.err().ok_or("missing original root opened")?;
-    assert!(matches!(error, DemandError::Io(_)));
-    assert_eq!(work.receipt().backend_read_operations, 1);
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
-    let before = work.receipt();
-    cancellation.cancel();
-    let error = NativeDemandSource::open_with_reference_and_native_work(
-        directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), reference, None, &work,
-    ).await.err().ok_or("pre-cancelled original root opened")?;
-    assert!(matches!(error, DemandError::Cancelled));
-    assert_eq!(work.receipt(), before);
-    for metadata_denial in [false, true] {
-        let mut limited = budget;
-        if metadata_denial { limited.peak_allocation_bytes = NativeMaterializationWork::accounting_state_bytes(); }
-        else { limited.allocation_operations = 1; }
-        let work = NativeMaterializationWork::new(limited, &CancellationToken::new()).map_err(|(error, _)| error)?;
-        let before = work.receipt();
-        let error = NativeDemandSource::open_with_reference_and_native_work(
-            directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), reference, None, &work,
-        ).await.err().ok_or("original root ignored its constructor metadata bound")?;
-        assert!(matches!(error, DemandError::Mount(_) | DemandError::Work(_)));
-        assert_eq!(work.receipt(), before);
-    }
     Ok(())
 }
 

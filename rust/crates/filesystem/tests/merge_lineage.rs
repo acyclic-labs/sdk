@@ -18,7 +18,6 @@ use acyclic_fs::{
     WorkspaceLineageStore, resolve_merge_plan,
 };
 use acyclic_stream::MemoryStream;
-use acyclic_stream::OwnedBytes;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

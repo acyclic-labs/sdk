@@ -3423,7 +3423,7 @@ impl LazyDirectoryCursor {
             accounting.record_completed(tag).map_err(lazy_cursor_filesystem_error)?;
             match &self.phase {
                 LazyDirectoryPhase::Source(Some(cursor)) => cursor
-                    .encode_cursor_into_with_accounting(&mut encoder, accounting, cancellation)
+                    .encode_cursor_into(&mut encoder, accounting, cancellation)
                     .map_err(LazyWorkspaceError::from)?,
                 LazyDirectoryPhase::Authored(Some(after)) => after.name
                     .encode_cursor_into_with_accounting(&mut encoder, accounting, cancellation)
@@ -3533,7 +3533,7 @@ impl LazyDirectoryCursor {
                 .map_err(lazy_cursor_wire_error)? {
                 0 => LazyDirectoryPhase::Source(None),
                 1 => {
-                    let (cursor, mut cursor_allocation) = SourceCursor::decode_cursor_with_accounting(
+                    let (cursor, mut cursor_allocation) = SourceCursor::decode_cursor(
                         &mut decoder, source, &directory, profile, limits, accounting, cancellation,
                     ).map_err(LazyWorkspaceError::from)?;
                     let next_owned = match owned_bytes.checked_add(cursor.retained_bytes()) {
