@@ -689,6 +689,16 @@ pub enum Error {
         /// Existing custody for any SDK-owned diagnostic payload.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
+    /// Failure before the original native accounting state could be allocated.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("native accounting construction failed: {cause}")]
+    NativeConstruction {
+        /// The actual rejection, without constructing an owned diagnostic.
+        #[source]
+        cause: acyclic_fs::NativeTreeMaterializationError,
+        /// The actual constructor work prefix, held inline without a receipt box.
+        work: acyclic_fs::WorkCounters,
+    },
     /// A fixed native boundary rejection that needs no diagnostic allocation.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{reason}")]
@@ -799,7 +809,8 @@ impl Error {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeBoundary { code, .. } | Self::NativeDiagnostic { code, .. } => *code,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::NativeDecode { .. }
+            Self::NativeConstruction { .. }
+            | Self::NativeDecode { .. }
             | Self::NativeStream { .. }
             | Self::NativeSupervisor { .. }
             | Self::NativeSource { .. } => ErrorCode::Storage,
@@ -812,11 +823,13 @@ impl Error {
                     Native::InvalidLayout
                     | Native::InvalidPreimage
                     | Native::InvalidPath(_)
-                    | Native::OverlappingPaths => ErrorCode::Invalid,
+                    | Native::OverlappingPaths
+                    | Native::PayloadTooLarge { .. } => ErrorCode::Invalid,
                     Native::MissingTarget(_) | Native::MissingPreimage(_) => ErrorCode::NotFound,
                     Native::ExternalMutation(_)
                     | Native::UnexpectedBackup(_)
-                    | Native::AllocationChanged { .. } => ErrorCode::Conflict,
+                    | Native::AllocationChanged { .. }
+                    | Native::PreimageConflict => ErrorCode::Conflict,
                     Native::UnsupportedRename | Native::UnverifiedSourceMetadata(_) => {
                         ErrorCode::Unsupported
                     }
@@ -847,6 +860,7 @@ impl Error {
         match self {
             Self::Allocation(_)
             | Self::NativeWork { .. }
+            | Self::NativeConstruction { .. }
             | Self::NativeBoundary { .. }
             | Self::NativeDiagnostic { .. }
             | Self::NativeDecode { .. }
