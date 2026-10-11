@@ -1463,6 +1463,7 @@ mod tests {
         memory_limit: u64,
         cancelled: std::sync::atomic::AtomicBool,
         allocation_failure: std::sync::Mutex<Option<std::collections::TryReserveError>>,
+        allocation_reservations: std::sync::Mutex<(u64, u64)>,
     }
 
     impl ControlMeter {
@@ -1472,6 +1473,7 @@ mod tests {
                 read_limit: reads, allocation_limit: allocations, memory_limit: memory,
                 cancelled: std::sync::atomic::AtomicBool::new(false),
                 allocation_failure: std::sync::Mutex::new(None),
+                allocation_reservations: std::sync::Mutex::new((0, 0)),
             }
         }
     }
@@ -1542,27 +1544,56 @@ mod tests {
             if maximum == 0 && actual == 0 { Ok(()) }
             else { Err(std::io::ErrorKind::InvalidInput.into()) }
         }
-        fn allocate(&self, bytes: u64) -> std::io::Result<()> {
+        fn reserve_allocation(&self, bytes: u64) -> std::io::Result<()> {
             self.check()?;
-            let counts = &self.counts;
-            if counts.allocations.load(Relaxed) == self.allocation_limit || counts.live.load(Relaxed) + bytes > self.memory_limit {
+            let mut pending = self.allocation_reservations.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let operations = pending.0.checked_add(1).ok_or(std::io::ErrorKind::OutOfMemory)?;
+            let held_bytes = pending.1.checked_add(bytes).ok_or(std::io::ErrorKind::OutOfMemory)?;
+            if self.counts.allocations.load(Relaxed).checked_add(operations)
+                .is_none_or(|total| total > self.allocation_limit)
+                || self.counts.live.load(Relaxed).checked_add(held_bytes)
+                    .is_none_or(|total| total > self.memory_limit)
+            {
                 return Err(std::io::ErrorKind::OutOfMemory.into());
             }
-            counts.allocations.fetch_add(1, Relaxed);
-            let live = counts.live.fetch_add(bytes, Relaxed) + bytes;
-            counts.peak.fetch_max(live, Relaxed);
+            *pending = (operations, held_bytes);
             Ok(())
+        }
+        fn cancel_reserved_allocation(&self, bytes: u64) {
+            let mut pending = self.allocation_reservations.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let operations = pending.0.checked_sub(1).expect("refund only an owned allocation credit");
+            let held_bytes = pending.1.checked_sub(bytes).expect("refund only owned allocation bytes");
+            *pending = (operations, held_bytes);
+        }
+        fn record_reserved_allocation(&self, bytes: u64) -> std::io::Result<()> {
+            let mut pending = self.allocation_reservations.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let operations = pending.0.checked_sub(1).ok_or(std::io::ErrorKind::InvalidInput)?;
+            let held_bytes = pending.1.checked_sub(bytes).ok_or(std::io::ErrorKind::InvalidInput)?;
+            let live = self.counts.live.load(Relaxed).checked_add(bytes).ok_or(std::io::ErrorKind::OutOfMemory)?;
+            let allocations = self.counts.allocations.load(Relaxed).checked_add(1).ok_or(std::io::ErrorKind::OutOfMemory)?;
+            *pending = (operations, held_bytes);
+            self.counts.allocations.store(allocations, Relaxed);
+            self.counts.live.store(live, Relaxed);
+            self.counts.peak.fetch_max(live, Relaxed);
+            Ok(())
+        }
+        fn allocate(&self, bytes: u64) -> std::io::Result<()> {
+            self.reserve_allocation(bytes)?;
+            self.record_reserved_allocation(bytes)
         }
         fn allocate_refcount_header(&self) -> std::io::Result<()> { self.allocate(0) }
         fn adopt(&self, bytes: u64) -> std::io::Result<()> {
             self.check()?;
+            let pending = self.allocation_reservations.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let counts = &self.counts;
-            if counts.live.load(Relaxed) + bytes > self.memory_limit { return Err(std::io::ErrorKind::OutOfMemory.into()); }
+            if counts.live.load(Relaxed).checked_add(pending.1).and_then(|live| live.checked_add(bytes))
+                .is_none_or(|live| live > self.memory_limit) { return Err(std::io::ErrorKind::OutOfMemory.into()); }
             let live = counts.live.fetch_add(bytes, Relaxed) + bytes;
             counts.peak.fetch_max(live, Relaxed);
             Ok(())
         }
         fn record_completed_adoption(&self, bytes: u64) -> (u64, std::io::Result<()>) {
+            let pending = self.allocation_reservations.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let previous = match self.counts.live.fetch_update(Relaxed, Relaxed, |live| live.checked_add(bytes)) {
                 Ok(previous) => previous,
                 Err(_) => return (0, Err(std::io::ErrorKind::OutOfMemory.into())),
@@ -1572,12 +1603,15 @@ mod tests {
             // Only already-observed capacity is retained. There is no
             // allocation operation or fabricated successful native growth.
             let result = self.check().and_then(|()| {
-                if live > self.memory_limit { Err(std::io::ErrorKind::OutOfMemory.into()) }
+                if live.checked_add(pending.1).is_none_or(|total| total > self.memory_limit) { Err(std::io::ErrorKind::OutOfMemory.into()) }
                 else { Ok(()) }
             });
             (bytes, result)
         }
-        fn release(&self, bytes: u64) { self.counts.live.fetch_sub(bytes, Relaxed); }
+        fn release(&self, bytes: u64) {
+            let _pending = self.allocation_reservations.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.counts.live.fetch_sub(bytes, Relaxed);
+        }
         fn admit_examination(&self, _: u64, _: u64) -> std::io::Result<()> { self.check() }
         fn record_examination(&self, items: u64, copied: u64) -> std::io::Result<()> {
             self.counts.items.fetch_add(items, Relaxed);
@@ -1757,6 +1791,9 @@ mod tests {
                 self.bytes(kind).0.fetch_add(actual, Relaxed);
                 Ok(())
             }
+            fn reserve_allocation(&self, bytes: u64) -> io::Result<()> { self.control.reserve_allocation(bytes) }
+            fn cancel_reserved_allocation(&self, bytes: u64) { self.control.cancel_reserved_allocation(bytes); }
+            fn record_reserved_allocation(&self, bytes: u64) -> io::Result<()> { self.control.record_reserved_allocation(bytes) }
             fn allocate(&self, bytes: u64) -> io::Result<()> { self.control.allocate(bytes) }
             fn allocate_refcount_header(&self) -> io::Result<()> { self.control.allocate_refcount_header() }
             fn adopt(&self, bytes: u64) -> io::Result<()> { self.control.adopt(bytes) }
