@@ -3033,6 +3033,8 @@ mod platform {
     use std::mem::{size_of, zeroed};
     use std::os::windows::process::CommandExt as _;
     use std::process::Command;
+    #[cfg(test)]
+    use std::process::Child;
     use windows_sys::Win32::Foundation::{
         CloseHandle, ERROR_BROKEN_PIPE, ERROR_NO_MORE_FILES, HANDLE, INVALID_HANDLE_VALUE,
     };
