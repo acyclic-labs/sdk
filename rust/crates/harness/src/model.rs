@@ -1034,7 +1034,9 @@ impl PreparedModelRequest {
             _ => crate::contract::canonical_json_bytes(&request)?,
         };
         #[cfg(feature = "filesystem")]
-        bytes_hold = io.map(|io| io.guard_owned(bytes.len() as u64)).transpose()?;
+        {
+            bytes_hold = io.map(|io| io.guard_owned(bytes.len() as u64)).transpose()?;
+        }
         let request_digest = model_hash(&bytes, io)?;
         let binding_digest = model_digest(&(&request.model, &request.tools), io)?;
         #[cfg(feature = "filesystem")]

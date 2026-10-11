@@ -333,7 +333,9 @@ fn compile_json_schema_engine<'a>(
         _ => serde_json::to_vec(schema).map_err(|error| Error::Invalid(error.to_string()))?,
     };
     #[cfg(feature = "filesystem")]
-    _encoded = io.map(|io| io.guard_owned(encoded.len() as u64)).transpose()?;
+    {
+        _encoded = io.map(|io| io.guard_owned(encoded.len() as u64)).transpose()?;
+    }
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let work = acyclic_fs::WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() };
