@@ -17,7 +17,7 @@ pub(crate) fn copy_metadata_string(
 }
 
 /// Stable identity of a replaceable resource provider.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, schemars::JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ProviderRef {
     /// Globally unique namespace, such as `acyclic` or a reverse DNS name.
