@@ -602,6 +602,11 @@ Readonly native contexts and wake queries attach their genuine funded original
 owner mailbox during READ issuance, before metadata origin is stamped. The
 mailbox retains the runtime's original content-volume identity for reader-only
 parcel lookup; that identity is not a grant or a selected-output substitute.
+The private SDK mailbox callbacks preflight the original owner and metadata
+ledger before funding their actual future frame. Inbox and received-parcel
+callbacks use the owner's live READ gate, not a fresh execution/WRITE check.
+Received bytes keep their intrinsic `OwnedBytes` custody; model receipt lookup
+also returns the original unmintable READ witness without cloning a scope.
 
 `with_model_with_native_work` borrows the original selected configuration,
 funds its actual metadata copies before construction and retains their original

@@ -315,6 +315,20 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     fn original_received_copy_read_volume(&self) -> Option<&VolumeRef> {
         Some(&self.original_received_copy_read_volume)
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn verify_read_access_with_native_work<'a>(
+        &'a self, scope: &'a RuntimeScope, work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        native_mailbox::verify_read_access(self, scope, work)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_received_for_model_with_native_work<'a>(
+        &'a self, scope: &'a RuntimeScope, volume: &'a VolumeRef,
+        model: OperationId, receive: OperationId,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (acyclic_stream::OwnedBytes, crate::runtime::ReceivedCopyReadWitness<'a>)>> {
+        native_mailbox::read_received_for_model(self, scope, volume, model, receive, work)
+    }
     fn task_binding(&self) -> (TaskId, &LeaseFence) {
         self.owner.borrowed().task_binding()
     }
@@ -348,7 +362,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     fn read_received_with_native_work<'a>(
         &'a self, receive_operation: OperationId, item: &'a crate::scheduler::InboxItem,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
         native_mailbox::read_received(self, receive_operation, item, work)
     }
     fn send<'a>(
