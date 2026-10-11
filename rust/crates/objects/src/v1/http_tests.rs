@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 struct Fixture {
     objects: MemoryObjects,
     calls: Arc<Mutex<std::collections::BTreeSet<String>>>,
+    get_calls: Arc<std::sync::atomic::AtomicU64>,
 }
 fn invalid() -> Error {
     wire::ErrorCode::InvalidArgument.into()
@@ -94,7 +95,9 @@ async fn operation(
                 }
             }
             framing.finish()?;
-            let result = fixture.objects.put(header, body.freeze()).await?;
+            let bad_receipt = header.object_key == "native-bad-receipt";
+            let mut result = fixture.objects.put(header, body.freeze().into()).await?;
+            if bad_receipt { result.size += 1; }
             Ok(("application/json", json::encode(output, &result)?))
         }
         "multipart/upload-part" => {
@@ -120,15 +123,17 @@ async fn operation(
                 }
             }
             framing.finish()?;
-            let result = fixture.objects.upload_part(header, body.freeze()).await?;
+            let result = fixture.objects.upload_part(header, body.freeze().into()).await?;
             Ok(("application/json", json::encode(output, &result)?))
         }
         "objects/get" => {
+            fixture.get_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let query: wire::GetObjectRequest = json::decode(input, bytes, 128 * 1024)?;
             let mode = query.object_key.clone();
-            let mut selected = fixture.objects.get(query, 8 * 1024 * 1024).await?;
+            let selected = fixture.objects.get(query, 8 * 1024 * 1024).await?;
+            let mut header = selected.header().clone();
             if mode == "huge-header"
-                && let Some(object) = &mut selected.header.object
+                && let Some(object) = &mut header.object
             {
                 object.size = u64::MAX;
             }
@@ -136,7 +141,7 @@ async fn operation(
                 output,
                 &wire::GetObjectResponse {
                     frame: Some(wire::get_object_response::Frame::Header(
-                        selected.header.clone(),
+                        header.clone(),
                     )),
                 },
             )?;
@@ -144,7 +149,7 @@ async fn operation(
                 result.extend(framed(
                     output,
                     &wire::GetObjectResponse {
-                        frame: Some(wire::get_object_response::Frame::Header(selected.header)),
+                        frame: Some(wire::get_object_response::Frame::Header(header)),
                     },
                 )?);
             }
@@ -159,17 +164,15 @@ async fn operation(
                     },
                 )?);
             } else {
-                if mode == "truncated" {
-                    selected
-                        .body
-                        .truncate(selected.body.len().saturating_sub(1));
-                }
+                let selected_body = if mode == "truncated" {
+                    selected.body().slice(..selected.body().len().saturating_sub(1))
+                } else { selected.body().clone() };
                 let size = if mode == "oversized-frame" {
                     65537
                 } else {
                     65536
                 };
-                for (index, bytes) in selected.body.chunks(size).enumerate() {
+                for (index, bytes) in selected_body.chunks(size).enumerate() {
                     let body = if mode == "corrupt-codec" {
                         wire::Body {
                             codec: wire::Codec::Zstd as i32,
@@ -276,6 +279,7 @@ async fn start() -> Result<Server, Box<dyn std::error::Error + Send + Sync>> {
     let fixture = Fixture {
         objects: MemoryObjects::new(MemoryOptions::default())?,
         calls: Arc::default(),
+        get_calls: Arc::default(),
     };
     let app = Router::new()
         .route("/v1/objects/{*route}", post(handler))
@@ -327,6 +331,7 @@ async fn http_exercises_every_rpc_streaming_authentication_bounds_and_semantic_e
         Box::pin(client.get_stream(query, maximum))
     })
     .await?;
+    super::tests::exercise_native_transport(&client, || server.fixture.get_calls.load(std::sync::atomic::Ordering::SeqCst)).await?;
     let calls = server
         .fixture
         .calls
@@ -370,15 +375,11 @@ async fn ndjson_rejects_incomplete_oversized_and_wrong_media_responses()
         } else {
             Bytes::from_static(b"bytes")
         };
-        client
-            .put(
-                wire::PutObjectHeader {
-                    bucket: bucket.clone(),
-                    object_key: key.into(),
-                    ..Default::default()
-                },
-                bytes,
-            )
+        client.put(wire::PutObjectHeader {
+            bucket: bucket.clone(),
+            object_key: key.into(),
+            ..Default::default()
+        }, bytes.into())
             .await?;
         let error = client
             .get(
@@ -471,15 +472,11 @@ async fn http_download_trace_requires_validated_eof_and_records_cancellation()
         "terminal-error",
         "corrupt-codec",
     ] {
-        client
-            .put(
-                wire::PutObjectHeader {
-                    bucket: bucket.clone(),
-                    object_key: key.into(),
-                    ..Default::default()
-                },
-                bytes.clone(),
-            )
+        client.put(wire::PutObjectHeader {
+            bucket: bucket.clone(),
+            object_key: key.into(),
+            ..Default::default()
+        }, bytes.clone().into())
             .await?;
     }
     let capture = Capture::default();
@@ -831,21 +828,17 @@ fn http_chrome_export_keeps_customer_data_out_of_serialized_trace()
                             let bucket = Some(wire::BucketRef {
                                 name: BUCKET.into(),
                             });
-                            client
-                                .put(
-                                    wire::PutObjectHeader {
-                                        bucket: bucket.clone(),
-                                        object_key: KEY.into(),
-                                        metadata: Some(wire::ObjectMetadata {
-                                            user: [("source-path".into(), PATH.into())]
-                                                .into_iter()
-                                                .collect(),
-                                            ..Default::default()
-                                        }),
-                                        ..Default::default()
-                                    },
-                                    Bytes::from_static(BODY.as_bytes()),
-                                )
+                            client.put(wire::PutObjectHeader {
+                                bucket: bucket.clone(),
+                                object_key: KEY.into(),
+                                metadata: Some(wire::ObjectMetadata {
+                                    user: [("source-path".into(), PATH.into())]
+                                        .into_iter()
+                                        .collect(),
+                                    ..Default::default()
+                                }),
+                                ..Default::default()
+                            }, Bytes::from_static(BODY.as_bytes()).into())
                                 .await?;
                             let download = client
                                 .get_stream(
@@ -858,7 +851,7 @@ fn http_chrome_export_keeps_customer_data_out_of_serialized_trace()
                                 )
                                 .await?;
                             assert_eq!(
-                                download.collect(512 * 1024).await?.body.as_ref(),
+                                download.collect(512 * 1024).await?.body().as_ref(),
                                 BODY.as_bytes()
                             );
                             // An exported failed RPC ensures error outcomes are covered too.

@@ -1,23 +1,28 @@
 //! Shared bounded upload framing and source-failure cancellation.
 use super::{Error, UploadBody, request, wire};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use futures::{
     StreamExt,
-    channel::oneshot,
+    task::AtomicWaker,
     future::{Either, select},
     stream,
 };
 use std::{
     future::Future,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
+
 pub(super) struct State {
     length: AtomicU64,
     complete: AtomicBool,
+    closed: AtomicBool,
+    failure: Mutex<Option<Error>>,
+    waker: AtomicWaker,
+    _allocation: Option<acyclic_native_runtime::ReadAllocation>,
 }
 impl State {
     pub(super) fn finish(&self) -> Result<u64, Error> {
@@ -26,17 +31,85 @@ impl State {
         }
         Ok(self.length.load(Ordering::Acquire))
     }
+    fn fail(&self, error: Error) {
+        let mut failure = self.failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if failure.is_none() { *failure = Some(error); }
+        drop(failure);
+        self.waker.wake();
+    }
 }
-pub(super) fn chunks(body: UploadBody) -> (UploadBody, Arc<State>, oneshot::Receiver<Error>) {
+
+struct SourceState(Arc<State>);
+impl std::ops::Deref for SourceState {
+    type Target = State;
+    fn deref(&self) -> &State { &self.0 }
+}
+impl Drop for SourceState {
+    fn drop(&mut self) {
+        self.closed.store(true, Ordering::Release);
+        self.waker.wake();
+    }
+}
+pub(super) struct Failure(Arc<State>);
+impl Future for Failure {
+    type Output = Result<Error, ()>;
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        self.0.waker.register(cx.waker());
+        let mut failure = self.0.failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(error) = failure.take() { return std::task::Poll::Ready(Ok(error)); }
+        if self.0.closed.load(Ordering::Acquire) { return std::task::Poll::Ready(Err(())); }
+        std::task::Poll::Pending
+    }
+}
+pub(super) fn chunks(body: UploadBody) -> (UploadBody, Arc<State>, Failure) {
+    match chunks_controlled(body, None) {
+        Ok(chunks) => chunks,
+        Err(_) => unreachable!("ordinary upload framing requires no native admission"),
+    }
+}
+
+pub(super) fn chunks_controlled(
+    body: UploadBody,
+    controls: Option<super::response::NativeGetControls>,
+) -> Result<(UploadBody, Arc<State>, Failure), Error> {
+    let allocation = match &controls {
+        Some(controls) => {
+            controls.check()?;
+            let allocation = acyclic_native_runtime::ReadAllocation::new(
+                &controls.meter, std::mem::size_of::<State>(),
+            ).map_err(|error| controls.fail(error))?;
+            Some(allocation)
+        }
+        None => None,
+    };
     let state = Arc::new(State {
         length: AtomicU64::new(0),
         complete: AtomicBool::new(false),
+        closed: AtomicBool::new(false),
+        failure: Mutex::new(None),
+        waker: AtomicWaker::new(),
+        _allocation: allocation,
     });
-    let (error, failure) = oneshot::channel();
+    let failure = Failure(state.clone());
     let chunks = stream::try_unfold(
-        (body, Bytes::new(), 0_u64, state.clone(), Some(error)),
-        |(mut body, mut pending, mut length, state, mut error)| async move {
+        (body, OwnedBytes::new(), 0_u64, SourceState(state.clone()), controls.clone()),
+        |(mut body, mut pending, mut length, state, controls)| async move {
+            if let Some(controls) = &controls {
+                if let Err(failure) = controls.check() {
+                    state.fail(failure);
+                    return Err(failure);
+                }
+            }
             while pending.is_empty() {
+                if let Some(controls) = &controls {
+                    if let Err(failure) = controls.check() {
+                        state.fail(failure);
+                        return Err(failure);
+                    }
+                }
                 match body.next().await {
                     Some(Ok(bytes)) => {
                         let size = length
@@ -52,17 +125,13 @@ pub(super) fn chunks(body: UploadBody) -> (UploadBody, Arc<State>, oneshot::Rece
                                 pending = bytes;
                             }
                             Err(failure) => {
-                                if let Some(error) = error.take() {
-                                    let _ = error.send(failure);
-                                }
+                                state.fail(failure);
                                 return Err(failure);
                             }
                         }
                     }
                     Some(Err(failure)) => {
-                        if let Some(error) = error.take() {
-                            let _ = error.send(failure);
-                        }
+                        state.fail(failure);
                         return Err(failure);
                     }
                     None => {
@@ -72,15 +141,49 @@ pub(super) fn chunks(body: UploadBody) -> (UploadBody, Arc<State>, oneshot::Rece
                 }
             }
             let chunk = pending.split_to(pending.len().min(65_536));
-            Ok(Some((chunk, (body, pending, length, state, error))))
+            Ok(Some((chunk, (body, pending, length, state, controls))))
         },
-    )
-    .boxed();
-    (chunks, state, failure)
+    );
+    let chunks = match &controls {
+        Some(controls) => box_native(chunks, &controls.meter).map_err(|error| controls.fail(error))?,
+        None => chunks.boxed().into(),
+    };
+    Ok((chunks, state, failure))
+}
+
+fn box_native<S>(
+    stream: S,
+    meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+) -> Result<UploadBody, super::NativeObjectsError>
+where
+    S: futures::Stream<Item = Result<OwnedBytes, Error>> + Send + 'static,
+{
+    let allocation = acyclic_native_runtime::ReadAllocation::new(
+        meter, std::mem::size_of::<S>(),
+    )?;
+    Ok(UploadBody { stream: stream.boxed(), _allocation: Some(allocation) })
+}
+
+pub(super) fn chunks_native(
+    body: OwnedBytes,
+    meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    errors: Arc<super::NativeTransportErrors>,
+) -> Result<UploadBody, super::NativeObjectsError> {
+    meter.check()?;
+    let source_meter = meter.clone();
+    let source = stream::once(async move {
+        if let Err(error) = source_meter.check() {
+            errors.record(error.into());
+            return Err(wire::ErrorCode::Unavailable.into());
+        }
+        Ok(body)
+    });
+    // The shared controlled framing engine performs custody-preserving slicing.
+    box_native(source, &meter)
 }
 pub(super) async fn run<T: Send>(
     request: impl Future<Output = Result<T, Error>> + Send,
-    failure: oneshot::Receiver<Error>,
+    failure: Failure,
 ) -> Result<T, Error> {
     futures::pin_mut!(request, failure);
     match select(failure, request).await {

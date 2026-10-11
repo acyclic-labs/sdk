@@ -26,6 +26,36 @@ impl<T> Outcome for Result<T, crate::Error> {
         self.as_ref().err().map(|error| error.code.as_str_name())
     }
 }
+#[cfg(not(target_arch = "wasm32"))]
+impl<T> Outcome for Result<T, crate::v1::NativeObjectsError> {
+    fn failure(&self) -> Option<&'static str> {
+        use crate::v1::{NativeObjectsCause, NativeObjectsError};
+        fn admission(error: &std::io::Error) -> &'static str {
+            match error.kind() {
+                std::io::ErrorKind::Interrupted => "cancelled",
+                std::io::ErrorKind::OutOfMemory => "allocation",
+                std::io::ErrorKind::Unsupported => "unsupported",
+                std::io::ErrorKind::InvalidData => "corrupt",
+                _ => "io",
+            }
+        }
+        fn native_failure(error: &NativeObjectsError) -> &'static str {
+            match error {
+                NativeObjectsError::Service(error) => error.code.as_str_name(),
+                NativeObjectsError::Admission(error) => admission(error),
+                NativeObjectsError::Unsupported => "unsupported",
+                NativeObjectsError::SharedFailure(failure) => native_failure(failure.error()),
+                NativeObjectsError::ReadFailure(failure) => match &failure.cause {
+                    NativeObjectsCause::Service(error) => error.code.as_str_name(),
+                    NativeObjectsCause::Admission(error) => admission(error),
+                    NativeObjectsCause::Unsupported => "unsupported",
+                    NativeObjectsCause::SharedFailure(failure) => native_failure(failure.error()),
+                },
+            }
+        }
+        self.as_ref().err().map(native_failure)
+    }
+}
 impl<T> Outcome for Result<T, crate::body::BodyError> {
     fn failure(&self) -> Option<&'static str> {
         self.as_ref().err().map(|_| "unavailable")
@@ -108,6 +138,7 @@ struct BodyState {
     body: futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>>,
     lifetime: Lifetime,
     context: Option<Span>,
+    _allocation: Option<acyclic_native_runtime::ReadAllocation>,
 }
 impl From<futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>>> for BodyStream {
     fn from(body: futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>>) -> Self {
@@ -118,12 +149,33 @@ impl From<futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>
                     body,
                     lifetime: Lifetime(None),
                     context: Some(Span::none()),
+                    _allocation: None,
                 },
                 tracing::dispatcher::get_default(Clone::clone),
             ),
         };
         #[cfg(target_arch = "wasm32")]
         Self { inner: body }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl BodyStream {
+    pub(crate) fn from_native_boxed<S>(
+        body: std::pin::Pin<Box<S>>, allocation: acyclic_native_runtime::ReadAllocation,
+    ) -> Self
+    where S: futures::Stream<Item = Result<bytes::Bytes, crate::Error>> + Send + 'static {
+        Self {
+            inner: Origin::new(
+                BodyState {
+                    body,
+                    lifetime: Lifetime(None),
+                    context: Some(Span::none()),
+                    _allocation: Some(allocation),
+                },
+                tracing::dispatcher::get_default(Clone::clone),
+            ),
+        }
     }
 }
 impl futures::Stream for BodyStream {

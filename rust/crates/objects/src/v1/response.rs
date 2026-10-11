@@ -215,44 +215,531 @@ pub fn listing(
 /// plain, 8 MiB compressed) and the remaining bytes
 /// before any allocation or decompression, and the decoded length must match it.
 pub fn body(frame: wire::Body, remaining: u64) -> Result<Vec<u8>, Error> {
-    if frame.decoded_length > remaining {
-        return Err(invalid());
+    let (length, compressed) = body_spec(&frame, remaining)?;
+    if compressed {
+        zstd(&frame.data, length, |maximum| zstd_output(maximum).ok(), |_, _| true).ok_or_else(invalid)
+    } else {
+        Ok(frame.data)
     }
+}
+
+fn body_spec(frame: &wire::Body, remaining: u64) -> Result<(usize, bool), Error> {
+    if frame.decoded_length > remaining { return Err(invalid()); }
     let length = usize::try_from(frame.decoded_length).map_err(|_| invalid())?;
     match wire::Codec::try_from(frame.codec) {
         Ok(wire::Codec::None)
-            if frame.decoded_length <= wire::ObjectsLimit::MaxBodyFrameBytes as u64
-                && frame.data.len() == length =>
-        {
-            Ok(frame.data)
-        }
+            if frame.decoded_length <= wire::ObjectsLimit::MaxBodyFrameBytes as u64 && frame.data.len() == length =>
+        { Ok((length, false)) }
         Ok(wire::Codec::Zstd)
             if frame.decoded_length <= wire::ObjectsLimit::MaxBodyDecodedBytes as u64 =>
-        {
-            zstd(&frame.data, length).ok_or_else(invalid)
-        }
+        { Ok((length, true)) }
         _ => Err(invalid()),
     }
 }
 /// Decompresses one or more complete Zstandard frames to exactly `length` bytes.
 ///
 /// Empty data is not a Zstandard stream; an empty frame is sent as `CODEC_NONE`.
-fn zstd(mut input: &[u8], length: usize) -> Option<Vec<u8>> {
+fn zstd(
+    mut input: &[u8], length: usize,
+    allocate: impl FnOnce(usize) -> Option<Vec<u8>>,
+    record: impl FnOnce(u64, u64) -> bool,
+) -> Option<Vec<u8>> {
     use std::io::Read;
-    if input.is_empty() {
-        return None;
+    let encoded = input.len() as u64;
+    let mut completed = 0;
+    let mut output = allocate(length.checked_add(1)?)?;
+    let valid = (|| {
+        if input.is_empty() { return None; }
+        while !input.is_empty() {
+            let mut decoder = ruzstd::decoding::StreamingDecoder::new(&mut input).ok()?;
+            loop {
+                let count = decoder.read(&mut output[completed..]).ok()?;
+                completed += count;
+                if completed > length { return None; }
+                if count == 0 { break; }
+            }
+        }
+        (completed == length).then_some(())
+    })();
+    if !record(encoded - input.len() as u64, completed as u64) { return None; }
+    valid?;
+    output.truncate(completed);
+    Some(output)
+}
+
+fn zstd_output(maximum: usize) -> Result<Vec<u8>, std::collections::TryReserveError> {
+    let mut output = Vec::new();
+    output.try_reserve_exact(maximum)?;
+    output.resize(maximum, 0);
+    Ok(output)
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
+pub(crate) struct NativeGetControls {
+    pub meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    pub errors: std::sync::Arc<super::NativeTransportErrors>,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
+impl Clone for NativeGetControls {
+    fn clone(&self) -> Self {
+        Self { meter: self.meter.clone(), errors: self.errors.clone() }
     }
-    let mut output = Vec::with_capacity(length);
-    while !input.is_empty() {
-        let allowed = (length - output.len()) as u64 + 1;
-        let decoder = ruzstd::decoding::StreamingDecoder::new(&mut input).ok()?;
-        decoder.take(allowed).read_to_end(&mut output).ok()?;
-        if output.len() > length {
-            return None;
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
+impl NativeGetControls {
+    pub fn fail(&self, error: impl Into<super::NativeObjectsError>) -> Error {
+        let error = error.into();
+        let service = match &error {
+            super::NativeObjectsError::Service(error) => *error,
+            _ => invalid(),
+        };
+        self.errors.record(error);
+        service
+    }
+
+    pub fn check(&self) -> Result<(), Error> {
+        self.meter.check().map_err(|error| self.fail(error))
+    }
+
+    pub fn dispatch<T>(
+        &self,
+        kind: acyclic_native_runtime::NativeOperationKind,
+        operation: impl FnOnce() -> T,
+    ) -> Result<(T, bool), Error> {
+        let mut plan = acyclic_native_runtime::NativeOperationReservation::new(
+            self.meter.as_ref(), kind, 1,
+        ).map_err(|error| self.fail(error))?;
+        let (operation, recorded) = plan.attempt(operation);
+        let failed = recorded.is_err();
+        if let Err(error) = recorded {
+            self.errors.record(super::NativeObjectsError::Admission(error));
+        }
+        Ok((operation, failed))
+    }
+
+    pub fn request<M: prost::Message>(&self, query: &M) -> Result<acyclic_native_runtime::ReadAllocation, Error> {
+        let maximum = query.encoded_len().checked_mul(4)
+            .ok_or_else(invalid)?;
+        acyclic_native_runtime::ReadAllocation::adopt(&self.meter, maximum)
+            .map_err(|error| self.fail(error))
+    }
+
+    pub fn binary(&self, value: &impl prost::Message) -> Result<(Vec<u8>, acyclic_native_runtime::ReadAllocation), Error> {
+        let maximum = value.encoded_len();
+        self.meter.admit_codec(maximum as u64, 0, 0).map_err(|error| self.fail(error))?;
+        let mut allocation = acyclic_native_runtime::ReadAllocation::new(&self.meter, maximum)
+            .map_err(|error| self.fail(error))?;
+        let mut bytes = Vec::new();
+        if let Err(error) = bytes.try_reserve_exact(maximum) {
+            allocation.reconcile_capacity(bytes.capacity()).map_err(|error| self.fail(error))?;
+            return Err(self.fail(super::NativeObjectsError::from(self.meter.allocation_failed(error)).with_wire(bytes, allocation)));
+        }
+        if let Err(error) = allocation.reconcile_capacity(bytes.capacity()) {
+            return Err(self.fail(super::NativeObjectsError::from(error).with_wire(bytes, allocation)));
+        }
+        value.encode(&mut bytes).map_err(|_| invalid())?;
+        if let Err(error) = self.meter.record_codec(bytes.len() as u64, 0, 0) {
+            return Err(self.fail(super::NativeObjectsError::from(error).with_wire(bytes, allocation)));
+        }
+        Ok((bytes, allocation))
+    }
+
+    pub fn copy(&self, bytes: &[u8]) -> Result<(Vec<u8>, acyclic_native_runtime::ReadAllocation), Error> {
+        self.meter.admit_codec(0, bytes.len() as u64, 0).map_err(|error| self.fail(error))?;
+        let mut allocation = acyclic_native_runtime::ReadAllocation::new(&self.meter, bytes.len())
+            .map_err(|error| self.fail(error))?;
+        let mut data = Vec::new();
+        if let Err(error) = data.try_reserve_exact(bytes.len()) {
+            allocation.reconcile_capacity(data.capacity()).map_err(|error| self.fail(error))?;
+            return Err(self.fail(super::NativeObjectsError::from(self.meter.allocation_failed(error)).with_wire(data, allocation)));
+        }
+        if let Err(error) = allocation.reconcile_capacity(data.capacity()) {
+            return Err(self.fail(super::NativeObjectsError::from(error).with_wire(data, allocation)));
+        }
+        data.extend_from_slice(bytes);
+        if let Err(error) = self.meter.record_codec(0, bytes.len() as u64, 0) {
+            return Err(self.fail(super::NativeObjectsError::from(error).with_wire(data, allocation)));
+        }
+        Ok((data, allocation))
+    }
+
+    pub fn wire_bytes(&self, data: Vec<u8>, mut allocation: acyclic_native_runtime::ReadAllocation) -> Result<bytes::Bytes, Error> {
+        let mut control = match acyclic_native_runtime::ReadAllocation::new(&self.meter, std::mem::size_of::<NativeBodyChunk>()) {
+            Ok(control) => control,
+            Err(error) => return Err(self.fail(super::NativeObjectsError::from(error).with_wire(data, allocation))),
+        };
+        if let Err(error) = allocation.absorb(&mut control) {
+            return Err(self.fail(super::NativeObjectsError::from(error).with_wire(data, allocation)));
+        }
+        Ok(bytes::Bytes::from_owner(NativeBodyChunk { data, _allocation: allocation }))
+    }
+
+    pub fn body(&self, frame: wire::Body, remaining: u64, mut allocation: acyclic_native_runtime::ReadAllocation) -> Result<bytes::Bytes, Error> {
+        use acyclic_native_runtime::ReadAllocation;
+        if let Err(error) = allocation.reconcile_capacity(frame.data.capacity()) {
+            return Err(self.fail(super::NativeObjectsError::from(error).with_wire(frame.data, allocation)));
+        }
+        let (decoded, compressed) = match body_spec(&frame, remaining) {
+            Ok(spec) => spec,
+            Err(error) => return Err(self.fail(super::NativeObjectsError::from(error).with_wire(frame.data, allocation))),
+        };
+        if !compressed { return self.wire_bytes(frame.data, allocation); }
+        let encoded = frame.data.len() as u64;
+        if let Err(error) = self.meter.admit_codec(encoded, decoded as u64 + 1, 0) {
+            return Err(self.fail(super::NativeObjectsError::from(error).with_wire(frame.data, allocation)));
+        }
+        let mut output_claim = match ReadAllocation::new(&self.meter, decoded + 1) {
+            Ok(claim) => claim,
+            Err(error) => return Err(self.fail(super::NativeObjectsError::from(error).with_wire(frame.data, allocation))),
+        };
+        let data = zstd(&frame.data, decoded, |maximum| {
+            match zstd_output(maximum) {
+                Ok(output) => {
+                    if let Err(error) = output_claim.reconcile_capacity(output.capacity()) {
+                        self.fail(error);
+                        None
+                    } else { Some(output) }
+                }
+                Err(error) => {
+                    self.fail(self.meter.allocation_failed(error));
+                    None
+                }
+            }
+        }, |encoded, copied| {
+            self.meter.record_codec(encoded, copied, 0)
+                .map_err(|error| self.fail(error)).is_ok()
+        });
+        let Some(data) = data else {
+            let error = self.errors.take().unwrap_or_else(|| invalid().into());
+            return Err(self.fail(error.with_wire(frame.data, allocation)));
+        };
+        drop(frame.data);
+        allocation.resize_retained(0).map_err(|error| self.fail(error))?;
+        allocation.absorb(&mut output_claim).map_err(|error| self.fail(error))?;
+        self.wire_bytes(data, allocation)
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
+struct NativeBodyChunk {
+    data: Vec<u8>,
+    _allocation: acyclic_native_runtime::ReadAllocation,
+}
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
+impl AsRef<[u8]> for NativeBodyChunk {
+    fn as_ref(&self) -> &[u8] { &self.data }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
+pub(crate) fn header_capacity(header: &wire::GetObjectHeader) -> usize {
+    let Some(object) = &header.object else { return 0; };
+    info_capacity(object)
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
+pub(crate) fn info_capacity(object: &wire::ObjectInfo) -> usize {
+    object.etag.capacity() + object.metadata.as_ref().map_or(0, metadata_capacity)
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
+fn metadata_capacity(metadata: &wire::ObjectMetadata) -> usize {
+    metadata.content_type.capacity()
+        + metadata.content_encoding.capacity()
+        + metadata.cache_control.capacity()
+        + metadata.content_disposition.capacity()
+        + metadata.content_language.capacity()
+        + metadata.user.iter().map(|(key, value)| key.capacity() + value.capacity()).sum::<usize>()
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
+pub(crate) fn binary_controlled(
+    value: &impl prost::Message, controls: Option<&NativeGetControls>,
+) -> Result<(Vec<u8>, Option<acyclic_native_runtime::ReadAllocation>), Error> {
+    if let Some(controls) = controls {
+        let (bytes, allocation) = controls.binary(value)?;
+        Ok((bytes, Some(allocation)))
+    } else {
+        Ok((value.encode_to_vec(), None))
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
+pub(crate) fn validate_put_controlled(
+    original: &[u8],
+    result: wire::ObjectInfo,
+    mut allocation: Option<acyclic_native_runtime::ReadAllocation>,
+    length: Result<u64, Error>,
+    controls: Option<&NativeGetControls>,
+) -> Result<(wire::ObjectInfo, Option<acyclic_native_runtime::ReadAllocation>), Error> {
+    let validation = (|| {
+        if let Some(allocation) = &mut allocation {
+            allocation.reconcile_capacity(info_capacity(&result))
+                .map_err(|error| controls.expect("native receipt custody").fail(error))?;
+        }
+        let _reply_claim = controls.map(|controls| controls.request(&result)).transpose()?;
+        let _query_claim = controls.map(|controls| {
+            acyclic_native_runtime::ReadAllocation::adopt(&controls.meter, original.len().saturating_mul(4))
+                .map_err(|error| controls.fail(error))
+        }).transpose()?;
+        let encoded = binary_controlled(&result, controls)?;
+        validate_binary("objects/put", original, &encoded.0, length?)
+    })();
+    if let Err(error) = validation {
+        if let (Some(controls), Some(allocation)) = (controls, allocation.take()) {
+            let original = controls.errors.take().unwrap_or_else(|| error.into());
+            return Err(controls.fail(original.with_receipt(result, allocation)));
+        }
+        return Err(error);
+    }
+    Ok((result, allocation))
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
+pub(crate) enum RequestInput<M> {
+    Ordinary(M),
+    Native {
+        request: super::ObjectsNativeRequest<M>,
+        controls: Option<NativeGetControls>,
+    },
+    #[cfg(feature = "grpc")]
+    CodecFailure(tonic::Status),
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
+impl<M> RequestInput<M> {
+    pub fn ordinary(value: M) -> Self { Self::Ordinary(value) }
+    pub fn native(
+        request: super::ObjectsNativeRequest<M>,
+        meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<Self, super::NativeObjectsError> {
+        let input = Self::Native { request, controls: None };
+        if let Self::Native { request, .. } = &input {
+            super::native_input_meter(meter, request)?;
+        }
+        Ok(input)
+    }
+    pub fn value(&self) -> &M {
+        match self {
+            Self::Ordinary(value) => value,
+            Self::Native { request, .. } => request.data(),
+            #[cfg(feature = "grpc")]
+            Self::CodecFailure(_) => unreachable!("failed source frames are handled before encoding"),
         }
     }
-    (output.len() == length).then_some(output)
+    pub fn map<N>(self, transform: impl FnOnce(M) -> N) -> RequestInput<N> {
+        match self {
+            Self::Ordinary(value) => RequestInput::Ordinary(transform(value)),
+            Self::Native { request, controls } => RequestInput::Native { request: request.map(transform), controls },
+            #[cfg(feature = "grpc")]
+            Self::CodecFailure(error) => RequestInput::CodecFailure(error),
+        }
+    }
+    #[cfg(feature = "grpc")]
+    pub fn with_controls(mut self, current: Option<NativeGetControls>) -> Result<Self, Error>
+    where M: prost::Message {
+        if let (Self::Native { request, controls }, Some(current)) = (&mut self, current) {
+            let encoded = request.data().encoded_len();
+            current.meter.admit_codec(encoded as u64, 0, 0)
+                .map_err(|error| current.fail(error))?;
+            *controls = Some(current);
+        }
+        Ok(self)
+    }
+    #[cfg(feature = "grpc")]
+    fn controls(&self) -> Option<&NativeGetControls> {
+        match self {
+            Self::Ordinary(_) | Self::CodecFailure(_) => None,
+            Self::Native { controls, .. } => Some(controls.as_ref().expect("native source controls are prepared before IO")),
+        }
+    }
 }
+
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+pub(crate) struct CustodyProstCodec<M, U>(std::marker::PhantomData<(M, U)>);
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+impl<M, U> CustodyProstCodec<M, U> {
+    pub fn new() -> Self { Self(std::marker::PhantomData) }
+}
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+impl<M: prost::Message + 'static, U: prost::Message + Default + 'static> tonic::codec::Codec for CustodyProstCodec<M, U> {
+    type Encode = RequestInput<M>;
+    type Decode = U;
+    type Encoder = CustodyProstEncoder<M>;
+    type Decoder = tonic_prost::ProstDecoder<U>;
+    fn encoder(&mut self) -> Self::Encoder { CustodyProstEncoder(std::marker::PhantomData) }
+    fn decoder(&mut self) -> Self::Decoder {
+        tonic_prost::ProstDecoder::new(tonic::codec::BufferSettings::default())
+    }
+}
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+pub(crate) struct CustodyProstEncoder<M>(std::marker::PhantomData<M>);
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+impl<M: prost::Message> tonic::codec::Encoder for CustodyProstEncoder<M> {
+    type Item = RequestInput<M>;
+    type Error = tonic::Status;
+    fn encode(&mut self, item: Self::Item, buffer: &mut tonic::codec::EncodeBuf<'_>) -> Result<(), Self::Error> {
+        let item = match item {
+            RequestInput::CodecFailure(error) => return Err(error),
+            item => item,
+        };
+        // Same prost encoder and default buffers as tonic-prost. The owning
+        // packet is never unwrapped: its data retires before its real guard.
+        let encoded = item.value().encoded_len() as u64;
+        if let Some(controls) = item.controls()
+            && let Err(error) = controls.meter.admit_codec(encoded, 0, 0) {
+            controls.fail(error);
+            return Err(controls.errors.codec_failure().expect("one prepared native codec failure"));
+        }
+        item.value().encode(buffer).expect("Message only errors if not enough space");
+        if let Some(controls) = item.controls()
+            && let Err(error) = controls.meter.record_codec(encoded, 0, 0) {
+            controls.fail(error);
+            return Err(controls.errors.codec_failure().expect("one prepared native codec failure"));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
+pin_project_lite::pin_project! {
+    struct BodySlot<S> {
+        #[pin]
+        source: Option<S>,
+    }
+}
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
+impl<S: futures::Stream> futures::Stream for BodySlot<S> {
+    type Item = S::Item;
+    fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>)
+        -> std::task::Poll<Option<Self::Item>> {
+        self.project().source.as_pin_mut()
+            .expect("only initialized transport slots are published").poll_next(cx)
+    }
+}
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
+pub(crate) struct PreparedBodyStream<S> {
+    source: std::pin::Pin<Box<BodySlot<S>>>,
+    allocation: acyclic_native_runtime::ReadAllocation,
+}
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
+pub(crate) fn prepare_body_stream<F, A, B, S>(
+    _factory: &F, controls: Option<&NativeGetControls>,
+) -> Result<Option<PreparedBodyStream<S>>, Error>
+where F: FnOnce(A, B) -> S,
+      S: futures::Stream<Item = Result<bytes::Bytes, Error>> + Send + 'static {
+    controls.map(|controls| {
+        let allocation = acyclic_native_runtime::ReadAllocation::new(
+            &controls.meter, std::mem::size_of::<BodySlot<S>>(),
+        ).map_err(|error| controls.fail(error))?;
+        Ok(PreparedBodyStream {
+            source: Box::pin(BodySlot { source: None }), allocation,
+        })
+    }).transpose()
+}
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
+pub(crate) fn finish_body_stream<F, A, B, S>(
+    factory: F, first: A, second: B, prepared: Option<PreparedBodyStream<S>>,
+) -> super::BodyStream
+where F: FnOnce(A, B) -> S,
+      S: futures::Stream<Item = Result<bytes::Bytes, Error>> + Send + 'static {
+    use futures::StreamExt;
+    let source = factory(first, second);
+    if let Some(mut prepared) = prepared {
+        prepared.source.as_mut().project().source.set(Some(source));
+        super::BodyStream::from_native_boxed(prepared.source, prepared.allocation)
+    } else {
+        source.boxed().into()
+    }
+}
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+pin_project_lite::pin_project! {
+    struct NativeHttpStream<S> {
+        #[pin]
+        source: S,
+        failure: Option<Box<dyn std::error::Error + Send + Sync>>,
+        failed: bool,
+        _controls: NativeGetControls,
+    }
+}
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+impl<S> futures::Stream for NativeHttpStream<S>
+where S: futures::Stream<Item = Result<bytes::Bytes, Error>> {
+    type Item = Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>>;
+    fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>)
+        -> std::task::Poll<Option<Self::Item>> {
+        let this = self.project();
+        if *this.failed { return std::task::Poll::Ready(None); }
+        match this.source.poll_next(cx) {
+            std::task::Poll::Ready(Some(Err(error))) => {
+                *this.failed = true;
+                let mut failure = this.failure.take().expect("one prepared HTTP source failure");
+                *failure.downcast_mut::<Error>().expect("prepared semantic source error") = error;
+                std::task::Poll::Ready(Some(Err(failure)))
+            }
+            std::task::Poll::Ready(Some(Ok(bytes))) => std::task::Poll::Ready(Some(Ok(bytes))),
+            std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+}
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+pub(crate) fn http_body<S>(
+    source: S, controls: Option<&NativeGetControls>,
+) -> Result<reqwest::Body, Error>
+where S: futures::Stream<Item = Result<bytes::Bytes, Error>> + Send + 'static {
+    if let Some(controls) = controls {
+        let failure_allocation = acyclic_native_runtime::ReadAllocation::new(
+            &controls.meter, std::mem::size_of::<Error>(),
+        ).map_err(|error| controls.fail(error))?;
+        let failure: Box<dyn std::error::Error + Send + Sync> = Box::new(invalid());
+        controls.errors.retain_wire(failure_allocation).map_err(|error| controls.fail(error))?;
+        let source_allocation = acyclic_native_runtime::ReadAllocation::new(
+            &controls.meter, std::mem::size_of::<NativeHttpStream<S>>(),
+        ).map_err(|error| controls.fail(error))?;
+        controls.errors.retain_wire(source_allocation).map_err(|error| controls.fail(error))?;
+        Ok(reqwest::Body::wrap_stream(NativeHttpStream {
+            source, failure: Some(failure), failed: false, _controls: controls.clone(),
+        }))
+    } else {
+        Ok(reqwest::Body::wrap_stream(source))
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
+pub(crate) fn reject_frame(
+    frame: Option<wire::get_object_response::Frame>,
+    allocation: Option<acyclic_native_runtime::ReadAllocation>,
+    controls: Option<&NativeGetControls>,
+) -> Error {
+    use wire::get_object_response::Frame;
+    let error = match &frame {
+        Some(Frame::Error(detail)) => wire::ErrorCode::try_from(detail.code)
+            .ok().filter(|code| *code != wire::ErrorCode::Unspecified)
+            .map_or_else(invalid, Error::from),
+        _ => invalid(),
+    };
+    if let (Some(controls), Some(mut allocation)) = (controls, allocation) {
+        let capacity = match &frame {
+            Some(Frame::Header(header)) => header_capacity(header),
+            Some(Frame::Body(body)) => body.data.capacity(),
+            Some(Frame::Error(detail)) => detail.request_id.capacity(),
+            None => 0,
+        };
+        let cause = allocation.reconcile_capacity(capacity)
+            .err().map_or_else(|| super::NativeObjectsError::from(error), super::NativeObjectsError::from);
+        let cause = match frame {
+            Some(Frame::Header(header)) => cause.with_header(header, allocation),
+            Some(Frame::Body(body)) => cause.with_wire(body.data, allocation),
+            Some(Frame::Error(detail)) => cause.with_wire(detail.request_id.into_bytes(), allocation),
+            None => cause,
+        };
+        return controls.fail(cause);
+    }
+    error
+}
+
 /// Builds an uncompressed body frame for a provider that does not compress.
 #[must_use]
 pub fn plain_body(data: Vec<u8>) -> wire::Body {

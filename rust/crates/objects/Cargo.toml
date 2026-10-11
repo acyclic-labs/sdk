@@ -20,12 +20,13 @@ required-features = ["local"]
 
 [features]
 default = ["grpc"]
-grpc = ["dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/time"]
+grpc = ["dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "dep:http-body", "dep:http-body-util", "tokio/time"]
 json = ["dep:prost-reflect", "dep:serde_json"]
 http = ["json", "dep:reqwest"]
 local = ["dep:fs2", "dep:libc", "tokio/rt-multi-thread"]
 
 [dependencies]
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
 async-trait.workspace = true
 blake3 = "1.8.2"
 bytes.workspace = true
@@ -54,6 +55,8 @@ tonic = { version = "0.14.6", features = ["tls-ring"], optional = true }
 tonic-prost = { workspace = true, optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { workspace = true, optional = true }
+http-body = { version = "1", optional = true }
+http-body-util = { version = "0.1", optional = true }
 tracing.workspace = true
 rustls = { workspace = true, optional = true }
 rustls-platform-verifier = { workspace = true, optional = true }
@@ -63,6 +66,7 @@ tracing-subscriber.workspace = true
 tracing-chrome.workspace = true
 divan.workspace = true
 axum.workspace = true
+parking_lot = "0.12"
 rcgen = "0.14.10"
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["macros", "rt"] }
