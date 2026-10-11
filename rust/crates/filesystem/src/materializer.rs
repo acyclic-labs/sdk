@@ -740,9 +740,21 @@ impl NativeTreeMaterializationBackend {
         if Some(native_metadata_fingerprint(&metadata, None)?) != expected {
             return Err(native_external_mutation(path));
         }
+        let previous = native_metadata_held(&metadata);
         entry.set_metadata(desired.readonly, desired.posix_mode, desired.windows_attributes)?;
-        self.verify_root_binding()?;
-        self.verify_parent_bindings(path)
+        let binding = self.verify_root_binding()
+            .and_then(|()| self.verify_parent_bindings(path))
+            .and_then(|()| self.verify_held_parent_binding(path, &entry.parent));
+        if let Err(error) = binding {
+            // Undo only our metadata on this exact held entry, never a replacement or later edit.
+            if let Some(current) = entry.metadata()?
+                && native_metadata_fingerprint(&current, None)? == native_metadata_fingerprint(&metadata, Some(desired))?
+            {
+                entry.set_metadata(previous.readonly, previous.posix_mode, previous.windows_attributes)?;
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn verify_original_entry(&self, path: &Path, descendants: bool) -> Result<(), NativeTreeMaterializationError> {
@@ -1066,9 +1078,26 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
                     return Err(error.into());
                 }
             }
-            backend.verify_root_binding()?;
-            backend.verify_parent_bindings(path)?;
-            if native_entry_fingerprint(&backend.root, path)? != after { return Err(native_external_mutation(path)); }
+            let binding = backend.verify_root_binding()
+                .and_then(|()| backend.verify_parent_bindings(path))
+                .and_then(|()| backend.verify_held_parent_binding(path, &live.parent));
+            if let Err(error) = binding {
+                // A root/parent move during commit is not a successful publication.
+                // Recover through the same original held parent, without following its new name.
+                if after.is_some() {
+                    let installed = live.repin()?;
+                    if native_held_entry_fingerprint(&installed)? != after { return Err(native_external_mutation(path)); }
+                    let staged = native_entry::Entry::open(&backend.target, path)?;
+                    installed.rename_to(&staged)?;
+                    if native_entry_fingerprint(&backend.target, path)? != after {
+                        if !live.is_present()? { staged.rename_to(&live)?; }
+                        return Err(native_external_mutation(path));
+                    }
+                }
+                if before.is_some() && saved.is_present()? && !live.is_present()? { saved.rename_to(&live)?; }
+                return Err(error);
+            }
+            if native_held_entry_fingerprint(&live.repin()?)? != after { return Err(native_external_mutation(path)); }
             Ok(())
         }).await?
     }
@@ -1119,9 +1148,23 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
                 }
                 Some(_) => return Err(NativeTreeMaterializationError::MissingPreimage(edit_path(&edit).to_owned())),
             }
-            backend.verify_root_binding()?;
-            backend.verify_parent_bindings(path)?;
-            if native_entry_fingerprint(&backend.root, path)? != before { return Err(native_external_mutation(path)); }
+            let binding = backend.verify_root_binding()
+                .and_then(|()| backend.verify_parent_bindings(path))
+                .and_then(|()| backend.verify_held_parent_binding(path, &live.parent));
+            if let Err(error) = binding {
+                if before.is_some() {
+                    let restored = live.repin()?;
+                    if native_held_entry_fingerprint(&restored)? != before { return Err(native_external_mutation(path)); }
+                    restored.rename_to(&saved)?;
+                    if native_entry_fingerprint(&backend.backup, path)? != before {
+                        if !live.is_present()? { saved.rename_to(&live)?; }
+                        return Err(native_external_mutation(path));
+                    }
+                }
+                if after.is_some() && staged.is_present()? && !live.is_present()? { staged.rename_to(&live)?; }
+                return Err(error);
+            }
+            if native_held_entry_fingerprint(&live.repin()?)? != before { return Err(native_external_mutation(path)); }
             Ok(())
         }).await?
     }
@@ -1254,14 +1297,19 @@ fn native_entry_fingerprint_scoped(root: &HostRoot, path: &Path, include_content
         Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => return Ok(None),
         Err(error) => return Err(error),
     };
-    let mut hasher = blake3::Hasher::new();
     if !include_contents {
         return Ok(Some(native_metadata_fingerprint(&metadata, override_metadata)?));
     }
     let entry = native_entry::Entry::open(root, path)?;
-    let metadata = entry.metadata()?.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "entry binding disappeared"))?;
+    native_held_entry_fingerprint(&entry)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_held_entry_fingerprint(entry: &native_entry::Entry<'_>) -> Result<Option<NativeFingerprint>, std::io::Error> {
+    let Some(metadata) = entry.metadata()? else { return Ok(None); };
+    let mut hasher = blake3::Hasher::new();
     let mut buffer = [0_u8; 64 * 1024];
-    hash_native_entry(&entry.parent, entry.name, &metadata, &mut hasher, override_metadata, &mut buffer)?;
+    hash_native_entry(&entry.parent, entry.name, &metadata, &mut hasher, None, &mut buffer)?;
     Ok(Some(*hasher.finalize().as_bytes()))
 }
 
