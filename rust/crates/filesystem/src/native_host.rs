@@ -14,6 +14,258 @@ use crate::demand::{DemandError, DemandWork};
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::NativeRootIdentity;
 
+/// A closed, preaccepted replacement of one conditional materialization
+/// record. Core state owns the genuine namespace admission, revision check,
+/// record lock and durable previous-image copy before preparing this packet.
+/// No path/descriptor escapes and completion opens/allocates/converts nothing.
+pub(crate) struct PreparedMaterializationRecord {
+    file: File,
+    parent: Dir,
+    #[cfg(unix)]
+    temporary_name: NativeEnvironmentBuffer<u8>,
+    #[cfg(unix)]
+    current_name: NativeEnvironmentBuffer<u8>,
+    #[cfg(windows)]
+    rename_packet: NativeEnvironmentBuffer<u64>,
+    #[cfg(windows)]
+    rename_length: u32,
+    #[cfg(windows)]
+    parent_sync: File,
+    maximum_bytes: usize,
+    published: bool,
+    credit: crate::materializer::NativeWorkReservation,
+    cleanup: Option<crate::materializer::NativeCleanupWrite>,
+    _allocation: crate::materializer::NativeAllocation,
+}
+
+impl PreparedMaterializationRecord {
+    pub(crate) fn prepare(
+        parent_path: &Path, current: &Path, previous: &Path, temporary: &Path,
+        has_current: bool, work: &crate::materializer::NativeMaterializationWork, maximum_bytes: usize,
+    ) -> Result<Self, crate::materializer::NativeTreeMaterializationError> {
+        use crate::materializer::NativeTreeMaterializationError as E;
+        require_leaf(current)?;
+        require_leaf(previous)?;
+        require_leaf(temporary)?;
+        if !has_current || current == previous || current == temporary || previous == temporary {
+            return Err(E::InvalidLayout);
+        }
+        let allocation = work.retain_owned(std::mem::size_of::<Self>() as u64)?;
+        let parent = open_root_directory_with_work(parent_path, &mut &*work)?;
+        if entry_identity_with_work(&parent, current, &mut &*work)?.is_none() {
+            return Err(io::Error::from(io::ErrorKind::NotFound).into());
+        }
+        // A previous stale temporary belongs to this already-locked record;
+        // its disposal is admitted now, never after the physical action.
+        match remove_leaf_with_work(&parent, temporary, &mut &*work) {
+            Ok(()) => {}
+            Err(E::Io(error)) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        #[cfg(unix)]
+        let temporary_name = prepared_materialization_name(temporary, work)?;
+        #[cfg(unix)]
+        let current_name = prepared_materialization_name(current, work)?;
+        #[cfg(windows)]
+        let (rename_packet, rename_length) = prepared_materialization_rename_packet(&parent, current, work)?;
+        #[cfg(windows)]
+        let parent_sync = {
+            use windows::Wdk::Storage::FileSystem::{FILE_DIRECTORY_FILE, FILE_SYNCHRONOUS_IO_NONALERT};
+            use windows::Win32::Storage::FileSystem::{FILE_GENERIC_READ, FILE_GENERIC_WRITE};
+            open_windows_held_with_work(&parent, Path::new("."), FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+                FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, &mut &*work)?
+        };
+        let credit = work.reserve_work(WorkCounters {
+            backend_write_operations: (maximum_bytes as u64).checked_add(1).ok_or(crate::WorkError::Overflow)?,
+            object_bytes_written: maximum_bytes as u64,
+            durability_operations: 2,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let cleanup = work.reserve_cleanup_write()?;
+        #[cfg(unix)]
+        let file = open_unix_named_with(&parent,
+            std::ffi::CStr::from_bytes_with_nul(&temporary_name.data).expect("prepared temporary leaf is terminated"),
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
+            || work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED }))?;
+        #[cfg(windows)]
+        let file = with_wide_path_with_work(temporary, &mut &*work, |name, work| {
+            create_windows_provisional_file_with_work(&parent, name, work)
+        })?;
+        let prepared = Self {
+            file, parent,
+            #[cfg(unix)] temporary_name,
+            #[cfg(unix)] current_name,
+            #[cfg(windows)] rename_packet,
+            #[cfg(windows)] rename_length,
+            #[cfg(windows)] parent_sync,
+            maximum_bytes, published: false, credit, cleanup: Some(cleanup), _allocation: allocation,
+        };
+        #[cfg(windows)]
+        keep_windows_created_file_with_work(&prepared.file, &mut &*work)?;
+        work.admit(WorkCounters::UNCHARGED)?;
+        Ok(prepared)
+    }
+
+    /// Completes only the previously accepted CAS packet. Accounting credit
+    /// does not authorize any additional action or renew the caller's scope.
+    pub(crate) fn complete(mut self, bytes: &[u8]) -> Result<(), crate::materializer::NativeTreeMaterializationError> {
+        use std::io::Write as _;
+        use crate::materializer::NativeTreeMaterializationError as E;
+        if bytes.len() > self.maximum_bytes { return Err(E::InvalidLayout); }
+        let file = &mut self.file;
+        let mut offset = 0;
+        while offset < bytes.len() {
+            self.credit.record_completed(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED })?;
+            let count = file.write(&bytes[offset..]).map_err(E::Io)?;
+            if count > bytes.len() - offset { return Err(E::InvalidLayout); }
+            self.credit.record_completed(WorkCounters { object_bytes_written: count as u64, ..WorkCounters::UNCHARGED })?;
+            if count == 0 { return Err(io::Error::from(io::ErrorKind::WriteZero).into()); }
+            offset += count;
+        }
+        self.credit.record_completed(WorkCounters { durability_operations: 1, ..WorkCounters::UNCHARGED })?;
+        sync_held_descriptor_once(file)?;
+        self.credit.record_completed(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED })?;
+        #[cfg(unix)]
+        {
+            // SAFETY: this retained name was validated/terminated at prepare.
+            let temporary = unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(&self.temporary_name.data) };
+            // SAFETY: preparation validated and terminated these owned names;
+            // borrowing them performs no late scan, encoding or allocation.
+            let current = unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(&self.current_name.data) };
+            rename_unix_names_once(&self.parent, temporary, &self.parent, current, true)?;
+        }
+        #[cfg(windows)]
+        windows_rename_packet_once(file, &self.rename_packet.data, self.rename_length)?;
+        self.published = true;
+        drop(self.cleanup.take());
+        self.credit.record_completed(WorkCounters { durability_operations: 1, ..WorkCounters::UNCHARGED })?;
+        #[cfg(unix)]
+        sync_held_descriptor_once(&self.parent)?;
+        #[cfg(windows)]
+        sync_held_descriptor_once(&self.parent_sync)?;
+        Ok(())
+    }
+}
+
+impl Drop for PreparedMaterializationRecord {
+    fn drop(&mut self) {
+        let Some(cleanup) = self.cleanup.take() else { return; };
+        if self.published { drop(cleanup); return; }
+        #[cfg(unix)]
+        let _ = cleanup.attempt_recorded(|| {
+            use std::os::fd::AsRawFd as _;
+            // SAFETY: preparation validated and terminated this retained name.
+            let name = unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(&self.temporary_name.data) };
+            // SAFETY: the exact held parent and prepared name remain alive;
+            // no cancelled allocator/path traversal can gate this cleanup.
+            if unsafe { libc::unlinkat(self.parent.as_raw_fd(), name.as_ptr(), 0) } == 0 {
+                Ok(())
+            } else { Err(io::Error::last_os_error()) }
+        });
+        #[cfg(windows)]
+        let _ = cleanup.attempt_recorded(|| {
+            use windows::Wdk::Storage::FileSystem::{FILE_DISPOSITION_INFORMATION, FileDispositionInformation};
+            windows_set_information_held(&self.file,
+                &FILE_DISPOSITION_INFORMATION { DeleteFile: true }, FileDispositionInformation)
+        });
+    }
+}
+
+#[cfg(unix)]
+fn prepared_materialization_name(
+    leaf: &Path, work: &crate::materializer::NativeMaterializationWork,
+) -> Result<NativeEnvironmentBuffer<u8>, crate::materializer::NativeTreeMaterializationError> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let bytes = leaf.as_os_str().as_bytes();
+    for byte in bytes {
+        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+        if *byte == 0 { return Err(crate::materializer::NativeTreeMaterializationError::InvalidLayout); }
+    }
+    let copy = WorkCounters { bytes_copied: bytes.len() as u64, ..WorkCounters::UNCHARGED };
+    work.admit(copy)?;
+    let mut name = native_environment_buffer::<u8>(bytes.len().checked_add(1).ok_or(crate::WorkError::Overflow)?, work)?;
+    name.data.extend_from_slice(bytes);
+    name.data.push(0);
+    work.record_admitted(copy)?;
+    Ok(name)
+}
+
+#[cfg(windows)]
+fn prepared_materialization_rename_packet(
+    parent: &Dir, leaf: &Path, work: &crate::materializer::NativeMaterializationWork,
+) -> Result<(NativeEnvironmentBuffer<u64>, u32), crate::materializer::NativeTreeMaterializationError> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+    use windows::Wdk::Storage::FileSystem::FILE_RENAME_INFORMATION;
+    let units = wide_units_with(leaf.as_os_str(), || work.charge(
+        WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED },
+    ))?;
+    let name_bytes = units.checked_mul(2).ok_or(crate::WorkError::Overflow)?;
+    let header = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName);
+    let length = header.checked_add(name_bytes).ok_or(crate::WorkError::Overflow)?;
+    let words = length.max(std::mem::size_of::<FILE_RENAME_INFORMATION>()).div_ceil(8);
+    let encoded = WorkCounters { bytes_encoded: name_bytes as u64, ..WorkCounters::UNCHARGED };
+    work.admit(encoded)?;
+    let mut buffer = native_environment_buffer::<u64>(words, work)?;
+    buffer.data.resize(words, 0);
+    let information = buffer.data.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+    // SAFETY: pre-funded aligned storage contains the full header/name tail.
+    // The leading BOOLEAN is ReplaceIfExists, set only for this locked CAS.
+    unsafe {
+        information.cast::<u8>().write(1);
+        std::ptr::addr_of_mut!((*information).RootDirectory).write(windows::Win32::Foundation::HANDLE(parent.as_handle().as_raw_handle()));
+        std::ptr::addr_of_mut!((*information).FileNameLength).write(u32::try_from(name_bytes).map_err(|_| crate::WorkError::Overflow)?);
+        let tail = buffer.data.as_mut_ptr().cast::<u8>().add(header).cast::<u16>();
+        for (index, unit) in leaf.as_os_str().encode_wide().enumerate() {
+            if unit == 0 { return Err(crate::materializer::NativeTreeMaterializationError::InvalidLayout); }
+            tail.add(index).write(unit);
+        }
+    }
+    work.record_admitted(encoded)?;
+    Ok((buffer, u32::try_from(length).map_err(|_| crate::WorkError::Overflow)?))
+}
+
+#[cfg(unix)]
+fn rename_unix_names_once(
+    from: &Dir, source: &std::ffi::CStr, to: &Dir, destination: &std::ffi::CStr, replace: bool,
+) -> io::Result<()> {
+    use std::os::fd::AsRawFd as _;
+    // SAFETY: actual held parents and prepared names outlive this syscall.
+    #[cfg(target_os = "linux")]
+    let result = unsafe { libc::syscall(libc::SYS_renameat2, from.as_raw_fd(), source.as_ptr(),
+        to.as_raw_fd(), destination.as_ptr(), if replace { 0 } else { libc::RENAME_NOREPLACE }) };
+    #[cfg(target_os = "macos")]
+    let result = unsafe { libc::renameatx_np(from.as_raw_fd(), source.as_ptr(), to.as_raw_fd(),
+        destination.as_ptr(), if replace { 0 } else { libc::RENAME_EXCL }) } as libc::c_long;
+    if result == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+#[cfg(windows)]
+fn windows_rename_packet_once(file: &File, buffer: &[u64], length: u32) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows::Wdk::Storage::FileSystem::{FileRenameInformation, NtSetInformationFile};
+    let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
+    // SAFETY: the held DELETE-capable file and complete aligned prebuilt
+    // packet remain alive; the parent handle stored in the packet is pinned.
+    let status = unsafe { NtSetInformationFile(windows::Win32::Foundation::HANDLE(file.as_raw_handle()),
+        &raw mut block, buffer.as_ptr().cast(), length, FileRenameInformation) };
+    if status.is_err() { Err(status_error(status)) } else { Ok(()) }
+}
+
+#[cfg(unix)]
+fn sync_held_descriptor_once(file: &impl std::os::fd::AsRawFd) -> io::Result<()> {
+    // SAFETY: the exact held file/directory descriptor remains live.
+    if unsafe { libc::fsync(file.as_raw_fd()) } == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+#[cfg(windows)]
+fn sync_held_descriptor_once(file: &impl std::os::windows::io::AsRawHandle) -> io::Result<()> {
+    // SAFETY: this held file/directory handle has genuine write access.
+    unsafe { windows::Win32::Storage::FileSystem::FlushFileBuffers(
+        windows::Win32::Foundation::HANDLE(file.as_raw_handle()),
+    ) }.map_err(|error| io::Error::from_raw_os_error(error.code().0 & 0xffff))
+}
+
 fn native_read(work: &mut DemandWork) -> Result<(), DemandError> {
     work.charge(WorkCounters {
         backend_read_operations: 1,
@@ -1969,20 +2221,10 @@ fn rename_no_replace_held_core<W: NativeHostWork>(
     require_leaf(to_name)?;
     #[cfg(unix)]
     {
-        use std::os::fd::AsRawFd as _;
         unix_name_with_work(from_name.as_os_str(), work, |from_name, work| {
             unix_name_with_work(to_name.as_os_str(), work, |to_name, work| {
                 native_attempt(work, WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED }, || {
-                    // SAFETY: held parents and terminated leaves remain live;
-                    // the real platform primitive is atomic and NO-REPLACE.
-                    #[cfg(target_os = "linux")]
-                    let result = unsafe { libc::syscall(libc::SYS_renameat2, from.as_raw_fd(), from_name.as_ptr(),
-                        to.as_raw_fd(), to_name.as_ptr(), libc::RENAME_NOREPLACE) };
-                    #[cfg(target_os = "macos")]
-                    let result = unsafe { libc::renameatx_np(from.as_raw_fd(), from_name.as_ptr(),
-                        to.as_raw_fd(), to_name.as_ptr(), libc::RENAME_EXCL) } as libc::c_long;
-                    if result != 0 { return Err(io::Error::last_os_error()); }
-                    Ok(())
+                    rename_unix_names_once(from, from_name, to, to_name, false)
                 })
             })
         })
@@ -1990,14 +2232,12 @@ fn rename_no_replace_held_core<W: NativeHostWork>(
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt as _;
-        use std::os::windows::io::{AsRawHandle as _, AsHandle as _};
+        use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
         use windows::Wdk::Storage::FileSystem::{
             FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT, FILE_RENAME_INFORMATION,
-            FileRenameInformation, NtSetInformationFile,
         };
         use windows::Win32::Storage::FileSystem::{DELETE, SYNCHRONIZE, FILE_READ_ATTRIBUTES};
         use windows::Win32::Foundation::HANDLE;
-        use windows::Win32::System::IO::IO_STATUS_BLOCK;
         let access = DELETE | SYNCHRONIZE | if expected.is_some() { FILE_READ_ATTRIBUTES } else { Default::default() };
         let file = open_windows_held_with_work(from, from_name, access,
             FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT, work)?;
@@ -2039,11 +2279,7 @@ fn rename_no_replace_held_core<W: NativeHostWork>(
             }
             let length = u32::try_from(bytes).map_err(|_| crate::WorkError::Overflow)?;
             native_attempt(work, WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED }, || {
-                let mut block = IO_STATUS_BLOCK::default();
-                let status = unsafe { NtSetInformationFile(HANDLE(file.as_raw_handle()), &raw mut block,
-                    information.cast(), length, FileRenameInformation) };
-                if status.is_err() { return Err(status_error(status)); }
-                Ok(())
+                windows_rename_packet_once(&file, &buffer, length)
             })
         })();
         drop(buffer);
@@ -2066,11 +2302,9 @@ pub(crate) fn sync_directory_held_with_work<W: NativeHostWork>(
 ) -> Result<(), W::Error> {
     #[cfg(unix)]
     {
-        use std::os::fd::AsRawFd as _;
         loop {
             let error = native_attempt(work, WorkCounters { durability_operations: 1, ..WorkCounters::UNCHARGED }, || {
-                // SAFETY: the held parent descriptor remains live.
-                Ok((unsafe { libc::fsync(directory.as_raw_fd()) } != 0).then(io::Error::last_os_error))
+                Ok(sync_held_descriptor_once(directory).err())
             })?;
             match error {
                 Some(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -2081,17 +2315,14 @@ pub(crate) fn sync_directory_held_with_work<W: NativeHostWork>(
     }
     #[cfg(windows)]
     {
-        use std::os::windows::io::AsRawHandle as _;
         use windows::Wdk::Storage::FileSystem::{FILE_DIRECTORY_FILE, FILE_SYNCHRONOUS_IO_NONALERT};
-        use windows::Win32::Storage::FileSystem::{FILE_GENERIC_READ, FILE_GENERIC_WRITE, FlushFileBuffers};
-        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Storage::FileSystem::{FILE_GENERIC_READ, FILE_GENERIC_WRITE};
         // FlushFileBuffers requires write access. Reopen the exact held
         // directory itself, not a path which may now name a replacement.
         let file = open_windows_held_with_work(directory, Path::new("."), FILE_GENERIC_READ | FILE_GENERIC_WRITE,
             FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, work)?;
         native_attempt(work, WorkCounters { durability_operations: 1, ..WorkCounters::UNCHARGED }, || {
-            unsafe { FlushFileBuffers(HANDLE(file.as_raw_handle())) }
-                .map_err(|error| io::Error::from_raw_os_error(error.code().0 & 0xffff))
+            sync_held_descriptor_once(&file)
         })
     }
 }
@@ -2324,11 +2555,9 @@ fn set_windows_basic_info_with_work<W: NativeHostWork>(
 pub(crate) fn sync_file_held_with_work<W: NativeHostWork>(file: &File, work: &mut W) -> Result<(), W::Error> {
     #[cfg(unix)]
     {
-        use std::os::fd::AsRawFd as _;
         loop {
             let error = native_attempt(work, WorkCounters { durability_operations: 1, ..WorkCounters::UNCHARGED }, || {
-                // SAFETY: the pinned file descriptor remains live.
-                Ok((unsafe { libc::fsync(file.as_raw_fd()) } != 0).then(io::Error::last_os_error))
+                Ok(sync_held_descriptor_once(file).err())
             })?;
             match error {
                 Some(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -2339,13 +2568,8 @@ pub(crate) fn sync_file_held_with_work<W: NativeHostWork>(file: &File, work: &mu
     }
     #[cfg(windows)]
     {
-        use std::os::windows::io::AsRawHandle as _;
-        use windows::Win32::Foundation::HANDLE;
-        use windows::Win32::Storage::FileSystem::FlushFileBuffers;
         native_attempt(work, WorkCounters { durability_operations: 1, ..WorkCounters::UNCHARGED }, || {
-            // SAFETY: this pinned handle has actual generic write access.
-            unsafe { FlushFileBuffers(HANDLE(file.as_raw_handle())) }
-                .map_err(|error| io::Error::from_raw_os_error(error.code().0 & 0xffff))
+            sync_held_descriptor_once(file)
         })
     }
 }
@@ -3917,8 +4141,17 @@ impl HostStatReader {
             let bytes = name.len() as u64 * 2;
             let delta = WorkCounters { bytes_copied: bytes, ..WorkCounters::UNCHARGED };
             work.admit(delta)?;
-            let allocation = work.claim(bytes)?;
-            let name = name.to_vec();
+            let mut allocation = work.claim(bytes)?;
+            let mut copied = Vec::new();
+            let reserved = copied.try_reserve_exact(name.len());
+            let reconciled = work.reconcile_allocation(&mut allocation, copied.capacity() as u64 * 2);
+            if let Err(error) = reserved.map_err(W::allocation_failed).and(reconciled) {
+                drop(copied);
+                work.release(allocation)?;
+                return Err(error);
+            }
+            copied.extend_from_slice(name);
+            let name = copied;
             let stat = match (|| {
                 work.record(delta)?;
                 Ok(windows_wide_name_with_work(&name, work,
@@ -4378,11 +4611,14 @@ pub(crate) fn read_dir_held_with_work<W: NativeHostWork>(
 fn directory_buffer_with_work<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<(Vec<u64>, W::Allocation), W::Error> {
-    let allocation = work.claim(HostStatReader::BUFFER_BYTES as u64)?;
+    let mut allocation = work.claim(HostStatReader::BUFFER_BYTES as u64)?;
     let mut buffer = Vec::new();
-    if let Err(error) = buffer.try_reserve_exact(HostStatReader::BUFFER_BYTES / std::mem::size_of::<u64>()) {
+    let reserved = buffer.try_reserve_exact(HostStatReader::BUFFER_BYTES / std::mem::size_of::<u64>());
+    let reconciled = work.reconcile_allocation(&mut allocation, buffer.capacity() as u64 * 8);
+    if let Err(error) = reserved.map_err(W::allocation_failed).and(reconciled) {
+        drop(buffer);
         work.release(allocation)?;
-        return Err(io::Error::new(io::ErrorKind::OutOfMemory, error).into());
+        return Err(error);
     }
     buffer.resize(HostStatReader::BUFFER_BYTES / std::mem::size_of::<u64>(), 0);
     Ok((buffer, allocation))
@@ -4496,8 +4732,17 @@ impl HostStatReader {
             if name.is_empty() || name.contains(&b'/') { return Err(malformed().into()); }
             let delta = WorkCounters { bytes_copied: name.len() as u64, ..WorkCounters::UNCHARGED };
             work.admit(delta)?;
-            let allocation = work.claim(name.len() as u64)?;
-            let name = OsString::from_vec(name.to_vec());
+            let mut allocation = work.claim(name.len() as u64)?;
+            let mut copied = Vec::new();
+            let reserved = copied.try_reserve_exact(name.len());
+            let reconciled = work.reconcile_allocation(&mut allocation, copied.capacity() as u64);
+            if let Err(error) = reserved.map_err(W::allocation_failed).and(reconciled) {
+                drop(copied);
+                work.release(allocation)?;
+                return Err(error);
+            }
+            copied.extend_from_slice(name);
+            let name = OsString::from_vec(copied);
             let stat = match (|| {
                 work.record(delta)?;
                 stat_leaf_with_work(&self.directory, OsStr::from_bytes(name.as_bytes()), work)
@@ -4514,6 +4759,45 @@ impl HostStatReader {
             self.next = end;
             return Ok(Some((HostListedEntry { name, stat }, allocation)));
         }
+    }
+}
+
+/// Projects lossless private-state names through the same held directory/stat
+/// engine. Windows uses the existing opaque std native-name decode boundary;
+/// its logical capacity is funded/reconciled, not fabricated allocator calls.
+pub(crate) fn next_private_state_entry_with_work(
+    reader: &mut HostStatReader, directory: &Dir,
+    original: &crate::materializer::NativeMaterializationWork,
+) -> Result<Option<(HostListedEntry, crate::materializer::NativeAllocation)>, crate::materializer::NativeTreeMaterializationError> {
+    #[cfg(unix)]
+    {
+        let Some(mut entry) = reader.next_with_work(&mut &*original)? else { return Ok(None); };
+        if entry.0.stat.is_none() {
+            entry.0.stat = Some(stat_leaf_with_work(directory, &entry.0.name, &mut &*original)?);
+        }
+        original.admit(WorkCounters::UNCHARGED)?;
+        Ok(Some(entry))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt as _;
+        let Some(wide) = reader.next_wide_with_work(&mut &*original)? else { return Ok(None); };
+        let stat = match wide.0.stat {
+            Some(stat) => stat,
+            None => stat_windows_leaf_with_work(directory, &wide.0.name, &mut &*original)?,
+        };
+        let logical = native_environment_encoded_length(&wide.0.name, original)?;
+        let encoded = WorkCounters { bytes_encoded: logical as u64, ..WorkCounters::UNCHARGED };
+        original.admit(encoded)?;
+        let mut allocation = original.retain_owned(logical as u64)?;
+        let name = OsString::from_wide(&wide.0.name);
+        let reconciled = allocation.reconcile_capacity(name.capacity() as u64);
+        let recorded = original.record_admitted(encoded);
+        reconciled?;
+        recorded?;
+        drop(wide);
+        original.admit(WorkCounters::UNCHARGED)?;
+        Ok(Some((HostListedEntry { name, stat: Some(stat) }, allocation)))
     }
 }
 

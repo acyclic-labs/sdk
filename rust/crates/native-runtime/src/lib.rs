@@ -2007,6 +2007,18 @@ impl ReadAllocation {
     /// The original shared invocation, not a newly constructed ledger.
     pub const fn meter(&self) -> &Arc<dyn NativeReadMeter> { &self.meter }
 
+    /// Transfers an already-owned claim to its exact original meter owner.
+    /// No admission, cancellation check, release or new allocation occurs.
+    /// A mismatch returns the original guard intact.
+    pub fn consume_same_meter_owned_bytes(
+        mut self, expected: &Arc<dyn NativeReadMeter>,
+    ) -> Result<u64, Self> {
+        if !Arc::ptr_eq(&self.meter, expected) { return Err(self); }
+        let bytes = self.bytes;
+        self.bytes = 0;
+        Ok(bytes)
+    }
+
     /// Moves another same-ledger claim without allocating or releasing it.
     /// Both guards remain unchanged on identity mismatch or overflow.
     pub fn absorb(&mut self, other: &mut Self) -> io::Result<()> {
