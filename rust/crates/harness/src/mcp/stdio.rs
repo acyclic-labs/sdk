@@ -387,7 +387,7 @@ fn rejection(work: NativeWork<'_>, reason: &'static str) -> Error {
     let _ = work;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.is_some() {
-        return Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, reason };
+        return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
     }
     Error::Invalid(reason.into())
 }
@@ -496,7 +496,7 @@ fn encode_line<T: Serialize>(value: &T, maximum: usize, work: NativeWork<'_>) ->
             Ok(bytes) => bytes,
             Err(Error::Invalid(message)) => {
                 diagnostic.substitute(message.capacity() as u64).map_err(native_error)?;
-                return Err(Error::NativeDiagnostic { code: crate::wire::ErrorCode::Storage,
+                return Err(Error::NativeDiagnostic { code: crate::wire::ErrorCode::Invalid,
                     message, custody: diagnostic });
             }
             Err(error) => return Err(error),
@@ -547,7 +547,7 @@ fn frame_admission(body: &[u8], maximum: usize, work: NativeWork<'_>) -> Result<
         match scanned {
             Err(Error::Invalid(message)) => {
                 diagnostic.substitute(message.capacity() as u64).map_err(native_error)?;
-                return Err(Error::NativeDiagnostic { code: crate::wire::ErrorCode::Storage, message, custody: diagnostic });
+                return Err(Error::NativeDiagnostic { code: crate::wire::ErrorCode::Invalid, message, custody: diagnostic });
             }
             Err(error) => return Err(error),
             Ok(()) => {}
