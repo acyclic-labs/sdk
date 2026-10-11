@@ -1442,12 +1442,12 @@ pub enum Error {
     NativeSourcePublicationUncertain {
         /// The actual generation returned by the completed SDK transaction.
         generation: acyclic_fs::GenerationId,
-        /// The complete postpublication proof failure, including intrinsic custody.
+        /// The complete typed failure in the slot allocated before publication.
         #[source]
-        source: acyclic_fs::LazyWorkspaceError,
+        source: Box<dyn std::error::Error + Send + Sync>,
         /// A distinct retention failure after the primary proof failure, if both occurred.
         retention_failure: Option<acyclic_fs::LazyWorkspaceError>,
-        /// Existing additional custody, released after the original cause.
+        /// Original slot custody, released after both original causes are dropped.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// An actual native workspace failure, moved without diagnostic conversion.
@@ -1741,6 +1741,17 @@ impl From<acyclic_fs::LazyWorkspaceError> for Error {
 impl From<acyclic_fs::native_mount::MountLifecycleError> for Error {
     fn from(cause: acyclic_fs::native_mount::MountLifecycleError) -> Self {
         Self::NativeView { cause, custody: None }
+    }
+}
+
+/// Moves the complete native source cause and its intrinsic custody without formatting.
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+impl From<acyclic_fs::native_mount::MountSourceError> for Error {
+    fn from(cause: acyclic_fs::native_mount::MountSourceError) -> Self {
+        Self::NativeView {
+            cause: acyclic_fs::native_mount::MountLifecycleError::Source(cause),
+            custody: None,
+        }
     }
 }
 
