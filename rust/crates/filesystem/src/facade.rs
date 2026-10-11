@@ -14141,6 +14141,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         DetachedFile::from_record_measured(self.volume.clone(), record, budget, cancellation)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn detached_from_record_with_native_work(
+        &self, record: FileRecord, original: &crate::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<DetachedFile<A, O>, FsError> {
+        let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
+        DetachedFile::from_record_with_accounting(self.volume.clone(), record, &mut accounting)
+    }
+
     /// Reads one authenticated candidate file record by stable identity.
     ///
     /// Tracking modes retain a complete file-record dependency. More precise
@@ -18134,14 +18143,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Self> {
-        cancellation.check().map_err(|error| OperationFailure::before_work(error.into()))?;
-        let mut work = WorkCounters::default();
-        let mut allocations = crate::kernel::allocation::AllocationLedger::default();
-        let hold = crate::Collection::hold_record_measured(
-            volume.fs.inner.objects.collection(), record, volume.config,
-            &mut allocations, &mut work, budget, cancellation,
-        ).map_err(|error| OperationFailure::new(error, work))?;
-        Ok(FsReceipt { value: Self { volume, record, _hold: hold }, work })
+        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(budget, cancellation);
+        let result = Self::from_record_with_accounting(volume, record, &mut accounting);
+        let work = accounting.spent();
+        result.map(|value| FsReceipt { value, work })
+            .map_err(|error| OperationFailure::new(error, work))
+    }
+
+    fn from_record_with_accounting(
+        volume: Volume<A, O>, record: FileRecord,
+        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+    ) -> Result<Self, FsError> {
+        accounting.check()?;
+        let hold = crate::Collection::hold_record_with_accounting(
+            volume.fs.inner.objects.collection(), record, volume.config, accounting,
+        )?;
+        Ok(Self { volume, record, _hold: hold })
     }
 
     /// Logical occupied collection-root bytes retained by this detached handle.

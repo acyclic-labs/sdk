@@ -566,6 +566,185 @@ pub struct NativeMaterializationWork {
     cancellation: crate::CancellationToken,
 }
 
+/// Opening policy for an already-authorized host-private state pathname.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeStateFileMode {
+    /// Opens an existing regular file without following its final binding.
+    Readonly,
+    /// Opens an existing regular read/write file without creating or truncating.
+    ReadWriteExisting,
+    /// Opens or creates a regular read/write file without truncating it.
+    ReadWriteCreate,
+}
+
+/// Opaque namespace owner for a trusted host's configured private state root.
+///
+/// This is distinct from accounting, task grants and project-read authority.
+/// Only trusted service bootstrap may mint it from its configured private
+/// directory while retaining the host's real configuration/creation authority.
+/// Finite request handlers receive this owner, never mint one from a request.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
+pub struct NativeHostPrivateStateRoot {
+    inner: std::sync::Arc<NativeHostPrivateStateRootInner>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct NativeHostPrivateStateRootInner {
+    // Only bootstrap's unpublished unique Arc may contain None.
+    root: Option<crate::native_host::HostRoot>,
+    _allocation: NativeAllocation,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NativeHostPrivateStateRootInner {
+    fn root(&self) -> &crate::native_host::HostRoot {
+        self.root.as_ref().expect("only initialized configured-root owners are published")
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl std::fmt::Debug for NativeHostPrivateStateRoot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("NativeHostPrivateStateRoot")
+            .field("physical_identity", &self.inner.root().identity()).finish_non_exhaustive()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NativeHostPrivateStateRoot {
+    /// Registers and holds the genuine trusted host-configured private root.
+    ///
+    /// This is a host bootstrap boundary, not a request-path authorizer. The
+    /// embedding host MUST already hold its configured-directory creation
+    /// authority (and service ownership lock, where required) before entry.
+    /// Neither a caller's pathname, a project read grant, an owner-file marker
+    /// nor `work` establishes that authority. No public from-parts/raw-directory
+    /// conversion exists. The physical root is held, not reopened by requests.
+    /// The single Arc's logical body is funded before registration effects;
+    /// opaque stdlib refcount and OS bookkeeping are excluded from payload/RSS.
+    ///
+    /// # Errors
+    /// Preserves native I/O, original quota/cancellation and creation prefixes.
+    pub fn bootstrap_configured_with_native_work(
+        configured_directory: &Path, work: &NativeMaterializationWork,
+    ) -> Result<Self, NativeTreeMaterializationError> {
+        let allocation = work.claim(std::mem::size_of::<NativeHostPrivateStateRootInner>() as u64)?;
+        let mut inner = std::sync::Arc::new(NativeHostPrivateStateRootInner { root: None, _allocation: allocation });
+        crate::native_host::create_directories_materialization_measured(configured_directory, work)?;
+        let (directory, identity) = crate::native_host::open_root_directory_identity_with_work(
+            configured_directory, &mut &*work,
+        )?;
+        work.admit(crate::WorkCounters::UNCHARGED)?;
+        let root = crate::native_host::HostRoot::from_held_dir_with_identity(directory, identity);
+        std::sync::Arc::get_mut(&mut inner).expect("bootstrap root owner is still unpublished").root = Some(root);
+        Ok(Self { inner })
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn validate_native_state_relative(
+    relative: &Path, work: &NativeMaterializationWork,
+) -> Result<(), NativeTreeMaterializationError> {
+    work.admit(crate::WorkCounters::UNCHARGED)?;
+    for component in relative.components() {
+        work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
+        if !matches!(component, std::path::Component::Normal(_)) {
+            return Err(NativeTreeMaterializationError::InvalidLayout);
+        }
+    }
+    Ok(())
+}
+
+
+/// An owned regular state-file descriptor and its exact held parent directory.
+///
+/// Namespace authority is retained from the trusted configured-root owner;
+/// accounting alone cannot authorize opening a state file. No raw descriptor
+/// escapes. OS-private bookkeeping is not a payload/RSS claim; the inline
+/// logical Self remains funded until descriptors and root authority retire.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct NativeStateFile {
+    file: std::fs::File,
+    parent: cap_std::fs::Dir,
+    work: NativeMaterializationWork,
+    _root: NativeHostPrivateStateRoot,
+    _allocation: NativeAllocation,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl std::fmt::Debug for NativeStateFile {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("NativeStateFile").finish_non_exhaustive()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NativeStateFile {
+    /// Validates private owner-file metadata through this exact held file.
+    ///
+    /// Unix requires the current effective user, mode 0600 and one hard link.
+    /// Windows preserves the existing regular/non-reparse metadata policy;
+    /// current-user payload encryption remains the caller's DPAPI engine.
+    /// No raw File or ambient pathname is exposed.
+    ///
+    /// # Errors
+    /// Preserves typed invalid layout, native I/O and original finite work.
+    pub fn validate_private_owner(&self) -> Result<(), NativeTreeMaterializationError> {
+        crate::native_host::validate_private_state_file_with_work(&self.file, &mut &self.work)
+    }
+
+    /// Reads from the held file's current cursor, retaining bounded bytes and
+    /// their original allocation guard. No implicit seek or flush occurs.
+    ///
+    /// # Errors
+    /// Preserves original I/O, quota and cancellation causes and actual work.
+    pub fn read_owned(
+        &mut self, maximum_bytes: usize,
+    ) -> Result<(Vec<u8>, NativeAllocation), NativeTreeMaterializationError> {
+        self.work.read_owned_bytes(&mut self.file, maximum_bytes)
+    }
+
+    /// Writes borrowed bytes at the held cursor without copying or flushing.
+    ///
+    /// # Errors
+    /// Retains each actually completed partial transfer on the original work.
+    pub fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), NativeTreeMaterializationError> {
+        self.work.write_owned_bytes(&mut self.file, bytes)
+    }
+
+    /// Sets the held file's length, normally after a completed replacement
+    /// write. Opening and writing never implicitly truncate the old file.
+    ///
+    /// # Errors
+    /// Rejects lengths outside the native range before any OS effect or
+    /// dynamically allocated invalid-input error.
+    pub fn set_len(&self, length: u64) -> Result<(), NativeTreeMaterializationError> {
+        if length > i64::MAX as u64 { return Err(NativeTreeMaterializationError::InvalidLayout); }
+        acyclic_native_runtime::set_len_measured(&self.file, length, self.work.runtime_meter())
+            .map_err(|error| self.work.runtime_error(error))
+    }
+
+    /// Performs a full durability barrier on this exact held file.
+    ///
+    /// # Errors
+    /// Preserves native I/O, quota and cancellation causes on the original work.
+    pub fn sync_file(&self) -> Result<(), NativeTreeMaterializationError> {
+        acyclic_native_runtime::sync_file_measured(
+            &self.file, acyclic_native_runtime::Durability::Full, self.work.runtime_meter(),
+        ).map_err(|error| self.work.runtime_error(error))
+    }
+
+    /// Syncs the exact parent held at open, never a pathname replacement.
+    ///
+    /// # Errors
+    /// Retains actual native read/durability prefixes on the original work.
+    pub fn sync_parent(&self) -> Result<(), NativeTreeMaterializationError> {
+        crate::native_host::sync_directory_held_measured(&self.parent, &self.work)?;
+        self.work.admit(crate::WorkCounters::UNCHARGED)
+    }
+}
+
 
 /// A real held original mutex leaf, never an unlocked work proxy. Only
 /// accounting/cancellation/invariants may run before this guard is dropped.
@@ -701,6 +880,16 @@ impl NativeMaterializationWork {
         let mut original = self.state.lock();
         let previous = original.enter_materialization_leaf(self.invocation.as_ref().map(std::sync::Arc::downgrade));
         NativeMaterializationLeaf { original, previous: Some(previous) }
+    }
+
+    /// Borrows one allocator-free accounting/cancellation/invariant leaf of
+    /// this complete original view. Never run allocation, OS, serialization,
+    /// SDK/user callbacks or awaits while this real mutex guard is held.
+    pub(crate) fn with_original_leaf<T>(&self, operation: impl FnOnce(&mut crate::demand::DemandWork) -> T) -> T {
+        let mut original = self.state();
+        original.with_resource_scope(self.resource.as_ref().map(std::sync::Arc::downgrade), |work| {
+            work.with_native_capture_scope(self.capture_origin.clone(), operation)
+        })
     }
 
     /// Borrows the existing runtime callback meter; no lock or new meter is
@@ -924,6 +1113,191 @@ impl NativeMaterializationWork {
         }
         Ok(())
     }
+    /// Opens a relative state pathname under a genuine configured-root owner.
+    ///
+    /// The caller MUST supply the bootstrap-minted namespace owner and validate
+    /// pathname protection and original-source ownership before entry; this
+    /// work is never filesystem authorization. Absolute and parent paths are
+    /// rejected before host I/O. Existing no-follow native traversal/name
+    /// engines retain the regular file, its exact parent and root authority.
+    /// Create mode never truncates; no new Arc backing or ledger is allocated.
+    ///
+    /// # Errors
+    /// Preserves original NotFound (including a missing parent), native I/O,
+    /// quota and cancellation causes and every actual completed effect.
+    pub fn open_state_file_with_native_work(
+        &self, root: &NativeHostPrivateStateRoot, relative: &Path, mode: NativeStateFileMode,
+    ) -> Result<NativeStateFile, NativeTreeMaterializationError> {
+        validate_native_state_relative(relative, self)?;
+        let leaf = relative.file_name().ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+        let parent = relative.parent().ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+        let allocation = self.retain_owned(std::mem::size_of::<NativeStateFile>() as u64)?;
+        let parent = root.inner.root().open_dir_held_with_work(parent, &mut &*self)?;
+        let options = match mode {
+            NativeStateFileMode::Readonly => crate::native_host::NativeOpenOptions::Read,
+            NativeStateFileMode::ReadWriteExisting => crate::native_host::NativeOpenOptions::ReadWrite,
+            NativeStateFileMode::ReadWriteCreate => crate::native_host::NativeOpenOptions::ReadWriteCreate,
+        };
+        let file = crate::native_host::open_leaf_with_work(
+            &parent, Path::new(leaf), &options, &mut &*self,
+        )?;
+        self.admit(crate::WorkCounters::UNCHARGED)?;
+        Ok(NativeStateFile { file, parent, work: self.clone(), _root: root.clone(), _allocation: allocation })
+    }
+
+    /// Registers relative directories under a trusted configured-root owner.
+    ///
+    /// Namespace/creation authority comes only from that supplied held owner;
+    /// accounting never grants it. Uses the existing held native traversal
+    /// and creation engine, without reopening an ambient request pathname.
+    ///
+    /// # Errors
+    /// Preserves original native I/O, quota and cancellation failures and
+    /// actually completed creation prefixes.
+    pub fn create_directories_with_native_work(
+        &self, root: &NativeHostPrivateStateRoot, relative: &Path,
+    ) -> Result<(), NativeTreeMaterializationError> {
+        validate_native_state_relative(relative, self)?;
+        root.inner.root().create_directories_for_state_with_work(relative, &mut &*self)?;
+        self.admit(crate::WorkCounters::UNCHARGED)
+    }
+
+    /// Observes any final entry beneath the genuine held private-state root.
+    ///
+    /// The final binding is not followed: a directory, file or symlink/reparse
+    /// witness is present and must block fresh owner-credential bootstrap.
+    /// Only an actual native NotFound is absence; quota, cancellation,
+    /// protection and other I/O failures are never interpreted as missing.
+    ///
+    /// # Errors
+    /// Preserves typed invalid relative names and original finite/native causes.
+    pub fn state_path_exists_with_native_work(
+        &self, root: &NativeHostPrivateStateRoot, relative: &Path,
+    ) -> Result<bool, NativeTreeMaterializationError> {
+        validate_native_state_relative(relative, self)?;
+        let leaf = relative.file_name().ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+        let parent = relative.parent().ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+        let exists = match root.inner.root().open_dir_held_with_work(parent, &mut &*self) {
+            Ok(parent) => crate::native_host::entry_identity_with_work(
+                &parent, Path::new(leaf), &mut &*self,
+            )?.is_some(),
+            Err(NativeTreeMaterializationError::Io(error))
+                if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error),
+        };
+        self.admit(crate::WorkCounters::UNCHARGED)?;
+        Ok(exists)
+    }
+
+    /// Validates a real private owner-state directory beneath the held root.
+    ///
+    /// Unix requires the current effective user and no group/other write bits.
+    /// Windows requires real directory/non-reparse metadata. The namespace
+    /// owner remains separate from all original-work admission.
+    ///
+    /// # Errors
+    /// Preserves native metadata I/O, typed layout and finite-work failures.
+    pub fn validate_private_state_directory(
+        &self, root: &NativeHostPrivateStateRoot, relative: &Path,
+    ) -> Result<(), NativeTreeMaterializationError> {
+        validate_native_state_relative(relative, self)?;
+        root.inner.root().validate_private_state_directory_with_work(relative, &mut &*self)
+    }
+
+    /// Atomically publishes an already-authorized private owner-state payload.
+    ///
+    /// Creates only an absent temporary regular leaf (Unix mode 0600), validates
+    /// its held metadata, writes borrowed parts without an input copy, fully
+    /// syncs the file, then performs the existing held NO-REPLACE rename and
+    /// parent durability barriers. Prepared temporary cleanup and its original
+    /// write reservation exist before creation, and cannot be gated by a fresh
+    /// allocation/admission after fatal refusal. Cleanup never deletes a
+    /// published or pre-existing destination.
+    ///
+    /// # Errors
+    /// Preserves the original first fatal cause and every completed native
+    /// transfer/publication/cleanup prefix, including late cancellation.
+    pub fn publish_private_state_file_with_native_work(
+        &self, root: &NativeHostPrivateStateRoot, temporary: &Path, destination: &Path,
+        parts: &[&[u8]],
+    ) -> Result<(), NativeTreeMaterializationError> {
+        validate_native_state_relative(temporary, self)?;
+        validate_native_state_relative(destination, self)?;
+        if temporary == destination { return Err(NativeTreeMaterializationError::InvalidLayout); }
+        let temporary_leaf = temporary.file_name().ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+        let destination_leaf = destination.file_name().ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+        let temporary_parent = temporary.parent().ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+        let destination_parent = destination.parent().ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+        self.validate_private_state_directory(root, temporary_parent)?;
+        if temporary_parent != destination_parent {
+            self.validate_private_state_directory(root, destination_parent)?;
+        }
+        let parent = root.inner.root().open_dir_held_with_work(temporary_parent, &mut &*self)?;
+        let other_parent = if temporary_parent == destination_parent {
+            None
+        } else { Some(root.inner.root().open_dir_held_with_work(destination_parent, &mut &*self)?) };
+        let destination_parent = other_parent.as_ref().unwrap_or(&parent);
+        crate::native_host::with_private_state_temporary(&parent, Path::new(temporary_leaf), self, |file, published| {
+            for bytes in parts { self.write_owned_bytes(file, bytes)?; }
+            acyclic_native_runtime::sync_file_measured(
+                file, acyclic_native_runtime::Durability::Full, self.runtime_meter(),
+            ).map_err(|error| self.runtime_error(error))?;
+            crate::native_host::rename_no_replace_held_with_work(
+                &parent, Path::new(temporary_leaf), destination_parent, Path::new(destination_leaf), &mut &*self,
+            )?;
+            // Set immediately after the real rename: even a later cancelled
+            // flush must never arm deletion against the destination.
+            *published = true;
+            let first = crate::native_host::sync_directory_held_measured(&parent, self);
+            let second = match &other_parent {
+                Some(parent) => crate::native_host::sync_directory_held_measured(parent, self),
+                None => Ok(()),
+            };
+            first.and(second)?;
+            self.admit(crate::WorkCounters::UNCHARGED)
+        })
+    }
+
+    /// Performs a NO-REPLACE rename solely beneath the supplied held owner.
+    /// Publication needing mandatory failure cleanup must use the one-shot
+    /// private-state publisher instead of a caller-managed temporary sequence.
+    ///
+    /// # Errors
+    /// Preserves original native rename and finite-work prefixes.
+    pub fn rename_private_relative(
+        &self, root: &NativeHostPrivateStateRoot, from: &Path, to: &Path,
+    ) -> Result<(), NativeTreeMaterializationError> {
+        validate_native_state_relative(from, self)?;
+        validate_native_state_relative(to, self)?;
+        let from_leaf = from.file_name().ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+        let to_leaf = to.file_name().ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+        let from_parent = from.parent().ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+        let to_parent = to.parent().ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+        let parent = root.inner.root().open_dir_held_with_work(from_parent, &mut &*self)?;
+        let other = if from_parent == to_parent { None }
+            else { Some(root.inner.root().open_dir_held_with_work(to_parent, &mut &*self)?) };
+        crate::native_host::rename_no_replace_held_with_work(
+            &parent, Path::new(from_leaf), other.as_ref().unwrap_or(&parent), Path::new(to_leaf), &mut &*self,
+        )?;
+        self.admit(crate::WorkCounters::UNCHARGED)
+    }
+
+    /// Removes a relative regular-file binding beneath the genuine held owner.
+    /// This is an ordinary admitted removal, not post-failure cleanup custody.
+    ///
+    /// # Errors
+    /// Preserves original native removal and finite-work prefixes.
+    pub fn remove_private_relative(
+        &self, root: &NativeHostPrivateStateRoot, relative: &Path,
+    ) -> Result<(), NativeTreeMaterializationError> {
+        validate_native_state_relative(relative, self)?;
+        let leaf = relative.file_name().ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+        let parent = relative.parent().ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+        let parent = root.inner.root().open_dir_held_with_work(parent, &mut &*self)?;
+        crate::native_host::remove_leaf_with_work(&parent, Path::new(leaf), &mut &*self)?;
+        self.admit(crate::WorkCounters::UNCHARGED)
+    }
+
 
     /// Withholds additive completion limits on this same original and resource.
     /// No work is reported until a real accepted SDK event completes. This is
@@ -1903,6 +2277,17 @@ impl std::fmt::Debug for NativeWorkReservation {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeWorkReservation {
+    /// Compares the original accounting ledger and exact resource attribution.
+    /// This pure membership query is not mutation or append authorization.
+    #[must_use]
+    pub fn matches_work(&self, work: &NativeMaterializationWork) -> bool {
+        self.meter.shares_allocation_context(work)
+    }
+
+    /// Returns this token's still-owned additive credit, not fresh allowance.
+    #[must_use]
+    pub const fn remaining_work(&self) -> crate::WorkCounters { self.remaining }
+
     /// Records a real completed prefix, consuming only its owned credit.
     /// Actual counters are retained before any late root/local cancellation.
     ///

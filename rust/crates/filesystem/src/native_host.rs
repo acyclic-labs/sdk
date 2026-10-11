@@ -117,6 +117,9 @@ impl NativeHostWork for &crate::materializer::NativeMaterializationWork {
     fn allocation_failed(error: std::collections::TryReserveError) -> Self::Error {
         crate::materializer::NativeTreeMaterializationError::AllocationFailed(error)
     }
+    fn invalid_request() -> Self::Error {
+        crate::materializer::NativeTreeMaterializationError::InvalidLayout
+    }
     fn check(&self) -> Result<(), Self::Error> {
         crate::materializer::NativeMaterializationWork::admit(self, WorkCounters::UNCHARGED)
     }
@@ -386,8 +389,10 @@ pub(crate) fn clone_path_with_work<W: NativeHostWork>(
     let mut allocation = work.claim(bytes as u64)?;
     let mut name = OsString::new();
     let result = (|| {
-        name.try_reserve_exact(bytes).map_err(W::allocation_failed)?;
-        work.reconcile_allocation(&mut allocation, name.capacity() as u64)?;
+        let reserved = name.try_reserve_exact(bytes);
+        let reconciled = work.reconcile_allocation(&mut allocation, name.capacity() as u64);
+        reserved.map_err(W::allocation_failed)?;
+        reconciled?;
         name.push(path.as_os_str());
         work.record(delta)?;
         Ok(())
@@ -984,21 +989,26 @@ fn unix_name_checked_with_work<W: NativeHostWork, T>(
         let invalid = *byte == 0 || single_leaf && *byte == b'/';
         work.record(delta)?;
         if invalid {
-            let message = if *byte == 0 { "native name contains NUL" } else { "expected one owned native child" };
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, message).into());
+            return Err(W::invalid_request());
         }
     }
     let size = bytes.len().checked_add(1).ok_or(crate::WorkError::Overflow)?;
     let delta = WorkCounters { bytes_copied: bytes.len() as u64, ..WorkCounters::UNCHARGED };
     work.admit(delta)?;
-    let allocation = work.claim(size as u64)?;
-    let mut owned = Vec::with_capacity(size);
-    owned.extend_from_slice(bytes);
-    owned.push(0);
-    let name = std::ffi::CString::from_vec_with_nul(owned)
-        .expect("validated name and one appended terminator");
-    let result = (|| { work.record(delta)?; operation(&name, work) })();
-    drop(name);
+    let mut allocation = work.claim(size as u64)?;
+    let mut owned = Vec::new();
+    let reserved = owned.try_reserve_exact(size);
+    let reconciled = work.reconcile_allocation(&mut allocation, owned.capacity() as u64);
+    let result = (|| {
+        reserved.map_err(W::allocation_failed).and(reconciled)?;
+        owned.extend_from_slice(bytes);
+        owned.push(0);
+        let name = std::ffi::CStr::from_bytes_with_nul(&owned)
+            .expect("validated name and one appended terminator");
+        work.record(delta)?;
+        operation(name, work)
+    })();
+    drop(owned);
     work.release(allocation)?;
     result
 }
@@ -1321,10 +1331,13 @@ fn create_directories_owned_with_work<W: NativeHostWork>(
             let bytes = units.checked_mul(2).ok_or(crate::WorkError::Overflow)? as u64;
             let delta = WorkCounters { bytes_encoded: bytes, ..WorkCounters::UNCHARGED };
             work.admit(delta)?;
-            let allocation = work.claim(bytes)?;
-            let mut wide = Vec::with_capacity(units);
-            wide.extend(name.encode_wide());
+            let mut allocation = work.claim(bytes)?;
+            let mut wide = Vec::new();
+            let reserved = wide.try_reserve_exact(units);
+            let reconciled = work.reconcile_allocation(&mut allocation, wide.capacity() as u64 * 2);
             let result = (|| {
+                reserved.map_err(W::allocation_failed).and(reconciled)?;
+                wide.extend(name.encode_wide());
                 work.record(delta)?;
                 create_windows_directory_with_work(&current, &wide, work)
             })();
@@ -1366,7 +1379,7 @@ pub(crate) fn open_leaf_with_work<W: NativeHostWork>(
                 });
                 match result {
                     Ok(stat) if stat.st_mode & libc::S_IFMT as libc::mode_t == libc::S_IFREG as libc::mode_t => return Ok(file),
-                    Ok(_) => return Err(io::Error::new(io::ErrorKind::InvalidInput, "native leaf is not a regular file").into()),
+                    Ok(_) => return Err(W::invalid_request()),
                     Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) => continue,
                     Err(error) => return Err(error),
                 }
@@ -1376,6 +1389,130 @@ pub(crate) fn open_leaf_with_work<W: NativeHostWork>(
     #[cfg(windows)]
     { with_wide_path_with_work(name, work, |name, work| open_windows_leaf_with_options_with_work(parent, name, options, work)) }
 }
+/// Fixed private-owner predicates shared by rooted state-file producers.
+/// No raw handle, provider callback or dynamically constructed policy error
+/// crosses the public SDK boundary.
+#[cfg(unix)]
+fn validate_private_state_descriptor_with_work<W: NativeHostWork>(
+    file: &impl std::os::fd::AsRawFd, directory: bool, work: &mut W,
+) -> Result<(), W::Error> {
+    let stat = loop {
+        let result = native_attempt(work, WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED }, || {
+            let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+            // SAFETY: live held descriptor and correctly sized output storage.
+            if unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 { return Err(io::Error::last_os_error()); }
+            Ok(unsafe { stat.assume_init() })
+        });
+        match result {
+            Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) => {}
+            result => break result?,
+        }
+    };
+    let user = native_attempt(work, WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED }, || {
+        // SAFETY: the effective-user query has no arguments or retained data.
+        Ok(unsafe { libc::geteuid() })
+    })?;
+    let kind = if directory { libc::S_IFDIR } else { libc::S_IFREG } as libc::mode_t;
+    let mode = stat.st_mode & 0o777;
+    if stat.st_mode & libc::S_IFMT as libc::mode_t != kind
+        || stat.st_uid != user
+        || (directory && mode & 0o022 != 0)
+        || (!directory && (mode != 0o600 || stat.st_nlink != 1))
+    {
+        return Err(W::invalid_request());
+    }
+    work.check()
+}
+
+#[cfg(windows)]
+fn validate_private_state_descriptor_with_work<W: NativeHostWork>(
+    file: &impl std::os::windows::io::AsRawHandle, directory: bool, work: &mut W,
+) -> Result<(), W::Error> {
+    use windows::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, GetFileInformationByHandle,
+    };
+    let information = native_attempt(work, WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED }, || {
+        let mut information = BY_HANDLE_FILE_INFORMATION::default();
+        // SAFETY: the exact held handle and fixed output storage remain live.
+        unsafe { GetFileInformationByHandle(windows::Win32::Foundation::HANDLE(file.as_raw_handle()), &raw mut information) }
+            .map_err(|error| io::Error::from_raw_os_error(error.code().0 & 0xffff))?;
+        Ok(information)
+    })?;
+    if information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+        || (information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0) != directory
+    {
+        return Err(W::invalid_request());
+    }
+    // The existing host policy checks regular/reparse metadata on Windows;
+    // DPAPI's current-user protection belongs to its existing caller engine.
+    work.check()
+}
+
+pub(crate) fn validate_private_state_file_with_work<W: NativeHostWork>(
+    file: &File, work: &mut W,
+) -> Result<(), W::Error> {
+    validate_private_state_descriptor_with_work(file, false, work)
+}
+
+/// Holds a prepared cleanup name and reservation before exclusive creation.
+/// The only callback is crate-private SDK code; no consumer receives a File.
+pub(crate) fn with_private_state_temporary(
+    parent: &Dir, name: &Path, original: &crate::materializer::NativeMaterializationWork,
+    operation: impl FnOnce(&mut File, &mut bool) -> Result<(), crate::materializer::NativeTreeMaterializationError>,
+) -> Result<(), crate::materializer::NativeTreeMaterializationError> {
+    require_leaf(name)?;
+    #[cfg(unix)]
+    return unix_name_with_work(name.as_os_str(), &mut &*original, |name, work| {
+        use std::os::fd::AsRawFd as _;
+        let cleanup = original.reserve_cleanup_write()?;
+        let mut file = open_unix_named_with_mode(parent, name,
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
+            0o600, || work.started_io(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED }))?;
+        let mut published = false;
+        let result = validate_private_state_file_with_work(&file, work)
+            .and_then(|()| operation(&mut file, &mut published));
+        drop(file);
+        if published {
+            drop(cleanup);
+            return result;
+        }
+        let (removed, recorded) = cleanup.attempt_recorded(|| {
+            // SAFETY: held parent and pre-funded terminated leaf outlive this
+            // mandatory cleanup, even after quota refusal or cancellation.
+            if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) } != 0 {
+                Err(io::Error::last_os_error())
+            } else { Ok(()) }
+        });
+        match result {
+            Err(error) => Err(error),
+            Ok(()) => { recorded?; removed?; Err(crate::materializer::NativeTreeMaterializationError::InvalidLayout) }
+        }
+    });
+    #[cfg(windows)]
+    return with_wide_path_with_work(name, &mut &*original, |name, work| {
+        use windows::Wdk::Storage::FileSystem::{FILE_DISPOSITION_INFORMATION, FileDispositionInformation};
+        let cleanup = original.reserve_cleanup_write()?;
+        let mut file = create_windows_provisional_file_with_work(parent, name, work)?;
+        let mut published = false;
+        let result = keep_windows_created_file_with_work(&file, work)
+            .and_then(|()| validate_private_state_file_with_work(&file, work))
+            .and_then(|()| operation(&mut file, &mut published));
+        if published {
+            drop(cleanup);
+            drop(file);
+            return result;
+        }
+        let (removed, recorded) = cleanup.attempt_recorded(|| windows_set_information_held(
+            &file, &FILE_DISPOSITION_INFORMATION { DeleteFile: true }, FileDispositionInformation,
+        ));
+        drop(file);
+        match result {
+            Err(error) => Err(error),
+            Ok(()) => { recorded?; removed?; Err(crate::materializer::NativeTreeMaterializationError::InvalidLayout) }
+        }
+    });
+}
+
 
 /// Opens exactly one held directory component; no ambient relative reopen.
 pub(crate) fn open_builtin_directory_with_work<W: NativeHostWork>(
@@ -1784,7 +1921,7 @@ fn ordinary_error(error: DemandError) -> io::Error {
 fn require_leaf(path: &Path) -> io::Result<()> {
     let mut components = path.components();
     if !matches!(components.next(), Some(std::path::Component::Normal(_))) || components.next().is_some() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "expected one native leaf name"));
+        return Err(io::ErrorKind::InvalidInput.into());
     }
     Ok(())
 }
@@ -1878,9 +2015,13 @@ fn rename_no_replace_held_core<W: NativeHostWork>(
         let header = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName);
         let bytes = header.checked_add(name_bytes).ok_or(crate::WorkError::Overflow)?;
         let words = bytes.max(std::mem::size_of::<FILE_RENAME_INFORMATION>()).div_ceil(8);
-        let allocation = work.claim(words as u64 * 8)?;
-        let mut buffer = vec![0u64; words];
+        let mut allocation = work.claim(words as u64 * 8)?;
+        let mut buffer = Vec::new();
+        let reserved = buffer.try_reserve_exact(words);
+        let reconciled = work.reconcile_allocation(&mut allocation, buffer.capacity() as u64 * 8);
         let result = (|| {
+            reserved.map_err(W::allocation_failed).and(reconciled)?;
+            buffer.resize(words, 0u64);
             let encoded = WorkCounters { bytes_encoded: name_bytes as u64, ..WorkCounters::UNCHARGED };
             work.admit(encoded)?;
             work.record(encoded)?;
@@ -1892,7 +2033,7 @@ fn rename_no_replace_held_core<W: NativeHostWork>(
                 std::ptr::addr_of_mut!((*information).FileNameLength).write(u32::try_from(name_bytes).map_err(|_| crate::WorkError::Overflow)?);
                 let tail = buffer.as_mut_ptr().cast::<u8>().add(header).cast::<u16>();
                 for (index, unit) in to_name.as_os_str().encode_wide().enumerate() {
-                    if unit == 0 { return Err(io::Error::new(io::ErrorKind::InvalidInput, "rename name contains NUL").into()); }
+                    if unit == 0 { return Err(W::invalid_request()); }
                     tail.add(index).write(unit);
                 }
             }
@@ -3393,10 +3534,16 @@ pub(crate) fn with_wide_path_with_work<W: NativeHostWork, T>(
     let bytes = units.checked_mul(2).ok_or(crate::WorkError::Overflow)? as u64;
     let encoded = WorkCounters { bytes_encoded: bytes, ..WorkCounters::UNCHARGED };
     work.admit(encoded)?;
-    let allocation = work.claim(bytes)?;
-    let mut name = Vec::with_capacity(units);
-    name.extend(path.as_os_str().encode_wide().map(|unit| if unit == u16::from(b'/') { u16::from(b'\\') } else { unit }));
-    let result = (|| { work.record(encoded)?; operation(&name, work) })();
+    let mut allocation = work.claim(bytes)?;
+    let mut name = Vec::new();
+    let reserved = name.try_reserve_exact(units);
+    let reconciled = work.reconcile_allocation(&mut allocation, name.capacity() as u64 * 2);
+    let result = (|| {
+        reserved.map_err(W::allocation_failed).and(reconciled)?;
+        name.extend(path.as_os_str().encode_wide().map(|unit| if unit == u16::from(b'/') { u16::from(b'\\') } else { unit }));
+        work.record(encoded)?;
+        operation(&name, work)
+    })();
     drop(name);
     work.release(allocation)?;
     result
@@ -4063,14 +4210,22 @@ fn clone_directory_with<E: From<io::Error>>(
 
 #[cfg(unix)]
 fn open_unix_named_with<E: From<io::Error>>(
-    directory: &Dir, name: &std::ffi::CStr, mut flags: i32,
+    directory: &Dir, name: &std::ffi::CStr, flags: i32,
+    before: impl FnMut() -> Result<(), E>,
+) -> Result<File, E> {
+    open_unix_named_with_mode(directory, name, flags, 0o666, before)
+}
+
+#[cfg(unix)]
+fn open_unix_named_with_mode<E: From<io::Error>>(
+    directory: &Dir, name: &std::ffi::CStr, mut flags: i32, mode: libc::mode_t,
     mut before: impl FnMut() -> Result<(), E>,
 ) -> Result<File, E> {
     use std::os::fd::{AsRawFd as _, FromRawFd as _};
     loop {
         before()?;
         // SAFETY: the held parent and terminated single-component name are live.
-        let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags, 0o666) };
+        let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags, mode) };
         if fd >= 0 {
             // SAFETY: openat returned a new owned descriptor.
             return Ok(unsafe { File::from_raw_fd(fd) });
@@ -4363,6 +4518,20 @@ impl HostStatReader {
 }
 
 impl HostRoot {
+    /// Creates only relative directories beneath this already-held state root.
+    pub(crate) fn create_directories_for_state_with_work<W: NativeHostWork>(
+        &self, relative: &Path, work: &mut W,
+    ) -> Result<(), W::Error> {
+        create_directories_held_with_work(&self.directory, relative, work).map(|_| ())
+    }
+
+    pub(crate) fn validate_private_state_directory_with_work<W: NativeHostWork>(
+        &self, relative: &Path, work: &mut W,
+    ) -> Result<(), W::Error> {
+        let directory = self.open_dir_held_with_work(relative, work)?;
+        validate_private_state_descriptor_with_work(&directory, true, work)
+    }
+
     pub(crate) fn open_dir_held_measured(&self, path: &Path, work: &mut DemandWork) -> Result<Dir, DemandError> {
         self.open_dir_held_with_work(path, work)
     }
@@ -6653,7 +6822,7 @@ pub(crate) fn create_windows_directory_with_work<W: NativeHostWork>(directory: &
         Ok(information)
     })?;
     if information.FileAttributes & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "directory is a reparse point").into());
+        return Err(W::invalid_request());
     }
     Ok(file)
 }
@@ -6796,7 +6965,7 @@ pub(crate) fn open_windows_leaf_with_options_with_work<W: NativeHostWork>(parent
         Ok(information)
     })?;
     if information.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "file is a reparse point").into());
+        return Err(W::invalid_request());
     }
     Ok(file)
 }
