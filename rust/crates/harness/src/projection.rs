@@ -10,7 +10,6 @@ use crate::{
     model::{FileProjectionPolicy, ModelContent, ModelContentPart, ModelMessage, ModelRole},
     tool::ToolInvocation,
 };
-use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
 use std::collections::{HashMap, HashSet};
@@ -1379,6 +1378,7 @@ async fn resolve_attachments<R: ContentResidencyVerifier + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acyclic_stream::BoxProviderFuture as BoxFuture;
     use crate::conversation::{
         ConversationMessage, FileDescriptor, VolumeClass, VolumeOwner, VolumeRef,
     };

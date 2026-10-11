@@ -8,6 +8,8 @@ use crate::{Capabilities, Error, OperationId, Result, TaskId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
+#[cfg(feature = "filesystem")]
+use std::sync::Arc;
 
 mod root_bootstrap;
 pub use root_bootstrap::{

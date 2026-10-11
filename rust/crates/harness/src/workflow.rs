@@ -995,9 +995,7 @@ pub struct DurableWorkflowHost {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     checkpoint_custody: Option<acyclic_fs::NativeAllocation>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    index_custody: Vec<acyclic_fs::NativeAllocation>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    index_vector_custody: Option<acyclic_fs::NativeAllocation>,
+    index_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl DurableWorkflowHost {
@@ -1065,9 +1063,7 @@ impl DurableWorkflowHost {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             checkpoint_custody: observed.custody.take(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            index_custody: Vec::new(),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            index_vector_custody: None,
+            index_custody: None,
         };
         let mut keys = BTreeSet::new();
         loop {
@@ -1253,18 +1249,14 @@ impl DurableWorkflowHost {
     {
         self.require_original_native_work(work)?;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let original_index_custody = self.index_custody.len();
-        let original_index_bytes = self.index_custody.last().map(acyclic_fs::NativeAllocation::bytes);
+        let original_index_bytes = self.index_custody.as_ref().map(acyclic_fs::NativeAllocation::bytes);
         let result = self.step_checked_untraced(
             operation_id, idempotency_key, input, check, Some(&io),
         ).await;
         if result.is_err() {
-            self.index_custody.truncate(original_index_custody);
-            if let (Some(previous), Some(bytes)) =
-                (self.index_custody.last_mut(), original_index_bytes)
-            {
-                // Only the unconstructed new slots retire; existing index ownership is unchanged, with no admission/IO/cancellation.
-                let _ = previous.substitute(bytes);
+            match (self.index_custody.as_mut(), original_index_bytes) {
+                (Some(previous), Some(bytes)) => { let _ = previous.substitute(bytes); }
+                _ => self.index_custody = None,
             }
         }
         let retained = result.as_ref().map_or(0, |(_, checkpoint, transition)| {
@@ -1421,43 +1413,14 @@ impl DurableWorkflowHost {
                 code: crate::wire::ErrorCode::Invalid,
                 reason: "native workflow index slot overflow",
             })?;
-        let slots_io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        slots_io.retain_owned(bytes)?;
-        let mut incoming = slots_io.into_native_custody(bytes)?;
-        if let Some(previous) = self.index_custody.last_mut() {
-            if previous.work().shares_ledger(incoming.work()) {
-                previous.absorb(&mut incoming).map_err(|cause| Error::NativeWork {
-                    cause, custody: Some(incoming),
-                })?;
-                return Ok(());
-            }
+        let mut incoming = work.retain_owned(bytes)?;
+        if let Some(previous) = &mut self.index_custody {
+            previous.absorb(&mut incoming).map_err(|cause| Error::NativeWork {
+                cause, custody: Some(incoming),
+            })?;
+        } else {
+            self.index_custody = Some(incoming);
         }
-        if self.index_custody.len() == self.index_custody.capacity() {
-            let count = self.index_custody.capacity().checked_mul(2)
-                .map(|count| count.max(4)).ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "native workflow index custody capacity overflow",
-                })?;
-            let capacity = count.checked_mul(std::mem::size_of::<acyclic_fs::NativeAllocation>())
-                .ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "native workflow index custody capacity overflow",
-                })? as u64;
-            let storage_io = crate::filesystem::PreparationIo::from_native_work(work)?;
-            storage_io.retain_owned(capacity)?;
-            storage_io.allocation_attempt(capacity)?;
-            self.index_custody.try_reserve_exact(count - self.index_custody.len())
-                .map_err(Error::Allocation)?;
-            self.index_vector_custody = Some(storage_io.into_native_custody(capacity)?);
-            let actual = (self.index_custody.capacity()
-                * std::mem::size_of::<acyclic_fs::NativeAllocation>()) as u64;
-            if let Some(guard) = &mut self.index_vector_custody {
-                guard.resize_retained(actual).map_err(|cause| Error::NativeWork {
-                    cause, custody: None,
-                })?;
-            }
-        }
-        self.index_custody.push(incoming);
         Ok(())
     }
 }
@@ -1550,17 +1513,9 @@ fn validate_commands(
 fn validate_workflow_key(
     key: &IdempotencyKey, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if io.is_some() {
-        return if crate::contract::is_valid_idempotency_key(&key.0) {
-            Ok(())
-        } else {
-            Err(workflow_invalid_error(io, "idempotency key is invalid"))
-        };
+    if key.0.is_empty() || key.0.chars().any(char::is_control) {
+        return Err(workflow_invalid_error(io, "idempotency key is invalid"));
     }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    let _ = io;
-    IdempotencyKey::new(key.0.clone())?;
     Ok(())
 }
 
