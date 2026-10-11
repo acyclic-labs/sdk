@@ -58,12 +58,16 @@ impl BuiltinMediator {
     /// Admits/reconciles one actual upstream request through the SDK durable
     /// runner. A repeated ID with different method/arguments conflicts; it does
     /// not acquire a fresh mutation identity after a lost ACK.
+    ///
+    /// A successful SDK tool outcome is not a correlated protocol receipt until
+    /// its actual response envelope validates. Missing, malformed, mismatched,
+    /// or notification-only replies remain indeterminate under the original
+    /// operation; this gate never dispatches a replacement invocation.
     pub async fn dispatch(
         &self,
         request: codex_exec_server_protocol::JSONRPCRequest,
     ) -> Result<codex_exec_server_protocol::JSONRPCMessage> {
-        use acyclic_harness::{Outcome, executor::{decode_json, encode_json}, tool::ToolInvocation};
-        use codex_exec_server_protocol::JSONRPCMessage;
+        use acyclic_harness::{Outcome, executor::encode_json, tool::ToolInvocation};
         let binding = self.bindings.get(&request.method)
             .ok_or_else(|| Error::Unauthorized(format!("exec-server method {} is not admitted", request.method)))?;
         // Hash the tagged canonical ID: integer 1 and string "1" remain distinct.
@@ -80,12 +84,25 @@ impl BuiltinMediator {
             Outcome::Cancelled => return Err(Error::InteractionRejected(acyclic_harness::InteractionRejection::Cancelled)),
             Outcome::Indeterminate { operation_id } => return Err(Error::Indeterminate(operation_id)),
         };
-        let response: JSONRPCMessage = decode_json(&encode_json(&value)?)?;
-        match &response {
-            JSONRPCMessage::Response(reply) if reply.id == request_id => Ok(response),
-            JSONRPCMessage::Error(reply) if reply.id == request_id => Ok(response),
-            _ => Err(Error::Indeterminate(invocation.operation_id)),
-        }
+        correlated_reply(value, &request_id, invocation.operation_id)
+    }
+}
+
+fn correlated_reply(
+    value: serde_json::Value,
+    request_id: &codex_exec_server_protocol::RequestId,
+    operation_id: OperationId,
+) -> Result<codex_exec_server_protocol::JSONRPCMessage> {
+    use codex_exec_server_protocol::JSONRPCMessage;
+    // The durable runtime already owns decoded JSON. Consume that value through
+    // the upstream bounded envelope decoder; do not encode and copy the entire
+    // file/process/HTTP response merely to parse it a second time.
+    let response: JSONRPCMessage = serde_json::from_value(value)
+        .map_err(|_| Error::Indeterminate(operation_id))?;
+    match &response {
+        JSONRPCMessage::Response(reply) if &reply.id == request_id => Ok(response),
+        JSONRPCMessage::Error(reply) if &reply.id == request_id => Ok(response),
+        _ => Err(Error::Indeterminate(operation_id)),
     }
 }
 
@@ -99,4 +116,65 @@ fn builtin_method(method: &str) -> bool {
         FS_CREATE_DIRECTORY_METHOD | FS_GET_METADATA_METHOD | FS_CANONICALIZE_METHOD |
         FS_READ_DIRECTORY_METHOD | FS_WALK_METHOD | FS_REMOVE_METHOD | FS_COPY_METHOD |
         CAPABILITY_ROOTS_DISCOVER_METHOD | HTTP_REQUEST_METHOD)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_exec_server_protocol::{
+        JSONRPCError, JSONRPCErrorError, JSONRPCMessage, JSONRPCNotification,
+        JSONRPCResponse, RequestId,
+    };
+
+    #[test]
+    fn actual_upstream_response_and_error_keep_the_original_request_identity() -> Result<()> {
+        let operation = OperationId::from_bytes([7; 16]);
+        let id = RequestId::String("original-process-start".into());
+        let response = JSONRPCMessage::Response(JSONRPCResponse {
+            id: id.clone(),
+            result: serde_json::json!({"processId": "actual-original-process"}),
+        });
+        let encoded = serde_json::to_value(&response)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(correlated_reply(encoded, &id, operation)?, response);
+        let rejected = JSONRPCMessage::Error(JSONRPCError {
+            id: id.clone(),
+            error: JSONRPCErrorError {
+                code: -32602,
+                data: None,
+                message: "original request rejected".into(),
+            },
+        });
+        let encoded = serde_json::to_value(&rejected)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(correlated_reply(encoded, &id, operation)?, rejected);
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_mismatched_and_notification_replies_remain_original_indeterminate() -> Result<()> {
+        let operation = OperationId::from_bytes([11; 16]);
+        let id = RequestId::Integer(1);
+        let mismatched = JSONRPCMessage::Response(JSONRPCResponse {
+            id: RequestId::String("1".into()),
+            result: serde_json::json!({"processId": "original-process"}),
+        });
+        let notification = JSONRPCMessage::Notification(JSONRPCNotification {
+            method: codex_exec_server_protocol::EXEC_EXITED_METHOD.into(),
+            params: Some(serde_json::json!({"processId": "original-process", "exitCode": 0})),
+        });
+        let values = [
+            serde_json::Value::Null,
+            serde_json::json!({"id": 1, "error": {"code": "not-an-integer", "message": "invalid provider reply"}}),
+            serde_json::to_value(mismatched).map_err(|error| Error::Invalid(error.to_string()))?,
+            serde_json::to_value(notification).map_err(|error| Error::Invalid(error.to_string()))?,
+        ];
+        for value in values {
+            assert!(matches!(
+                correlated_reply(value, &id, operation),
+                Err(Error::Indeterminate(actual)) if actual == operation
+            ));
+        }
+        Ok(())
+    }
 }
