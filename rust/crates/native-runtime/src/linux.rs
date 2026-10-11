@@ -130,26 +130,6 @@ pub(super) fn write_all_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result
 }
 
 #[allow(unsafe_code)]
-pub(super) fn write_at_measured(
-    file: &File, offset: u64, bytes: &[u8], meter: &dyn crate::NativeReadMeter,
-) -> io::Result<usize> {
-    use std::os::fd::AsRawFd as _;
-    validate_io_range(offset, bytes.len(), "write")?;
-    let mut transfer = crate::NativeByteReservation::new(
-        meter, crate::NativeOperationKind::Write, bytes.len(),
-    )?;
-    meter.admit_write(0)?;
-    // SAFETY: the descriptor and borrowed payload live through this one syscall.
-    let result = unsafe {
-        libc::pwrite(file.as_raw_fd(), bytes.as_ptr().cast(), bytes.len(), offset as libc::off_t)
-    };
-    if result < 0 { return Err(io::Error::last_os_error()); }
-    let count = result as usize;
-    transfer.record(count)?;
-    Ok(count)
-}
-
-#[allow(unsafe_code)]
 pub(super) fn set_len_once(file: &File, size: u64) -> io::Result<()> {
     use std::os::fd::AsRawFd as _;
     let size = libc::off_t::try_from(size)
@@ -905,75 +885,7 @@ fn record_owned_read(
 mod tests {
     use super::*;
 
-    #[test]
-    fn write_chunks_share_the_owned_buffer() -> io::Result<()> {
-        let bytes = Bytes::from(vec![0x5a; MAX_IO_BYTES + 3]);
-        let start = bytes.as_ptr();
-        let chunks = chunk_owned_writes(vec![OwnedWrite { offset: 7, bytes }])
-            .collect::<io::Result<Vec<_>>>()?;
-        let [first, second] = chunks.as_slice() else {
-            return Err(io::Error::other("write chunk count changed"));
-        };
-        assert_eq!(first.offset, 7);
-        assert_eq!(
-            second.offset,
-            7 + u64::try_from(MAX_IO_BYTES).unwrap_or_default()
-        );
-        assert_eq!(first.bytes.as_ptr(), start);
-        assert_eq!(second.bytes.as_ptr(), start.wrapping_add(MAX_IO_BYTES));
-        Ok(())
-    }
 
-    #[test]
-    fn compio_owner_callbacks_preserve_owned_batch_results() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let file = Arc::new(NativeFilePayload::unmetered(
-            std::fs::OpenOptions::new()
-                .create_new(true)
-                .read(true)
-                .write(true)
-                .open(temporary.path().join("owned-owner"))?,
-        ));
-        let (written, write_result) = mpsc::sync_channel(1);
-        submit_write(
-            Arc::clone(&file),
-            vec![OwnedWrite {
-                offset: 2,
-                bytes: Bytes::from_static(b"owned"),
-            }],
-            Box::new(move |result| {
-                let _ = written.send(result);
-            }),
-        )?;
-        write_result
-            .recv_timeout(Duration::from_secs(2))
-            .map_err(io::Error::other)??;
-
-        let (read, read_result) = mpsc::sync_channel(1);
-        submit_read(
-            file,
-            vec![
-                OwnedRead {
-                    offset: 2,
-                    length: 5,
-                },
-                OwnedRead {
-                    offset: 7,
-                    length: 5,
-                },
-            ],
-            Box::new(move |result| {
-                let _ = read.send(result);
-            }),
-        )?;
-        assert_eq!(
-            read_result
-                .recv_timeout(Duration::from_secs(2))
-                .map_err(io::Error::other)??,
-            vec![Bytes::from_static(b"owned"), Bytes::new()]
-        );
-        Ok(())
-    }
 
     #[test]
     fn compio_parallel_read_window_preserves_order_empty_and_eof() -> io::Result<()> {

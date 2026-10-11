@@ -39,30 +39,9 @@ impl std::fmt::Debug for NativeFilePayload {
 }
 
 #[cfg(unix)]
-impl std::os::fd::AsRawFd for NativeFilePayload {
-    fn as_raw_fd(&self) -> std::os::fd::RawFd {
-        std::os::fd::AsRawFd::as_raw_fd(&self.file)
-    }
-}
-
-#[cfg(unix)]
 impl std::os::fd::AsFd for NativeFilePayload {
     fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
         std::os::fd::AsFd::as_fd(&self.file)
-    }
-}
-
-#[cfg(windows)]
-impl std::os::windows::io::AsRawHandle for NativeFilePayload {
-    fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
-        std::os::windows::io::AsRawHandle::as_raw_handle(&self.file)
-    }
-}
-
-#[cfg(windows)]
-impl std::os::windows::io::AsHandle for NativeFilePayload {
-    fn as_handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {
-        std::os::windows::io::AsHandle::as_handle(&self.file)
     }
 }
 
@@ -73,7 +52,6 @@ type FileIdentity = linux::FileIdentity;
 #[cfg(target_vendor = "apple")]
 type FileIdentity = apple::FileIdentity;
 
-#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 struct FileHealth {
     tail: FileSequencer,
     uncertain: Arc<AtomicBool>,
@@ -401,10 +379,7 @@ fn with_file_admission<T>(file: &File, operation: impl FnOnce() -> io::Result<T>
 /// One file owned by the native I/O runtime.
 pub struct NativeFile {
     file: Arc<NativeFilePayload>,
-    tail: FileSequencer,
-    uncertain: Arc<AtomicBool>,
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    _health: Arc<FileHealth>,
+    health: Arc<FileHealth>,
     #[cfg(windows)]
     overlapped: bool,
 }
@@ -415,16 +390,14 @@ impl NativeFile {
         let file = Arc::new(NativeFilePayload::unmetered(file));
         #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
         let health = shared_file_health(&file)?;
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        let (tail, uncertain) = (Arc::clone(&health.tail), Arc::clone(&health.uncertain));
         #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-        let (tail, uncertain) = (Arc::new(Mutex::new(None)), Arc::new(AtomicBool::new(false)));
+        let health = Arc::new(FileHealth {
+            tail: Arc::new(Mutex::new(None)), uncertain: Arc::new(AtomicBool::new(false)),
+            poison_anchor: Mutex::new(None),
+        });
         Ok(Self {
             file,
-            tail,
-            uncertain,
-            #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-            _health: health,
+            health,
             #[cfg(windows)]
             overlapped: false,
         })
@@ -472,10 +445,8 @@ impl NativeFile {
                 return Err((error, file));
             }
         };
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        let (tail, uncertain) = (Arc::clone(&health.tail), Arc::clone(&health.uncertain));
         #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-        let (tail, uncertain) = {
+        let health = {
             if let Err(error) = meter.allocate(arc_allocation_bytes::<Mutex<Option<Arc<OperationFence>>>>() as u64) {
                 let payload = Arc::try_unwrap(file).ok().expect("unpublished native file import");
                 meter.release(file_bytes as u64);
@@ -489,12 +460,20 @@ impl NativeFile {
                 meter.release(file_bytes as u64);
                 return Err((error, payload.file));
             }
-            (tail, Arc::new(AtomicBool::new(false)))
+            let uncertain = Arc::new(AtomicBool::new(false));
+            if let Err(error) = meter.allocate(arc_allocation_bytes::<FileHealth>() as u64) {
+                drop(tail);
+                drop(uncertain);
+                meter.release((arc_allocation_bytes::<Mutex<Option<Arc<OperationFence>>>>()
+                    + arc_allocation_bytes::<AtomicBool>()) as u64);
+                let payload = Arc::try_unwrap(file).ok().expect("unpublished native file import");
+                meter.release(file_bytes as u64);
+                return Err((error, payload.file));
+            }
+            Arc::new(FileHealth { tail, uncertain, poison_anchor: Mutex::new(None) })
         };
         Ok(Self {
-            file, tail, uncertain,
-            #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-            _health: health,
+            file, health,
             #[cfg(windows)]
             overlapped: false,
         })
@@ -514,7 +493,7 @@ impl NativeFile {
         let health = 0;
         #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
         let health = arc_allocation_bytes::<Mutex<Option<Arc<OperationFence>>>>()
-            + arc_allocation_bytes::<AtomicBool>();
+            + arc_allocation_bytes::<AtomicBool>() + arc_allocation_bytes::<FileHealth>();
         (arc_allocation_bytes::<NativeFilePayload>() + health) as u64
     }
 
@@ -539,8 +518,7 @@ impl NativeFile {
     /// Metered adoption of an already-authorized overlapped Windows handle.
     ///
     /// # Safety
-    /// The ownership and no-completion-port requirements of
-    /// `from_overlapped_file_unchecked` also apply here.
+    /// Same requirements as [`Self::from_overlapped_file_unchecked`].
     #[cfg(windows)]
     #[allow(unsafe_code)]
     pub unsafe fn from_overlapped_file_measured_unchecked(
@@ -555,8 +533,7 @@ impl NativeFile {
     /// Imports an authorized overlapped handle with intrinsic original custody.
     ///
     /// # Safety
-    /// The sole-ownership and no-completion-port requirements of
-    /// `from_overlapped_file_unchecked` also apply here.
+    /// Same requirements as [`Self::from_overlapped_file_unchecked`].
     #[cfg(windows)]
     #[allow(unsafe_code)]
     pub unsafe fn from_overlapped_file_measured_owned_unchecked(
@@ -573,10 +550,7 @@ impl NativeFile {
         UnitCompletion::submit(
             Arc::clone(&self.file),
             NativeUnitOperation::SetLen(size),
-            Some(Arc::clone(&self.tail)),
-            Some(Arc::clone(&self.uncertain)),
-            #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-            Some(Arc::clone(&self._health)),
+            Some(Arc::clone(&self.health)),
             obs::file_span!(DEBUG, "acyclic.runtime.set_len"),
             #[cfg(windows)]
             self.overlapped,
@@ -592,10 +566,7 @@ impl NativeFile {
         UnitCompletion::submit(
             Arc::clone(&self.file),
             NativeUnitOperation::Control(Box::new(operation)),
-            Some(Arc::clone(&self.tail)),
-            Some(Arc::clone(&self.uncertain)),
-            #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-            Some(Arc::clone(&self._health)),
+            Some(Arc::clone(&self.health)),
             obs::file_span!(DEBUG, "acyclic.runtime.control"),
             #[cfg(windows)]
             self.overlapped,
@@ -614,7 +585,7 @@ impl NativeFile {
         offset: u64,
         length: usize,
         meter: Arc<dyn NativeReadMeter>,
-    ) -> io::Result<NativeReadCompletion> {
+    ) -> io::Result<NativeCompletion<NativeReadResult>> {
         self.read_bounded_async_inner(offset, length, meter, false)
     }
 
@@ -633,12 +604,11 @@ impl NativeFile {
         let allocation = ReadAllocation::new(
             &meter, arc_allocation_bytes::<Mutex<CompletionState<(B, usize)>>>(),
         )?;
-        let state = Arc::new(Mutex::new(CompletionState { _allocation: Some(allocation), ..CompletionState::default() }));
+        let state = Arc::new(Mutex::new(CompletionState { task_pending: true, _allocation: Some(allocation), ..CompletionState::default() }));
         let output = Arc::clone(&state);
         #[cfg(windows)]
         let overlapped = self.overlapped;
-        let operation = move |file: Arc<NativeFilePayload>, meter: Arc<dyn NativeReadMeter>,
-                              completion: Option<Arc<OperationFence>>| {
+        let operation = move |file: Arc<NativeFilePayload>, meter: Arc<dyn NativeReadMeter>| {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let destination = storage.as_mut().get_mut(..length)
                     .ok_or(io::ErrorKind::InvalidInput)?;
@@ -653,34 +623,28 @@ impl NativeFile {
             drop(file);
             drop(meter);
             match result {
-                Ok(result) => finish_job(&output, result, completion),
-                Err(payload) => finish_panicked_job(&output, payload, completion),
+                Ok(result) => output.lock().unwrap_or_else(std::sync::PoisonError::into_inner).result = Some(result),
+                Err(payload) => output.stage_panic(payload),
             }
         };
         let allocation = ReadAllocation::new(&meter, std::mem::size_of_val(&operation))?;
-        Ok(NativeCompletion {
-            pending: Some(NativeJob::PreparedRead {
+        Ok(NativeCompletion::pending(NativeJob::PreparedRead {
                 file: Arc::clone(&self.file), operation: Box::new(operation),
-                meter, completion: None, _allocation: allocation,
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                _health: Some(Arc::clone(&self._health)),
-            }),
-            state, waiter: None, sequencer: Some(Arc::clone(&self.tail)),
-            uncertain: Some(Arc::clone(&self.uncertain)), predecessor: None,
-            completion: None, terminated: false,
-        })
+                meter, completion: None, terminal: state.clone(), _allocation: allocation,
+                health: Some(Arc::clone(&self.health)),
+            }, state, &NATIVE_WORKERS))
     }
 
     fn read_bounded_async_inner(
         &self, offset: u64, length: usize, meter: Arc<dyn NativeReadMeter>,
         require_full: bool,
-    ) -> io::Result<NativeReadCompletion> {
+    ) -> io::Result<NativeCompletion<NativeReadResult>> {
         meter.check()?;
         meter.admit_bytes(length)?;
         if length == 0 {
-            return Ok(NativeReadCompletion::ready(NativeReadResult {
+            return Ok(NativeCompletion::ready(Ok(NativeReadResult {
                 bytes: Bytes::new(), buffer_capacity: 0, _allocation: None,
-            }));
+            })));
         }
         offset.checked_add(length as u64)
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
@@ -692,8 +656,7 @@ impl NativeFile {
             &meter, arc_allocation_bytes::<Mutex<CompletionState<NativeReadResult>>>(),
         )?;
         let state = Arc::new(Mutex::new(CompletionState { _allocation: Some(allocation), ..CompletionState::default() }));
-        Ok(NativeReadCompletion::pending(NativeCompletion {
-            pending: Some(NativeJob::BoundedRead {
+        Ok(NativeCompletion::pending(NativeJob::BoundedRead {
                 file: Arc::clone(&self.file),
                 #[cfg(windows)]
                 overlapped: self.overlapped,
@@ -703,17 +666,8 @@ impl NativeFile {
                 meter,
                 state: Arc::clone(&state),
                 completion: None,
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                _health: Some(Arc::clone(&self._health)),
-            }),
-            state,
-            waiter: None,
-            sequencer: Some(Arc::clone(&self.tail)),
-            uncertain: Some(Arc::clone(&self.uncertain)),
-            predecessor: None,
-            completion: None,
-            terminated: false,
-        }))
+                health: Some(Arc::clone(&self.health)),
+            }, state, &NATIVE_WORKERS))
     }
 
     /// Submits owned positional reads while retaining this handle.
@@ -722,10 +676,7 @@ impl NativeFile {
         ReadBatch::submit(
             Arc::clone(&self.file),
             reads,
-            Some(Arc::clone(&self.tail)),
-            Some(Arc::clone(&self.uncertain)),
-            #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-            Some(Arc::clone(&self._health)),
+            Some(Arc::clone(&self.health)),
             obs::file_span!(DEBUG, "acyclic.runtime.read_batch"),
             #[cfg(windows)]
             self.overlapped,
@@ -738,10 +689,7 @@ impl NativeFile {
         UnitCompletion::submit(
             Arc::clone(&self.file),
             NativeUnitOperation::Write(writes),
-            Some(Arc::clone(&self.tail)),
-            Some(Arc::clone(&self.uncertain)),
-            #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-            Some(Arc::clone(&self._health)),
+            Some(Arc::clone(&self.health)),
             obs::file_span!(DEBUG, "acyclic.runtime.write_batch"),
             #[cfg(windows)]
             self.overlapped,
@@ -754,10 +702,7 @@ impl NativeFile {
         UnitCompletion::submit(
             Arc::clone(&self.file),
             NativeUnitOperation::Sync(durability),
-            Some(Arc::clone(&self.tail)),
-            Some(Arc::clone(&self.uncertain)),
-            #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-            Some(Arc::clone(&self._health)),
+            Some(Arc::clone(&self.health)),
             obs::file_span!(DEBUG, "acyclic.runtime.sync"),
             #[cfg(windows)]
             self.overlapped,
@@ -772,7 +717,7 @@ impl NativeFile {
         meter: Arc<dyn NativeReadMeter>,
     ) -> io::Result<UnitCompletion> {
         self.validate_bounded_write(offset, bytes.len(), meter.as_ref())?;
-        self.submit_bounded_unit(NativeBoundedUnitOperation::Write { offset, bytes }, meter)
+        self.submit_bounded_unit(NativeUnitOperation::BoundedWrite { offset, bytes }, meter)
     }
 
     /// Writes a caller-accounted payload on this same ordered native driver.
@@ -806,14 +751,14 @@ impl NativeFile {
     pub fn set_len_bounded_async(
         &self, size: u64, meter: Arc<dyn NativeReadMeter>,
     ) -> io::Result<UnitCompletion> {
-        self.submit_bounded_unit(NativeBoundedUnitOperation::SetLen(size), meter)
+        self.submit_bounded_unit(NativeUnitOperation::SetLen(size), meter)
     }
 
     /// Flushes at the existing file fence, charging only a supported OS flush.
     pub fn sync_bounded_async(
         &self, durability: Durability, meter: Arc<dyn NativeReadMeter>,
     ) -> io::Result<UnitCompletion> {
-        self.submit_bounded_unit(NativeBoundedUnitOperation::Sync(durability), meter)
+        self.submit_bounded_unit(NativeUnitOperation::Sync(durability), meter)
     }
 
     /// Executes measured held-handle controls in this file's native order.
@@ -824,33 +769,28 @@ impl NativeFile {
         meter.check()?;
         let allocation = ReadAllocation::new(&meter, std::mem::size_of::<F>())?;
         self.submit_bounded_unit(
-            NativeBoundedUnitOperation::Control {
+            NativeUnitOperation::MeasuredControl {
                 operation: Box::new(operation), _allocation: allocation,
             }, meter,
         )
     }
 
     fn submit_bounded_unit(
-        &self, operation: NativeBoundedUnitOperation, meter: Arc<dyn NativeReadMeter>,
+        &self, operation: NativeUnitOperation, meter: Arc<dyn NativeReadMeter>,
     ) -> io::Result<UnitCompletion> {
         meter.check()?;
         let allocation = ReadAllocation::new(
             &meter, arc_allocation_bytes::<Mutex<CompletionState<()>>>(),
         )?;
         let state = Arc::new(Mutex::new(CompletionState { _allocation: Some(allocation), ..CompletionState::default() }));
-        Ok(NativeCompletion {
-            pending: Some(NativeJob::BoundedUnit {
-                file: Arc::clone(&self.file), operation, meter,
+        Ok(NativeCompletion::pending(NativeJob::Unit {
+                file: Arc::clone(&self.file), operation, meter: Some(meter),
+                span: obs::file_span!(DEBUG, "acyclic.runtime.bounded_unit"),
+                #[cfg(windows)]
+                overlapped: self.overlapped,
                 state: Arc::clone(&state), completion: None,
-                tail: Some(Arc::clone(&self.tail)),
-                uncertain: Some(Arc::clone(&self.uncertain)),
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                _health: Some(Arc::clone(&self._health)),
-            }),
-            state, waiter: None, sequencer: Some(Arc::clone(&self.tail)),
-            uncertain: Some(Arc::clone(&self.uncertain)),
-            predecessor: None, completion: None, terminated: false,
-        })
+                health: Some(Arc::clone(&self.health)),
+            }, state, &NATIVE_WORKERS))
     }
 }
 
@@ -1183,7 +1123,7 @@ pub fn device_control_in_place(
     input: &[u8],
     output: &mut [u8],
 ) -> io::Result<usize> {
-    windows::control_in_place(file, code, input, output)
+    windows::control_in_place(file, code, input, output, None)
 }
 
 /// Applies one measured device request using the existing in-place completion primitive.
@@ -1196,7 +1136,7 @@ pub fn device_control_in_place_measured(
     meter: &dyn NativeReadMeter,
 ) -> io::Result<usize> {
     meter.check()?;
-    windows::control_in_place_measured(file, code, input, output, meter)
+    windows::control_in_place(file, code, input, output, Some((meter, NativeOperationKind::Read)))
 }
 
 /// Applies an actual mutating device request and completion on a held handle.
@@ -1209,7 +1149,7 @@ pub fn device_control_in_place_measured_mutation(
     meter: &dyn NativeReadMeter,
 ) -> io::Result<usize> {
     meter.check()?;
-    windows::control_in_place_measured_mutation(file, code, input, output, meter)
+    windows::control_in_place(file, code, input, output, Some((meter, NativeOperationKind::Write)))
 }
 
 /// One owned positional write whose buffer remains live through completion.
@@ -1239,8 +1179,6 @@ pub fn read_batch_async(file: File, reads: Vec<OwnedRead>) -> ReadBatch {
             Ok(health) => ReadBatch::submit(
                 file,
                 reads,
-                Some(Arc::clone(&health.tail)),
-                Some(Arc::clone(&health.uncertain)),
                 Some(health),
                 obs::file_span!(TRACE, "acyclic.runtime.read_batch"),
                 #[cfg(windows)]
@@ -1253,7 +1191,6 @@ pub fn read_batch_async(file: File, reads: Vec<OwnedRead>) -> ReadBatch {
     ReadBatch::submit(
         file,
         reads,
-        None,
         None,
         obs::file_span!(TRACE, "acyclic.runtime.read_batch"),
     )
@@ -1426,9 +1363,12 @@ pub fn process_status(
     result
 }
 
-/// Runtime-independent completion of an owned native-file operation.
+/// Runtime-independent completion of an owned file or host operation.
 pub struct NativeCompletion<T> {
-    state: Arc<Mutex<CompletionState<T>>>,
+    pool: &'static LazyLock<io::Result<NativeWorkers>>,
+    prepared_wake: Option<Arc<BlockingWaitWake>>,
+    state: Option<Arc<Mutex<CompletionState<T>>>>,
+    ready: Option<io::Result<T>>,
     pending: Option<NativeJob>,
     waiter: Option<Arc<CapacityWaiter>>,
     sequencer: Option<FileSequencer>,
@@ -1437,6 +1377,8 @@ pub struct NativeCompletion<T> {
     completion: Option<Arc<OperationFence>>,
     terminated: bool,
 }
+
+impl<T> Unpin for NativeCompletion<T> {}
 
 /// Completion of one owned native read batch.
 pub type ReadBatch = NativeCompletion<Vec<Bytes>>;
@@ -1451,54 +1393,6 @@ pub struct NativeReadResult {
     /// Actual retained vector capacity, excluding reference-count headers.
     pub buffer_capacity: usize,
     _allocation: Option<ReadAllocation>,
-}
-
-/// A bounded native read on the existing completion engine, or an inline zero-length result with no request, buffer, fence, or wake allocation.
-pub struct NativeReadCompletion(NativeReadCompletionState);
-
-enum NativeReadCompletionState {
-    Ready(Option<NativeReadResult>),
-    Pending(NativeCompletion<NativeReadResult>),
-}
-
-impl NativeReadCompletion {
-    fn ready(value: NativeReadResult) -> Self {
-        Self(NativeReadCompletionState::Ready(Some(value)))
-    }
-
-    fn pending(completion: NativeCompletion<NativeReadResult>) -> Self {
-        Self(NativeReadCompletionState::Pending(completion))
-    }
-
-    /// Waits through the same measured task engine.
-    pub fn wait_measured(
-        self,
-        deadline: Option<std::time::Instant>,
-        cancellation: impl Future<Output = ()>,
-        on_deadline: impl FnOnce(),
-    ) -> io::Result<NativeReadResult> {
-        match self.0 {
-            NativeReadCompletionState::Ready(mut value) =>
-                Ok(value.take().expect("native read polled after completion")),
-            NativeReadCompletionState::Pending(completion) => {
-                let meter = measured_completion_meter(&completion.state)?;
-                wait_measured_completion(completion, meter, None, deadline, cancellation, on_deadline)
-            }
-        }
-    }
-}
-
-impl Future for NativeReadCompletion {
-    type Output = io::Result<NativeReadResult>;
-
-    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
-        match &mut self.get_mut().0 {
-            NativeReadCompletionState::Ready(value) =>
-                Poll::Ready(Ok(value.take().expect("native read polled after completion"))),
-            NativeReadCompletionState::Pending(completion) =>
-                Pin::new(completion).poll(context),
-        }
-    }
 }
 
 /// Filesystem-operation allowance owned by one accepted native request.
@@ -1582,7 +1476,6 @@ impl Drop for OwnedNativeOperationReservation {
     }
 }
 
-
 /// Stack-only custody of one request's possible physical byte transfer.
 pub struct NativeByteReservation<'a> {
     meter: &'a dyn NativeReadMeter,
@@ -1660,7 +1553,6 @@ impl Drop for OwnedNativeByteReservation {
         }
     }
 }
-
 
 /// Invocation-local accounting shared by bounded native I/O.
 pub trait NativeReadMeter: Send + Sync {
@@ -1932,15 +1824,6 @@ fn arc_allocation_bytes<T>() -> usize {
     std::mem::size_of::<T>()
 }
 
-/// Runtime-independent bounded offload for host operations without a native completion path, such as file locks and directory namespace transactions.
-pub struct BlockingIoTask<T> {
-    state: Arc<Mutex<CompletionState<T>>>,
-    pending: Option<NativeJob>,
-    waiter: Option<Arc<CapacityWaiter>>,
-    terminated: bool,
-    prepared_wake: Option<Arc<BlockingWaitWake>>,
-}
-
 thread_local! {
     static INLINE_BLOCKING: Cell<bool> = const { Cell::new(false) };
 }
@@ -1976,7 +1859,7 @@ fn inline_blocking_allowed() -> bool {
 #[must_use]
 pub fn run_blocking_io<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
-) -> BlockingIoTask<T> {
+) -> NativeCompletion<T> {
     blocking_io_task(operation, None, None).expect("unmetered task construction cannot fail")
 }
 
@@ -1984,7 +1867,7 @@ pub fn run_blocking_io<T: Send + 'static>(
 pub fn run_blocking_io_measured<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
     meter: Arc<dyn NativeReadMeter>,
-) -> io::Result<BlockingIoTask<T>> {
+) -> io::Result<NativeCompletion<T>> {
     blocking_io_task(operation, Some(meter), None)
 }
 
@@ -1992,8 +1875,8 @@ pub fn run_blocking_io_measured<T: Send + 'static>(
 pub fn prepare_blocking_io_measured<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
     meter: Arc<dyn NativeReadMeter>,
-) -> io::Result<BlockingIoTask<T>> {
-    ready_workers(&BLOCKING_WORKERS)?;
+) -> io::Result<NativeCompletion<T>> {
+    workers(&BLOCKING_WORKERS, true)?;
     let allocation_meter = meter.allocation_owner().unwrap_or_else(|| Arc::clone(&meter));
     let mut task = blocking_io_task(
         operation, Some(meter), Some(&allocation_meter),
@@ -2007,7 +1890,7 @@ fn blocking_io_task<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
     meter: Option<Arc<dyn NativeReadMeter>>,
     allocation_meter: Option<&Arc<dyn NativeReadMeter>>,
-) -> io::Result<BlockingIoTask<T>> {
+) -> io::Result<NativeCompletion<T>> {
     let allocation_meter = allocation_meter.or(meter.as_ref());
     if let Some(meter) = &meter { meter.check()?; }
     let allocation = allocation_meter.map(|meter| ReadAllocation::new(
@@ -2037,13 +1920,10 @@ fn blocking_io_task<T: Send + 'static>(
     let allocation = allocation_meter.map(|meter| ReadAllocation::new(
         meter, std::mem::size_of_val(&operation),
     )).transpose()?;
-    Ok(BlockingIoTask {
-        pending: Some(NativeJob::Task {
+    Ok(NativeCompletion::pending(NativeJob::Task {
             operation: Box::new(operation), meter, completion: Arc::clone(&state) as Arc<dyn TaskTerminal>,
             _allocation: allocation,
-        }),
-        state, waiter: None, terminated: false, prepared_wake: None,
-    })
+        }, state, &BLOCKING_WORKERS))
 }
 
 #[derive(Default)]
@@ -2194,33 +2074,26 @@ impl<T: Send> TaskTerminal for Mutex<CompletionState<T>> {
 struct FileCompletion<T> {
     state: Arc<Mutex<CompletionState<T>>>,
     fence: Option<Arc<OperationFence>>,
-    uncertain: Option<Arc<AtomicBool>>,
-    _tail: Option<FileSequencer>,
+    health: Option<Arc<FileHealth>>,
     file: Option<Arc<NativeFilePayload>>,
     span: obs::OperationSpan,
     finished: bool,
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    _health: Option<Arc<FileHealth>>,
 }
 
 impl<T> FileCompletion<T> {
     fn new(
         state: Arc<Mutex<CompletionState<T>>>,
         fence: Option<Arc<OperationFence>>,
-        uncertain: Option<Arc<AtomicBool>>,
-        tail: Option<FileSequencer>,
+        health: Option<Arc<FileHealth>>,
         span: obs::OperationSpan,
     ) -> Self {
         Self {
             state,
             fence,
-            uncertain,
-            _tail: tail,
+            health,
             file: None,
             span,
             finished: false,
-            #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-            _health: None,
         }
     }
 
@@ -2229,20 +2102,11 @@ impl<T> FileCompletion<T> {
         self
     }
 
-    fn for_health(mut self,
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        health: Option<Arc<FileHealth>>,
-    ) -> Self {
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        { self._health = health; }
-        self
-    }
-
     fn finish(mut self, result: io::Result<T>) -> Option<Waker> {
         let Self {
             state,
             fence,
-            uncertain,
+            health,
             file,
             span,
             finished,
@@ -2252,13 +2116,13 @@ impl<T> FileCompletion<T> {
             span.record_result(&result);
             #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
             if result.as_ref().err().is_some_and(is_uncertain_io_error)
-                && let (Some(file), Some(uncertain)) = (file.as_ref(), uncertain.as_ref())
+                && let (Some(file), Some(health)) = (file.as_ref(), health.as_ref())
             {
-                poison_file_health(file, uncertain);
+                poison_file_health(file, &health.uncertain);
             }
             // Retire the handle after quarantine decisions and before publishing Ready.
             drop(file.take());
-            let waker = finish_file_job(state, result, fence.take(), uncertain.as_deref());
+            let waker = finish_file_job(state, result, fence.take(), health.as_ref().map(|health| health.uncertain.as_ref()));
             *finished = true;
             waker
         })
@@ -2307,12 +2171,9 @@ enum NativeJob {
         span: obs::OperationSpan,
         #[cfg(windows)]
         overlapped: bool,
-        tail: Option<FileSequencer>,
-        uncertain: Option<Arc<AtomicBool>>,
         state: Arc<Mutex<CompletionState<Vec<Bytes>>>>,
         completion: Option<Arc<OperationFence>>,
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        _health: Option<Arc<FileHealth>>,
+        health: Option<Arc<FileHealth>>,
     },
     BoundedRead {
         file: Arc<NativeFilePayload>,
@@ -2324,43 +2185,29 @@ enum NativeJob {
         meter: Arc<dyn NativeReadMeter>,
         state: Arc<Mutex<CompletionState<NativeReadResult>>>,
         completion: Option<Arc<OperationFence>>,
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        _health: Option<Arc<FileHealth>>,
+        health: Option<Arc<FileHealth>>,
     },
     PreparedRead {
         file: Arc<NativeFilePayload>,
         operation: Box<dyn FnOnce(
-            Arc<NativeFilePayload>, Arc<dyn NativeReadMeter>, Option<Arc<OperationFence>>,
-        ) -> Option<Waker> + Send>,
+            Arc<NativeFilePayload>, Arc<dyn NativeReadMeter>,
+        ) + Send>,
         meter: Arc<dyn NativeReadMeter>,
         completion: Option<Arc<OperationFence>>,
+        terminal: Arc<dyn TaskTerminal>,
         _allocation: ReadAllocation,
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        _health: Option<Arc<FileHealth>>,
-    },
-    BoundedUnit {
-        file: Arc<NativeFilePayload>,
-        operation: NativeBoundedUnitOperation,
-        meter: Arc<dyn NativeReadMeter>,
-        state: Arc<Mutex<CompletionState<()>>>,
-        completion: Option<Arc<OperationFence>>,
-        tail: Option<FileSequencer>,
-        uncertain: Option<Arc<AtomicBool>>,
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        _health: Option<Arc<FileHealth>>,
+        health: Option<Arc<FileHealth>>,
     },
     Unit {
         file: Arc<NativeFilePayload>,
         operation: NativeUnitOperation,
+        meter: Option<Arc<dyn NativeReadMeter>>,
         span: obs::OperationSpan,
         #[cfg(windows)]
         overlapped: bool,
-        tail: Option<FileSequencer>,
-        uncertain: Option<Arc<AtomicBool>>,
         state: Arc<Mutex<CompletionState<()>>>,
         completion: Option<Arc<OperationFence>>,
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        _health: Option<Arc<FileHealth>>,
+        health: Option<Arc<FileHealth>>,
     },
     Task {
         operation: Box<dyn FnOnce() + Send>,
@@ -2372,9 +2219,14 @@ enum NativeJob {
 
 enum NativeUnitOperation {
     Write(Vec<OwnedWrite>),
+    BoundedWrite { offset: u64, bytes: Bytes },
     SetLen(u64),
     Sync(Durability),
     Control(FileControl),
+    MeasuredControl {
+        operation: Box<dyn FnOnce(&File, &dyn NativeReadMeter) -> io::Result<()> + Send>,
+        _allocation: ReadAllocation,
+    },
 }
 
 type FileControl = Box<dyn FnOnce(&File) -> io::Result<()> + Send>;
@@ -2385,21 +2237,11 @@ struct NativeOwnedWrite<B, C> {
     _custody: C,
 }
 
-enum NativeBoundedUnitOperation {
-    Write { offset: u64, bytes: Bytes },
-    SetLen(u64),
-    Sync(Durability),
-    Control {
-        operation: Box<dyn FnOnce(&File, &dyn NativeReadMeter) -> io::Result<()> + Send>,
-        _allocation: ReadAllocation,
-    },
-}
-
 impl NativeJob {
     fn set_completion(&mut self, fence: Arc<OperationFence>) {
         match self {
             Self::Read { completion, .. } | Self::BoundedRead { completion, .. }
-            | Self::PreparedRead { completion, .. } | Self::BoundedUnit { completion, .. }
+            | Self::PreparedRead { completion, .. }
             | Self::Unit { completion, .. } => {
                 *completion = Some(fence);
             }
@@ -2410,7 +2252,8 @@ impl NativeJob {
     fn meter(&self) -> Option<&Arc<dyn NativeReadMeter>> {
         match self {
             Self::BoundedRead { meter, .. } | Self::PreparedRead { meter, .. }
-            | Self::BoundedUnit { meter, .. } => Some(meter),
+            => Some(meter),
+            Self::Unit { meter, .. } => meter.as_ref(),
             Self::Task { meter, .. } => meter.as_ref(),
             _ => None,
         }
@@ -2424,7 +2267,7 @@ impl NativeJob {
             Self::Read {
                 overlapped: true,
                 ..
-            } | Self::BoundedRead { .. } | Self::PreparedRead { .. } | Self::BoundedUnit { .. } | Self::Unit {
+            } | Self::BoundedRead { .. } | Self::PreparedRead { .. } | Self::Unit { meter: Some(_), .. } | Self::Unit {
                 overlapped: true,
                 operation: NativeUnitOperation::Write(_),
                 ..
@@ -2441,30 +2284,25 @@ impl NativeJob {
                 reads,
                 span,
                 overlapped: true,
-                tail,
-                uncertain,
                 state,
                 completion,
-                _health,
+                health,
             } => span.scope(|| {
-                FileCompletion::new(state, completion, uncertain, tail, span.clone())
-                    .for_health(_health)
+                FileCompletion::new(state, completion, health.clone(), span.clone())
                     .for_file(Arc::clone(&file))
                     .finish(windows::read_batch_in_place(&file, &reads))
             }),
             Self::Unit {
                 file,
                 operation: NativeUnitOperation::Write(writes),
+                meter: None,
                 span,
                 overlapped: true,
-                tail,
-                uncertain,
                 state,
                 completion,
-                _health,
+                health,
             } => span.scope(|| {
-                let finish = FileCompletion::new(state, completion, uncertain, tail, span.clone())
-                    .for_health(_health)
+                let finish = FileCompletion::new(state, completion, health.clone(), span.clone())
                     .for_file(Arc::clone(&file));
                 let result = validate_write_batch(&writes)
                     .and_then(|()| windows::write_batch_in_place(&file, &writes));
@@ -2476,24 +2314,21 @@ impl NativeJob {
 
     fn run(self) -> Option<Waker> {
         match self {
-            Self::PreparedRead { file, operation, meter, completion, _allocation,
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                _health,
+            Self::PreparedRead { file, operation, meter, completion, terminal, _allocation,
+                health,
             } => {
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                let _held_health = _health;
-                let wake = operation(file, meter, completion);
+                operation(file, meter);
                 drop(_allocation);
-                wake
+                drop(health);
+                if let Some(completion) = completion { completion.complete(); }
+                terminal.publish()
             }
             Self::BoundedRead { file, offset, length, require_full, meter, state, completion,
                 #[cfg(windows)]
                 overlapped,
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                _health,
+                health,
             } => {
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                let _held_health = _health;
+                let _held_health = health;
                 let result = read_bounded_in_place(
                     &file, offset, length, require_full, &meter,
                     #[cfg(windows)]
@@ -2502,52 +2337,17 @@ impl NativeJob {
                 drop(file);
                 finish_job(&state, result, completion)
             }
-            Self::BoundedUnit { file, operation, meter, state, completion, tail, uncertain,
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                _health,
-            } => {
-                let finish = FileCompletion::new(
-                    state, completion, uncertain, tail.clone(),
-                    obs::file_span!(DEBUG, "acyclic.runtime.bounded_unit"),
-                ).for_health(
-                    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                    _health,
-                ).for_file(Arc::clone(&file));
-                FileScope::with(tail.as_ref(), || {
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        meter.check()?;
-                        match operation {
-                            NativeBoundedUnitOperation::Write { offset, bytes } =>
-                                write_bounded_in_place(&file, offset, &bytes, meter.as_ref()),
-                            NativeBoundedUnitOperation::SetLen(size) =>
-                                set_len_measured(&file, size, meter.as_ref()),
-                            NativeBoundedUnitOperation::Sync(durability) =>
-                                sync_file_measured(&file, durability, meter.as_ref()),
-                            NativeBoundedUnitOperation::Control { operation, _allocation } =>
-                                operation(&file, meter.as_ref()),
-                        }
-                    })).unwrap_or_else(|_| std::process::abort());
-                    // The completion keeps its own handle until health/quarantine
-                    // decisions finish. Retire this operation alias before Ready.
-                    drop(file);
-                    finish.finish(result)
-                })
-            }
             Self::Read {
                 file,
                 reads,
                 span,
                 #[cfg(windows)]
                 overlapped,
-                tail,
-                uncertain,
                 state,
                 completion,
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                _health,
+                health,
             } => span.scope(|| {
-                let finish = FileCompletion::new(state, completion, uncertain, tail, span.clone())
-                    .for_health(#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))] _health)
+                let finish = FileCompletion::new(state, completion, health.clone(), span.clone())
                     .for_file(Arc::clone(&file));
                 #[cfg(target_os = "linux")]
                 return submit_file_io(finish, |callback| {
@@ -2569,19 +2369,16 @@ impl NativeJob {
             Self::Unit {
                 file,
                 operation,
+                meter,
                 span,
                 #[cfg(windows)]
                 overlapped,
-                tail,
-                uncertain,
                 state,
                 completion,
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                _health,
+                health,
             } => span.scope(|| {
                 let finish =
-                    FileCompletion::new(state, completion, uncertain, tail.clone(), span.clone())
-                        .for_health(#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))] _health)
+                    FileCompletion::new(state, completion, health.clone(), span.clone())
                         .for_file(Arc::clone(&file));
                 #[cfg(any(windows, target_os = "linux"))]
                 let operation = match operation {
@@ -2600,20 +2397,33 @@ impl NativeJob {
                     }
                     operation => operation,
                 };
-                FileScope::with(tail.as_ref(), || {
+                FileScope::with(health.as_ref().map(|health| &health.tail), || {
                     let result =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match operation {
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            if let Some(meter) = &meter { meter.check()?; }
+                            match operation {
                             #[cfg(not(any(windows, target_os = "linux")))]
                             NativeUnitOperation::Write(writes) => write_all_batch_owned(&file, writes),
                             #[cfg(any(windows, target_os = "linux"))]
                             NativeUnitOperation::Write(_) => {
                                 unreachable!("native writes are dispatched before bounded controls")
                             }
-                            NativeUnitOperation::SetLen(size) => file.set_len(size),
-                            NativeUnitOperation::Sync(durability) => sync_file(&file, durability),
+                            NativeUnitOperation::SetLen(size) => match &meter {
+                                Some(meter) => set_len_measured(&file, size, meter.as_ref()),
+                                None => file.set_len(size),
+                            },
+                            NativeUnitOperation::Sync(durability) => match &meter {
+                                Some(meter) => sync_file_measured(&file, durability, meter.as_ref()),
+                                None => sync_file(&file, durability),
+                            },
                             NativeUnitOperation::Control(operation) => operation(&file),
-                        }))
+                            NativeUnitOperation::BoundedWrite { offset, bytes } =>
+                                write_bounded_in_place(&file, offset, &bytes, meter.as_ref().expect("bounded job meter").as_ref()),
+                            NativeUnitOperation::MeasuredControl { operation, _allocation } =>
+                                operation(&file, meter.as_ref().expect("bounded job meter").as_ref()),
+                        }}))
                         .unwrap_or_else(|_| std::process::abort());
+                    drop(file);
                     finish.finish(result)
                 })
             }),
@@ -2656,24 +2466,6 @@ fn finish_job<T>(
     if let Some(completion) = completion {
         completion.complete();
     }
-    waker
-}
-
-fn finish_panicked_job<T>(
-    state: &Mutex<CompletionState<T>>,
-    payload: Box<dyn std::any::Any + Send>,
-    completion: Option<Arc<OperationFence>>,
-) -> Option<Waker> {
-    let mut state = state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    state.panic = Some(payload);
-    let waker = state.waker.take();
-    drop(state);
-    if let Some(completion) = completion {
-        completion.complete();
-    }
-    // The same worker wakes outside the state lock, after retiring its job.
     waker
 }
 
@@ -2782,59 +2574,65 @@ impl NativeCompletion<Vec<Bytes>> {
     fn submit(
         file: Arc<NativeFilePayload>,
         reads: Vec<OwnedRead>,
-        sequencer: Option<FileSequencer>,
-        uncertain: Option<Arc<AtomicBool>>,
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
         health: Option<Arc<FileHealth>>,
         span: obs::OperationSpan,
         #[cfg(windows)] overlapped: bool,
     ) -> Self {
         let span = span.sized(reads.len(), || reads.iter().map(|read| read.length).sum());
         let state = Arc::new(Mutex::new(CompletionState::default()));
-        Self {
-            pending: Some(NativeJob::Read {
+        Self::pending(NativeJob::Read {
                 file,
                 reads,
                 span,
                 #[cfg(windows)]
                 overlapped,
-                tail: sequencer.clone(),
-                uncertain: uncertain.clone(),
                 state: Arc::clone(&state),
                 completion: None,
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                _health: health,
-            }),
-            state,
-            waiter: None,
-            sequencer,
-            uncertain,
-            predecessor: None,
-            completion: None,
-            terminated: false,
-        }
+                health,
+            }, state, &NATIVE_WORKERS)
     }
 }
 
 impl<T> NativeCompletion<T> {
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    fn failed(error: io::Error) -> Self {
+    fn pending(
+        job: NativeJob, state: Arc<Mutex<CompletionState<T>>>,
+        pool: &'static LazyLock<io::Result<NativeWorkers>>,
+    ) -> Self {
+        let health = match &job {
+            NativeJob::Read { health, .. } | NativeJob::BoundedRead { health, .. }
+            | NativeJob::PreparedRead { health, .. } | NativeJob::Unit { health, .. } => health.as_ref(),
+            NativeJob::Task { .. } => None,
+        };
+        let sequencer = health.map(|health| Arc::clone(&health.tail));
+        let uncertain = health.map(|health| Arc::clone(&health.uncertain));
         Self {
-            state: Arc::new(Mutex::new(CompletionState {
-                task_pending: false,
-                result: Some(Err(error)),
-                panic: None,
-                waker: None,
-                _allocation: None,
-            })),
-            pending: None,
-            waiter: None,
-            sequencer: None,
-            uncertain: None,
-            predecessor: None,
-            completion: None,
-            terminated: false,
+            pool, prepared_wake: None, state: Some(state), ready: None,
+            pending: Some(job), waiter: None, sequencer, uncertain,
+            predecessor: None, completion: None, terminated: false,
         }
+    }
+
+    fn ready(result: io::Result<T>) -> Self {
+        Self {
+            pool: &NATIVE_WORKERS, prepared_wake: None,
+            state: None, ready: Some(result), pending: None, waiter: None,
+            sequencer: None, uncertain: None, predecessor: None,
+            completion: None, terminated: false,
+        }
+    }
+
+    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+    fn failed(error: io::Error) -> Self { Self::ready(Err(error)) }
+
+    /// Waits through the same measured task engine.
+    pub fn wait_measured(
+        mut self, deadline: Option<std::time::Instant>,
+        cancellation: impl Future<Output = ()>, on_deadline: impl FnOnce(),
+    ) -> io::Result<T> {
+        if let Some(result) = self.ready.take() { return result; }
+        let meter = measured_completion_meter(self.state.as_ref().expect("pending native completion"))?;
+        let wake = self.prepared_wake.take();
+        wait_measured_completion(self, meter, wake, deadline, cancellation, on_deadline)
     }
 }
 
@@ -2842,9 +2640,6 @@ impl NativeCompletion<()> {
     fn submit(
         file: Arc<NativeFilePayload>,
         operation: NativeUnitOperation,
-        sequencer: Option<FileSequencer>,
-        uncertain: Option<Arc<AtomicBool>>,
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
         health: Option<Arc<FileHealth>>,
         span: obs::OperationSpan,
         #[cfg(windows)] overlapped: bool,
@@ -2856,28 +2651,17 @@ impl NativeCompletion<()> {
             });
         }
         let state = Arc::new(Mutex::new(CompletionState::default()));
-        Self {
-            pending: Some(NativeJob::Unit {
+        Self::pending(NativeJob::Unit {
                 file,
                 operation,
+                meter: None,
                 span,
                 #[cfg(windows)]
                 overlapped,
-                tail: sequencer.clone(),
-                uncertain: uncertain.clone(),
                 state: Arc::clone(&state),
                 completion: None,
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                _health: health,
-            }),
-            state,
-            waiter: None,
-            sequencer,
-            uncertain,
-            predecessor: None,
-            completion: None,
-            terminated: false,
-        }
+                health,
+            }, state, &NATIVE_WORKERS)
     }
 }
 
@@ -2896,7 +2680,7 @@ fn reserve_if_needed(
     *predecessor = tail.clone();
     let allocation = match pending.as_ref() {
         Some(NativeJob::BoundedRead { meter, .. } | NativeJob::PreparedRead { meter, .. }
-            | NativeJob::BoundedUnit { meter, .. }) => Some(ReadAllocation::new(
+            | NativeJob::Unit { meter: Some(meter), .. }) => Some(ReadAllocation::new(
             meter, arc_allocation_bytes::<OperationFence>(),
         )?),
         _ => None,
@@ -2920,6 +2704,10 @@ impl<T> Future for NativeCompletion<T> {
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         assert!(!this.terminated, "native I/O polled after completion");
+        if let Some(result) = this.ready.take() {
+            this.terminated = true;
+            return Poll::Ready(result);
+        }
         if let Err(error) = reserve_if_needed(
             &mut this.sequencer,
             &mut this.predecessor,
@@ -2963,15 +2751,20 @@ impl<T> Future for NativeCompletion<T> {
             this.terminated = true;
             return Poll::Ready(result);
         }
+        if std::ptr::eq(this.pool, &BLOCKING_WORKERS) && inline_blocking_allowed()
+            && let Some(job) = this.pending.take()
+        {
+            let _ = job.run();
+        }
         // A thread that admits inline blocking serves an overlapped handle's
         // positional I/O itself; the job records its result and fence.
         #[cfg(windows)]
-        if inline_blocking_allowed()
+        if !std::ptr::eq(this.pool, &BLOCKING_WORKERS) && inline_blocking_allowed()
             && let Some(job) = this.pending.take_if(|job| job.runs_in_place())
         {
             let _ = job.run_in_place();
         }
-        match poll_submission(&mut this.pending, &mut this.waiter, context) {
+        match poll_submission(this.pool, &mut this.pending, &mut this.waiter, context) {
             Poll::Ready(Err(error)) => {
                 this.pending = None;
                 if let Some(completion) = &this.completion {
@@ -2984,7 +2777,7 @@ impl<T> Future for NativeCompletion<T> {
             Poll::Pending => return Poll::Pending,
         }
         let mut state = this
-            .state
+            .state.as_ref().expect("pending native completion")
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !state.task_pending && let Some(payload) = state.panic.take() {
@@ -2994,7 +2787,7 @@ impl<T> Future for NativeCompletion<T> {
             drop(waker);
             drop(this.pending.take());
             if let Some(waiter) = this.waiter.take()
-                && let Ok(workers) = ready_workers(&NATIVE_WORKERS)
+                && let Ok(workers) = workers(this.pool, true)
             {
                 remove_capacity_waiter(workers, Some(waiter));
             }
@@ -3097,72 +2890,8 @@ fn wait_measured_completion<T>(
     }
 }
 
-impl<T> BlockingIoTask<T> {
-    /// Waits synchronously through this task's existing measured completion and capacity queue, admitting only its actual SDK-owned wake payload.
-    pub fn wait_measured(
-        mut self,
-        deadline: Option<std::time::Instant>,
-        cancellation: impl Future<Output = ()>,
-        on_deadline: impl FnOnce(),
-    ) -> io::Result<T> {
-        let meter = measured_completion_meter(&self.state)?;
-        let wake = self.prepared_wake.take();
-        wait_measured_completion(self, meter, wake, deadline, cancellation, on_deadline)
-    }
-}
-
-impl<T> Future for BlockingIoTask<T> {
-    type Output = io::Result<T>;
-
-    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        assert!(!this.terminated, "host I/O task polled after completion");
-        if let Some(job) = this.pending.take_if(|_| inline_blocking_allowed()) {
-            // The job records its result before returning; there is no
-            // observer to wake yet, and no worker is needed.
-            let _ = job.run();
-        } else if this.pending.is_some() {
-            let measured = this.pending.as_ref().is_some_and(|job| job.meter().is_some());
-            let workers = match if measured { ready_workers(&BLOCKING_WORKERS) } else { blocking_workers() } {
-                Ok(workers) => workers,
-                Err(error) => {
-                    this.terminated = true;
-                    return Poll::Ready(Err(error));
-                }
-            };
-            match poll_submission_with(workers, &mut this.pending, &mut this.waiter, context) {
-                Poll::Ready(Err(error)) => {
-                    this.terminated = true;
-                    return Poll::Ready(Err(error));
-                }
-                Poll::Ready(Ok(())) => {}
-                Poll::Pending => return Poll::Pending,
-            }
-        }
-        let mut state = this
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !state.task_pending && let Some(payload) = state.panic.take() {
-            this.terminated = true;
-            let waker = state.waker.take();
-            drop(state);
-            drop(waker);
-            drop(this.pending.take());
-            if let Some(waiter) = this.waiter.take()
-                && let Ok(workers) = ready_workers(&BLOCKING_WORKERS)
-            {
-                remove_capacity_waiter(workers, Some(waiter));
-            }
-            std::panic::resume_unwind(payload);
-        }
-        let result = state.poll_result(context.waker());
-        if result.is_ready() { this.terminated = true; }
-        result
-    }
-}
-
 fn poll_submission(
+    pool: &'static LazyLock<io::Result<NativeWorkers>>,
     pending: &mut Option<NativeJob>,
     waiter: &mut Option<Arc<CapacityWaiter>>,
     context: &Context<'_>,
@@ -3171,7 +2900,7 @@ fn poll_submission(
         return Poll::Ready(Ok(()));
     }
     let measured = pending.as_ref().is_some_and(|job| job.meter().is_some());
-    let workers = match if measured { ready_workers(&NATIVE_WORKERS) } else { native_workers() } {
+    let workers = match if measured { workers(pool, true) } else { workers(pool, false) } {
         Ok(workers) => workers,
         Err(error) => return Poll::Ready(Err(error)),
     };
@@ -3294,27 +3023,19 @@ pub fn initialize_native_io_services() -> io::Result<()> {
     // registration only borrows the already initialized limit and registry.
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
     FILE_HEALTH.get_or_init(|| Mutex::new(FileHealthRegistry::new()));
-    native_workers()?;
-    blocking_workers()?;
+    workers(&NATIVE_WORKERS, false)?;
+    workers(&BLOCKING_WORKERS, false)?;
     IO_SERVICES_INITIALIZED.store(true, Ordering::Release);
     Ok(())
 }
 
-fn ready_workers(
-    slot: &'static LazyLock<io::Result<NativeWorkers>>,
+fn workers(
+    slot: &'static LazyLock<io::Result<NativeWorkers>>, measured: bool,
 ) -> io::Result<&'static NativeWorkers> {
-    if !IO_SERVICES_INITIALIZED.load(Ordering::Acquire) {
-        return Err(io::Error::from(io::ErrorKind::NotConnected));
+    if measured && !IO_SERVICES_INITIALIZED.load(Ordering::Acquire) {
+        return Err(io::ErrorKind::NotConnected.into());
     }
     slot.as_ref().map_err(|error| io::Error::new(error.kind(), error.to_string()))
-}
-
-fn native_workers() -> io::Result<&'static NativeWorkers> {
-    NATIVE_WORKERS.as_ref().map_err(|error| io::Error::new(error.kind(), error.to_string()))
-}
-
-fn blocking_workers() -> io::Result<&'static NativeWorkers> {
-    BLOCKING_WORKERS.as_ref().map_err(|error| io::Error::new(error.kind(), error.to_string()))
 }
 
 /// Starts one existing service pool.
@@ -3363,30 +3084,13 @@ impl<T> Drop for NativeCompletion<T> {
         {
             completion.complete_after(self.predecessor.take());
         }
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .waker = None;
+        if let Some(state) = &self.state {
+            state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).waker = None;
+        }
         let Some(waiter) = self.waiter.take() else {
             return;
         };
-        let Ok(workers) = native_workers() else {
-            return;
-        };
-        remove_capacity_waiter(workers, Some(waiter));
-    }
-}
-
-impl<T> Drop for BlockingIoTask<T> {
-    fn drop(&mut self) {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .waker = None;
-        let Some(waiter) = self.waiter.take() else {
-            return;
-        };
-        let Ok(workers) = ready_workers(&BLOCKING_WORKERS) else {
+        let Ok(workers) = self.pool.as_ref() else {
             return;
         };
         remove_capacity_waiter(workers, Some(waiter));
@@ -3447,7 +3151,7 @@ pub fn write_all_at_measured(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "write offset overflow"))?;
     #[cfg(windows)]
     {
-        windows::with_overlapped_measured(file, 0x0012_0116, false, meter, |file| {
+        windows::with_overlapped(file, 0x0012_0116, false, Some(meter), |file| {
             write_bounded_in_place(file, offset, bytes, meter)
         })
     }
@@ -3472,10 +3176,21 @@ fn write_bounded_in_place(
         // The same native worker owns each request through terminal completion.
         let length = bytes.len().min(1024 * 1024);
         let chunk = &bytes[..length];
-        #[cfg(target_os = "linux")]
-        let result = linux::write_at_measured(file, offset, chunk, meter);
-        #[cfg(target_vendor = "apple")]
-        let result = apple::write_at_measured(file, offset, chunk, meter);
+        #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+        let result = (|| {
+            use std::os::fd::AsRawFd as _;
+            validate_prepared_read_range(offset, length)?;
+            let mut transfer = NativeByteReservation::new(meter, NativeOperationKind::Write, length)?;
+            meter.admit_write(0)?;
+            // SAFETY: the validated range and borrowed payload remain live through pwrite.
+            #[allow(unsafe_code)]
+            let count = unsafe {
+                libc::pwrite(file.as_raw_fd(), chunk.as_ptr().cast(), length, offset as libc::off_t)
+            };
+            if count < 0 { return Err(io::Error::last_os_error()); }
+            transfer.record(count as usize)?;
+            Ok(count as usize)
+        })();
         #[cfg(windows)]
         let result = windows::write_at_known_overlapped(file, offset, chunk, meter);
         #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
@@ -3526,11 +3241,11 @@ fn read_bounded_in_place(
     };
     #[cfg(windows)]
     {
-        windows::with_overlapped_measured(
+        windows::with_overlapped(
             file,
             windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ,
             known_overlapped,
-            meter.as_ref(),
+            Some(meter.as_ref()),
             read,
         )
     }
@@ -3565,9 +3280,9 @@ fn read_prepared_in_place(
     if destination.is_empty() { return Ok(0); }
     #[cfg(windows)]
     {
-        windows::with_overlapped_measured(
+        windows::with_overlapped(
             file, windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ,
-            known_overlapped, meter,
+            known_overlapped, Some(meter),
             |file| read_bounded_slice(file, offset, destination, require_full, meter),
         )
     }
@@ -3666,7 +3381,6 @@ impl AsyncRangeReader {
         self.remaining -= result.bytes.len() as u64;
         Ok(result)
     }
-
 
 }
 
@@ -4033,18 +3747,11 @@ mod tests {
     fn accepted_callback_cannot_disappear_without_terminal_completion() -> io::Result<()> {
         const MARKER: &str = "ACYCLIC_DROPPED_COMPLETION_CHILD";
         if std::env::var_os(MARKER).is_some() {
-            let state = Arc::new(Mutex::new(CompletionState::<()> {
-                task_pending: false,
-                result: None,
-                panic: None,
-                waker: None,
-                _allocation: None,
-            }));
+            let state = Arc::new(Mutex::new(CompletionState::<()>::default()));
             eprintln!("dropping accepted native callback");
             let _ = submit_file_io(
                 FileCompletion::new(
                     state,
-                    None,
                     None,
                     None,
                     obs::OperationSpan::new(tracing::Span::none()),
@@ -4084,7 +3791,7 @@ mod tests {
                     .write(true)
                     .open(directory.path().join("panic-worker"))?,
             )?;
-            let _ = complete_write(file.control_async(|_| {
+            let _ = complete(file.control_async(|_| {
                 eprintln!("injected native worker unwind");
                 std::panic::resume_unwind(Box::new("injected native worker unwind"));
             }));
@@ -4217,45 +3924,7 @@ mod tests {
         Ok(())
     }
 
-    fn complete_read(mut read: ReadBatch) -> io::Result<Vec<Bytes>> {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let waker = completion_waker();
-        loop {
-            match Pin::new(&mut read).poll(&mut Context::from_waker(&waker)) {
-                Poll::Ready(result) => return result,
-                Poll::Pending if Instant::now() < deadline => {
-                    std::thread::park_timeout(deadline.saturating_duration_since(Instant::now()));
-                }
-                Poll::Pending => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "owned native read did not complete",
-                    ));
-                }
-            }
-        }
-    }
-
-    fn complete_write(mut write: UnitCompletion) -> io::Result<()> {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let waker = completion_waker();
-        loop {
-            match Pin::new(&mut write).poll(&mut Context::from_waker(&waker)) {
-                Poll::Ready(result) => return result,
-                Poll::Pending if Instant::now() < deadline => {
-                    std::thread::park_timeout(deadline.saturating_duration_since(Instant::now()));
-                }
-                Poll::Pending => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "owned native write did not complete",
-                    ));
-                }
-            }
-        }
-    }
-
-    fn complete_measured<T>(future: impl Future<Output = io::Result<T>>) -> io::Result<T> {
+    fn complete<T>(future: impl Future<Output = io::Result<T>>) -> io::Result<T> {
         let deadline = Instant::now() + Duration::from_secs(10);
         let waker = completion_waker();
         let mut future = std::pin::pin!(future);
@@ -4285,7 +3954,6 @@ mod tests {
         pub(super) cancelled: AtomicBool,
         cancel_after_read: bool,
         panic_after_read: bool,
-        allocation_failure: parking_lot::Mutex<Option<std::collections::TryReserveError>>,
     }
 
     impl ReadBudgetMeter {
@@ -4296,7 +3964,6 @@ mod tests {
                 operation_limit, byte_limit, allocation_limit: u64::MAX, memory_limit: 1024 * 1024,
                 deny_allocations: AtomicBool::new(false), operation_denial: None, cancel_after_operation: false,
                 cancelled: AtomicBool::new(false), cancel_after_read: false, panic_after_read: false,
-                allocation_failure: parking_lot::Mutex::new(None),
             }
         }
         fn refuse() -> io::Error { io::ErrorKind::Other.into() }
@@ -4360,9 +4027,7 @@ mod tests {
         }
         fn record_reserved_allocation(&self, _: u64) -> io::Result<()> { Ok(()) }
         fn allocation_failed(&self, error: std::collections::TryReserveError) -> io::Error {
-            let mut failure = self.allocation_failure.lock();
-            if failure.is_none() { *failure = Some(error); }
-            io::ErrorKind::OutOfMemory.into()
+            io::Error::new(io::ErrorKind::OutOfMemory, error)
         }
         fn allocate_refcount_header(&self) -> io::Result<()> { self.allocate(0) }
         fn adopt(&self, bytes: u64) -> io::Result<()> {
@@ -4541,30 +4206,6 @@ mod tests {
 
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
     #[test]
-    fn bounded_read_cancellation_preserves_completed_prefix() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("cancel");
-        std::fs::write(&path, b"abc")?;
-        let file = bounded_write_file(&path, false)?;
-        let mut limits = ReadBudgetMeter::new(8, 8);
-        limits.cancel_after_read = true;
-        let meter = Arc::new(limits);
-        let read = file.read_bounded_async(0, 8, meter.clone())?;
-        let error = match {
-            let _blocking = InlineBlocking::enter();
-            complete_measured(read)
-        } {
-            Err(error) => error,
-            Ok(_) => panic!("cancelled read returned success"),
-        };
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-        assert_eq!(meter.read.load(Ordering::Acquire), 3);
-        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-        Ok(())
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
     fn prepared_read_returns_same_owner_short_prefix_and_eof_without_header() -> io::Result<()> {
         initialize_native_io_services()?;
         let temporary = tempfile::tempdir()?;
@@ -4578,14 +4219,14 @@ mod tests {
             let read = file.read_prepared_bounded_async(offset, storage, 8, false, meter.clone())?;
             let (storage, filled) = {
                 let _blocking = InlineBlocking::enter();
-                complete_measured(read)
+                complete(read)
             }?;
             assert_eq!(filled, expected);
             assert_eq!(storage.as_ptr(), identity);
             assert_eq!(&storage[..filled], &b"abc"[..expected]);
             assert!(storage[filled..].iter().all(|byte| *byte == 0x55));
             assert_eq!(meter.read.load(Ordering::Acquire), expected as u64);
-            assert!(file.tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none());
+            assert!(file.health.tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none());
             let weak = Arc::downgrade(&meter);
             drop(meter);
             let deadline = Instant::now() + Duration::from_secs(10);
@@ -4606,15 +4247,18 @@ mod tests {
         let path = temporary.path().join("prepared-refusal");
         std::fs::write(&path, b"abc")?;
         let file = bounded_write_file(&path, false)?;
-        for late_cancel in [false, true] {
+        for (prepared, late_cancel) in [(true, false), (true, true), (false, true)] {
             let mut limits = ReadBudgetMeter::new(8, 8);
             limits.cancel_after_read = late_cancel;
             let meter = Arc::new(limits);
-            let read = file.read_prepared_bounded_async(0, [0x55; 8], 8, true, meter.clone())?;
             let error = {
                 let _blocking = InlineBlocking::enter();
-                complete_measured(read)
-            }.unwrap_err();
+                if prepared {
+                    complete(file.read_prepared_bounded_async(0, [0x55; 8], 8, true, meter.clone())?).unwrap_err()
+                } else {
+                    complete(file.read_bounded_async(0, 8, meter.clone())?).err().expect("cancelled read")
+                }
+            };
             assert_eq!(error.kind(), if late_cancel {
                 io::ErrorKind::Interrupted
             } else { io::ErrorKind::UnexpectedEof });
@@ -4642,12 +4286,9 @@ mod tests {
         let mut read = file.read_prepared_bounded_async(0, [0; 3], 3, true, meter.clone())?;
         let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _blocking = InlineBlocking::enter();
-            complete_measured(&mut read)
+            complete(&mut read)
         })).expect_err("prepared observer resumes original terminal panic");
         assert_eq!(payload.downcast_ref::<u64>(), Some(&0x7072_6570_6172_6564_u64));
-        assert!(read.terminated);
-        assert!(!read.state.is_poisoned());
-        assert!(read.state.try_lock().expect("observer released state").panic.is_none());
         assert_eq!(meter.read.load(Ordering::Acquire), 3);
         drop(payload);
         drop(read);
@@ -4656,7 +4297,7 @@ mod tests {
             std::thread::yield_now();
         }
         assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-        assert!(file.tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none());
+        assert!(file.health.tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none());
         Ok(())
     }
 
@@ -4759,60 +4400,66 @@ mod tests {
     #[test]
     fn measured_sync_wait_cancellation_wake_drains_real_read_prefix() -> io::Result<()> {
         initialize_native_io_services()?;
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("sync-cancel-wake");
-        std::fs::write(&path, b"abc")?;
-        let mut file = File::open(path)?;
-        let meter = Arc::new(ReadBudgetMeter::new(1, 3));
-        let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
-        let terminal = Arc::new(AtomicBool::new(false));
-        let body_gate = gate.clone();
-        let body_terminal = terminal.clone();
-        let body_meter = meter.clone();
-        let mut task = run_blocking_io_measured(move || -> io::Result<usize> {
-            let mut buffer = [0_u8; 3];
-            body_meter.admit_read(buffer.len())?;
-            let completed = file.read(&mut buffer)?;
-            body_meter.record_read(completed)?;
-            let (lock, changed) = &*body_gate;
-            let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.0 = true;
-            changed.notify_all();
-            while !state.1 {
-                state = changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
+        for expired_deadline in [false, true] {
+            let temporary = tempfile::tempdir()?;
+            let path = temporary.path().join("sync-cancel-wake");
+            std::fs::write(&path, b"abc")?;
+            let mut file = File::open(path)?;
+            let meter = Arc::new(ReadBudgetMeter::new(1, 3));
+            let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+            let terminal = Arc::new(AtomicBool::new(false));
+            let body_gate = gate.clone();
+            let body_terminal = terminal.clone();
+            let body_meter = meter.clone();
+            let mut task = run_blocking_io_measured(move || -> io::Result<usize> {
+                let mut buffer = [0_u8; 3];
+                body_meter.admit_read(buffer.len())?;
+                let completed = file.read(&mut buffer)?;
+                body_meter.record_read(completed)?;
+                let (lock, changed) = &*body_gate;
+                let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.0 = true;
+                changed.notify_all();
+                while !state.1 {
+                    state = changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+                body_terminal.store(true, Ordering::Release);
+                Ok(completed)
+            }, meter.clone())?;
+            let waker = completion_waker();
+            let mut context = Context::from_waker(&waker);
+            loop {
+                assert!(Pin::new(&mut task).poll(&mut context).is_pending());
+                if task.pending.is_none() { break; }
+                std::thread::park_timeout(Duration::from_millis(1));
             }
-            body_terminal.store(true, Ordering::Release);
-            Ok(completed)
-        }, meter.clone())?;
-        let waker = completion_waker();
-        let mut context = Context::from_waker(&waker);
-        loop {
-            assert!(Pin::new(&mut task).poll(&mut context).is_pending());
-            if task.pending.is_none() { break; }
-            std::thread::park_timeout(Duration::from_millis(1));
+            let release = || {
+                let (lock, changed) = &*gate;
+                let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                while !state.0 {
+                    state = changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+                meter.cancelled.store(true, Ordering::Release);
+                state.1 = true;
+                changed.notify_all();
+            };
+            let mut first_poll = true;
+            let cancellation = std::future::poll_fn(|context| {
+                if expired_deadline { return Poll::Pending; }
+                if std::mem::take(&mut first_poll) {
+                    context.waker().wake_by_ref();
+                    Poll::Pending
+                } else {
+                    release();
+                    Poll::Ready(())
+                }
+            });
+            let completed = task.wait_measured(expired_deadline.then(Instant::now), cancellation, release)??;
+            assert!(terminal.load(Ordering::Acquire));
+            assert_eq!(completed, 3);
+            assert_eq!(meter.read.load(Ordering::Acquire), 3);
+            assert_eq!(meter.memory.load(Ordering::Acquire), 0);
         }
-        let mut cancellation_polls = 0;
-        let cancellation = std::future::poll_fn(|context| {
-            cancellation_polls += 1;
-            if cancellation_polls == 1 {
-                context.waker().wake_by_ref();
-                return Poll::Pending;
-            }
-            let (lock, changed) = &*gate;
-            let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            while !state.0 {
-                state = changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
-            }
-            meter.cancelled.store(true, Ordering::Release);
-            state.1 = true;
-            changed.notify_all();
-            Poll::Ready(())
-        });
-        let completed = task.wait_measured(None, cancellation, || panic!("unexpected deadline"))??;
-        assert_eq!(cancellation_polls, 2);
-        assert!(terminal.load(Ordering::Acquire));
-        assert_eq!(completed, 3);
-        assert_eq!(meter.read.load(Ordering::Acquire), 3);
         Ok(())
     }
 
@@ -4882,7 +4529,7 @@ mod tests {
         let mut write = file.write_bounded_async_with_custody(
             0, bytes, meter.clone(), custody,
         )?;
-        let completed = write.state.clone();
+        let completed = write.state.as_ref().expect("pending write").clone();
         let (sender, receiver) = mpsc::sync_channel(1);
         sender.try_send(write.pending.take().expect("the real write is pending"))
             .map_err(|_| io::Error::other("write admission failed"))?;
@@ -4962,7 +4609,7 @@ mod tests {
         assert_eq!(&bytes[16..21], &[0x33; 5]);
         assert_eq!(read_at(&file, 21, &mut bytes)?, 0);
 
-        complete_write(NativeFile::from_file(file.try_clone()?)?.write_all_batch_async(vec![
+        complete(NativeFile::from_file(file.try_clone()?)?.write_all_batch_async(vec![
                 OwnedWrite {
                     offset: 32,
                     bytes: Bytes::from_static(&[0x44; 5]),
@@ -4981,7 +4628,7 @@ mod tests {
 
         let mut cursor = file.try_clone()?;
         cursor.seek(SeekFrom::End(0))?;
-        let selected = complete_read(read_batch_async(
+        let selected = complete(read_batch_async(
             file.try_clone()?,
             vec![OwnedRead {
                 offset: 16,
@@ -4991,7 +4638,7 @@ mod tests {
         assert_eq!(selected, [Bytes::from_static(&[0x33; 5])]);
         assert_eq!(cursor.stream_position()?, 55);
 
-        complete_write(NativeFile::from_file(file.try_clone()?)?.write_all_batch_async(vec![OwnedWrite {
+        complete(NativeFile::from_file(file.try_clone()?)?.write_all_batch_async(vec![OwnedWrite {
                 offset: 4,
                 bytes: Bytes::from_static(b"cursor-independent"),
             }],
@@ -5005,19 +4652,14 @@ mod tests {
 
     #[test]
     fn batch_larger_than_native_queue_preserves_every_write() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(temporary.path().join("large-batch"))?;
+        let file = tempfile::tempfile()?;
         let writes: Vec<_> = (0_u8..17)
             .map(|value| OwnedWrite {
                 offset: u64::from(value) * 4,
                 bytes: Bytes::from(vec![value; 3]),
             })
             .collect();
-        complete_write(NativeFile::from_file(file.try_clone()?)?.write_all_batch_async(writes))?;
+        complete(NativeFile::from_file(file.try_clone()?)?.write_all_batch_async(writes))?;
 
         let mut actual = [0_u8; 67];
         assert_eq!(read_at(&file, 0, &mut actual)?, actual.len());
@@ -5041,7 +4683,7 @@ mod tests {
             .write(true)
             .open(&path)?;
         std::fs::write(&path, b"unchanged")?;
-        let result = complete_write(NativeFile::from_file(file)?.write_all_batch_async(vec![
+        let result = complete(NativeFile::from_file(file)?.write_all_batch_async(vec![
                 OwnedWrite {
                     offset: 0,
                     bytes: Bytes::from_static(b"first"),
@@ -5060,14 +4702,9 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn native_write_batch_preserves_empty_writes_and_port_reuse() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(temporary.path().join("write-batch-reuse"))?;
+        let file = tempfile::tempfile()?;
         for value in 0_u8..8 {
-            complete_write(NativeFile::from_file(file.try_clone()?)?.write_all_batch_async(vec![
+            complete(NativeFile::from_file(file.try_clone()?)?.write_all_batch_async(vec![
                     OwnedWrite {
                         offset: u64::from(value) * 2,
                         bytes: Bytes::copy_from_slice(&[value]),
@@ -5121,27 +4758,27 @@ mod tests {
             Bytes::new(),
         ];
         let write = |offset, bytes| {
-            complete_write(native.write_all_batch_async(vec![OwnedWrite { offset, bytes }]))
+            complete(native.write_all_batch_async(vec![OwnedWrite { offset, bytes }]))
         };
         {
             let _inline = InlineBlocking::enter();
             write(0, Bytes::from_static(b"abcdefgh"))?;
             write(10, Bytes::from_static(b"xy"))?;
-            assert_eq!(complete_read(native.read_batch_async(reads()))?, expected);
+            assert_eq!(complete(native.read_batch_async(reads()))?, expected);
         }
-        assert_eq!(complete_read(native.read_batch_async(reads()))?, expected);
+        assert_eq!(complete(native.read_batch_async(reads()))?, expected);
         write(0, Bytes::from_static(b"A"))?;
         {
             let _inline = InlineBlocking::enter();
             write(1, Bytes::from_static(b"B"))?;
-            let read = complete_read(native.read_batch_async(vec![OwnedRead {
+            let read = complete(native.read_batch_async(vec![OwnedRead {
                 offset: 0,
                 length: 3,
             }]))?;
             assert_eq!(read, [Bytes::from_static(b"ABc")]);
         }
         assert_eq!(
-            complete_read(native.read_batch_async(vec![OwnedRead {
+            complete(native.read_batch_async(vec![OwnedRead {
                 offset: 0,
                 length: 3,
             }]))?,
@@ -5162,7 +4799,7 @@ mod tests {
         let native = NativeFile::from_file(file)?;
         let resize = native.set_len_async(64);
         drop(native);
-        complete_write(resize)?;
+        complete(resize)?;
         assert_eq!(std::fs::metadata(&path)?.len(), 64);
         Ok(())
     }
@@ -5199,16 +4836,9 @@ mod tests {
                 .open(&path)?,
         )?;
         let completion = FileCompletion::new(
-            Arc::new(Mutex::new(CompletionState::<()> {
-                task_pending: false,
-                result: None,
-                panic: None,
-                waker: None,
-                _allocation: None,
-            })),
+            Arc::new(Mutex::new(CompletionState::<()>::default())),
             None,
-            Some(Arc::clone(&native.uncertain)),
-            Some(Arc::clone(&native.tail)),
+            Some(Arc::clone(&native.health)),
             obs::OperationSpan::new(tracing::Span::none()),
         )
         .for_file(Arc::clone(&native.file));
@@ -5217,9 +4847,9 @@ mod tests {
         )));
         drop(native);
         let alias = NativeFile::from_file(OpenOptions::new().read(true).open(&path)?)?;
-        assert!(alias.uncertain.load(Ordering::Acquire));
+        assert!(alias.health.uncertain.load(Ordering::Acquire));
         assert!(
-            complete_read(alias.read_batch_async(vec![OwnedRead {
+            complete(alias.read_batch_async(vec![OwnedRead {
                 offset: 0,
                 length: 1,
             }]))
@@ -5244,14 +4874,14 @@ mod tests {
         std::fs::hard_link(&path, &alias)?;
         let second =
             NativeFile::from_file(OpenOptions::new().read(true).write(true).open(&alias)?)?;
-        assert!(Arc::ptr_eq(&first.tail, &second.tail));
-        assert!(Arc::ptr_eq(&first.uncertain, &second.uncertain));
-        poison_file_health(&first.file, &first.uncertain);
+        assert!(Arc::ptr_eq(&first.health.tail, &second.health.tail));
+        assert!(Arc::ptr_eq(&first.health.uncertain, &second.health.uncertain));
+        poison_file_health(&first.file, &first.health.uncertain);
         drop(first);
-        let result = complete_write(second.set_len_async(1));
+        let result = complete(second.set_len_async(1));
         assert!(result.is_err(), "an alias bypassed an uncertain completion");
         drop(second);
-        let bare_result = complete_read(read_batch_async(
+        let bare_result = complete(read_batch_async(
             OpenOptions::new().read(true).open(&path)?,
             vec![OwnedRead {
                 offset: 0,
@@ -5277,7 +4907,7 @@ mod tests {
                 .write(true)
                 .open(temporary.path().join("clean"))?,
         )?;
-        complete_write(independent.set_len_async(1))?;
+        complete(independent.set_len_async(1))?;
         Ok(())
     }
 
@@ -5296,7 +4926,7 @@ mod tests {
         )?;
 
         std::fs::hard_link(&path, &alias_path)?;
-        let tail = Arc::downgrade(&native.tail);
+        let tail = Arc::downgrade(&native.health.tail);
         let (started_sender, started_receiver) = mpsc::sync_channel(1);
         let (release_sender, release_receiver) = mpsc::sync_channel::<()>(1);
         let mut pending = native.control_async(move |_| {
@@ -5323,10 +4953,10 @@ mod tests {
             &tail
                 .upgrade()
                 .ok_or_else(|| io::Error::other("admitted job lost its alias tail"))?,
-            &alias.tail
+            &alias.health.tail
         ));
         release_sender.send(()).map_err(io::Error::other)?;
-        complete_write(pending)?;
+        complete(pending)?;
         Ok(())
     }
 
@@ -5349,9 +4979,9 @@ mod tests {
         let waker = completion_waker();
         match Pin::new(&mut sync).poll(&mut Context::from_waker(&waker)) {
             Poll::Ready(result) => result?,
-            Poll::Pending => complete_write(sync)?,
+            Poll::Pending => complete(sync)?,
         }
-        complete_write(write)?;
+        complete(write)?;
         assert_eq!(std::fs::read(&path)?, b"ordered");
 
         let discarded = native.write_all_batch_async(vec![OwnedWrite {
@@ -5360,7 +4990,7 @@ mod tests {
         }]);
         let resize = native.set_len_async(16);
         drop(discarded);
-        complete_write(resize)?;
+        complete(resize)?;
         assert_eq!(std::fs::metadata(&path)?.len(), 16);
         Ok(())
     }
@@ -5379,26 +5009,20 @@ mod tests {
         )?;
         let prior = Arc::new(OperationFence::default());
         *poisoned
-            .tail
+            .health.tail
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&prior));
-        let state = Mutex::new(CompletionState::<()> {
-            task_pending: false,
-            result: None,
-            panic: None,
-            waker: None,
-            _allocation: None,
-        });
-        poison_file_health(&poisoned.file, &poisoned.uncertain);
+        let state = Mutex::new(CompletionState::<()>::default());
+        poison_file_health(&poisoned.file, &poisoned.health.uncertain);
         finish_file_job(
             &state,
             Err(linux::uncertain_completion(io::Error::other(
                 "injected ambiguous completion",
             ))),
             Some(prior),
-            Some(&poisoned.uncertain),
+            Some(&poisoned.health.uncertain),
         );
-        let Err(error) = complete_write(poisoned.set_len_async(4)) else {
+        let Err(error) = complete(poisoned.set_len_async(4)) else {
             return Err(io::Error::other(
                 "an uncertain prior operation did not fence its successor",
             ));
@@ -5414,21 +5038,14 @@ mod tests {
                 .write(true)
                 .open(&unrelated_path)?,
         )?;
-        complete_write(unrelated.set_len_async(4))?;
+        complete(unrelated.set_len_async(4))?;
         assert_eq!(std::fs::metadata(unrelated_path)?.len(), 4);
         Ok(())
     }
 
     #[test]
     fn platform_control_is_offloaded_and_file_sequenced() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let native = NativeFile::from_file(
-            OpenOptions::new()
-                .create_new(true)
-                .read(true)
-                .write(true)
-                .open(temporary.path().join("ordered-control"))?,
-        )?;
+        let native = NativeFile::from_file(tempfile::tempfile()?)?;
         let mut write = native.write_all_batch_async(vec![OwnedWrite {
             offset: 0,
             bytes: Bytes::from_static(b"ready"),
@@ -5461,10 +5078,10 @@ mod tests {
                 .send(bytes)
                 .map_err(|error| io::Error::other(error.to_string()))
         });
-        complete_write(control)?;
+        complete(control)?;
         assert_eq!(receiver.recv().map_err(io::Error::other)?, *b"ready");
         if !write_completed {
-            complete_write(write)?;
+            complete(write)?;
         }
         Ok(())
     }
@@ -5482,7 +5099,7 @@ mod tests {
         )?;
         let never_polled = native.set_len_async(8);
         let last = native.set_len_async(32);
-        complete_write(last)?;
+        complete(last)?;
         assert_eq!(std::fs::metadata(&path)?.len(), 32);
         drop(never_polled);
         assert_eq!(std::fs::metadata(&path)?.len(), 32);
@@ -5538,13 +5155,8 @@ mod tests {
                 .recv_timeout(Duration::from_secs(10))
                 .map_err(|error| io::Error::other(error.to_string()))?;
         }
-        let temporary = tempfile::tempdir()?;
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(temporary.path().join("independent-native-io"))?;
-        complete_read(read_batch_async(
+        let file = tempfile::tempfile()?;
+        complete(read_batch_async(
             file,
             vec![OwnedRead {
                 offset: 0,
@@ -5579,14 +5191,9 @@ mod tests {
 
     #[test]
     fn native_read_batch_preserves_order_and_short_reads() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(temporary.path().join("read-batch"))?;
+        let file = tempfile::tempfile()?;
         write_all_at(&file, 0, b"abcdefgh")?;
-        let reads = complete_read(read_batch_async(
+        let reads = complete(read_batch_async(
             file,
             vec![
                 OwnedRead {
@@ -5608,49 +5215,6 @@ mod tests {
 
     #[cfg(target_vendor = "apple")]
     #[test]
-    fn native_batches_reject_all_invalid_offsets_before_submission() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("invalid-offset-batch");
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(&path)?;
-        write_all_at(&file, 0, b"stable")?;
-
-        let read = complete_read(read_batch_async(
-            file.try_clone()?,
-            vec![
-                OwnedRead {
-                    offset: 0,
-                    length: 1,
-                },
-                OwnedRead {
-                    offset: u64::MAX,
-                    length: 1,
-                },
-            ],
-        ));
-        assert!(matches!(read, Err(error) if error.kind() == io::ErrorKind::InvalidInput));
-
-        let write = complete_write(NativeFile::from_file(file)?.write_all_batch_async(vec![
-                OwnedWrite {
-                    offset: 0,
-                    bytes: Bytes::from_static(b"changed"),
-                },
-                OwnedWrite {
-                    offset: u64::MAX,
-                    bytes: Bytes::from_static(b"x"),
-                },
-            ],
-        ));
-        assert!(matches!(write, Err(error) if error.kind() == io::ErrorKind::InvalidInput));
-        assert_eq!(std::fs::read(path)?, b"stable");
-        Ok(())
-    }
-
-    #[cfg(target_vendor = "apple")]
-    #[test]
     fn apple_batches_preserve_unlinked_open_files() -> io::Result<()> {
         let temporary = tempfile::tempdir()?;
         let path = temporary.path().join("unlinked-open-file");
@@ -5660,13 +5224,13 @@ mod tests {
             .write(true)
             .open(&path)?;
         std::fs::remove_file(path)?;
-        complete_write(NativeFile::from_file(file.try_clone()?)?.write_all_batch_async(vec![OwnedWrite {
+        complete(NativeFile::from_file(file.try_clone()?)?.write_all_batch_async(vec![OwnedWrite {
                 offset: 3,
                 bytes: Bytes::from_static(b"kept"),
             }],
         ))?;
         assert_eq!(
-            complete_read(read_batch_async(
+            complete(read_batch_async(
                 file,
                 vec![OwnedRead {
                     offset: 3,
@@ -5678,9 +5242,8 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
-    fn io_uring_rejects_cursor_aliases_before_any_submission() -> io::Result<()> {
+    fn invalid_positional_batches_leave_contents_and_cursor_unchanged() -> io::Result<()> {
         let temporary = tempfile::tempdir()?;
         let path = temporary.path().join("invalid-io-uring-offset");
         let mut file = OpenOptions::new()
@@ -5701,7 +5264,7 @@ mod tests {
             Err(error) if error.kind() == io::ErrorKind::InvalidInput
         ));
         assert!(matches!(
-            complete_read(read_batch_async(
+            complete(read_batch_async(
                 file.try_clone()?,
                 vec![
                     OwnedRead {
@@ -5717,7 +5280,7 @@ mod tests {
             Err(error) if error.kind() == io::ErrorKind::InvalidInput
         ));
         assert!(matches!(
-            complete_write(NativeFile::from_file(file.try_clone()?)?.write_all_batch_async(vec![
+            complete(NativeFile::from_file(file.try_clone()?)?.write_all_batch_async(vec![
                     OwnedWrite {
                         offset: 0,
                         bytes: Bytes::from_static(b"changed"),
@@ -5754,7 +5317,7 @@ mod tests {
             .pending
             .take()
             .ok_or_else(|| io::Error::other("write was not pending admission"))?;
-        let completed = Arc::clone(&write.state);
+        let completed = Arc::clone(write.state.as_ref().expect("pending write"));
         sender
             .try_send(admitted)
             .map_err(|_| io::Error::other("write admission failed"))?;
@@ -5791,11 +5354,6 @@ mod tests {
 
     #[test]
     fn dropped_admission_waiters_do_not_block_later_reads() -> io::Result<()> {
-        enum FirstPoll {
-            Ready(io::Result<Vec<Bytes>>),
-            Pending(Box<ReadBatch>),
-        }
-
         let temporary = tempfile::tempdir()?;
         let path = temporary.path().join("admission-drop");
         let file = OpenOptions::new()
@@ -5813,33 +5371,17 @@ mod tests {
                     length: 1,
                 }],
             );
-            reads.push(
-                match Pin::new(&mut read).poll(&mut Context::from_waker(Waker::noop())) {
-                    Poll::Ready(result) => FirstPoll::Ready(result),
-                    Poll::Pending => FirstPoll::Pending(Box::new(read)),
-                },
-            );
-        }
-        for read in &reads {
-            if let FirstPoll::Ready(result) = read {
-                match result {
-                    Ok(completed) => assert_eq!(completed, &[Bytes::from_static(b"x")]),
-                    Err(error) => {
-                        return Err(io::Error::new(
-                            error.kind(),
-                            format!("initial native read failed: {error}"),
-                        ));
-                    }
+            reads.push(match Pin::new(&mut read).poll(&mut Context::from_waker(Waker::noop())) {
+                Poll::Ready(result) => {
+                    assert_eq!(result?, [Bytes::from_static(b"x")]);
+                    None
                 }
-            }
+                Poll::Pending => Some(read),
+            });
         }
         reads.truncate(8);
-        for read in reads {
-            let completed = match read {
-                FirstPoll::Ready(result) => result?,
-                FirstPoll::Pending(read) => complete_read(*read)?,
-            };
-            assert_eq!(completed, [Bytes::from_static(b"x")]);
+        for read in reads.into_iter().flatten() {
+            assert_eq!(complete(read)?, [Bytes::from_static(b"x")]);
         }
         let final_read = read_batch_async(
             file,
@@ -5848,21 +5390,16 @@ mod tests {
                 length: 1,
             }],
         );
-        assert_eq!(complete_read(final_read)?, [Bytes::from_static(b"x")]);
+        assert_eq!(complete(final_read)?, [Bytes::from_static(b"x")]);
         Ok(())
     }
 
     #[cfg(windows)]
     #[test]
     fn native_read_batch_preserves_empty_and_eof_ranges() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(temporary.path().join("read-batch-eof"))?;
+        let file = tempfile::tempfile()?;
         write_all_at(&file, 0, b"abc")?;
-        let reads = complete_read(read_batch_async(
+        let reads = complete(read_batch_async(
             file.try_clone()?,
             vec![
                 OwnedRead {
@@ -5881,7 +5418,7 @@ mod tests {
         ))?;
         assert_eq!(reads, [Bytes::new(), Bytes::new(), Bytes::new()]);
         for (offset, expected) in b"abc".iter().copied().enumerate() {
-            let repeated = complete_read(read_batch_async(
+            let repeated = complete(read_batch_async(
                 file.try_clone()?,
                 vec![OwnedRead {
                     offset: offset as u64,
@@ -5895,41 +5432,14 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn native_read_batch_chunks_large_ranges() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(temporary.path().join("large-read-batch"))?;
-        let expected = Bytes::from(vec![0x5a; 1024 * 1024 + 1]);
-        write_all_at(&file, 7, &expected)?;
-        let actual = complete_read(read_batch_async(
-            file,
-            vec![OwnedRead {
-                offset: 7,
-                length: expected.len(),
-            }],
-        ))?;
-        assert_eq!(actual, [expected]);
-        Ok(())
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
     fn native_read_batch_windows_requests_beyond_the_ring() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(temporary.path().join("windowed-read-batch"))?;
+        let file = tempfile::tempfile()?;
         let expected: Vec<u8> = (0..17).collect();
         write_all_at(&file, 0, &expected)?;
         let requests = (0_u64..17)
             .map(|offset| OwnedRead { offset, length: 1 })
             .collect();
-        let actual = complete_read(read_batch_async(file, requests))?;
+        let actual = complete(read_batch_async(file, requests))?;
         assert_eq!(
             actual,
             expected
@@ -5943,15 +5453,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn native_read_batch_windows_one_range_beyond_the_ring() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(temporary.path().join("windowed-large-read"))?;
+        let file = tempfile::tempfile()?;
         let expected = Bytes::from(vec![0x69; 16 * 1024 * 1024 + 1]);
         write_all_at(&file, 3, &expected)?;
-        let actual = complete_read(read_batch_async(
+        let actual = complete(read_batch_async(
             file,
             vec![OwnedRead {
                 offset: 3,
@@ -5963,7 +5468,7 @@ mod tests {
     }
     fn prepared_metadata_task(
         file: File, meter: Arc<dyn NativeReadMeter>,
-    ) -> io::Result<BlockingIoTask<io::Result<u64>>> {
+    ) -> io::Result<NativeCompletion<io::Result<u64>>> {
         let mut operation = OwnedNativeOperationReservation::new(
             Arc::clone(&meter), NativeOperationKind::Read, 1,
         )?;
@@ -6010,9 +5515,7 @@ mod tests {
         let workers = NativeWorkers { sender, admission: Arc::new(Mutex::new(AdmissionState::new())) };
         workers.sender.try_send(NativeJob::Task {
             operation: Box::new(|| ()), meter: None,
-            completion: Arc::new(Mutex::new(CompletionState::<()> {
-                task_pending: true, result: None, panic: None, waker: None, _allocation: None,
-            })),
+            completion: Arc::new(Mutex::new(CompletionState::<()> { task_pending: true, ..CompletionState::default() })),
             _allocation: None,
         }).map_err(|_| io::Error::other("failed to saturate canonical test queue"))?;
         workers.admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner).queued_jobs = 1;
@@ -6124,9 +5627,7 @@ mod tests {
         };
         let job = || NativeJob::Task {
             operation: Box::new(|| ()), meter: None,
-            completion: Arc::new(Mutex::new(CompletionState::<()> {
-                task_pending: true, result: None, panic: None, waker: None, _allocation: None,
-            })),
+            completion: Arc::new(Mutex::new(CompletionState::<()> { task_pending: true, ..CompletionState::default() })),
             _allocation: None,
         };
         workers
@@ -6249,125 +5750,37 @@ mod tests {
         limits.memory_limit = 0;
         limits.allocation_limit = 0;
         let meter = Arc::new(limits);
-        let output = complete_measured(file.read_bounded_async(u64::MAX, 0, meter.clone())?)?;
+        let output = complete(file.read_bounded_async(u64::MAX, 0, meter.clone())?)?;
         assert!(output.bytes.is_empty());
         assert_eq!(meter.memory.load(Ordering::Acquire), 0);
         Ok(())
     }
 
+    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
     #[test]
-    fn measured_sync_wait_deadline_drains_the_actual_terminal_body() -> io::Result<()> {
-        initialize_native_io_services()?;
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("sync-deadline");
-        std::fs::write(&path, b"abc")?;
-        let mut file = File::open(path)?;
-        let meter = Arc::new(ReadBudgetMeter::new(1, 3));
-        let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
-        let terminal = Arc::new(AtomicBool::new(false));
-        let body_gate = gate.clone();
-        let body_terminal = terminal.clone();
-        let body_meter = meter.clone();
-        let mut task = run_blocking_io_measured(move || -> io::Result<usize> {
-            let mut buffer = [0_u8; 3];
-            body_meter.admit_read(buffer.len())?;
-            let completed = file.read(&mut buffer)?;
-            body_meter.record_read(completed)?;
-            let (lock, changed) = &*body_gate;
-            let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.0 = true;
-            changed.notify_all();
-            while !state.1 {
-                state = changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
-            }
-            body_terminal.store(true, Ordering::Release);
-            Ok(completed)
-        }, meter.clone())?;
-        let waker = completion_waker();
-        let mut context = Context::from_waker(&waker);
-        loop {
-            assert!(Pin::new(&mut task).poll(&mut context).is_pending());
-            if task.pending.is_none() { break; }
-            std::thread::park_timeout(Duration::from_millis(1));
+    fn bounded_write_cancellation_retires_custody_after_actual_prefix() -> io::Result<()> {
+        for payload in [b"persisted".to_vec(), vec![0x5a; 1024 * 1024 + 7]] {
+            let temporary = tempfile::tempdir()?;
+            let path = temporary.path().join("custodied-cancel");
+            File::create(&path)?;
+            let file = bounded_write_file(&path, true)?;
+            let expected = payload[..payload.len().min(1024 * 1024)].to_vec();
+            let mut limits = ReadBudgetMeter::new(u64::MAX, payload.len() as u64);
+            limits.cancel_after_read = true;
+            let meter = Arc::new(limits);
+            let bytes_dropped = Arc::new(AtomicBool::new(false));
+            let retired = Arc::new(AtomicBool::new(false));
+            let bytes = Bytes::from_owner(ObservedWriteBytes { bytes: payload, dropped: bytes_dropped.clone() });
+            let custody = ObservedWriteCustody {
+                bytes_dropped, retired: retired.clone(), meter: meter.clone(),
+                actual_prefix: expected.len() as u64,
+            };
+            let error = complete(file.write_bounded_async_with_custody(0, bytes, meter.clone(), custody)?).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+            assert!(retired.load(Ordering::Acquire));
+            assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+            assert_eq!(std::fs::read(&path)?, expected);
         }
-        let mut deadline_calls = 0;
-        let completed = task.wait_measured(
-            Some(Instant::now()),
-            std::future::pending(),
-            || {
-                deadline_calls += 1;
-                let (lock, changed) = &*gate;
-                let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                while !state.0 {
-                    state = changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
-                }
-                meter.cancelled.store(true, Ordering::Release);
-                state.1 = true;
-                changed.notify_all();
-            },
-        )??;
-        assert_eq!(deadline_calls, 1);
-        assert!(terminal.load(Ordering::Acquire));
-        assert_eq!(completed, 3);
-        assert_eq!(meter.read.load(Ordering::Acquire), 3);
         Ok(())
     }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn bounded_write_custody_retires_after_actual_partial_prefix() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("custodied-prefix");
-        File::create(&path)?;
-        let file = bounded_write_file(&path, true)?;
-        let mut limits = ReadBudgetMeter::new(u64::MAX, 1024 * 1024 + 7);
-        limits.cancel_after_read = true;
-        let meter = Arc::new(limits);
-        let bytes_dropped = Arc::new(AtomicBool::new(false));
-        let retired = Arc::new(AtomicBool::new(false));
-        let bytes = Bytes::from_owner(ObservedWriteBytes {
-            bytes: vec![0x5a; 1024 * 1024 + 7],
-            dropped: bytes_dropped.clone(),
-        });
-        let custody = ObservedWriteCustody {
-            bytes_dropped: bytes_dropped.clone(), retired: retired.clone(),
-            meter: meter.clone(), actual_prefix: 1024 * 1024,
-        };
-        assert!(complete_write(file.write_bounded_async_with_custody(
-            0, bytes, meter.clone(), custody,
-        )?).is_err());
-        assert!(retired.load(Ordering::Acquire));
-        assert_eq!(std::fs::read(&path)?, vec![0x5a; 1024 * 1024]);
-        Ok(())
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn bounded_write_cancelled_custody_records_physical_prefix_before_retirement() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("custodied-cancel");
-        File::create(&path)?;
-        let file = bounded_write_file(&path, true)?;
-        let mut budget = ReadBudgetMeter::new(u64::MAX, 9);
-        budget.cancel_after_read = true;
-        let meter = Arc::new(budget);
-        let bytes_dropped = Arc::new(AtomicBool::new(false));
-        let retired = Arc::new(AtomicBool::new(false));
-        let bytes = Bytes::from_owner(ObservedWriteBytes {
-            bytes: b"persisted".to_vec(), dropped: bytes_dropped.clone(),
-        });
-        let custody = ObservedWriteCustody {
-            bytes_dropped: bytes_dropped.clone(), retired: retired.clone(),
-            meter: meter.clone(), actual_prefix: 9,
-        };
-        let error = complete_write(file.write_bounded_async_with_custody(
-            0, bytes, meter.clone(), custody,
-        )?).expect_err("actual transfer sets the cancellation control");
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-        assert!(retired.load(Ordering::Acquire));
-        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-        assert_eq!(std::fs::read(&path)?, b"persisted");
-        Ok(())
-    }
-
 }

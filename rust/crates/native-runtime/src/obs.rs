@@ -519,7 +519,7 @@ mod tests {
                 });
                 (caller, observer)
             });
-            native.uncertain.store(true, Ordering::Release);
+            native.health.uncertain.store(true, Ordering::Release);
             let rejected = tracing::dispatcher::with_default(&foreign, || {
                 let mut context = TaskContext::from_waker(Waker::noop());
                 matches!(

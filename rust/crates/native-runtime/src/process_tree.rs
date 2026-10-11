@@ -206,7 +206,7 @@ impl<'a> PendingStdin<'a> {
             )).transpose()?;
             let pipe = tree.child.as_mut().and_then(|child| child.stdin.as_mut())
                 .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "no owned process stdin"))?;
-            let transfer = platform::write_pipe_with_meter(pipe, suffix, meter);
+            let transfer = platform::write_pipe(pipe, suffix, meter);
             let actual = transfer.as_ref().ok().and_then(|(written, _)| *written).unwrap_or(0);
             let recorded_bytes = reservation.as_mut().map_or(Ok(()), |token| token.record(actual));
             if actual > suffix.len() { return Err(io::Error::other("invalid process write length")); }
@@ -409,7 +409,11 @@ impl ProcessTree {
         let Some(pipe) = self.child.as_mut().and_then(|child| child.stdout.as_mut()) else {
             return Ok(Some(0));
         };
-        platform::read_pipe(pipe, buffer)
+        // SAFETY: initialized bytes can be borrowed as MaybeUninit bytes.
+        let buffer = unsafe { std::slice::from_raw_parts_mut(buffer.as_mut_ptr().cast(), buffer.len()) };
+        let (read, recorded) = platform::read_pipe(pipe, buffer, None)?;
+        recorded?;
+        Ok(read)
     }
 
     /// Writes to owned stdin without waiting for pipe capacity.
@@ -425,11 +429,12 @@ impl ProcessTree {
             .as_mut()
             .and_then(|child| child.stdin.as_mut())
             .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "no owned process stdin"))?;
-        platform::write_pipe(pipe, bytes)
+        let (written, recorded) = platform::write_pipe(pipe, bytes, None)?;
+        recorded?;
+        Ok(written)
     }
 
-    /// Closes only the retained stdin pipe. Tree containment remains owned here.
-    pub fn close_stdin(&mut self) {
+    fn close_stdin(&mut self) {
         if let Some(child) = self.child.as_mut() {
             drop(child.stdin.take());
         }
@@ -454,13 +459,6 @@ impl ProcessTree {
             .ok_or_else(|| io::ErrorKind::Other.into())
     }
 
-    #[cfg(unix)]
-    fn try_wait_with_meter(
-        &mut self, meter: Option<&dyn crate::NativeReadMeter>,
-    ) -> io::Result<Option<ExitStatus>> {
-        platform::observe_exit_id(self.owned_child_id()?, meter)
-    }
-
     fn select_control_meter(&mut self, meter: Option<&dyn crate::NativeReadMeter>) {
         if meter.is_some() {
             self.cleanup_on_drop = false;
@@ -474,7 +472,7 @@ impl ProcessTree {
     ) -> io::Result<Option<ExitStatus>> {
         self.select_control_meter(meter);
         #[cfg(unix)]
-        return self.try_wait_with_meter(meter);
+        return platform::observe_exit_id(self.owned_child_id()?, meter);
         #[cfg(windows)]
         {
             let child = self.child.as_mut().ok_or(io::ErrorKind::NotFound)?;
@@ -812,7 +810,7 @@ impl ProcessTree {
         self.capture_close_stdin(meter)?;
         if self.child.is_some() || self.native_child.is_some() {
             let deadline = Instant::now() + Self::TERMINATION_TIMEOUT;
-            while self.try_wait_with_meter(meter)?.is_none() {
+            while platform::observe_exit_id(self.owned_child_id()?, meter)?.is_none() {
                 if Instant::now() >= deadline {
                     return Err(io::ErrorKind::TimedOut.into());
                 }
@@ -950,7 +948,7 @@ fn drain_pipe<T: Read + platform::Pipe>(
         output.spare_capacity_mut().get_mut(..admitted)
             .ok_or_else(|| io::Error::from(io::ErrorKind::Other))?
     };
-    let transfer = platform::read_pipe_with_meter(reader, buffer, meter);
+    let transfer = platform::read_pipe(reader, buffer, meter);
     let actual = transfer.as_ref().ok().and_then(|(read, _)| *read).unwrap_or(0);
     let recorded_bytes = reservation.as_mut().map_or(Ok(()), |token| token.record(actual));
     if actual > maximum { return Err(io::Error::other("pipe returned an invalid length")); }
@@ -1100,19 +1098,6 @@ mod platform {
 
     pub(super) fn read_pipe(
         pipe: &mut (impl Read + Pipe),
-        buffer: &mut [u8],
-    ) -> io::Result<Option<usize>> {
-        // SAFETY: initialized bytes may also be borrowed as MaybeUninit bytes.
-        let buffer = unsafe { std::slice::from_raw_parts_mut(
-            buffer.as_mut_ptr().cast(), buffer.len(),
-        ) };
-        let (read, recorded) = read_pipe_with_meter(pipe, buffer, None)?;
-        recorded?;
-        Ok(read)
-    }
-
-    pub(super) fn read_pipe_with_meter(
-        pipe: &mut (impl Read + Pipe),
         buffer: &mut [std::mem::MaybeUninit<u8>],
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<(Option<usize>, io::Result<()>)> {
@@ -1136,14 +1121,6 @@ mod platform {
     }
 
     pub(super) fn write_pipe(
-        pipe: &mut (impl Write + Pipe), bytes: &[u8],
-    ) -> io::Result<Option<usize>> {
-        let (written, recorded) = write_pipe_with_meter(pipe, bytes, None)?;
-        recorded?;
-        Ok(written)
-    }
-
-    pub(super) fn write_pipe_with_meter(
         pipe: &mut (impl Write + Pipe), bytes: &[u8],
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<(Option<usize>, io::Result<()>)> {
@@ -2313,14 +2290,6 @@ mod platform {
 
     pub(super) fn write_pipe(
         pipe: &mut (impl Write + Pipe), bytes: &[u8],
-    ) -> io::Result<Option<usize>> {
-        let (written, recorded) = write_pipe_with_meter(pipe, bytes, None)?;
-        recorded?;
-        Ok(written)
-    }
-
-    pub(super) fn write_pipe_with_meter(
-        pipe: &mut (impl Write + Pipe), bytes: &[u8],
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<(Option<usize>, io::Result<()>)> {
         let mode = PIPE_NOWAIT;
@@ -2365,18 +2334,6 @@ mod platform {
     }
 
     pub(super) fn read_pipe(
-        pipe: &mut (impl Read + Pipe), buffer: &mut [u8],
-    ) -> io::Result<Option<usize>> {
-        // SAFETY: initialized bytes may also be borrowed as MaybeUninit bytes.
-        let buffer = unsafe { std::slice::from_raw_parts_mut(
-            buffer.as_mut_ptr().cast(), buffer.len(),
-        ) };
-        let (read, recorded) = read_pipe_with_meter(pipe, buffer, None)?;
-        recorded?;
-        Ok(read)
-    }
-
-    pub(super) fn read_pipe_with_meter(
         pipe: &mut (impl Read + Pipe),
         buffer: &mut [std::mem::MaybeUninit<u8>],
         meter: Option<&dyn crate::NativeReadMeter>,
