@@ -1,6 +1,7 @@
 //! Service identity, locking, lifecycle, doctor, and the control client.
 
 use super::*;
+use crate::service::SessionCloseState;
 use tracing::Instrument as _;
 
 pub(crate) fn default_data_directory() -> PathBuf {
@@ -851,17 +852,24 @@ pub(crate) fn write_service_drain_completion(
     data: &Path,
     identity: &str,
     drain_id: &str,
-    result: &Result<(), String>,
+    result: &acyclic_harness::Result<SessionCloseState>,
 ) -> Result<(), String> {
     let path = service_drain_completion_path(data, identity);
     let next = path.with_extension("next");
     fs::create_dir_all(data.join(SERVICE_DRAIN_DIRECTORY)).map_err(display)?;
+    // This is the existing final drain-error wire rendering boundary. The
+    // borrowed Root error retains its cause and custody through the write.
+    let error = match result {
+        Err(error) => Some(error.to_string()),
+        Ok(SessionCloseState::Failed) => Some("Acyclic service retained a failed session shutdown".to_owned()),
+        Ok(SessionCloseState::Closed) => None,
+    };
     let value = json!({
         "version": 1,
         "identity": identity,
         "drainId": drain_id,
-        "ok": result.is_ok(),
-        "error": result.as_ref().err(),
+        "ok": matches!(result, Ok(SessionCloseState::Closed)),
+        "error": error,
     });
     let mut file = OpenOptions::new()
         .create(true)
@@ -946,22 +954,50 @@ pub(crate) fn service_lock_is_contended(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::WouldBlock || cfg!(windows) && error.raw_os_error() == Some(33)
 }
 
-pub(crate) async fn run_service(data: PathBuf) -> Result<(), String> {
+pub(crate) async fn run_service(data: PathBuf) -> acyclic_harness::Result<SessionCloseState> {
     // Taken first, so nothing the service prints can reach its starter.
-    let ready = acyclic_native_runtime::take_service_ready_signal().map_err(display)?;
+    let ready = acyclic_native_runtime::take_service_ready_signal()
+        .map_err(|error| acyclic_harness::Error::Storage(display(error)))?;
     run_service_with_identity(data, None, ready).await
 }
 
 pub(crate) async fn shutdown_service_endpoint(
     endpoint: ControlEndpoint,
     control: Arc<ConcurrentServiceControl>,
-) -> Result<(), String> {
+) -> acyclic_harness::Result<SessionCloseState> {
     let endpoint_result = endpoint.shutdown().await;
     let control_result = match Arc::try_unwrap(control) {
         Ok(control) => control.shutdown().await,
-        Err(_) => Err("control service retained an active request during shutdown".to_owned()),
+        Err(_) => Err(acyclic_harness::Error::Invalid(
+            "control service retained an active request during shutdown".to_owned(),
+        )),
     };
-    endpoint_result.and(control_result)
+    service_cleanup_outcome(control_result, endpoint_result, "control endpoint shutdown")
+}
+
+fn service_cleanup_outcome(
+    native: acyclic_harness::Result<SessionCloseState>,
+    ordinary: Result<(), String>,
+    context: &'static str,
+) -> acyclic_harness::Result<SessionCloseState> {
+    match native {
+        Ok(SessionCloseState::Closed) => ordinary
+            .map(|()| SessionCloseState::Closed)
+            .map_err(acyclic_harness::Error::Storage),
+        outcome => {
+            // Only the already owned ordinary cleanup diagnostic is recorded.
+            // The supervisor's first Root cause is never formatted or cloned.
+            if let Err(error) = ordinary {
+                tracing::warn!(
+                    target: "acyclic_plugin",
+                    cleanup_context = context,
+                    error = %error,
+                    "secondary service cleanup failure"
+                );
+            }
+            outcome
+        }
+    }
 }
 
 /// Runs the service. `ready`, when its starter waits on it, is signalled once
@@ -971,9 +1007,9 @@ pub(crate) async fn run_service_with_identity(
     data: PathBuf,
     identity_override: Option<String>,
     ready: Option<acyclic_native_runtime::ServiceReadySignal>,
-) -> Result<(), String> {
-    let Some(lock) = acquire_service_lock(&data)? else {
-        return Ok(());
+) -> acyclic_harness::Result<SessionCloseState> {
+    let Some(lock) = acquire_service_lock(&data).map_err(acyclic_harness::Error::Storage)? else {
+        return Ok(SessionCloseState::Closed);
     };
     let result = run_locked_service(data, identity_override, ready).await;
     drop(lock);
@@ -984,7 +1020,7 @@ pub(crate) async fn run_locked_service(
     data: PathBuf,
     identity_override: Option<String>,
     ready: Option<acyclic_native_runtime::ServiceReadySignal>,
-) -> Result<(), String> {
+) -> acyclic_harness::Result<SessionCloseState> {
     let mut service = ConcurrentServiceControl::open(data.clone()).await?;
     if let Some(identity) = identity_override {
         service.resources.binary_identity = identity;
@@ -997,14 +1033,11 @@ pub(crate) async fn run_locked_service(
         Err(endpoint_error) => {
             let control_result = match Arc::try_unwrap(control) {
                 Ok(control) => control.shutdown().await,
-                Err(_) => Err("failed endpoint retained the control service".to_owned()),
-            };
-            return match control_result {
-                Ok(()) => Err(endpoint_error),
-                Err(shutdown_error) => Err(format!(
-                    "{endpoint_error}; endpoint startup cleanup failed: {shutdown_error}"
+                Err(_) => Err(acyclic_harness::Error::Invalid(
+                    "failed endpoint retained the control service".to_owned(),
                 )),
             };
+            return service_cleanup_outcome(control_result, Err(endpoint_error), "control endpoint startup");
         }
     };
     let published = StopRequests::open(&data, &instance_id).and_then(|stops| {
@@ -1018,12 +1051,7 @@ pub(crate) async fn run_locked_service(
         Ok(published) => published,
         Err(marker_error) => {
             let cleanup = shutdown_service_endpoint(endpoint, control).await;
-            return match cleanup {
-                Ok(()) => Err(marker_error),
-                Err(cleanup_error) => Err(format!(
-                    "{marker_error}; identity publication cleanup failed: {cleanup_error}"
-                )),
-            };
+            return service_cleanup_outcome(cleanup, Err(marker_error), "service identity publication");
         }
     };
     if let Some(ready) = ready {
@@ -1038,9 +1066,12 @@ pub(crate) async fn run_locked_service(
         }
     };
     drop(stops);
-    let result = service_result.and(shutdown_service_endpoint(endpoint, control).await);
+    let result = service_cleanup_outcome(
+        shutdown_service_endpoint(endpoint, control).await, service_result, "service shutdown signal",
+    );
     if let Some(drain_id) = requested_drain {
-        write_service_drain_completion(&data, &instance_id, &drain_id, &result)?;
+        let completion = write_service_drain_completion(&data, &instance_id, &drain_id, &result);
+        return service_cleanup_outcome(result, completion, "service drain confirmation");
     }
     result
 }
@@ -1320,6 +1351,11 @@ pub(crate) enum ControlRequestError {
     Unavailable(String),
     Indeterminate(String),
     Response(String),
+    NativeWork(acyclic_harness::Error),
+    NativeResponse {
+        message: String,
+        custody: acyclic_fs::NativeAllocation,
+    },
 }
 
 impl std::fmt::Display for ControlRequestError {
@@ -1328,6 +1364,17 @@ impl std::fmt::Display for ControlRequestError {
             Self::Unavailable(message) | Self::Indeterminate(message) | Self::Response(message) => {
                 formatter.write_str(message)
             }
+            Self::NativeWork(error) => std::fmt::Display::fmt(error, formatter),
+            Self::NativeResponse { message, custody: _custody } => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for ControlRequestError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NativeWork(error) => Some(error),
+            _ => None,
         }
     }
 }
@@ -1345,6 +1392,44 @@ pub(crate) async fn send_control_envelope(
 ) -> Result<Value, ControlRequestError> {
     send_control_envelope_with_attempts(data, envelope, 50, control_request_wait(&envelope.request))
         .await
+}
+
+pub(crate) async fn send_control_envelope_with_native_work(
+    data: &Path,
+    envelope: &ControlEnvelope<ControlRequest>,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(Value, acyclic_fs::NativeAllocation), ControlRequestError> {
+    send_native_control_envelope_with_attempts(data, envelope, work, 50).await
+}
+
+pub(crate) async fn send_control_envelope_once_with_native_work(
+    data: &Path,
+    envelope: &ControlEnvelope<ControlRequest>,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(Value, acyclic_fs::NativeAllocation), ControlRequestError> {
+    send_native_control_envelope_with_attempts(data, envelope, work, 1).await
+}
+
+async fn send_native_control_envelope_with_attempts(
+    data: &Path,
+    envelope: &ControlEnvelope<ControlRequest>,
+    work: &acyclic_fs::NativeMaterializationWork,
+    attempts: usize,
+) -> Result<(Value, acyclic_fs::NativeAllocation), ControlRequestError> {
+    let (value, allocation) = send_control_envelope_with_attempts_and_work(
+        data,
+        envelope,
+        attempts,
+        control_request_wait(&envelope.request),
+        Some(work),
+    )
+    .await?;
+    match allocation {
+        Some(allocation) => Ok((value, allocation)),
+        None => Err(ControlRequestError::NativeWork(acyclic_harness::Error::Invalid(
+            "native control response lost its original allocation custody".to_owned(),
+        ))),
+    }
 }
 
 pub(crate) fn control_request_wait(request: &ControlRequest) -> std::time::Duration {
@@ -1374,24 +1459,314 @@ pub(crate) async fn send_control_envelope_once(
         .await
 }
 
+type ControlClientResponse = (Value, Option<acyclic_fs::NativeAllocation>);
+
+fn native_control_error(cause: acyclic_fs::NativeTreeMaterializationError) -> acyclic_harness::Error {
+    acyclic_harness::Error::NativeWork { cause, custody: None }
+}
+
+fn native_control_codec_error(
+    error: acyclic_harness::Error,
+    allocation: acyclic_fs::NativeAllocation,
+) -> acyclic_harness::Error {
+    if allocation.bytes() == 0 {
+        // Codec cleanup has already retired failed output. An empty output
+        // guard is not custody for the cause or a substitute query-work handle.
+        drop(allocation);
+        return error;
+    }
+    match error {
+        acyclic_harness::Error::NativeWork { cause, custody: None } => {
+            acyclic_harness::Error::NativeWork { cause, custody: Some(allocation) }
+        }
+        // The SDK has already dropped partial codec output. Never replace an
+        // existing owned cause or its custody with a rendered diagnostic.
+        error => error,
+    }
+}
+
+fn native_control_codec_charge(
+    charge: acyclic_harness::JsonCodecCharge,
+    work: &acyclic_fs::NativeMaterializationWork,
+    allocation: &mut acyclic_fs::NativeAllocation,
+) -> acyclic_harness::Result<()> {
+    use acyclic_harness::JsonCodecCharge;
+    let mut spent = acyclic_fs::WorkCounters::default();
+    match charge {
+        JsonCodecCharge::Work { bytes, items } => {
+            spent.bytes_encoded = bytes;
+            spent.items_examined = items;
+        }
+        JsonCodecCharge::Read { .. } => {
+            // The frame's actual transport read has its own admitted boundary.
+            // A lexical scan of already held bytes is not a second I/O read.
+            return work.remaining().map(|_| ()).map_err(native_control_error);
+        }
+        JsonCodecCharge::Copy { bytes } => spent.bytes_copied = bytes,
+        JsonCodecCharge::CopyAdmission { bytes } => {
+            return work.admit(acyclic_fs::WorkCounters {
+                bytes_copied: bytes, ..acyclic_fs::WorkCounters::default()
+            }).map_err(native_control_error);
+        }
+        JsonCodecCharge::AllocationOperation { .. } => spent.allocation_operations = 1,
+        JsonCodecCharge::Retain { bytes } => {
+            let retained = allocation.bytes().checked_add(bytes)
+                .ok_or_else(|| native_control_error(acyclic_fs::WorkError::Overflow.into()))?;
+            return allocation.resize_retained(retained).map_err(native_control_error);
+        }
+        JsonCodecCharge::Release { bytes } => {
+            return allocation.release(bytes).map_err(native_control_error);
+        }
+        JsonCodecCharge::Admission { .. } => {
+            return Err(acyclic_harness::Error::Invalid(
+                "control encoding requested typed decode admission".to_owned(),
+            ));
+        }
+    }
+    work.charge(spent).map_err(native_control_error)
+}
+
+pub(crate) fn encode_native_control_value<T: serde::Serialize + ?Sized>(
+    value: &T,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> acyclic_harness::Result<(Vec<u8>, acyclic_fs::NativeAllocation)> {
+    let remaining = work.remaining().map_err(native_control_error)?;
+    let bounds = acyclic_harness::JsonBounds {
+        maximum_bytes: remaining.bytes_encoded.min((MAXIMUM_CONTROL_MESSAGE_BYTES - 1) as u64),
+        maximum_items: remaining.items_examined,
+        maximum_depth: 64,
+    };
+    let mut allocation = work.retain_owned(0).map_err(native_control_error)?;
+    match acyclic_harness::json_bytes_bounded_trusted(value, bounds, &mut |charge| {
+        native_control_codec_charge(charge, work, &mut allocation)
+    }) {
+        Ok(bytes) => Ok((bytes, allocation)),
+        Err(error) => Err(native_control_codec_error(error, allocation)),
+    }
+}
+
+// Fields drop in declaration order, including cancellation of an exchange.
+struct ControlEncodedRequest {
+    bytes: Vec<u8>,
+    _allocation: Option<acyclic_fs::NativeAllocation>,
+}
+
+impl ControlEncodedRequest {
+    fn new(
+        envelope: &ControlEnvelope<ControlRequest>,
+        work: Option<&acyclic_fs::NativeMaterializationWork>,
+    ) -> Result<Self, ControlRequestError> {
+        match work {
+            Some(work) => {
+                let allocation;
+                let bytes;
+                (bytes, allocation) = encode_native_control_value(envelope, work)
+                    .map_err(ControlRequestError::NativeWork)?;
+                // Keep the encoder's exact bytes across every connection
+                // attempt; framing writes the newline without another buffer.
+                work.charge(acyclic_fs::WorkCounters {
+                    bytes_encoded: 1, ..acyclic_fs::WorkCounters::default()
+                }).map_err(native_control_error).map_err(ControlRequestError::NativeWork)?;
+                Ok(Self { bytes, _allocation: Some(allocation) })
+            }
+            None => {
+                let mut bytes = serde_json::to_vec(envelope)
+                    .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
+                bytes.push(b'\n');
+                Ok(Self { bytes, _allocation: None })
+            }
+        }
+    }
+}
+
+const CONTROL_RESPONSE_READER_BYTES: usize = 8 * 1024;
+
+struct ControlResponseFrame {
+    bytes: Vec<u8>,
+    allocation: Option<acyclic_fs::NativeAllocation>,
+    reader_allocation: Option<acyclic_fs::NativeAllocation>,
+}
+
+impl ControlResponseFrame {
+    fn new(
+        work: Option<&acyclic_fs::NativeMaterializationWork>,
+    ) -> Result<Self, ControlRequestError> {
+        let Some(work) = work else {
+            return Ok(Self { bytes: Vec::new(), allocation: None, reader_allocation: None });
+        };
+        let maximum = MAXIMUM_CONTROL_MESSAGE_BYTES + 1;
+        work.admit(acyclic_fs::WorkCounters {
+            source_bytes_read: maximum as u64,
+            bytes_copied: (maximum + CONTROL_RESPONSE_READER_BYTES) as u64,
+            ..acyclic_fs::WorkCounters::default()
+        }).map_err(native_control_error).map_err(ControlRequestError::NativeWork)?;
+        let mut frame = Self { bytes: Vec::new(), allocation: None, reader_allocation: None };
+        frame.reserve_native(maximum, work).map_err(ControlRequestError::NativeWork)?;
+        // Reader storage is only a quota here. Its actual allocator attempt
+        // is charged immediately before constructing the buffered reader.
+        frame.reader_allocation = Some(work.retain_owned(CONTROL_RESPONSE_READER_BYTES as u64)
+            .map_err(native_control_error).map_err(ControlRequestError::NativeWork)?);
+        Ok(frame)
+    }
+
+    fn native_capacity_for(&self, minimum: usize) -> usize {
+        self.bytes.capacity().saturating_mul(2)
+            .max(CONTROL_RESPONSE_READER_BYTES)
+            .max(minimum)
+            .min(MAXIMUM_CONTROL_MESSAGE_BYTES + 1)
+    }
+
+    fn reserve_native(
+        &mut self,
+        minimum: usize,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> acyclic_harness::Result<()> {
+        if minimum <= self.bytes.capacity() {
+            return Ok(());
+        }
+        if minimum > MAXIMUM_CONTROL_MESSAGE_BYTES + 1 {
+            return Err(native_control_error(acyclic_fs::NativeTreeMaterializationError::PayloadTooLarge {
+                maximum: MAXIMUM_CONTROL_MESSAGE_BYTES as u64, actual: minimum as u64,
+            }));
+        }
+        let capacity = self.native_capacity_for(minimum);
+        // The old backing guard remains live while this actual allocator
+        // attempt acquires the complete replacement, not just a size delta.
+        let replacement = work.claim(capacity as u64).map_err(native_control_error)?;
+        self.bytes.try_reserve_exact(capacity - self.bytes.len())
+            .map_err(acyclic_fs::NativeTreeMaterializationError::AllocationFailed)
+            .map_err(native_control_error)?;
+        // A successful reserve has retired the previous backing allocation.
+        // Bind replacement custody before any completed-capacity check.
+        self.allocation = Some(replacement);
+        if let Some(allocation) = self.allocation.as_mut() {
+            allocation.resize_retained(self.bytes.capacity() as u64).map_err(native_control_error)?;
+        }
+        Ok(())
+    }
+
+    fn decode(
+        self,
+        request_id: &control_protocol::RequestId,
+    ) -> Result<ControlClientResponse, ControlRequestError> {
+        let result = match self.allocation.as_ref() {
+            Some(allocation) => decode_native_control_response(&self.bytes, request_id, allocation.work())
+                .map(|(value, allocation)| (value, Some(allocation))),
+            None => decode_control_response(&self.bytes, request_id).map(|value| (value, None)),
+        };
+        // Frame bytes are freed before their original guard, after the
+        // decoder has either transferred reply custody or freed partial data.
+        drop(self);
+        result
+    }
+}
+
+struct ControlResponseReader<'a, R: tokio::io::AsyncRead> {
+    reader: tokio::io::BufReader<tokio::io::Take<R>>,
+    allocation: Option<acyclic_fs::NativeAllocation>,
+    bytes: &'a mut Vec<u8>,
+    recorded_read: u64,
+    recorded_copy: u64,
+}
+
+impl<R: tokio::io::AsyncRead> ControlResponseReader<'_, R> {
+    fn record_read(&mut self) -> acyclic_harness::Result<()> {
+        let consumed = (MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64 - self.reader.get_ref().limit();
+        let copied = self.bytes.len() as u64;
+        let read_delta = consumed - self.recorded_read;
+        let copy_delta = copied - self.recorded_copy;
+        if read_delta == 0 && copy_delta == 0 {
+            return Ok(());
+        }
+        // SDK spent records completed work even when reconciliation then
+        // fails. Mark this prefix first so Drop cannot record it twice.
+        self.recorded_read = consumed;
+        self.recorded_copy = copied;
+        if let Some(allocation) = self.allocation.as_ref() {
+            allocation.work().spent(acyclic_fs::WorkCounters {
+                source_bytes_read: read_delta,
+                bytes_copied: copy_delta,
+                ..acyclic_fs::WorkCounters::default()
+            }).map_err(native_control_error)?;
+        }
+        Ok(())
+    }
+}
+
+impl<R: tokio::io::AsyncRead> Drop for ControlResponseReader<'_, R> {
+    fn drop(&mut self) {
+        // Timeout/cancellation still owns and records the actual read prefix.
+        // Both allocations drop only after their corresponding buffers.
+        let _ = self.record_read();
+    }
+}
+
+async fn read_control_response_frame(
+    stream: impl tokio::io::AsyncRead + Unpin,
+    mut frame: ControlResponseFrame,
+) -> Result<ControlResponseFrame, ControlRequestError> {
+    if let Some(allocation) = frame.reader_allocation.as_ref() {
+        allocation.work().charge(acyclic_fs::WorkCounters {
+            allocation_operations: 1,
+            bytes_copied: CONTROL_RESPONSE_READER_BYTES as u64,
+            ..acyclic_fs::WorkCounters::default()
+        }).map_err(native_control_error).map_err(ControlRequestError::NativeWork)?;
+    }
+    let mut reader = ControlResponseReader {
+        reader: BufReader::with_capacity(
+            CONTROL_RESPONSE_READER_BYTES,
+            stream.take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64),
+        ),
+        allocation: frame.reader_allocation.take(),
+        bytes: &mut frame.bytes,
+        recorded_read: 0,
+        recorded_copy: 0,
+    };
+    let read = reader.reader.read_until(b'\n', reader.bytes).await;
+    reader.record_read().map_err(ControlRequestError::NativeWork)?;
+    drop(reader);
+    read.map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
+    if frame.bytes.len() > MAXIMUM_CONTROL_MESSAGE_BYTES || frame.bytes.pop() != Some(b'\n') {
+        return Err(ControlRequestError::Indeterminate(
+            "invalid response from Acyclic service".to_owned(),
+        ));
+    }
+    Ok(frame)
+}
+
 pub(crate) async fn send_control_envelope_with_attempts(
     data: &Path,
     envelope: &ControlEnvelope<ControlRequest>,
     windows_connect_attempts: usize,
     response_wait: std::time::Duration,
 ) -> Result<Value, ControlRequestError> {
+    let (value, _) = send_control_envelope_with_attempts_and_work(
+        data, envelope, windows_connect_attempts, response_wait, None,
+    ).await?;
+    Ok(value)
+}
+
+async fn send_control_envelope_with_attempts_and_work(
+    data: &Path,
+    envelope: &ControlEnvelope<ControlRequest>,
+    windows_connect_attempts: usize,
+    response_wait: std::time::Duration,
+    native_work: Option<&acyclic_fs::NativeMaterializationWork>,
+) -> Result<ControlClientResponse, ControlRequestError> {
     let deadline = tokio::time::Instant::now() + response_wait;
     #[cfg(not(windows))]
     let _ = windows_connect_attempts;
-    let mut encoded = serde_json::to_vec(envelope)
-        .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
-    encoded.push(b'\n');
+    let encoded = ControlEncodedRequest::new(envelope, native_work)?;
+    // Reserve the bounded receive storage before any request can be delivered.
+    let frame = ControlResponseFrame::new(native_work)?;
     #[cfg(target_os = "linux")]
-    return send_linux_mailbox_request(
+    return send_linux_mailbox_request_with_frame(
         data,
-        &encoded,
+        &encoded.bytes,
+        native_work.is_some(),
         &envelope.request_id,
         remaining_control_wait(deadline)?,
+        frame,
     )
     .await;
     #[cfg(not(target_os = "linux"))]
@@ -1426,11 +1801,13 @@ pub(crate) async fn send_control_envelope_with_attempts(
         }
         #[cfg(windows)]
         let stream = connect_windows_control_pipe(data, windows_connect_attempts, deadline).await?;
-        exchange_control_stream(
+        exchange_control_stream_with_frame(
             stream,
-            &encoded,
+            &encoded.bytes,
+            native_work.is_some(),
             &envelope.request_id,
             remaining_control_wait(deadline)?,
+            frame,
         )
         .await
     }
@@ -1603,42 +1980,49 @@ pub(crate) fn remaining_control_wait(
 
 #[cfg(not(target_os = "linux"))]
 pub(crate) async fn exchange_control_stream(
-    mut stream: impl AsyncRead + AsyncWrite + Unpin,
+    stream: impl AsyncRead + AsyncWrite + Unpin,
     encoded: &[u8],
     request_id: &control_protocol::RequestId,
     maximum_wait: std::time::Duration,
 ) -> Result<Value, ControlRequestError> {
+    let (value, _) = exchange_control_stream_with_frame(
+        stream, encoded, false, request_id, maximum_wait, ControlResponseFrame::new(None)?,
+    ).await?;
+    Ok(value)
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn exchange_control_stream_with_frame(
+    mut stream: impl AsyncRead + AsyncWrite + Unpin,
+    encoded: &[u8],
+    append_newline: bool,
+    request_id: &control_protocol::RequestId,
+    maximum_wait: std::time::Duration,
+    frame: ControlResponseFrame,
+) -> Result<ControlClientResponse, ControlRequestError> {
     let exchange = async {
         stream
             .write_all(encoded)
             .await
             .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
+        if append_newline {
+            stream.write_all(b"\n").await
+                .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
+        }
         stream
             .flush()
             .await
             .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
-        let mut response = Vec::new();
-        let mut reader = BufReader::new(stream).take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64);
-        reader
-            .read_until(b'\n', &mut response)
-            .await
-            .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
-        Ok::<_, ControlRequestError>(response)
+        read_control_response_frame(stream, frame).await
     };
-    let mut response = tokio::time::timeout(maximum_wait, exchange)
+    tokio::time::timeout(maximum_wait, exchange)
         .await
         .map_err(|_| {
             ControlRequestError::Indeterminate(
                 "Acyclic service did not answer before the request deadline".to_owned(),
             )
-        })??;
-    if response.len() > MAXIMUM_CONTROL_MESSAGE_BYTES || response.last() != Some(&b'\n') {
-        return Err(ControlRequestError::Indeterminate(
-            "invalid response from Acyclic service".to_owned(),
-        ));
-    }
-    response.pop();
-    decode_control_response(&response, request_id)
+        })??
+        .decode(request_id)
 }
 
 #[cfg(target_os = "linux")]
@@ -1648,6 +2032,21 @@ pub(crate) async fn send_linux_mailbox_request(
     request_id: &control_protocol::RequestId,
     maximum_wait: std::time::Duration,
 ) -> Result<Value, ControlRequestError> {
+    let (value, _) = send_linux_mailbox_request_with_frame(
+        data, encoded, false, request_id, maximum_wait, ControlResponseFrame::new(None)?,
+    ).await?;
+    Ok(value)
+}
+
+#[cfg(target_os = "linux")]
+async fn send_linux_mailbox_request_with_frame(
+    data: &Path,
+    encoded: &[u8],
+    append_newline: bool,
+    request_id: &control_protocol::RequestId,
+    maximum_wait: std::time::Duration,
+    frame: ControlResponseFrame,
+) -> Result<ControlClientResponse, ControlRequestError> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -1701,7 +2100,7 @@ pub(crate) async fn send_linux_mailbox_request(
         .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
         // Holding the write end as well means the response ends at its
         // newline, never at an end of file before the service opens it.
-        let mut response_pipe = rustix::fs::openat(
+        let response_pipe = rustix::fs::openat(
             directory,
             LINUX_EXCHANGE_RESPONSE,
             rustix::fs::OFlags::RDWR
@@ -1712,7 +2111,6 @@ pub(crate) async fn send_linux_mailbox_request(
         )
         .map_err(errno_to_io)
         .and_then(tokio::net::unix::pipe::Receiver::from_owned_fd)
-        .map(|pipe| BufReader::new(pipe).take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64))
         .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
         let request_file = rustix::fs::openat(
             directory,
@@ -1725,9 +2123,13 @@ pub(crate) async fn send_linux_mailbox_request(
             rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
         )
         .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
-        std::fs::File::from(request_file)
-            .write_all(encoded)
+        let mut request_file = std::fs::File::from(request_file);
+        request_file.write_all(encoded)
             .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
+        if append_newline {
+            request_file.write_all(b"\n")
+                .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
+        }
         rustix::fs::renameat(
             &*mailbox_directory,
             &unpublished,
@@ -1736,17 +2138,7 @@ pub(crate) async fn send_linux_mailbox_request(
         )
         .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
         exchange.name = name.into();
-        let mut response = Vec::new();
-        response_pipe
-            .read_until(b'\n', &mut response)
-            .await
-            .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
-        if response.len() > MAXIMUM_CONTROL_MESSAGE_BYTES || response.pop() != Some(b'\n') {
-            return Err(ControlRequestError::Indeterminate(
-                "invalid response from Acyclic service".to_owned(),
-            ));
-        }
-        decode_control_response(&response, request_id)
+        read_control_response_frame(response_pipe, frame).await?.decode(request_id)
     })
     .await
     .unwrap_or_else(|_| {
@@ -1759,6 +2151,178 @@ pub(crate) async fn send_linux_mailbox_request(
         exchange.remove();
     }
     result
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct NativeControlResponse {
+    version: u32,
+    request_id: String,
+    ok: bool,
+    result: Option<Value>,
+    error: Option<String>,
+}
+
+// Only these two audited serde schemas use the shared native JSON engine.
+enum NativeControlJsonSchema {
+    Value,
+    Response,
+}
+
+fn decode_native_control_json<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+    work: &acyclic_fs::NativeMaterializationWork,
+    schema: NativeControlJsonSchema,
+) -> acyclic_harness::Result<(T, acyclic_fs::NativeAllocation)> {
+    use acyclic_harness::JsonCodecCharge;
+    if bytes.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
+        return Err(native_control_error(acyclic_fs::NativeTreeMaterializationError::PayloadTooLarge {
+            maximum: MAXIMUM_CONTROL_MESSAGE_BYTES as u64, actual: bytes.len() as u64,
+        }));
+    }
+    let remaining = work.remaining().map_err(native_control_error)?;
+    let bounds = acyclic_harness::JsonBounds {
+        maximum_bytes: bytes.len() as u64,
+        maximum_items: remaining.items_examined,
+        maximum_depth: 64,
+    };
+    let diagnostic = acyclic_harness::json_value_decode_owned_bytes(0, 0)?;
+    let mut allocation = work.retain_owned(diagnostic).map_err(native_control_error)?;
+    let mut items = 0_u64;
+    let decoded = acyclic_harness::json_from_slice_bounded_native_trusted(
+        bytes, bounds, 0, acyclic_harness::wire::ErrorCode::Invalid, &mut |charge| {
+            match charge {
+                JsonCodecCharge::Work { items: examined, .. } => {
+                    items = items.checked_add(examined)
+                        .ok_or_else(|| native_control_error(acyclic_fs::WorkError::Overflow.into()))?;
+                }
+                JsonCodecCharge::Admission { .. } => {
+                    let value_owned = acyclic_harness::json_value_decode_owned_bytes(bytes.len() as u64, items)?;
+                    // Value decoding already includes its scratch/diagnostic
+                    // witness. Closed typed headers can additionally diagnose
+                    // unexpected field values while a partial Value is live.
+                    let additional = match schema {
+                        NativeControlJsonSchema::Value => 0,
+                        NativeControlJsonSchema::Response => (bytes.len() as u64).checked_mul(4)
+                            .ok_or_else(|| native_control_error(acyclic_fs::WorkError::Overflow.into()))?,
+                    };
+                    let owned = value_owned.checked_add(additional)
+                        .ok_or_else(|| native_control_error(acyclic_fs::WorkError::Overflow.into()))?;
+                    return allocation.resize_retained(owned).map_err(native_control_error);
+                }
+                _ => {}
+            }
+            native_control_codec_charge(charge, work, &mut allocation)
+        },
+    );
+    match decoded {
+        Ok(value) => Ok((value, allocation)),
+        Err(acyclic_harness::Error::NativeDecode { code, source, custody: None }) =>
+            Err(acyclic_harness::Error::NativeDecode { code, source, custody: Some(allocation) }),
+        Err(error) => {
+            drop(allocation);
+            Err(error)
+        }
+    }
+}
+
+pub(crate) fn decode_native_control_input(
+    bytes: &[u8],
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> acyclic_harness::Result<(Value, acyclic_fs::NativeAllocation)> {
+    decode_native_control_json(bytes, work, NativeControlJsonSchema::Value)
+}
+
+pub(crate) fn read_native_control_input(
+    mut reader: impl std::io::Read,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> acyclic_harness::Result<(Value, acyclic_fs::NativeAllocation)> {
+    let mut frame = ControlResponseFrame { bytes: Vec::new(), allocation: None, reader_allocation: None };
+    let mut scratch = [0_u8; CONTROL_RESPONSE_READER_BYTES];
+    let maximum = MAXIMUM_CONTROL_MESSAGE_BYTES + 1;
+    while frame.bytes.len() < maximum {
+        let remaining = work.remaining().map_err(native_control_error)?;
+        let spare = frame.bytes.capacity() - frame.bytes.len();
+        let available = if spare == 0 { scratch.len() } else { spare.min(scratch.len()) };
+        let mut requested = ((maximum - frame.bytes.len()).min(available) as u64)
+            .min(remaining.source_bytes_read.max(1)) as usize;
+        let may_copy = frame.bytes.len() < MAXIMUM_CONTROL_MESSAGE_BYTES;
+        if may_copy {
+            requested = (requested as u64).min(remaining.bytes_copied.max(1)) as usize;
+        }
+        work.admit(acyclic_fs::WorkCounters {
+            source_bytes_read: requested as u64,
+            bytes_copied: if may_copy { requested as u64 } else { 0 },
+            ..acyclic_fs::WorkCounters::default()
+        }).map_err(native_control_error)?;
+        let needed = frame.bytes.len() + requested;
+        if needed <= MAXIMUM_CONTROL_MESSAGE_BYTES && needed > frame.bytes.capacity() {
+            // Quota denial is before I/O, but an EOF probe need not allocate.
+            work.admit(acyclic_fs::WorkCounters {
+                allocation_operations: 1, ..acyclic_fs::WorkCounters::default()
+            }).map_err(native_control_error)?;
+            work.admit_retained(frame.native_capacity_for(needed) as u64).map_err(native_control_error)?;
+        }
+        let count = match reader.read(&mut scratch[..requested]) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => result.map_err(|error| native_control_error(acyclic_fs::NativeTreeMaterializationError::Io(error)))?,
+        };
+        if count == 0 {
+            break;
+        }
+        // This exact physical prefix survives cancellation/reconciliation.
+        work.spent(acyclic_fs::WorkCounters {
+            source_bytes_read: count as u64, ..acyclic_fs::WorkCounters::default()
+        }).map_err(native_control_error)?;
+        let actual = frame.bytes.len() + count;
+        if actual > MAXIMUM_CONTROL_MESSAGE_BYTES {
+            return Err(native_control_error(acyclic_fs::NativeTreeMaterializationError::PayloadTooLarge {
+                maximum: MAXIMUM_CONTROL_MESSAGE_BYTES as u64, actual: actual as u64,
+            }));
+        }
+        frame.reserve_native(actual, work)?;
+        work.charge(acyclic_fs::WorkCounters {
+            bytes_copied: count as u64, ..acyclic_fs::WorkCounters::default()
+        }).map_err(native_control_error)?;
+        frame.bytes.extend_from_slice(&scratch[..count]);
+    }
+    let result = decode_native_control_input(&frame.bytes, work);
+    // Imported bytes are freed before their guard, after the final SDK scan.
+    drop(frame);
+    result
+}
+
+fn decode_native_control_response(
+    bytes: &[u8],
+    request_id: &control_protocol::RequestId,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(Value, acyclic_fs::NativeAllocation), ControlRequestError> {
+    let allocation;
+    let response;
+    (response, allocation) = decode_native_control_json::<NativeControlResponse>(
+        bytes, work, NativeControlJsonSchema::Response,
+    ).map_err(ControlRequestError::NativeWork)?;
+    if response.version != 2 {
+        return Err(ControlRequestError::Indeterminate(
+            "invalid response from Acyclic service".to_owned(),
+        ));
+    }
+    if response.request_id != request_id.as_str() {
+        return Err(ControlRequestError::Indeterminate(
+            "Acyclic control response does not match the request identity".to_owned(),
+        ));
+    }
+    let NativeControlResponse { ok, result, error, .. } = response;
+    if ok {
+        drop(error);
+        Ok((result.unwrap_or(Value::Null), allocation))
+    } else {
+        drop(result);
+        Err(ControlRequestError::NativeResponse {
+            message: error.unwrap_or_else(|| "Acyclic service request failed".to_owned()),
+            custody: allocation,
+        })
+    }
 }
 
 pub(crate) fn decode_control_response(

@@ -288,9 +288,10 @@ async fn call_result(params: &Value) -> Result<Value, String> {
             let failure = HookFailure::classify(HOST, event, Some((&cwd, &input)));
             match local_native_hook_answer(HOST, event, &input) {
                 Ok(Some(answer)) => answer,
-                Ok(None) => forward_native_hook(HOST, event, cwd, input, ServiceStart::Forbidden)
+                Ok(None) => forward_native_hook(HOST, event, cwd, input, ServiceStart::Forbidden, None)
                     .await
-                    .unwrap_or_else(|error| failure.answer(&error)),
+                    .map(|(value, _)| value)
+                    .unwrap_or_else(|error| failure.answer(&error.to_string())),
                 Err(error) => failure.answer(&error),
             }
         }

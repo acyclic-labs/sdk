@@ -225,6 +225,11 @@ the same protected publisher key as their measured counterparts, not an alternat
 once-file namespace. Closed typed decoders reserve their audited logical DTO
 ownership plus parser scratch before parsing; raw input remains guarded through
 decode, and decoded ownership remains guarded through the DTO's final consumer.
+Malformed persisted DTOs retain the SDK's original typed serde diagnostic and
+its admitted parser quota until the native error consumer drops it; empty
+codec-error guards are not manufactured. Native canonical-byte and digest
+helpers use that same original ledger and the existing SDK canonical/BLAKE3
+identity, rather than rebuilding a remaining-budget meter.
 
 Imported-file evidence retains its original SDK allocation guard through the
 existing service actor, response channel and bounded RPC encoder. Encoding
@@ -232,6 +237,15 @@ admits its separate output buffer on that same ledger before growth; the
 transport retains its custody until the actual response write completes.
 Legacy replies carry no native allocation claim. These are SDK-owned-buffer
 bounds, not a measurement of Pi, Node, transport-library or total OS memory.
+
+The pinned Pi `__pi` entry point uses that native path end to end: bounded
+stdin and caller-scope decoding, original native current-directory/environment
+metadata, and prepaid hook-name/request-ID storage. Its one query ledger
+survives the existing at-most-once transport and final guarded stdout encoding.
+Only an unavailable service permits bootstrap retransmission of the same
+envelope; an uncertain acknowledgement is not automatically resent. Typed
+native failures remain owned through the final CLI diagnostic, and a failed
+service close exits unsuccessfully without boxing or replacing its native cause.
 
 Shared physical roots retain the existing single-flight registry, watcher and
 lazy source. Acquisition requires an explicit finite work budget/cancellation
@@ -506,6 +520,12 @@ or deletion lease.
 The lazy mount guard receives the SDK's actual shared native invocation carrier.
 Original owner/grant IO, native callbacks and publication retain that same
 allocation/cancellation ledger; no remaining-budget meter or receipt is rebuilt.
+Preparation and view factories use the shared `NativeFutureBundle`; callers
+check its constructor before awaiting (`...? .await?`). The original ledger
+admits the compiled future frame before its builder runs, without a Pi wrapper
+or second ledger. SDK mount, scratch-view and provider payload guards reside
+inside the actual Arc-backed values, so every clone retains their custody.
+Logical SDK byte accounting excludes opaque Arc/allocator headers and process RSS.
 The real driver callback scope is acquired under its short session mutex; the
 mutex is released before held-file IO awaits. The actual native process retains
 each project's owned original-work scope until its tree and stdio are physically
