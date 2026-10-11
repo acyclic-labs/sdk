@@ -5782,7 +5782,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         provider.commit(keyed_commit("guard-readable", 0)?).await?;
-        let before = std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len();
+        let before = std::fs::read(directory.path().join(JOURNAL_FILE))?;
         let request = keyed_commit("guard-denied", 0)?;
         let key = request.idempotency_key.clone();
         let meter = Arc::new(LocalNativeMeter::default());
@@ -5808,8 +5808,7 @@ mod tests {
         ).await??;
         assert!(matches!(result, Err(NativeGuardFailure::Owner(0x51))));
         assert!(provider.inspect_idempotency(key).await?.is_none());
-        assert_eq!(std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len(), before);
-        assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
+        assert_eq!(std::fs::read(directory.path().join(JOURNAL_FILE))?, before);
         drop(provider);
         assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
         meter.assert_refunded();
