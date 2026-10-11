@@ -215,7 +215,6 @@ impl LiveHandles {
     }
 }
 
-#[derive(Default)]
 struct NativeEntry {
     prepared: RwLock<Option<Arc<PreparedNative>>>,
     observed: RwLock<Option<Arc<PreparedNative>>>,
@@ -225,6 +224,25 @@ struct NativeEntry {
     run: tokio::sync::Mutex<()>,
     operation_cancellation: CancellationToken,
     cleanup_cancellation: CancellationToken,
+    // Every physical payload and retained SDK proof drops before its birth custody.
+    native_custody: NativeAllocation,
+}
+
+impl NativeEntry {
+    fn new_with_work(work: &NativeMaterializationWork) -> Result<Self> {
+        let known_payload = std::mem::size_of::<Self>() as u64
+            + std::mem::size_of::<(TaskId, Arc<Self>)>() as u64;
+        let custody = work.claim(known_payload).map_err(native_error)?;
+        Ok(Self {
+            prepared: RwLock::new(None), observed: RwLock::new(None),
+            view: RwLock::new(None), cold: RwLock::new(None),
+            handles: tokio::sync::Mutex::new(LiveHandles::default()),
+            run: tokio::sync::Mutex::new(()),
+            operation_cancellation: CancellationToken::new(),
+            cleanup_cancellation: CancellationToken::new(),
+            native_custody: custody,
+        })
+    }
 }
 
 pub(crate) struct PiNativeCommandHost {
@@ -284,6 +302,7 @@ impl PiNativeCommandHost {
     }
 
     async fn register_binding(&self, prepared: PreparedPiFork, observed: bool) -> Result<()> {
+        let original_work = prepared.original_work()?.clone();
         prepared.report.validate()?;
         let binding = &prepared.binding;
         binding.validate(None, binding.project_volumes.keys().map(String::as_str), false)?;
@@ -315,7 +334,7 @@ impl PiNativeCommandHost {
         {
             return Err(unauthorized("Pi private generations differ from their actual creator report"));
         }
-        let entry = self.entry(binding.task_id);
+        let entry = self.entry_with_work(binding.task_id, &original_work)?;
         let destination = if observed { &entry.observed } else { &entry.prepared };
         let mut retained = destination.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(prior) = retained.as_ref() {
@@ -362,12 +381,14 @@ impl PiNativeCommandHost {
         locator.1.absorb(&mut sdk_operation.1).map_err(native_error)?;
         locator.1.absorb(&mut root_key.1).map_err(native_error)?;
         locator.0._custody = Some(locator.1);
-        self.retain_cold_locator(task, locator.0)
+        self.retain_cold_locator(task, locator.0, work)
     }
 
 
-    fn retain_cold_locator(&self, task: TaskId, locator: PiNativeColdLocator) -> Result<()> {
-        let entry = self.entry(task);
+    fn retain_cold_locator(&self, task: TaskId, locator: PiNativeColdLocator,
+        work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        let entry = self.entry_with_work(task, work)?;
         let mut retained = entry.cold.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(prior) = retained.as_ref() {
             if prior.parent != locator.parent || prior.sdk_operation != locator.sdk_operation
@@ -390,7 +411,7 @@ impl PiNativeCommandHost {
         budget: WorkBudget, cancellation: &CancellationToken,
     ) -> Result<()> {
         if self.prepared(owner.task_id()).is_some() { return Ok(()); }
-        let entry = self.entry(owner.task_id());
+        let entry = self.registered_entry(owner.task_id())?;
         let locator = entry.cold.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
             .ok_or_else(|| unauthorized("Pi cold child has no authenticated original source capability"))?;
         let work = self.preparation_work(&entry).await?;
@@ -661,14 +682,14 @@ impl PiNativeCommandHost {
 
     pub(crate) async fn request_scratch_disposal(&self, task: TaskId) -> Result<()> {
         self.child_admission(task).await?;
-        self.entry(task).handles.lock().await.dispose_requested = true;
+        self.registered_entry(task)?.handles.lock().await.dispose_requested = true;
         Ok(())
     }
 
     /// Run this future in a service background job, never the session actor. The
     /// process may call that actor while the stock task driver awaits its result.
     pub(crate) async fn run_child(&self, task: TaskId) -> Result<(Option<TaskWorkerAttempt>, NativeAllocation)> {
-        let entry = self.entry(task);
+        let entry = self.registered_entry(task)?;
         let _run = entry.run.lock().await;
         let work = self.preparation_work(&entry).await?;
         self.child_admission_with_work(task, &work).await?;
@@ -706,7 +727,7 @@ impl PiNativeCommandHost {
     /// Resume only a reservation already retained by the original task host.
     /// Unlike run_child, an idle observation cannot acquire a new reservation.
     pub(crate) async fn recover_child(&self, task: TaskId) -> Result<(Option<TaskWorkerAttempt>, NativeAllocation)> {
-        let entry = self.entry(task);
+        let entry = self.registered_entry(task)?;
         let _run = entry.run.lock().await;
         let work = self.preparation_work(&entry).await?;
         self.child_admission_with_work(task, &work).await?;
@@ -731,7 +752,7 @@ impl PiNativeCommandHost {
         let cleanup = meter.cancellation();
         async {
             self.child_admission_with_work(task, meter).await?;
-            let entry = self.entry(task);
+            let entry = self.registered_entry(task)?;
             let effect = {
                 let handles = entry.handles.lock().await;
                 if handles.drained.is_some() && handles.mounts_drained { return Ok(()); }
@@ -759,7 +780,7 @@ impl PiNativeCommandHost {
         meter: &NativeMaterializationWork,
     ) -> Result<()> {
         async {
-            let entry = self.entry(task);
+            let entry = self.registered_entry(task)?;
             let (effect, drained, interrupted, dispose) = {
                 let handles = entry.handles.lock().await;
                 (handles.effect.clone(), handles.drained.is_some() && handles.mounts_drained,
@@ -1011,9 +1032,19 @@ impl PiNativeCommandHost {
         Ok(recorded_effect.0.as_ref().is_none_or(|record| record.status == EffectStatus::Planned))
     }
 
-    fn entry(&self, task: TaskId) -> Arc<NativeEntry> {
-        self.entries.write().unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entry(task).or_default().clone()
+    fn entry_with_work(&self, task: TaskId, work: &NativeMaterializationWork) -> Result<Arc<NativeEntry>> {
+        let mut entries = self.entries.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = entries.get(&task) { return Ok(Arc::clone(entry)); }
+        let entry = Arc::new(NativeEntry::new_with_work(work)?);
+        entries.insert(task, Arc::clone(&entry));
+        Ok(entry)
+    }
+
+    fn registered_entry(&self, task: TaskId) -> Result<Arc<NativeEntry>> {
+        self.find_entry(task).ok_or(Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::NotFound,
+            reason: "Pi native task has no authenticated registered entry",
+        })
     }
 
     fn find_entry(&self, task: TaskId) -> Option<Arc<NativeEntry>> {
@@ -1034,7 +1065,7 @@ impl PiNativeCommandHost {
     }
 
     async fn bind_invocation_work(&self, task: TaskId, work: &NativeMaterializationWork) -> Result<()> {
-        let entry = self.entry(task);
+        let entry = self.registered_entry(task)?;
         let mut handles = entry.handles.lock().await;
         if let Some(original) = handles.preparation_work.as_ref() {
             if !original.shares_ledger(work) {
@@ -1115,7 +1146,7 @@ impl PiNativeCommandHost {
         let admission = self.child_admission_with_work(task, meter).await?;
         let input = &admission.1;
         let PiTaskExecution::Child { launch } = &input.execution else { unreachable!() };
-        let entry = self.entry(task);
+        let entry = self.registered_entry(task)?;
         {
             let handles = entry.handles.lock().await;
             if handles.effect.is_some() || handles.preparation_owner.is_some()
@@ -1265,7 +1296,7 @@ impl PiNativeCommandHost {
         let effects = self.effects(context, input, &runner, work)?;
         let bound = Arc::new(BoundEffect { runner, effects, owner, journal, context: shared, command,
             staged: None });
-        self.entry(input.binding.task_id).handles.lock().await.effect = Some(bound.clone());
+        self.registered_entry(input.binding.task_id)?.handles.lock().await.effect = Some(bound.clone());
         Ok(bound)
     }
 
@@ -1338,7 +1369,7 @@ impl PiNativeCommandHost {
         retained_intent.1.absorb(&mut invocation.1).map_err(native_error)?;
         intent.invocation = invocation.0;
         drop(caller_environment);
-        let entry = self.entry(owner.task_id());
+        let entry = self.registered_entry(owner.task_id())?;
         let mut handles = entry.handles.lock().await;
         if let Some(bound) = handles.effect.as_ref()
             && bound.staged.is_some()
@@ -1526,7 +1557,7 @@ impl PiNativeCommandHost {
             return Ok(TaskCommandProgress::Indeterminate);
         }
         let task = bound.owner.task_id();
-        let work = self.preparation_work(&self.entry(task)).await?;
+        let work = self.preparation_work(&self.registered_entry(task)?).await?;
         let receipt = bound.runner.receipt_with_native_work(&work).await.map_err(receipt_error)?
             .ok_or(Error::Indeterminate(bound.command))?;
         if !receipt.observed || receipt.task != task || receipt.command != bound.command
@@ -1645,7 +1676,7 @@ impl TaskCommandHost for PiNativeCommandHost {
             let input = &admitted.0;
             let recorded_effect = self.original_effect(context, input, command.operation_id, work).await?;
             let Some(effect) = recorded_effect.0.as_ref() else {
-                let entry = self.entry(input.binding.task_id);
+                let entry = self.registered_entry(input.binding.task_id)?;
                 if entry.handles.lock().await.preparation_owner.is_some() {
                     self.rollback_preparation_owned(input.binding.task_id, &entry, work,
                         work.cancellation()).await?;
