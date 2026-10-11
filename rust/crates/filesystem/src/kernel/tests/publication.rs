@@ -1248,3 +1248,81 @@ fn original_borrowed_payload_fingerprint_preserves_legacy_recipe_without_allocat
     }
     Ok(())
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_original_fingerprint_survives_real_reservation_rotation_without_authorizing_historical_permit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let objects = MemoryObjectStore::default();
+    let authority = MemoryAuthorityStore::default();
+    let volume_id = VolumeId::from_bytes([64; 16]);
+    let (root, _) = native_fixture(&objects, volume_id)?;
+    let request = native_request(&authority, volume_id, root)?;
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).map_err(|(error, _)| error)?;
+    let old = crate::AsyncAuthorityStore::reserve_publication_with_native_work(
+        &authority, request.authority_id, request.expected, request.operation_id, &original, &cancellation,
+    ).await?;
+    let old_permit = PublicationPermit::Reservation {
+        operation_id: old.operation_id.into_bytes(), gate_tail: old.gate_tail, expected: old.expected,
+    };
+    let context = Digest::from_bytes([65; 32]);
+    let (data, custody) = original.copy_bytes(b"immutable original reservation operation data")?;
+    let evidence = acyclic_stream::OwnedBytes::from_vec_with_guard(data, custody, original.runtime_meter_owner())
+        .map_err(|failure| failure.into_error())?;
+    let expected_fingerprint = {
+        let mut binding = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
+        let bound = permit_context_with_accounting(Some(context), old_permit, &mut binding)?;
+        let mut accounting = PublicationAccounting::Native(&original);
+        prepare_publication_commit(request, bound, Some(evidence.clone()), &mut accounting, &cancellation)?.fingerprint
+    };
+    crate::AsyncAuthorityStore::release_publication_with_native_work(&authority, old, &original, &cancellation).await?;
+    let current = crate::AsyncAuthorityStore::reserve_publication_with_native_work(
+        &authority, request.authority_id, request.expected, request.operation_id, &original, &cancellation,
+    ).await?;
+    assert_ne!(current.gate_tail, old.gate_tail);
+    let current_permit = PublicationPermit::Reservation {
+        operation_id: current.operation_id.into_bytes(), gate_tail: current.gate_tail, expected: current.expected,
+    };
+    let seals = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let owner_seals = seals.clone();
+    let mut owner = move |_: &crate::NativeMaterializationWork| {
+        owner_seals.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::future::ready(Ok::<(), NativePublicationTestError>(()))
+    };
+    let rejected = publish_generation_async_guarded_with_native_work(
+        &objects, &authority, request,
+        PublicationIntent::guarded(Some(context), old_permit).with_original_evidence(Some(evidence.clone()))
+            .with_original_fingerprint_permit(Some(old_permit)),
+        limits(), &original, &cancellation, &mut owner, None, None,
+    ).await?;
+    assert!(matches!(rejected.0.outcome, AppendOutcome::Conflict { .. }));
+    assert_eq!(original.receipt().authority_records_appended, 0);
+    let published = publish_generation_async_guarded_with_native_work(
+        &objects, &authority, request,
+        PublicationIntent::guarded(Some(context), current_permit).with_original_evidence(Some(evidence.clone()))
+            .with_original_fingerprint_permit(Some(old_permit)),
+        limits(), &original, &cancellation, &mut owner, None, None,
+    ).await?;
+    let commit = match published.0.outcome {
+        AppendOutcome::Committed(commit) => commit,
+        _ => return Err("current authenticated reservation did not publish".into()),
+    };
+    assert_eq!(commit.fingerprint, expected_fingerprint);
+    assert_eq!(original.receipt().authority_records_appended, 1);
+    assert!(seals.load(std::sync::atomic::Ordering::SeqCst) > 0);
+    let (data, custody) = original.copy_bytes(b"altered original reservation operation data")?;
+    let altered = acyclic_stream::OwnedBytes::from_vec_with_guard(data, custody, original.runtime_meter_owner())
+        .map_err(|failure| failure.into_error())?;
+    let before = seals.load(std::sync::atomic::Ordering::SeqCst);
+    let changed = publish_generation_async_guarded_with_native_work(
+        &objects, &authority, request,
+        PublicationIntent::guarded(Some(context), current_permit).with_original_evidence(Some(altered))
+            .with_original_fingerprint_permit(Some(old_permit)),
+        limits(), &original, &cancellation, &mut owner, Some(commit), None,
+    ).await?;
+    assert!(matches!(changed.0.outcome, AppendOutcome::IdempotencyConflict { .. }));
+    assert_eq!(original.receipt().authority_records_appended, 1);
+    assert_eq!(seals.load(std::sync::atomic::Ordering::SeqCst), before);
+    Ok(())
+}

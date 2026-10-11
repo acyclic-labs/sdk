@@ -6061,7 +6061,7 @@ async fn original_guarded_live_retry_preserves_both_real_identities()
     };
     let outcome = local.resume_live_guarded_with_native_work(
         OperationId::from_bytes([212; 16]), 8, 16, PublicationPermit::Unrestricted,
-        &original, &cancellation, &mut before_publication, None,
+        &original, &cancellation, &mut before_publication, None, None, None, None,
     ).await?;
     assert!(matches!(outcome.0, LiveMutationOutcome::Committed { .. }));
     assert_eq!(outcome.1.bytes(), 0);

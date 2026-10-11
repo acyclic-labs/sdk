@@ -85,7 +85,7 @@ pub use closure::{
     prove_generation_closure_async,
 };
 pub use codec::{CanonicalDecodeError, DecodeLimits};
-pub(crate) use codec::{Decoder, Encoder};
+pub(crate) use codec::{CanonicalInvariant, Decoder, Encoder};
 pub use export::{
     GenerationExportManifest, GenerationExportManifestError, decode_generation_export_manifest,
     encode_generation_export_manifest, validate_generation_export_manifest,
