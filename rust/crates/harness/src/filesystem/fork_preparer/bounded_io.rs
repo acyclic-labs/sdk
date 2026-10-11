@@ -209,6 +209,19 @@ impl PreparationIo {
         }
     }
 
+    /// Move already admitted ownership; never retain it a second time.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn take_native_custody(&self, bytes: u64) -> Result<acyclic_fs::NativeAllocation> {
+        match &self.ledger {
+            PreparationLedger::Native { custody, .. } => custody.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .split_off(bytes).map_err(|cause| Error::NativeWork { cause, custody: None }),
+            PreparationLedger::Owned { .. } => Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout, custody: None,
+            }),
+        }
+    }
+
     pub(crate) fn check_cancellation(&self) -> Result<()> {
         match self.cancellation.check() {
             Ok(()) => Ok(()),
@@ -235,8 +248,8 @@ impl PreparationIo {
             PreparationLedger::Owned { work, .. } => work.lock().map(|state| state.1)
                 .map_err(|_| Error::Storage("creation IO accounting is poisoned".into())),
             #[cfg(not(target_arch = "wasm32"))]
-            PreparationLedger::Native { custody, .. } => custody.lock().map(|guard| guard.bytes())
-                .map_err(|_| Error::Storage("native preparation custody is poisoned".into())),
+            PreparationLedger::Native { custody, .. } => Ok(custody.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner).bytes()),
         }
     }
 
@@ -945,6 +958,14 @@ impl PreparationHistoryIo<'_> {
 }
 
 impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn original_native_work(&self) -> Option<&acyclic_fs::NativeMaterializationWork> {
+        self.io.original_native_work()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn absorb_native_custody(&mut self, incoming: acyclic_fs::NativeAllocation) -> Result<()> {
+        self.io.absorb_native_custody(incoming)
+    }
     fn check_cancellation(&self) -> Result<()> {
         self.io.check_cancellation()
     }

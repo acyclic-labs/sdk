@@ -130,6 +130,9 @@ so already-owned output drops before its quota is released; failure never
 acquires a replacement guard.
 Absorbing native custody borrows the incoming guard; rejection preserves both
 ledgers unchanged and carries that original incoming guard with the failure.
+Borrowed preparation adapters can split already admitted custody for an owned
+diagnostic; the transfer performs no allocation, cancellation check or new
+retention claim. Nested History proofs borrow the same original native ledger.
 There is no secondary native error wrapper, marker trap, formatting allocation,
 or new retention attempt after a denied operation.
 Encoding first admits the necessary one-byte/one-token minimum without
