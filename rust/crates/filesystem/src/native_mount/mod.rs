@@ -189,7 +189,9 @@ fn errno(error: MountSourceError) -> i32 {
             error.raw_os_error().unwrap_or(libc::EIO),
         MountSourceError::NativeWork(error) => native_materialization_errno(error),
         MountSourceError::WorkspaceCause(error) => native_workspace_errno(error),
+        MountSourceError::WorkspacePrefixFailure { source, .. } => native_workspace_errno(source),
         MountSourceError::NativeWorkspaceCause(cause) => native_workspace_errno(&cause.source),
+        MountSourceError::NativeCallbackDenied { .. } => libc::EACCES,
         MountSourceError::NativeText { kind, .. } | MountSourceError::NativeStaticText { kind, .. } =>
             native_source_text_errno(*kind),
         MountSourceError::Filesystem(crate::FsError::Cancelled(_)) => libc::ESTALE,
@@ -315,11 +317,11 @@ pub struct MountLookup {
 }
 
 /// Receives content one piece at a time: the piece's logical offset and its
-/// bytes.
-pub type ContentSink<'a> = dyn FnMut(u64, Bytes) -> Result<(), MountSourceError> + 'a;
+/// canonical owned bytes.
+pub type ContentSink<'a> = dyn FnMut(u64, acyclic_stream::OwnedBytes) -> Result<(), MountSourceError> + 'a;
 
 /// Measured pinned content keeps the producer's exact live capacity through the
-/// actual native completion. Ordinary byte-only sinks remain unchanged.
+/// actual native completion. Payload custody remains in the byte carrier.
 pub type NativeMountContentSink<'a> =
     dyn FnMut(u64, crate::kernel::OwnedSourceChunk) -> Result<(), MountSourceError> + 'a;
 
@@ -384,7 +386,7 @@ pub struct MountSparseSpan {
     /// Offset relative to the requested snapshot range.
     pub relative_offset: u64,
     /// Exact allocated bytes; holes are omitted.
-    pub bytes: Bytes,
+    pub bytes: acyclic_stream::OwnedBytes,
 }
 
 /// Bounded sparse range transferred between path-independent native handles.
@@ -518,13 +520,13 @@ pub trait MountOpenFile: Send + Sync + 'static {
     /// # Errors
     ///
     /// Returns range, storage, authentication, cancellation, or work failures.
-    fn read_range(&self, offset: u64, length: u32) -> Result<Bytes, MountSourceError>;
+    fn read_range(&self, offset: u64, length: u32) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
     /// Reads at most `maximum_bytes`, clipping to EOF in the same coherent view.
     ///
     /// # Errors
     ///
     /// Returns the same typed failures as [`Self::read_range`].
-    fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<Bytes, MountSourceError>;
+    fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
     /// Finds the next sparse data or hole boundary.
     ///
     /// # Errors
@@ -570,7 +572,7 @@ pub trait MountOpenFile: Send + Sync + 'static {
     /// # Errors
     ///
     /// Returns absence, unsupported-profile, storage, authentication, or work failures.
-    fn read_attribute(&self, name: &[u8]) -> Result<Option<Bytes>, MountSourceError>;
+    fn read_attribute(&self, name: &[u8]) -> Result<Option<acyclic_stream::OwnedBytes>, MountSourceError>;
     /// Lists one bounded page of native named-attribute names.
     ///
     /// # Errors
@@ -1002,9 +1004,29 @@ pub enum MountSourceError {
     /// Original authenticated workspace cause, moved without formatting.
     #[error(transparent)]
     WorkspaceCause(crate::WorkspaceError),
+    /// Original workspace failure and the original prefix-accounting failure.
+    #[error("workspace operation and its prefix accounting failed")]
+    WorkspacePrefixFailure {
+        /// Complete original workspace cause.
+        #[source]
+        source: crate::WorkspaceError,
+        /// Complete scalar prefix failure; neither cause replaces the other.
+        accounting: crate::WorkspaceError,
+    },
     /// Whole original workspace cause and its already funded outer custody.
     #[error(transparent)]
     NativeWorkspaceCause(crate::lazy_workspace::NativeLazyWorkspaceCause),
+    /// Original authorization denial in its already funded callback slot.
+    /// The physical cause drops before its required original allocation guard.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("native callback authorization failed")]
+    NativeCallbackDenied {
+        /// Complete original typed callback cause; no replacement box is made.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+        /// Original custody of the same physical failure slot.
+        custody: crate::NativeAllocation,
+    },
     /// Original funded SDK diagnostic; data physically drops before custody.
     #[error("{text}")]
     NativeText {
@@ -1317,20 +1339,31 @@ impl<'a> NativeMountCallbackFuture<'a> {
         F: std::future::Future<Output = Result<(), E>> + Send + 'a,
         B: FnOnce() -> F + Send + 'a,
     {
-        let slot_bytes = std::mem::size_of::<NativeMountCallbackCause<E>>();
-        let allocation = work.native_materialization_work().claim_allocation(
-            slot_bytes as u64, u64::from(slot_bytes != 0),
-        )?;
-        let failure = NativeMountCallbackReservation {
-            slot: Box::new(NativeMountCallbackCause { source: None }),
-            custody: allocation,
-        };
+        let failure = NativeMountCallbackReservation::<E>::prepare(work)?;
         Self::new(work, move || async move {
             match build().await {
                 Ok(()) => {
                     drop(failure);
                     Ok(())
                 }
+                Err(error) => Err(failure.into_error(error)),
+            }
+        })
+    }
+    /// Reuses an already funded native denial rather than nesting its custody
+    /// inside another cause slot. Other native causes use the same reservation.
+    pub(crate) fn new_native_guarded<F, B>(
+        work: &NativeMountMeterWork, build: B,
+    ) -> Result<Self, NativeMountError>
+    where
+        F: std::future::Future<Output = Result<(), NativeMountError>> + Send + 'a,
+        B: FnOnce() -> F + Send + 'a,
+    {
+        let failure = NativeMountCallbackReservation::<NativeMountError>::prepare(work)?;
+        Self::new(work, move || async move {
+            match build().await {
+                Ok(()) => Ok(()),
+                Err(error @ NativeMountError::CallbackDenied { .. }) => Err(error),
                 Err(error) => Err(failure.into_error(error)),
             }
         })
@@ -1378,6 +1411,17 @@ struct NativeMountCallbackReservation<E> {
 }
 
 impl<E: std::error::Error + Send + Sync + 'static> NativeMountCallbackReservation<E> {
+    fn prepare(work: &NativeMountMeterWork) -> Result<Self, NativeMountError> {
+        let slot_bytes = std::mem::size_of::<NativeMountCallbackCause<E>>();
+        let allocation = work.native_materialization_work().claim_allocation(
+            slot_bytes as u64, u64::from(slot_bytes != 0),
+        )?;
+        Ok(Self {
+            slot: Box::new(NativeMountCallbackCause { source: None }),
+            custody: allocation,
+        })
+    }
+
     fn into_error(mut self, error: E) -> NativeMountError {
         self.slot.source = Some(error);
         let source: Box<dyn std::error::Error + Send + Sync> = self.slot;
@@ -2267,7 +2311,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
     /// # Errors
     ///
     /// Returns a typed source failure when the path is absent or is not a link.
-    fn read_link(&self, path: &MountPath) -> Result<Bytes, MountSourceError>;
+    fn read_link(&self, path: &MountPath) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
 
     /// Reads exact link bytes using the same native lifecycle ledger.
     ///
@@ -2287,7 +2331,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
         path: &MountPath,
         offset: u64,
         length: u32,
-    ) -> Result<Bytes, MountSourceError>;
+    ) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
 
     /// Reads one bounded logical range without resetting the native ledger.
     ///
@@ -2410,7 +2454,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
         &self,
         path: &MountPath,
         name: &[u8],
-    ) -> Result<Option<Bytes>, MountSourceError>;
+    ) -> Result<Option<acyclic_stream::OwnedBytes>, MountSourceError>;
     /// Lists one bounded page of native named-attribute names.
     ///
     /// # Errors

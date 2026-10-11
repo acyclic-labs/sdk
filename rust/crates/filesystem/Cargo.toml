@@ -78,6 +78,7 @@ wasm-bindgen = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+parking_lot.workspace = true
 cap-primitives = "4.0.3"
 cap-fs-ext = "4.0.2"
 cap-std = "4.0.3"

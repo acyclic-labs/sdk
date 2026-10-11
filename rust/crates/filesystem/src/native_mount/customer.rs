@@ -116,16 +116,6 @@ pub struct NativeWorkingSet<A, O> {
 }
 
 
-enum WorkingSetGuardError<E> {
-    Lifecycle(MountLifecycleError),
-    Guard(E),
-}
-
-impl<E> From<MountSourceError> for WorkingSetGuardError<E> {
-    fn from(error: MountSourceError) -> Self {
-        Self::Lifecycle(MountLifecycleError::Source(error))
-    }
-}
 
 impl<A, O> NativeWorkingSet<A, O>
 where
@@ -304,22 +294,25 @@ where
             |_| std::future::ready(Ok::<(), MountLifecycleError>(())),
         ).await;
         result.map(|value| crate::OperationReceipt { value, work: work.receipt() })
-            .map_err(|error| (error, work.receipt()))
+            .map_err(|error| (error.cause, work.receipt()))
     }
 
     /// Captures and publishes through the canonical source, retaining the
     /// caller's typed pre-publication guard error without formatting or boxing.
     pub async fn sync_with_permit_with_work<F, Fut, E>(
         &self, permit: crate::PublicationPermit, work: &super::NativeMountMeterWork,
-        cancellation: &crate::CancellationToken, mut before_publication: F,
-    ) -> Result<(), E>
+        cancellation: &crate::CancellationToken, before_publication: F,
+    ) -> Result<(), NativeMountPublicationFailure<E>>
     where
-        E: From<MountLifecycleError> + Send,
-        F: FnMut(super::NativeMountMeterWork) -> Fut + Send,
-        Fut: std::future::Future<Output = Result<(), E>> + Send,
+        E: From<MountLifecycleError> + From<MountSourceError> + Send + 'static,
+        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+        Fut: std::future::Future<Output = Result<(), E>> + Send + 'static,
     {
         if !self.writable {
-            return Err(E::from(MountLifecycleError::NativePolicy("read-only native view cannot publish")));
+            return Err(NativeMountPublicationFailure {
+                cause: E::from(MountLifecycleError::NativePolicy("read-only native view cannot publish")),
+                source_acknowledged: false,
+            });
         }
         let result = async {
             cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
@@ -334,16 +327,15 @@ where
             self.capture_host_subtree_with_work(&MountPath::root(), work, cancellation).await?;
             Ok::<(), MountLifecycleError>(())
         }.await;
-        result.map_err(E::from)?;
-        let mut guard = |work| {
-            let checked = before_publication(work);
-            async move { checked.await.map_err(WorkingSetGuardError::Guard) }
-        };
+        result.map_err(|cause| NativeMountPublicationFailure {
+            cause: E::from(cause), source_acknowledged: false,
+        })?;
+        // This source call is the final SDK operation. Only its actual success
+        // confirms publication; a source error remains honestly unconfirmed.
         self.source.sync_async_with_permit_native_work_guarded(
-            permit, work, cancellation, &mut guard,
-        ).await.map_err(|error| match error {
-            WorkingSetGuardError::Lifecycle(error) => E::from(error),
-            WorkingSetGuardError::Guard(error) => error,
+            permit, work, cancellation, before_publication,
+        ).await.map_err(|cause| NativeMountPublicationFailure {
+            cause, source_acknowledged: false,
         })
     }
 
@@ -722,7 +714,7 @@ where
     ) -> Result<(), MountLifecycleError> {
         self.sync_with_permit_measured_guarded(
             permit, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
-            |_original| std::future::ready(Ok(())),
+            |_original| std::future::ready(Ok::<(), MountLifecycleError>(())),
         ).await.map(|receipt| receipt.value).map_err(|(error, _)| error.cause)
     }
 
@@ -731,22 +723,23 @@ where
     /// A failed flush, settlement or guard retains the original publication
     /// owner and the complete work prefix. The callback supplies freshness,
     /// never a replacement permit or a synthetic lazy snapshot.
-    pub async fn sync_with_permit_measured_guarded<F, Fut>(
+    pub async fn sync_with_permit_measured_guarded<F, Fut, E>(
         &self,
         permit: crate::PublicationPermit,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
         before_publication: F,
-    ) -> Result<crate::OperationReceipt<()>, (NativeMountPublicationFailure, crate::WorkCounters)>
+    ) -> Result<crate::OperationReceipt<()>, (NativeMountPublicationFailure<E>, crate::WorkCounters)>
     where
-        F: FnMut(super::NativeMountMeterWork) -> Fut + Send,
-        Fut: Future<Output = Result<(), MountSourceError>> + Send,
+        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+        E: From<MountLifecycleError> + From<MountSourceError> + Send + 'static,
     {
         let work = customer_native_work(budget, cancellation)
             .map_err(|(error, spent)| {
                 self.retain_failed_session();
                 (NativeMountPublicationFailure {
-                    cause: MountLifecycleError::Native(error), source_acknowledged: false,
+                    cause: E::from(MountLifecycleError::Native(error)), source_acknowledged: false,
                 }, spent)
             })?;
         let result = self.sync_with_permit_work_guarded(
@@ -759,24 +752,26 @@ where
     /// Publishes on the enclosing operation's unchanged original native meter.
     /// Failure retains whether the real source completed before native visibility
     /// validation failed. An unconfirmed source is not proof of absent publication.
-    pub async fn sync_with_permit_work_guarded<F, Fut>(
+    pub async fn sync_with_permit_work_guarded<F, Fut, E>(
         &self,
         permit: crate::PublicationPermit,
         native_work: &super::NativeMountMeterWork,
         cancellation: &crate::CancellationToken,
-        mut before_publication: F,
-    ) -> Result<(), NativeMountPublicationFailure>
+        before_publication: F,
+    ) -> Result<(), NativeMountPublicationFailure<E>>
     where
-        F: FnMut(super::NativeMountMeterWork) -> Fut + Send,
-        Fut: Future<Output = Result<(), MountSourceError>> + Send,
+        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+        E: From<MountLifecycleError> + From<MountSourceError> + Send + 'static,
     {
         let result = async {
             native_work.meter().with_original_leaf(|work| work.check())
-                .map_err(native_demand_lifecycle_error)?;
-            with_live_session(&self.session, |session| session.flush_callbacks_with_meter(native_work))?;
+                .map_err(native_demand_lifecycle_error).map_err(E::from)?;
+            with_live_session(&self.session, |session| session.flush_callbacks_with_meter(native_work))
+                .map_err(E::from)?;
             self.source.sync_async_with_permit_native_work_guarded(
-                permit, native_work, cancellation, &mut before_publication,
-            ).await.map_err(MountLifecycleError::Source)
+                permit, native_work, cancellation, before_publication,
+            ).await
         }.await;
         match result {
             Ok(()) => self.revalidate_acknowledged_publication(native_work),
@@ -787,13 +782,14 @@ where
         }
     }
 
-    fn revalidate_acknowledged_publication(
+    fn revalidate_acknowledged_publication<E>(
         &self,
         native_work: &super::NativeMountMeterWork,
-    ) -> Result<(), NativeMountPublicationFailure> {
+    ) -> Result<(), NativeMountPublicationFailure<E>>
+    where E: From<MountLifecycleError> {
         let result = with_live_session(&self.session, |session| session.revalidate_with_meter(native_work));
         if result.is_err() { self.retain_failed_session(); }
-        result.map_err(|cause| NativeMountPublicationFailure { cause, source_acknowledged: true })
+        result.map_err(|cause| NativeMountPublicationFailure { cause: E::from(cause), source_acknowledged: true })
     }
 
     /// Imports an original selected mutation through this mount's SDK owner.
@@ -802,7 +798,7 @@ where
     /// and guards every publication with the original permit. No private
     /// source handle or alternate publication engine is exposed.
     #[allow(clippy::too_many_arguments, reason = "retains the original selection, operation, permit, work bounds and owner guard")]
-    pub async fn import_selected_measured_guarded<F, Fut>(
+    pub async fn import_selected_measured_guarded<F, Fut, E>(
         &self,
         destination: crate::LazySnapshotRef,
         plan: crate::SelectedImportPlan,
@@ -811,19 +807,20 @@ where
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
         before_publication: F,
-    ) -> Result<crate::OperationReceipt<crate::LazySnapshotRef>, (MountLifecycleError, crate::WorkCounters)>
+    ) -> Result<crate::OperationReceipt<crate::LazySnapshotRef>, (E, crate::WorkCounters)>
     where
-        F: FnMut(super::NativeMountMeterWork) -> Fut + Send,
-        Fut: Future<Output = Result<(), MountSourceError>> + Send,
+        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+        E: From<MountLifecycleError> + From<MountSourceError> + Send + 'static,
     {
         let work = customer_native_work(budget, cancellation)
             .map_err(|(error, spent)| {
                 self.retain_failed_session();
-                (MountLifecycleError::Native(error), spent)
+                (E::from(MountLifecycleError::Native(error)), spent)
             })?;
         let result = async {
             let plan_allocation = work.retain_owned(plan.logical_owned_bytes())
-                .map_err(|error| MountLifecycleError::Native(NativeMountError::Materialization(error)))?;
+                .map_err(|error| E::from(MountLifecycleError::Native(NativeMountError::Materialization(error))))?;
             self.import_selected_work_guarded(
                 destination, plan, plan_allocation, operation, permit, &work.native_mount_work(),
                 cancellation, before_publication,
@@ -839,7 +836,7 @@ where
     /// and resource view. It grants no source or publication authority.
     /// Input custody is assembled before the returned future can be dropped.
     #[allow(clippy::too_many_arguments, reason = "retains the original selection, operation, permit, carrier and owner guard")]
-    pub fn import_selected_work_guarded<'a, F, Fut>(
+    pub fn import_selected_work_guarded<'a, F, Fut, E>(
         &'a self,
         destination: crate::LazySnapshotRef,
         plan: crate::SelectedImportPlan,
@@ -848,11 +845,12 @@ where
         permit: crate::PublicationPermit,
         native_work: &'a super::NativeMountMeterWork,
         cancellation: &'a crate::CancellationToken,
-        mut before_publication: F,
-    ) -> impl Future<Output = Result<crate::LazySnapshotRef, MountLifecycleError>> + Send + 'a
+        before_publication: F,
+    ) -> impl Future<Output = Result<crate::LazySnapshotRef, E>> + Send + 'a
     where
-        F: FnMut(super::NativeMountMeterWork) -> Fut + Send + 'a,
-        Fut: Future<Output = Result<(), MountSourceError>> + Send + 'a,
+        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+        E: From<MountLifecycleError> + From<MountSourceError> + Send + 'static,
     {
         // Capture the whole paid tuple: an unpolled future drops data first.
         let input = (plan, plan_allocation);
@@ -866,21 +864,23 @@ where
             let result = async move {
                 let original = native_work.native_materialization_work();
                 original.admit(crate::WorkCounters::UNCHARGED)
-                    .map_err(|error| MountLifecycleError::Native(NativeMountError::Materialization(error)))?;
+                    .map_err(|error| E::from(MountLifecycleError::Native(NativeMountError::Materialization(error))))?;
                 if !custody.work().shares_ledger(&original)
                     || !custody.work().shares_resource_allowance(&original)
                     || custody.bytes() < plan.logical_owned_bytes()
                 {
-                    return Err(MountLifecycleError::Native(NativeMountError::Materialization(
+                    return Err(E::from(MountLifecycleError::Native(NativeMountError::Materialization(
                         crate::NativeTreeMaterializationError::InvalidLayout,
-                    )));
+                    ))));
                 }
-                with_live_session(&self.session, |session| session.flush_callbacks_with_meter(native_work))?;
+                with_live_session(&self.session, |session| session.flush_callbacks_with_meter(native_work))
+                    .map_err(E::from)?;
                 let snapshot = self.source.import_selected_meter_guarded(
                     destination, plan, operation, permit, native_work,
-                    cancellation, &mut before_publication,
-                ).await.map_err(MountLifecycleError::Source)?;
-                with_live_session(&self.session, |session| session.revalidate_with_meter(native_work))?;
+                    cancellation, before_publication,
+                ).await?;
+                with_live_session(&self.session, |session| session.revalidate_with_meter(native_work))
+                    .map_err(E::from)?;
                 Ok(snapshot)
             }.await;
             drop(plan_custody);
@@ -1011,6 +1011,35 @@ where
         result
     }
 
+    /// Validates the supplied immutable view on the current caller's work.
+    ///
+    /// This does not flush the driver, invoke the source owner's callback guard,
+    /// enter its native scope, publish writes, or grant a caller read authority.
+    pub async fn validate_snapshot_with_work(
+        &self,
+        frozen: crate::LazySnapshotRef,
+        native_work: &super::NativeMountMeterWork,
+    ) -> Result<(), MountLifecycleError> {
+        self.source.validate_snapshot_with_native_work(
+            frozen, &native_work.native_materialization_work(),
+        ).await.map_err(MountLifecycleError::Lazy)
+    }
+
+    /// Looks up exactly the supplied frozen view on the current caller's work.
+    ///
+    /// Drop the returned lookup before its allocation guard. The source's held
+    /// lifetime custody remains separate from this query's actual work.
+    pub async fn lookup_at_snapshot_with_work(
+        &self,
+        frozen: crate::LazySnapshotRef,
+        path: &str,
+        native_work: &super::NativeMountMeterWork,
+    ) -> Result<(crate::LazyLookup, crate::NativeAllocation), MountLifecycleError> {
+        self.source.lookup_at_snapshot_with_work(
+            frozen, path, &native_work.native_materialization_work(),
+        ).await.map_err(MountLifecycleError::from)
+    }
+
     /// Publishes pending effects on the source callback runtime.
     pub fn sync_blocking(&self) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;
@@ -1107,10 +1136,10 @@ where
 /// source success; it is not namespace authority or physical cleanup evidence.
 #[derive(Debug, Error)]
 #[error("{cause}")]
-pub struct NativeMountPublicationFailure {
+pub struct NativeMountPublicationFailure<E> {
     /// The original cause and all its intrinsic allocation custody.
     #[source]
-    pub cause: MountLifecycleError,
+    pub cause: E,
     /// The actual SDK source returned success before this later failure.
     pub source_acknowledged: bool,
 }
@@ -1131,6 +1160,13 @@ pub enum MountLifecycleError {
     /// Lazy source or sparse-overlay admission failed.
     #[error(transparent)]
     Lazy(#[from] LazyWorkspaceError),
+    /// Original immutable lazy-query cause drops before its retained custody.
+    #[error("{source}")]
+    NativeLazy {
+        #[source]
+        source: LazyWorkspaceError,
+        custody: Option<crate::NativeAllocation>,
+    },
     /// Native driver admission or teardown failed.
     #[error(transparent)]
     Native(#[from] NativeMountError),
@@ -1157,6 +1193,12 @@ pub enum MountLifecycleError {
 impl From<(WorkspaceError, Option<crate::NativeAllocation>)> for MountLifecycleError {
     fn from((source, custody): (WorkspaceError, Option<crate::NativeAllocation>)) -> Self {
         Self::NativeWorkspace { source, custody }
+    }
+}
+
+impl From<(LazyWorkspaceError, Option<crate::NativeAllocation>)> for MountLifecycleError {
+    fn from((source, custody): (LazyWorkspaceError, Option<crate::NativeAllocation>)) -> Self {
+        Self::NativeLazy { source, custody }
     }
 }
 
@@ -1378,7 +1420,8 @@ where
     ) -> Result<LazyMount<A, O, D, S>, MountLifecycleError> {
         acyclic_native_runtime::initialize_native_io_services().map_err(NativeMountError::from)?;
         super::initialize_native_mount_services()?;
-        self.mount_measured(destination, options, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+        let destination = destination.into();
+        self.mount_measured(destination.as_path(), options, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await.map(|receipt| receipt.value).map_err(|(error, _)| error)
     }
 
@@ -1389,14 +1432,14 @@ where
     /// Admission reads only the selected root, leaving descendants lazy.
     pub async fn mount_measured(
         &self,
-        destination: impl Into<PathBuf>,
+        destination: impl AsRef<Path>,
         options: MountOptions,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::OperationReceipt<LazyMount<A, O, D, S>>, (MountLifecycleError, crate::WorkCounters)> {
         let work = customer_native_work(budget, cancellation)
             .map_err(|(error, spent)| (MountLifecycleError::Native(error), spent))?;
-        let result = self.mount_with_work(destination, options, None, &work.native_mount_work(), cancellation).await;
+        let result = self.mount_with_work(destination.as_ref(), options, None, &work.native_mount_work(), cancellation).await;
         result.map(|value| crate::OperationReceipt { value, work: work.receipt() })
             .map_err(|error| (error, work.receipt()))
     }
@@ -1409,18 +1452,18 @@ where
     /// guard; `None` is only an explicitly host-configured native source.
     pub async fn mount_with_work(
         &self,
-        destination: impl Into<PathBuf>,
+        destination: &Path,
         options: MountOptions,
         callback_guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
         native_work: &super::NativeMountMeterWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<LazyMount<A, O, D, S>, MountLifecycleError> {
-        let destination = destination.into();
         async {
             let original = native_work.native_materialization_work();
-            let destination_custody = original.retain_owned(destination.capacity() as u64)
+            let destination = original.copy_path(destination)
                 .map_err(|error| MountLifecycleError::Native(NativeMountError::Materialization(error)))?;
-            let destination = destination;
+            let destination_custody = destination.1;
+            let destination = destination.0;
             let options_bytes = match &options.subdirectory {
                 std::borrow::Cow::Borrowed(_) => 0,
                 std::borrow::Cow::Owned(value) => value.capacity() as u64,
@@ -2015,6 +2058,17 @@ mod tests {
         assert!(matches!(denied.0, MountLifecycleError::Native(NativeMountError::Work(_))));
         assert_eq!(lazy.workspace().head().await?.id(), generation);
         assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
+        let path_budget = crate::WorkBudget { bytes_copied: 0, ..crate::WorkBudget::UNBOUNDED };
+        let path_work = customer_native_work(path_budget, &cancellation).map_err(|(error, _)| error)?;
+        let before_path_copy = path_work.receipt();
+        let denied_path = lazy.mount_with_work(
+            destination.path(), options.clone(), None, &path_work.native_mount_work(), &cancellation,
+        ).await.err().ok_or("unfunded borrowed destination was copied before admission")?;
+        assert!(matches!(denied_path, MountLifecycleError::Native(NativeMountError::Materialization(_))));
+        assert_eq!(path_work.receipt(), before_path_copy);
+        path_work.receipt().verify(path_budget)?;
+        assert_eq!(lazy.workspace().head().await?.id(), generation);
+        assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
         let startup = lazy.mount_measured(
             "relative-invalid-mount", options.clone(), crate::WorkBudget::UNBOUNDED, &cancellation,
         ).await.err().ok_or("invalid destination admitted a real provider")?;
@@ -2079,6 +2133,28 @@ mod tests {
         let before = mount.snapshot_measured(crate::WorkBudget::UNBOUNDED, &cancellation)
             .await.map_err(|(error, _)| error)?;
         assert_eq!(before.value.authored_generation, generation);
+        let query_work = customer_native_work(crate::WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        assert!(!query_work.shares_ledger(mount._destination_custody.work()));
+        let query_native = query_work.native_mount_work();
+        mount.validate_snapshot_with_work(before.value, &query_native).await?;
+        let (lookup, lookup_custody) = mount.lookup_at_snapshot_with_work(
+            before.value, "/source.txt", &query_native,
+        ).await?;
+        assert!(matches!(&lookup, crate::LazyLookup::Source(node) if node.kind == crate::SourceNodeKind::RegularFile));
+        assert!(lookup_custody.work().shares_ledger(&query_work));
+        assert!(query_work.receipt().items_examined > 0);
+        drop(lookup);
+        drop(lookup_custody);
+        let denied_query_cancellation = crate::CancellationToken::new();
+        let denied_query = customer_native_work(crate::WorkBudget::UNBOUNDED, &denied_query_cancellation)
+            .map_err(|(error, _)| error)?;
+        let denied_query_prefix = denied_query.receipt();
+        denied_query_cancellation.cancel();
+        assert!(mount.validate_snapshot_with_work(before.value, &denied_query.native_mount_work()).await.is_err());
+        assert_eq!(denied_query.receipt(), denied_query_prefix);
+        mount.validate_snapshot_with_work(before.value, &query_native).await?;
+        assert_eq!(lazy.workspace().head().await?.id(), generation);
         let identity = mount.native_root_identity().ok_or("mounted driver lost its original root witness")?;
         let io_work = customer_native_work(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
@@ -2112,7 +2188,7 @@ mod tests {
         std::fs::write(destination.path().join("authored.txt"), b"native edit")?;
         let guarded = mount.sync_with_permit_measured_guarded(
             PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &cancellation,
-            |_original| std::future::ready(Err(MountSourceError::Stale)),
+            |_original| std::future::ready(Err::<(), _>(MountLifecycleError::Source(MountSourceError::Stale))),
         ).await.err().ok_or("failed original-owner guard published")?;
         assert!(!guarded.0.source_acknowledged);
         assert!(guarded.1.items_examined > 0);
@@ -2120,11 +2196,14 @@ mod tests {
         assert!(mount.snapshot_measured(crate::WorkBudget::UNBOUNDED, &cancellation).await.is_err());
         let original = customer_native_work(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
+        let callback_original = original.clone();
         mount.sync_with_permit_work_guarded(
             PublicationPermit::Unrestricted, &original.native_mount_work(), &cancellation,
-            |meter| {
-                assert_eq!(meter.native_materialization_work().receipt(), original.receipt());
-                std::future::ready(Ok(()))
+            move |meter: &crate::NativeMaterializationWork| {
+                assert!(meter.shares_ledger(&callback_original));
+                assert!(meter.shares_resource_allowance(&callback_original));
+                assert_eq!(meter.receipt(), callback_original.receipt());
+                std::future::ready(Ok::<(), MountLifecycleError>(()))
             },
         ).await?;
         assert!(original.receipt().items_examined > 0);
@@ -2135,10 +2214,10 @@ mod tests {
             .map_err(|(error, _)| error)?;
         let publication_native = publication_work.native_mount_work();
         with_live_session(&mount.session, |session| session.flush_callbacks_with_meter(&publication_native))?;
-        let mut before_publication = |_actual| std::future::ready(Ok::<(), MountSourceError>(()));
+        let before_publication = |_actual: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), MountSourceError>(()));
         mount.source.sync_async_with_permit_native_work_guarded(
             PublicationPermit::Unrestricted, &publication_native, &publication_cancellation,
-            &mut before_publication,
+            before_publication,
         ).await?;
         let acknowledged = mount.source.snapshot_with_native_work(
             &publication_native, &publication_cancellation,
@@ -2146,7 +2225,7 @@ mod tests {
         assert_eq!(lazy.read_range("/authored.txt", 0, 32).await?.as_ref(), b"late source acknowledgement");
         let acknowledged_prefix = publication_work.receipt();
         publication_cancellation.cancel();
-        let late_driver = mount.revalidate_acknowledged_publication(&publication_native)
+        let late_driver = mount.revalidate_acknowledged_publication::<MountLifecycleError>(&publication_native)
             .err().ok_or("cancelled native revalidation erased a real source acknowledgement")?;
         assert!(late_driver.source_acknowledged);
         assert!(matches!(late_driver.cause, MountLifecycleError::Native(_)));
@@ -2183,7 +2262,7 @@ mod tests {
         let denied_import = mount.import_selected_measured_guarded(
             actual.value, plan, operation,
             PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &cancellation,
-            |_original| std::future::ready(Err(MountSourceError::Stale)),
+            |_original| std::future::ready(Err::<(), _>(MountLifecycleError::Source(MountSourceError::Stale))),
         ).await.err().ok_or("selected import bypassed its original owner guard")?;
         assert_ne!(denied_import.1, crate::WorkCounters::UNCHARGED);
         assert_eq!(lazy.workspace().head().await?.id(), imported_head);
@@ -2199,7 +2278,7 @@ mod tests {
         let unpolled = mount.import_selected_work_guarded(
             actual.value, plan, plan_custody, operation,
             PublicationPermit::Unrestricted, &selected_native, &cancellation,
-            |_original| std::future::ready(Ok(())),
+            |_original| std::future::ready(Ok::<(), MountLifecycleError>(())),
         );
         drop(unpolled);
         assert_eq!(selected_work.receipt(), before_unpolled);
@@ -2213,7 +2292,7 @@ mod tests {
             mount.import_selected_work_guarded(
                 actual.value, plan, plan_custody, operation,
                 PublicationPermit::Unrestricted, &foreign_native, &cancellation,
-                |_original| std::future::ready(Ok(())),
+                |_original| std::future::ready(Ok::<(), MountLifecycleError>(())),
             ).await,
             Err(MountLifecycleError::Native(NativeMountError::Materialization(
                 crate::NativeTreeMaterializationError::InvalidLayout,
@@ -2227,7 +2306,7 @@ mod tests {
         let imported = mount.import_selected_work_guarded(
             actual.value, plan, plan_custody, operation,
             PublicationPermit::Unrestricted, &selected_native, &cancellation,
-            |_original| std::future::ready(Ok(())),
+            |_original| std::future::ready(Ok::<(), MountLifecycleError>(())),
         ).await?;
         selected_work.receipt().verify(crate::WorkBudget::UNBOUNDED)?;
         assert_eq!(imported.authored_generation, lazy.workspace().head().await?.id());
@@ -2593,12 +2672,37 @@ mod tests {
             assert_eq!(canonical.accessed_ns, Some(1_700_000_000_000_000_000));
         }
         std::fs::write(working.join("hot/file.txt"), b"native-edit")?;
+        let before_guard = lazy.workspace().head().await?.id();
+        let denied_publication = customer_native_work(crate::WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let denied = working_set.sync_with_permit_with_work(
+            PublicationPermit::Unrestricted, &denied_publication.native_mount_work(), &cancellation,
+            |_original: &crate::NativeMaterializationWork| std::future::ready(Err::<(), _>(
+                MountLifecycleError::NativePolicy("original materialized owner denied publication"),
+            )),
+        ).await.err().ok_or("materialized publication ignored its original owner guard")?;
+        assert!(!denied.source_acknowledged);
+        assert!(matches!(denied.cause, MountLifecycleError::NativePolicy(
+            "original materialized owner denied publication",
+        )));
+        assert!(denied_publication.receipt().items_examined > 0);
+        denied_publication.receipt().verify(crate::WorkBudget::UNBOUNDED)?;
+        assert_eq!(lazy.workspace().head().await?.id(), before_guard);
         working_set
             .capture_host_paths(&[MountPath::root().child(name)])
             .await?;
-        working_set
-            .sync_with_permit(PublicationPermit::Unrestricted)
-            .await?;
+        let publication = customer_native_work(crate::WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let guard_original = publication.clone();
+        working_set.sync_with_permit_with_work(
+            PublicationPermit::Unrestricted, &publication.native_mount_work(), &cancellation,
+            move |actual: &crate::NativeMaterializationWork| {
+                assert!(actual.shares_ledger(&guard_original));
+                assert!(actual.shares_resource_allowance(&guard_original));
+                std::future::ready(Ok::<(), MountLifecycleError>(()))
+            },
+        ).await?;
+        assert!(publication.receipt().items_examined > 0);
         assert_eq!(
             lazy.workspace().read("/hot/file.txt", 32).await?.as_ref(),
             b"native-edit"
