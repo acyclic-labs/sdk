@@ -86,6 +86,7 @@ pub use native_execution::{
     NativePublicationCleanup, NativePublicationReservation, NativePublicationReservationFailure,
     NativeReservationError,
     NativePreparationJournalError, NativePreparationJournalObservation, NativeRecordedPreparation,
+    NativeViewPublicationError,
 };
 pub use task_commands::{
     EFFECT_TASK_COMMAND_KIND, FilesystemTaskCommands, MAIL_RECEIVE_TASK_COMMAND_KIND,

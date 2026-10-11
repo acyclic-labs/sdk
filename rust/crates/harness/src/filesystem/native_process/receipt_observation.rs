@@ -127,7 +127,7 @@ pub(super) fn decode(
     let mut items = 0u64;
     let guard = custody.as_mut().ok_or(NativeReceiptError::Record("native receipt custody is missing"))?;
     let previous = guard.bytes();
-    guard.resize_retained(add(previous, 1024)?)?;
+    guard.resize_retained(add(previous, crate::contract::lexical_json_diagnostic_bytes())?)?;
     crate::contract::admit_json(bytes, bounds, &mut |charge| {
         let result = match charge {
             JsonCodecCharge::Work { items: visited, bytes: encoded } => {
@@ -145,6 +145,8 @@ pub(super) fn decode(
         };
         result.map_err(|cause| Error::NativeWork { cause, custody: None })
     }).map_err(|source| NativeReceiptError::Codec { source, custody: custody.take() })?;
+    custody.as_mut().ok_or(NativeReceiptError::Record("native receipt custody is missing"))?
+        .substitute(previous)?;
     let slots = multiply(items, 10)?;
     let content_slot = size_of::<(serde::__private229::de::Content<'static>, serde::__private229::de::Content<'static>)>()
         .max(size_of::<serde::__private229::de::Content<'static>>()) as u64;
