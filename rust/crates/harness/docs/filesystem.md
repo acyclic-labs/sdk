@@ -209,6 +209,11 @@ journal's owned fields. Stream and schema sharing is Arc-only; opaque Arc weak
 backing and allocator-node/RSS footprint are not claimed. Native fresh workflow
 admission uses the same staged admission identity, append and retry engine as
 ordinary admission, with the original cancellation and owner tail fences.
+Native scheduler-payload and content-reader constructors likewise authenticate
+borrowed configuration before funding its actual metadata copies. Their
+intrinsic guard outlives owned fields; `into_native_shared` admits the actual
+SDK Arc allocation attempt without claiming opaque Arc backing bytes or
+creating another ledger.
 
 Native JSON graph production does not encode and parse a temporary byte buffer.
 Borrowed DTO conversions preserve `Deserialize`'s borrowed-Value visitor;

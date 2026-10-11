@@ -137,6 +137,8 @@ pub struct FilesystemSchedulerPayloadStore<A, O> {
     volume: VolumeRef,
     grant: ContentGrant,
     maximum_bytes: u64,
+    #[cfg(not(target_arch = "wasm32"))]
+    _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl<A, O> FilesystemSchedulerPayloadStore<A, O> {
@@ -148,21 +150,60 @@ impl<A, O> FilesystemSchedulerPayloadStore<A, O> {
         scope: &Scope,
         maximum_bytes: u64,
     ) -> Result<Self> {
-        if volume.class() != VolumeClass::AgentPrivate
-            || volume.provider() != &host.provider
-            || maximum_bytes == 0
-        {
-            return Err(Error::Invalid(
-                "scheduler payload store requires a private volume and positive limit".into(),
-            ));
-        }
+        Self::validate_configuration(&host, &volume, maximum_bytes, None)?;
         let grant = ContentGrant::verify(verifier, scope, &volume, VolumeOperation::Write)?;
         Ok(Self {
             host,
             volume,
             grant,
             maximum_bytes,
+            #[cfg(not(target_arch = "wasm32"))]
+            _native_metadata: None,
         })
+    }
+
+    fn validate_configuration(
+        host: &FilesystemHost<A, O>, volume: &VolumeRef, maximum_bytes: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        if volume.class() != VolumeClass::AgentPrivate
+            || volume.provider() != &host.provider || maximum_bytes == 0
+        {
+            return Err(fork_preparer_io::invalid(io,
+                "scheduler payload store requires a private volume and positive limit"));
+        }
+        Ok(())
+    }
+
+    /// Funds only newly owned SDK metadata using the caller's original ledger.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new_with_native_work(
+        host: Arc<FilesystemHost<A, O>>, volume: &VolumeRef,
+        verifier: &AuthorityVerifier, scope: &Scope, maximum_bytes: u64,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        let io = PreparationIo::from_native_work(work)?;
+        Self::validate_configuration(&host, volume, maximum_bytes, Some(&io))?;
+        let grant = ContentGrant::verify_with_io(
+            verifier, scope, volume, VolumeOperation::Write, &io,
+        )?;
+        let volume = volume.clone_with_io(&io)?;
+        io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+        let retained = io.owned_bytes()?;
+        let _native_metadata = Some(io.into_native_custody(retained)?);
+        Ok(Self { host, volume, grant, maximum_bytes, _native_metadata })
+    }
+
+    /// The intrinsic guard covers Self and deep metadata, not opaque Arc nodes.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn into_native_shared(self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Arc<Self>> {
+        if !self._native_metadata.as_ref().is_some_and(|custody| work.shares_ledger(custody.work())) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "native payload sharing requires original metadata custody" });
+        }
+        let io = PreparationIo::from_native_work(work)?;
+        io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
+        Ok(Arc::new(self))
     }
 }
 
@@ -254,6 +295,8 @@ pub struct FilesystemContentVerifier<A, O> {
     verifier: AuthorityVerifier,
     scope: Scope,
     maximum_bytes: u64,
+    #[cfg(not(target_arch = "wasm32"))]
+    _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl<A, O> FilesystemContentVerifier<A, O> {
@@ -274,22 +317,14 @@ impl<A, O> FilesystemContentVerifier<A, O> {
         maximum_bytes: u64,
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
-        if maximum_bytes == 0 {
-            return Err(Error::Invalid(
-                "content admission limit must be positive".into(),
-            ));
-        }
-        if let Some(io) = io {
-            let mut observer = io.history_io();
-            verifier.verify_with_work(&scope, &mut Some(&mut observer))?;
-        } else {
-            verifier.verify(&scope)?;
-        }
+        Self::validate_configuration(&verifier, &scope, maximum_bytes, io)?;
         Ok(Self {
             host,
             verifier,
             scope,
             maximum_bytes,
+            #[cfg(not(target_arch = "wasm32"))]
+            _native_metadata: None,
         })
     }
 
@@ -298,6 +333,52 @@ impl<A, O> FilesystemContentVerifier<A, O> {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         self.scope.logical_owned_bytes()?.checked_add(self.verifier.logical_owned_bytes()?)
             .ok_or_else(|| Error::Invalid("content verifier ownership overflow".into()))
+    }
+
+    fn validate_configuration(
+        verifier: &AuthorityVerifier, scope: &Scope, maximum_bytes: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        if maximum_bytes == 0 {
+            return Err(fork_preparer_io::invalid(io, "content admission limit must be positive"));
+        }
+        match io {
+            Some(io) => {
+                let mut observer = io.history_io();
+                let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
+                verifier.verify_with_work(scope, &mut work)
+            }
+            None => verifier.verify(scope),
+        }
+    }
+
+    /// Authenticates borrowed configuration before copying its SDK metadata.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new_with_native_work(
+        host: Arc<FilesystemHost<A, O>>, verifier: &AuthorityVerifier,
+        scope: &Scope, maximum_bytes: u64, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        let io = PreparationIo::from_native_work(work)?;
+        Self::validate_configuration(verifier, scope, maximum_bytes, Some(&io))?;
+        let (verifier, custody) = verifier.clone_with_native_work(work)?;
+        io.absorb_native_custody(custody)?;
+        let (scope, custody) = scope.clone_with_native_work(work)?;
+        io.absorb_native_custody(custody)?;
+        io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+        let retained = io.owned_bytes()?;
+        let _native_metadata = Some(io.into_native_custody(retained)?);
+        Ok(Self { host, verifier, scope, maximum_bytes, _native_metadata })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn into_native_shared(self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Arc<Self>> {
+        if !self._native_metadata.as_ref().is_some_and(|custody| work.shares_ledger(custody.work())) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "native content sharing requires original metadata custody" });
+        }
+        let io = PreparationIo::from_native_work(work)?;
+        io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
+        Ok(Arc::new(self))
     }
 }
 
