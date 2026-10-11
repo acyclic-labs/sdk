@@ -1613,11 +1613,11 @@ impl Error {
     }
 
     /// Native failures must propagate before additional provider or deadline work.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn is_native_failure(&self) -> bool {
         match self {
-            Self::Allocation(_)
-            | Self::NativeWork { .. }
+            Self::Allocation(_) => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeWork { .. }
             | Self::NativeConstruction { .. }
             | Self::NativeBoundary { .. }
             | Self::NativeDiagnostic { .. }
@@ -1633,11 +1633,11 @@ impl Error {
             | Self::NativeDrivenJoin { .. }
             | Self::NativeReservation { .. }
             | Self::NativeFilesystem { .. } => true,
-            #[cfg(feature = "filesystem-local")]
+            #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
             Self::NativeLineage { .. } | Self::NativeContext { .. } => true,
-            #[cfg(feature = "mcp-http")]
+            #[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
             Self::NativeMcpHttp { .. } => true,
-            #[cfg(feature = "native-execution")]
+            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
             Self::NativeView { .. } | Self::NativePublication { .. }
             | Self::NativeWorkspacePublication { .. }
             | Self::NativeTimeout { .. } => true,
