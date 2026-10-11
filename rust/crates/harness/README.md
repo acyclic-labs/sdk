@@ -196,6 +196,9 @@ verifies the existing preparation task, original allocation generation and
 protected provider records. The coordinator authenticates its original parent,
 creation fence and intended child before sealing exact grants and content
 bindings into that child's scope. Caller-built proof refs alone grant nothing.
+The private seal retains the exact authenticated current-default origin already
+used for writer selection; headless inspection never reselects it from public
+volume owner labels or the ordering of private allocations.
 `FilesystemResourceCreationProvider` uses the ordinary workspace, content verifier
 and publisher; `open_with_creation_providers` composes it into the same filesystem
 task runtime. Child writes and new child admission require their current retained
