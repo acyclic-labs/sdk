@@ -253,6 +253,10 @@ the original binding event through the SDK's authenticated atomic operation
 index, including archived events, then replays the same prior revision and
 guarded command for its original ACK. Cold observation never installs that ACK
 in a current owner's binding cache.
+Child cancellation and preparation rollback use the existing guarded SDK task
+cancellation engine on their original cleanup work. The native process stop
+receipt remains separate: a cancellation acknowledgement alone is not proof
+that a process drained or that scratch can be disposed.
 
 Imported-file evidence retains its original SDK allocation guard through the
 existing service actor, response channel and bounded RPC encoder. Encoding
@@ -557,6 +561,12 @@ The protected conversation scope and verifier are funded before construction;
 their owned tuple transfers into the live mixed-view project binding with its
 original custody guard, rather than an external host cache. The separate
 filesystem mount source never derives task authority from that accounting guard.
+Task-backed scratch and project sources install their actual retained task
+owner, current fence and exact volume READ/WRITE purpose before preparation,
+source capture or watch startup. Every callback verifies that authority on the
+same original ledger. Its typed denial slot is funded before verification and
+retains the whole original error and custody; no formatted failure or global
+error trap replaces the cause.
 The real driver callback scope is acquired under its short session mutex; the
 mutex is released before held-file IO awaits. The actual native process retains
 each project's owned original-work scope until its tree and stdio are physically
