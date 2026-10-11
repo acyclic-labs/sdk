@@ -1293,7 +1293,7 @@ async fn original_native_preparation_resumes_physical_partial_and_lost_acknowled
             assert_eq!(std::fs::read(fixture.allocation.root.join("a-source/input.txt"))
                 .map_err(|error| Error::Storage(error.to_string()))?, b"pinned input");
             assert!(!fixture.allocation.root.join("b-destination").exists());
-            assert!(failed.work.materializations > 0);
+            assert!(failed.1.materializations > 0);
         }
         if let Some(receipt) = &before {
             assert_eq!(receipt.task, fixture.owner.task_binding().0);
@@ -3547,7 +3547,7 @@ async fn native_allocation_recovery_never_adopts_pending_directory_identity() ->
         .ok_or_else(|| Error::NotFound("original preparation allocation journal".into()))?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let witness = acyclic_fs::NativeMaterializationWork::new(fixture.options.work_per_volume, &cancellation)
-        .map_err(|failure| Error::Storage(failure.to_string()))?;
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let parent = witness.root_identity(fixture.allocation.operation_directory.parent()
         .ok_or_else(|| Error::Storage("original allocation parent is absent".into()))?)
         .map_err(|error| Error::Storage(error.to_string()))?;
@@ -3654,7 +3654,7 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
         let cleanup_cancellation = acyclic_fs::CancellationToken::new();
         let budget = fixture.view.manifest().validation_budget()?;
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-            .map_err(|failure| Error::Storage(failure.to_string()))?;
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let destination = workspace_ref(
             fixture.destination.provider().clone(), &fixture.destination.storage_name()?,
         )?;
@@ -3740,14 +3740,14 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
             let mut denied_budget = budget;
             denied_budget.allocation_operations = 1;
             let denied_work = acyclic_fs::NativeMaterializationWork::new(denied_budget, &cleanup_cancellation)
-                .map_err(|failure| Error::Storage(failure.to_string()))?;
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let failed = receipt.value.into_cleanup().release(&denied_work, &cleanup_cancellation).await
                 .err().ok_or_else(|| Error::Storage("cleanup frame denial was not exercised".into()))?;
             assert_eq!(failed.work.backend_write_operations, 0);
             assert!(matches!(failed.error, crate::filesystem::NativeReservationError::Native(_)));
             let retained = failed.cleanup.ok_or_else(|| Error::Storage("denied cleanup dropped actual SDK gate custody".into()))?;
             let cleanup_work = acyclic_fs::NativeMaterializationWork::new(budget, &cleanup_cancellation)
-                .map_err(|failure| Error::Storage(failure.to_string()))?;
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             retained.release(&cleanup_work, &cleanup_cancellation).await
                 .map_err(|failure| Error::Storage(failure.error.to_string()))?;
             fixture.files.write(&destination, "/release-check.txt", b"settled").await?;
@@ -3777,7 +3777,7 @@ async fn original_supervisor_stop_is_attempt_fenced_and_does_not_cancel_the_nati
     let cleanup_cancellation = acyclic_fs::CancellationToken::new();
     let budget = fixture.view.manifest().validation_budget()?;
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cleanup_cancellation)
-        .map_err(|failure| Error::Storage(failure.to_string()))?;
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     assert!(matches!(
         process.signal_stop(crate::EffectAttemptId::from_bytes([255; 16]), &work, &cleanup_cancellation).await,
         Err(crate::filesystem::NativeReceiptError::Record(_)),
@@ -3795,7 +3795,7 @@ async fn original_supervisor_stop_is_attempt_fenced_and_does_not_cancel_the_nati
     let mut denied_budget = budget;
     denied_budget.items_examined = 0;
     let denied = acyclic_fs::NativeMaterializationWork::new(denied_budget, &cleanup_cancellation)
-        .map_err(|failure| Error::Storage(failure.to_string()))?;
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     assert!(matches!(
         process.signal_stop(attempt, &denied, &cleanup_cancellation).await,
         Err(crate::filesystem::NativeReceiptError::Native(_)),
@@ -3860,7 +3860,7 @@ async fn original_warm_supervisor_stop_settles_after_real_task_cancellation() ->
     let cleanup_cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
         fixture.view.manifest().validation_budget()?, &cleanup_cancellation,
-    ).map_err(|failure| Error::Storage(failure.to_string()))?;
+    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     process.signal_stop(attempt, &work, &cleanup_cancellation).await
         .map_err(|error| Error::Storage(error.to_string()))?;
     let receipt = process.request_stop(attempt, &work, &cleanup_cancellation).await

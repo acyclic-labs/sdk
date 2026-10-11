@@ -108,7 +108,10 @@ impl NativeViewManifest {
     /// This does not authenticate a view; its host owner must verify the exact
     /// pins against the existing mount and provider before dispatch/publication.
     pub fn validate(&self) -> Result<()> {
-        use crate::Error;
+        self.validate_with_io(None)
+    }
+
+    pub(crate) fn validate_with_io(&self, io: Option<&super::PreparationIo>) -> Result<()> {
         use std::path::Component;
 
         if !self.options.root.is_absolute()
@@ -122,11 +125,13 @@ impl NativeViewManifest {
                 .components()
                 .any(|part| matches!(part, Component::ParentDir))
         {
-            return Err(Error::Invalid(
-                "invalid native view selection or bounds".into(),
-            ));
+            return Err(validation_error(io, crate::wire::ErrorCode::Invalid,
+                "invalid native view selection or bounds"));
         }
         for (index, mapping) in self.volumes.iter().enumerate() {
+            if let Some(io) = io {
+                io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+            }
             mapping.volume.validate()?;
             mapping.generation.validate()?;
             if mapping.generation.as_resource().provider() != mapping.volume.provider()
@@ -137,28 +142,51 @@ impl NativeViewManifest {
                     .path
                     .components()
                     .any(|part| matches!(part, Component::ParentDir))
-                || self.volumes.iter().take(index).any(|prior| {
-                    mapping.path.starts_with(&prior.path) || prior.path.starts_with(&mapping.path)
-                })
             {
-                return Err(Error::Invalid(
-                    "native volume selection overlaps or escapes its root".into(),
-                ));
+                return Err(validation_error(io, crate::wire::ErrorCode::Invalid,
+                    "native volume selection overlaps or escapes its root"));
+            }
+            for prior in self.volumes.iter().take(index) {
+                if let Some(io) = io {
+                    io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+                }
+                if mapping.path.starts_with(&prior.path) || prior.path.starts_with(&mapping.path) {
+                    return Err(validation_error(io, crate::wire::ErrorCode::Invalid,
+                        "native volume selection overlaps or escapes its root"));
+                }
             }
         }
         for mapping in &self.volumes {
+            if let Some(io) = io {
+                io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+            }
             if let NativeVolumeNamespace::LazyMount { snapshot } = &mapping.namespace
                 && (snapshot.workspace_id.into_bytes() == [0; 16]
                     || snapshot.source.identity == [0; 16]
                     || snapshot.authored_generation.digest().as_bytes().as_slice()
                         != mapping.generation.as_resource().key())
             {
-                return Err(Error::Invalid(
-                    "lazy native snapshot differs from its selected generation".into(),
-                ));
+                return Err(validation_error(io, crate::wire::ErrorCode::Invalid,
+                    "lazy native snapshot differs from its selected generation"));
             }
         }
         Ok(())
+    }
+}
+
+pub(super) fn validation_error(
+    io: Option<&super::PreparationIo>, code: crate::wire::ErrorCode, reason: &'static str,
+) -> crate::Error {
+    #[cfg(not(target_arch = "wasm32"))]
+    if io.and_then(super::PreparationIo::original_native_work).is_some() {
+        return crate::Error::NativeBoundary { code, reason };
+    }
+    let _ = io;
+    match code {
+        crate::wire::ErrorCode::Unsupported => crate::Error::Unsupported(reason.into()),
+        crate::wire::ErrorCode::Unauthorized => crate::Error::Unauthorized(reason.into()),
+        crate::wire::ErrorCode::Conflict => crate::Error::Conflict(reason.into()),
+        _ => crate::Error::Invalid(reason.into()),
     }
 }
 
@@ -216,7 +244,22 @@ impl NativeProcessRequest {
 
     /// Binds the existing approval mechanism to the task, command and exact request.
     pub fn approval_digest(&self, task: crate::TaskId, command: OperationId) -> Result<[u8; 32]> {
-        crate::contract::canonical_json_digest(&(NATIVE_PROCESS_EFFECT_KIND, task, command, self))
+        self.approval_digest_with_io(task, command, None)
+    }
+
+    pub(crate) fn approval_digest_with_io(
+        &self, task: crate::TaskId, command: OperationId,
+        io: Option<&super::PreparationIo>,
+    ) -> Result<[u8; 32]> {
+        let value = (NATIVE_PROCESS_EFFECT_KIND, task, command, self);
+        let Some(io) = io else { return crate::contract::canonical_json_digest(&value); };
+        let encoded = io.encode_json(&value, io.remaining()?.bytes_encoded, true)?;
+        let guard = io.guard_owned(encoded.capacity() as u64)?;
+        io.charge(acyclic_fs::WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() })?;
+        let digest = *blake3::hash(&encoded).as_bytes();
+        drop(encoded);
+        drop(guard);
+        Ok(digest)
     }
 
     /// Decodes a pinned complete MCP process receipt, with no process or network
