@@ -10,7 +10,7 @@ use crate::kernel::{
 };
 use crate::memory::MemoryObjectStore;
 use crate::storage::{ObjectKind, ObjectStore};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 
 fn record(byte: u8) -> FileRecord {
     FileRecord {
@@ -33,7 +33,7 @@ fn put(
     ObjectStore::put(
         store,
         id,
-        Bytes::from(encode_file_table_page(page, 8)?),
+        OwnedBytes::from(encode_file_table_page(page, 8)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)

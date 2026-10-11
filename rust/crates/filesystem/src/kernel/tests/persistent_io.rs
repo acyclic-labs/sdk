@@ -8,7 +8,7 @@ use crate::memory::MemoryObjectStore;
 use crate::storage::{ObjectKind, ObjectStore, object_digest};
 use crate::test_support::OwnedReadObjectStore;
 use crate::{CachedObjectStore, ObjectCacheOptions, ObjectCacheStats};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 
 fn put_tree_page(
     store: &MemoryObjectStore,
@@ -24,7 +24,7 @@ fn put_tree_page(
     ObjectStore::put(
         store,
         object,
-        Bytes::from(encode_tree_page(&page, 8)?),
+        OwnedBytes::from(encode_tree_page(&page, 8)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(object)
@@ -293,7 +293,7 @@ fn post_read_budget_failure_releases_every_decoded_allocation()
     ObjectStore::put(
         &store,
         object,
-        Bytes::from(encode_tree_page(&page, 8)?),
+        OwnedBytes::from(encode_tree_page(&page, 8)?),
         WorkBudget::UNBOUNDED,
     )?;
     let mut allocations = AllocationLedger::default();
@@ -348,7 +348,7 @@ fn single_page_read_authenticates_decode_and_releases_backend_ownership()
     allocations.release(owned.logical_bytes)?;
     assert_eq!(allocations.live_bytes(), 0);
 
-    let malformed = Bytes::from_static(b"not a canonical tree page");
+    let malformed = OwnedBytes::from_static(b"not a canonical tree page");
     let malformed_id = ObjectId {
         kind: ObjectKind::TreePage,
         digest: object_digest(ObjectKind::TreePage, &malformed),
@@ -393,7 +393,7 @@ fn shape_valid_malformed_tree_page_releases_decoded_allocation()
     ObjectStore::put(
         &store,
         object,
-        Bytes::from(malformed),
+        OwnedBytes::from(malformed),
         WorkBudget::UNBOUNDED,
     )?;
     let mut allocations = AllocationLedger::default();
@@ -625,7 +625,7 @@ fn late_batch_decode_failure_releases_every_pending_allocation()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let first = put_tree_page(&store, b"first", 1)?;
-    let malformed = Bytes::from_static(b"not a canonical tree page");
+    let malformed = OwnedBytes::from_static(b"not a canonical tree page");
     let second = ObjectId {
         kind: ObjectKind::TreePage,
         digest: object_digest(ObjectKind::TreePage, &malformed),
@@ -789,11 +789,11 @@ fn shared_copy_and_batch_retention_failures_release_every_logical_byte()
 
     let reads = [
         ObjectRead {
-            bytes: Bytes::from_static(b"shared"),
+            bytes: OwnedBytes::from_static(b"shared"),
             retention: ObjectReadRetention::Shared,
         },
         ObjectRead {
-            bytes: Bytes::from_static(b"owned"),
+            bytes: OwnedBytes::from_static(b"owned"),
             retention: ObjectReadRetention::Owned { logical_bytes: 5 },
         },
     ];
@@ -806,13 +806,13 @@ fn shared_copy_and_batch_retention_failures_release_every_logical_byte()
 
     let overflowing_reads = [
         ObjectRead {
-            bytes: Bytes::new(),
+            bytes: OwnedBytes::new(),
             retention: ObjectReadRetention::Owned {
                 logical_bytes: u64::MAX,
             },
         },
         ObjectRead {
-            bytes: Bytes::new(),
+            bytes: OwnedBytes::new(),
             retention: ObjectReadRetention::Owned { logical_bytes: 1 },
         },
     ];
@@ -892,7 +892,7 @@ fn corrupted_batch_state_releases_resources_and_fails_closed()
         store: &store,
         sources: vec![BatchSource::Cold(object)].into_iter(),
         reads: vec![ObjectRead {
-            bytes: Bytes::new(),
+            bytes: OwnedBytes::new(),
             retention: ObjectReadRetention::Owned { logical_bytes: 1 },
         }]
         .into_iter(),

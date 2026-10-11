@@ -411,63 +411,40 @@ pub struct BlobBuild {
 #[derive(Debug)]
 pub struct OwnedSourceChunk {
     /// Exact bytes supplied by this read.
-    pub bytes: Bytes,
+    pub bytes: acyclic_stream::OwnedBytes,
     /// Payload capacity retained by these bytes, not their visible length.
     pub logical_owned_bytes: u64,
-    ownership: SourceChunkOwnership,
+    intrinsic: bool,
 }
 
-#[derive(Debug)]
-enum SourceChunkOwnership {
-    Claimed,
-    #[cfg(not(target_arch = "wasm32"))]
-    Intrinsic { _allocation: Option<crate::NativeAllocation> },
-}
 
 impl OwnedSourceChunk {
     /// Borrows the supplied bytes without detaching their native custody.
     #[must_use]
-    pub fn bytes(&self) -> &Bytes { &self.bytes }
+    pub fn bytes(&self) -> &acyclic_stream::OwnedBytes { &self.bytes }
 
     /// Exact backing capacity reported by the physical source producer.
     #[must_use]
     pub const fn logical_owned_bytes(&self) -> u64 { self.logical_owned_bytes }
 
     /// Bytes whose retained capacity is accounted by the ordinary caller.
-    pub fn claimed(bytes: Bytes, logical_owned_bytes: u64) -> Self {
-        Self { bytes, logical_owned_bytes, ownership: SourceChunkOwnership::Claimed }
+    pub fn claimed(bytes: acyclic_stream::OwnedBytes, logical_owned_bytes: u64) -> Self {
+        Self { bytes, logical_owned_bytes, intrinsic: false }
     }
 
     /// Bytes already retained by their original native allocation owner.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn intrinsic(
-        bytes: Bytes, logical_owned_bytes: u64, allocation: Option<crate::NativeAllocation>,
-    ) -> Self {
-        Self {
-            bytes, logical_owned_bytes,
-            ownership: SourceChunkOwnership::Intrinsic { _allocation: allocation },
-        }
+    pub fn intrinsic(bytes: acyclic_stream::OwnedBytes, logical_owned_bytes: u64) -> Self {
+        Self { bytes, logical_owned_bytes, intrinsic: true }
     }
 
     /// Whether native ownership already accounts for this chunk's capacity.
-    pub fn is_intrinsic(&self) -> bool {
-        match &self.ownership {
-            SourceChunkOwnership::Claimed => false,
-            #[cfg(not(target_arch = "wasm32"))]
-            SourceChunkOwnership::Intrinsic { .. } => true,
-        }
-    }
+    pub const fn is_intrinsic(&self) -> bool { self.intrinsic }
 
     /// Transfers bytes and native custody without releasing the allocation.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn into_owned_parts(self) -> (Bytes, u64, bool, Option<crate::NativeAllocation>) {
-        let Self { bytes, logical_owned_bytes, ownership } = self;
-        match ownership {
-            SourceChunkOwnership::Claimed => (bytes, logical_owned_bytes, false, None),
-            SourceChunkOwnership::Intrinsic { _allocation } => {
-                (bytes, logical_owned_bytes, true, _allocation)
-            }
-        }
+    pub fn into_owned_parts(self) -> (acyclic_stream::OwnedBytes, u64, bool) {
+        (self.bytes, self.logical_owned_bytes, self.intrinsic)
     }
 }
 
@@ -839,21 +816,57 @@ async fn read_blob_chunk<R: AsyncBlobSource>(
     source: &mut R, maximum: usize, accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(OwnedSourceChunk, usize), FsError> {
-    let mut buffer = empty_blob_vec();
+    let mut buffer = Some(empty_blob_vec());
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut prepared = None;
     let result = async {
-        reserve_blob_vec(&mut buffer, maximum, accounting)?;
-        let zeroed = WorkCounters { bytes_copied: usize_to_u64(maximum), ..WorkCounters::UNCHARGED };
-        accounting.admit(zeroed)?;
-        buffer.value.resize(maximum, 0);
-        completed_read_work(accounting, zeroed)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = accounting.native_work().cloned();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = &native {
+            original.admit(WorkCounters {
+                source_bytes_read: usize_to_u64(maximum), ..WorkCounters::UNCHARGED
+            })?;
+        }
+        let owned = buffer.as_mut().expect("source storage is prepared once");
+        reserve_blob_vec(owned, maximum, accounting)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = &native {
+            let capacity = owned.value.capacity();
+            let copied = original.reserve_copy(usize_to_u64(capacity))?;
+            owned.value.resize(capacity, 0);
+            copied.record(usize_to_u64(capacity))?;
+            let owned = buffer.take().expect("original source storage");
+            prepared = Some(acyclic_stream::PreparedOwnedBytes::new(
+                owned.value, owned.custody, original.runtime_meter_owner(),
+            ).map_err(|failure| match failure.into_error() {
+                acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error).into(),
+                acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
+                | acyclic_stream::PreparedOwnedBytesError::NotUnique => {
+                    FsError::from(crate::NativeTreeMaterializationError::InvalidLayout)
+                }
+            })?);
+        }
+        if let Some(owned) = buffer.as_mut() {
+            let zeroed = WorkCounters { bytes_copied: usize_to_u64(maximum), ..WorkCounters::UNCHARGED };
+            accounting.admit(zeroed)?;
+            owned.value.resize(maximum, 0);
+            completed_read_work(accounting, zeroed)?;
+        }
         let mut filled = 0_usize;
         while filled < maximum {
             accounting.check()?;
-            let destination = buffer.value.get_mut(filled..).ok_or(BlobBuildError::TooLarge)?;
             #[cfg(not(target_arch = "wasm32"))]
-            let native = accounting.native_work();
+            let destination = match prepared.as_mut() {
+                Some(prepared) => &mut prepared.writable()[filled..maximum],
+                None => buffer.as_mut().expect("ordinary source storage").value.get_mut(filled..)
+                    .ok_or(BlobBuildError::TooLarge)?,
+            };
+            #[cfg(target_arch = "wasm32")]
+            let destination = buffer.as_mut().expect("ordinary source storage").value.get_mut(filled..)
+                .ok_or(BlobBuildError::TooLarge)?;
             #[cfg(not(target_arch = "wasm32"))]
-            let read = if let Some(original) = native {
+            let read = if let Some(original) = &native {
                 source.read_with_native_work(destination, original, cancellation).await
             } else {
                 read_standalone_blob_source(source, destination, accounting, cancellation).await
@@ -865,24 +878,30 @@ async fn read_blob_chunk<R: AsyncBlobSource>(
             if read == 0 { break; }
             filled += read;
         }
-        buffer.value.truncate(filled);
         Ok(filled)
     }.await;
     match result {
-        Err(error) => { let _ = release_blob_vec(buffer, accounting); Err(error) }
-        Ok(filled) => {
-            let logical_owned_bytes = usize_to_u64(buffer.value.capacity());
-            // Native Bytes aliases inherit the original producer guard.
-            let bytes = owned_read_bytes(buffer)?;
+        Err(error) => {
             #[cfg(not(target_arch = "wasm32"))]
-            let chunk = if accounting.native_work().is_some() {
-                OwnedSourceChunk::intrinsic(bytes, logical_owned_bytes, None)
-            } else {
-                OwnedSourceChunk::claimed(bytes, logical_owned_bytes)
-            };
-            #[cfg(target_arch = "wasm32")]
-            let chunk = OwnedSourceChunk::claimed(bytes, logical_owned_bytes);
-            Ok((chunk, filled))
+            drop(prepared);
+            if let Some(buffer) = buffer { let _cleanup = release_blob_vec(buffer, accounting); }
+            Err(error)
+        }
+        Ok(filled) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(prepared) = prepared {
+                let logical_owned_bytes = usize_to_u64(prepared.maximum_len());
+                let bytes = prepared.freeze(filled).map_err(|failed| {
+                    drop(failed);
+                    FsError::from(crate::NativeTreeMaterializationError::InvalidLayout)
+                })?;
+                return Ok((OwnedSourceChunk::intrinsic(bytes, logical_owned_bytes), filled));
+            }
+            let mut buffer = buffer.expect("ordinary source storage");
+            buffer.value.truncate(filled);
+            let logical_owned_bytes = usize_to_u64(buffer.value.capacity());
+            let bytes = owned_read_bytes(buffer)?;
+            Ok((OwnedSourceChunk::claimed(bytes, logical_owned_bytes), filled))
         }
     }
 }
@@ -924,7 +943,7 @@ fn drop_source_chunk(chunk: OwnedSourceChunk, accounting: &mut KernelAccounting<
 }
 
 fn hashed_blob_object(
-    kind: ObjectKind, bytes: Bytes, accounting: &mut KernelAccounting<'_>,
+    kind: ObjectKind, bytes: acyclic_stream::OwnedBytes, accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<HashedObject, FsError> {
     accounting.check()?;
@@ -1364,7 +1383,7 @@ fn build_failed(error: BlobBuildError, work: WorkCounters) -> BlobBuildFailure {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BlobRead {
     /// Requested bytes. Native aliases retain the original physical allocation guard.
-    pub bytes: Bytes,
+    pub bytes: acyclic_stream::OwnedBytes,
     /// Actual controlled output-vector capacity retained by `bytes`.
     pub logical_owned_bytes: u64,
     /// Exact completed kernel and backend work in the supplied accounting context.
@@ -1374,7 +1393,7 @@ pub struct BlobRead {
 }
 
 impl BlobRead {
-    /// Exact logical payload capacity measured before the buffer becomes Bytes.
+    /// Exact logical payload capacity measured before freezing the byte carrier.
     pub fn logical_owned_bytes(&self) -> u64 { self.logical_owned_bytes }
 }
 

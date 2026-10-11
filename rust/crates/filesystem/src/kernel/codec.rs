@@ -25,6 +25,8 @@ pub(crate) enum ReadAllocationStep {
     Capacity { admitted_bytes: u64, actual_bytes: u64 },
     BeforeCopy(u64),
     Copied(u64),
+    BeforeHash(u64),
+    Hashed(u64),
     BeforeItem,
     Item,
 }
@@ -321,6 +323,18 @@ impl<'a> Decoder<'a> {
         maximum_object_bytes: u64,
         observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self, E> {
+        Self::new_recognized_versions_with_steps(
+            bytes, domain, &[expected_version], maximum_object_bytes, observe,
+        ).map(|(decoder, _)| decoder)
+    }
+
+    pub(crate) fn new_recognized_versions_with_steps<E: From<CanonicalDecodeError>>(
+        bytes: &'a [u8],
+        domain: &[u8],
+        supported_versions: &[u16],
+        maximum_object_bytes: u64,
+        observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<(Self, u16), E> {
         let observed = usize_to_u64(bytes.len());
         if observed > maximum_object_bytes {
             return Err(CanonicalDecodeError::ObjectTooLarge {
@@ -346,13 +360,13 @@ impl<'a> Decoder<'a> {
             .map_err(|_| CanonicalDecodeError::Truncated)?;
         observe(ReadAllocationStep::Copied(2))?;
         let version = u16::from_le_bytes(version_bytes);
-        if version != expected_version {
+        if !supported_versions.contains(&version) {
             return Err(CanonicalDecodeError::UnsupportedVersion(version).into());
         }
-        Ok(Self {
+        Ok((Self {
             bytes,
             cursor: header_length,
-        })
+        }, version))
     }
 
     pub(crate) fn u8(&mut self) -> Result<u8, CanonicalDecodeError> {

@@ -193,9 +193,9 @@ pub(super) async fn seal_checkout_with_permit_guarded_with_native_work<'a, A, O,
 where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
-    T: From<crate::FsError> + From<MountSourceError> + Send,
-    F: FnMut(&'a crate::NativeMaterializationWork) -> Fut + Send,
-    Fut: std::future::Future<Output = Result<(), T>> + Send,
+    T: From<crate::FsError> + From<MountSourceError> + Send + 'static,
+    F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+    Fut: std::future::Future<Output = Result<(), T>> + Send + 'static,
 {
     cancellation.check().map_err(|error| T::from(crate::FsError::Cancelled(error)))?;
     let mode = checkout.mode().mutations;
@@ -208,7 +208,7 @@ where
             // owner callback, flush or authority append. A known ACK converges
             // through the very same SDK pending-publication engine.
             if let Some(outcome) = checkout.retry_stale_commit_guarded_with_native_work(
-                operation_id, permit, original, cancellation, before_publication, None,
+                operation_id, permit, original, cancellation, before_publication, None, None, None,
             ).await? {
                 return Ok(matches!(outcome,
                     CheckoutCommitOutcome::Committed { .. }

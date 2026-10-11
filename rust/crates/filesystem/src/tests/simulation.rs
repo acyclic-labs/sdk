@@ -1397,14 +1397,20 @@ async fn exercise_original_simulation_mutations<A: AsyncAuthorityStore>(
 
     let third = original_proposal(0xb6, 0xb7, &original, &cancellation)?;
     let before_guard = original.receipt();
-    let calls = std::sync::atomic::AtomicUsize::new(0);
-    let mut denied_guard = |root: NativeMaterializationWork| {
-        calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        assert!(root.shares_ledger(marker.work()));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let callback_calls = Arc::clone(&calls);
+    let callback_work = marker.work().clone();
+    let callback_state = Arc::clone(&simulation.state);
+    let callback_authority = Arc::clone(&simulation.authority);
+    let callback_cancellation = cancellation.clone();
+    let mut denied_guard = move |root: &NativeMaterializationWork| {
+        callback_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        assert!(root.shares_ledger(&callback_work));
         assert!(root.receipt().backend_read_operations > before_guard.backend_read_operations);
-        drop(simulation.state.try_lock().expect("the simulator lock is not held at sealing"));
-        let inner = Arc::clone(&simulation.authority);
-        let cancellation = cancellation.clone();
+        drop(callback_state.try_lock().expect("the simulator lock is not held at sealing"));
+        let inner = Arc::clone(&callback_authority);
+        let cancellation = callback_cancellation.clone();
+        let root = root.clone();
         async move {
             assert_eq!(inner.head_with_native_work(id, &root, &cancellation).await?, appended);
             Err::<(), _>(SimulationOwnerFailure::Stopped(0x1234))
@@ -1417,8 +1423,9 @@ async fn exercise_original_simulation_mutations<A: AsyncAuthorityStore>(
     assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
     assert_eq!(original.receipt().backend_write_operations, before_guard.backend_write_operations);
     assert_eq!(authority.head_with_native_work(id, &original, &cancellation).await?, appended);
-    let mut accepted_guard = |root: NativeMaterializationWork| {
-        assert!(root.shares_ledger(marker.work()));
+    let callback_work = marker.work().clone();
+    let mut accepted_guard = move |root: &NativeMaterializationWork| {
+        assert!(root.shares_ledger(&callback_work));
         std::future::ready(Ok::<(), AuthorityStoreError>(()))
     };
     let (published, published_custody) = authority.compare_and_append_guarded_with_native_owner(
@@ -1493,9 +1500,10 @@ async fn original_simulation_mutation_faults_and_unsupported_providers_never_cal
         epoch: Epoch::GENESIS, sequence: Sequence::GENESIS, digest: Digest::from_bytes([0xc2; 32]),
     };
     let proposed = original_proposal(0xc3, 0xc4, &original, &cancellation)?;
-    let calls = std::sync::atomic::AtomicUsize::new(0);
-    let mut guard = |_root: crate::NativeMaterializationWork| {
-        calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let callback_calls = Arc::clone(&calls);
+    let mut guard = move |_root: &crate::NativeMaterializationWork| {
+        callback_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         std::future::ready(Ok::<(), SimulationOwnerFailure>(()))
     };
     for fault in [SimulationFault::RejectBefore, SimulationFault::PartitionBefore] {
@@ -1559,9 +1567,10 @@ async fn original_simulation_trace_denial_and_original_cancellation_precede_muta
     assert!(authority.compare_and_append_guarded_with_native_work(
         original_append(id, expected, proposed.clone()), &original, &cancellation,
     ).await.is_err());
-    let calls = std::sync::atomic::AtomicUsize::new(0);
-    let mut guard = |_root: crate::NativeMaterializationWork| {
-        calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let callback_calls = Arc::clone(&calls);
+    let mut guard = move |_root: &crate::NativeMaterializationWork| {
+        callback_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         std::future::ready(Ok::<(), AuthorityStoreError>(()))
     };
     assert!(authority.compare_and_append_guarded_with_native_owner(

@@ -181,11 +181,22 @@ pub(crate) fn measured_on<T, E: ErrorKind>(
     result: MeasuredResult<T, E>,
     work: impl FnOnce(&T) -> &WorkCounters,
 ) -> MeasuredResult<T, E> {
+    measured_on_with_kind(span, result, work, E::kind)
+}
+
+/// Caller-owned failures need not implement the SDK's private error taxonomy.
+#[cfg_attr(target_arch = "wasm32", allow(unused_variables, reason = "WASM records no spans"))]
+pub(crate) fn measured_on_with_kind<T, E>(
+    span: &OperationSpan,
+    result: MeasuredResult<T, E>,
+    work: impl FnOnce(&T) -> &WorkCounters,
+    kind: impl FnOnce(&E) -> &'static str,
+) -> MeasuredResult<T, E> {
     #[cfg(not(target_arch = "wasm32"))]
     if !span.span.is_disabled() {
         let (work, kind) = match &result {
             Ok(value) => (work(value), None),
-            Err(failure) => (&*failure.work, Some(failure.error.kind())),
+            Err(failure) => (&*failure.work, Some(kind(&failure.error))),
         };
         record_outcome(&span.span, kind);
         record_work(&span.span, work);

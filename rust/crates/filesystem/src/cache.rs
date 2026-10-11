@@ -3,9 +3,10 @@
 //! This layer owns no authority. Every entry is keyed by a canonical typed
 //! object identity and may be discarded without changing filesystem results.
 //!
-//! Native reads borrow resident payloads and retain original custody in owned
-//! byte aliases. Known flight/waiter controls are admitted before allocation;
-//! opaque tree-node allocator metadata is not a logical DATA allocation.
+//! Native reads borrow resident payloads and retain original custody in canonical
+//! OwnedBytes aliases through cache entries and completed single-flight results.
+//! Known flight/waiter controls are admitted before allocation; opaque tree-node
+//! allocator metadata is not a logical DATA allocation.
 //! Native writes forward the same original invocation and retain intrinsic
 //! immutable byte aliases in memo entries; publication flush reaches the inner
 //! staged or durable store rather than taking this decorator's default no-op.
@@ -21,7 +22,7 @@ use crate::storage::{
     ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectReceipt,
     ObjectResult, ObjectStoreError, ObjectWrite,
 };
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::async_storage::{NativeObjectRead, NativeObjectReadBatch};
 #[cfg(not(target_arch = "wasm32"))]
@@ -111,7 +112,7 @@ pub struct ObjectCacheStats {
 }
 
 struct CacheEntry {
-    bytes: Bytes,
+    bytes: OwnedBytes,
     touched: u64,
 }
 
@@ -170,7 +171,7 @@ struct Shared {
 
 enum FlightState {
     Running(FlightWaiters),
-    Complete(Option<Bytes>),
+    Complete(Option<OwnedBytes>),
 }
 
 #[derive(Default)]
@@ -197,7 +198,7 @@ impl Flight {
         }
     }
 
-    fn finish(&self, bytes: Option<Bytes>) {
+    fn finish(&self, bytes: Option<OwnedBytes>) {
         let waiters = match self.state.lock() {
             Ok(mut state) => {
                 if matches!(*state, FlightState::Complete(_)) { return; }
@@ -221,7 +222,7 @@ impl Flight {
     }
 
     #[cfg(test)]
-    fn poll(&self, context: &Context<'_>) -> Poll<Result<Option<Bytes>, ObjectStoreError>> {
+    fn poll(&self, context: &Context<'_>) -> Poll<Result<Option<OwnedBytes>, ObjectStoreError>> {
         self.poll_with_context(context, #[cfg(not(target_arch = "wasm32"))] None)
     }
 
@@ -229,7 +230,7 @@ impl Flight {
         &self,
         context: &Context<'_>,
         #[cfg(not(target_arch = "wasm32"))] work: Option<&NativeMaterializationWork>,
-    ) -> Poll<Result<Option<Bytes>, ObjectStoreError>> {
+    ) -> Poll<Result<Option<OwnedBytes>, ObjectStoreError>> {
         let mut state = self.state.lock().map_err(|_| ObjectStoreError::Corrupt)?;
         match &mut *state {
             FlightState::Complete(bytes) => Poll::Ready(Ok(bytes.clone())),
@@ -309,7 +310,7 @@ impl<'a, S> ActiveFlightGuard<'a, S> {
         }
     }
 
-    fn finish(mut self, bytes: Option<Bytes>) -> Result<(), ObjectStoreError> {
+    fn finish(mut self, bytes: Option<OwnedBytes>) -> Result<(), ObjectStoreError> {
         self.flight.finish(bytes);
         self.store.remove_flight(self.object_id, &self.flight)?;
         self.finished = true;
@@ -327,13 +328,13 @@ impl<S> Drop for ActiveFlightGuard<'_, S> {
 }
 
 enum ReadPlan {
-    Hit(Bytes),
+    Hit(OwnedBytes),
     Leader(Arc<Flight>),
     Follower(Arc<Flight>),
 }
 
 enum BatchSlot {
-    Hit(Bytes),
+    Hit(OwnedBytes),
     LocalLeader(usize),
     ExternalFollower(Arc<Flight>),
 }
@@ -555,7 +556,7 @@ impl<S> CachedObjectStore<S> {
         Ok(true)
     }
 
-    fn insert(&self, object_id: ObjectId, bytes: Bytes) -> Result<bool, ObjectStoreError> {
+    fn insert(&self, object_id: ObjectId, bytes: OwnedBytes) -> Result<bool, ObjectStoreError> {
         let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         if length > self.shared.options.maximum_bytes {
             return Ok(false);
@@ -745,7 +746,7 @@ fn combine_failure(prior: WorkCounters, failure: ObjectFailure) -> ObjectFailure
     }
 }
 
-fn shared_read(bytes: Bytes, work: WorkCounters) -> ObjectReceipt<ObjectRead> {
+fn shared_read(bytes: OwnedBytes, work: WorkCounters) -> ObjectReceipt<ObjectRead> {
     ObjectReceipt {
         value: ObjectRead {
             bytes,
@@ -759,7 +760,7 @@ fn shared_read(bytes: Bytes, work: WorkCounters) -> ObjectReceipt<ObjectRead> {
 async fn wait_for_flight(
     flight: &Flight,
     cancellation: &CancellationToken,
-) -> Result<Option<Bytes>, ObjectStoreError> {
+) -> Result<Option<OwnedBytes>, ObjectStoreError> {
     wait_for_flight_with_context(flight, cancellation, #[cfg(not(target_arch = "wasm32"))] None).await
 }
 
@@ -767,7 +768,7 @@ async fn wait_for_flight_with_context(
     flight: &Flight,
     cancellation: &CancellationToken,
     #[cfg(not(target_arch = "wasm32"))] work: Option<&NativeMaterializationWork>,
-) -> Result<Option<Bytes>, ObjectStoreError> {
+) -> Result<Option<OwnedBytes>, ObjectStoreError> {
     let mut cancelled = pin!(cancellation.cancelled());
     poll_fn(|context| {
         if cancelled.as_mut().poll(context).is_ready() {
@@ -1196,7 +1197,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
     async fn put(
         &self,
         object_id: ObjectId,
-        bytes: Bytes,
+        bytes: OwnedBytes,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
@@ -1251,7 +1252,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
 
     #[cfg(not(target_arch = "wasm32"))]
     async fn put_with_native_work(
-        &self, object_id: ObjectId, bytes: Bytes, work: &NativeMaterializationWork,
+        &self, object_id: ObjectId, bytes: OwnedBytes, work: &NativeMaterializationWork,
         cancellation: &CancellationToken,
     ) -> Result<(), ObjectStoreError> {
         cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
@@ -1343,7 +1344,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
     ) -> Result<NativeObjectRead, ObjectStoreError> {
         let mut read = self.read_engine(object_id, maximum_bytes, work.remaining()?, cancellation, Some(work))
             .await.map_err(|(error, _)| error)?.value;
-        // Genuine native backend owned bytes have custody in their Bytes owner;
+        // Genuine native backend bytes have intrinsic canonical OwnedBytes custody;
         // cache and flight clones share that owner, not a second body claim.
         read.retention = ObjectReadRetention::Shared;
         NativeObjectRead::shared(read)

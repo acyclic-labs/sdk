@@ -14,7 +14,7 @@ fn put(
     let id = extent_page_id(page, maximum_items)?;
     store.put(
         id,
-        Bytes::from(encode_extent_page(page, maximum_items)?),
+        acyclic_stream::OwnedBytes::from(encode_extent_page(page, maximum_items)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)
@@ -622,7 +622,7 @@ fn shape_valid_malformed_page_releases_decoded_allocation() -> Result<(), Box<dy
     ObjectStore::put(
         &store,
         malformed_id,
-        Bytes::from(malformed),
+        acyclic_stream::OwnedBytes::from(malformed),
         WorkBudget::UNBOUNDED,
     )?;
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);

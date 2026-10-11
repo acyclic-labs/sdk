@@ -5,7 +5,7 @@ use crate::kernel::{
 };
 use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectStore;
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 
 fn put(
     store: &MemoryObjectStore,
@@ -15,7 +15,7 @@ fn put(
     let root = extent_page_id(&page, 16)?;
     store.put(
         root,
-        Bytes::from(encode_extent_page(&page, 16)?),
+        OwnedBytes::from(encode_extent_page(&page, 16)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(root)

@@ -9,8 +9,6 @@ use crate::kernel::{NamespacePath, NamespacePathError};
 use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
 #[cfg(any(feature = "native-watch", target_arch = "wasm32"))]
 use crate::WorkError;
-#[cfg(feature = "native-watch")]
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 #[cfg(not(target_arch = "wasm32"))]
@@ -481,6 +479,12 @@ impl<'a, 'b> SourceCursorAccounting<'a, 'b> {
                 ReadAllocationStep::Copied(bytes) => self.accounting.record_completed(
                     WorkCounters { bytes_copied: bytes, ..WorkCounters::UNCHARGED },
                 ),
+                ReadAllocationStep::BeforeHash(bytes) => self.accounting.check().and_then(|()| self.accounting.admit(
+                    WorkCounters { bytes_hashed: bytes, ..WorkCounters::UNCHARGED },
+                )),
+                ReadAllocationStep::Hashed(bytes) => self.accounting.record_completed(
+                    WorkCounters { bytes_hashed: bytes, ..WorkCounters::UNCHARGED },
+                ).and_then(|()| self.accounting.check()),
                 ReadAllocationStep::BeforeItem => self.accounting.admit(
                     WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED },
                 ),
@@ -2684,6 +2688,18 @@ impl acyclic_native_runtime::NativeReadMeter for ScopedSourceReadMeter<'_> {
     fn allocation_failed(&self, error: std::collections::TryReserveError) -> std::io::Error {
         self.original.allocation_failed(error)
     }
+    fn reserve_allocation(&self, bytes: u64) -> std::io::Result<()> {
+        self.check()?;
+        self.original.reserve_allocation(bytes)
+    }
+    fn cancel_reserved_allocation(&self, bytes: u64) {
+        self.original.cancel_reserved_allocation(bytes);
+    }
+    fn record_reserved_allocation(&self, bytes: u64) -> std::io::Result<()> {
+        // The action was admitted before the transport began. A local stop
+        // cannot revoke the Ready control needed to drain that accepted action.
+        self.original.record_reserved_allocation(bytes)
+    }
     fn allocate_refcount_header(&self) -> std::io::Result<()> {
         self.check()?;
         self.original.allocate_refcount_header()
@@ -3000,6 +3016,63 @@ impl DemandWork {
         self.record_native_io_failure(DemandError::OriginalWorkPoisoned);
     }
 
+    /// Reserves the original live quota and one allocator attempt without
+    /// reporting either as physical work before the accepted Ready boundary.
+    pub(crate) fn reserve_native_allocation(&mut self, bytes: u64) -> Result<(), DemandError> {
+        if let Some(resource) = self.resource_scope() {
+            return resource.reserve_allocation(bytes, || {
+                self.with_resource_scope(None, |work| work.reserve_native_allocation(bytes))
+            });
+        }
+        self.reconcile_cancellation_registry()?;
+        self.check()?;
+        let pending = self.cancellation_wait.pending_work.allocation_operations
+            .checked_add(1).ok_or(crate::WorkError::Overflow)?;
+        self.allocations.reserve_allocation(bytes, &self.work, self.budget)
+            .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
+        // Successful admission proved that this effective budget contains the
+        // withheld operation; no callback can change it inside this leaf.
+        self.budget.allocation_operations -= 1;
+        self.cancellation_wait.pending_work.allocation_operations = pending;
+        Ok(())
+    }
+
+    pub(crate) fn cancel_reserved_native_allocation(&mut self, bytes: u64) -> Result<(), DemandError> {
+        if let Some(resource) = self.resource_scope() {
+            return resource.cancel_reserved_allocation(bytes, || {
+                self.with_resource_scope(None, |work| work.cancel_reserved_native_allocation(bytes))
+            });
+        }
+        let pending = self.cancellation_wait.pending_work.allocation_operations
+            .checked_sub(1).ok_or(crate::WorkError::Overflow)?;
+        let budget = self.budget.allocation_operations.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+        self.allocations.cancel_reserved_allocation(bytes)
+            .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
+        self.cancellation_wait.pending_work.allocation_operations = pending;
+        self.budget.allocation_operations = budget;
+        Ok(())
+    }
+
+    pub(crate) fn record_reserved_native_allocation(&mut self, bytes: u64) -> Result<(), DemandError> {
+        if let Some(resource) = self.resource_scope() {
+            return resource.record_reserved_allocation(bytes, || {
+                self.with_resource_scope(None, |work| work.record_reserved_native_allocation(bytes))
+            });
+        }
+        if self.cancellation_wait.native_poisoned { return Err(DemandError::OriginalWorkPoisoned); }
+        let pending = self.cancellation_wait.pending_work.allocation_operations
+            .checked_sub(1).ok_or(crate::WorkError::Overflow)?;
+        let budget = self.budget.allocation_operations.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+        self.allocations.record_reserved_allocation(bytes, &mut self.work)
+            .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
+        self.cancellation_wait.pending_work.allocation_operations = pending;
+        self.budget.allocation_operations = budget;
+        // Only the explicit current capture loan owns this newly begun control.
+        // Plain/root meters have no capture binding; reservations never tag data.
+        if let Some(custody) = self.capture_custody() { custody.claim(bytes); }
+        Ok(())
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn reserve_native_cleanup_write(&mut self) -> Result<u64, DemandError> {
         if let Some(resource) = self.resource_scope() {
@@ -3063,6 +3136,19 @@ impl DemandWork {
         self.cancellation_wait.pending_work = pending;
         Ok(())
     }
+    /// Transfers already-withheld work into the existing item escrow. This is
+    /// accounting custody only: no new allowance, work, or cancellation grant.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn partition_native_work_items(&mut self, items: u64) -> Result<(), DemandError> {
+        let pending_work = self.cancellation_wait.pending_work.items_examined
+            .checked_sub(items).ok_or(DemandError::InvalidRequest)?;
+        let pending_items = self.cancellation_wait.pending_items.checked_add(items)
+            .ok_or(crate::WorkError::Overflow)?;
+        self.cancellation_wait.pending_work.items_examined = pending_work;
+        self.cancellation_wait.pending_items = pending_items;
+        Ok(())
+    }
+
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn refund_native_work(&mut self, unused: WorkCounters) -> Result<(), DemandError> {
@@ -3946,6 +4032,7 @@ impl DemandWork {
         let mut budget = self.work.remaining(self.budget)?;
         budget.peak_allocation_bytes = budget.peak_allocation_bytes
             .checked_sub(self.live_allocation_bytes())
+            .and_then(|bytes| bytes.checked_sub(self.allocations.reserved_bytes()))
             .ok_or(crate::WorkError::Overflow)?;
         if let Some(resource) = self.resource_scope() { budget = budget.intersect_budget(resource.remaining()?); }
         Ok(budget)
@@ -4032,6 +4119,7 @@ fn clone_namespace<W: SourceDemandReadWork>(path: &NamespacePath, work: &mut W) 
     let mut owned_bytes = 0_u64;
     let mut copy = None;
     let mut item = None;
+    let mut hash = None;
     let mut event = None;
     let cloned = path.clone_with_steps(&cancellation, &mut |step| {
         match step {
@@ -4059,6 +4147,27 @@ fn clone_namespace<W: SourceDemandReadWork>(path: &NamespacePath, work: &mut W) 
                 } else {
                     work.record(WorkCounters { bytes_copied: bytes, ..WorkCounters::UNCHARGED })
                 }
+            }
+            NamespacePathStep::Allocation(ReadAllocationStep::BeforeHash(bytes)) => {
+                if hash.is_some() { return Err(DemandError::InvalidRequest); }
+                work.check()?;
+                let delta = WorkCounters { bytes_hashed: bytes, ..WorkCounters::UNCHARGED };
+                if let Some(source) = work.native_source_work() {
+                    hash = Some(source.materialization_work()?.reserve_work(delta)
+                        .map_err(crate::native_name::original_name_error)?);
+                    Ok(())
+                } else {
+                    work.admit(delta)
+                }
+            }
+            NamespacePathStep::Allocation(ReadAllocationStep::Hashed(bytes)) => {
+                let delta = WorkCounters { bytes_hashed: bytes, ..WorkCounters::UNCHARGED };
+                if let Some(mut reservation) = hash.take() {
+                    reservation.record_completed(delta).map_err(crate::native_name::original_name_error)?;
+                } else {
+                    work.record(delta)?;
+                }
+                work.check()
             }
             NamespacePathStep::Allocation(ReadAllocationStep::BeforeItem) => {
                 if item.is_some() { return Err(DemandError::InvalidRequest); }
@@ -7227,13 +7336,20 @@ pub mod native {
             }
             #[cfg(unix)]
             work.preflight(WorkCounters { output_bytes: before.len(), ..WorkCounters::UNCHARGED })?;
-            let mut ownership = SourcePayloadOwnership::new(work)?;
-            #[cfg(windows)]
-            let target_ownership = SourcePayloadOwnership::new(work)?;
+            #[cfg(unix)]
+            if work.is_native_original() {
+                work.preflight(WorkCounters { source_bytes_read: before.len(), ..WorkCounters::UNCHARGED })?;
+            }
             let relative = self.relative(path, work)?;
             let result = (|| {
                 let remaining = work.remaining()?;
                 let maximum = remaining.output_bytes.min(remaining.source_bytes_read).min(maximum_bytes);
+                let bytes = if work.is_native_original() {
+                    self.inner.root.read_source_link_with_work(&relative, maximum, work)?
+                } else {
+                let ownership = SourcePayloadOwnership::new(work)?;
+                #[cfg(windows)]
+                let target_ownership = SourcePayloadOwnership::new(work)?;
                 #[cfg(unix)]
                 let (target, target_bytes) = self.inner.root.read_link_with_work(&relative, maximum, work)?;
                 #[cfg(windows)]
@@ -7284,26 +7400,20 @@ pub mod native {
                     if !work.is_native_original() { work.release(target_bytes)?; }
                     bytes
                 };
+                bytes.into()
+                };
                 let after = self.metadata(path, work)?.ok_or(DemandError::Absent)?;
                 if work.with_original_leaf(|actual| version_measured(&after, actual))? != expected {
                     return Err(DemandError::StaleVersion);
                 }
                 self.check(source, work)?;
                 work.charge(WorkCounters { output_bytes: bytes.len() as u64, ..WorkCounters::UNCHARGED })?;
-                let logical_owned_bytes = bytes.capacity() as u64;
-                let bytes = if work.is_native_original() {
-                    let control_bytes = std::mem::size_of::<NativeSourceBytes>() as u64;
-                    work.allocate(control_bytes)?;
-                    ownership.retain(control_bytes, work)?;
-                    Bytes::from_owner(NativeSourceBytes {
-                        bytes, ownership,
-                    })
-                } else { Bytes::from(bytes) };
-                Ok(if work.is_native_original() {
-                    crate::kernel::OwnedSourceChunk::intrinsic(bytes, logical_owned_bytes, None)
+                let logical_owned_bytes = bytes.retained_capacity().unwrap_or(0) as u64;
+                if work.is_native_original() {
+                    Ok(crate::kernel::OwnedSourceChunk::intrinsic(bytes, logical_owned_bytes))
                 } else {
-                    crate::kernel::OwnedSourceChunk::claimed(bytes, logical_owned_bytes)
-                })
+                    Ok(crate::kernel::OwnedSourceChunk::claimed(bytes, logical_owned_bytes))
+                }
             })();
             let bytes = path_owned_bytes(&relative);
             drop(relative);
@@ -7372,14 +7482,6 @@ pub mod native {
         ownership: SourcePayloadOwnership,
     }
 
-    struct NativeSourceBytes {
-        bytes: Vec<u8>,
-        ownership: SourcePayloadOwnership,
-    }
-
-    impl AsRef<[u8]> for NativeSourceBytes {
-        fn as_ref(&self) -> &[u8] { &self.bytes }
-    }
 
     /// Deadline for requesting cancellation of a remote read. Its receipt
     /// waits for in-flight native I/O to quiesce: finite work is guaranteed,
@@ -7558,7 +7660,10 @@ pub mod native {
             let length = length.min(self.logical_bytes.saturating_sub(offset));
             let size = usize::try_from(length).map_err(|_| DemandError::InvalidRequest)?;
             work.preflight(WorkCounters { output_bytes: length, ..WorkCounters::UNCHARGED })?;
-            let ownership = SourcePayloadOwnership::new(work)?;
+            if work.is_native_original() {
+                work.preflight(WorkCounters { source_bytes_read: length, ..WorkCounters::UNCHARGED })?;
+            }
+            let mut ownership = Some(SourcePayloadOwnership::new(work)?);
             let mut capacity = length;
             work.allocate(capacity)?;
             let mut bytes = Vec::new();
@@ -7572,15 +7677,38 @@ pub mod native {
                 let _cleanup = work.release(capacity);
                 return Err(error);
             }
-            if let Err(error) = ownership.retain(capacity, work) {
+            if let Err(error) = ownership.as_ref().expect("untransferred source custody").retain(capacity, work) {
                 drop(bytes);
                 let _cleanup = work.release(capacity);
                 return Err(error);
             }
-            bytes.resize(size, 0);
+            let mut prepared = if work.is_native_original() {
+                let original = work.native_source_work().ok_or(DemandError::NativeWorkUnavailable)?
+                    .materialization_work()?;
+                let copied = original.reserve_copy(capacity).map_err(crate::native_name::original_name_error)?;
+                bytes.resize(bytes.capacity(), 0);
+                copied.record(capacity).map_err(crate::native_name::original_name_error)?;
+                Some(acyclic_stream::PreparedOwnedBytes::new(
+                    std::mem::take(&mut bytes), ownership.take().expect("original source custody"),
+                    original.runtime_meter_owner(),
+                ).map_err(|failure| match failure.into_error() {
+                    acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+                        crate::native_name::original_name_error(original.runtime_error(error))
+                    }
+                    acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
+                    | acyclic_stream::PreparedOwnedBytesError::NotUnique => DemandError::InvalidRequest,
+                })?)
+            } else {
+                bytes.resize(size, 0);
+                None
+            };
             let result = (|| {
                 let mut filled = 0;
-                while let Some(unfilled) = bytes.get_mut(filled..).filter(|rest| !rest.is_empty()) {
+                let destination = match prepared.as_mut() {
+                    Some(prepared) => &mut prepared.writable()[..size],
+                    None => bytes.as_mut_slice(),
+                };
+                while let Some(unfilled) = destination.get_mut(filled..).filter(|rest| !rest.is_empty()) {
                     work.check()?;
                     #[cfg(unix)]
                     let read = work.with_native_read_meter(|meter| {
@@ -7599,35 +7727,29 @@ pub mod native {
                 }
                 self.prove_current(file, work)?;
                 work.charge(WorkCounters { output_bytes: filled as u64, ..WorkCounters::UNCHARGED })?;
-                if work.is_native_original() {
-                    let control_bytes = std::mem::size_of::<NativeSourceBytes>() as u64;
-                    work.allocate(control_bytes)?;
-                    ownership.retain(control_bytes, work)?;
-                } else if filled != bytes.capacity() {
+                if !work.is_native_original() && filled != bytes.capacity() {
                     work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::UNCHARGED })?;
                 }
                 Ok(filled)
             })();
             match result {
                 Ok(filled) => {
-                    bytes.truncate(filled);
-                    let logical_owned_bytes = bytes.capacity() as u64;
-                    let bytes = if work.is_native_original() {
-                        Bytes::from_owner(NativeSourceBytes {
-                            bytes,
-                            ownership,
-                        })
-                    } else { Bytes::from(bytes) };
-                    Ok(if work.is_native_original() {
-                        crate::kernel::OwnedSourceChunk::intrinsic(bytes, logical_owned_bytes, None)
+                    if let Some(prepared) = prepared {
+                        let bytes = prepared.freeze(filled).map_err(|failed| {
+                            drop(failed);
+                            DemandError::InvalidRequest
+                        })?;
+                        Ok(crate::kernel::OwnedSourceChunk::intrinsic(bytes, capacity))
                     } else {
-                        crate::kernel::OwnedSourceChunk::claimed(bytes, logical_owned_bytes)
-                    })
+                        bytes.truncate(filled);
+                        Ok(crate::kernel::OwnedSourceChunk::claimed(bytes.into(), capacity))
+                    }
                 }
                 Err(error) => {
+                    drop(prepared);
                     drop(bytes);
                     drop(ownership);
-                    if !work.is_native_original() { work.release(length)?; }
+                    if !work.is_native_original() { work.release(capacity)?; }
                     Err(error)
                 }
             }
@@ -7703,23 +7825,29 @@ pub mod native {
             let before = original.with_original_leaf(DemandWork::receipt);
             let live = original.with_original_leaf(|work| work.live_allocation_bytes());
             let alias = chunk.bytes.clone();
+            let empty = chunk.bytes.slice(..0);
             drop(chunk);
             original.with_original_leaf(DemandWork::reconcile_native_controls)?;
             assert_eq!(original.with_original_leaf(|work| work.live_allocation_bytes()), live);
             assert_eq!(original.with_original_leaf(DemandWork::receipt), before);
             drop(alias);
             original.with_original_leaf(DemandWork::reconcile_native_controls)?;
-            assert!(original.with_original_leaf(|work| work.live_allocation_bytes())
-                <= live - 6 - std::mem::size_of::<NativeSourceBytes>() as u64);
+            assert_eq!(original.with_original_leaf(|work| work.live_allocation_bytes()), live);
+            drop(empty);
+            original.with_original_leaf(DemandWork::reconcile_native_controls)?;
+            assert!(original.with_original_leaf(|work| work.live_allocation_bytes()) <= live - 6);
             let chunk = file.read(ReadRange::new(0, 6)?, &mut NativeSourceWork::new(&original))?;
+            let empty = chunk.bytes.slice(..0);
             let origin = Arc::downgrade(&original);
             drop(file);
             drop(original);
             assert_eq!(chunk.bytes.as_ref(), b"native");
             assert!(origin.upgrade().ok_or("byte owner retired its original early")?
                 .with_original_leaf(|work| work.live_allocation_bytes())
-                >= 6 + std::mem::size_of::<NativeSourceBytes>() as u64);
+                >= chunk.logical_owned_bytes);
             drop(chunk);
+            assert!(origin.upgrade().is_some(), "the empty alias retains the original context");
+            drop(empty);
             assert!(origin.upgrade().is_none());
             Ok(())
         }
@@ -9356,7 +9484,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn raw_source_packet_partitions_retire_only_physically_dropped_link_buffers()
+    fn source_packet_aliases_retire_only_physically_dropped_link_buffers()
     -> Result<(), Box<dyn Error>> {
         let root = tempfile::tempdir()?;
         std::os::unix::fs::symlink("first actual target", root.path().join("first"))?;
@@ -9368,30 +9496,27 @@ mod tests {
         let scope = native.native_volume_work(WorkBudget::UNBOUNDED)?;
         let allowance = scope.resource_allowance().ok_or("resource allowance absent")?;
         let mut work = NativeSourceWork::from_native_materialization_work(&scope);
-        let mut ownership = SourcePayloadOwnership::new(&mut work)?;
-        let (first, first_bytes) = crate::native_host::read_link_held_with_work(
+        let first = crate::native_host::read_source_link_held_with_work(
             &directory, std::path::Path::new("first"), 512, &mut work,
         )?;
-        ownership.retain(first_bytes, &mut work)?;
-        let (second, second_bytes) = crate::native_host::read_link_held_with_work(
+        let second = crate::native_host::read_source_link_held_with_work(
             &directory, std::path::Path::new("second"), 512, &mut work,
         )?;
-        ownership.retain(second_bytes, &mut work)?;
+        let first_alias = first.clone();
+        let first_empty = first.slice(..0);
         let before = allowance.remaining()?.peak_allocation_bytes;
-        assert!(matches!(
-            ownership.split_owned_payload(first_bytes + second_bytes + 1),
-            Err(crate::NativeTreeMaterializationError::Work(crate::WorkError::Overflow))
-        ), "a native owner never substitutes an ordinary guard for unclaimed bytes");
-        assert_eq!(allowance.remaining()?.peak_allocation_bytes, before);
-        let first_ownership = ownership.split_owned_payload(first_bytes)?;
-        assert_eq!(allowance.remaining()?.peak_allocation_bytes, before, "partitioning creates no claim");
         drop(first);
-        drop(first_ownership);
-        assert_eq!(allowance.remaining()?.peak_allocation_bytes, before + first_bytes);
-        assert_eq!(second, b"second actual target", "the surviving field remains physically owned");
+        assert_eq!(allowance.remaining()?.peak_allocation_bytes, before);
+        drop(first_alias);
+        assert_eq!(allowance.remaining()?.peak_allocation_bytes, before,
+            "the empty window keeps the same original byte custody");
+        drop(first_empty);
+        let after_first = allowance.remaining()?.peak_allocation_bytes;
+        assert!(after_first > before);
+        assert_eq!(second.as_ref(), b"second actual target",
+            "the surviving packet remains physically owned");
         drop(second);
-        drop(ownership);
-        assert_eq!(allowance.remaining()?.peak_allocation_bytes, WorkBudget::UNBOUNDED.peak_allocation_bytes);
+        assert!(allowance.remaining()?.peak_allocation_bytes > after_first);
         assert!(scope.receipt().backend_read_operations >= 2, "both real readlink attempts were retained");
         Ok(())
     }
@@ -10623,7 +10748,7 @@ mod tests {
                     scope.spawn(|| {
                         barrier.wait();
                         file.read_range(0, 6, WorkBudget::UNBOUNDED, &CancellationToken::new())
-                            .is_ok_and(|read| read.value.bytes == Bytes::from_static(b"before"))
+                            .is_ok_and(|read| read.value.bytes.as_ref() == b"before")
                     })
                 })
                 .collect::<Vec<_>>();
@@ -10632,12 +10757,12 @@ mod tests {
             }
         });
         assert_eq!(
-            file.read_range(0, 6, WorkBudget::UNBOUNDED, &CancellationToken::new())?.value.bytes,
-            Bytes::from_static(b"before")
+            file.read_range(0, 6, WorkBudget::UNBOUNDED, &CancellationToken::new())?.value.bytes.as_ref(),
+            b"before"
         );
         assert_eq!(
-            file.read_range(0, 6, WorkBudget::UNBOUNDED, &CancellationToken::new())?.value.bytes,
-            Bytes::from_static(b"before")
+            file.read_range(0, 6, WorkBudget::UNBOUNDED, &CancellationToken::new())?.value.bytes.as_ref(),
+            b"before"
         );
         Ok(())
     }
@@ -11173,6 +11298,23 @@ impl<T: NativeDemandReadWork + Send> acyclic_native_runtime::NativeReadMeter for
 
     fn allocate(&self, bytes: u64) -> std::io::Result<()> {
         self.with_io(|held| held.as_work().claim_native_owned(bytes, u64::from(bytes != 0), &None))
+    }
+
+    fn reserve_allocation(&self, bytes: u64) -> std::io::Result<()> {
+        self.with_io(|held| held.as_work().reserve_native_allocation(bytes))
+    }
+
+    fn cancel_reserved_allocation(&self, bytes: u64) {
+        let mut held = self.lock();
+        let work = held.as_work();
+        if let Err(error) = work.cancel_reserved_native_allocation(bytes) {
+            work.record_native_io_failure(error);
+            work.poison_native_original_work();
+        }
+    }
+
+    fn record_reserved_allocation(&self, bytes: u64) -> std::io::Result<()> {
+        self.with_io(|held| held.as_work().record_reserved_native_allocation(bytes))
     }
 
     fn adopt(&self, bytes: u64) -> std::io::Result<()> {

@@ -7,6 +7,7 @@ use crate::speculation::{ResidencyHint, ResidencyReason};
 use crate::storage::ObjectReadRequest;
 use crate::test_support::OwnedReadObjectStore;
 use crate::{CachedObjectStore, ObjectCacheOptions};
+use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll, Waker};
 
@@ -19,7 +20,7 @@ impl AsyncObjectStore for PeakRecordingStore {
     async fn put(
         &self,
         _object_id: ObjectId,
-        _bytes: Bytes,
+        _bytes: OwnedBytes,
         _budget: WorkBudget,
         _cancellation: &CancellationToken,
     ) -> crate::storage::ObjectResult<()> {
@@ -108,7 +109,7 @@ impl AsyncBlobSource for ScriptedSource {
 fn put<S: ObjectStore>(
     store: &S,
     kind: ObjectKind,
-    bytes: Bytes,
+    bytes: OwnedBytes,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let id = ObjectId {
         kind,
@@ -283,8 +284,8 @@ fn blob_page_codec_rejects_every_noncanonical_shape() -> Result<(), Box<dyn std:
 #[test]
 fn tiny_range_reads_only_one_intersecting_chunk() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let first = put(&store, ObjectKind::BlobChunk, Bytes::from_static(b"abcd"))?;
-    let second = put(&store, ObjectKind::BlobChunk, Bytes::from_static(b"efgh"))?;
+    let first = put(&store, ObjectKind::BlobChunk, OwnedBytes::from_static(b"abcd"))?;
+    let second = put(&store, ObjectKind::BlobChunk, OwnedBytes::from_static(b"efgh"))?;
     let page = BlobPage {
         first_offset: 0,
         end_offset: 8,
@@ -302,7 +303,7 @@ fn tiny_range_reads_only_one_intersecting_chunk() -> Result<(), Box<dyn std::err
         ]),
     };
     let bytes = encode_blob_page(&page, 8)?;
-    let root = put(&store, ObjectKind::Blob, Bytes::from(bytes))?;
+    let root = put(&store, ObjectKind::Blob, OwnedBytes::from(bytes))?;
     let result = read_blob_range(
         &store,
         root,
@@ -313,7 +314,7 @@ fn tiny_range_reads_only_one_intersecting_chunk() -> Result<(), Box<dyn std::err
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
     )?;
-    assert_eq!(result.bytes, Bytes::from_static(b"fg"));
+    assert_eq!(result.bytes.as_ref(), b"fg");
     assert_eq!(result.work.page_reads, 1);
     assert_eq!(result.work.object_probes, 2);
 
@@ -367,7 +368,7 @@ fn owned_blob_pages_and_chunks_preserve_exact_range_results()
     let chunk = put(
         &store.inner,
         ObjectKind::BlobChunk,
-        Bytes::from_static(b"owned-range"),
+        OwnedBytes::from_static(b"owned-range"),
     )?;
     let page = BlobPage {
         first_offset: 0,
@@ -381,7 +382,7 @@ fn owned_blob_pages_and_chunks_preserve_exact_range_results()
     let root = put(
         &store.inner,
         ObjectKind::Blob,
-        Bytes::from(encode_blob_page(&page, 8)?),
+        OwnedBytes::from(encode_blob_page(&page, 8)?),
     )?;
     let read = crate::async_storage::poll_ready(read_blob_range_async(
         &store,
@@ -411,7 +412,7 @@ fn asynchronous_blob_ranges_batch_intersecting_leaf_chunks()
     let store = MemoryObjectStore::default();
     let chunks = [b"abc".as_slice(), b"def".as_slice(), b"ghi".as_slice()]
         .into_iter()
-        .map(|bytes| put(&store, ObjectKind::BlobChunk, Bytes::copy_from_slice(bytes)))
+        .map(|bytes| put(&store, ObjectKind::BlobChunk, OwnedBytes::from(bytes.to_vec())))
         .collect::<Result<Vec<_>, _>>()?;
     let [first, second, third] = chunks.as_slice() else {
         return Err("expected exactly three chunks".into());
@@ -440,7 +441,7 @@ fn asynchronous_blob_ranges_batch_intersecting_leaf_chunks()
     let root = put(
         &store,
         ObjectKind::Blob,
-        Bytes::from(encode_blob_page(&page, 8)?),
+        OwnedBytes::from(encode_blob_page(&page, 8)?),
     )?;
     let read = crate::async_storage::poll_ready(read_blob_range_async(
         &store,
@@ -454,7 +455,7 @@ fn asynchronous_blob_ranges_batch_intersecting_leaf_chunks()
         &CancellationToken::new(),
     ))
     .ok_or("memory blob batch blocked")??;
-    assert_eq!(read.bytes, Bytes::from_static(b"bcdefgh"));
+    assert_eq!(read.bytes.as_ref(), b"bcdefgh");
     assert_eq!(read.work.backend_read_operations, 2);
     assert_eq!(read.work.object_probes, 4);
     Ok(())
@@ -529,7 +530,7 @@ fn blob_batch_passes_only_the_residual_peak_budget_to_backends()
     let mut accounting = KernelAccounting::standalone(total_budget, &cancellation);
     let mut batch = BlobBatchStore::new(&store, &mut accounting)?;
     for value in 0..BLOB_BATCH_OBJECTS {
-        let bytes = Bytes::from(vec![
+        let bytes = acyclic_stream::OwnedBytes::from(vec![
             u8::try_from(value)?;
             usize::try_from(retained_per_object)?
         ]);
@@ -554,7 +555,7 @@ fn blob_batch_passes_only_the_residual_peak_budget_to_backends()
     };
     let mut final_accounting = KernelAccounting::standalone(final_budget, &cancellation);
     let mut final_batch = BlobBatchStore::new(&final_store, &mut final_accounting)?;
-    let object = HashedObject::new(ObjectKind::BlobChunk, Bytes::from(vec![b'o', b'n', b'e']));
+    let object = HashedObject::new(ObjectKind::BlobChunk, vec![b'o', b'n', b'e'].into());
     let _custody = final_accounting.claim_owned(retained_per_object, 0)?;
     crate::async_storage::poll_ready(final_batch.put(
         object, retained_per_object, &mut final_accounting, &cancellation,
@@ -675,7 +676,7 @@ fn repeated_blob_reads_reuse_decoded_indexes_without_backend_reads()
         &cancellation,
     ))
     .ok_or("cached blob read blocked")??;
-    assert_eq!(first.bytes, Bytes::from_static(b"cdef"));
+    assert_eq!(first.bytes.as_ref(), b"cdef");
     assert_eq!(first.work.backend_read_operations, 3);
     assert_eq!(store.stats()?.resident_decoded_pages, 2);
 
@@ -733,7 +734,7 @@ fn blob_read_exposes_nearest_authenticated_unvisited_chunk()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
     )?;
-    assert_eq!(read.bytes, Bytes::from_static(b"abcd"));
+    assert_eq!(read.bytes.as_ref(), b"abcd");
     assert_eq!(read.work.object_probes, 2);
     assert_eq!(
         read.next_residency,
@@ -1025,7 +1026,7 @@ fn streaming_builder_round_trips_a_multilevel_index() -> Result<(), Box<dyn std:
         },
         WorkBudget::UNBOUNDED,
     )?;
-    assert_eq!(read.bytes, Bytes::from_static(b"bcdefgh"));
+    assert_eq!(read.bytes.as_ref(), b"bcdefgh");
     assert!(read.work.page_reads >= 3);
     let narrow = read_blob_range(
         &store,
@@ -1040,7 +1041,7 @@ fn streaming_builder_round_trips_a_multilevel_index() -> Result<(), Box<dyn std:
         },
         WorkBudget::UNBOUNDED,
     )?;
-    assert_eq!(narrow.bytes, Bytes::from_static(b"e"));
+    assert_eq!(narrow.bytes.as_ref(), b"e");
     assert!(narrow.work.object_probes < read.work.object_probes);
 
     let shallow = read_blob_range(
@@ -1121,7 +1122,7 @@ fn measured_async_source_work_replaces_inferred_bytes_and_obeys_budget()
         ) -> std::io::Result<Option<OwnedSourceChunk>> {
             if self.returned {
                 self.work = Some(WorkCounters::default());
-                return Ok(Some(OwnedSourceChunk::claimed(Bytes::new(), 0)));
+                return Ok(Some(OwnedSourceChunk::claimed(acyclic_stream::OwnedBytes::new(), 0)));
             }
             self.returned = true;
             self.work = Some(WorkCounters {
@@ -1129,7 +1130,7 @@ fn measured_async_source_work_replaces_inferred_bytes_and_obeys_budget()
                 source_path_components: 7,
                 ..WorkCounters::default()
             });
-            Ok(Some(OwnedSourceChunk::claimed(Bytes::from_static(b"abc"), 0)))
+            Ok(Some(OwnedSourceChunk::claimed(acyclic_stream::OwnedBytes::from_static(b"abc"), 0)))
         }
 
         fn take_work(&mut self) -> Option<WorkCounters> {
@@ -1199,7 +1200,7 @@ fn owned_chunk_retains_actual_backing_capacity_not_visible_length()
             _budget: WorkBudget,
             _cancellation: &CancellationToken,
         ) -> std::io::Result<Option<OwnedSourceChunk>> {
-            Ok(Some(self.0.take().unwrap_or(OwnedSourceChunk::claimed(Bytes::new(), 0))))
+            Ok(Some(self.0.take().unwrap_or(OwnedSourceChunk::claimed(acyclic_stream::OwnedBytes::new(), 0))))
         }
     }
 
@@ -1210,7 +1211,7 @@ fn owned_chunk_retains_actual_backing_capacity_not_visible_length()
         let mut bytes = Vec::with_capacity(65_536);
         bytes.extend_from_slice(b"abc");
         let capacity = usize_to_u64(bytes.capacity());
-        (RetainedSource(Some(OwnedSourceChunk::claimed(Bytes::from(bytes), capacity))), capacity)
+        (RetainedSource(Some(OwnedSourceChunk::claimed(bytes.into(), capacity))), capacity)
     };
     let options = BlobBuildOptions {
         chunk_bytes: 3,

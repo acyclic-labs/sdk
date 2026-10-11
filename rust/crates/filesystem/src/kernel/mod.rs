@@ -268,7 +268,9 @@ pub use publication::{
     PublishedGeneration, decode_published_generation, publish_generation, publish_generation_async,
 };
 pub(crate) use publication::{
-    PublicationIntent, publish_generation_async_guarded, publish_generation_async_with_permit,
+    PublicationIntent, permit_context_with_accounting, publish_generation_async_guarded, publish_generation_async_with_permit,
+    BorrowedPublicationEvidence, decode_publication_evidence_with_accounting,
+    contextual_publication_fingerprint_from_payload_with_accounting,
 };
 pub use range::{
     ExtentPlan, ExtentRangeRequest, ExtentReadError, ExtentReadFailure, ExtentSeekRequest,
@@ -332,4 +334,6 @@ pub use volume::{
     VolumeCreated, VolumeCreatedError, decode_volume_created, encode_volume_created,
     volume_authority_id,
 };
-pub(crate) use volume::{CONFIG_ENCODED_BYTES, encode_volume_created_measured};
+pub(crate) use volume::{
+    CONFIG_ENCODED_BYTES, decode_config_with_steps, encode_config, encode_volume_created_measured,
+};

@@ -4395,15 +4395,84 @@ async fn guarded_stale_exact_retry_resolves_committed_without_owner_reseal()
     retry.write("/file", Bytes::from_static(b"same input")).await?;
     let cancellation = CancellationToken::new();
     let budget = selected_transaction_budget();
+    let mut owner_calls = 0;
     let resolved = retry.commit_with_permit_measured_guarded(
         crate::PublicationPermit::Unrestricted, budget, &cancellation,
-        |_| async {
-            Err(crate::OperationFailure::before_work(FsError::MutationNotAllowed))
+        |_| {
+            owner_calls += 1;
+            std::future::ready(Err(crate::OperationFailure::before_work(
+                OrdinaryOwnerError::Denied { task: [119; 16], revision: 914, expired: true },
+            )))
         },
     ).await?;
     resolved.work.verify(budget)?;
     assert!(matches!(&resolved.value, TransactionCommit::AlreadyCommitted(generation) if generation.id() == committed.id()));
     assert_eq!(workspace.head().await?.id(), committed.id());
+    assert_eq!(owner_calls, 0, "an already committed operation performs no new CAS");
+    Ok(())
+}
+
+#[derive(Debug, thiserror::Error)]
+enum OrdinaryOwnerError {
+    #[error(transparent)]
+    Sdk(WorkspaceError),
+    #[error("ordinary owner denied publication")]
+    Denied { task: [u8; 16], revision: u64, expired: bool },
+}
+
+impl From<WorkspaceError> for OrdinaryOwnerError {
+    fn from(error: WorkspaceError) -> Self { Self::Sdk(error) }
+}
+
+impl From<FsError> for OrdinaryOwnerError {
+    fn from(error: FsError) -> Self { Self::Sdk(error.into()) }
+}
+
+#[tokio::test]
+async fn ordinary_owner_denial_preserves_whole_error_work_and_candidate()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("whole-ordinary-owner").await?;
+    let base = workspace.head().await?;
+    let cancellation = CancellationToken::new();
+    let mut candidate = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    candidate.write("/file", Bytes::from_static(b"candidate")).await?;
+    let callback_work = crate::WorkCounters {
+        backend_read_operations: 3,
+        ..crate::WorkCounters::UNCHARGED
+    };
+    let failure = candidate.commit_with_permit_measured_guarded(
+        crate::PublicationPermit::Unrestricted, selected_transaction_budget(), &cancellation,
+        |_| std::future::ready(Err(crate::OperationFailure::new(
+            OrdinaryOwnerError::Denied { task: [117; 16], revision: 912, expired: true },
+            callback_work,
+        ))),
+    ).await.err().ok_or("expired owner published")?;
+    assert!(matches!(failure.error,
+        OrdinaryOwnerError::Denied { task, revision: 912, expired: true } if task == [117; 16]));
+    assert!(failure.work.backend_read_operations >= callback_work.backend_read_operations);
+    assert!(failure.work.bytes_hashed > 0);
+    assert_eq!(failure.work.authority_records_appended, 0);
+    assert_eq!(workspace.head().await?.id(), base.id());
+    let failure = candidate.commit_with_permit_guarded(
+        crate::PublicationPermit::Unrestricted, &cancellation,
+        || std::future::ready(Err(OrdinaryOwnerError::Denied {
+            task: [118; 16], revision: 913, expired: false,
+        })),
+    ).await.err().ok_or("denied ordinary owner published")?;
+    assert!(matches!(failure,
+        OrdinaryOwnerError::Denied { task, revision: 913, expired: false } if task == [118; 16]));
+    assert_eq!(workspace.head().await?.id(), base.id());
+    assert!(matches!(candidate.commit().await?, TransactionCommit::Committed(_)));
+    assert_eq!(workspace.read("/file", 32).await?.as_ref(), b"candidate");
+    let mut cancelled_candidate = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    cancelled_candidate.write("/cancelled", Bytes::from_static(b"not published")).await?;
+    cancellation.cancel();
+    let sdk_failure = cancelled_candidate.commit_with_permit_guarded(
+        crate::PublicationPermit::Unrestricted, &cancellation,
+        || std::future::ready(Ok::<(), OrdinaryOwnerError>(())),
+    ).await.err().ok_or("cancelled SDK work published")?;
+    assert!(matches!(sdk_failure, OrdinaryOwnerError::Sdk(WorkspaceError::Cancelled(_))));
     Ok(())
 }
 
@@ -5047,6 +5116,48 @@ fn root_read_merge_overflow_keeps_both_exact_prefixes_in_workspace_errors() {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, thiserror::Error)]
+enum NativeCreationGuardTestError {
+    #[error("the owner denied this creation phase: {0}")]
+    Denied(u32),
+    #[error(transparent)]
+    Filesystem(#[from] crate::FsError),
+    #[error(transparent)]
+    Workspace(#[from] WorkspaceError),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_guarded_creation_preserves_original_callback_error_and_prepared_work()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(
+        selected_transaction_budget(), &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let before = original.receipt();
+    let seals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed_seals = Arc::clone(&seals);
+    let guard_original = original.clone();
+    let mut deny = move |observed: &crate::NativeMaterializationWork| {
+        assert!(observed.shares_ledger(&guard_original));
+        observed_seals.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::future::ready(Err(NativeCreationGuardTestError::Denied(23)))
+    };
+    let failure = fs.create_workspace_with_operation_guarded_with_native_work(
+        "native-guarded-creation-denied", VolumeConfig::portable(Lifecycle::Persistent),
+        IdempotencyKey::new().operation_id(), &original, &cancellation, &mut deny,
+    ).await.err().ok_or("the owner denial unexpectedly created a workspace")?;
+    assert!(matches!(failure, NativeCreationGuardTestError::Denied(23)));
+    assert!(seals.load(std::sync::atomic::Ordering::Relaxed) > 0);
+    assert!(original.receipt().bytes_hashed > before.bytes_hashed);
+    assert_eq!(original.receipt().authority_records_appended, before.authority_records_appended);
+    assert!(fs.open_workspace("native-guarded-creation-denied").await.is_err());
+    original.receipt().verify(selected_transaction_budget())?;
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn native_guarded_fork_denial_keeps_prepared_work_without_destination_authority()
 -> Result<(), Box<dyn Error>> {
@@ -5059,19 +5170,21 @@ async fn native_guarded_fork_denial_keeps_prepared_work_without_destination_auth
         selected_transaction_budget(), &cancellation,
     ).map_err(|(error, _)| error)?;
     let before = original.receipt();
-    let mut seals = 0;
-    let mut deny = |observed: &crate::NativeMaterializationWork| {
-        assert!(observed.shares_ledger(&original));
-        seals += 1;
-        std::future::ready(Err(crate::FsError::MutationNotAllowed))
+    let seals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed_seals = Arc::clone(&seals);
+    let guard_original = original.clone();
+    let mut deny = move |observed: &crate::NativeMaterializationWork| {
+        assert!(observed.shares_ledger(&guard_original));
+        observed_seals.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::future::ready(Err(WorkspaceError::from(crate::FsError::MutationNotAllowed)))
     };
     let failure = workspace.fork_with_permit_guarded_with_native_work(
         "native-guarded-fork-denied", ForkOptions::from_generation(frozen, IdempotencyKey::new())
             .inherit_paths(vec!["/selected".to_owned()]),
         crate::PublicationPermit::Unrestricted, &original, &cancellation, &mut deny,
     ).await.err().ok_or("the original owner denial unexpectedly published a destination")?;
-    assert!(matches!(failure.0, WorkspaceError::Filesystem(crate::FsError::MutationNotAllowed)));
-    assert!(seals > 0);
+    assert!(matches!(failure, WorkspaceError::Filesystem(crate::FsError::MutationNotAllowed)));
+    assert!(seals.load(std::sync::atomic::Ordering::Relaxed) > 0);
     assert!(original.receipt().bytes_hashed > before.bytes_hashed);
     assert!(fs.open_workspace("native-guarded-fork-denied").await.is_err());
     original.receipt().verify(selected_transaction_budget())?;
@@ -5098,7 +5211,7 @@ async fn native_selected_restore_honors_the_real_retained_authority_reservation(
     let before = original.receipt();
     let key = IdempotencyKey::new();
     let paths = vec!["/selected".to_owned()];
-    let mut allow = |_: &crate::NativeMaterializationWork| std::future::ready(Ok(()));
+    let mut allow = |_: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), WorkspaceError>(()));
     let denied = workspace.restore_selected_paths_from_with_permit_guarded_with_native_work(
         &frozen, &paths, current.id(), key, crate::PublicationPermit::Unrestricted,
         &original, &cancellation, &mut allow,
@@ -5114,7 +5227,7 @@ async fn native_selected_restore_honors_the_real_retained_authority_reservation(
     };
     let restored = workspace.restore_selected_paths_from_with_permit_guarded_with_native_work(
         &frozen, &paths, current.id(), key, permit, &original, &cancellation, &mut allow,
-    ).await.map_err(|(error, _)| error)?;
+    ).await?;
     assert!(matches!(restored, TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_)));
     assert_eq!(workspace.read("/selected", 6).await?, Bytes::from_static(b"frozen"));
     workspace.release_publication_with_native_work(reservation, &original, &cancellation)
@@ -5144,17 +5257,70 @@ async fn native_guarded_fork_rejects_an_unrelated_source_reservation_without_reb
         gate_tail: reservation.gate_tail,
         expected: reservation.expected,
     };
-    let mut allow = |_: &crate::NativeMaterializationWork| std::future::ready(Ok(()));
+    let mut allow = |_: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), WorkspaceError>(()));
     let failed = workspace.fork_with_permit_guarded_with_native_work(
         "native-fork-reserved-destination", ForkOptions::from_generation(frozen, IdempotencyKey::new()),
         permit, &original, &cancellation, &mut allow,
     ).await.err().ok_or("a source reservation was incorrectly rebound to a new destination")?;
-    assert!(matches!(failed.0,
+    assert!(matches!(failed,
         WorkspaceError::Filesystem(crate::FsError::Authority(
             crate::AuthorityStoreError::RejectedStatic(_)))));
     assert_eq!(original.receipt().authority_records_appended, before);
     assert!(fs.open_workspace("native-fork-reserved-destination").await.is_err());
     workspace.release_publication_with_native_work(reservation, &original, &cancellation)
         .await.map_err(|(error, _)| error)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn contextual_operation_record_retains_original_witness_after_head_advances()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("original-context-record").await?;
+    let cancellation = CancellationToken::new();
+    let key = IdempotencyKey::new();
+    let original_evidence: &'static [u8] = b"opaque original SDK operation witness";
+    let context = crate::Digest::from_bytes([0xc7; 32]);
+    let mut transaction = workspace.begin_transaction(key).await?;
+    transaction.write("/original", Bytes::from_static(b"original generation")).await?;
+    let committed = transaction.commit_with_context_with_permit_measured_guarded(
+        context, acyclic_stream::OwnedBytes::from_static(original_evidence),
+        crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation,
+        |_| std::future::ready(Ok::<_, crate::OperationFailure<WorkspaceError>>(
+            crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED },
+        )),
+    ).await?;
+    let original_generation = match committed.value {
+        TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
+        _ => return Err("the original contextual operation did not publish".into()),
+    };
+    workspace.write("/later", Bytes::from_static(b"later unrelated generation")).await?;
+    let current = workspace.head().await?;
+    assert_ne!(current.id(), original_generation.id());
+    let observed = workspace.operation_generation_record_measured(
+        key, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?;
+    let (generation, record) = observed.value.ok_or("original operation disappeared")?;
+    assert_eq!(generation.id(), original_generation.id());
+    assert_eq!(record.operation_id, key.operation_id());
+    let mut decode_work = crate::WorkCounters::UNCHARGED;
+    let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+    let mut accounting = crate::kernel::allocation::KernelAccounting::borrowed_standalone(
+        &mut allocations, &mut decode_work, WorkBudget::UNBOUNDED, &cancellation,
+    );
+    let evidence = crate::kernel::decode_publication_evidence_with_accounting(
+        &record.payload, 4 * 1024, &mut accounting,
+    )?;
+    assert_eq!(evidence.publication.generation_root.digest, original_generation.id().digest());
+    assert_eq!(evidence.original_evidence, Some(original_evidence));
+    assert!(evidence.evidence_digest.is_some());
+    drop(accounting);
+    assert!(decode_work.bytes_hashed >= original_evidence.len() as u64);
+    assert_eq!(workspace.operation_generation_measured(
+        key, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.ok_or("generation-only projection lost the operation")?.id(), original_generation.id());
+    assert!(workspace.operation_generation_record_measured(
+        IdempotencyKey::new(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.is_none());
     Ok(())
 }

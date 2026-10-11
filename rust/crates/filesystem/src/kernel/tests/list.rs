@@ -4,7 +4,7 @@ use crate::kernel::{FileKind, NameEncoding, TreeChild, TreePage, encode_tree_pag
 use crate::memory::MemoryObjectStore;
 use crate::storage::{ObjectKind, ObjectStore};
 use crate::{CachedObjectStore, ObjectCacheOptions};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use std::task::{Context, Poll, Waker};
 
 fn name(value: &str) -> Result<LogicalName, Box<dyn std::error::Error>> {
@@ -28,7 +28,7 @@ fn put(store: &MemoryObjectStore, page: &TreePage) -> Result<ObjectId, Box<dyn s
     ObjectStore::put(
         store,
         id,
-        Bytes::from(encode_tree_page(page, 8)?),
+        OwnedBytes::from(encode_tree_page(page, 8)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)
@@ -521,7 +521,7 @@ fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
         reached: AtomicUsize,
     }
     impl AsyncObjectStore for PanickingRead {
-        async fn put(&self, id: ObjectId, bytes: Bytes, budget: WorkBudget, cancellation: &CancellationToken)
+        async fn put(&self, id: ObjectId, bytes: OwnedBytes, budget: WorkBudget, cancellation: &CancellationToken)
         -> ObjectResult<()> {
             AsyncObjectStore::put(&self.inner, id, bytes, budget, cancellation).await
         }

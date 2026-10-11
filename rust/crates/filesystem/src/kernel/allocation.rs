@@ -22,6 +22,9 @@ pub(crate) fn bytes_owner_control_bytes<T>() -> Result<u64, WorkError> {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct AllocationLedger {
     live_bytes: u64,
+    // Accepted future payload/control capacity, not a physical allocation or peak.
+    #[cfg(not(target_arch = "wasm32"))]
+    reserved_bytes: u64,
 }
 
 /// Deterministic logical capacity for a fallibly growing operation vector.
@@ -187,10 +190,61 @@ impl AllocationLedger {
             .live_bytes
             .checked_add(bytes)
             .ok_or(AllocationError::Overflow)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.reserved_bytes != 0 {
+            work.admit(&WorkCounters {
+                allocation_operations: operations,
+                peak_allocation_bytes: next_live.checked_add(self.reserved_bytes).ok_or(AllocationError::Overflow)?,
+                ..WorkCounters::UNCHARGED
+            }, &budget)?;
+        }
         work.charge_allocation(operations, next_live, &budget)?;
         self.live_bytes = next_live;
         Ok(())
     }
+
+    /// Withholds known future capacity without claiming physical backing.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn reserve_allocation(
+        &mut self, bytes: u64, work: &WorkCounters, budget: WorkBudget,
+    ) -> Result<(), AllocationError> {
+        let reserved = self.reserved_bytes.checked_add(bytes).ok_or(AllocationError::Overflow)?;
+        work.admit(&WorkCounters {
+            allocation_operations: 1,
+            peak_allocation_bytes: self.live_bytes.checked_add(reserved).ok_or(AllocationError::Overflow)?,
+            ..WorkCounters::UNCHARGED
+        }, &budget)?;
+        self.reserved_bytes = reserved;
+        Ok(())
+    }
+
+    /// Refunds only unused capacity; actual live and historical peak are untouched.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn cancel_reserved_allocation(&mut self, bytes: u64) -> Result<(), AllocationError> {
+        let reserved = self.reserved_bytes.checked_sub(bytes).ok_or(AllocationError::ReleaseInvariant)?;
+        self.reserved_bytes = reserved;
+        Ok(())
+    }
+
+    /// Consumes an admitted allocator credit at its real begun-allocation boundary.
+    /// No cancellation or fresh quota admission can invalidate an accepted drain.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn record_reserved_allocation(
+        &mut self, bytes: u64, work: &mut WorkCounters,
+    ) -> Result<(), AllocationError> {
+        let reserved = self.reserved_bytes.checked_sub(bytes).ok_or(AllocationError::ReleaseInvariant)?;
+        let live = self.live_bytes.checked_add(bytes).ok_or(AllocationError::Overflow)?;
+        work.try_add_assign(&WorkCounters {
+            allocation_operations: 1, peak_allocation_bytes: live,
+            ..WorkCounters::UNCHARGED
+        })?;
+        self.reserved_bytes = reserved;
+        self.live_bytes = live;
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) const fn reserved_bytes(&self) -> u64 { self.reserved_bytes }
 
     /// Records already physical allocator excess without another allocation
     /// operation or a refusal that would erase its actual peak. The caller

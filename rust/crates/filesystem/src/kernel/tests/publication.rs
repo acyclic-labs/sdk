@@ -51,7 +51,7 @@ fn put(
         kind,
         digest: object_digest(kind, &bytes),
     };
-    store.put(object, Bytes::from(bytes), WorkBudget::UNBOUNDED)?;
+    store.put(object, acyclic_stream::OwnedBytes::from(bytes), WorkBudget::UNBOUNDED)?;
     Ok(object)
 }
 
@@ -1364,11 +1364,13 @@ async fn native_publication_authenticates_actual_complete_closure_on_original_le
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let standing = original.claim(19)?;
-    let mut calls = 0;
-    let mut owner = |same: &crate::NativeMaterializationWork| {
-        assert!(original.shares_ledger(same));
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let owner_calls = calls.clone();
+    let owner_original = original.clone();
+    let mut owner = move |same: &crate::NativeMaterializationWork| {
+        assert!(owner_original.shares_ledger(same));
         assert_eq!(same.receipt().authority_records_appended, 0);
-        calls += 1;
+        owner_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         std::future::ready(Ok::<(), NativePublicationTestError>(()))
     };
     let publication = publish_generation_async_guarded_with_native_work(
@@ -1381,7 +1383,7 @@ async fn native_publication_authenticates_actual_complete_closure_on_original_le
     assert_eq!(publication.0.proof.file_count, 2);
     assert!(publication.1.shares_ledger(&standing));
     assert_eq!(publication.0.work, original.receipt());
-    assert_eq!(calls, 1);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert!(original.receipt().backend_read_operations >= 7);
     let live_with_output = original.live_allocation_bytes();
     let output_bytes = publication.1.bytes();
@@ -1404,17 +1406,19 @@ async fn native_publication_owner_stale_after_await_fails_before_actual_cas()
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes();
-    let owner_epoch = AtomicU64::new(1);
+    let owner_epoch = std::sync::Arc::new(AtomicU64::new(1));
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let (continue_tx, continue_rx) = tokio::sync::oneshot::channel();
-    let mut started_tx = Some(started_tx);
-    let mut continue_rx = Some(continue_rx);
-    let mut guard = |same: &crate::NativeMaterializationWork| {
-        assert!(original.shares_ledger(same));
-        let observed = owner_epoch.load(Ordering::SeqCst);
-        let sender = started_tx.take().expect("one attempted CAS");
-        let receiver = continue_rx.take().expect("one attempted CAS");
-        let epoch = &owner_epoch;
+    let started_tx = std::sync::Arc::new(parking_lot::Mutex::new(Some(started_tx)));
+    let continue_rx = std::sync::Arc::new(parking_lot::Mutex::new(Some(continue_rx)));
+    let guarded_epoch = owner_epoch.clone();
+    let owner_original = original.clone();
+    let mut guard = move |same: &crate::NativeMaterializationWork| {
+        assert!(owner_original.shares_ledger(same));
+        let observed = guarded_epoch.load(Ordering::SeqCst);
+        let sender = started_tx.lock().take().expect("one attempted CAS");
+        let receiver = continue_rx.lock().take().expect("one attempted CAS");
+        let epoch = guarded_epoch.clone();
         async move {
             sender.send(()).expect("owner scheduling channel");
             receiver.await.expect("owner continuation");
@@ -1461,9 +1465,10 @@ async fn native_publication_partial_closure_and_allocation_denials_release_owned
         let original = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes();
-        let mut calls = 0;
-        let mut guard = |_: &crate::NativeMaterializationWork| {
-            calls += 1;
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let owner_calls = calls.clone();
+        let mut guard = move |_: &crate::NativeMaterializationWork| {
+            owner_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             std::future::ready(Ok::<(), NativePublicationTestError>(()))
         };
         let mut admitted = limits();
@@ -1480,7 +1485,7 @@ async fn native_publication_partial_closure_and_allocation_denials_release_owned
             assert!(matches!(failure, NativePublicationTestError::Fs(crate::FsError::Closure(ClosureError::TooManyObjects { .. }))));
             assert!(original.receipt().backend_read_operations > 0);
         }
-        assert_eq!(calls, 0);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(original.receipt().authority_records_appended, 0);
         assert_eq!(original.live_allocation_bytes(), baseline);
         assert_eq!(authority.head(request.authority_id, WorkBudget::UNBOUNDED)?.value, request.expected);
@@ -1497,6 +1502,7 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
     let authority = MemoryAuthorityStore::default();
     let volume_id = VolumeId::from_bytes([34; 16]);
     let (root, _) = native_fixture(&objects, volume_id)?;
+    let changed_root = fixture(&objects, volume_id)?;
     let request = native_request(&authority, volume_id, root)?;
     let simulation = Simulation::wrap(authority, objects, SimulationOptions::default())?;
     let (authority, objects) = simulation.stores();
@@ -1504,9 +1510,14 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
+    let (data, custody) = original.copy_bytes(b"immutable original operation data")?;
+    let evidence = acyclic_stream::OwnedBytes::from_vec_with_guard(data, custody, original.runtime_meter_owner())
+        .map_err(|failure| failure.into_error())?;
+    let intent = PublicationIntent::unrestricted(Some(Digest::from_bytes([59; 32])))
+        .with_original_evidence(Some(evidence));
     let mut guard = |_: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), NativePublicationTestError>(()));
     let failure = publish_generation_async_guarded_with_native_work(
-        &objects, &authority, request, PublicationIntent::unrestricted(None),
+        &objects, &authority, request, intent.clone(),
         limits(), &original, &cancellation, &mut guard, None, None,
     ).await.err().ok_or("acknowledgement loss unexpectedly returned success")?;
     assert!(matches!(failure, NativePublicationTestError::Fs(crate::FsError::Authority(AuthorityStoreError::Indeterminate { .. }))));
@@ -1523,18 +1534,44 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
         digest: commit.previous_digest,
     };
     assert_eq!(predecessor, request.expected);
-    let mut seals = 0;
-    let mut stale_owner = |_: &crate::NativeMaterializationWork| {
-        seals += 1;
+    {
+        let mut accounting = crate::kernel::allocation::KernelAccounting::native(&reopened, &cancellation);
+        let decoded = decode_publication_evidence_with_accounting(&commit.payload, 4_096, &mut accounting)?;
+        assert_eq!(decoded.original_evidence, Some(b"immutable original operation data".as_slice()));
+        assert_eq!(contextual_publication_fingerprint_from_payload_with_accounting(
+            request, intent.operation_context.ok_or("missing original context")?, &commit.payload, &mut accounting,
+        )?, commit.fingerprint);
+    }
+    let later = publish_generation_async_guarded_with_native_work(
+        &objects, &authority, PublishGenerationRequest {
+            expected: Head { epoch: commit.epoch, sequence: commit.sequence, digest: commit.digest },
+            operation_id: OperationId::from_bytes([60; 16]), generation_root: changed_root, ..request
+        }, PublicationIntent::unrestricted(None), limits(), &original, &cancellation, &mut guard, None, None,
+    ).await?;
+    assert!(matches!(later.0.outcome, AppendOutcome::Committed(_)));
+    let seals = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let owner_seals = seals.clone();
+    let mut stale_owner = move |_: &crate::NativeMaterializationWork| {
+        owner_seals.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         std::future::ready(Err::<(), _>(NativePublicationTestError::OwnerStale))
     };
+    let changed = publish_generation_async_guarded_with_native_work(
+        &objects, &authority, PublishGenerationRequest { generation_root: changed_root, expected: predecessor, ..request },
+        intent.clone(), limits(), &reopened, &cancellation, &mut stale_owner, Some(commit.clone()), None,
+    ).await?;
+    assert!(matches!(changed.0.outcome, AppendOutcome::IdempotencyConflict { .. }));
     let publication = publish_generation_async_guarded_with_native_work(
         &objects, &authority, PublishGenerationRequest { expected: predecessor, ..request },
-        PublicationIntent::unrestricted(None), limits(), &reopened, &cancellation,
+        intent, limits(), &reopened, &cancellation,
         &mut stale_owner, Some(commit), None,
     ).await?;
     assert!(matches!(publication.0.outcome, AppendOutcome::AlreadyCommitted(_)));
-    assert_eq!(seals, 0);
+    if let AppendOutcome::AlreadyCommitted(recovered) = &publication.0.outcome {
+        assert_eq!(recovered.operation_id, request.operation_id);
+        assert_eq!(recovered.previous_digest, request.expected.digest);
+        assert_eq!(decode_published_generation(&recovered.payload, 4_096)?.generation_root, root);
+    }
+    assert_eq!(seals.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(reopened.receipt().authority_records_appended, 0);
     assert_eq!(reopened.receipt().backend_write_operations, 0);
     Ok(())
@@ -1548,7 +1585,7 @@ struct NativeMissingCustody<'a>(&'a MemoryObjectStore);
 #[cfg(not(target_arch = "wasm32"))]
 impl crate::AsyncObjectStore for NativeMissingCustody<'_> {
     async fn put(
-        &self, object: ObjectId, bytes: Bytes, budget: WorkBudget, cancellation: &CancellationToken,
+        &self, object: ObjectId, bytes: acyclic_stream::OwnedBytes, budget: WorkBudget, cancellation: &CancellationToken,
     ) -> crate::storage::ObjectResult<()> {
         crate::AsyncObjectStore::put(self.0, object, bytes, budget, cancellation).await
     }
@@ -1599,9 +1636,10 @@ async fn native_publication_missing_custody_capability_rejects_after_real_proof_
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes();
-    let mut calls = 0;
-    let mut guard = |_: &crate::NativeMaterializationWork| {
-        calls += 1;
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let owner_calls = calls.clone();
+    let mut guard = move |_: &crate::NativeMaterializationWork| {
+        owner_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         std::future::ready(Ok::<(), NativePublicationTestError>(()))
     };
     let failure = publish_generation_async_guarded_with_native_work(
@@ -1612,7 +1650,7 @@ async fn native_publication_missing_custody_capability_rejects_after_real_proof_
     assert!(original.receipt().backend_read_operations >= 7);
     assert_eq!(original.receipt().authority_records_appended, 0);
     assert_eq!(original.live_allocation_bytes(), baseline);
-    assert_eq!(calls, 0);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(authority.head(request.authority_id, WorkBudget::UNBOUNDED)?.value, request.expected);
     Ok(())
 }
@@ -1630,9 +1668,10 @@ async fn native_publication_root_preparation_retains_original_cause_and_releases
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes();
-    let mut calls = 0;
-    let mut owner = |_: &crate::NativeMaterializationWork| {
-        calls += 1;
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let owner_calls = calls.clone();
+    let mut owner = move |_: &crate::NativeMaterializationWork| {
+        owner_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         std::future::ready(Ok::<(), NativePublicationTestError>(()))
     };
     let mut preparation = |root: &GenerationRoot, proof: &mut crate::NativeAllocation, same: &crate::NativeMaterializationWork| {
@@ -1652,7 +1691,7 @@ async fn native_publication_root_preparation_retains_original_cause_and_releases
         limits(), &original, &cancellation, &mut owner, None, Some(&mut preparation),
     ).await.err().ok_or("failed root preparation unexpectedly published")?;
     assert!(matches!(failure, NativePublicationTestError::OwnerStale));
-    assert_eq!(calls, 0);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(original.receipt().authority_records_appended, 0);
     assert_eq!(original.live_allocation_bytes(), baseline);
     assert_eq!(authority.head(request.authority_id, WorkBudget::UNBOUNDED)?.value, request.expected);
@@ -1740,12 +1779,224 @@ fn native_publication_payload_owner_denial_keeps_real_completed_buffers_and_drop
     let authority = MemoryAuthorityStore::default();
     let request = native_request(&authority, volume_id, root)?;
     let mut accounting = PublicationAccounting::Native(&original);
-    assert!(prepare_publication_commit(request, None, &mut accounting, &cancellation).is_err());
+    assert!(prepare_publication_commit(request, None, None, &mut accounting, &cancellation).is_err());
     assert_eq!(original.receipt().allocation_operations, initial_operations + 2);
     assert_eq!(original.receipt().bytes_encoded,
         (publication_payload_length() + fingerprint_input_length(None)) as u64);
     assert_eq!(original.live_allocation_bytes(), baseline);
     assert_eq!(original.receipt().authority_records_appended, 0);
     assert_eq!(authority.head(request.authority_id, WorkBudget::UNBOUNDED)?.value, request.expected);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn original_permit_context_uses_canonical_recipe_and_admits_exact_hash_before_cpu()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let permits = [
+        (PublicationPermit::Unrestricted, 0),
+        (PublicationPermit::Lease {
+            authority_id: [43; 16], workspace_id: [44; 16], lease_id: [45; 16], expires_at_millis: 46,
+        }, b"acyclic-fs-publication-lease-v1\0".len() as u64 + 1 + 48 + 8),
+        (PublicationPermit::Reservation {
+            operation_id: [47; 16], gate_tail: 48,
+            expected: Head { epoch: Epoch::GENESIS, sequence: crate::Sequence::new(49), digest: Digest::from_bytes([50; 32]) },
+        }, b"acyclic-fs-publication-reservation-v1\0".len() as u64 + 1 + 16 + 8 + 8 + 8 + 32),
+    ];
+    for (permit, base_hash_bytes) in permits {
+        for context in [None, Some(Digest::from_bytes([51; 32]))] {
+            let hashed = base_hash_bytes + if base_hash_bytes != 0 && context.is_some() { 32 } else { 0 };
+            let mut budget = WorkBudget::UNBOUNDED;
+            budget.bytes_hashed = hashed;
+            let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(error, _)| error)?;
+            let before = original.receipt();
+            let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
+            assert_eq!(permit_context_with_accounting(context, permit, &mut accounting)?, permit_context(context, permit));
+            assert_eq!(original.receipt().bytes_hashed, hashed);
+            assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
+            if hashed != 0 {
+                budget.bytes_hashed = hashed - 1;
+                let denied = crate::NativeMaterializationWork::new(budget, &cancellation)
+                    .map_err(|(error, _)| error)?;
+                let before = denied.receipt();
+                let mut accounting = crate::kernel::allocation::KernelAccounting::native(&denied, &cancellation);
+                assert!(permit_context_with_accounting(context, permit, &mut accounting).is_err());
+                assert_eq!(denied.receipt().bytes_hashed, 0);
+                assert_eq!(denied.receipt().allocation_operations, before.allocation_operations);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn publication_evidence_v2_validates_complete_frame_before_legacy_projection()
+-> Result<(), Box<dyn std::error::Error>> {
+    let volume_id = VolumeId::from_bytes([52; 16]);
+    let root = ObjectId { kind: ObjectKind::GenerationRoot, digest: Digest::from_bytes([53; 32]) };
+    let evidence = b"immutable original operation data";
+    let mut bytes = Vec::new();
+    write_publication_payload_with_evidence(&mut bytes, volume_id, root, Some((evidence, original_evidence_digest(evidence))));
+    let decoded = decode_publication_evidence_with_steps::<CanonicalDecodeError>(&bytes, bytes.len() as u64, |_| Ok(()))?;
+    assert_eq!(decoded.publication, PublishedGeneration { volume_id, generation_root: root });
+    assert_eq!(decoded.original_evidence, Some(evidence.as_slice()));
+    assert_eq!(decoded.evidence_digest, Some(original_evidence_digest(evidence)));
+    assert_eq!(decoded.original_evidence.ok_or("missing original data")?.as_ptr(),
+        bytes[publication_payload_length() + 4..].as_ptr());
+    assert_eq!(decode_published_generation(&bytes, bytes.len() as u64)?, decoded.publication);
+    assert!(matches!(decode_published_generation(&bytes, bytes.len() as u64 - 1),
+        Err(CanonicalDecodeError::ObjectTooLarge { .. })));
+    for offset in [PAYLOAD_DOMAIN.len(), PAYLOAD_DOMAIN.len() + 2 + 16, publication_payload_length() + 4, bytes.len() - 1] {
+        let mut malformed = bytes.clone();
+        malformed[offset] = u8::MAX;
+        assert!(decode_published_generation(&malformed, u64::MAX).is_err());
+    }
+    for length in [0_u32, u32::MAX] {
+        let mut malformed = bytes.clone();
+        let offset = publication_payload_length();
+        malformed[offset..offset + 4].copy_from_slice(&length.to_le_bytes());
+        assert!(decode_published_generation(&malformed, bytes.len() as u64).is_err());
+    }
+    let mut suffixed = bytes.clone();
+    suffixed.push(0);
+    assert!(matches!(decode_published_generation(&suffixed, u64::MAX), Err(CanonicalDecodeError::TrailingBytes)));
+    assert!(decode_published_generation(&bytes[..bytes.len() - 1], u64::MAX).is_err());
+    let legacy = encode_publication_payload(volume_id, root);
+    let decoded = decode_publication_evidence_with_steps::<CanonicalDecodeError>(&legacy, u64::MAX, |_| Ok(()))?;
+    assert_eq!(decoded.original_evidence, None);
+    assert_eq!(decoded.evidence_digest, None);
+    assert_eq!(decoded.publication, PublishedGeneration { volume_id, generation_root: root });
+    let mut suffixed = legacy;
+    suffixed.extend_from_slice(evidence);
+    assert!(matches!(decode_published_generation(&suffixed, u64::MAX), Err(CanonicalDecodeError::TrailingBytes)));
+    let large_evidence = vec![7; 4_096];
+    let mut large = Vec::new();
+    write_publication_payload_with_evidence(&mut large, volume_id, root,
+        Some((&large_evidence, original_evidence_digest(&large_evidence))));
+    assert!(matches!(decode_published_generation(&large, 4_096), Err(CanonicalDecodeError::ObjectTooLarge { .. })));
+    assert_eq!(decode_published_generation(&large, large.len() as u64)?, decoded.publication);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn original_evidence_decoder_denies_hash_before_cpu_and_retains_completed_cancelled_hash()
+-> Result<(), Box<dyn std::error::Error>> {
+    let volume_id = VolumeId::from_bytes([54; 16]);
+    let root = ObjectId { kind: ObjectKind::GenerationRoot, digest: Digest::from_bytes([55; 32]) };
+    let evidence = b"immutable original operation data";
+    let mut bytes = Vec::new();
+    write_publication_payload_with_evidence(&mut bytes, volume_id, root, Some((evidence, original_evidence_digest(evidence))));
+    let cancellation = CancellationToken::new();
+    let mut budget = WorkBudget::UNBOUNDED;
+    budget.bytes_hashed = 0;
+    let original = crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
+    let before = original.receipt();
+    let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
+    assert!(decode_published_generation_with_accounting(&bytes, bytes.len() as u64, &mut accounting).is_err());
+    assert_eq!(original.receipt().bytes_hashed, 0);
+    assert_eq!(original.receipt().bytes_copied, 2 + 16 + 1 + 32 + 4 + 32);
+    assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).map_err(|(error, _)| error)?;
+    let before = original.receipt();
+    let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
+    let mut observer = super::super::file_read::OriginalReadAccounting::new(&mut accounting)?;
+    let result = decode_publication_evidence_with_steps::<crate::FsError>(&bytes, bytes.len() as u64, |step| {
+        if matches!(&step, super::super::codec::ReadAllocationStep::Hashed(_)) { cancellation.cancel(); }
+        observer.observe(step).map_err(super::super::file_read::ReadDecodeError::into_original_fs_error)
+    });
+    drop(observer.into_allocation());
+    assert!(result.is_err());
+    assert_eq!(original.receipt().bytes_hashed, (EVIDENCE_DOMAIN.len() + evidence.len()) as u64);
+    assert_eq!(original.receipt().bytes_copied, 2 + 16 + 1 + 32 + 4 + 32);
+    assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn publication_payload_aliases_hold_actual_original_evidence_until_last_owner_drop()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let (data, custody) = original.copy_bytes(b"immutable original operation data")?;
+    let evidence = acyclic_stream::OwnedBytes::from_vec_with_guard(data, custody, original.runtime_meter_owner())
+        .map_err(|failure| failure.into_error())?;
+    assert!(original.live_allocation_bytes() > baseline);
+    let authority = MemoryAuthorityStore::default();
+    let root = ObjectId { kind: ObjectKind::GenerationRoot, digest: Digest::from_bytes([57; 32]) };
+    let request = native_request(&authority, VolumeId::from_bytes([56; 16]), root)?;
+    let context = Digest::from_bytes([58; 32]);
+    let mut accounting = PublicationAccounting::Native(&original);
+    let commit = prepare_publication_commit(request, Some(context), Some(evidence), &mut accounting, &cancellation)?;
+    let retained = original.live_allocation_bytes();
+    let before_clone = original.receipt().allocation_operations;
+    let alias = commit.clone();
+    assert_eq!(original.receipt().allocation_operations, before_clone);
+    drop(commit);
+    assert_eq!(original.live_allocation_bytes(), retained);
+    let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
+    let decoded = decode_publication_evidence_with_accounting(&alias.payload, 4_096, &mut accounting)?;
+    assert_eq!(decoded.original_evidence, Some(b"immutable original operation data".as_slice()));
+    let before = original.receipt();
+    assert_eq!(contextual_publication_fingerprint_from_payload_with_accounting(
+        request, context, &alias.payload, &mut accounting,
+    )?, alias.fingerprint);
+    let after = original.receipt();
+    assert_eq!(after.allocation_operations, before.allocation_operations);
+    assert_eq!(after.bytes_copied, before.bytes_copied);
+    assert_eq!(after.bytes_encoded, before.bytes_encoded);
+    assert_eq!(after.bytes_hashed - before.bytes_hashed,
+        (fingerprint_domain(Some(context)).len() + fingerprint_input_length(Some(context))
+            - publication_payload_length() + alias.payload.len()) as u64);
+    assert_eq!(original.live_allocation_bytes(), retained);
+    assert_ne!(contextual_publication_fingerprint_with_accounting(request, context, &mut accounting)?, alias.fingerprint);
+    let changed_evidence = b"altered original operation data";
+    let mut changed = Vec::new();
+    write_publication_payload_with_evidence(&mut changed, request.volume_id, request.generation_root,
+        Some((changed_evidence, original_evidence_digest(changed_evidence))));
+    assert_ne!(contextual_publication_fingerprint_from_payload_with_accounting(
+        request, context, &changed, &mut accounting,
+    )?, alias.fingerprint);
+    drop(alias);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn original_borrowed_payload_fingerprint_preserves_legacy_recipe_without_allocation_and_denies_before_hash()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = ObjectId { kind: ObjectKind::GenerationRoot, digest: Digest::from_bytes([61; 32]) };
+    let authority = MemoryAuthorityStore::default();
+    let request = native_request(&authority, VolumeId::from_bytes([62; 16]), root)?;
+    let context = Digest::from_bytes([63; 32]);
+    let payload = encode_publication_payload(request.volume_id, root);
+    let expected = contextual_publication_fingerprint(request, context);
+    let hashed = (fingerprint_domain(Some(context)).len() + fingerprint_input_length(Some(context))) as u64;
+    let cancellation = CancellationToken::new();
+    for maximum in [hashed, hashed - 1] {
+        let mut budget = WorkBudget::UNBOUNDED;
+        budget.bytes_hashed = maximum;
+        let original = crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
+        let before = original.receipt();
+        let live = original.live_allocation_bytes();
+        let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
+        let result = contextual_publication_fingerprint_from_payload_with_accounting(request, context, &payload, &mut accounting);
+        if maximum == hashed {
+            assert_eq!(result?, expected);
+            assert_eq!(original.receipt().bytes_hashed - before.bytes_hashed, hashed);
+        } else {
+            assert!(result.is_err());
+            assert_eq!(original.receipt().bytes_hashed, before.bytes_hashed);
+        }
+        assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
+        assert_eq!(original.receipt().bytes_copied, before.bytes_copied);
+        assert_eq!(original.receipt().bytes_encoded, before.bytes_encoded);
+        assert_eq!(original.live_allocation_bytes(), live);
+    }
     Ok(())
 }

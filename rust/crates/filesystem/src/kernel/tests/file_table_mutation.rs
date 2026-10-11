@@ -6,7 +6,7 @@ use crate::kernel::{
 };
 use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectStore;
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
@@ -52,7 +52,7 @@ fn put(
     let id = file_table_page_id(page, maximum_items)?;
     store.put(
         id,
-        Bytes::from(encode_file_table_page(page, maximum_items)?),
+        OwnedBytes::from(encode_file_table_page(page, maximum_items)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)

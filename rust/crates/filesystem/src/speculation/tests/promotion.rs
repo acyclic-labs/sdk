@@ -7,7 +7,7 @@ use crate::storage::{
     ObjectStoreError, object_digest,
 };
 use crate::{AsyncObjectStore, CancellationToken, WorkCounters};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use std::cell::Cell;
 use std::future::Future;
 
@@ -23,7 +23,7 @@ impl AsyncObjectStore for UnderreportedOwnedStore {
     async fn put(
         &self,
         object_id: ObjectId,
-        bytes: Bytes,
+        bytes: OwnedBytes,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
@@ -545,7 +545,7 @@ fn canonical_store_executor_authenticates_moves_and_retries_without_a_second_bod
 -> Result<(), Box<dyn std::error::Error>> {
     let volume_id = VolumeId::from_bytes([1; 16]);
     let generation_id = generation(2);
-    let bytes = Bytes::from(vec![3; 64]);
+    let bytes = OwnedBytes::from(vec![3; 64]);
     let object_id = object(3);
     let source = MemoryObjectStore::default();
     ObjectStore::put(&source, object_id, bytes.clone(), WorkBudget::UNBOUNDED)?;
@@ -578,7 +578,7 @@ fn canonical_store_executor_authenticates_moves_and_retries_without_a_second_bod
         assert_eq!(receipt.work.object_bytes_written, 64);
     }
     let admitted = ObjectStore::read(executor.destination(), object_id, 64, WorkBudget::UNBOUNDED)?;
-    assert_eq!(admitted.value.bytes, bytes);
+    assert_eq!(admitted.value.bytes.as_ref(), bytes.as_ref());
 
     let wrong = StorePromotionExecutor::new(
         StorageLocationId::from_bytes([7; 16]),
@@ -613,7 +613,7 @@ fn promotion_rejects_owned_retention_that_exceeds_the_admitted_live_peak()
     ObjectStore::put(
         &source.inner,
         object_id,
-        Bytes::from(vec![33; 64]),
+        OwnedBytes::from(vec![33; 64]),
         WorkBudget::UNBOUNDED,
     )?;
     let mut engine = PromotionSpeculator::new(
@@ -663,7 +663,7 @@ fn simulated_remote_promotion_fails_exactly_and_retries_idempotently()
     ObjectStore::put(
         &source_inner,
         object_id,
-        Bytes::from(vec![3; 64]),
+        OwnedBytes::from(vec![3; 64]),
         WorkBudget::UNBOUNDED,
     )?;
     let source_simulation = Simulation::wrap(
@@ -777,7 +777,7 @@ fn cancelled_promotion_execution_writes_nothing_until_explicit_feedback()
     ObjectStore::put(
         &source,
         object_id,
-        Bytes::from(vec![3; 64]),
+        OwnedBytes::from(vec![3; 64]),
         WorkBudget::UNBOUNDED,
     )?;
     let destination = MemoryObjectStore::default();

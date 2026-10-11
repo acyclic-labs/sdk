@@ -4,8 +4,8 @@ use crate::kernel::DecodeLimits;
 use crate::{MemoryObjectStore, ObjectKind, object_digest};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-fn object(value: &'static [u8]) -> (ObjectId, Bytes) {
-    let bytes = Bytes::from_static(value);
+fn object(value: &'static [u8]) -> (ObjectId, OwnedBytes) {
+    let bytes = OwnedBytes::from_static(value);
     (
         ObjectId {
             kind: ObjectKind::BlobChunk,
@@ -220,7 +220,7 @@ fn flight_waiter_bound_and_completion_are_deterministic() {
         Poll::Ready(Err(ObjectStoreError::Rejected(message)))
             if message.contains("waiter bound")
     ));
-    flight.finish(Some(Bytes::from_static(b"ready")));
+    flight.finish(Some(OwnedBytes::from_static(b"ready")));
     assert!(matches!(
         flight.poll(first_context),
         Poll::Ready(Ok(Some(bytes))) if bytes.as_ref() == b"ready"
@@ -352,7 +352,7 @@ impl AsyncObjectStore for CountingStore {
     async fn put(
         &self,
         object_id: ObjectId,
-        bytes: Bytes,
+        bytes: OwnedBytes,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
@@ -414,7 +414,7 @@ impl AsyncObjectStore for ShortBatchStore {
     async fn put(
         &self,
         object_id: ObjectId,
-        bytes: Bytes,
+        bytes: OwnedBytes,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
@@ -472,7 +472,7 @@ impl AsyncObjectStore for GatedStore {
     async fn put(
         &self,
         object_id: ObjectId,
-        bytes: Bytes,
+        bytes: OwnedBytes,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
@@ -946,7 +946,7 @@ fn decoded_eviction_poison_recovery_and_failure_accounting_are_fail_closed()
     assert!(cached.insert(first_id, first_bytes.clone())?);
     assert!(cached.insert(first_id, first_bytes.clone())?);
     let conflicting = cached
-        .insert(first_id, Bytes::from_static(b"different"))
+        .insert(first_id, OwnedBytes::from_static(b"different"))
         .err()
         .ok_or("conflicting immutable cache bytes were accepted")?;
     assert!(matches!(conflicting, ObjectStoreError::Corrupt));
@@ -988,7 +988,7 @@ fn decoded_eviction_poison_recovery_and_failure_accounting_are_fail_closed()
         std::panic::resume_unwind(Box::new("poison flight state"));
     }));
     assert!(poisoned.is_err());
-    flight.finish(Some(Bytes::from_static(b"must-not-survive-poison")));
+    flight.finish(Some(OwnedBytes::from_static(b"must-not-survive-poison")));
     let flight_state = match flight.state.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
@@ -996,7 +996,7 @@ fn decoded_eviction_poison_recovery_and_failure_accounting_are_fail_closed()
     assert!(matches!(&*flight_state, FlightState::Complete(None)));
 
     let completed = Flight::new(1);
-    completed.finish(Some(Bytes::from_static(b"complete")));
+    completed.finish(Some(OwnedBytes::from_static(b"complete")));
     let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _guard = match completed.state.lock() {
             Ok(guard) => guard,
@@ -1112,6 +1112,29 @@ mod native_cache {
         Ok(())
     }
 
+    fn copied_native_bytes(
+        source: &[u8], work: &NativeMaterializationWork,
+    ) -> Result<OwnedBytes, ObjectStoreError> {
+        let mut allocation = work.claim(source.len() as u64)?;
+        let copy = work.reserve_copy(source.len() as u64)?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(source.len())
+            .map_err(|error| ObjectStoreError::Native(NativeTreeMaterializationError::AllocationFailed(error)))?;
+        allocation.reconcile_capacity(bytes.capacity() as u64)?;
+        bytes.resize(bytes.capacity(), 0);
+        let mut prepared = acyclic_stream::PreparedOwnedBytes::new(
+            bytes, allocation, work.runtime_meter_owner(),
+        ).map_err(|failure| match failure.into_error() {
+            acyclic_stream::PreparedOwnedBytesError::Admission(error) => work.runtime_error(error).into(),
+            acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
+            | acyclic_stream::PreparedOwnedBytesError::NotUnique =>
+                ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout),
+        })?;
+        prepared.writable()[..source.len()].copy_from_slice(source);
+        copy.record(source.len() as u64)?;
+        prepared.freeze(source.len()).map_err(|_| ObjectStoreError::Corrupt)
+    }
+
     #[derive(Clone, Copy)]
     enum Finish { Return, Error, Panic, Pending }
 
@@ -1122,7 +1145,7 @@ mod native_cache {
 
     impl AsyncObjectStore for OwnedNativeStore {
         async fn put(
-            &self, id: ObjectId, bytes: Bytes, budget: WorkBudget, token: &CancellationToken,
+            &self, id: ObjectId, bytes: OwnedBytes, budget: WorkBudget, token: &CancellationToken,
         ) -> ObjectResult<()> {
             self.inner.put(id, bytes, budget, token).await
         }
@@ -1143,18 +1166,12 @@ mod native_cache {
             &self, id: ObjectId, maximum: u64, work: &NativeMaterializationWork, token: &CancellationToken,
         ) -> Result<NativeObjectRead, ObjectStoreError> {
             let source = self.inner.read_with_native_work(id, maximum, work, token).await?;
-            let length = source.read().bytes.len();
-            let allocation = work.claim(length as u64)?;
-            let copy = work.reserve_copy(length as u64)?;
-            let mut bytes = Vec::new();
-            bytes.try_reserve_exact(length)
-                .map_err(|error| ObjectStoreError::Native(NativeTreeMaterializationError::AllocationFailed(error)))?;
-            bytes.extend_from_slice(&source.read().bytes);
-            copy.record(length as u64)?;
-            let read = NativeObjectRead::owned(ObjectRead {
-                bytes: Bytes::from(bytes),
-                retention: ObjectReadRetention::Owned { logical_bytes: length as u64 },
-            }, allocation)?;
+            let bytes = copied_native_bytes(&source.read().bytes, work)?;
+            let logical_bytes = bytes.retained_capacity().ok_or(ObjectStoreError::Corrupt)? as u64;
+            let read = NativeObjectRead::intrinsic(ObjectRead {
+                bytes,
+                retention: ObjectReadRetention::Owned { logical_bytes },
+            }, work)?;
             match self.finish {
                 Finish::Return => {}
                 Finish::Error => return Err(ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout)),
@@ -1173,18 +1190,12 @@ mod native_cache {
                 values, allocation: Some(KernelOwnedAllocation::NativeOriginal(allocation)),
             };
             for value in &mut buffer.values {
-                let length = value.bytes.len();
-                let allocation = work.claim(length as u64)?;
-                let copy = work.reserve_copy(length as u64)?;
-                let mut bytes = Vec::new();
-                bytes.try_reserve_exact(length).map_err(|error| ObjectStoreError::Native(
-                    NativeTreeMaterializationError::AllocationFailed(error)))?;
-                bytes.extend_from_slice(&value.bytes);
-                copy.record(length as u64)?;
-                *value = NativeObjectRead::owned(ObjectRead {
-                    bytes: Bytes::from(bytes),
-                    retention: ObjectReadRetention::Owned { logical_bytes: length as u64 },
-                }, allocation)?.into_read();
+                let bytes = copied_native_bytes(&value.bytes, work)?;
+                let logical_bytes = bytes.retained_capacity().ok_or(ObjectStoreError::Corrupt)? as u64;
+                *value = NativeObjectRead::intrinsic(ObjectRead {
+                    bytes,
+                    retention: ObjectReadRetention::Owned { logical_bytes },
+                }, work)?.into_read();
             }
             match self.finish {
                 Finish::Return => {}

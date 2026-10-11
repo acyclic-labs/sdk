@@ -2,7 +2,8 @@
 //!
 //! Standalone and native callers use the same lookup, observation and shared-prefix
 //! batch machines. Native cache slots and returned dependency buffers retain the
-//! original invocation guard; provider byte aliases retain their source owner.
+//! original invocation guard; canonical OwnedBytes aliases retain their source
+//! owner through every path-cache forwarding boundary.
 
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::{AuthenticatedProbeError, DecodeLimits, Dependency, DependencyRegion, DependencyState,
@@ -17,7 +18,7 @@ use crate::model::FilesystemProfile;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest,
     ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStoreError};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use std::cmp::Ordering;
 use std::mem::size_of;
 use std::ops::{Deref, DerefMut};
@@ -126,7 +127,7 @@ fn admit_path_frame(accounting: &mut KernelAccounting<'_>, bytes: u64, observati
     Ok(guard)
 }
 
-struct CachedObject { object_id: ObjectId, bytes: Bytes }
+struct CachedObject { object_id: ObjectId, bytes: OwnedBytes }
 struct CacheState {
     slots: GuardedVec<Option<CachedObject>>,
     entry_count: usize,
@@ -173,7 +174,7 @@ impl<'a, S> OperationReadCache<'a, S> {
         Ok(probe_slots(&state.slots, object_id, accounting, self.data_custody)?.0)
     }
     /// The very same slot-growth and rehash leaves serve both accounting modes.
-    fn admit(&self, object_id: ObjectId, bytes: &Bytes, owned_bytes: u64,
+    fn admit(&self, object_id: ObjectId, bytes: &OwnedBytes, owned_bytes: u64,
         accounting: &mut KernelAccounting<'_>) -> Result<bool, crate::FsError> {
         let mut state = self.lock_state();
         if state.entry_count >= self.maximum_entries { return Ok(false); }
@@ -310,7 +311,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
         work: &crate::NativeMaterializationWork) -> Result<async_storage::DecodedCacheAdmission, ObjectStoreError> {
         self.store.decoded_cache_admit_with_native_work(key, value, work)
     }
-    async fn put(&self, object_id: ObjectId, bytes: Bytes, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<()> {
+    async fn put(&self, object_id: ObjectId, bytes: OwnedBytes, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<()> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = async {
             let resident = self.extra_resident()?;
@@ -359,7 +360,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             .map_err(|error| ObjectFailure::new(object_error(error), work))
     }
     #[cfg(not(target_arch = "wasm32"))]
-    async fn put_with_native_work(&self, object_id: ObjectId, bytes: Bytes,
+    async fn put_with_native_work(&self, object_id: ObjectId, bytes: OwnedBytes,
         work: &crate::NativeMaterializationWork, cancellation: &CancellationToken)
         -> Result<(), ObjectStoreError> {
         self.store.put_with_native_work(object_id, bytes, work, cancellation).await

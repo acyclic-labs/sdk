@@ -16,6 +16,7 @@ use thiserror::Error;
 const PAYLOAD_DOMAIN: &[u8] = b"acyclic-fs-publish-generation-v1\0";
 const FINGERPRINT_DOMAIN: &[u8] = b"acyclic-fs-publish-fingerprint-v1\0";
 const CONTEXTUAL_FINGERPRINT_DOMAIN: &[u8] = b"acyclic-fs-publish-fingerprint-v2\0";
+const EVIDENCE_DOMAIN: &[u8] = b"acyclic-fs-publication-original-evidence-v1\0";
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) type PublicationRootPreparation<'a, E> =
@@ -37,6 +38,12 @@ enum PublicationProofGuard {
 struct PublicationOutput {
     receipt: PublicationReceipt,
     guard: PublicationProofGuard,
+}
+
+struct PublicationAppend {
+    outcome: AppendOutcome,
+    #[cfg(not(target_arch = "wasm32"))]
+    allocation: Option<crate::NativeAllocation>,
 }
 
 struct ProvenPublication {
@@ -117,17 +124,6 @@ impl<'a> PublicationAccounting<'a> {
         }
     }
 
-    fn charge(&mut self, delta: WorkCounters) -> Result<(), crate::FsError> {
-        match self {
-            Self::Standalone { work, budget, cancellation, .. } => {
-                cancellation.check()?;
-                work.charge(&delta, budget)?;
-                Ok(())
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Native(original) => original.charge(delta).map_err(Into::into),
-        }
-    }
 
     fn retain(&mut self, bytes: u64) -> Result<(), crate::FsError> {
         if let Self::Standalone { retained, .. } = self {
@@ -160,12 +156,23 @@ impl<'a> PublicationAccounting<'a> {
 #[cfg(not(target_arch = "wasm32"))]
 struct NativePublicationPayload {
     bytes: Vec<u8>,
+    _original_evidence: Option<acyclic_stream::OwnedBytes>,
     _allocation: crate::NativeAllocation,
     _control: crate::NativeAllocation,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl AsRef<[u8]> for NativePublicationPayload {
+    fn as_ref(&self) -> &[u8] { &self.bytes }
+}
+
+struct PublicationEvidencePayload {
+    bytes: Vec<u8>,
+    _original_evidence: acyclic_stream::OwnedBytes,
+    _control: super::allocation::KernelOwnedAllocation,
+}
+
+impl AsRef<[u8]> for PublicationEvidencePayload {
     fn as_ref(&self) -> &[u8] { &self.bytes }
 }
 
@@ -186,9 +193,10 @@ pub struct PublishGenerationRequest {
     pub generation_root: ObjectId,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PublicationIntent {
     pub(crate) operation_context: Option<Digest>,
+    pub(crate) original_evidence: Option<acyclic_stream::OwnedBytes>,
     pub(crate) permit: PublicationPermit,
 }
 
@@ -196,6 +204,7 @@ impl PublicationIntent {
     pub(crate) const fn unrestricted(operation_context: Option<Digest>) -> Self {
         Self {
             operation_context,
+            original_evidence: None,
             permit: PublicationPermit::Unrestricted,
         }
     }
@@ -206,8 +215,14 @@ impl PublicationIntent {
     ) -> Self {
         Self {
             operation_context,
+            original_evidence: None,
             permit,
         }
+    }
+
+    pub(crate) fn with_original_evidence(mut self, evidence: Option<acyclic_stream::OwnedBytes>) -> Self {
+        self.original_evidence = evidence;
+        self
     }
 }
 
@@ -220,6 +235,15 @@ pub struct PublishedGeneration {
     pub generation_root: ObjectId,
 }
 
+/// Borrowed data authenticated by the complete canonical publication decoder.
+/// It conveys no current publication permission or owner authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct BorrowedPublicationEvidence<'a> {
+    pub(crate) publication: PublishedGeneration,
+    pub(crate) original_evidence: Option<&'a [u8]>,
+    pub(crate) evidence_digest: Option<Digest>,
+}
+
 /// Decodes one canonical generation-publication authority payload.
 ///
 /// The authority store deliberately treats payloads as opaque. This decoder is
@@ -229,8 +253,8 @@ pub struct PublishedGeneration {
 ///
 /// # Errors
 ///
-/// Rejects the wrong domain/version, truncation, trailing bytes, an unknown
-/// object-kind tag, or any object kind other than `GenerationRoot`.
+/// Rejects wrong domain/version, truncation, trailing bytes, an unknown/non-root
+/// object kind, or invalid v2 evidence framing/digest before projecting either scalar.
 pub fn decode_published_generation(
     bytes: &[u8],
     maximum_payload_bytes: u64,
@@ -241,9 +265,19 @@ pub fn decode_published_generation(
 pub(crate) fn decode_published_generation_with_steps<E: From<CanonicalDecodeError>>(
     bytes: &[u8],
     maximum_payload_bytes: u64,
-    mut observe: impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+    observe: impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<PublishedGeneration, E> {
-    let mut decoder = Decoder::new_with_steps(bytes, PAYLOAD_DOMAIN, 1, maximum_payload_bytes, &mut observe)?;
+    decode_publication_evidence_with_steps(bytes, maximum_payload_bytes, observe).map(|decoded| decoded.publication)
+}
+
+pub(crate) fn decode_publication_evidence_with_steps<'a, E: From<CanonicalDecodeError>>(
+    bytes: &'a [u8],
+    maximum_payload_bytes: u64,
+    mut observe: impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+) -> Result<BorrowedPublicationEvidence<'a>, E> {
+    let (mut decoder, version) = Decoder::new_recognized_versions_with_steps(
+        bytes, PAYLOAD_DOMAIN, &[1, 2], maximum_payload_bytes, &mut observe,
+    )?;
     let volume_id = VolumeId::from_bytes(decoder.fixed_with_steps::<16, E>(&mut observe)?);
     let kind = ObjectKind::from_canonical_tag(decoder.u8_with_steps(&mut observe)?).map_err(|_| {
         E::from(CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static("unknown publication object kind")))
@@ -257,8 +291,37 @@ pub(crate) fn decode_published_generation_with_steps<E: From<CanonicalDecodeErro
         kind,
         digest: Digest::from_bytes(decoder.fixed_with_steps::<32, E>(&mut observe)?),
     };
+    let publication = PublishedGeneration { volume_id, generation_root };
+    if version == 1 {
+        decoder.finish().map_err(E::from)?;
+        return Ok(BorrowedPublicationEvidence { publication, original_evidence: None, evidence_digest: None });
+    }
+    let length = decoder.u32_with_steps(&mut observe)?;
+    if length == 0 {
+        return Err(E::from(CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static(
+            "empty original publication evidence",
+        ))));
+    }
+    let envelope_bytes = usize_to_u64(publication_payload_length()).checked_add(4 + 32)
+        .ok_or(CanonicalDecodeError::LengthOverflow)?;
+    let maximum = u32::try_from(maximum_payload_bytes.checked_sub(envelope_bytes).unwrap_or(0)).unwrap_or(u32::MAX);
+    if length > maximum {
+        return Err(E::from(CanonicalDecodeError::FieldTooLarge { observed: length, maximum }));
+    }
+    let evidence = decoder.take_exact(usize::try_from(length).map_err(|_| CanonicalDecodeError::LengthOverflow)?)?;
+    let stored_digest = Digest::from_bytes(decoder.fixed_with_steps::<32, E>(&mut observe)?);
     decoder.finish().map_err(E::from)?;
-    Ok(PublishedGeneration { volume_id, generation_root })
+    let hashed = usize_to_u64(EVIDENCE_DOMAIN.len()).checked_add(u64::from(length))
+        .ok_or(CanonicalDecodeError::LengthOverflow)?;
+    observe(super::codec::ReadAllocationStep::BeforeHash(hashed))?;
+    let actual_digest = original_evidence_digest(evidence);
+    observe(super::codec::ReadAllocationStep::Hashed(hashed))?;
+    if actual_digest != stored_digest {
+        return Err(E::from(CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static(
+            "original publication evidence digest mismatch",
+        ))));
+    }
+    Ok(BorrowedPublicationEvidence { publication, original_evidence: Some(evidence), evidence_digest: Some(stored_digest) })
 }
 
 /// Decodes the same canonical authority payload on the caller's existing
@@ -269,18 +332,26 @@ pub(crate) fn decode_published_generation_with_accounting(
     maximum_payload_bytes: u64,
     accounting: &mut super::allocation::KernelAccounting<'_>,
 ) -> Result<PublishedGeneration, crate::FsError> {
+    decode_publication_evidence_with_accounting(bytes, maximum_payload_bytes, accounting).map(|decoded| decoded.publication)
+}
+
+pub(crate) fn decode_publication_evidence_with_accounting<'a>(
+    bytes: &'a [u8],
+    maximum_payload_bytes: u64,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+) -> Result<BorrowedPublicationEvidence<'a>, crate::FsError> {
     accounting.check()?;
     #[cfg(not(target_arch = "wasm32"))]
     if accounting.native_work().is_some() {
         let mut observer = super::file_read::OriginalReadAccounting::new(accounting)?;
-        let decoded = decode_published_generation_with_steps(bytes, maximum_payload_bytes, |step| observer.observe(step));
+        let decoded = decode_publication_evidence_with_steps(bytes, maximum_payload_bytes, |step| observer.observe(step));
         drop(observer.into_allocation());
         return decoded.map_err(super::file_read::ReadDecodeError::into_original_fs_error);
     }
     let (allocations, work, budget, cancellation) = accounting.standalone_parts()
         .expect("only a standalone decoder remains after the native branch");
     let mut observer = Some(super::file_read::ReadDecodeAccounting { allocations, work, budget, cancellation });
-    decode_published_generation_with_steps(bytes, maximum_payload_bytes, |step| {
+    decode_publication_evidence_with_steps(bytes, maximum_payload_bytes, |step| {
         super::file_read::observe_read_decode_step(&mut observer, step).map_err(|error| match error {
             super::file_read::ReadDecodeError::Canonical(error) => crate::FsError::Decode(error),
             super::file_read::ReadDecodeError::AllocationFailed(_) => crate::FsError::Decode(CanonicalDecodeError::AllocationFailed),
@@ -442,6 +513,23 @@ where
             })
         }
     };
+    let mut dispatch = |request: GuardedAppend, allowance: Option<WorkBudget>| {
+        let future = authority.compare_and_append_guarded(
+            request, allowance.expect("the ordinary engine supplies its remaining budget"), cancellation,
+        );
+        async move {
+            future.await.map(|receipt| (
+                PublicationAppend {
+                    outcome: receipt.value,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    allocation: None,
+                },
+                Some(receipt.work),
+            )).map_err(|failure| PublicationStepFailure {
+                cause: E::from(crate::FsError::Authority(failure.error)), work: Some(*failure.work),
+            })
+        }
+    };
     let mut roots = |root: &super::GenerationRoot, _: &mut PublicationProofGuard, accounting: &mut PublicationAccounting<'_>| {
         if let Some(prepare) = prepare_roots.as_mut() {
             let result = prepare(root, accounting.remaining().map_err(E::from)?)
@@ -455,8 +543,8 @@ where
         Ok(())
     };
     let result = publish_generation_async_inner(
-        objects, authority, request, intent, closure_limits, cancellation,
-        &mut accounting, &mut seal, resolved, &mut roots,
+        objects, request, intent, closure_limits, cancellation,
+        &mut accounting, &mut seal, &mut dispatch, resolved, &mut roots,
     ).await;
     result.map(|output| output.receipt)
         .map_err(|error| OperationFailure::new(error, accounting.work()))
@@ -481,11 +569,40 @@ pub(crate) async fn publish_generation_async_guarded_with_native_work<'a, O, A, 
 where
     O: crate::AsyncObjectStore,
     A: crate::AsyncAuthorityStore,
-    E: From<crate::FsError> + Send,
-    F: FnMut(&'a crate::NativeMaterializationWork) -> Fut + Send,
-    Fut: Future<Output = Result<(), E>> + Send,
+    E: From<crate::FsError> + Send + 'static,
+    F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+    Fut: Future<Output = Result<(), E>> + Send + 'static,
 {
     let mut accounting = PublicationAccounting::Native(original);
+    let mut factory = before_publication.clone();
+    let owner_original = original.clone();
+    let owned_owner = move |same_original: &crate::NativeMaterializationWork| {
+        let admitted = if owner_original.shares_ledger(same_original) {
+            owner_original.admit(WorkCounters::UNCHARGED).map_err(crate::FsError::from).map_err(E::from)
+        } else {
+            Err(E::from(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout)))
+        };
+        let future = admitted.map(|()| factory(same_original));
+        async move {
+            let future = future.map_err(NativePublicationOwnerFailure::Owner)?;
+            future.await.map_err(NativePublicationOwnerFailure::Owner)
+        }
+    };
+    let mut dispatch = |request: GuardedAppend, _: Option<WorkBudget>| {
+        let mut owner = owned_owner.clone();
+        async move {
+            let (outcome, allocation) = authority.compare_and_append_guarded_with_native_owner(
+                request, original, cancellation, &mut owner,
+            ).await.map_err(|error| PublicationStepFailure {
+                cause: match error {
+                    NativePublicationOwnerFailure::Owner(error) => error,
+                    NativePublicationOwnerFailure::Authority(error) => E::from(native_authority_error(error)),
+                },
+                work: None,
+            })?;
+            Ok((PublicationAppend { outcome, allocation: Some(allocation) }, None))
+        }
+    };
     let mut seal = |_| {
         let future = before_publication(original);
         async move {
@@ -502,8 +619,8 @@ where
         Ok(())
     };
     let output = publish_generation_async_inner(
-        objects, authority, request, intent, closure_limits, cancellation,
-        &mut accounting, &mut seal, resolved, &mut roots,
+        objects, request, intent, closure_limits, cancellation,
+        &mut accounting, &mut seal, &mut dispatch, resolved, &mut roots,
     ).await?;
     match output.guard {
         PublicationProofGuard::Native(guard) => Ok((output.receipt, guard)),
@@ -511,24 +628,25 @@ where
     }
 }
 
-async fn publish_generation_async_inner<O, A, E, F, Fut, R>(
+async fn publish_generation_async_inner<O, E, F, Fut, G, Dispatch, R>(
     objects: &O,
-    authority: &A,
     request: PublishGenerationRequest,
     intent: PublicationIntent,
     closure_limits: ClosureLimits,
     cancellation: &CancellationToken,
     accounting: &mut PublicationAccounting<'_>,
     before_publication: &mut F,
+    dispatch: &mut G,
     resolved: Option<crate::foundation::DurableCommit>,
     prepare_roots: &mut R,
 ) -> Result<PublicationOutput, E>
 where
     O: crate::AsyncObjectStore,
-    A: crate::AsyncAuthorityStore,
     E: From<crate::FsError> + Send,
     F: FnMut(Option<WorkBudget>) -> Fut + Send,
     Fut: Future<Output = Result<Option<WorkCounters>, PublicationStepFailure<E>>> + Send,
+    G: FnMut(GuardedAppend, Option<WorkBudget>) -> Dispatch + crate::async_storage::StorageFuture,
+    Dispatch: Future<Output = Result<(PublicationAppend, Option<WorkCounters>), PublicationStepFailure<E>>> + crate::async_storage::StorageFuture,
     R: FnMut(&super::GenerationRoot, &mut PublicationProofGuard, &mut PublicationAccounting<'_>) -> Result<(), E>,
 {
     let expected_authority = volume_authority_id(request.volume_id);
@@ -577,20 +695,23 @@ where
             expected: request.volume_id, actual: output.proof.root.volume_id,
         })));
     }
-    let permit_hash_bytes = match intent.permit {
-        PublicationPermit::Unrestricted => 0,
-        PublicationPermit::Lease { .. } =>
-            usize_to_u64(b"acyclic-fs-publication-lease-v1\0".len()) + 1 + 16 + 16 + 16 + 8
-                + if intent.operation_context.is_some() { 32 } else { 0 },
-        PublicationPermit::Reservation { .. } =>
-            usize_to_u64(b"acyclic-fs-publication-reservation-v1\0".len()) + 1 + 16 + 8 + 8 + 8 + 32
-                + if intent.operation_context.is_some() { 32 } else { 0 },
-    };
-    accounting.charge(WorkCounters { bytes_hashed: permit_hash_bytes, ..WorkCounters::UNCHARGED })
-        .map_err(E::from)?;
-    let operation_context = permit_context(intent.operation_context, intent.permit);
-    let commit = prepare_publication_commit(request, operation_context, accounting, cancellation)
-        .map_err(E::from)?;
+    let operation_context = match accounting {
+        PublicationAccounting::Standalone { work, budget, .. } => {
+            let mut allocations = super::allocation::AllocationLedger::default();
+            let mut binding = super::allocation::KernelAccounting::borrowed_standalone(
+                &mut allocations, work, *budget, cancellation,
+            );
+            permit_context_with_accounting(intent.operation_context, intent.permit, &mut binding)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        PublicationAccounting::Native(original) => {
+            let mut binding = super::allocation::KernelAccounting::native(original, cancellation);
+            permit_context_with_accounting(intent.operation_context, intent.permit, &mut binding)
+        }
+    }.map_err(E::from)?;
+    let commit = prepare_publication_commit(
+        request, operation_context, intent.original_evidence, accounting, cancellation,
+    ).map_err(E::from)?;
     if let Some(resolved) = resolved.as_ref()
         && resolved.fingerprint != commit.fingerprint
     {
@@ -646,43 +767,22 @@ where
         accounting.accept_step(checked.map(|work| ((), work)))?;
     }
     cancellation.check().map_err(crate::FsError::from).map_err(E::from)?;
-    let outcome = match accounting {
-        PublicationAccounting::Standalone { .. } => {
-            let result = authority.compare_and_append_guarded(
-                append, accounting.remaining().map_err(E::from)?, cancellation,
-            ).await.map(|receipt| (receipt.value, Some(receipt.work))).map_err(|failure| PublicationStepFailure {
-                cause: E::from(crate::FsError::Authority(failure.error)), work: Some(*failure.work),
-            });
-            accounting.accept_step(result)?
-        }
+    let allowance = match accounting {
+        PublicationAccounting::Standalone { .. } => Some(accounting.remaining().map_err(E::from)?),
         #[cfg(not(target_arch = "wasm32"))]
-        PublicationAccounting::Native(original) => {
-            let original = *original;
-            let mut owner = |same_original: crate::NativeMaterializationWork| {
-                let admitted = if original.shares_ledger(&same_original) {
-                    original.admit(WorkCounters::UNCHARGED).map_err(crate::FsError::from).map_err(E::from)
-                } else {
-                    Err(E::from(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout)))
-                };
-                let future = admitted.map(|()| before_publication(None));
-                async move {
-                    let future = future.map_err(NativePublicationOwnerFailure::Owner)?;
-                    future.await.map(|_| ()).map_err(|failure| NativePublicationOwnerFailure::Owner(failure.cause))
-                }
-            };
-            let mut appended = authority.compare_and_append_guarded_with_native_owner(
-                append, original, cancellation, &mut owner,
-            ).await.map_err(|error| match error {
-                NativePublicationOwnerFailure::Owner(error) => error,
-                NativePublicationOwnerFailure::Authority(error) => E::from(native_authority_error(error)),
-            })?;
-            if let PublicationProofGuard::Native(proof_guard) = &mut output.guard {
-                proof_guard.absorb(&mut appended.1).map_err(crate::FsError::from).map_err(E::from)?;
-            }
-            appended.0
-        }
+        PublicationAccounting::Native(_) => None,
     };
-    Ok(output.finish(outcome, accounting.work()))
+    let appended = accounting.accept_step(dispatch(append, allowance).await)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut appended = appended;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let PublicationProofGuard::Native(proof_guard) = &mut output.guard {
+        let allocation = appended.allocation.as_mut().ok_or_else(|| E::from(crate::FsError::NativeKernel(
+            crate::NativeTreeMaterializationError::InvalidLayout,
+        )))?;
+        proof_guard.absorb(allocation).map_err(crate::FsError::from).map_err(E::from)?;
+    }
+    Ok(output.finish(appended.outcome, accounting.work()))
 }
 
 fn publication_error(error: crate::FsError) -> PublicationError {
@@ -712,6 +812,28 @@ fn native_authority_error(error: AuthorityStoreError) -> crate::FsError {
         AuthorityStoreError::NativeOriginal(error) => crate::FsError::NativeKernel(error),
         error => crate::FsError::Authority(error),
     }
+}
+
+pub(crate) fn permit_context_with_accounting(
+    context: Option<Digest>,
+    permit: PublicationPermit,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+) -> Result<Option<Digest>, crate::FsError> {
+    accounting.check()?;
+    let permit_hash_bytes = match permit {
+        PublicationPermit::Unrestricted => 0,
+        PublicationPermit::Lease { .. } =>
+            usize_to_u64(b"acyclic-fs-publication-lease-v1\0".len()) + 1 + 16 + 16 + 16 + 8
+                + if context.is_some() { 32 } else { 0 },
+        PublicationPermit::Reservation { .. } =>
+            usize_to_u64(b"acyclic-fs-publication-reservation-v1\0".len()) + 1 + 16 + 8 + 8 + 8 + 32
+                + if context.is_some() { 32 } else { 0 },
+    };
+    let hashing = WorkCounters { bytes_hashed: permit_hash_bytes, ..WorkCounters::UNCHARGED };
+    accounting.admit(hashing)?;
+    let bound = permit_context(context, permit);
+    accounting.record_completed(hashing)?;
+    Ok(bound)
 }
 
 fn permit_context(context: Option<Digest>, permit: PublicationPermit) -> Option<Digest> {
@@ -769,6 +891,7 @@ fn permit_context(context: Option<Digest>, permit: PublicationPermit) -> Option<
 fn prepare_publication_commit(
     request: PublishGenerationRequest,
     operation_context: Option<Digest>,
+    original_evidence: Option<acyclic_stream::OwnedBytes>,
     accounting: &mut PublicationAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<ProposedCommit, crate::FsError> {
@@ -780,14 +903,29 @@ fn prepare_publication_commit(
             let mut construction = super::allocation::KernelAccounting::borrowed_standalone(
                 &mut allocations, work, *budget, cancellation,
             );
-            let (payload, fingerprint) = construct_publication_commit(request, operation_context, &mut construction)?;
-            *retained = retained.checked_add(payload.bytes).ok_or(WorkError::Overflow)?;
-            Ok(ProposedCommit { operation_id: request.operation_id, fingerprint, payload: Bytes::from(payload.value) })
+            let (payload, fingerprint) = construct_publication_commit(
+                request, operation_context, original_evidence.as_ref().map(|evidence| evidence.as_slice()), &mut construction,
+            )?;
+            let payload = if let Some(evidence) = original_evidence {
+                let control_bytes = super::allocation::bytes_owner_control_bytes::<PublicationEvidencePayload>()?;
+                let control = construction.claim_owned(control_bytes, 1)?;
+                *retained = retained.checked_add(payload.bytes)
+                    .and_then(|bytes| bytes.checked_add(control_bytes)).ok_or(WorkError::Overflow)?;
+                Bytes::from_owner(PublicationEvidencePayload {
+                    bytes: payload.value, _original_evidence: evidence, _control: control,
+                })
+            } else {
+                *retained = retained.checked_add(payload.bytes).ok_or(WorkError::Overflow)?;
+                Bytes::from(payload.value)
+            };
+            Ok(ProposedCommit { operation_id: request.operation_id, fingerprint, payload })
         }
         #[cfg(not(target_arch = "wasm32"))]
         PublicationAccounting::Native(original) => {
             let mut construction = super::allocation::KernelAccounting::native(original, cancellation);
-            let built = construct_publication_commit(request, operation_context, &mut construction)?;
+            let built = construct_publication_commit(
+                request, operation_context, original_evidence.as_ref().map(|evidence| evidence.as_slice()), &mut construction,
+            )?;
             cancellation.check()?;
             original.admit(WorkCounters::UNCHARGED)?;
             let control = original.claim(super::allocation::bytes_owner_control_bytes::<NativePublicationPayload>()?)?;
@@ -797,7 +935,7 @@ fn prepare_publication_commit(
                 unreachable!("the original constructor preserves its native allocation owner");
             };
             let payload = Bytes::from_owner(NativePublicationPayload {
-                bytes: payload, _allocation: allocation, _control: control,
+                bytes: payload, _original_evidence: original_evidence, _allocation: allocation, _control: control,
             });
             Ok(ProposedCommit { operation_id: request.operation_id, fingerprint, payload })
         }
@@ -811,17 +949,31 @@ fn publication_allocation_error(error: super::allocation::AllocationError) -> cr
 fn construct_publication_commit(
     request: PublishGenerationRequest,
     operation_context: Option<Digest>,
+    original_evidence: Option<&[u8]>,
     accounting: &mut super::allocation::KernelAccounting<'_>,
 ) -> Result<(super::persistent_point::Owned<Vec<u8>>, Digest), crate::FsError> {
     use super::persistent_point::Owned;
     accounting.check()?;
-    let mut payload = Owned::<Vec<u8>>::allocate(publication_payload_length(), accounting)?;
-    let mut input = Owned::<Vec<u8>>::allocate(fingerprint_input_length(operation_context), accounting)?;
-    let encoded = usize_to_u64(publication_payload_length())
-        .checked_add(usize_to_u64(fingerprint_input_length(operation_context))).ok_or(WorkError::Overflow)?;
+    let payload_length = publication_payload_length_with_evidence(original_evidence)?;
+    let input_length = fingerprint_input_length(operation_context)
+        .checked_sub(publication_payload_length()).and_then(|length| length.checked_add(payload_length))
+        .ok_or(WorkError::Overflow)?;
+    let evidence = if let Some(bytes) = original_evidence {
+        let hashing = WorkCounters {
+            bytes_hashed: usize_to_u64(EVIDENCE_DOMAIN.len()).checked_add(usize_to_u64(bytes.len())).ok_or(WorkError::Overflow)?,
+            ..WorkCounters::UNCHARGED
+        };
+        accounting.admit(hashing)?;
+        let digest = original_evidence_digest(bytes);
+        accounting.record_completed(hashing)?;
+        Some((bytes, digest))
+    } else { None };
+    let mut payload = Owned::<Vec<u8>>::allocate(payload_length, accounting)?;
+    let mut input = Owned::<Vec<u8>>::allocate(input_length, accounting)?;
+    let encoded = usize_to_u64(payload_length).checked_add(usize_to_u64(input_length)).ok_or(WorkError::Overflow)?;
     let encoding = WorkCounters { bytes_encoded: encoded, bytes_copied: encoded, ..WorkCounters::UNCHARGED };
     accounting.admit(encoding)?;
-    write_publication_payload(&mut payload.value, request.volume_id, request.generation_root);
+    write_publication_payload_with_evidence(&mut payload.value, request.volume_id, request.generation_root, evidence);
     write_fingerprint_input(&mut input.value, &request, operation_context, &payload.value);
     accounting.record_completed(encoding)?;
     let hashed = usize_to_u64(fingerprint_domain(operation_context).len())
@@ -851,9 +1003,36 @@ pub(crate) fn contextual_publication_fingerprint_with_accounting(
     accounting: &mut super::allocation::KernelAccounting<'_>,
 ) -> Result<Digest, crate::FsError> {
     let (payload, fingerprint) = construct_publication_commit(
-        request, Some(operation_context), accounting,
+        request, Some(operation_context), None, accounting,
     )?;
     payload.retire(accounting)?;
+    Ok(fingerprint)
+}
+
+/// Hashes the authenticated original payload without allocating or copying its
+/// retained operation data. The caller keeps the complete durable record alive.
+pub(crate) fn contextual_publication_fingerprint_from_payload_with_accounting(
+    request: PublishGenerationRequest,
+    operation_context: Digest,
+    payload: &[u8],
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+) -> Result<Digest, crate::FsError> {
+    accounting.check()?;
+    let context = Some(operation_context);
+    let input_bytes = usize_to_u64(fingerprint_input_length(context))
+        .checked_sub(usize_to_u64(publication_payload_length()))
+        .and_then(|bytes| bytes.checked_add(usize_to_u64(payload.len()))).ok_or(WorkError::Overflow)?;
+    let hashing = WorkCounters {
+        bytes_hashed: usize_to_u64(fingerprint_domain(context).len()).checked_add(input_bytes).ok_or(WorkError::Overflow)?,
+        ..WorkCounters::UNCHARGED
+    };
+    accounting.admit(hashing)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(fingerprint_domain(context));
+    feed_fingerprint_input(&request, context, payload, |part| { hasher.update(part); });
+    let fingerprint = Digest::from_bytes(*hasher.finalize().as_bytes());
+    accounting.record_completed(hashing)?;
+    accounting.check()?;
     Ok(fingerprint)
 }
 
@@ -878,6 +1057,23 @@ const fn publication_payload_length() -> usize {
     PAYLOAD_DOMAIN.len() + 2 + 16 + 1 + 32
 }
 
+fn publication_payload_length_with_evidence(evidence: Option<&[u8]>) -> Result<usize, crate::FsError> {
+    let Some(evidence) = evidence else { return Ok(publication_payload_length()) };
+    if evidence.is_empty() {
+        return Err(CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static("empty original publication evidence")).into());
+    }
+    u32::try_from(evidence.len()).map_err(|_| CanonicalDecodeError::LengthOverflow)?;
+    publication_payload_length().checked_add(4).and_then(|length| length.checked_add(evidence.len()))
+        .and_then(|length| length.checked_add(32)).ok_or_else(|| WorkError::Overflow.into())
+}
+
+fn original_evidence_digest(evidence: &[u8]) -> Digest {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(EVIDENCE_DOMAIN);
+    hasher.update(evidence);
+    Digest::from_bytes(*hasher.finalize().as_bytes())
+}
+
 const fn fingerprint_input_length(operation_context: Option<Digest>) -> usize {
     16 + 8
         + 8
@@ -897,11 +1093,23 @@ pub(crate) fn encode_publication_payload(
 }
 
 fn write_publication_payload(bytes: &mut Vec<u8>, volume_id: VolumeId, generation_root: ObjectId) {
+    write_publication_payload_with_evidence(bytes, volume_id, generation_root, None);
+}
+
+fn write_publication_payload_with_evidence(
+    bytes: &mut Vec<u8>, volume_id: VolumeId, generation_root: ObjectId,
+    evidence: Option<(&[u8], Digest)>,
+) {
     bytes.extend_from_slice(PAYLOAD_DOMAIN);
-    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&(if evidence.is_some() { 2_u16 } else { 1_u16 }).to_le_bytes());
     bytes.extend_from_slice(&volume_id.into_bytes());
     bytes.push(generation_root.kind.canonical_tag());
     bytes.extend_from_slice(generation_root.digest.as_bytes());
+    if let Some((evidence, digest)) = evidence {
+        bytes.extend_from_slice(&(evidence.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(evidence);
+        bytes.extend_from_slice(digest.as_bytes());
+    }
 }
 
 fn fingerprint_domain(operation_context: Option<Digest>) -> &'static [u8] {
@@ -926,15 +1134,24 @@ fn write_fingerprint_input(
     bytes: &mut Vec<u8>, request: &PublishGenerationRequest,
     operation_context: Option<Digest>, payload: &[u8],
 ) {
-    bytes.extend_from_slice(&request.authority_id.into_bytes());
-    bytes.extend_from_slice(&request.epoch.get().to_le_bytes());
-    bytes.extend_from_slice(&request.expected.epoch.get().to_le_bytes());
-    bytes.extend_from_slice(&request.expected.sequence.get().to_le_bytes());
-    bytes.extend_from_slice(request.expected.digest.as_bytes());
+    feed_fingerprint_input(request, operation_context, payload, |part| bytes.extend_from_slice(part));
+}
+
+fn feed_fingerprint_input(
+    request: &PublishGenerationRequest,
+    operation_context: Option<Digest>,
+    payload: &[u8],
+    mut feed: impl FnMut(&[u8]),
+) {
+    feed(&request.authority_id.into_bytes());
+    feed(&request.epoch.get().to_le_bytes());
+    feed(&request.expected.epoch.get().to_le_bytes());
+    feed(&request.expected.sequence.get().to_le_bytes());
+    feed(request.expected.digest.as_bytes());
     if let Some(context) = operation_context {
-        bytes.extend_from_slice(context.as_bytes());
+        feed(context.as_bytes());
     }
-    bytes.extend_from_slice(payload);
+    feed(payload);
 }
 
 #[cfg(all(test, feature = "memory"))]

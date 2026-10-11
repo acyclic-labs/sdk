@@ -8,12 +8,12 @@ use crate::storage::{
     ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectReceipt,
     ObjectResult, ObjectStore, ObjectStoreError,
 };
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Deterministic conformance backend that returns independently owned read
 /// buffers. The production memory backend intentionally shares immutable
-/// `Bytes`; this backend proves kernels correctly admit the more expensive
+/// byte buffers; this backend proves kernels correctly admit the more expensive
 /// ownership contract required of remote and native adapters.
 #[derive(Default)]
 pub(crate) struct OwnedReadObjectStore {
@@ -53,7 +53,7 @@ impl OwnedReadObjectStore {
             .map_err(|error| ObjectFailure::new(error.into(), receipt.work))?;
         Ok(ObjectReceipt {
             value: ObjectRead {
-                bytes: Bytes::copy_from_slice(&receipt.value.bytes),
+                bytes: OwnedBytes::copy_from_slice(&receipt.value.bytes),
                 retention: ObjectReadRetention::Owned { logical_bytes },
             },
             work,
@@ -77,7 +77,7 @@ impl AsyncObjectStore for OwnedReadObjectStore {
     async fn put(
         &self,
         object_id: ObjectId,
-        bytes: Bytes,
+        bytes: OwnedBytes,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {

@@ -12,7 +12,7 @@ use crate::performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
 };
 use crate::storage::{ObjectId, ObjectRead, ObjectReadRequest, ObjectStoreError};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use std::mem::size_of;
 use thiserror::Error;
 
@@ -314,7 +314,7 @@ pub async fn import_generation_batch_async<S: AsyncObjectStore + ?Sized>(
     store: &S,
     manifest: &GenerationExportManifest,
     cursor: TransferCursor,
-    bodies: &[Bytes],
+    bodies: &[OwnedBytes],
     maximum_objects: u32,
     budget: WorkBudget,
     cancellation: &CancellationToken,

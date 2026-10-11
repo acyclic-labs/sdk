@@ -38,7 +38,7 @@ fn put_root(
         kind: ObjectKind::GenerationRoot,
         digest: object_digest(ObjectKind::GenerationRoot, &encoded),
     };
-    store.put(object, Bytes::from(encoded), WorkBudget::UNBOUNDED)?;
+    store.put(object, acyclic_stream::OwnedBytes::from(encoded), WorkBudget::UNBOUNDED)?;
     Ok(object)
 }
 

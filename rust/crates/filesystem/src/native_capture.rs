@@ -1408,10 +1408,9 @@ impl CaptureWorkScope {
         }
         let bytes = custody.take_retained_bytes();
         drop(custody);
-        let (released, completed) = {
-            let mut work = capture_ledger_meter(&self.original);
+        let (released, completed) = self.native.with_original_leaf(|work| {
             (work.without_capture_custody(|work| work.release(bytes)), work.work)
-        };
+        });
         released.map_err(|error| OperationFailure::new(capture_demand_error(error), completed))
     }
 }
@@ -1431,28 +1430,10 @@ impl Drop for CaptureWorkScope {
     fn drop(&mut self) { let _ = self.release(); }
 }
 
-struct CaptureWorkGuard<'a> {
-    work: std::sync::MutexGuard<'a, DemandWork>,
-    previous: Option<std::sync::Arc<crate::demand::CaptureTransientCustody>>,
-}
-
-impl std::ops::Deref for CaptureWorkGuard<'_> {
-    type Target = DemandWork;
-    fn deref(&self) -> &DemandWork { &self.work }
-}
-
-impl std::ops::DerefMut for CaptureWorkGuard<'_> {
-    fn deref_mut(&mut self) -> &mut DemandWork { &mut self.work }
-}
-
-impl Drop for CaptureWorkGuard<'_> {
-    fn drop(&mut self) { self.work.replace_capture_custody(self.previous.take()); }
-}
-
-fn capture_owned_leaf(meter: &CaptureWorkScope) -> CaptureWorkGuard<'_> {
-    let mut work = capture_ledger_meter(meter.original());
-    let previous = work.replace_capture_custody(meter.custody.as_ref().map(std::sync::Arc::clone));
-    CaptureWorkGuard { work, previous }
+fn capture_owned_leaf<T>(
+    meter: &CaptureWorkScope, operation: impl FnOnce(&mut DemandWork) -> T,
+) -> T {
+    meter.native().with_original_leaf(operation)
 }
 
 fn capture_meter(meter: &CaptureWorkScope) -> CaptureNativeHostWork<'_> {
@@ -1483,7 +1464,7 @@ impl CaptureNativeWork for DemandWork {
 
 impl CaptureNativeWork for CaptureNativeHostWork<'_> {
     fn leaf<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
-        operation(&mut capture_owned_leaf(self.scope))
+        capture_owned_leaf(self.scope, operation)
     }
 }
 
@@ -1498,54 +1479,52 @@ impl crate::native_host::NativeHostWork for CaptureNativeHostWork<'_> {
     fn allocation_failed(error: std::collections::TryReserveError) -> DemandError {
         DemandError::Allocation(error)
     }
-    fn check(&self) -> Result<(), DemandError> { capture_ledger_meter(self.scope.original()).check() }
+    fn check(&self) -> Result<(), DemandError> { capture_owned_leaf(self.scope, |work| work.check()) }
     fn admit(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
-        let work = capture_ledger_meter(self.scope.original());
-        work.check()?;
-        work.work.admit(&delta, &work.budget).map_err(DemandError::from)
+        capture_owned_leaf(self.scope, |work| work.admit(delta))
     }
     fn record(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
-        capture_ledger_meter(self.scope.original()).record(delta)
+        capture_owned_leaf(self.scope, |work| work.record(delta))
     }
     fn started_io(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
-        capture_owned_leaf(self.scope).charge(delta)
+        capture_owned_leaf(self.scope, |work| work.charge(delta))
     }
     fn claim(&mut self, bytes: u64) -> Result<u64, DemandError> {
-        capture_owned_leaf(self.scope).allocate(bytes)?;
+        capture_owned_leaf(self.scope, |work| work.allocate(bytes))?;
         Ok(bytes)
     }
     fn reserve_opaque_decode(&mut self, bytes: u64) -> Result<u64, DemandError> {
-        capture_owned_leaf(self.scope).adopt(bytes)?;
+        capture_owned_leaf(self.scope, |work| work.adopt(bytes))?;
         Ok(bytes)
     }
     fn reconcile_allocation(&mut self, allocation: &mut u64, actual: u64) -> Result<(), DemandError> {
-        capture_owned_leaf(self.scope).reconcile_native_allocation(allocation, actual)
+        capture_owned_leaf(self.scope, |work| work.reconcile_native_allocation(allocation, actual))
     }
     fn release(&mut self, bytes: u64) -> Result<(), DemandError> {
-        capture_owned_leaf(self.scope).release(bytes)
+        capture_owned_leaf(self.scope, |work| work.release(bytes))
     }
     fn attempt_io<T>(
         &mut self, delta: WorkCounters, operation: impl FnOnce() -> std::io::Result<T>,
     ) -> Result<T, DemandError> {
         // Consume the real attempt's allowance before a reentrant host can
         // spend it. The operation immediately follows with the lock retired.
-        capture_ledger_meter(self.scope.original()).charge(delta)?;
+        capture_owned_leaf(self.scope, |work| work.charge(delta))?;
         operation().map_err(DemandError::from)
     }
     fn reserve_cleanup_write(&mut self) -> Result<u64, DemandError> {
-        acyclic_native_runtime::NativeReadMeter::reserve_cleanup_write(self.scope.original().as_ref())
+        acyclic_native_runtime::NativeReadMeter::reserve_cleanup_write(self.scope.native().runtime_meter())
             .map_err(native_demand_error)
     }
     fn cancel_cleanup_write(&mut self, reservation: u64) {
         acyclic_native_runtime::NativeReadMeter::cancel_cleanup_write(
-            self.scope.original().as_ref(), reservation,
+            self.scope.native().runtime_meter(), reservation,
         );
     }
     fn attempt_cleanup_write<T>(
         &mut self, reservation: u64, operation: impl FnOnce() -> T,
     ) -> (T, Result<(), DemandError>) {
         let recorded = acyclic_native_runtime::NativeReadMeter::record_cleanup_write(
-            self.scope.original().as_ref(), reservation,
+            self.scope.native().runtime_meter(), reservation,
         ).map_err(native_demand_error);
         (operation(), recorded)
     }
@@ -1557,106 +1536,122 @@ struct CaptureNativeReadMeter<'a>(&'a CaptureWorkScope);
 
 impl acyclic_native_runtime::NativeReadMeter for CaptureNativeReadMeter<'_> {
     fn check(&self) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::check(self.0.original().as_ref())
+        acyclic_native_runtime::NativeReadMeter::check(self.0.native().runtime_meter())
     }
     fn reserve_operations(&self, kind: acyclic_native_runtime::NativeOperationKind, count: u64) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::reserve_operations(self.0.original().as_ref(), kind, count)
+        acyclic_native_runtime::NativeReadMeter::reserve_operations(self.0.native().runtime_meter(), kind, count)
     }
     fn cancel_reserved_operations(&self, kind: acyclic_native_runtime::NativeOperationKind, count: u64) {
-        acyclic_native_runtime::NativeReadMeter::cancel_reserved_operations(self.0.original().as_ref(), kind, count)
+        acyclic_native_runtime::NativeReadMeter::cancel_reserved_operations(self.0.native().runtime_meter(), kind, count)
     }
     fn record_reserved_operation(&self, kind: acyclic_native_runtime::NativeOperationKind) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::record_reserved_operation(self.0.original().as_ref(), kind)
+        acyclic_native_runtime::NativeReadMeter::record_reserved_operation(self.0.native().runtime_meter(), kind)
     }
     fn admit_write_bytes(&self, maximum: usize) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::admit_write_bytes(self.0.original().as_ref(), maximum)
+        acyclic_native_runtime::NativeReadMeter::admit_write_bytes(self.0.native().runtime_meter(), maximum)
     }
     fn reserve_bytes(&self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::reserve_bytes(self.0.original().as_ref(), kind, maximum)
+        acyclic_native_runtime::NativeReadMeter::reserve_bytes(self.0.native().runtime_meter(), kind, maximum)
     }
     fn cancel_reserved_bytes(&self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64) {
-        acyclic_native_runtime::NativeReadMeter::cancel_reserved_bytes(self.0.original().as_ref(), kind, maximum)
+        acyclic_native_runtime::NativeReadMeter::cancel_reserved_bytes(self.0.native().runtime_meter(), kind, maximum)
     }
     fn record_reserved_bytes(&self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64, actual: u64) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::record_reserved_bytes(self.0.original().as_ref(), kind, maximum, actual)
+        acyclic_native_runtime::NativeReadMeter::record_reserved_bytes(self.0.native().runtime_meter(), kind, maximum, actual)
     }
     fn allocate(&self, bytes: u64) -> std::io::Result<()> {
-        let result = { capture_owned_leaf(self.0).allocate(bytes) };
+        let result = capture_owned_leaf(self.0, |work| work.allocate(bytes));
+        result.map_err(|error| self.0.original().relay_io_failure(error))
+    }
+    fn reserve_allocation(&self, bytes: u64) -> std::io::Result<()> {
+        let result = self.0.native().with_original_leaf(|work| work.reserve_native_allocation(bytes));
+        result.map_err(|error| self.0.original().relay_io_failure(error))
+    }
+    fn cancel_reserved_allocation(&self, bytes: u64) {
+        self.0.native().with_original_leaf(|work| {
+            if let Err(error) = work.cancel_reserved_native_allocation(bytes) {
+                work.record_native_io_failure(error);
+                work.poison_native_original_work();
+            }
+        });
+    }
+    fn record_reserved_allocation(&self, bytes: u64) -> std::io::Result<()> {
+        let result = self.0.native().with_original_leaf(|work| work.record_reserved_native_allocation(bytes));
         result.map_err(|error| self.0.original().relay_io_failure(error))
     }
     fn allocation_failed(&self, error: std::collections::TryReserveError) -> std::io::Error {
-        acyclic_native_runtime::NativeReadMeter::allocation_failed(self.0.original().as_ref(), error)
+        acyclic_native_runtime::NativeReadMeter::allocation_failed(self.0.native().runtime_meter(), error)
     }
     fn allocate_refcount_header(&self) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::allocate_refcount_header(self.0.original().as_ref())
+        acyclic_native_runtime::NativeReadMeter::allocate_refcount_header(self.0.native().runtime_meter())
     }
     fn adopt(&self, bytes: u64) -> std::io::Result<()> {
-        let result = { capture_owned_leaf(self.0).adopt(bytes) };
+        let result = capture_owned_leaf(self.0, |work| work.adopt(bytes));
         result.map_err(|error| self.0.original().relay_io_failure(error))
     }
     fn record_completed_adoption(&self, bytes: u64) -> (u64, std::io::Result<()>) {
-        let (claimed, result) = { capture_owned_leaf(self.0).record_native_completed_adoption(bytes) };
+        let (claimed, result) = capture_owned_leaf(self.0, |work| work.record_native_completed_adoption(bytes));
         (claimed, result.map_err(|error| self.0.original().relay_io_failure(error)))
     }
     fn admit_codec(&self, encoded: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::admit_codec(self.0.original().as_ref(), encoded, copied, hashed)
+        acyclic_native_runtime::NativeReadMeter::admit_codec(self.0.native().runtime_meter(), encoded, copied, hashed)
     }
     fn record_codec(&self, encoded: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::record_codec(self.0.original().as_ref(), encoded, copied, hashed)
+        acyclic_native_runtime::NativeReadMeter::record_codec(self.0.native().runtime_meter(), encoded, copied, hashed)
     }
     fn examine(&self, items: u64, copied: u64) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::examine(self.0.original().as_ref(), items, copied)
+        acyclic_native_runtime::NativeReadMeter::examine(self.0.native().runtime_meter(), items, copied)
     }
     fn admit_examination(&self, items: u64, copied: u64) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::admit_examination(self.0.original().as_ref(), items, copied)
+        acyclic_native_runtime::NativeReadMeter::admit_examination(self.0.native().runtime_meter(), items, copied)
     }
     fn record_examination(&self, items: u64, copied: u64) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::record_examination(self.0.original().as_ref(), items, copied)
+        acyclic_native_runtime::NativeReadMeter::record_examination(self.0.native().runtime_meter(), items, copied)
     }
     fn release(&self, bytes: u64) {
         capture_meter(self.0).release(bytes).expect("capture native allocation ownership balances");
     }
     fn admit_bytes(&self, maximum: usize) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::admit_bytes(self.0.original().as_ref(), maximum)
+        acyclic_native_runtime::NativeReadMeter::admit_bytes(self.0.native().runtime_meter(), maximum)
     }
     fn admit_read(&self, maximum: usize) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::admit_read(self.0.original().as_ref(), maximum)
+        acyclic_native_runtime::NativeReadMeter::admit_read(self.0.native().runtime_meter(), maximum)
     }
     fn admit_operations(&self, count: u64) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::admit_operations(self.0.original().as_ref(), count)
+        acyclic_native_runtime::NativeReadMeter::admit_operations(self.0.native().runtime_meter(), count)
     }
     fn record_operations(&self, count: u64) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::record_operations(self.0.original().as_ref(), count)
+        acyclic_native_runtime::NativeReadMeter::record_operations(self.0.native().runtime_meter(), count)
     }
     fn record_read(&self, bytes: usize) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::record_read(self.0.original().as_ref(), bytes)
+        acyclic_native_runtime::NativeReadMeter::record_read(self.0.native().runtime_meter(), bytes)
     }
     fn finish_read(&self, requested: usize, completed: usize) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::finish_read(self.0.original().as_ref(), requested, completed)
+        acyclic_native_runtime::NativeReadMeter::finish_read(self.0.native().runtime_meter(), requested, completed)
     }
     fn admit_write(&self, maximum: usize) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::admit_write(self.0.original().as_ref(), maximum)
+        acyclic_native_runtime::NativeReadMeter::admit_write(self.0.native().runtime_meter(), maximum)
     }
     fn record_write(&self, bytes: usize) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::record_write(self.0.original().as_ref(), bytes)
+        acyclic_native_runtime::NativeReadMeter::record_write(self.0.native().runtime_meter(), bytes)
     }
     fn admit_write_operations(&self, count: u64) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::admit_write_operations(self.0.original().as_ref(), count)
+        acyclic_native_runtime::NativeReadMeter::admit_write_operations(self.0.native().runtime_meter(), count)
     }
     fn record_write_operations(&self, count: u64) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::record_write_operations(self.0.original().as_ref(), count)
+        acyclic_native_runtime::NativeReadMeter::record_write_operations(self.0.native().runtime_meter(), count)
     }
     fn admit_durability(&self) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::admit_durability(self.0.original().as_ref())
+        acyclic_native_runtime::NativeReadMeter::admit_durability(self.0.native().runtime_meter())
     }
     fn reserve_cleanup_write(&self) -> std::io::Result<u64> {
-        acyclic_native_runtime::NativeReadMeter::reserve_cleanup_write(self.0.original().as_ref())
+        acyclic_native_runtime::NativeReadMeter::reserve_cleanup_write(self.0.native().runtime_meter())
     }
     fn cancel_cleanup_write(&self, reservation: u64) {
-        acyclic_native_runtime::NativeReadMeter::cancel_cleanup_write(self.0.original().as_ref(), reservation);
+        acyclic_native_runtime::NativeReadMeter::cancel_cleanup_write(self.0.native().runtime_meter(), reservation);
     }
     fn record_cleanup_write(&self, reservation: u64) -> std::io::Result<()> {
-        acyclic_native_runtime::NativeReadMeter::record_cleanup_write(self.0.original().as_ref(), reservation)
+        acyclic_native_runtime::NativeReadMeter::record_cleanup_write(self.0.native().runtime_meter(), reservation)
     }
 }
 
@@ -1707,6 +1702,9 @@ impl acyclic_native_runtime::NativeReadMeter for CapturedRuntimeReadMeter {
         self.base.record_reserved_bytes(kind, maximum, actual)
     }
     fn allocate(&self, bytes: u64) -> std::io::Result<()> { self.base.allocate(bytes) }
+    fn reserve_allocation(&self, bytes: u64) -> std::io::Result<()> { self.base.reserve_allocation(bytes) }
+    fn cancel_reserved_allocation(&self, bytes: u64) { self.base.cancel_reserved_allocation(bytes); }
+    fn record_reserved_allocation(&self, bytes: u64) -> std::io::Result<()> { self.base.record_reserved_allocation(bytes) }
     fn allocation_failed(&self, error: std::collections::TryReserveError) -> std::io::Error { self.base.allocation_failed(error) }
     fn allocate_refcount_header(&self) -> std::io::Result<()> { self.base.allocate_refcount_header() }
     fn adopt(&self, bytes: u64) -> std::io::Result<()> { self.base.adopt(bytes) }
@@ -2562,6 +2560,14 @@ fn clone_capture_path(path: &NamespacePath, meter: &mut impl CaptureNativeWork) 
                 NamespacePathStep::Allocation(ReadAllocationStep::Copied(bytes)) =>
                     meter.record(WorkCounters { bytes_copied: bytes, source_bytes_read: bytes,
                         ..WorkCounters::UNCHARGED }).map_err(capture_demand_error),
+                NamespacePathStep::Allocation(ReadAllocationStep::BeforeHash(bytes)) => {
+                    meter.check().map_err(capture_demand_error)?;
+                    meter.admit(WorkCounters { bytes_hashed: bytes, ..WorkCounters::UNCHARGED }).map_err(capture_demand_error)
+                }
+                NamespacePathStep::Allocation(ReadAllocationStep::Hashed(bytes)) => {
+                    meter.record(WorkCounters { bytes_hashed: bytes, ..WorkCounters::UNCHARGED }).map_err(capture_demand_error)?;
+                    meter.check().map_err(capture_demand_error)
+                }
                 NamespacePathStep::Allocation(ReadAllocationStep::BeforeItem) =>
                     meter.admit(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(capture_demand_error),
                 NamespacePathStep::Allocation(ReadAllocationStep::Item) =>
@@ -3114,6 +3120,43 @@ mod host_observation_tests {
         assert_eq!(native.live_allocation_bytes(), baseline + capacity);
         assert_eq!(input.0.as_slice(), b"abc");
         drop(input);
+        assert_eq!(native.live_allocation_bytes(), baseline);
+        Ok(())
+    }
+
+    #[test]
+    fn capture_allocation_credit_reports_only_accepted_physical_backing()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        use acyclic_native_runtime::NativeReadMeter;
+        let cancellation = CancellationToken::new();
+        let native = crate::NativeMaterializationWork::new(
+            native_range_tests::original_budget(), &cancellation,
+        ).map_err(|(error, _)| error)?;
+        let baseline = native.live_allocation_bytes();
+        let mut scope = CaptureWorkScope::new(&native)?;
+        let held = native.live_allocation_bytes();
+        let before = native.receipt();
+        let meter = CaptureNativeReadMeter(&scope);
+        meter.reserve_allocation(8)?;
+        assert_eq!(native.receipt(), before);
+        assert_eq!(native.live_allocation_bytes(), held);
+        assert_eq!(scope.custody.as_ref().expect("live scope").retained_bytes(), 0);
+        meter.cancel_reserved_allocation(8);
+        assert_eq!(native.receipt(), before);
+        assert_eq!(native.live_allocation_bytes(), held);
+        meter.reserve_allocation(8)?;
+        cancellation.cancel();
+        meter.record_reserved_allocation(8)?;
+        let bytes = Box::new([0_u8; 8]);
+        assert_eq!(native.receipt().allocation_operations, before.allocation_operations + 1);
+        assert_eq!(native.live_allocation_bytes(), held + 8);
+        assert_eq!(scope.custody.as_ref().expect("live scope").retained_bytes(), 8);
+        drop(bytes);
+        meter.release(8);
+        assert_eq!(native.live_allocation_bytes(), held);
+        assert_eq!(scope.custody.as_ref().expect("live scope").retained_bytes(), 0);
+        scope.release()?;
         assert_eq!(native.live_allocation_bytes(), baseline);
         Ok(())
     }

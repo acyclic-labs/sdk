@@ -7,6 +7,7 @@ use crate::kernel::{
 };
 use crate::memory::MemoryObjectStore;
 use crate::storage::{ObjectId, ObjectKind, ObjectStore};
+use acyclic_stream::OwnedBytes;
 use std::io::Cursor;
 
 fn inline_record(bytes: &[u8]) -> Result<FileRecord, Box<dyn std::error::Error>> {
@@ -289,7 +290,7 @@ fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
     ObjectStore::put(
         &store,
         extent_root,
-        Bytes::from(encode_extent_page(&extents, 16)?),
+        OwnedBytes::from(encode_extent_page(&extents, 16)?),
         WorkBudget::UNBOUNDED,
     )?;
     let record = FileRecord {
@@ -355,12 +356,12 @@ fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
                 maximum_spans: 5, limits: DecodeLimits::default(), budget: WorkBudget::UNBOUNDED },
             &mut accounting, &cancellation,
         )).ok_or("original sparse read blocked")??;
-        assert_eq!(native.bytes, read.bytes);
+        assert_eq!(native.bytes.as_ref(), read.bytes.as_ref());
         assert_eq!(original.receipt().output_bytes, 8);
         assert!(original.receipt().backend_read_operations >= 3);
         let alias = native.bytes.slice(1..4);
         drop(native);
-        assert!(original.live_allocation_bytes() > baseline, "a physical Bytes alias retains original custody");
+        assert!(original.live_allocation_bytes() > baseline, "a physical OwnedBytes alias retains original custody");
         drop(alias);
         assert_eq!(original.live_allocation_bytes(), baseline);
     }
@@ -443,7 +444,7 @@ fn late_backend_retention_refusal_releases_only_returned_backing()
     let existing = allocate_read_buffer(4, &mut accounting)?;
     let receipt = crate::performance::OperationReceipt {
         value: crate::storage::ObjectRead {
-            bytes: Bytes::from(vec![1, 2, 3]),
+            bytes: OwnedBytes::from(vec![1, 2, 3]),
             retention: crate::storage::ObjectReadRetention::Owned { logical_bytes: 3 },
         },
         work: WorkCounters { allocation_operations: 1, peak_allocation_bytes: 3, ..WorkCounters::UNCHARGED },
@@ -469,7 +470,7 @@ fn backend_merge_failure_does_not_release_unregistered_returned_backing()
     accounting.standalone_parts().ok_or("standalone parts unavailable")?.1.object_probes = u64::MAX;
     let receipt = crate::performance::OperationReceipt {
         value: crate::storage::ObjectRead {
-            bytes: Bytes::from(vec![1, 2, 3]),
+            bytes: OwnedBytes::from(vec![1, 2, 3]),
             retention: crate::storage::ObjectReadRetention::Owned { logical_bytes: 3 },
         },
         work: WorkCounters { object_probes: 1, ..WorkCounters::UNCHARGED },

@@ -6086,12 +6086,14 @@ mod tests {
     fn lazy_state(workspace_id: WorkspaceId, revision: u64) -> LazyWorkspaceState {
         let shadows = [3_u8; 32];
         serde_json::from_value(serde_json::json!({
-            "schema_version": 9,
+            "schema_version": 10,
             "revision": revision,
             "workspace_id": workspace_id,
             "parent_workspace_id": null,
             "fork_origin": null,
             "completed_selected_import": null,
+            "pending_write": null,
+            "completed_write": null,
             "source": crate::demand::SourceReference { identity: [1; 16], epoch: 0 },
             "overlay": LazyOverlayId::from_bytes([2; 32]),
             "shadows": shadows,
@@ -6101,12 +6103,12 @@ mod tests {
     }
 
     #[test]
-    fn canonical_lazy_companion_layout_requires_schema_nine() {
+    fn canonical_lazy_companion_layout_requires_schema_ten() {
         let workspace = WorkspaceId::from_bytes([0x39; 16]);
         let mut state = lazy_state(workspace, 1);
-        assert_eq!(state.schema_version, 9);
+        assert_eq!(state.schema_version, 10);
         state.validate_root_binding(workspace, state.source).expect("current root layout");
-        state.schema_version = 8;
+        state.schema_version = 9;
         assert!(matches!(
             state.validate_root_binding(workspace, state.source),
             Err(crate::LazyWorkspaceError::StaleSource),

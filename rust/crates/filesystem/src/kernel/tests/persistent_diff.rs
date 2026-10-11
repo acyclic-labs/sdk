@@ -10,7 +10,7 @@ use crate::memory::MemoryObjectStore;
 use crate::storage::{ObjectKind, ObjectStore};
 use crate::test_support::OwnedReadObjectStore;
 use crate::{CachedObjectStore, ObjectCacheOptions};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 
 fn name(value: &str) -> Result<LogicalName, Box<dyn std::error::Error>> {
     Ok(LogicalName::new(
@@ -33,7 +33,7 @@ fn put(store: &MemoryObjectStore, page: &TreePage) -> Result<ObjectId, Box<dyn s
     ObjectStore::put(
         store,
         id,
-        Bytes::from(encode_tree_page(page, 8)?),
+        OwnedBytes::from(encode_tree_page(page, 8)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)
@@ -60,7 +60,7 @@ fn put_file_table(
     ObjectStore::put(
         store,
         id,
-        Bytes::from(encode_file_table_page(page, 8)?),
+        OwnedBytes::from(encode_file_table_page(page, 8)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)
@@ -519,7 +519,7 @@ fn diff_preserves_storage_and_decode_failures_after_admitted_work()
     assert_eq!(failure.work.page_reads, 2);
     assert!(failure.work.backend_read_operations >= 1);
 
-    let malformed_bytes = Bytes::from_static(b"not a canonical tree page");
+    let malformed_bytes = OwnedBytes::from_static(b"not a canonical tree page");
     let malformed = ObjectId {
         kind: ObjectKind::TreePage,
         digest: crate::storage::object_digest(ObjectKind::TreePage, &malformed_bytes),
