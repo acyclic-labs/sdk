@@ -530,24 +530,12 @@ pub trait NativeProcessView<P: StreamProvider>: Send + Sync {
     fn operation_cancellation(&self) -> &acyclic_fs::CancellationToken;
     /// A genuine prepared caller family; legacy preparation carries no such proof.
     fn original_native_work(&self) -> Option<&NativeMaterializationWork>;
-    /// Admit the dynamic frame before bounded physical checks.
-    fn validate_for_dispatch(
-        &self, budget: acyclic_fs::WorkBudget,
-    ) -> std::result::Result<crate::NativeFutureBundle<'_, std::result::Result<acyclic_fs::OperationReceipt<()>, (Error, acyclic_fs::WorkCounters)>>, (Error, acyclic_fs::WorkCounters)>;
-    /// Observe an original held root and no-follow relative directory.
-    fn validate_working_directory<'a>(
-        &'a self, cwd: &'a Path, budget: acyclic_fs::WorkBudget,
-    ) -> std::result::Result<crate::NativeFutureBundle<'a, std::result::Result<acyclic_fs::OperationReceipt<()>, (Error, acyclic_fs::WorkCounters)>>, (Error, acyclic_fs::WorkCounters)>;
-    /// Admit publication's dynamic frame; completed destinations remain final.
-    fn publish<'a>(
-        &'a self, owner: &'a TaskJournalOwner<P>,
-    ) -> std::result::Result<crate::NativeFutureBundle<'a, std::result::Result<NativeViewPublicationReceipt, NativeViewPublicationError>>, (Error, acyclic_fs::WorkCounters)>;
     /// Uses the caller's actual original ledger and the held view's cancellation.
-    fn validate_for_dispatch_with_native_work<'a>(
+    fn validate_for_dispatch<'a>(
         &'a self, work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>>;
     /// Checks the same held root without constructing a replacement work span.
-    fn validate_working_directory_with_native_work<'a>(
+    fn validate_working_directory<'a>(
         &'a self, cwd: &'a Path, work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>>;
     /// Retains genuine mounted-namespace scopes through process quiescence.
@@ -555,7 +543,7 @@ pub trait NativeProcessView<P: StreamProvider>: Send + Sync {
         &'a self, work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, NativeProcessNamespaceScopes>>;
     /// Retains actual completed destinations and original typed publication cause.
-    fn publish_with_native_work<'a>(
+    fn publish<'a>(
         &'a self, owner: &'a TaskJournalOwner<P>, work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, std::result::Result<NativeViewPublicationReceipt, NativeViewPublicationError>>>;
 }
@@ -1259,8 +1247,8 @@ impl NativePreparationRoot {
         custody.absorb(&mut operation_custody).map_err(Error::from)?;
         let meter = work.clone();
         acyclic_native_runtime::run_blocking_io_measured(move || {
-            let backend = acyclic_fs::NativeTreeMaterializationBackend::open_owned_with_work(
-                root, operation_directory, custody, meter.clone(),
+            let backend = acyclic_fs::NativeTreeMaterializationBackend::open(
+                root, operation_directory, Some(custody), meter.clone(),
             ).map_err(Error::from)?;
             backend.require_initial_empty().map_err(Error::from)?;
             let expected_identity = acyclic_fs::NativeRootIdentity::from_bytes(
@@ -1574,36 +1562,12 @@ where
     fn original_native_work(&self) -> Option<&NativeMaterializationWork> {
         self.original_work.as_ref()
     }
-    fn validate_for_dispatch(
-        &self, budget: acyclic_fs::WorkBudget,
-    ) -> std::result::Result<crate::NativeFutureBundle<'_, std::result::Result<acyclic_fs::OperationReceipt<()>, (Error, acyclic_fs::WorkCounters)>>, (Error, acyclic_fs::WorkCounters)> {
-        let work = self.validation_work(budget)?;
-        let meter = work.clone();
-        crate::NativeFutureBundle::new(&work, || async move {
-            let result = self.validate_dispatch_with_work(&meter).await;
-            Ok(native_result(result, &meter))
-        }).map_err(|error| (error, work.receipt()))
-    }
-    fn validate_working_directory<'a>(
-        &'a self, cwd: &'a Path, budget: acyclic_fs::WorkBudget,
-    ) -> std::result::Result<crate::NativeFutureBundle<'a, std::result::Result<acyclic_fs::OperationReceipt<()>, (Error, acyclic_fs::WorkCounters)>>, (Error, acyclic_fs::WorkCounters)> {
-        let work = self.validation_work(budget)?;
-        let meter = work.clone();
-        crate::NativeFutureBundle::new(&work, || async move {
-            Ok(native_result(self.validate_directory_with_work(cwd, &meter), &meter))
-        }).map_err(|error| (error, work.receipt()))
-    }
-    fn publish<'a>(
-        &'a self, owner: &'a TaskJournalOwner<P>,
-    ) -> std::result::Result<crate::NativeFutureBundle<'a, std::result::Result<NativeViewPublicationReceipt, NativeViewPublicationError>>, (Error, acyclic_fs::WorkCounters)> {
-        NativeVolumeView::publish(self, owner)
-    }
-    fn validate_for_dispatch_with_native_work<'a>(
+    fn validate_for_dispatch<'a>(
         &'a self, work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
         crate::NativeFutureBundle::new(work, || self.validate_dispatch_with_work(work))
     }
-    fn validate_working_directory_with_native_work<'a>(
+    fn validate_working_directory<'a>(
         &'a self, cwd: &'a Path, work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
         crate::NativeFutureBundle::new(work, || async {
@@ -1638,7 +1602,7 @@ where
             Ok(held)
         })
     }
-    fn publish_with_native_work<'a>(
+    fn publish<'a>(
         &'a self, owner: &'a TaskJournalOwner<P>, work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, std::result::Result<NativeViewPublicationReceipt, NativeViewPublicationError>>> {
         let custody = work.retain_owned(0).map_err(Error::from)?;
@@ -2064,7 +2028,7 @@ where
                 for path in &top_level {
                     let (path, mut path_custody) = native_string(path, &work)?;
                     plan_custody.absorb(&mut path_custody).map_err(Error::from)?;
-                    let (image, mut image_custody) = native_bytes(acyclic_fs::NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX, &work)?;
+                    let (image, mut image_custody) = work.copy_bytes(acyclic_fs::NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX).map_err(Error::from)?;
                     plan_custody.absorb(&mut image_custody).map_err(Error::from)?;
                     edits.push(acyclic_fs::MaterializationEdit::Install { path, image });
                 }
@@ -2893,7 +2857,7 @@ async fn native_backend(
     custody.absorb(&mut operation_custody).map_err(Error::from)?;
     let meter = work.clone();
     let backend = acyclic_native_runtime::run_blocking_io_measured(move || {
-        acyclic_fs::NativeTreeMaterializationBackend::open_owned_with_work(root, operation_directory, custody, meter)
+        acyclic_fs::NativeTreeMaterializationBackend::open(root, operation_directory, Some(custody), meter)
     }, work.runtime_meter_owner())
         .map_err(|error| Error::from(work.runtime_error(error)))?
         .await.map_err(|error| Error::from(work.runtime_error(error)))?
@@ -3436,7 +3400,7 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
         let association = *blake3::hash(&encoded).as_bytes();
         drop(encoded);
         drop(encoded_custody);
-        let (key_bytes, key_custody) = native_bytes(&association, &self.work)?;
+        let (key_bytes, key_custody) = self.work.copy_bytes(&association).map_err(Error::from)?;
         let key_bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(
             key_bytes, key_custody, self.work.runtime_meter_owner(),
         ).map_err(|failure| native_owned_bytes_failure(failure, &self.work))?;
@@ -3650,7 +3614,7 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
         self.work.charge(acyclic_fs::WorkCounters {
             bytes_hashed: bytes.len() as u64, ..acyclic_fs::WorkCounters::default()
         }).map_err(Error::from)?;
-        let (key_bytes, key_custody) = native_bytes(blake3::hash(&bytes).as_bytes(), &self.work)?;
+        let (key_bytes, key_custody) = self.work.copy_bytes(blake3::hash(&bytes).as_bytes()).map_err(Error::from)?;
         let key_bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(
             key_bytes, key_custody, self.work.runtime_meter_owner(),
         ).map_err(|failure| native_owned_bytes_failure(failure, &self.work))?;
@@ -3815,7 +3779,7 @@ fn native_canonical<T: serde::Serialize + ?Sized>(
     }
 }
 
-fn native_codec_charge_typed(
+pub(super) fn native_codec_charge_typed(
     charge: crate::contract::JsonCodecCharge, work: &NativeMaterializationWork,
     custody: &mut acyclic_fs::NativeAllocation,
 ) -> std::result::Result<(), acyclic_fs::NativeTreeMaterializationError> {
@@ -3869,16 +3833,6 @@ fn native_vec<T>(capacity: usize, work: &NativeMaterializationWork) -> Result<(V
         return Err(Error::NativeWork { cause, custody: Some(custody) });
     }
     Ok((value, custody))
-}
-
-fn native_bytes(value: &[u8], work: &NativeMaterializationWork) -> Result<(Vec<u8>, acyclic_fs::NativeAllocation)> {
-    let (copied, custody) = native_vec(value.len(), work)?;
-    let mut copied = copied;
-    work.charge(acyclic_fs::WorkCounters {
-        bytes_copied: value.len() as u64, ..acyclic_fs::WorkCounters::default()
-    }).map_err(Error::from)?;
-    copied.extend_from_slice(value);
-    Ok((copied, custody))
 }
 
 fn native_owned_bytes_failure(

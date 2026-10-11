@@ -1,8 +1,4 @@
 //! Task-bound resource creation requests and authenticated preparation leases.
-//!
-//! These values do not grant resource access. Providers must retain the origin
-//! with their existing allocation records and authenticate those records before
-//! deriving child authority or content bindings.
 
 use crate::core::Authority;
 use crate::resources::{ProviderRef, ResourceRef};
@@ -23,7 +19,6 @@ pub use root_bootstrap::RootBootstrapContentContext;
 pub(crate) use root_bootstrap::preflight_root_bootstrap_with_native_work;
 
 /// Exact provider evidence to authenticate before deriving child resource access.
-/// These references are canonical admission data, never bearer authority.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceCreationProofRef {
@@ -58,8 +53,6 @@ impl ResourceCreationProofRef {
 }
 
 /// One immutable resource request admitted as an ordinary preparation task's input.
-/// Resource count and provider work/bytes are explicit per-request bounds; the
-/// preparation task itself consumes the coordinator's ordinary session budget.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourcePreparationRequest {
@@ -79,21 +72,16 @@ pub struct ResourcePreparationRequest {
     pub maximum_bytes: u64,
     /// Complete provider-specific request, never substituted on recovery.
     pub payload: Value,
-    /// Optional ordinary resumable outbox command. Its immutable payload refers
-    /// to provider input, not recursively to this complete preparation request.
+    /// Optional ordinary resumable outbox command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<crate::workflow::WorkflowCommand>,
-    /// Immutable original caller checkpoint for source restoration. The owner
-    /// requires read authority; consumers must authenticate the snapshot itself.
-    /// Direct configured creators may already retain the exact source separately.
+    /// Immutable original caller checkpoint for source restoration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_checkpoint: Option<crate::conversation::FileRef>,
-    /// Explicit immutable inputs for the intended child, not a reference scan or
-    /// a grant. The creator authenticates original donor rights and pinned bytes.
+    /// Explicit immutable inputs for the intended child, not a reference scan or a grant.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input_files: Vec<crate::conversation::FileRef>,
     /// Explicit selected Project authorization; the owner verifies and seals it.
-    /// This never grants another task's history or private namespace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_authorization: Option<crate::source_authorization::ProjectSourceAuthorization>,
 }
@@ -111,7 +99,6 @@ impl crate::filesystem::PreparationRecord for ResourcePreparationRequest {
 
 impl ResourcePreparationRequest {
     /// Every actually owned variable-capacity field, excluding the inline Self.
-    /// This logical inventory follows the admission/record deep-only convention.
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         let overflow = || {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -154,9 +141,7 @@ impl ResourcePreparationRequest {
         Error::Invalid(reason.into())
     }
 
-    /// Decodes the closed preparation DTO from the caller's original retained
-    /// value. The returned logical extent remains in the original observer;
-    /// its owner must release or transfer it only after the request is dropped.
+    /// Decodes the closed preparation DTO from the caller's original retained value.
     pub(crate) fn from_borrowed_value_with_work(
         value: &Value,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -253,9 +238,6 @@ impl ResourcePreparationRequest {
             }
             return Ok((request, extent));
         }
-        // The same audited PreparationRecord policy for portable/ordinary
-        // History observers. The concrete Request slot bound covers tagged
-        // serde temporaries and vector slack, not opaque allocator nodes.
         let bounds = crate::contract::JsonBounds {
             maximum_bytes: bytes.len() as u64,
             maximum_items: (bytes.len() as u64).saturating_add(1),
@@ -309,7 +291,6 @@ impl ResourcePreparationRequest {
     }
 
     /// Checks this borrowed request on the supplied original native ledger.
-    /// Validation does not issue grants or authenticate a creation receipt.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn validate_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
@@ -421,8 +402,6 @@ impl ResourcePreparationRequest {
 }
 
 /// Provenance retained inside a trusted provider's existing allocation record.
-/// Deserializing this record conveys no authority. Verification also requires
-/// the bound task owner and the provider's authenticated allocation evidence.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceCreationOrigin {
@@ -437,7 +416,6 @@ pub struct ResourceCreationOrigin {
     /// Digest of the preparation task's complete retained admission.
     pub admission_digest: [u8; 32],
     /// Exact authenticated preparation-task donor grants, not provider-root scope.
-    /// The coordinator verifies these against the original retained admission.
     pub source_grants: Capabilities,
     /// Digest of the complete immutable resource request and requested child scope.
     pub request_digest: [u8; 32],
@@ -446,7 +424,6 @@ pub struct ResourceCreationOrigin {
 }
 
 /// Sealed, process-local binding to an authenticated preparation task lease.
-/// Only the authenticated `TaskJournalOwner` preparation producers construct it.
 #[cfg(feature = "filesystem")]
 pub struct TaskResourcePreparation {
     pub(crate) owner: std::sync::Arc<dyn ResourcePreparationLease>,
@@ -478,22 +455,19 @@ impl TaskResourcePreparation {
         self.project_source.as_ref()
     }
 
-    /// Borrowed original preparation-task grants. Broader provider credentials
-    /// never substitute for the task's admitted source-read authority.
+    /// Borrowed original preparation-task grants.
     #[must_use]
     pub fn grants(&self) -> &crate::Capabilities {
         self.owner.grants()
     }
 
-    /// Borrowed actual preparation invocation token, if its owner was bound at
-    /// the caller's live invocation boundary. It grants no resource authority.
+    /// Borrowed actual preparation invocation token, if its owner was bound at the caller's live invocation boundary.
     #[must_use]
     pub fn cancellation(&self) -> Option<&acyclic_fs::CancellationToken> {
         self.owner.cancellation()
     }
 
     /// Requires the current uncancelled preparation lease before fresh allocation.
-    /// Providers must enforce the request's work/IO bounds at their own boundary.
     pub async fn verify_creation(&self) -> Result<()> {
         self.owner.verify_lease(false).await
     }
@@ -517,7 +491,6 @@ impl TaskResourcePreparation {
     }
 
     /// Permits observing an existing uncertain allocation under a retained lease.
-    /// This does not authorize another creation or grant child access.
     pub async fn verify_reconciliation(&self) -> Result<()> {
         self.owner.verify_lease(true).await
     }
@@ -532,8 +505,6 @@ impl TaskResourcePreparation {
     }
 }
 
-// Keep the authenticated lease process-local while allowing creation providers
-// to remain independent of the coordinator's Stream implementation.
 #[cfg(feature = "filesystem")]
 pub(crate) trait ResourcePreparationLease: acyclic_stream::ProviderPlatform {
     fn verify_lease(&self, settlement: bool) -> acyclic_stream::BoxProviderFuture<'_, Result<()>>;
@@ -580,7 +551,6 @@ impl<P: acyclic_stream::StreamProvider> ResourcePreparationLease
 }
 
 /// An operation declared by a trusted creation provider for one exact resource.
-/// These labels are requests, not bearer authority.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreatedResourceOperation {
     /// Provider-neutral operation on this resource only.
@@ -590,7 +560,6 @@ pub enum CreatedResourceOperation {
     /// Actual filesystem content publication authority for an exact volume.
     WriteVolume(crate::conversation::VolumeRef),
     /// Exact immutable inherited-file read delegated by an authenticated creator.
-    /// This does not authorize the source volume or any publication operation.
     ReadFile(crate::conversation::FileRef),
 }
 
@@ -607,21 +576,17 @@ pub fn created_resource_capability(resource: &ResourceRef, operation: &str) -> R
 }
 
 /// Provider-authenticated content handles for an exact created volume.
-/// A configured provider must reauthenticate its retained allocation evidence
-/// whenever these handles read or publish. Raw proof refs cannot create handles.
 #[derive(Clone)]
 pub struct CreatedContentBinding {
     /// Exact volume mapped by the provider's authenticated allocation record.
     pub volume: crate::conversation::VolumeRef,
-    /// Exact aggregate audience authenticated with this allocation, if the
-    /// provider supplies a canonical published child binding.
+    /// Exact aggregate audience authenticated with this allocation, if the provider supplies a canonical published child binding.
     pub authority: Option<crate::core::Authority>,
     /// Existing provider reader/writer machinery, not a second content engine.
     pub binding: crate::runtime::ContentBindings,
     /// Selects the task's ordinary content destination; at most one is allowed.
     pub default_writer: bool,
-    /// Explicit result slot authenticated by the allocation provider; never inferred
-    /// from private volume ordering. This slot is not the ordinary scratch writer.
+    /// Explicit result slot authenticated by the allocation provider; never inferred from private volume ordering.
     pub artifact_writer: bool,
     /// Original protected filesystem allocation identity, not a physical leaf receipt.
     #[cfg(feature = "filesystem")]
@@ -638,8 +603,7 @@ pub(crate) trait ScratchCreationIdentity: Send + Sync {
     fn origin(&self) -> &ResourceCreationOrigin;
 }
 
-/// Opaque identity of the original child scratch allocation. It shares the
-/// already retained provider handle; cloning it allocates or copies no lease.
+/// Opaque identity of the original child scratch allocation.
 #[cfg(feature = "filesystem")]
 #[derive(Clone)]
 pub struct ChildScratchCreationProof {
@@ -666,8 +630,7 @@ impl ChildScratchCreationProof {
             && self.initial_generation() == other.initial_generation() && self.origin() == other.origin()
     }
 
-    /// Authenticates original allocation custody and current-fenced WRITE through
-    /// the same task owner's settlement path. No native physical IO is claimed.
+    /// Authenticates original allocation custody and current-fenced WRITE through the same task owner's settlement path.
     pub async fn authorize_settlement_measured<P: acyclic_stream::StreamProvider + 'static>(
         &self, owner: &crate::durable_host::TaskJournalOwner<P>,
         budget: acyclic_fs::WorkBudget, cancellation: &acyclic_fs::CancellationToken,
@@ -675,9 +638,7 @@ impl ChildScratchCreationProof {
         owner.authorize_created_scratch_settlement_measured(self,budget,cancellation).await
     }
 
-    /// Authorizes only cleanup of this original allocation under its authentic
-    /// current owner, original WRITE custody and the caller's existing ledger.
-    /// Recheck before every namespace mutation; this is not a deletion receipt.
+    /// Authorizes only cleanup of this original allocation under its authentic current owner, original WRITE custody and the caller's existing ledger.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn authorize_settlement_with_native_work<P: acyclic_stream::StreamProvider + 'static>(
         &self,
@@ -689,7 +650,6 @@ impl ChildScratchCreationProof {
 }
 
 /// One immutable inherited file and its authenticated exact-file reader.
-/// This is not an allocated namespace, volume mapping or writable destination.
 #[derive(Clone)]
 pub struct CreatedReferenceBinding {
     /// Complete exact file identity authenticated by the original creator seal.
@@ -699,8 +659,6 @@ pub struct CreatedReferenceBinding {
 }
 
 /// Authenticated result of one explicitly trusted provider verification.
-/// This public record is not authority: only the coordinator consumes it into a
-/// private, operation-bound scope after authenticating the preparation admission.
 #[derive(Clone)]
 pub struct CreatedResourceReceipt {
     /// Provenance retained with the original allocation.
@@ -720,22 +678,17 @@ pub struct CreatedResourceReceipt {
 }
 
 /// Trusted provider-neutral verifier registered at the actual task owner.
-/// Implementations authenticate protected allocation records, the immutable
-/// original generation and complete request before returning access operations.
 pub trait ResourceCreationProvider: acyclic_stream::ProviderPlatform {
     /// Pinned provider namespace, family and immutable contract revision.
     fn provider(&self) -> &ProviderRef;
-    /// Authenticates evidence without allocating, issuing another request or
-    /// substituting a recovery fence for the receipt's original creation fence.
+    /// Authenticates evidence without allocating, issuing another request or substituting a recovery fence for the receipt's original creation fence.
     fn verify<'a>(
         &'a self,
         request: &'a ResourcePreparationRequest,
         proof: &'a ResourceCreationProofRef,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<CreatedResourceReceipt>>;
 
-    /// Authenticates the same creator proof using the caller's original native
-    /// ledger/token. Returned custody must cover the owned receipt until actual
-    /// scope consumption transfers it; ordinary verification is not a fallback.
+    /// Authenticates the same creator proof using the caller's original native ledger/token.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn verify_with_native_work<'a>(
         &'a self, _request: &'a ResourcePreparationRequest,
@@ -747,8 +700,7 @@ pub trait ResourceCreationProvider: acyclic_stream::ProviderPlatform {
         })
     }
 
-    /// Borrows the configured original ROOT sources and their opaque canonical
-    /// witnesses. Lookup does not allocate, perform IO or grant resource access.
+    /// Borrows the configured original ROOT sources and their opaque canonical witnesses.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn root_bootstrap_sources(
         &self,
@@ -757,8 +709,7 @@ pub trait ResourceCreationProvider: acyclic_stream::ProviderPlatform {
         [None, None]
     }
 
-    /// Authenticates protected original ROOT content on the original native
-    /// ledger. Unsupported implementations fail before boxing or provider IO.
+    /// Authenticates protected original ROOT content on the original native ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn verify_root_bootstrap_with_native_work<'a>(
         &'a self,
@@ -784,8 +735,7 @@ pub(crate) struct CreatedResourceAccess {
     pub(crate) publication_lease: Option<std::sync::Arc<dyn CreatedTaskLease>>,
     // Exact authenticated origin used by the kernel's current-writer selection.
     current_default_origin: Option<OperationId>,
-    // SDK-owned logical payload custody. Opaque provider and Arc/Weak allocator
-    // backing is excluded; this guard drops after every SDK payload field.
+    // SDK-owned logical payload custody.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     native_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -858,8 +808,6 @@ impl CreatedResourceAccess {
             {
                 return Err(created_access_error(work, "created resource receipt changed identity"));
             }
-            // Only these SDK-owned fields are retired. Provider handle backing
-            // is neither re-adopted nor counted as new request memory.
             let retired = created_access_receipt_temporary_bytes(&receipt)?;
             let mut reference_labels = BTreeSet::new();
             for operation in &receipt.operations {
@@ -994,8 +942,7 @@ impl CreatedResourceAccess {
         Ok((access, owned))
     }
 
-    /// Known SDK layout and owned buffer capacities only. Shared provider
-    /// backing, Arc/Weak allocator blocks and opaque BTree nodes are excluded.
+    /// Known SDK layout and owned buffer capacities only.
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         let mut bytes = created_access_add(std::mem::size_of::<Self>() as u64, self.grants.logical_owned_bytes()?)?;
         bytes = created_access_add(bytes, created_access_vector_bytes::<CreatedContentBinding>(self.content.capacity())?)?;
@@ -1090,8 +1037,6 @@ fn created_access_insert_label(
         drop(label);
         return created_access_release(work, bytes);
     }
-    // A known String value slot, not a fabricated BTree allocator-node extent
-    // or a claimed exact physical allocation operation.
     if let Some(io) = work.as_deref_mut() { io.retain_owned(std::mem::size_of::<String>() as u64)?; }
     labels.insert(label);
     Ok(())

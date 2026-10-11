@@ -1,7 +1,4 @@
 //! Owner-bound preparation of an immutable Summary fork projection.
-//!
-//! This reuses canonical checkpoint/history verification. It performs no model
-//! operation, workspace allocation, seed publication or child admission.
 
 use crate::{
     Error, Result,
@@ -54,7 +51,6 @@ impl SummaryForkSelection {
 }
 
 /// Exact child-owned Summary projection bound by the original fork seed.
-/// Payload copies preserve bytes and descriptors; other references retain their original immutable identities.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -149,8 +145,6 @@ impl SummaryForkCapture {
 }
 
 /// Verified original-parent projection before child-owned materialization.
-/// Private fields prevent callers constructing an unchecked capture. This is
-/// not a published seed or permission to activate a child model operation.
 #[derive(Clone, Debug)]
 pub struct PreparedSummaryFork {
     parent: Authority,
@@ -186,15 +180,13 @@ impl PreparedSummaryFork {
         &self.selection
     }
 
-    /// Original verified checkpoint envelope. Its compaction proof identifies
-    /// the summary output; other admitted references retain their identities.
+    /// Original verified checkpoint envelope.
     #[must_use]
     pub const fn checkpoint(&self) -> &CanonicalContextCheckpoint {
         &self.checkpoint
     }
 
     /// Exact retained messages and metadata plus the complete bounded tail.
-    /// The historical current-input marker is cleared; child input is separate.
     #[must_use]
     pub const fn context(&self) -> &Context {
         &self.context
@@ -202,10 +194,6 @@ impl PreparedSummaryFork {
 }
 
 /// Explicit read-only preparation through the existing checkpoint/history path.
-/// The original parent reducer, journal, cursor and receiving scope must already
-/// be supplied by the owner. No new scope, capability, summary or model effect
-/// is manufactured. Later child capture/publication must bind this exact parent
-/// event/logical cut and selection, then use its original admitted child reader.
 pub async fn prepare_summary_fork_context<P: StreamProvider>(
     parent: &Reducer,
     selection: SummaryForkSelection,

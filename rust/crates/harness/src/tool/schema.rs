@@ -27,9 +27,7 @@ pub fn output<T: JsonSchema>() -> Result<Value> {
     .map_err(|error| Error::Invalid(error.to_string()))
 }
 
-// This is also the actual serializer used by the native file projectors. Its
-// complete schema root includes every nested result definition; it never embeds
-// a second root schema whose $refs would incorrectly resolve from the envelope.
+// This is also the actual serializer used by the native file projectors.
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum JsonProjection<T> {
@@ -64,8 +62,6 @@ pub enum ProjectionMode {
     Reference,
 }
 
-// Actual serializers shared by file and text-result projectors. These constrain
-// this reference-only producer, not the general native media/model contract.
 #[derive(Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum ReferencePolicy {

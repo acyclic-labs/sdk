@@ -37,11 +37,7 @@ use drain::NativeCleanupControl;
 use finite_execution::execute;
 
 impl NativeProcessRequest {
-    fn validate(&self) -> Result<()> {
-        self.validate_with_io(None)
-    }
-
-    fn validate_with_io(&self, io: Option<&super::PreparationIo>) -> Result<()> {
+    fn validate(&self, io: Option<&super::PreparationIo>) -> Result<()> {
         use super::native_contract::validation_error;
         if self.standard_input.is_some() && self.mcp_stdio.is_some() {
             return Err(validation_error(io, crate::wire::ErrorCode::Invalid,
@@ -98,15 +94,11 @@ impl NativeProcessRequest {
         Ok(())
     }
 
-    fn validate_native_paths(&self, view: &NativeViewManifest) -> Result<()> {
-        self.validate_native_paths_with_io(view, None)
-    }
-
-    fn validate_native_paths_with_io(
+    fn validate_native_paths(
         &self, view: &NativeViewManifest, io: Option<&super::PreparationIo>,
     ) -> Result<()> {
         use super::native_contract::validation_error;
-        self.validate_with_io(io)?;
+        self.validate(io)?;
         if &self.view != view {
             return Err(validation_error(io, crate::wire::ErrorCode::Conflict,
                 "native command view changed"));
@@ -365,7 +357,7 @@ pub struct NativeProcessPublishedVolume {
 }
 
 /// Authenticated original attempt and its durable native diagnostic.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeProcessReceipt {
     /// Original task, never reconstructed from native paths.
@@ -410,19 +402,6 @@ impl NativeProcessReceipt {
         let custody = custody
             .ok_or(receipt_error("native receipt has no original measured custody"))?;
         Ok((effect, custody))
-    }
-}
-
-impl std::fmt::Debug for NativeProcessReceipt {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("NativeProcessReceipt")
-            .field("task", &self.task).field("command", &self.command)
-            .field("original_fence", &self.original_fence).field("effect", &self.effect)
-            .field("observed", &self.observed).field("diagnostic", &self.diagnostic)
-            .field("publication_failure", &self.publication_failure)
-            .field("invocation_failure", &self.invocation_failure).field("work", &self.work)
-            .field("published", &self.published)
-            .finish()
     }
 }
 
@@ -784,9 +763,12 @@ async fn publish_view<P: StreamProvider>(
     }
     require_view_grants(owner, admitted)
         .map_err(|cause| slot.original_failure(cause, acyclic_fs::WorkCounters::UNCHARGED))?;
-    let future = view.publish(owner)
-        .map_err(|(cause, work)| slot.original_failure(cause, work))?;
-    let meter = future.work().clone();
+    let budget = view.manifest().validation_budget()
+        .map_err(|cause| slot.original_failure(cause, acyclic_fs::WorkCounters::UNCHARGED))?;
+    let meter = acyclic_fs::NativeMaterializationWork::new(budget, view.operation_cancellation())
+        .map_err(|(cause, work)| slot.original_failure(Error::NativeConstruction { cause, work }, work))?;
+    let future = view.publish(owner, &meter)
+        .map_err(|cause| slot.original_failure(cause, meter.receipt()))?;
     slot.retain_failure_work(&meter)
         .map_err(|cause| slot.original_failure(cause, meter.receipt()))?;
     let receipt = future.await
@@ -814,19 +796,6 @@ fn native_work_error(error: acyclic_fs::WorkError) -> Error {
     Error::NativeWork {
         cause: acyclic_fs::NativeTreeMaterializationError::Work(error), custody: None,
     }
-}
-
-fn retain_validation_result<T>(
-    result: std::result::Result<acyclic_fs::OperationReceipt<T>, (Error, acyclic_fs::WorkCounters)>,
-    work: &mut acyclic_fs::WorkCounters,
-    frame_bytes: u64,
-) -> Result<T> {
-    let (value, spent) = match result {
-        Ok(receipt) => (Ok(receipt.value), receipt.work),
-        Err((error, work)) => (Err(error), work),
-    };
-    merge_execution_work(work, spent, frame_bytes)?;
-    value
 }
 
 fn merge_execution_work(

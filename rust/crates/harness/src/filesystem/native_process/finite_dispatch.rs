@@ -2,7 +2,7 @@
 
 use super::*;
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
-use crate::contract::{JsonBounds, JsonCodecCharge};
+use crate::contract::JsonBounds;
 use std::future::Future;
 
 type NativeResult<T> = std::result::Result<T, Error>;
@@ -216,7 +216,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 self.owner.verify_with_native_work(false, work).await?;
             }
             None => {
-                request.validate_native_paths(view.manifest())?;
+                request.validate_native_paths(view.manifest(), None)?;
                 self.authority.approvals.verify(self.approval, self.command, approval_digest).await?;
                 require_view_grants(&self.owner, &request.view)?;
                 self.owner.verify(false).await?;
@@ -350,23 +350,8 @@ async fn append_receipt_original<P: StreamProvider>(
                 JsonBounds { maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
                     maximum_items: remaining.items_examined, maximum_depth: 256 },
                 &mut |charge| {
-                    let result = match charge {
-                        JsonCodecCharge::Work { bytes, items } => work.charge(WorkCounters {
-                            bytes_encoded: bytes, items_examined: items, ..WorkCounters::default() }),
-                        JsonCodecCharge::CopyAdmission { bytes } => work.admit(WorkCounters {
-                            bytes_copied: bytes, ..WorkCounters::default() }),
-                        JsonCodecCharge::Copy { bytes } => work.charge(WorkCounters {
-                            bytes_copied: bytes, ..WorkCounters::default() }),
-                        JsonCodecCharge::AllocationOperation { .. } => work.charge(WorkCounters {
-                            allocation_operations: 1, ..WorkCounters::default() }),
-                        JsonCodecCharge::Read { .. } => work.remaining().map(|_| ()),
-                        JsonCodecCharge::Admission { maximum_owned_bytes } => work.admit_retained(maximum_owned_bytes),
-                        JsonCodecCharge::Retain { bytes } => guard.bytes().checked_add(bytes)
-                            .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow))
-                            .and_then(|bytes| guard.resize_retained(bytes)),
-                        JsonCodecCharge::Release { bytes } => guard.release(bytes),
-                    };
-                    result.map_err(Error::from)
+                    crate::filesystem::native_execution::native_codec_charge_typed(charge, work, guard)
+                        .map_err(Error::from)
                 }).map_err(|source| codec_slot.retain(source, custody.take()))?
         }
         None => crate::contract::canonical_json_bytes(receipt)?,

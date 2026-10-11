@@ -1,7 +1,4 @@
 //! Transport-independent validation of protobuf wire messages.
-//!
-//! These validators are deliberately free of host-only state so that the gRPC
-//! and WebAssembly adapters enforce exactly the same identity rules.
 
 use crate::{
     Error, Result, wire,

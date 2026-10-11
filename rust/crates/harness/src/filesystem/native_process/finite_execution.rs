@@ -152,27 +152,18 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
                 bytes_copied: u64::from(request.maximum_output_bytes),
                 items_examined: u64::from(request.maximum_output_bytes).saturating_add(16),
                 ..WorkCounters::default() }).map_err(Error::from)?;
-            view.validate_working_directory_with_native_work(&request.cwd, work)?.await?;
-            view.validate_for_dispatch_with_native_work(work)?.await?;
+            view.validate_working_directory(&request.cwd, work)?.await?;
+            view.validate_for_dispatch(work)?.await?;
         } else {
             let available = execution_remaining(spent, budget, frame_bytes)?;
-            let cwd = match view.validate_working_directory(&request.cwd, available) {
-                Ok(future) => {
-                    let meter = future.work().clone();
-                    future.await.unwrap_or_else(|error| Err((error, meter.receipt())))
-                }
-                Err(failure) => Err(failure),
-            };
-            retain_validation_result(cwd, &mut spent, frame_bytes)?;
-            let available = execution_remaining(spent, budget, frame_bytes)?;
-            let validated = match view.validate_for_dispatch(available) {
-                Ok(future) => {
-                    let meter = future.work().clone();
-                    future.await.unwrap_or_else(|error| Err((error, meter.receipt())))
-                }
-                Err(failure) => Err(failure),
-            };
-            retain_validation_result(validated, &mut spent, frame_bytes)?;
+            let work = NativeMaterializationWork::new(available, view.operation_cancellation())
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let validated = async {
+                view.validate_working_directory(&request.cwd, &work)?.await?;
+                view.validate_for_dispatch(&work)?.await
+            }.await;
+            merge_execution_work(&mut spent, work.receipt(), frame_bytes)?;
+            validated?;
             spent.verify(budget).map_err(native_work_error)?;
         }
         if view.manifest() != &request.view {
@@ -261,7 +252,7 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
                 let admitted = async {
                     verify(owner, original)?.await?;
                     grants(owner, &request.view, original)?;
-                    view.publish_with_native_work(owner, work)
+                    view.publish(owner, work)
                 }.await;
                 let publication = match admitted {
                     Ok(future) => match future.await.unwrap_or_else(|cause| Err(

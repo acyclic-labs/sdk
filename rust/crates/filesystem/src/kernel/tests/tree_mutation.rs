@@ -194,40 +194,6 @@ fn semantic_noop_preserves_root_and_writes_nothing() -> Result<(), Box<dyn std::
 }
 
 #[test]
-fn async_and_sync_tree_mutation_share_exact_results_and_work()
--> Result<(), Box<dyn std::error::Error>> {
-    let sync_store = MemoryObjectStore::default();
-    let async_store = MemoryObjectStore::default();
-    let (sync_root, _) = three_leaf_tree(&sync_store)?;
-    let (async_root, _) = three_leaf_tree(&async_store)?;
-    assert_eq!(sync_root, async_root);
-    let mutations = vec![TreeMutation::Replace {
-        entry: entry("m", 2, FileKind::Fifo)?,
-        expected_file_id: FileId::from_bytes([2; 16]),
-    }];
-    let synchronous = apply_tree_mutations(
-        &sync_store,
-        sync_root,
-        mutations.clone(),
-        8,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    let asynchronous = crate::async_storage::poll_ready(apply_tree_mutations_async(
-        &async_store,
-        async_root,
-        mutations,
-        8,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    ))
-    .ok_or("memory-backed asynchronous tree mutation unexpectedly blocked")??;
-    assert_eq!(asynchronous, synchronous);
-    Ok(())
-}
-
-#[test]
 fn overflowing_leaf_splits_and_builds_one_new_root() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put(

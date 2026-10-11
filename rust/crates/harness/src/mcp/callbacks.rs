@@ -114,8 +114,7 @@ impl McpCallbackRequest {
     }
 }
 
-/// A host may implement this using its recorded admission owners; never invoke
-/// a raw model provider or duplicate an interaction/effect journal here.
+/// A host may implement this using its recorded admission owners; never invoke a raw model provider or duplicate an interaction/effect journal here.
 pub trait McpCallbackAdmission: acyclic_stream::ProviderPlatform {
     /// Admits/reconciles the exact request. Repeated identity must retain one result.
     fn admit<'a>(&'a self, context: ToolContext, request: &'a McpCallbackRequest) -> BoxProviderFuture<'a, Result<Value>>;
@@ -125,8 +124,7 @@ pub trait McpCallbackAdmission: acyclic_stream::ProviderPlatform {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpSamplingPolicy {
-    /// Exact host input used only when the remote transcript does not end in a
-    /// user message. This is explicit policy, not a synthesized remote message.
+    /// Exact host input used only when the remote transcript does not end in a user message.
     pub continuation: ModelContent,
     /// Opt-in image processing contract; absent means images are unsupported.
     pub image: Option<NativeMediaPolicy>,
@@ -134,9 +132,7 @@ pub struct McpSamplingPolicy {
     pub audio: Option<NativeMediaPolicy>,
 }
 
-/// Concrete recorded model/interaction adapter. The supplied stock executor is
-/// already bound to the ordinary durable host/task (or local task), model,
-/// context/token budgets and grants; no MCP-specific provider is introduced.
+/// Concrete recorded model/interaction adapter.
 pub struct McpRuntimeCallbacks {
     executor: StockExecutor,
     journal: Arc<dyn ExecutionJournal>,

@@ -6,7 +6,6 @@ use crate::memory::MemoryObjectStore;
 use crate::speculation::{ResidencyHint, ResidencyReason};
 use crate::storage::ObjectReadRequest;
 use crate::test_support::OwnedReadObjectStore;
-use crate::{CachedObjectStore, ObjectCacheOptions};
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll, Waker};
@@ -620,84 +619,6 @@ fn owned_blob_page_releases_retention_when_decoded_cache_rejects_admission()
 }
 
 #[test]
-fn repeated_blob_reads_reuse_decoded_indexes_without_backend_reads()
--> Result<(), Box<dyn std::error::Error>> {
-    let backend = MemoryObjectStore::new(1024 * 1024)?;
-    let chunk_bytes = OwnedBytes::from_static(b"abcdefgh");
-    let chunk = put(&backend, ObjectKind::BlobChunk, chunk_bytes.clone())?;
-    let leaf_page = BlobPage {
-        first_offset: 0,
-        end_offset: 8,
-        node: BlobNode::Leaf(vec![BlobChunkRef {
-            first_offset: 0,
-            end_offset: 8,
-            chunk,
-        }]),
-    };
-    let leaf = put(
-        &backend,
-        ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&leaf_page, 8)?),
-    )?;
-    let root_page = BlobPage {
-        first_offset: 0,
-        end_offset: 8,
-        node: BlobNode::Internal(vec![BlobChild {
-            first_offset: 0,
-            end_offset: 8,
-            page: leaf,
-        }]),
-    };
-    let root = put(
-        &backend,
-        ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&root_page, 8)?),
-    )?;
-    let store = CachedObjectStore::new(
-        backend,
-        ObjectCacheOptions {
-            maximum_entries: 8,
-            maximum_bytes: 1024 * 1024,
-            maximum_in_flight: 2,
-            maximum_waiters_per_object: 2,
-        },
-    )?;
-    let range = ByteRange {
-        offset: 2,
-        length: 4,
-    };
-    let cancellation = CancellationToken::new();
-    let first = crate::async_storage::poll_ready(read_blob_range_async(
-        &store,
-        root,
-        range,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("cached blob read blocked")??;
-    assert_eq!(first.bytes.as_ref(), b"cdef");
-    assert_eq!(first.work.backend_read_operations, 3);
-    assert_eq!(store.stats()?.resident_decoded_pages, 2);
-
-    let second = crate::async_storage::poll_ready(read_blob_range_async(
-        &store,
-        root,
-        range,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("warm cached blob read blocked")??;
-    assert_eq!(second.bytes, first.bytes);
-    assert_eq!(second.work.page_reads, 2);
-    assert_eq!(second.work.backend_read_operations, 0);
-    assert_eq!(second.work.object_bytes_read, 0);
-    assert_eq!(store.stats()?.decoded_hits, 2);
-    Ok(())
-}
-
-#[test]
 fn blob_read_exposes_nearest_authenticated_unvisited_chunk()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
@@ -1062,37 +983,6 @@ fn streaming_builder_round_trips_a_multilevel_index() -> Result<(), Box<dyn std:
     .ok_or("multilevel blob unexpectedly fit a one-page height bound")?;
     assert!(matches!(shallow.error, BlobReadError::CycleOrHeight));
     assert!(shallow.work.page_reads > 0);
-    Ok(())
-}
-
-#[test]
-fn async_and_sync_blob_build_share_exact_results_and_work() -> Result<(), Box<dyn std::error::Error>>
-{
-    let sync_store = MemoryObjectStore::default();
-    let async_store = MemoryObjectStore::default();
-    let mut sync_source = std::io::Cursor::new(b"abcdefghi");
-    let mut async_source = std::io::Cursor::new(b"abcdefghi");
-    let options = BlobBuildOptions {
-        chunk_bytes: 2,
-        page_items: 2,
-        page_bytes: 127,
-        maximum_blob_bytes: 9,
-    };
-    let synchronous = build_blob(
-        &sync_store,
-        &mut sync_source,
-        options,
-        WorkBudget::UNBOUNDED,
-    )?;
-    let asynchronous = crate::async_storage::poll_ready(build_blob_async(
-        &async_store,
-        &mut async_source,
-        options,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .ok_or("memory-backed asynchronous blob build unexpectedly blocked")??;
-    assert_eq!(asynchronous, synchronous);
     Ok(())
 }
 

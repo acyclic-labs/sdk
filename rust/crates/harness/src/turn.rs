@@ -46,8 +46,6 @@ pub struct TurnPreparation {
 }
 
 /// Canonical identity for the user record of one local conversation operation.
-/// This is the same SHA-256 UUID derivation exposed by the WASM facade, so a
-/// native retry and a JavaScript retry address the same message identity.
 pub fn canonical_user_message_id(operation_id: OperationId) -> Uuid {
     derived_uuid(operation_id, "user")
 }
@@ -68,12 +66,7 @@ pub fn derived_uuid(operation_id: OperationId, label: &str) -> Uuid {
     Uuid::from_bytes(bytes)
 }
 
-/// Plans the deterministic portion of one conversation turn.
-///
-/// `existing_selection` is the reducer's operation-scoped committed
-/// selection, if any.  The booleans describe external model state because
-/// native journals and JavaScript runtimes own different reconciliation
-/// mechanisms; the decision itself remains Rust-owned.
+/// Plans the deterministic portion of one conversation turn. `existing_selection` is the reducer's operation-scoped committed selection, if any.
 #[expect(
     clippy::too_many_arguments,
     reason = "the planner boundary keeps all deterministic turn inputs explicit"
@@ -101,9 +94,7 @@ pub fn prepare_turn(
     )
 }
 
-/// Plans a turn while preserving a host's established message identity
-/// namespace. Callers may explicitly select another identity; default callers
-/// always derive the canonical identity and do not detect legacy histories.
+/// Plans a turn while preserving a host's established message identity namespace.
 #[expect(
     clippy::too_many_arguments,
     reason = "the explicit identity planner forwards deterministic admission inputs"
@@ -257,10 +248,7 @@ fn prepare_turn_inherited(
     let selection_is_new = existing_selection.is_none();
     let selection = match existing_selection {
         Some(selection) => {
-            // A committed selection is anchored to the history observed before
-            // the model ran. Later assistant/tool publication may extend the
-            // conversation, so validate its provenance against that anchor
-            // rather than requiring the current tail length to remain equal.
+            // A committed selection is anchored to the history observed before the model ran.
             if selection.conversation_revision < user_message.sequence
                 || selection.conversation_revision > conversation.logical_revision()
             {

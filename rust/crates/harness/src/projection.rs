@@ -16,11 +16,9 @@ use serde::de::DeserializeOwned;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
-/// Default maximum bytes read when resolving a file for the provider-neutral
-/// projection helper.  Adapters may narrow this bound for their provider.
+/// Default maximum bytes read when resolving a file for the provider-neutral projection helper.
 pub const DEFAULT_PROJECTION_MAX_RESOLVED_BYTES: u64 = crate::conversation::MAX_LIMIT_FILE_BYTES;
-/// Default maximum bytes read for an attachment manifest in the projection
-/// helper.  The owning provider may choose a lower bound.
+/// Default maximum bytes read for an attachment manifest in the projection helper.
 pub const DEFAULT_PROJECTION_MAX_MANIFEST_BYTES: u64 = crate::conversation::MAX_LIMIT_FILE_BYTES;
 /// Default maximum number of attachments resolved from one selected message.
 pub const DEFAULT_PROJECTION_MAX_ATTACHMENTS: usize = u32::MAX as usize;
@@ -89,7 +87,6 @@ pub trait AttachmentListResolver: acyclic_stream::ProviderPlatform {
     }
 
     /// Resolves the original pinned manifest on the caller's native ledger.
-    /// Missing custom capabilities reject before allocating a callback frame.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn resolve_with_native_work<'a>(
         &'a self,
@@ -163,10 +160,7 @@ pub struct SelectedModelContext {
     pub messages: Vec<ModelMessage>,
 }
 
-/// Derives the bounded, ordered message identity set for one admitted user
-/// turn.  This is deliberately separate from byte projection: callers can
-/// commit the selection before invoking an asynchronous model or content
-/// provider, and retries can reuse the exact committed identities.
+/// Derives the bounded, ordered message identity set for one admitted user turn.
 pub fn bounded_model_context_selection(
     conversation: &ConversationState,
     user_id: Uuid,
@@ -184,9 +178,6 @@ pub fn bounded_model_context_selection(
 }
 
 /// Selects the exact canonical history delta after an owner-verified checkpoint.
-/// The immutable envelope is cryptographically bound to its pinned `FileRef` here;
-/// the owning journal remains responsible for its publication and summary admission.
-/// With no checkpoint all model-visible history is selected or the explicit bound rejects.
 pub fn select_turn_delta(
     conversation: &ConversationState,
     current: &ConversationMessage,
@@ -332,8 +323,7 @@ fn validate_selected_tool_pairs(
 }
 
 impl SelectedModelContext {
-    /// Admits a provider-proven context before dispatch without needing the
-    /// owning conversation or reimplementing model bounds in a host adapter.
+    /// Admits a provider-proven context before dispatch without needing the owning conversation or reimplementing model bounds in a host adapter.
     pub fn validate_for_dispatch(&self, limits: Limits) -> Result<()> {
         limits.validate()?;
         if let Some(checkpoint) = &self.selection.checkpoint {
@@ -358,8 +348,7 @@ impl SelectedModelContext {
         Ok(())
     }
 
-    /// Checks that a projected selection preserves one-to-one provenance and
-    /// ends in the exact current user input rather than duplicating it.
+    /// Checks that a projected selection preserves one-to-one provenance and ends in the exact current user input rather than duplicating it.
     pub fn validate_for_input(&self, input: &ModelContent) -> Result<()> {
         self.validate_for_input_with_io(input, None)
     }
@@ -411,8 +400,7 @@ impl SelectedModelContext {
     }
 }
 
-/// Selects a bounded ordered subset. Text and attachments stay as refs;
-/// structured tool artifacts are resolved only within the render bound.
+/// Selects a bounded ordered subset.
 #[allow(
     clippy::too_many_lines,
     reason = "projection enforces one bounded ordered selection"
@@ -437,10 +425,7 @@ pub async fn select_model_context<R: AttachmentListResolver + ?Sized>(
     .await
 }
 
-/// Selects a bounded ordered subset with an explicit provider attachment
-/// allowance. The native convenience uses the caller-selected attachment
-/// allowance; adapters may explicitly select a narrower projection without
-/// reimplementing the projection reducer.
+/// Selects a bounded ordered subset with an explicit provider attachment allowance.
 #[allow(
     clippy::too_many_lines,
     reason = "projection enforces one bounded ordered selection"
@@ -510,8 +495,6 @@ async fn select_model_context_with_projection_limit_and_io<R: AttachmentListReso
             continue;
         }
         if message.kind == MessageKind::ToolResult {
-            // The complete result remains an immutable artifact. Only its
-            // separately bounded projection is model-visible here.
             if message.content.descriptor().media_type() != "application/json" {
                 return Err(projection_invalid(io, "tool result artifact type is invalid"));
             }
@@ -563,7 +546,6 @@ async fn select_model_context_with_projection_limit_and_io<R: AttachmentListReso
             }
         };
         // This projection explicitly selects native image intent without conversion.
-        // The selected adapter must enforce its finite work budget.
         let native_image = || -> Result<FileProjectionPolicy> {
             projection_allocation(std::mem::size_of::<crate::model::NativeMediaPolicy>() as u64, io)?;
             Ok(FileProjectionPolicy::Native(Box::new(crate::model::NativeMediaPolicy {
@@ -626,10 +608,7 @@ async fn select_model_context_with_projection_limit_and_io<R: AttachmentListReso
     })
 }
 
-/// Selects from a loaded, possibly compacted conversation view whose
-/// authoritative revision is retained separately from the number of loaded
-/// messages.  The full-history variant above remains strict for native
-/// callers; this entry point is the bridge used by remote/WASM views.
+/// Selects from a loaded, possibly compacted conversation view whose authoritative revision is retained separately from the number of loaded messages.
 pub async fn select_model_context_at_revision<R: AttachmentListResolver + ?Sized>(
     conversation: &ConversationState,
     selection: ModelContextSelection,
@@ -646,9 +625,6 @@ pub async fn select_model_context_at_revision<R: AttachmentListResolver + ?Sized
 }
 
 /// Native copies and transferred same-ledger payloads remain owned by `io`.
-/// The caller must drop the selected context before its original IO custody.
-/// Source-reader guards remain separate until their physical data is retired;
-/// a foreign source is copied, never rebound or rejected for ledger identity.
 #[allow(clippy::too_many_arguments,
     reason = "the original revision selection ABI adds only its original optional preparation IO")]
 pub(crate) async fn select_model_context_at_revision_with_io<R: AttachmentListResolver + ?Sized>(
@@ -685,8 +661,7 @@ pub(crate) async fn select_model_context_at_revision_with_io<R: AttachmentListRe
     Ok(selected)
 }
 
-/// Validates selection order and role/linkage semantics without resolving any
-/// owner bytes.  Remote adapters use this before collecting authorized reads.
+/// Validates selection order and role/linkage semantics without resolving any owner bytes.
 pub fn validate_model_context_selection_at_revision(
     conversation: &ConversationState,
     selection: &ModelContextSelection,
@@ -697,8 +672,7 @@ pub fn validate_model_context_selection_at_revision(
     )
 }
 
-/// Reuses the canonical validation engine for an already admitted history
-/// observer; the native facade borrows its original ledger and creates no budget.
+/// Reuses the canonical validation engine for an already admitted history observer; the native facade borrows its original ledger and creates no budget.
 pub(crate) fn validate_model_context_selection_at_revision_with_work(
     conversation: &ConversationState,
     selection: &ModelContextSelection,
@@ -874,8 +848,6 @@ fn projection_omission_text(count: usize, io: Option<&crate::executor::Preparati
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         use std::fmt::Write as _;
-        // This private decimal/literal recipe is exact, not a generic formatter
-        // sizing pass or a second encoded buffer.
         let digits = if count == 0 { 1 } else { count.ilog10() as usize + 1 };
         let length = digits + "[".len()
             + " additional attachments omitted from this bounded model context]".len();
@@ -980,8 +952,6 @@ fn validate_projection_tool_identity(
     ToolInvocation::validate_identity(call_id, name)
 }
 
-// Only live logical key/value slots are owned here. Std's private hash buckets
-// and allocator operations are opaque, not fabricated native SDK observations.
 struct ProjectionIndex<'a, T> {
     values: HashMap<Uuid, T>,
     held: ProjectionIndexHold<'a>,
@@ -1221,9 +1191,6 @@ async fn read_projected_tool_result<R: AttachmentListResolver + ?Sized>(
     if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
         let parsed = read_native_projection_value(resolver, file, maximum_bytes, io).await?;
         let (value, custody) = parsed.into_native_parts()?;
-        // Preserve BOTH original consuming conversions: read_json_artifact<Value>
-        // first, then its caller's ToolResultContent conversion. Private Raw maps
-        // make the intermediate Value conversion observably nonidentity.
         let intermediate = convert_native_projection_source::<serde_json::Value>(
             NativeProjectionSource { value, custody }, maximum_bytes, io,
         )?;
@@ -1301,9 +1268,6 @@ fn projection_conversion_allowance<T: NativeProjectionArtifact>(
 ) -> Result<u64> {
     use serde::__private229::de::Content;
     use std::mem::size_of;
-    // ToolResultContent -> ModelDataPart -> VolumeOwner/NativeMediaIntent is
-    // the longest real tagged-buffer chain. Projection arguments have none.
-    // Vec capacities and Content map PAIRS are quota, not allocator observations.
     let overflow = || projection_invalid(Some(io), "tool projection conversion allowance overflows");
     let nodes = shape.lexical_items().checked_add(shape.virtual_items()).ok_or_else(overflow)?;
     let slots = nodes.checked_mul(10).ok_or_else(overflow)?;
@@ -1322,8 +1286,6 @@ fn projection_conversion_allowance<T: NativeProjectionArtifact>(
         nodes.checked_mul(size_of::<crate::model::NativeMediaPolicy>() as u64).ok_or_else(overflow)?
     } else { 0 };
     let strings = if typed_result { shape.input_bytes().checked_mul(3).ok_or_else(overflow)? } else { 0 };
-    // Only NEW conversion containers/raw scratch are added. Resident strings
-    // move under the original decoded Value's already-paid guard.
     let values = crate::contract::json_owned_value_conversion_additional_bytes(shape)?;
     let labels = [
         "serde_json::Value", "a valid JSON value", "a string containing valid JSON",
@@ -1378,9 +1340,7 @@ fn convert_native_projection_source<T: NativeProjectionArtifact>(
         },
     )?;
     let work = io.original_native_work().expect("native projection converter");
-    // Admit only new conversion payload/diagnostics before allocating. The
-    // original decoded guard is transferred exactly, not inferred from shared
-    // IO counters or claimed again for resident strings.
+    // Admit only new conversion payload/diagnostics before allocating.
     let mut additional = work.retain_owned(projection_conversion_allowance::<T>(shape, io)?)
         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
     if let Err(cause) = source.custody.absorb(&mut additional) {
@@ -1388,8 +1348,6 @@ fn convert_native_projection_source<T: NativeProjectionArtifact>(
         drop(value);
         return Err(Error::NativeWork { cause, custody: Some(custody) });
     }
-    // The consuming converter runs unchanged, with both old and new storage
-    // paid. On error it has physically retired the complete original tree.
     let value: T = match serde_json::from_value(source.value) {
         Ok(value) => value,
         Err(error) => return Err(Error::NativeDecode {
@@ -1461,9 +1419,6 @@ async fn read_owned_projection_value<'io, R: AttachmentListResolver + ?Sized>(
     {
         return Err(projection_invalid(Some(io), "tool artifact type or rendering limit is invalid"));
     }
-    // The ordinary provider's opaque frame/backend are outside the native
-    // envelope. Retain only a known capacity of the actual source allocation
-    // while the original owned IO funds the bounded parser.
     let _source_hold;
     let bytes = resolver.read(file).await?;
     _source_hold = bytes.retained_capacity()
@@ -1476,7 +1431,7 @@ async fn read_owned_projection_value<'io, R: AttachmentListResolver + ?Sized>(
     let parsed = io.decode_preparation_with_code::<serde_json::Value>(
         &bytes, crate::wire::ErrorCode::Invalid,
     )?;
-    validate_model_json_numbers_with_io(&parsed.value, Some(io))?;
+    validate_model_json_numbers(&parsed.value, Some(io))?;
     Ok(parsed)
 }
 
@@ -1500,7 +1455,7 @@ async fn read_native_projection_value<'io, R: AttachmentListResolver + ?Sized>(
     let parsed = io.decode_preparation_with_code::<serde_json::Value>(
         source.as_ref(), crate::wire::ErrorCode::Invalid,
     )?;
-    validate_model_json_numbers_with_io(&parsed.value, Some(io))?;
+    validate_model_json_numbers(&parsed.value, Some(io))?;
     Ok(parsed)
 }
 
@@ -1525,24 +1480,20 @@ async fn read_json_artifact<T: DeserializeOwned, R: AttachmentListResolver + ?Si
     file.descriptor().verify(&bytes)?;
     let value: serde_json::Value = crate::contract::json_from_slice(&bytes)
         .map_err(|error| Error::Invalid(format!("tool artifact is invalid: {error}")))?;
-    validate_model_json_numbers(&value)?;
+    validate_model_json_numbers(&value, None)?;
     serde_json::from_value(value)
         .map_err(|error| Error::Invalid(format!("tool artifact is invalid: {error}")))
 }
 
-fn validate_model_json_numbers(value: &serde_json::Value) -> Result<()> {
-    validate_model_json_numbers_with_io(value, None)
-}
-
-fn validate_model_json_numbers_with_io(
+fn validate_model_json_numbers(
     value: &serde_json::Value, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
     projection_step(io, 1)?;
     match value {
         serde_json::Value::Array(values) => values.iter()
-            .try_for_each(|value| validate_model_json_numbers_with_io(value, io)),
+            .try_for_each(|value| validate_model_json_numbers(value, io)),
         serde_json::Value::Object(values) => {
-            values.values().try_for_each(|value| validate_model_json_numbers_with_io(value, io))
+            values.values().try_for_each(|value| validate_model_json_numbers(value, io))
         }
         serde_json::Value::Number(number) => {
             if !crate::conversation::is_exact_js_integer(number)
@@ -1708,8 +1659,6 @@ mod tests {
             ..Limits::default()
         };
         assert!(select_turn_delta(&conversation, &current, true, None, limits).is_err());
-        // This fixture checks the envelope/source-selection boundary and indexed delta,
-        // not publication or summary proof. Those are explicitly owner-verified inputs.
         let payload = file(agent, "source.json", "application/json")?;
         let checkpoint = crate::context::CanonicalContextCheckpoint {
             operation_id: crate::OperationId::new(),
@@ -1912,7 +1861,7 @@ mod tests {
         let resolver = ArtifactResolver {
             bytes: vec![0; oversized_len],
         };
-        let result = read_json_artifact::<serde_json::Value, _>(&resolver, &reference, 1_024, None).await;
+        let result = read_json_artifact::<serde_json::Value, _>(&resolver, &reference, 1_024).await;
         let Err(error) = result else {
             return Err(Error::Invalid(
                 "oversized resolved bytes were accepted".into(),
@@ -2054,13 +2003,11 @@ mod tests {
     fn native_tool_conversion_preserves_original_owned_map_raw_semantics_without_reencoding() -> Result<()> {
         let work = projection_native_work()?;
         let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-        // Wire-first z is ordinary during the original slice decode. Actual
-        // owned-map iteration makes the private key first in from_value.
         let input = br#"{"call_id":"ok","name":"x","arguments":{"z":true,"$serde_json::private::RawValue":"{\"captured\":7}"}}"#;
         let parsed = io.decode_preparation_with_code::<serde_json::Value>(
             input, crate::wire::ErrorCode::Invalid,
         )?;
-        validate_model_json_numbers_with_io(&parsed.value, Some(&io))?;
+        validate_model_json_numbers(&parsed.value, Some(&io))?;
         let source_reads = work.receipt().source_bytes_read;
         let original: serde_json::Value = crate::contract::json_from_slice(input)?;
         let expected = serde_json::from_value::<ProjectedToolInvocation>(original);

@@ -1,6 +1,4 @@
-//! Optional host-only OAuth composition. The maintained rmcp manager owns
-//! discovery, PKCE, issuer binding, refresh coordination and credential storage.
-//! Harness supplies ordinary approval and exact network admission, not another engine.
+//! Optional host-only OAuth composition.
 use crate::{Error, OperationId, Result, interaction::{Interaction, InteractionOutcome}, runtime::TaskContext};
 use acyclic_stream::BoxProviderFuture;
 use std::sync::Arc;
@@ -9,8 +7,6 @@ pub use rmcp::transport::auth::{AuthError, AuthorizationCallback, AuthorizationM
 /// Host-only browser/callback interaction; no URL, code or token enters model context.
 pub trait McpOAuthInteraction: Send + Sync {
     /// Presents the approved private authorization URL and returns the redirect URL.
-    /// The host retains callback state in its selected StateStore and must honor
-    /// its admission cancellation/deadline; it must not auto-replay a token exchange.
     fn authorize<'a>(&'a self, operation: OperationId, authorization_url: &'a str) -> BoxProviderFuture<'a, Result<String>>;
 }
 
@@ -20,9 +16,7 @@ pub struct McpOAuthAuthorization<S, T> {
     pub endpoint: String,
     /// Existing host network admission capability.
     pub http: Arc<dyn OAuthHttpClient>,
-    /// Host persistent credential owner, including refresh coordination. Handle
-    /// definitive refresh rejection under the existing guard without clearing
-    /// credentials that have since been replaced or reacquiring that guard.
+    /// Host persistent credential owner, including refresh coordination.
     pub credentials: S,
     /// Host persistent PKCE/CSRF state owner.
     pub states: T,
@@ -32,9 +26,7 @@ pub struct McpOAuthAuthorization<S, T> {
     pub interaction: Arc<dyn McpOAuthInteraction>,
 }
 
-/// Performs an explicitly selected authorization flow. Persistent stores are
-/// REQUIRED parameters; this does not install in-memory durability by default.
-/// The caller admits the OAuth HTTP route under this operation before calling.
+/// Performs an explicitly selected authorization flow.
 pub async fn authorize<S: CredentialStore + 'static, T: StateStore + 'static>(
     context: &TaskContext,
     operation: OperationId,
@@ -52,15 +44,12 @@ pub async fn authorize<S: CredentialStore + 'static, T: StateStore + 'static>(
     approve(context, operation, &endpoint, url).await?;
     let callback = interaction.authorize(operation, url).await?;
     session.handle_callback_url(&callback).await.map_err(|error| token_error(operation, error))?;
-    // OAuthState is used only to recover the manager after the library session;
-    // no library HTTP worker, refresh-on-401 retry or autonomous session is started.
+    // OAuthState is used only to recover the manager after the library session; no library HTTP worker, refresh-on-401 retry or autonomous session is started.
     let mut state = rmcp::transport::auth::OAuthState::Session(session);
     state.complete_authorization().await.map_err(auth_error)?;
     state.into_authorization_manager().ok_or_else(|| Error::Invalid("MCP authorization manager unavailable".into()))
 }
 /// Private restart input retained by the host's existing admitted request owner.
-/// This carries client configuration, not access/refresh tokens. The `StateStore`
-/// retains the original PKCE verifier; no new authorization URL is generated.
 pub struct McpOAuthRecovery<S, T> {
     /// Same resource endpoint as the original admission.
     pub endpoint: String,
@@ -78,10 +67,7 @@ pub struct McpOAuthRecovery<S, T> {
     pub authorization_url: String,
 }
 
-/// Recovers the original PKCE callback after host restart. The library consumes
-/// retained state before token dispatch: uncertain token exchanges cannot be
-/// repeated by replaying this method. An already stored credential is reconciled
-/// without exchanging the callback again.
+/// Recovers the original PKCE callback after host restart.
 pub async fn recover<S: CredentialStore + 'static, T: StateStore + 'static>(
     context: &TaskContext,
     operation: OperationId,
@@ -115,8 +101,7 @@ async fn approve(context: &TaskContext, operation: OperationId, endpoint: &str, 
 }
 
 fn auth_error(error: AuthError) -> Error {
-    // Provider errors may embed token responses, URLs or codes. Retain diagnostics
-    // only in the host's credential owner, never in Harness/model-visible errors.
+    // Provider errors may embed token responses, URLs or codes.
     match error {
         AuthError::CredentialStoreError(_) => Error::Storage("private MCP credential owner failed".into()),
         _ => Error::Unauthorized("MCP OAuth operation failed; inspect the private credential owner".into()),
@@ -135,8 +120,7 @@ fn token_error(operation: OperationId, error: AuthError) -> Error {
 mod native {
     use super::*;
     use crate::mcp::http::{McpHttpProvider, McpHttpRequest, McpHttpResponse, NativeMcpHttpProvider};
-    /// Explicit credential-bound HTTP capability. Binds a single exact endpoint;
-    /// refreshing credentials never retries or reinitializes an MCP request.
+    /// Explicit credential-bound HTTP capability.
     pub struct OAuthMcpHttpProvider {
         endpoint: String,
         manager: Arc<AuthorizationManager>,

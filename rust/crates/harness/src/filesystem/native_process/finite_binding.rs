@@ -234,8 +234,8 @@ async fn bind_body<P: StreamProvider + 'static>(
             }
         }
     }
-    if let Some(view) = &view { request.validate_native_paths_with_io(view.manifest(), io)?; }
-    else { request.validate_with_io(io)?; }
+    if let Some(view) = &view { request.validate_native_paths(view.manifest(), io)?; }
+    else { request.validate(io)?; }
     if request.view.volumes.iter().any(|mapping| &mapping.volume == authority.results.volume()) {
         return Err(validation_error(io, crate::wire::ErrorCode::Unsupported,
             "native result storage must be separate from materialized volumes"));

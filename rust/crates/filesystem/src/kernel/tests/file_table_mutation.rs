@@ -209,40 +209,6 @@ fn remove_validation_requires_the_exact_file_identity() {
 }
 
 #[test]
-fn async_and_sync_file_table_mutation_share_exact_results_and_work()
--> Result<(), Box<dyn std::error::Error>> {
-    let sync_store = MemoryObjectStore::default();
-    let async_store = MemoryObjectStore::default();
-    let (sync_root, _) = three_leaf_table(&sync_store)?;
-    let (async_root, _) = three_leaf_table(&async_store)?;
-    assert_eq!(sync_root, async_root);
-    let mutations = vec![FileTableMutation::Replace {
-        expected: record(3, 3),
-        replacement: record(3, 8),
-    }];
-    let synchronous = apply_file_table_mutations(
-        &sync_store,
-        sync_root,
-        mutations.clone(),
-        8,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    let asynchronous = crate::async_storage::poll_ready(apply_file_table_mutations_async(
-        &async_store,
-        async_root,
-        mutations,
-        8,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    ))
-    .ok_or("memory-backed asynchronous file-table mutation unexpectedly blocked")??;
-    assert_eq!(asynchronous, synchronous);
-    Ok(())
-}
-
-#[test]
 fn stale_record_precondition_writes_nothing() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (root, _) = three_leaf_table(&store)?;

@@ -189,27 +189,12 @@ pub(super) fn decode(
     let previous = guard.bytes();
     guard.resize_retained(add(previous, crate::contract::lexical_json_diagnostic_bytes())?)?;
     crate::contract::admit_json(bytes, bounds, &mut |charge| {
-        let result = match charge {
-            JsonCodecCharge::Work { items: visited, bytes: encoded } => {
-                items = match items.checked_add(visited) {
-                    Some(items) => items,
-                    None => return Err(Error::NativeWork {
-                        cause: acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow),
-                        custody: None,
-                    }),
-                };
-                work.charge(WorkCounters { items_examined: visited, bytes_encoded: encoded, ..WorkCounters::default() })
-            }
-            JsonCodecCharge::AllocationOperation { .. } => work.charge(WorkCounters {
-                allocation_operations: 1, ..WorkCounters::default()
-            }),
-            JsonCodecCharge::CopyAdmission { bytes } => work.admit(WorkCounters {
-                bytes_copied: bytes, ..WorkCounters::default()
-            }),
-            JsonCodecCharge::Read { .. } => work.remaining().map(|_| ()),
-            _ => work.remaining().map(|_| ()),
-        };
-        result.map_err(Error::from)
+        if let JsonCodecCharge::Work { items: visited, .. } = charge {
+            items = items.checked_add(visited).ok_or_else(|| Error::from(
+                acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow)))?;
+        }
+        crate::filesystem::native_execution::native_codec_charge_typed(charge, work, guard)
+            .map_err(Error::from)
     }).map_err(|source| codec_slot.retain(source, custody.take()))?;
     custody.as_mut().ok_or(receipt_error("native receipt custody is missing"))?
         .substitute(previous)?;
