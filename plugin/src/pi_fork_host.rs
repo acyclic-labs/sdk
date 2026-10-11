@@ -42,6 +42,13 @@ struct ObservedSource {
     snapshot: LazySnapshotRef,
 }
 
+const OBSERVED_SOURCE_DIAGNOSTIC_LABEL_BYTES: u64 = crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES
+    + crate::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
+    "ObservedSource", "caller", "sdk_operation", "root_key", "snapshot", "TaskId",
+    "LazySnapshotRef", "id", "workspace_id", "authored_generation", "source", "overlay", "shadows",
+    "SourceReference", "identity", "epoch", "an array of length 16",
+]);
+
 #[derive(Serialize)]
 struct PiPreparedReply<'a> {
     task: TaskId,
@@ -293,7 +300,7 @@ impl<'a> PiForkHost<'a> {
             let bytes = self.coordinator(&work)?.read_original_input(&reference.0, remaining(&work)?, &cancel).await?;
             let decoded: (ObservedSource, _) = crate::pi_root_provider::guarded_pi_decode(bytes.as_ref(),
                 self.protected.policy().maximum_payload_bytes, self.protected.policy().maximum_payload_bytes,
-                acyclic_harness::JsonValueSchema::None, &work)?;
+                acyclic_harness::JsonValueSchema::None, OBSERVED_SOURCE_DIAGNOSTIC_LABEL_BYTES, &work)?;
             let observed = &decoded.0;
             if observed.caller != input.caller || observed.sdk_operation != input.sdk_operation || observed.root_key != input.root_key {
                 return Err(unauthorized("Pi original Root observation retry changed its source request"));

@@ -23,6 +23,24 @@ pub(crate) struct PiRootSourceCut {
     pub(crate) snapshots: BTreeMap<String, LazySnapshotRef>,
 }
 
+
+// Closed selected-command, admission and cursor labels augment the existing
+// canonical Root/SDK leaf inventory; these are actual serde schema labels.
+const SELECTED_DIAGNOSTIC_LABEL_BYTES: u64 =
+    crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES
+    + crate::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
+        "PiTaskInput", "execution", "PiTaskExecution", "host", "child", "preparation",
+        "launch", "WorkflowCommand", "operation_id", "payload",
+        "PiSelectedCommand", "caller", "sdk_operation", "source", "root", "directory",
+        "cursor", "maximum_entries", "destination", "paths", "confirm",
+        "approval_digest", "import_operation", "CursorEnvelope", "PageCursor",
+        "Inspect", "Diff", "value", "PiNativeInspectionCursor", "volume", "snapshot",
+        "continuation", "PiNativeDiffCursor", "before", "after", "before_pass",
+        "PiNativeSourceKey", "LazySnapshotRef", "id", "workspace_id",
+        "authored_generation", "SourceReference", "identity", "epoch", "overlay", "shadows",
+        "an array of length 16", "an array of length 32", "VolumeClass", "VolumeOwner",
+        "SelectedImportIntent", "source_snapshot", "destination_snapshot", "operation", "writeback",
+    ]);
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiSelectedCommand {
@@ -145,7 +163,8 @@ impl<'a> PiSelectedHost<'a> {
         let encoded = crate::pi_root_provider::guarded_pi_bytes(&admission.0.input, maximum, work)?;
         drop(admission);
         let result = crate::pi_root_provider::guarded_pi_decode(&encoded.0, maximum,
-            maximum.checked_mul(8).ok_or_else(|| invalid("admission ownership bound overflow"))?, acyclic_harness::JsonValueSchema::None, work);
+            maximum.checked_mul(8).ok_or_else(|| invalid("admission ownership bound overflow"))?,
+            acyclic_harness::JsonValueSchema::None, SELECTED_DIAGNOSTIC_LABEL_BYTES, work);
         drop(encoded);
         result
     }
@@ -220,7 +239,8 @@ impl<'a> PiSelectedHost<'a> {
         drop(payload);
         let decoded = crate::pi_root_provider::guarded_pi_decode::<PiSelectedCommand>(&encoded.0,
             crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
-            crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8, acyclic_harness::JsonValueSchema::None, work)?;
+            crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8,
+            acyclic_harness::JsonValueSchema::None, SELECTED_DIAGNOSTIC_LABEL_BYTES, work)?;
         drop(encoded);
         let input = &decoded.0;
         if input.caller != owner.task_id() || input.sdk_operation.is_empty() {
@@ -268,7 +288,7 @@ impl<'a> PiSelectedHost<'a> {
                     _ => return Err(denied("diff continuation used for inspection")),
                 };
                 let page = consume_root(work, selected.inspect(&context, &owner, &input.directory, continuation, maximum, cancellation, work).await)?;
-                let continuation = page.cursor.map(|cursor| self.cursor(input, &key, &command.kind, PageCursor::Inspect(cursor), cancellation, work)).transpose()?;
+                let continuation = page.cursor.as_ref().map(|cursor| self.cursor(input, &key, &command.kind, PageCursorRef::Inspect(cursor), cancellation, work)).transpose()?;
                 ready(&PiPageResponse { source: input.source, root: &key, volume: Some(&volume),
                     before_root: None, before_snapshot: None, snapshot: frozen, directory: &page.directory,
                     entries: &page.entries, cursor: continuation.as_ref().map(|(cursor, _)| cursor.as_str()) }, work)
@@ -286,7 +306,7 @@ impl<'a> PiSelectedHost<'a> {
                     _ => return Err(denied("inspection continuation used for diff")),
                 };
                 let page = consume_root(work, diff_native(&before, &selected, &context, &owner, &input.directory, continuation, maximum, cancellation, work).await)?;
-                let continuation = page.cursor.map(|cursor| self.cursor(input, &key, &command.kind, PageCursor::Diff(cursor), cancellation, work)).transpose()?;
+                let continuation = page.cursor.as_ref().map(|cursor| self.cursor(input, &key, &command.kind, PageCursorRef::Diff(cursor), cancellation, work)).transpose()?;
                 ready(&PiPageResponse { source: input.source, root: &key, volume: None,
                     before_root: Some(&before_key), before_snapshot: Some(before_frozen), snapshot: frozen,
                     directory: &page.directory, entries: &page.entries, cursor: continuation.as_ref().map(|(cursor, _)| cursor.as_str()) }, work)
@@ -302,7 +322,7 @@ impl<'a> PiSelectedHost<'a> {
             _ => unreachable!("kind checked above"),
         }
     }
-    fn cursor(&self, input: &PiSelectedCommand, root: &str, kind: &str, cursor: PageCursor,
+    fn cursor(&self, input: &PiSelectedCommand, root: &str, kind: &str, cursor: PageCursorRef<'_>,
         cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork) -> Result<(String, acyclic_fs::NativeAllocation)> {
         encode_cursor(&CursorEnvelopeRef { caller: input.caller, source: input.source, root,
             kind, directory: &input.directory, cursor: &cursor }, cancellation, work)
@@ -316,11 +336,18 @@ struct CursorEnvelope {
 }
 #[derive(Serialize)]
 struct CursorEnvelopeRef<'a> {
-    caller: TaskId, source: TaskId, root: &'a str, kind: &'a str, directory: &'a str, cursor: &'a PageCursor,
+    caller: TaskId, source: TaskId, root: &'a str, kind: &'a str, directory: &'a str, cursor: &'a PageCursorRef<'a>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value")]
 enum PageCursor { Inspect(PiNativeInspectionCursor), Diff(PiNativeDiffCursor) }
+
+#[derive(Serialize)]
+#[serde(tag = "kind", content = "value")]
+enum PageCursorRef<'a> {
+    Inspect(&'a crate::pi_inspection::PiNativeInspectionCursorRef<'a>),
+    Diff(&'a crate::pi_inspection::PiNativeDiffCursorRef<'a>),
+}
 
 fn encode_cursor<T: Serialize>(value: &T, cancellation: &CancellationToken,
     work: &acyclic_fs::NativeMaterializationWork) -> Result<(String, acyclic_fs::NativeAllocation)> {
@@ -351,7 +378,8 @@ fn decode_cursor<T: serde::de::DeserializeOwned>(value: &str, cancellation: &Can
     let bytes = hex::decode(value).map_err(storage)?;
     let result = crate::pi_root_provider::guarded_pi_decode(&bytes,
         (crate::MAXIMUM_CONTROL_MESSAGE_BYTES / 2) as u64,
-        crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8, acyclic_harness::JsonValueSchema::None, work);
+        crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8,
+        acyclic_harness::JsonValueSchema::None, SELECTED_DIAGNOSTIC_LABEL_BYTES, work);
     drop(bytes);
     drop(bytes_custody);
     result
@@ -581,7 +609,7 @@ impl PiSelectedHost<'_> {
         work: &acyclic_fs::NativeMaterializationWork) -> Result<Option<(SelectedImportIntent, acyclic_fs::NativeAllocation)>> {
         crate::pi_root_provider::read_pi_input_with_native_work(&self.protected, &self.filesystem,
             operation, "selected-import-intent", crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8,
-            acyclic_harness::JsonValueSchema::None, context, work).await
+            acyclic_harness::JsonValueSchema::None, SELECTED_DIAGNOSTIC_LABEL_BYTES, context, work).await
     }
     #[allow(clippy::too_many_arguments, reason = "original owner, frozen evidence and prepared approval are independent")]
     async fn writeback(&self, context: &TaskContext, owner: &Arc<TaskJournalOwner<LocalStream>>,

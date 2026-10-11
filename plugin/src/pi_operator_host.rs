@@ -161,7 +161,8 @@ pub(crate) async fn read_prepared_approval(runtime: &PiNativeRuntime, filesystem
         root, OperationId::from_bytes(root.into_bytes()), work).await?;
     let descriptor: Option<(PiPreparedApproval, acyclic_fs::NativeAllocation)> =
         crate::pi_root_provider::read_pi_input_with_native_work(protected, filesystem, operation,
-            "operator-approval", crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8, &context, work).await?;
+            "operator-approval", crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8,
+            acyclic_harness::JsonValueSchema::None, pi_operator::prepared_labels_bytes(), &context, work).await?;
     if let Some((descriptor, _custody)) = &descriptor { validate_descriptor(protected, &descriptor.into())?; }
     Ok(descriptor)
 }

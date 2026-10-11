@@ -22,9 +22,23 @@ struct RetainedRootSource {
 }
 
 // Only these closed DTOs are retained here; neither contains a serde_json::Value.
-trait SpawnRetainedInput: DeserializeOwned {}
-impl SpawnRetainedInput for RetainedRootSource {}
-impl SpawnRetainedInput for pi_native::PiNativeLaunchIntent {}
+trait SpawnRetainedInput: DeserializeOwned {
+    const DIAGNOSTIC_LABEL_BYTES: u64;
+}
+impl SpawnRetainedInput for RetainedRootSource {
+    const DIAGNOSTIC_LABEL_BYTES: u64 = pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
+        "RetainedRootSource", "caller", "sdk_operation", "root_key", "snapshot",
+        "TaskId", "LazySnapshotRef", "id", "workspace_id", "authored_generation",
+        "source", "overlay", "shadows", "LazySnapshotId", "WorkspaceId",
+        "GenerationId", "Digest", "SourceReference", "identity", "epoch",
+        "LazyOverlayId", "LazyShadowId",
+        "a string", "a UUID string", "u64", "u8",
+        "an array of length 16", "an array of length 32",
+    ]);
+}
+impl SpawnRetainedInput for pi_native::PiNativeLaunchIntent {
+    const DIAGNOSTIC_LABEL_BYTES: u64 = pi_native::PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES;
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -418,7 +432,8 @@ impl PiSession {
         let bytes = bytes;
         let owned = (bytes.len() as u64).checked_mul(4).ok_or_else(|| acyclic_harness::Error::Invalid("Pi retained input ownership bound overflow".to_owned()))?;
         let (value, custody) = pi_root_provider::guarded_pi_decode(
-            &bytes, maximum, owned, acyclic_harness::JsonValueSchema::None, work)?;
+            &bytes, maximum, owned, acyclic_harness::JsonValueSchema::None,
+            T::DIAGNOSTIC_LABEL_BYTES, work)?;
         drop(bytes);
         drop(bytes_custody);
         drop(reference);

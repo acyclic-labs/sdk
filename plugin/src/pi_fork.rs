@@ -94,6 +94,25 @@ pub(crate) struct PiForkPlan {
     _input_allocations: Option<Arc<PiForkInputAllocations>>,
 }
 
+const FORK_PLAN_DIAGNOSTIC_LABEL_BYTES: u64 = crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES
+    + crate::pi_native::PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES
+    + crate::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
+        "PiForkPlan", "original", "commit", "preparation", "request", "source_checkpoint", "source",
+        "caller_project", "frozen", "project_creation", "history_limits", "RetainedSpawnCommit",
+        "sdk_operation", "alias", "prompt", "caller", "source_task", "child", "launch",
+        "TaskAdmissionRecord", "operation_id", "task", "machine", "input", "input_schema",
+        "output_schema", "parent", "resource_proofs", "grants", "limits", "run_limits", "policy",
+        "extensions", "execution", "ComponentIdentity", "MachineIdentity", "name", "version", "digest",
+        "TaskRunLimits", "concurrency", "max_steps", "deadline_epoch_ms", "ResourceCreationProofRef",
+        "provider", "resource", "evidence", "ResourcePreparationRequest", "resources", "creation_grant",
+        "maximum_resources", "maximum_work", "maximum_bytes", "payload", "command", "input_files",
+        "read_authorization", "RecursiveSourceSnapshot", "project", "project_generation", "private_volume",
+        "private_generation", "HistoryReadLimits", "maximum_events", "LazySnapshotRef", "id", "workspace_id",
+        "authored_generation", "overlay", "shadows", "SourceReference", "identity", "epoch",
+        "ExtensionAdmission", "source", "selected", "configurations", "ExecutionPlacement", "build",
+        "environment", "readiness_revision", "an array of length 16",
+    ]);
+
 struct PiForkInputAllocations {
     _references: [Option<acyclic_fs::NativeAllocation>; 4],
     _container: acyclic_fs::NativeAllocation,
@@ -221,7 +240,8 @@ impl PiForkCoordinator {
         }
         self.require_input_read(context)?;
         let bytes = self.read_original_input(&reference.reference, budget, cancel).await?;
-        let actual: PiDecodedInput<PiNativeLaunchIntent> = self.decode_original_input(bytes.as_ref(), acyclic_harness::JsonValueSchema::None, budget, cancel)?;
+        let actual: PiDecodedInput<PiNativeLaunchIntent> = self.decode_original_input(bytes.as_ref(), acyclic_harness::JsonValueSchema::None,
+            crate::pi_native::PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES, budget, cancel)?;
         if actual.value != plan.commit.launch {
             return Err(Error::Unauthorized("Pi native SDK source cut, session bytes, or invocation changed".into()));
         }
@@ -414,7 +434,8 @@ impl PiForkCoordinator {
         self.runtime.verify_owner(&self.owner)?;
         let Some(mut reference) = self.observe_original_input(original, "fork-plan", budget, cancel).await? else { return Ok(None); };
         let bytes = self.read_original_input(&reference.reference, self.remaining(budget)?, cancel).await?;
-        let mut decoded: PiDecodedInput<PiForkPlan> = self.decode_original_input(bytes.as_ref(), acyclic_harness::JsonValueSchema::RecursiveForkToolPlan, budget, cancel)?;
+        let mut decoded: PiDecodedInput<PiForkPlan> = self.decode_original_input(bytes.as_ref(), acyclic_harness::JsonValueSchema::RecursiveForkToolPlan,
+            FORK_PLAN_DIAGNOSTIC_LABEL_BYTES, budget, cancel)?;
         self.validate_plan(&decoded.value, decoded.value.commit.caller)?;
         if decoded.value.original != original { return Err(Error::Unauthorized("Pi original plan locator changed".into())); }
         if let Some(work) = &self.work {
@@ -445,10 +466,10 @@ impl PiForkCoordinator {
     }
 
     fn decode_original_input<T: serde::de::DeserializeOwned>(&self, bytes: &[u8], value_schema: acyclic_harness::JsonValueSchema,
-        budget: WorkBudget, cancel: &CancellationToken) -> Result<PiDecodedInput<T>> {
+        schema_label_bytes: u64, budget: WorkBudget, cancel: &CancellationToken) -> Result<PiDecodedInput<T>> {
         match &self.work {
             Some(work) => crate::pi_root_provider::guarded_pi_decode(bytes, self.owner.policy().maximum_payload_bytes,
-                self.owner.policy().maximum_payload_bytes, value_schema, work)
+                self.owner.policy().maximum_payload_bytes, value_schema, schema_label_bytes, work)
                 .map(|(value, allocation)| PiDecodedInput { value, allocation: Some(allocation) }),
             None => Ok(PiDecodedInput { value: self.accept_root(crate::pi_root_provider::decode_pi_value(bytes,
                 self.owner.policy().maximum_payload_bytes, self.owner.policy().maximum_payload_bytes,
@@ -523,7 +544,8 @@ impl PiForkCoordinator {
             return Err(Error::Unauthorized("Pi prepared observation substituted Root".into()));
         };
         let bytes = self.read_original_input(&reference.reference, self.remaining(budget)?, &cancel).await?;
-        let intent: PiDecodedInput<PiNativeLaunchIntent> = self.decode_original_input(bytes.as_ref(), acyclic_harness::JsonValueSchema::None, budget, &cancel)?;
+        let intent: PiDecodedInput<PiNativeLaunchIntent> = self.decode_original_input(bytes.as_ref(), acyclic_harness::JsonValueSchema::None,
+            crate::pi_native::PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES, budget, &cancel)?;
         if launch.payload != reference.reference || intent.value != plan.commit.launch {
             return Err(Error::Unauthorized("Pi prepared observation changed its sealed native intent".into()));
         }

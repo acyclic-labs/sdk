@@ -253,6 +253,10 @@ its admitted parser quota until the native error consumer drops it; empty
 codec-error guards are not manufactured. Native canonical-byte and digest
 helpers use that same original ledger and the existing SDK canonical/BLAKE3
 identity, rather than rebuilding a remaining-budget meter.
+Native typed decoders declare both their concrete Value-field schema and a
+finite inventory of actual serde fields, variants and static expected labels.
+The shared SDK source pass issues the shape used to admit that diagnostic
+custody before parsing; no arbitrary label allowance or second parser is used.
 The Root provider's dispatch and reconciliation enter through funded SDK futures
 on that same request ledger. A cancelled original creator can observe and publish
 complete original resource evidence, but cannot capture or create missing resources.
@@ -608,6 +612,9 @@ Native cut decoding declares its exact Value schema; closed DTOs declare no Valu
 fields. Their audited fixed metadata accompanies the canonical SDK's actual
 source-shape admission, rather than an input-byte multiplier. Process result
 controls use the SDK's own closed-record decoder and retained-capacity receipt.
+Closed launch, header and cleanup records supply a finite source-derived serde
+diagnostic label inventory before parsing. Arbitrary Value cuts have no custom
+labels; SDK request/result decoders own their respective diagnostic contracts.
 Protected host-runtime copies use direct funded String, path and prefix-vector
 operations, not a codec round-trip. Environment pairs acquire logical metadata
 quota before insertion; opaque standard-library tree nodes are excluded rather
