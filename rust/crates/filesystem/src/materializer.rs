@@ -660,6 +660,13 @@ impl NativeMaterializationWork {
         std::sync::Arc::ptr_eq(&self.state, &other.state)
     }
 
+    /// Pure identity of the original ledger and its exact resource attribution.
+    /// No allowance, cancellation or filesystem authority is created or reset.
+    #[must_use]
+    pub fn shares_allocation_context(&self, other: &Self) -> bool {
+        self.shares_ledger(other) && self.shares_resource_allowance(other)
+    }
+
     pub(crate) fn shares_resource_allowance(&self, other: &Self) -> bool {
         match (&self.resource, &other.resource) {
             (None, None) => true,
@@ -873,6 +880,49 @@ impl NativeMaterializationWork {
                 return Err(NativeTreeMaterializationError::InvalidLayout);
             }
         }
+    }
+
+    /// Writes borrowed bytes through this original work's SDK I/O boundary.
+    /// Records each completed partial write before exposing late cancellation
+    /// or failure. No input copy, flush, filesystem permission or new ledger is
+    /// introduced; the caller remains responsible for authorizing its writer.
+    ///
+    /// # Errors
+    /// Returns the original admission, cancellation or I/O cause, retaining
+    /// the actual completed output prefix in this same original work.
+    pub fn write_owned_bytes<W: std::io::Write + ?Sized>(
+        &self, output: &mut W, bytes: &[u8],
+    ) -> Result<(), NativeTreeMaterializationError> {
+        use acyclic_native_runtime::{
+            NativeOperationKind, NativeOperationReservation, OwnedNativeByteReservation,
+        };
+        let mut transfer = OwnedNativeByteReservation::new(
+            self.runtime_meter_owner(), NativeOperationKind::Write, bytes.len(),
+        ).map_err(|error| self.runtime_error(error))?;
+        let mut offset = 0;
+        while offset < bytes.len() {
+            let mut operation = NativeOperationReservation::new(
+                self.runtime_meter(), NativeOperationKind::Write, 1,
+            ).map_err(|error| self.runtime_error(error))?;
+            let (written, recorded) = operation.attempt(|| output.write(&bytes[offset..]));
+            let count = match written {
+                Ok(count) if count <= bytes.len() - offset => count,
+                Ok(_) => return Err(NativeTreeMaterializationError::InvalidLayout),
+                Err(error) => {
+                    recorded.map_err(|error| self.runtime_error(error))?;
+                    if error.kind() == std::io::ErrorKind::Interrupted { continue; }
+                    return Err(self.runtime_error(error));
+                }
+            };
+            let transferred = transfer.record_partial(count);
+            recorded.map_err(|error| self.runtime_error(error))?;
+            transferred.map_err(|error| self.runtime_error(error))?;
+            if count == 0 {
+                return Err(self.runtime_error(std::io::ErrorKind::WriteZero.into()));
+            }
+            offset += count;
+        }
+        Ok(())
     }
 
     /// Withholds additive completion limits on this same original and resource.
@@ -8488,6 +8538,97 @@ mod tests {
             assert_eq!(work.receipt().allocation_operations - before.allocation_operations, 0);
             assert_eq!(work.live_allocation_bytes(), baseline);
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    struct PartialFileWriter<'a> {
+        file: &'a mut std::fs::File,
+        cancellation: Option<&'a crate::CancellationToken>,
+        fail_after_first: bool,
+        completed: usize,
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl std::io::Write for PartialFileWriter<'_> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.fail_after_first && self.completed != 0 {
+                return Err(std::io::ErrorKind::PermissionDenied.into());
+            }
+            let count = std::io::Write::write(self.file, &bytes[..bytes.len().min(3)])?;
+            self.completed += count;
+            if let Some(cancellation) = self.cancellation {
+                cancellation.cancel();
+            }
+            Ok(count)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            std::io::Write::flush(self.file)
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn owned_writer_records_real_partial_prefix_on_quota_cancel_and_io_failure() {
+        for (write_limit, cancel, fail, attempts, completed) in [
+            (3, false, false, 3, 8),
+            (1, false, false, 1, 3),
+            (3, true, false, 1, 3),
+            (3, false, true, 2, 3),
+        ] {
+            let directory = tempfile::tempdir().expect("real partial writer fixture");
+            let path = directory.path().join("payload");
+            let mut file = std::fs::File::create(&path).expect("authorized writer");
+            let cancellation = crate::CancellationToken::new();
+            let budget = crate::WorkBudget {
+                backend_write_operations: write_limit, output_bytes: 8,
+                bytes_copied: 0, bytes_encoded: 0, ..finite_native_budget()
+            };
+            let work = NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(error, _)| error).expect("original work");
+            let before = work.receipt();
+            let baseline = work.live_allocation_bytes();
+            let mut writer = PartialFileWriter {
+                file: &mut file, cancellation: cancel.then_some(&cancellation),
+                fail_after_first: fail, completed: 0,
+            };
+            let result = work.write_owned_bytes(&mut writer, b"original");
+            assert_eq!(writer.completed, completed);
+            drop(writer);
+            drop(file);
+            assert_eq!(std::fs::read(&path).expect("actual physical prefix"), &b"original"[..completed]);
+            assert_eq!(work.receipt().backend_write_operations - before.backend_write_operations, attempts);
+            assert_eq!(work.receipt().output_bytes - before.output_bytes, completed as u64);
+            assert_eq!(work.receipt().bytes_copied - before.bytes_copied, 0);
+            assert_eq!(work.receipt().allocation_operations - before.allocation_operations, 0);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+            if attempts == 3 {
+                result.expect("all real partial writes");
+            } else if cancel {
+                assert!(matches!(result, Err(NativeTreeMaterializationError::Cancelled)));
+            } else if fail {
+                assert!(matches!(result, Err(NativeTreeMaterializationError::Io(_))));
+            } else {
+                assert!(matches!(result, Err(NativeTreeMaterializationError::Work(_))));
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn owned_writer_preflight_denial_never_calls_or_edits_its_writer() {
+        let directory = tempfile::tempdir().expect("real denied writer fixture");
+        let path = directory.path().join("payload");
+        let mut file = std::fs::File::create(&path).expect("authorized writer");
+        let work = NativeMaterializationWork::new(crate::WorkBudget {
+            output_bytes: 7, ..finite_native_budget()
+        }, &crate::CancellationToken::new()).map_err(|(error, _)| error).expect("original work");
+        let before = work.receipt();
+        assert!(matches!(work.write_owned_bytes(&mut file, b"original"),
+            Err(NativeTreeMaterializationError::Work(_))));
+        assert_eq!(work.receipt(), before);
+        drop(file);
+        assert!(std::fs::read(path).expect("untouched real file").is_empty());
     }
 
     #[cfg(not(target_arch = "wasm32"))]
