@@ -426,14 +426,9 @@ impl InteractionRouter for TaskJournalInteractions {
         }
         crate::NativeFutureBundle::new(work, || async move {
             let paid = paid;
-            let io = super::PreparationIo::from_native_work(work)?;
-            let hashed = acyclic_fs::WorkCounters {
-                bytes_hashed: b"harness/v2/task-interaction\0".len() as u64 + 32,
-                ..Default::default()
-            };
-            io.preflight(hashed)?;
-            io.charge(hashed)?;
-            let id = crate::durable_host::task_interaction_id(self.task, operation_id);
+            let id = crate::durable_host::task_interaction_id_with_native_work(
+                self.task, operation_id, work,
+            )?;
             self.journal.open_interaction_with_native_work(id, &paid.value, work)?.await?;
             let (outcome, custody) = self.journal.interaction_outcome_with_native_work(id, work)?.await?;
             Ok((outcome.unwrap_or(InteractionOutcome::Indeterminate { operation_id }), custody))
@@ -1136,13 +1131,19 @@ where
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn bind_native_tool_interactions(
+    pub fn bind_native_tool_interactions(
         &self, context: crate::runtime::ToolContext, task: TaskId,
+        fence: &LeaseFence, turn: OperationId,
         journal: Arc<FilesystemExecutionJournal<P, A, O>>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::runtime::ToolContext> {
-        if self.interaction_owner.is_none() { return Ok(context); }
-        if context.task().durable_task_id() != Some(task) {
+        if !context.native_metadata_matches(work)
+            || !context.task().original_task_binding_matches(task, fence)
+            || !journal.original_native_execution_work_matches(work)
+            || !journal.original_task_execution_binding_matches(
+                task, fence, turn, context.operation_id(), self.host.as_ref(),
+            )
+        {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "journal interaction route differs from original task",

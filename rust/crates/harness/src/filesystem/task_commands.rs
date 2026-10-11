@@ -1148,7 +1148,9 @@ where
         }
         let invocation = tool_invocation_with_native_operation(context.context(), operation, definition, input.arguments, io, work)?;
         let tool_context = ToolContext::new_with_native_work(Arc::clone(&context), operation, &invocation.call_id, work)?;
-        let tool_context = self.runtime.bind_native_tool_interactions(tool_context, task, Arc::clone(&journal), work)?;
+        let tool_context = self.runtime.bind_native_tool_interactions(
+            tool_context, task, fence, turn, Arc::clone(&journal), work,
+        )?;
         if !reconciliation_only {
             let records = journal.replay_with_native_work(operation, 0, 1, work)?.await?;
             let empty = records.0.is_empty();

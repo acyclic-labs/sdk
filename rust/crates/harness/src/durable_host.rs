@@ -159,6 +159,19 @@ pub fn task_interaction_id(task_id: TaskId, operation_id: OperationId) -> Intera
     InteractionId::from_bytes(bytes)
 }
 
+/// Derives the same original ticket identity after funding the actual SDK hash.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub fn task_interaction_id_with_native_work(
+    task_id: TaskId, operation_id: OperationId,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<InteractionId> {
+    work.charge(acyclic_fs::WorkCounters {
+        bytes_hashed: b"harness/v2/task-interaction\0".len() as u64 + 32,
+        ..Default::default()
+    }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    Ok(task_interaction_id(task_id, operation_id))
+}
+
 fn worker_key(
     kind: &str,
     operation: OperationId,
@@ -240,6 +253,8 @@ pub struct CoordinatorTaskHost<P> {
     effects: Option<Arc<dyn DurableEffectObserver>>,
     session_limits: Option<crate::scheduler::SessionLimits>,
     resource_creation: Vec<Arc<dyn crate::resource_preparation::ResourceCreationProvider>>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    native_configuration_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 struct CreatedTaskPublicationLease<P> {
@@ -4830,23 +4845,67 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         machines: MachineRegistry,
         clock: Arc<dyn UnixMillisClock>,
     ) -> Result<Self> {
-        verifier.verify_audience(&owner)?;
-        verifier.verify(&owner_scope)?;
+        Self::new_observed(
+            coordinator, stream, payloads, reader, owner, owner_scope, verifier,
+            root_scope, tasks, machines, clock, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "the same explicit host configuration with its original observer")]
+    fn new_observed(
+        coordinator: DistributedCoordinator<P>, stream: StreamClient<P>,
+        payloads: Arc<dyn SchedulerPayloadStore>, reader: Arc<dyn ContentResidencyVerifier>,
+        owner: Authority, owner_scope: Scope, verifier: AuthorityVerifier,
+        root_scope: RuntimeScope, tasks: TaskRegistry, machines: MachineRegistry,
+        clock: Arc<dyn UnixMillisClock>,
+        mut work: Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        if work.is_some() {
+            if verifier.audience() != &owner {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "owner authority differs from the configured verifier",
+                });
+            }
+        } else {
+            verifier.verify_audience(&owner)?;
+        }
+        verifier.verify_with_work(&owner_scope, &mut work)?;
         for capability in [
             capability::OPERATION_DECLARE,
             capability::OPERATION_OBSERVE,
             capability::OPERATION_CANCEL,
         ] {
             if !owner_scope.capabilities().contains(capability) {
-                return Err(Error::Unauthorized(format!(
-                    "owner scope lacks {capability}"
-                )));
+                return Err(if work.is_some() {
+                    Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unauthorized,
+                        reason: "owner scope lacks a required operation capability",
+                    }
+                } else {
+                    Error::Unauthorized(format!("owner scope lacks {capability}"))
+                });
             }
         }
         if !root_scope.grants().is_subset_of(owner_scope.capabilities()) {
-            return Err(Error::Unauthorized(
-                "runtime grants exceed the signed owner scope".into(),
-            ));
+            return Err(if work.is_some() {
+                Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "runtime grants exceed the signed owner scope",
+                }
+            } else {
+                Error::Unauthorized("runtime grants exceed the signed owner scope".into())
+            });
+        }
+        if let Some(observer) = work.as_deref_mut() {
+            observer.retain_owned(std::mem::size_of::<Self>() as u64)?;
+            observer.retain_owned(
+                std::mem::size_of::<Mutex<DistributedCoordinator<P>>>()
+                    .saturating_sub(std::mem::size_of::<DistributedCoordinator<P>>()) as u64,
+            )?;
+            observer.codec_charge(crate::contract::JsonCodecCharge::AllocationOperation {
+                bytes: std::mem::size_of::<Mutex<DistributedCoordinator<P>>>() as u64,
+            })?;
         }
         Ok(Self {
             coordinator: Arc::new(Mutex::new(coordinator)),
@@ -4867,7 +4926,67 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             effects: None,
             session_limits: None,
             resource_creation: Vec::new(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_configuration_custody: None,
         })
+    }
+
+    /// Builds the same configured owner from guarded copies on the original
+    /// ledger. The coordinator keeps its own original replay/cache custody.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[allow(clippy::too_many_arguments, reason = "the original host configuration plus its native work")]
+    pub fn new_with_native_work(
+        coordinator: DistributedCoordinator<P>, stream: StreamClient<P>,
+        payloads: Arc<dyn SchedulerPayloadStore>, reader: Arc<dyn ContentResidencyVerifier>,
+        owner: &Authority, owner_scope: &Scope, verifier: &AuthorityVerifier,
+        root_scope: &RuntimeScope, tasks: &TaskRegistry, machines: &MachineRegistry,
+        clock: Arc<dyn UnixMillisClock>, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        use crate::store::history::HistoryIo as _;
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let owner = io.history_io().clone_authority(owner)?;
+        let scope_copy = owner_scope.clone_with_native_work(work)?;
+        io.absorb_native_custody(scope_copy.1)?;
+        let verifier_copy = verifier.clone_with_native_work(work)?;
+        io.absorb_native_custody(verifier_copy.1)?;
+        let root_copy = root_scope.clone_with_native_work(work)?;
+        io.absorb_native_custody(root_copy.1)?;
+        let tasks = tasks.clone_with_native_work(work)?;
+        let machines = machines.clone_with_native_work(work)?;
+        io.absorb_native_custody(machines.1)?;
+        let mut host = Self::new_observed(
+            coordinator, stream, payloads, reader, owner, scope_copy.0, verifier_copy.0,
+            root_copy.0, tasks, machines.0, clock, Some(&mut io.history_io()),
+        )?;
+        let retained = io.owned_bytes()?;
+        host.native_configuration_custody = Some(io.into_native_custody(retained)?);
+        Ok(host)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn into_native_shared(self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Arc<Self>> {
+        if !self.native_configuration_custody.as_ref()
+            .is_some_and(|custody| custody.work().shares_ledger(work))
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "host configuration differs from its original work",
+            });
+        }
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
+        Ok(Arc::new(self))
+    }
+
+    /// Observes the real SDK Arc construction, including its zero-sized clock.
+    /// The clock owns no logical metadata; opaque Arc backing is not invented.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn system_clock_with_native_work(
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Arc<dyn UnixMillisClock>> {
+        work.charge(acyclic_fs::WorkCounters { allocation_operations: 1, ..Default::default() })
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(Arc::new(acyclic_stream::SystemUnixMillisClock))
     }
 
     /// Current trusted wall clock shared by admission, workers and effect gates.
@@ -5058,6 +5177,64 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             let custody = io.take_native_custody(std::mem::size_of::<Admission<TaskId>>() as u64)?;
             Ok((admitted, custody))
         })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn with_session_limits_with_native_work(
+        mut self, limits: crate::scheduler::SessionLimits,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        if !self.native_configuration_custody.as_ref()
+            .is_some_and(|custody| custody.work().shares_ledger(work))
+        {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "session configuration differs from original host work" });
+        }
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        limits.validate_with_work(&mut Some(&mut io.history_io()))?;
+        self.session_limits = Some(limits);
+        Ok(self)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn with_resource_creation_providers_with_native_work(
+        mut self, providers: &[Arc<dyn crate::resource_preparation::ResourceCreationProvider>],
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        if !self.native_configuration_custody.as_ref()
+            .is_some_and(|custody| custody.work().shares_ledger(work))
+        {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "resource registry differs from original host work" });
+        }
+        if !self.resource_creation.is_empty() {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
+                reason: "resource creation registry is already configured" });
+        }
+        for (index, provider) in providers.iter().enumerate() {
+            provider.provider().validate_with_native_work(work)?;
+            if providers[..index].iter().any(|bound| bound.provider() == provider.provider()) {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "resource creation provider is registered twice" });
+            }
+        }
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let bytes = providers.len().checked_mul(std::mem::size_of::<Arc<
+            dyn crate::resource_preparation::ResourceCreationProvider>>())
+            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "resource registry ownership overflow" })? as u64;
+        io.retain_owned(bytes)?;
+        if !providers.is_empty() { io.allocation_attempt(bytes)?; }
+        let mut copied = Vec::new();
+        copied.try_reserve_exact(providers.len()).map_err(|_| Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Storage, reason: "resource registry allocation failed",
+        })?;
+        copied.extend(providers.iter().map(Arc::clone));
+        let mut custody = io.take_native_custody(bytes)?;
+        self.native_configuration_custody.as_mut().expect("checked original host custody")
+            .absorb(&mut custody).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.resource_creation = copied;
+        Ok(self)
     }
 
     /// Admits through the existing task path while retaining the parent's lease.
@@ -5300,9 +5477,29 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     /// Pins the policy enforced by this owner, independently of caller contexts.
     pub fn with_policy(mut self, policy: Arc<dyn ToolPolicy>) -> Result<Self> {
-        let binding = policy.identity();
-        validate_policy_identity(&binding)?;
-        self.policy_binding = Some(binding);
+        let identity = policy.identity();
+        validate_policy_identity(&identity)?;
+        self.policy_binding = Some(identity);
+        self.policy = Some(policy);
+        Ok(self)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn with_policy_with_native_work(
+        mut self, policy: Arc<dyn ToolPolicy>, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        if !self.native_configuration_custody.as_ref()
+            .is_some_and(|custody| custody.work().shares_ledger(work))
+        {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "policy configuration differs from original host work" });
+        }
+        policy.supports_native_policy(work)?;
+        let mut identity = policy.identity_with_native_work(work)?;
+        crate::runtime::validate_policy_identity_with_native_work(&identity.0, &identity.1, work)?;
+        self.native_configuration_custody.as_mut().expect("checked original host custody")
+            .absorb(&mut identity.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.policy_binding = Some(identity.0);
         self.policy = Some(policy);
         Ok(self)
     }
@@ -6996,6 +7193,15 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         work.charge(acyclic_fs::WorkCounters::default())
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(None)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn policy_identity_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<&ComponentIdentity>> {
+        work.charge(acyclic_fs::WorkCounters::default())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(self.policy_binding.as_ref())
     }
 
     fn supports_batch_cancellation(&self) -> bool {
