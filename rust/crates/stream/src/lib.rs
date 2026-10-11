@@ -113,13 +113,31 @@ pub const TOKEN_OPERATIONS: &[&str] = &[
 ];
 
 /// Permanent account-relative slash-separated ASCII path.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct StreamPath(Arc<str>);
+#[derive(Clone)]
+pub struct StreamPath(StreamPathStorage);
+
+#[derive(Clone)]
+enum StreamPathStorage {
+    Plain(Arc<str>),
+    #[cfg(not(target_arch = "wasm32"))]
+    Native { owner: Arc<NativePathText>, length: usize },
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct NativePathText {
+    text: String,
+    _allocation: acyclic_native_runtime::ReadAllocation,
+}
 
 impl StreamPath {
     /// Validates and owns one path.
     pub fn new(path: impl AsRef<str>) -> Result<Self, StreamError> {
         let path = path.as_ref();
+        Self::validate(path)?;
+        Ok(Self(StreamPathStorage::Plain(Arc::from(path))))
+    }
+
+    fn validate(path: &str) -> Result<(), StreamError> {
         if path.is_empty()
             || path.len() > MAX_PATH_BYTES
             || !path.is_ascii()
@@ -145,13 +163,44 @@ impl StreamPath {
         if count > MAX_ITEMS {
             return Err(StreamError::LimitExceeded);
         }
-        Ok(Self(Arc::from(path)))
+        Ok(())
+    }
+
+    /// Owns canonical path text with last-alias original-ledger custody.
+    /// Ordinary construction retains its existing single `Arc<str>` allocation.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new_native(
+        path: impl AsRef<str>,
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<Result<Self, StreamError>> {
+        let path = path.as_ref();
+        if let Err(error) = Self::validate(path) { return Ok(Err(error)); }
+        let mut allocation = acyclic_native_runtime::ReadAllocation::new(meter, path.len())?;
+        let mut text = String::new();
+        if let Err(error) = text.try_reserve_exact(path.len()) {
+            return Err(meter.allocation_failed(error));
+        }
+        allocation.reconcile_capacity(text.capacity())?;
+        meter.admit_codec(0, path.len() as u64, 0)?;
+        text.push_str(path);
+        meter.record_codec(0, path.len() as u64, 0)?;
+        let metadata = std::mem::size_of::<NativePathText>();
+        meter.admit_codec(0, metadata as u64, 0)?;
+        let mut owner_allocation = acyclic_native_runtime::ReadAllocation::new(meter, metadata)?;
+        allocation.absorb(&mut owner_allocation)?;
+        let owner = Arc::new(NativePathText { text, _allocation: allocation });
+        meter.record_codec(0, metadata as u64, 0)?;
+        Ok(Ok(Self(StreamPathStorage::Native { owner, length: path.len() })))
     }
 
     /// Canonical path text.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        &self.0
+        match &self.0 {
+            StreamPathStorage::Plain(text) => text,
+            #[cfg(not(target_arch = "wasm32"))]
+            StreamPathStorage::Native { owner, length } => &owner.text[..*length],
+        }
     }
 
     /// Immediate parent, if any.
@@ -162,10 +211,77 @@ impl StreamPath {
                   `rfind` is a valid char boundary and this can never panic"
     )]
     pub fn parent(&self) -> Option<Self> {
-        self.0
-            .rfind('/')
-            .map(|index| Self(Arc::from(&self.0[..index])))
+        let index = self.as_str().rfind('/')?;
+        Some(Self(match &self.0 {
+            StreamPathStorage::Plain(text) => StreamPathStorage::Plain(Arc::from(&text[..index])),
+            #[cfg(not(target_arch = "wasm32"))]
+            StreamPathStorage::Native { owner, .. } =>
+                StreamPathStorage::Native { owner: Arc::clone(owner), length: index },
+        }))
     }
+
+    /// Produces an implicit parent without an unmetered path allocation.
+    /// Native backing text is shared; a plain path's new parent is admitted.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn parent_native(
+        &self,
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<Option<Self>> {
+        meter.check()?;
+        let Some(index) = self.as_str().rfind('/') else { return Ok(None); };
+        match &self.0 {
+            StreamPathStorage::Native { owner, .. } => Ok(Some(Self(
+                StreamPathStorage::Native { owner: Arc::clone(owner), length: index },
+            ))),
+            StreamPathStorage::Plain(_) => match Self::new_native(&self.as_str()[..index], meter)? {
+                Ok(parent) => Ok(Some(parent)),
+                // A prefix of an already valid ASCII path is itself valid.
+                Err(_) => unreachable!("canonical stream path parent was invalid"),
+            },
+        }
+    }
+
+    /// Retains an existing native owner, or funds a real copy of plain text
+    /// before it can outlive the caller's operation-scoped input claim.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn retain_native(
+        &self,
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<Self> {
+        meter.check()?;
+        match &self.0 {
+            StreamPathStorage::Native { .. } => Ok(self.clone()),
+            StreamPathStorage::Plain(_) => match Self::new_native(self.as_str(), meter)? {
+                Ok(path) => Ok(path),
+                Err(_) => unreachable!("canonical stream path became invalid"),
+            },
+        }
+    }
+}
+
+impl fmt::Debug for StreamPath {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_tuple("StreamPath").field(&self.as_str()).finish()
+    }
+}
+
+impl PartialEq for StreamPath {
+    fn eq(&self, other: &Self) -> bool { self.as_str() == other.as_str() }
+}
+impl Eq for StreamPath {}
+impl PartialOrd for StreamPath {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
+}
+impl Ord for StreamPath {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.as_str().cmp(other.as_str()) }
+}
+impl std::hash::Hash for StreamPath {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(self.as_str(), state);
+    }
+}
+impl std::borrow::Borrow<str> for StreamPath {
+    fn borrow(&self) -> &str { self.as_str() }
 }
 
 impl fmt::Display for StreamPath {
@@ -544,6 +660,113 @@ pub type RecordStream = BoxProviderStream<'static, Result<Record, StreamError>>;
 /// Backpressured fixed-snapshot direct-child listing.
 pub type ChildStream = futures::stream::BoxStream<'static, Result<Child, StreamError>>;
 
+/// Original-native provider output with its actual newly allocated storage.
+/// Fields drop in order: physical output first, then its original-ledger claim.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct NativeStreamOutput<T> {
+    value: T,
+    allocation: acyclic_native_runtime::ReadAllocation,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<T> NativeStreamOutput<T> {
+    /// Transfers already admitted storage; never adopts or allocates it again.
+    pub fn new(value: T, allocation: acyclic_native_runtime::ReadAllocation) -> Self {
+        Self { value, allocation }
+    }
+
+    /// Borrows the output without detaching its physical storage claim.
+    pub fn value(&self) -> &T { &self.value }
+
+    /// Borrows the producer's output while retaining its storage claim.
+    pub fn value_mut(&mut self) -> &mut T { &mut self.value }
+
+    /// Transfers both owners. Keep this tuple intact until its value is freed,
+    /// or explicitly transfer the claim with the value.
+    pub fn into_parts(self) -> (T, acyclic_native_runtime::ReadAllocation) {
+        (self.value, self.allocation)
+    }
+}
+
+/// Preserves original observer failure separately from the provider's error.
+#[cfg(not(target_arch = "wasm32"))]
+pub type NativeStreamResult<T> =
+    std::io::Result<Result<NativeStreamOutput<T>, StreamError>>;
+
+/// One original-native record and the storage actually produced for it.
+#[cfg(not(target_arch = "wasm32"))]
+pub type NativeObservedRecord = NativeStreamOutput<Record>;
+
+/// A finite cursor preserves late original failures after its actual prefix.
+#[cfg(not(target_arch = "wasm32"))]
+pub type NativeRecordStream =
+    BoxProviderStream<'static, std::io::Result<Result<NativeObservedRecord, StreamError>>>;
+
+/// Object-safe provider future whose real heap frame is admitted before boxing.
+/// A denied allocation or unsupported provider returns inline, without a box.
+#[cfg(not(target_arch = "wasm32"))]
+pub enum NativeProviderFuture<'a, T> {
+    /// No physical future frame was allocated.
+    Ready(Option<NativeStreamResult<T>>),
+    /// The boxed frame drops before its original-ledger allocation guard.
+    Funded {
+        /// Canonical producer; no alternate request or work root.
+        future: std::pin::Pin<Box<dyn Future<Output = NativeStreamResult<T>> + Send + 'a>>,
+        /// Actual frame storage on the original ledger.
+        allocation: acyclic_native_runtime::ReadAllocation,
+    },
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<'a, T> NativeProviderFuture<'a, T> {
+    /// Admits the exact concrete frame before its sole physical allocation.
+    pub fn new<F>(
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        future: F,
+    ) -> Self
+    where
+        F: Future<Output = NativeStreamResult<T>> + Send + 'a,
+    {
+        let bytes = std::mem::size_of::<F>();
+        let allocation = if bytes == 0 {
+            acyclic_native_runtime::ReadAllocation::empty(meter)
+        } else {
+            match acyclic_native_runtime::ReadAllocation::new(meter, bytes) {
+                Ok(allocation) => allocation,
+                Err(error) => return Self::Ready(Some(Err(error))),
+            }
+        };
+        Self::Funded { future: Box::pin(future), allocation }
+    }
+
+    /// Returns a result without allocating a provider future.
+    pub fn ready(result: NativeStreamResult<T>) -> Self {
+        Self::Ready(Some(result))
+    }
+}
+
+// Only the boxed producer is pinned. The inline terminal result is not a
+// structurally pinned field and is moved out exactly once by poll.
+#[cfg(not(target_arch = "wasm32"))]
+impl<T> Unpin for NativeProviderFuture<'_, T> {}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<T> Future for NativeProviderFuture<'_, T> {
+    type Output = NativeStreamResult<T>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        match self.get_mut() {
+            Self::Ready(result) => std::task::Poll::Ready(
+                result.take().expect("native provider future polled after completion"),
+            ),
+            Self::Funded { future, .. } => future.as_mut().poll(context),
+        }
+    }
+}
+
 /// Heap-allocated provider future with the platform's executor bound.
 #[cfg(not(target_arch = "wasm32"))]
 pub type BoxProviderFuture<'a, T> = futures::future::BoxFuture<'a, T>;
@@ -628,6 +851,85 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     }
     /// Reads one complete immutable successful envelope.
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError>;
+
+    /// Canonical inspection funded by the original native work owner.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_inspect_idempotency(
+        &self,
+        key: IdempotencyKey,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, Option<IdempotencyObservation>> {
+        let _ = (key, meter);
+        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+    }
+
+    /// Canonical tail observation on the original ledger.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_tail(
+        &self,
+        path: StreamPath,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, u64> {
+        let _ = (path, meter);
+        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+    }
+
+    /// Canonical retained-window observation on the original ledger.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_bounds(
+        &self,
+        path: StreamPath,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, StreamBounds> {
+        let _ = (path, meter);
+        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+    }
+
+    /// Canonical finite read; original causes and output custody are retained.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_read(
+        &self,
+        request: ReadRequest,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, NativeRecordStream> {
+        let _ = (request, meter);
+        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+    }
+
+    /// Canonical commit with allocation admission before its future frame.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_commit(
+        &self,
+        request: CommitRequest,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, CommitOutcome> {
+        let _ = (request, meter);
+        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+    }
+
+    /// Executes the same canonical commit with the provider's trusted clock
+    /// checked at its actual linearization point, not at caller admission.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_commit_before(
+        &self,
+        request: CommitRequest,
+        deadline_unix_millis: u64,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, CommitOutcome> {
+        let _ = (request, deadline_unix_millis, meter);
+        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+    }
+
+    /// Canonical immutable-envelope read against original native work.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_read_commit(
+        &self,
+        commit_id: CommitId,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, CommittedEnvelope> {
+        let _ = (commit_id, meter);
+        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+    }
 }
 
 /// Minimal provider-bound client.
@@ -722,6 +1024,77 @@ impl<P: StreamProvider> StreamClient<P> {
     /// Reads a committed envelope.
     pub async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.provider.read_commit(commit_id).await
+    }
+
+    /// Forwards an admitted canonical native inspection without another box.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn native_inspect_idempotency(
+        &self,
+        key: IdempotencyKey,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, Option<IdempotencyObservation>> {
+        self.provider.native_inspect_idempotency(key, meter)
+    }
+
+    /// Forwards an already owned path to the original canonical tail producer.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn native_tail(
+        &self,
+        path: StreamPath,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, u64> {
+        self.provider.native_tail(path, meter)
+    }
+
+    /// Forwards a canonical original-native retained-window request.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn native_bounds(
+        &self,
+        path: StreamPath,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, StreamBounds> {
+        self.provider.native_bounds(path, meter)
+    }
+
+    /// Opens the same finite canonical producer with original custody.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn native_read(
+        &self,
+        request: ReadRequest,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, NativeRecordStream> {
+        self.provider.native_read(request, meter)
+    }
+
+    /// Forwards a canonical commit funded by the original work owner.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn native_commit(
+        &self,
+        request: CommitRequest,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, CommitOutcome> {
+        self.provider.native_commit(request, meter)
+    }
+
+    /// Forwards the original commit and trusted deadline without stripping it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn native_commit_before(
+        &self,
+        request: CommitRequest,
+        deadline_unix_millis: u64,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, CommitOutcome> {
+        self.provider.native_commit_before(request, deadline_unix_millis, meter)
+    }
+
+    /// Forwards an original-native immutable-envelope request.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn native_read_commit(
+        &self,
+        commit_id: CommitId,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, CommittedEnvelope> {
+        self.provider.native_read_commit(commit_id, meter)
     }
 }
 
