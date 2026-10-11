@@ -282,7 +282,7 @@ impl NativeSession {
                 account_guard(&work, owner)
             }
         };
-        match acyclic_fs::publish_native_generation_transition_with_work_guarded(&from, &to, &state,
+        match acyclic_fs::publish_native_generation_transition(&from, &to, &state,
             publication(binding, &excluded, &options, &cancellation), work, before_effect).await
         {
             Ok(receipt) => self.publication_result(binding, &interactions, Some(NativePublicationReceipt { journal: receipt.value, work: receipt.work })).await,
