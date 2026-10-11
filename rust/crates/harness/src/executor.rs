@@ -3454,16 +3454,14 @@ pub(crate) async fn retained_model_step_with_io(
         }
     }
     if started.is_none() && !events.is_empty() {
-        return Err(Error::Storage(
-            "model observations exist without an admitted attempt".into(),
-        ));
+        return Err(stock_boundary(io, crate::wire::ErrorCode::Storage,
+            "model observations exist without an admitted attempt"));
     }
     let request = if let Some((digest, reference)) = started {
         let recorded = load_model_request_with_io(journal, reference, limits, io).await?;
         if recorded.manifest().request_digest != digest {
-            return Err(Error::Conflict(
-                "recorded model request digest differs from admission".into(),
-            ));
+            return Err(stock_boundary(io, crate::wire::ErrorCode::Conflict,
+                "recorded model request digest differs from admission"));
         }
         Some(recorded)
     } else {
