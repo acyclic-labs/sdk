@@ -598,6 +598,20 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         None
     }
 
+    /// Borrows the same genuine adapter's pinned machine identity on the
+    /// original ledger. Native startup never calls the ordinary cloning hook.
+    /// An unaudited custom adapter rejects before any callback or allocation.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn resumable_machine_identity_with_native_work<'a>(
+        &'a self,
+        _work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<&'a crate::workflow::MachineIdentity>> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "tool executor has no native resumable identity producer",
+        })
+    }
+
     /// Checks invocation-specific resource grants before a result is replayed,
     /// dispatched, or reconciled. A scoped adapter must reject a missing scope.
     fn authorize(
