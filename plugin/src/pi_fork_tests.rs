@@ -195,8 +195,9 @@ impl Fixture {
     }
 
     pub(crate) fn coordinator(&self) -> PiForkCoordinator {
-        PiForkCoordinator::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            self.resources.clone(), self.owner.clone()).unwrap()
+        let work = acyclic_fs::NativeMaterializationWork::new(budget(), CancellationToken::new()).unwrap();
+        PiForkCoordinator::new_with_native_work(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
+            &self.resources, self.owner.clone(), &work).unwrap()
     }
     pub(crate) async fn plan(&self) -> PiForkPlan {
         let (_, issuer, _) = self.owner.conversation_authority(self.journal.task_id(),

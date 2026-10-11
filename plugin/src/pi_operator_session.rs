@@ -38,7 +38,7 @@ impl PiSession {
         let operator = pi_operator_host::PiOperatorHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
             protected, &self.resources, &self.state.root_session_id, &selected, work.clone())?;
         pi_workflow::PiWorkflowHost::new(&self.relative_directory, self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            &self.resources, &self.state).with_controls(&fork, &operator).with_work(work).control_command_with_native_work(command).await
+            &self.resources, &self.state).with_controls(&fork, &operator).with_work(work).control_command_with_native_work(command.0).await
             .map(|(value, allocation)| (value, Some(allocation)))
     }
 
