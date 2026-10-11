@@ -126,10 +126,6 @@ impl AuthoredMetadataCache {
     }
 }
 /// Directory-listing page size used to scan siblings for a case-folded
-/// collision under `CaseSensitivity::ProfileFolded`. This makes admitting a
-/// new name under that policy O(directory size) rather than O(1); the tree's
-/// physical page ordering is exact-byte (see `kernel::tree`), so folded
-/// comparison cannot be a binary search over it.
 const CASE_FOLD_COLLISION_SCAN_PAGE: u32 = 256;
 const ROOT_FILE_DOMAIN: &[u8] = b"acyclic-fs-root-file-v1\0";
 const CREATION_OPERATION_DOMAIN: &[u8] = b"acyclic-fs-create-operation-v1\0";
@@ -410,7 +406,6 @@ where
         ).await?;
         let outcome = workspace_join_published(&receipt);
         // The kernel owns the sole preparation hook, publication hold and CAS.
-        // Destroy all returned proof/append data before its original guard.
         drop(receipt);
         drop(allocation);
         Ok(outcome)
@@ -418,8 +413,6 @@ where
 }
 
 /// Restart-safe proof inputs for one committed workspace join. Verification
-/// compares the provider's durable operation fingerprint, so serializing this
-/// value never grants authority or makes a forged claim self-attesting.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JoinCommitWitness {
@@ -689,7 +682,6 @@ struct FsInner<A, O> {
     workspace_namespace: [u8; 16],
     path_index: Arc<dyn crate::path_index::GenerationPathIndex>,
     // This field must remain last: Rust drops fields in declaration order, so every durable
-    // provider and index is gone before a replacement local engine may acquire the root.
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     _local_root_lifecycle: Option<OwnershipAnchor>,
 }
@@ -740,8 +732,6 @@ where
     I: FnOnce(tokio::sync::OwnedMutexGuard<()>) -> F + Send + 'static,
 {
     // Tokio detaches a spawned task when its JoinHandle is dropped. That is intentional here:
-    // cancelling the caller must not release root ownership while provider spawn_blocking workers
-    // can still recover or mutate a journal.
     tokio::spawn(async move {
         crate::obs::in_span(&span, async move { initialize(ownership).await }).await
     })
@@ -770,10 +760,6 @@ impl<A, O> Fs<A, O> {
     }
 
     /// Derives the deployment-scoped stable identity for one canonical name.
-    ///
-    /// # Errors
-    ///
-    /// Rejects an invalid workspace name without storage access.
     pub fn workspace_id(
         &self,
         name: impl AsRef<str>,
@@ -804,7 +790,6 @@ impl<A, O> Fs<A, O> {
     }
 
     /// Coordinates leases on an authority backend that stores windows atomically
-    /// with generation publication. Cloning the backend grants no lease.
     #[must_use]
     pub fn operation_windows(&self) -> crate::OperationWindowCoordinator<A>
     where
@@ -822,8 +807,6 @@ impl<A, O> Fs<A, O> {
 #[cfg(feature = "distributed")]
 impl<P, O> Fs<crate::StreamAuthorityStore<P>, O> {
     /// Opens the SDK operation-window store on the exact Stream provider used
-    /// by generation authority. This co-location is what makes lease fencing
-    /// atomic with publication.
     #[must_use]
     pub fn operation_window_store(&self) -> crate::StreamOperationWindowStore<P> {
         crate::StreamOperationWindowStore::new(self.inner.authority.provider())
@@ -833,11 +816,6 @@ impl<P, O> Fs<crate::StreamAuthorityStore<P>, O> {
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 impl<O> Fs<LocalAuthorityBackend, O> {
     /// Flushes the authority frames written under
-    /// [`acyclic_stream::deferring_durability`], blocking the calling thread.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the authority journal cannot be flushed.
     pub fn flush_deferred_authority(&self) -> Result<(), acyclic_stream::StreamError> {
         self.inner.authority.provider().flush()
     }
@@ -867,7 +845,6 @@ pub struct Checkout<A, O> {
     base_file_table: ObjectId,
     base_root: GenerationRoot,
     /// The base generation and the working tree, which a running collection
-    /// treats as live.
     root: crate::collection::CheckoutRoots,
     authority_head: Option<Head>,
     authored_operation_id: Option<OperationId>,
@@ -889,10 +866,6 @@ enum CheckoutControlOrigin {
 }
 
 /// Tracking proof of one checkout, shared with that checkout's observers.
-///
-/// Observers append observations under a short synchronous lock while their
-/// borrow excludes every mutation of the owning checkout. A private candidate
-/// copies the proof and never shares it.
 struct DependencyLedger {
     proof: Arc<Mutex<Proof>>,
     observing: bool,
@@ -903,21 +876,11 @@ struct DependencyLedger {
 }
 
 /// One checkout's tracking proof, with the base paths whose complete
-/// observation it already holds.
-///
-/// A path observation's regions are only known by walking the base, so the
-/// proof remembers which walks it absorbed: repeating one against the same
-/// base adds nothing. The memory names its base file table and is forgotten
-/// with every proof it describes, so it can never claim an observation the
-/// proof lacks. Like the dependencies, it is shared between clones until one
-/// of them changes it, so copying a proof for a transaction costs nothing.
 #[derive(Clone)]
 struct Proof {
     dependencies: CheckoutDependencies,
     observed_base: Option<ObjectId>,
     /// Each observed path, and whether its terminal record was observed.
-    /// Clearing drops this physical owner without allocating a replacement.
-    /// The next canonical observation admits its new map before construction.
     observed_paths: Option<Arc<ObservedPathMap>>,
     observed_data_bytes: u64,
     observed_clone_data_bytes: u64,
@@ -1001,8 +964,6 @@ impl ProofDataAdmission<'_> {
         let live = accounting.allocations.live_bytes();
         if retained > live {
             // These exact same-producer payloads were admitted by their
-            // constructor or completed SDK receipt. Mirror custody on this
-            // same ledger; no new allocation, operation or caller work.
             let mut mirrored = WorkCounters::default();
             accounting.allocations.claim_bytes(
                 retained - live, 0, &mut mirrored, WorkBudget::UNBOUNDED,
@@ -1044,7 +1005,6 @@ impl ProofDataAdmission<'_> {
         work.charge_items(items, &budget)?;
         crate::collection::charge_handle_copy(copied, &mut work, budget)?;
         // Delivered DATA and constructor/control payloads already belong to
-        // the original caller. Pending newly admitted map payloads still count.
         let earlier_peak = work.peak_allocation_bytes;
         work.peak_allocation_bytes = 0;
         let external = self.owner.operation_cache_bytes();
@@ -1114,7 +1074,6 @@ pub(crate) struct ProofDataSnapshot {
 }
 
 /// Exact copies admitted before an authoritative root replaces owned buffers.
-/// Tuple fields destroy their root's Vec before retiring its primitive tag.
 struct PreparedCheckoutRoots {
     base: (GenerationRoot, crate::kernel::ProofDataClaim),
     held: Option<(GenerationRoot, crate::kernel::ProofDataClaim)>,
@@ -1125,21 +1084,6 @@ struct PreparedCheckoutRoots {
 impl ProofDataSnapshot {
     pub(crate) fn total_bytes(self) -> Result<u64, WorkError> {
         self.dependencies.2.checked_add(self.paths.2).ok_or(WorkError::Overflow)
-    }
-
-    /// Checked allocation generations prevent a freed map address from being
-    /// mistaken for its former payload. No old-root hold or forced COW is needed.
-    pub(crate) fn newly_retained_since(self, original: Self) -> Result<u64, WorkError> {
-        let added = |current: (usize, u64, u64), prior: (usize, u64, u64)| {
-            if current.0 == prior.0 && current.1 == prior.1 {
-                current.2.saturating_sub(prior.2)
-            } else {
-                current.2
-            }
-        };
-        added(self.dependencies, original.dependencies)
-            .checked_add(added(self.paths, original.paths))
-            .ok_or(WorkError::Overflow)
     }
 }
 
@@ -1175,7 +1119,6 @@ impl Proof {
     }
 
     /// Whether observing `path` against `base`, with its terminal when
-    /// `terminal` is set, would add nothing to the proof.
     fn observes_path(&self, base: ObjectId, path: &NamespacePath, terminal: bool) -> bool {
         self.observed_base == Some(base)
             && self.observed_paths.as_deref().is_some_and(|observed| {
@@ -1319,7 +1262,6 @@ impl DependencyLedger {
     }
 
     /// Constructs already admitted native map and proof payloads from their
-    /// actual paid claims, without allocating another observer ledger.
     #[cfg(not(target_arch = "wasm32"))]
     fn new_with_native_custody(
         dependencies: CheckoutDependencies,
@@ -1367,7 +1309,6 @@ impl DependencyLedger {
 
 
     /// Uses the already admitted token so its original owner can register
-    /// retirement before constructing this independent physical proof.
     fn independent_with_custody(&self, data_custody: Arc<crate::kernel::ProofDataCustody>) -> Self {
         Self {
             proof: Arc::new(Mutex::new(self.proof().clone())),
@@ -1411,24 +1352,6 @@ impl DependencyLedger {
             ledger: ProofDataAdmissionLedger::Local { accounting: &mut accounting, work, budget },
             owner: &self.data_custody, cancellation,
         })
-    }
-
-    fn copy_observation_name(
-        &self,
-        name: &LogicalName,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<(LogicalName, crate::kernel::ProofDataClaim), FsError> {
-        let bytes = name.as_bytes().len() as u64;
-        let mut accounting = self.accounting.lock();
-        ProofDataAdmission {
-            ledger: ProofDataAdmissionLedger::Local { accounting: &mut accounting, work, budget },
-            owner: &self.data_custody, cancellation,
-        }.admit(bytes, u64::from(bytes != 0), bytes, 1)?;
-        let name = name.clone();
-        let claim = crate::kernel::ProofDataClaim::new(Some(&self.data_custody), name.retained_bytes() as u64);
-        Ok((name, claim))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1509,12 +1432,6 @@ impl DependencyLedger {
 }
 
 /// Read-only observer of one checkout's current candidate.
-///
-/// Its borrow of the owning checkout excludes every mutation of that checkout
-/// while it lives, so any number of observers may read concurrently. It reads
-/// as a pinned read-only checkout, so every mutation or generation advance
-/// through it is rejected, and it records exactly the observations its owner
-/// would record, into the owner's own proof.
 #[cfg(feature = "native-mount")]
 pub(crate) struct CheckoutObserver<'a, A, O> {
     checkout: Checkout<A, O>,
@@ -1524,7 +1441,6 @@ pub(crate) struct CheckoutObserver<'a, A, O> {
 #[cfg(feature = "native-mount")]
 impl<A, O> CheckoutObserver<'_, A, O> {
     /// Retains this same observer behind the native view admission rather than
-    /// the owner's state-lock borrow. No checkout or proof is cloned.
     pub(crate) fn into_owned(self) -> CheckoutObserver<'static, A, O>
     where
         A: 'static,
@@ -1571,9 +1487,6 @@ impl<A, O> std::ops::DerefMut for CheckoutObserver<'_, A, O> {
 }
 
 /// Cheap immutable reader over one authenticated pinned checkout candidate.
-///
-/// Clones share the underlying stores and immutable generation root. Reads do
-/// not mutate checkout dependency state, so independent requests may overlap.
 pub struct PinnedReader<A, O> {
     volume: Volume<A, O>,
     generation_root: ObjectId,
@@ -1702,9 +1615,6 @@ fn readonly_absorb_allocation(
 }
 
 /// Cheap cloneable writer for immutable authenticated file content.
-///
-/// Staging never mutates a checkout candidate, so independent native or
-/// network sources can overlap before one ordered mutation transaction.
 pub struct ContentStager<A, O> {
     volume: Volume<A, O>,
 }
@@ -1739,8 +1649,6 @@ pub struct FileDescription {
 }
 
 /// One file resolved and authenticated by a specific pinned reader.
-///
-/// The private record and reader borrow make cross-generation use impossible.
 pub struct ResolvedFile<A, O> {
     reader: PinnedReader<A, O>,
     record: FileRecord,
@@ -1843,7 +1751,6 @@ pub struct ResolvedFileRangeReadRequest<'a, A, O> {
 }
 
 /// One child returned from an authenticated directory page, resolved by the
-/// originating pinned reader without a second namespace traversal.
 pub struct ResolvedDirectoryEntry<A, O> {
     /// Exact canonical child name.
     pub name: LogicalName,
@@ -1938,7 +1845,6 @@ pub type LocalObjectBackend = crate::staged_objects::StagedObjects<
 pub type LocalFs = Fs<LocalAuthorityBackend, LocalObjectBackend>;
 
 /// Durable operation-window store sharing the local filesystem's authority
-/// stream. Leases from any other store cannot authorize local publication.
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub type LocalOperationWindowStore = crate::StreamOperationWindowStore<acyclic_stream::LocalStream>;
 
@@ -1963,10 +1869,6 @@ pub type MemoryObjectBackend = crate::LogicalObjectStore<acyclic_objects::v1::Me
 pub(crate) type MemoryCheckout = Checkout<MemoryAuthorityBackend, MemoryObjectBackend>;
 
 /// Ephemeral path-independent regular file retained by an open native handle.
-///
-/// Detached files share immutable objects with their originating volume but
-/// are never published into a generation. They exist only until the final
-/// native handle closes, matching POSIX last-unlink lifetime semantics.
 pub struct DetachedFile<A, O> {
     volume: Volume<A, O>,
     record: FileRecord,
@@ -1993,12 +1895,9 @@ pub struct FileCloneRequest {
 }
 
 /// One regular-file content change. `F` addresses files: an exact
-/// [`NamespacePath`] or a stable [`FileId`], for the changed file and for any
-/// clone source alike.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ContentChange<F> {
     /// Replaces one range with caller bytes, preserving sparse untouched
-    /// ranges. Empty bytes only validate that the file is regular.
     Write {
         /// Inclusive logical offset.
         offset: u64,
@@ -2027,7 +1926,6 @@ pub enum ContentChange<F> {
         keep_size: bool,
     },
     /// Clones one range of another regular file by immutable extent
-    /// reference, without reading bytes.
     CloneFrom {
         /// Existing source regular file.
         source: F,
@@ -2041,17 +1939,9 @@ pub enum ContentChange<F> {
 }
 
 /// One independent change that [`Checkout::apply_group`] may apply together
-/// with others as a single mutation.
-///
-/// Compiling a change reads at most the metadata of the file whose content
-/// it changes, and no kind writes anything another kind reads except
-/// content-change times, which each stamp overwrites completely. So every
-/// change compiles against the same candidate to exactly the operations it
-/// would compile to after its predecessors.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GroupedChange {
     /// Creates one regular file with the caller's fresh stable identity and
-    /// exact initial bytes.
     CreateFile {
         /// New namespace path.
         path: NamespacePath,
@@ -2088,8 +1978,6 @@ pub enum ContentTimes {
     /// Leaves the file's metadata unchanged.
     Preserve,
     /// Sets every represented modification and status-change time to this
-    /// instant, in signed Unix-epoch nanoseconds, within the same mutation
-    /// as the change itself.
     Stamp(i64),
 }
 
@@ -2286,7 +2174,6 @@ impl ContentFile for FileId {
 }
 
 /// One caller-authored filesystem operation compiled into a single sparse,
-/// atomic checkout transaction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AuthoredMutation {
     /// Rebinds an existing non-directory object to a stable source identity.
@@ -2444,7 +2331,6 @@ pub enum AuthoredMutation {
 
 impl AuthoredMutation {
     /// Exact owned namespace-path buffer bytes transferred with this mutation.
-    /// Shared opaque byte payloads are not inferred from their slice lengths.
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
         match self {
             Self::Rename { source, destination, .. }
@@ -2669,7 +2555,6 @@ fn removed_binding_id(
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthoredTransactionResult {
     /// One entry per authored operation; create operations contain their new
-    /// path-independent identity and all other operations contain `None`.
     pub created_file_ids: Vec<Option<FileId>>,
 }
 
@@ -2677,14 +2562,12 @@ pub struct AuthoredTransactionResult {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthoredLiveMutationResult {
     /// One entry per authored operation; create operations contain their new
-    /// path-independent identity and all other operations contain `None`.
     pub created_file_ids: Vec<Option<FileId>>,
     /// Terminal direct-live publication outcome.
     pub outcome: LiveMutationOutcome,
 }
 
 /// Authenticated content staged from a bounded stream without materializing the
-/// complete file in memory.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StagedContent {
     /// Root of the immutable chunk/index closure.
@@ -2747,7 +2630,6 @@ pub struct DirectoryPageRequest {
 }
 
 /// One present no-follow path result with authenticated metadata decoded in
-/// the same operation. `None` represents authenticated absence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PathMetadataLookup {
     /// Path-independent authenticated file record.
@@ -2870,7 +2752,6 @@ pub enum FsError {
     #[error("frozen source snapshot is stale")]
     SourceSnapshotStale,
     /// The original native owner callback rejected the operation before publication.
-    /// The callback caller retains and restores its complete typed cause.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("native owner guard rejected the operation")]
     NativeOwnerGuardRejected,
@@ -2922,15 +2803,12 @@ pub enum FsError {
     #[error("durable volume requested from non-durable embedded backends")]
     UnsupportedDurability,
     /// A new name collides with an existing sibling under the volume's
-    /// `CaseSensitivity::ProfileFolded` policy once both are case-folded,
-    /// even though their exact bytes differ.
     #[error("name collides with an existing entry under the volume's case-folding policy")]
     NameCollision,
     /// A caller-derived identity already names different authenticated state.
     #[error("file identity collides with different authenticated content")]
     FileIdentityCollision,
     /// A new name is not canonical Unicode NFC, required by the volume's
-    /// `UnicodePolicy::RequireNfc` policy.
     #[error("name is not normalized to NFC as required by the volume's unicode policy")]
     NonNormalizedName,
     /// The facade does not yet expose this checkout behavior.
@@ -2963,7 +2841,6 @@ pub enum FsError {
         truncated: bool,
     },
     /// Native live advancement keeps its exact conflict payload on the
-    /// invocation that admitted it, until the error payload is destroyed.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("live advancement conflicts with an observed or mutated region")]
     NativeLiveConflict {
@@ -3137,7 +3014,6 @@ pub enum FsError {
     #[error(transparent)]
     Work(#[from] WorkError),
     /// A completed standalone root read cannot be combined into one exact
-    /// counter set. Both actual prefixes remain available without saturation.
     #[error("completed generation-root read work cannot be combined: {error}")]
     RootReadWorkMerge {
         prior: WorkCounters,
@@ -3151,7 +3027,6 @@ impl From<AuthorityStoreError> for FsError {
     fn from(error: AuthorityStoreError) -> Self {
         match error {
             // A deleted workspace's authority is released for good; reading
-            // it answers exactly as its tombstone did.
             AuthorityStoreError::Retired => Self::WorkspaceDeleted,
             error => Self::Authority(error),
         }
@@ -3166,9 +3041,6 @@ impl<A, O> Fs<A, O> {
     }
 
     /// Composes explicit backends in one stable workspace-identity namespace.
-    ///
-    /// This is an engine-construction boundary. Customer constructors derive
-    /// the namespace from their deployment rather than exposing it.
     #[must_use]
     pub fn new_in_namespace(
         authority: A,
@@ -3213,22 +3085,11 @@ impl<A, O> Fs<A, O> {
 
 impl<A, S> Fs<A, crate::cache::CachedObjectStore<S>> {
     /// Returns exact current and cumulative observations from the disposable
-    /// immutable-object accelerator shared by every clone and volume handle.
-    ///
-    /// # Errors
-    ///
-    /// Fails closed if process-local accelerator synchronization was poisoned.
     pub fn object_cache_stats(&self) -> Result<crate::cache::ObjectCacheStats, ObjectStoreError> {
         self.inner.objects.stats()
     }
 
     /// Discards all resident accelerated bytes without changing authority or
-    /// immutable backing storage. Concurrent reads remain correct and may
-    /// repopulate the cache after this call.
-    ///
-    /// # Errors
-    ///
-    /// Fails closed if process-local accelerator synchronization was poisoned.
     pub fn clear_object_cache(&self) -> Result<(), ObjectStoreError> {
         self.inner.objects.clear()
     }
@@ -3255,7 +3116,6 @@ impl
     >
 {
     /// Creates the deterministic infrastructure-free composition from the exact public reference
-    /// Stream and Objects providers used by hosted-service tests.
     #[must_use]
     pub fn memory() -> Self {
         let stream = std::sync::Arc::new(acyclic_stream::MemoryStream::default());
@@ -3264,9 +3124,6 @@ impl
     }
 
     /// Composes Filesystem over caller-owned public reference providers.
-    ///
-    /// Clones of the same providers may be retained to test cross-family behavior without any
-    /// shadow filesystem storage implementation.
     #[must_use]
     pub fn from_memory_providers(
         stream: std::sync::Arc<acyclic_stream::MemoryStream>,
@@ -3284,9 +3141,6 @@ impl
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     /// Observes release of every provider derived from this local root.
-    ///
-    /// This is an explicit service-shutdown boundary. The returned barrier does not retain the
-    /// root; callers must first drop every filesystem, workspace, checkout, and mount handle.
     #[doc(hidden)]
     #[must_use]
     pub fn local_root_release_barrier(
@@ -3299,10 +3153,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     }
 
     /// Opens the infrastructure-free durable local composition.
-    ///
-    /// # Errors
-    ///
-    /// Fails if limits are invalid or either durable backend cannot initialize.
     pub async fn local(options: LocalOptions) -> Result<Self, FsError> {
         let span = crate::obs::span!(
             INFO,
@@ -3343,7 +3193,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                     prepare_local_root_open(&mut registrations, &root, &options)
                 };
                 // Opening a root may wait for old provider handles or native I/O to finish. Keep that
-                // wait per-root so unrelated roots can attach and respond to hooks concurrently.
                 let _opening = opening.lock().await;
                 let lifecycle = {
                     let registrations = registry.lock().await;
@@ -3392,11 +3241,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             object_cache,
         } = options;
         // The Stream and Objects providers own disjoint directories, so their
-        // recoveries and first-open flushes proceed concurrently. Both openers
-        // always run to completion: an abandoned one would keep opening in its
-        // detached task and could take its root after this open had failed,
-        // holding it past every handle's drop. A provider that opened beside a
-        // failed one is therefore dropped before the failure returns.
         let open_stream = async {
             Ok::<_, FsError>(std::sync::Arc::new(match &lifecycle {
                 Some(ownership) => {
@@ -3473,22 +3317,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     }
 
     /// Reclaims every stored object nothing live reaches, while the root
-    /// stays open and in use.
-    ///
-    /// Live means: every generation in the history of a workspace that is
-    /// not deleted, every generation a retention keeps while the workspace it
-    /// serves lives, every record a lazy workspace in `core_state` still
-    /// resolves, active S3 multipart parts, and the base and working tree of
-    /// every open checkout. The root object of every generation a live one
-    /// names as a parent is kept too, so lineage walks stay whole. Along the
-    /// way, the authorities of deleted workspaces and ended retentions are
-    /// released. See [`crate::Collection`] for how publications made while
-    /// it runs stay safe.
-    ///
-    /// # Errors
-    ///
-    /// Fails, sweeping nothing, when anything live cannot be marked, and
-    /// stops at the first storage failure while sweeping.
     pub async fn collect_local_garbage(
         &self,
         core_state: Option<&crate::LocalCoreStateStore>,
@@ -3610,7 +3438,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     }
 
     /// Deletes `unmarked` in batches, each under the collection gate, then
-    /// reclaims their bodies.
     async fn sweep_local_objects(
         &self,
         collecting: &crate::collection::Collecting,
@@ -3669,8 +3496,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     }
 
     /// Marks every live generation of every authority, releasing the
-    /// authorities of deleted workspaces and ended retentions. Returns decode
-    /// limits that admit every live volume's pages.
     async fn mark_local_authorities(
         &self,
         marker: &mut crate::kernel::Marker<'_, LocalObjectBackend>,
@@ -3689,7 +3514,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 .await
             {
                 // Deleted and released since it was listed: nothing of it is
-                // left to keep.
                 Ok(()) | Err(FsError::WorkspaceDeleted) => {}
                 Err(error) => return Err(error),
             }
@@ -3698,7 +3522,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     }
 
     /// Marks one authority's live generations; see
-    /// [`Self::mark_local_authorities`].
     async fn mark_local_authority(
         &self,
         marker: &mut crate::kernel::Marker<'_, LocalObjectBackend>,
@@ -3749,8 +3572,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         }
         let retained = decode_retention_created(&first.payload, MAXIMUM_VOLUME_EVENT_BYTES)?;
         // A retention lasts as long as the workspace it serves: a fork
-        // base as long as its fork, a pin or checkpoint as long as its
-        // own workspace.
         let owner = match retained.kind {
             RetentionKind::ForkBase => hex::decode(&retained.label)
                 .ok()
@@ -3775,7 +3596,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     }
 
     /// Marks every generation in one volume's history, or releases the
-    /// volume's authority when its last record is its tombstone.
     async fn mark_local_volume(
         &self,
         marker: &mut crate::kernel::Marker<'_, LocalObjectBackend>,
@@ -3815,7 +3635,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             };
             after = last.sequence;
             // Exactly the history as of the head read: a record appended
-            // since, such as a deletion's tombstone, is the next pass's.
             for record in records
                 .iter()
                 .take_while(|record| record.sequence <= head.sequence)
@@ -3858,7 +3677,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     }
 
     /// Whether the workspace `volume_id` was deleted; one never created was
-    /// not.
     pub(crate) async fn local_volume_deleted(
         &self,
         volume_id: VolumeId,
@@ -4031,9 +3849,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Creates or recovers one canonical named workspace with portable defaults.
-    ///
-    /// # Errors
-    /// Rejects invalid names, incompatible semantics, or storage failures.
     pub async fn create_workspace(
         &self,
         name: impl AsRef<str>,
@@ -4045,11 +3860,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Creates or recovers a named workspace under explicit work and cancellation.
-    /// The receipt includes both creation and authenticated head resolution.
-    ///
-    /// # Errors
-    /// Returns typed failures with all work spent before rejection. A failed
-    /// head observation can follow committed creation; retry the exact name/config.
     pub async fn create_workspace_measured(
         &self,
         name: impl AsRef<str>,
@@ -4072,9 +3882,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Creates or recovers one named workspace with exact filesystem semantics.
-    ///
-    /// # Errors
-    /// Returns the same typed failures as [`Self::create_workspace`].
     pub async fn create_workspace_with_config(
         &self,
         name: impl AsRef<str>,
@@ -4092,10 +3899,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Creates or recovers exact named semantics within one cumulative budget.
-    ///
-    /// # Errors
-    /// Retains actual creation/head work on cancellation, exhaustion or backend
-    /// failure. An uncertain committed creation is recovered by exact retry.
     pub async fn create_workspace_with_config_measured(
         &self,
         name: impl AsRef<str>,
@@ -4115,12 +3918,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Creates or recovers one original creation operation and its immutable
-    /// initial generation. A retry never adopts a later workspace head.
-    ///
-    /// # Errors
-    /// Rejects a name already created by another operation. Creation,
-    /// first-record authentication and exact checkout share one work budget;
-    /// failures retain all work spent before an uncertain response.
     pub async fn create_workspace_with_operation_measured(
         &self,
         name: impl AsRef<str>,
@@ -4153,16 +3950,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Observes one original workspace creation without retrying its publication.
-    ///
-    /// Authenticates the immutable first record's exact named volume,
-    /// configuration and original operation, then its initial generation.
-    /// Missing authority returns `None`; no current head or companion state is
-    /// read, and no creation, CAS, hydration or recovery is performed.
-    ///
-    /// # Errors
-    ///
-    /// Existing mismatched creation is rejected. All authentication, storage,
-    /// allocation, cancellation and budget failures retain actual spent work.
     pub async fn workspace_for_creation_operation_measured(
         &self,
         name: impl AsRef<str>,
@@ -4208,9 +3995,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Creates or recovers the immutable initial generation on the original native ledger.
-    ///
-    /// # Errors
-    /// Rejects another operation's creation and preserves typed original source failures.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn create_workspace_with_operation_with_native_work(
         &self,
@@ -4227,12 +4011,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Creates or recovers the immutable initial generation, sealing every real
-    /// destination publication attempt with the original native owner guard.
-    /// The clonable guard owns its sealed authority; its future must not borrow
-    /// the callback's work argument. Owned work clones retain the same ledger.
-    ///
-    /// # Errors
-    /// Preserves the guard's typed failure and rejects mismatched creation facts.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn create_workspace_with_operation_guarded_with_native_work<'original, E, F, Fut>(
         &self,
@@ -4317,9 +4095,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Authenticates an original creation without publishing or reading its head.
-    ///
-    /// # Errors
-    /// Rejects an existing creation belonging to another operation or configuration.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn workspace_for_creation_operation_with_native_work(
         &self,
@@ -4373,9 +4148,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Opens the workspace authenticated by its immutable native creation record.
-    ///
-    /// # Errors
-    /// Preserves the original source cause without publishing or reading a head.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn open_workspace_with_native_work(
         &self,
@@ -4563,7 +4335,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     // Original creation recovery authenticates its immutable first record and
-    // exact generation instead of depending on the mutable current head.
     async fn create_named_workspace_measured(
         &self,
         name: impl AsRef<str>,
@@ -4608,10 +4379,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Opens one existing named workspace without a mutable catalog lookup.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid or absent names and malformed or unsupported creation state.
     pub async fn open_workspace(
         &self,
         name: impl AsRef<str>,
@@ -4623,12 +4390,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Authenticates named workspace creation and its current head under one
-    /// cumulative work budget and the caller's original cancellation token.
-    ///
-    /// # Errors
-    ///
-    /// Retains actual spent work on creation/head authentication, storage,
-    /// cancellation and budget failures. No mutable catalog is read.
     pub async fn open_workspace_measured(
         &self,
         name: impl AsRef<str>,
@@ -4689,37 +4450,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .observe_on(&span, "open_workspace")
     }
 
-    /// Adopts an already authenticated volume into the workspace facade.
-    ///
-    /// This avoids reopening durable creation state when a consumer already
-    /// owns the volume returned by its creation.
-    ///
-    /// # Errors
-    ///
-    /// Rejects an invalid descriptive name.
-    pub fn adopt_volume_workspace(
-        &self,
-        name: impl AsRef<str>,
-        volume: Volume<A, O>,
-    ) -> Result<crate::Workspace<A, O>, crate::workspace::WorkspaceError> {
-        let name = crate::WorkspaceName::new(name)?;
-        let id = crate::WorkspaceId::from_volume_id(volume.id);
-        Ok(crate::Workspace {
-            name,
-            id,
-            volume,
-            #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-            source: None,
-        })
-    }
-
     /// Terminally deletes one named workspace without requiring a live handle.
-    /// This stateless form preserves exact retry resolution after the durable
-    /// tombstone makes ordinary workspace opening fail closed.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid or absent names and returns typed storage failures.
     pub async fn delete_workspace(
         &self,
         name: impl AsRef<str>,
@@ -4756,8 +4487,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Builds and stores the forked generation root for a new workspace, then
-    /// proves its complete reachable closure. Returns the fork root with that
-    /// closure, the source root, and accrued work.
     async fn materialize_forked_generation_root(
         &self,
         source: &crate::Generation<A, O>,
@@ -4884,13 +4613,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Creates a new workspace at one exact immutable source generation while
-    /// sharing the complete file table and every unchanged content object.
-    ///
-    /// Only one small generation root and one creation fact are new. The fork
-    /// makes the staged part of its own closure durable, then records the
-    /// source's retention and the workspace's creation through one authority
-    /// commit, so a crash leaves either no workspace or the complete one. The
-    /// source and destination then publish independently.
     pub(crate) async fn fork_workspace_measured(
         &self,
         destination: crate::WorkspaceName,
@@ -5151,8 +4873,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// The source lineage a fork's authority starts from: the published
-    /// prefix when the source generation is its workspace's head, else an
-    /// independent lineage. `None` on backends that keep no lineage.
     async fn fork_lineage_with_accounting(
         &self, source: &crate::Generation<A, O>,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
@@ -5187,8 +4907,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Makes every object `records` reach durable, so a record another
-    /// durable store keeps, such as a removed identity a lazy workspace still
-    /// resolves, never outlives its content across a crash.
     pub(crate) async fn make_records_durable(
         &self,
         config: VolumeConfig,
@@ -5244,7 +4962,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Holds the actual generation closure across an external durable publication.
-    /// The ordinary cached pin slot is intentionally neither consumed nor changed.
     pub(crate) async fn make_generation_durable_measured(
         &self,
         volume: &Volume<A, O>,
@@ -5303,8 +5020,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Durably retains one generation under a retention label. Repeating the
-    /// same label at the same generation is exact; binding it to another
-    /// generation fails closed.
     pub(crate) async fn retain_workspace_generation(
         &self,
         volume: &Volume<A, O>,
@@ -5656,8 +5371,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Releases the authority of a workspace whose tombstone is durable:
-    /// nothing reads its history again, and the workspace's objects become
-    /// collectable once nothing else retains them.
     async fn retire_deleted_authority(
         &self,
         authority_id: crate::AuthorityId,
@@ -5712,8 +5425,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Computes the immutable source-parent identity used by a true merge
-    /// into this target. An ordinary target mutation cannot manufacture this
-    /// second parent without passing through Filesystem's join publication.
     pub(crate) async fn workspace_normalized_join_parent(
         &self,
         source: &crate::Generation<A, O>,
@@ -6066,7 +5777,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<(Option<(GenerationId, DurableCommit)>, crate::NativeAllocation), crate::workspace::WorkspaceError> {
         cancellation.check().map_err(FsError::from)?;
         // Keep the whole provider result: its record data drops before its
-        // metadata allocation on every failed decode.
         let observed = self.inner.authority.find_operation_with_native_work(
             volume_authority_id(workspace.id), operation_id, original, cancellation,
         ).await.map_err(FsError::from)?;
@@ -6239,8 +5949,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Whether two single-link records hold one file state: the same kind,
-    /// bytes, and metadata but for timestamps, whatever their identities, as
-    /// when a capture records a file a publication wrote.
     pub(crate) async fn same_file_state(
         &self,
         workspace: &Volume<A, O>,
@@ -6484,8 +6192,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Resolves where a fork stands against the parent it was forked from:
-    /// its head, the parent generation that it is based on, and the parent's
-    /// head, reading at most `maximum_generations` of its own history.
     async fn rebase_lineage(
         &self,
         target: &Volume<A, O>,
@@ -6563,7 +6269,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// The parent head that a fork would rebase onto, or `None` when the fork
-    /// is already based on it.
     pub(crate) async fn parent_advance(
         &self,
         target: &Volume<A, O>,
@@ -6826,7 +6531,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 return Err(crate::workspace::WorkspaceError::IncompatibleWorkspace.into());
             }
             // Normalize scalar identity in place; each decoded parent vector keeps
-            // its existing exact capacity guard throughout the borrowed merge.
             base_root.value.required_features = base_root.value.continuation_features();
             base_root.value.volume_id = target.id;
             source_root.value.required_features = source_root.value.continuation_features();
@@ -6883,7 +6587,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 return workspace_join_scalar(WorkspaceJoinOutcome::NoChanges(current_target), accounting).map_err(P::Error::from);
             }
             // This immutable normalized history parent is outside the candidate's
-            // namespace closure. Keep its actual visibility hold through the CAS.
             let _source_hold = if history == crate::workspace::JoinHistory::Merge {
                 Some(self.flush_join_parent_with_accounting(normalized_source_object, accounting, cancellation).await?)
             } else { None };
@@ -6947,12 +6650,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Executes one active local-residency prediction through this filesystem's
-    /// ordinary authenticated object backend and shared cache.
-    ///
-    /// # Errors
-    ///
-    /// Returns a stale-token, cancellation, authentication, storage, or exact
-    /// work-budget failure. It never changes filesystem authority.
     pub async fn execute_residency(
         &self,
         speculator: &crate::ResidencySpeculator,
@@ -6971,11 +6668,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Creates a fresh volume identity and its authenticated empty generation.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed measured failure for invalid/unsupported semantics,
-    /// cancellation, storage, authentication, authority conflict, or budget.
     pub async fn create_volume(
         &self,
         config: VolumeConfig,
@@ -6987,11 +6679,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Idempotently creates one caller-selected volume identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed measured failure for invalid/unsupported semantics,
-    /// cancellation, storage, authentication, authority conflict, or budget.
     pub async fn create_volume_with_id(
         &self,
         volume_id: VolumeId,
@@ -7091,12 +6778,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Opens one volume by reconstructing its immutable configuration from the
-    /// first bounded authority fact.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed measured failure when authority is absent/corrupt, its
-    /// creation fact is invalid, semantics are unsupported, or work is denied.
     pub async fn open_volume(
         &self,
         volume_id: VolumeId,
@@ -7136,11 +6817,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Reads one exact immutable object for resumable manifest transfer.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed identity, corruption, cancellation, backend, size, or
-    /// work-budget failures. The object is always reauthenticated by storage.
     pub async fn export_object(
         &self,
         object_id: ObjectId,
@@ -7161,11 +6837,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Idempotently imports one immutable object under its canonical identity.
-    ///
-    /// # Errors
-    ///
-    /// Rejects an identity/body mismatch before admitting visible authority and
-    /// returns exact cancellation, backend, allocation, or work failures.
     pub async fn import_object(
         &self,
         object_id: ObjectId,
@@ -7186,15 +6857,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Reads one ordered resumable page from a canonical generation manifest.
-    ///
-    /// Backends with a physical multi-get primitive may service the complete
-    /// page in one operation. The terminal cursor returns an empty terminal
-    /// page without storage work.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed manifest, cursor, cancellation, allocation, storage, or
-    /// bounded-work failures with exact retained-buffer accounting.
     pub async fn export_generation_batch(
         &self,
         manifest: &GenerationExportManifest,
@@ -7231,15 +6893,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Idempotently imports one manifest-aligned page of immutable bodies.
-    ///
-    /// A failed page may leave a valid immutable prefix; retrying the same
-    /// cursor and bodies is exactly safe because every put authenticates its
-    /// canonical object identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed manifest, cursor/body bound, cancellation, storage, or
-    /// exact-work failures while retaining imported-prefix work.
     pub async fn import_generation_batch(
         &self,
         manifest: &GenerationExportManifest,
@@ -7276,15 +6929,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Restores a volume authority from a fully imported immutable generation.
-    ///
-    /// The complete closure is authenticated before the first authority fact
-    /// can expose it. Retrying with the same caller-owned operation identity is
-    /// idempotent; changing its input is rejected by authority publication.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed configuration, volume-identity, closure, authority,
-    /// cancellation, or bounded-work failures.
     pub async fn restore_volume(
         &self,
         manifest: &GenerationExportManifest,
@@ -7341,8 +6985,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Durably creates a volume's authority with its creation record, once
-    /// every object in `closure`, the initial generation's closure, is
-    /// durable.
     async fn publish_volume_creation(
         &self,
         creation: VolumeCreation,
@@ -7646,7 +7288,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let hashing = WorkCounters {
             bytes_hashed: hashed_bytes,
             // Bytes 1.12 allocates its owner header exactly for spare-capacity
-            // vectors. Header bytes are excluded, but the operation is real.
             allocation_operations: u64::from(encoded.value.capacity() != encoded.value.len()),
             ..WorkCounters::default()
         };
@@ -7690,16 +7331,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
     }
 
     /// Computes one bounded semantic diff without scanning equal Merkle subtrees.
-    ///
-    /// File-record changes are keyed by stable identity, while namespace changes
-    /// are keyed by stable parent-directory identity and exact logical name. This
-    /// represents hard links and renames without inventing one canonical path.
-    /// Equal generation roots return with zero backend work.
-    ///
-    /// # Errors
-    ///
-    /// Rejects zero bounds, foreign/malformed generations, storage corruption,
-    /// cancellation, allocation failure, or work beyond the admitted budget.
     pub async fn diff_generations(
         &self,
         before: GenerationId,
@@ -7781,7 +7412,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
     }
 
     /// Resolves the exact generation root object and, for a writable
-    /// checkout, the authenticated authority head it must be fenced against.
     async fn resolve_checkout_generation(
         &self,
         selector: GenerationSelector,
@@ -7858,13 +7488,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
     }
 
     /// Opens one immutable pinned checkout after authenticating its bounded root.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed measured failure for unsupported modes, missing/corrupt
-    /// generation roots, volume mismatch, authority inconsistency,
-    /// cancellation, or work outside the admitted budget. Descendant objects
-    /// are authenticated lazily by the exact operation that demands them.
     pub async fn checkout(
         &self,
         selector: GenerationSelector,
@@ -8174,8 +7797,6 @@ static UNBOUNDED_CHECKOUT_CANCELLATION: std::sync::LazyLock<CancellationToken> =
     std::sync::LazyLock::new(CancellationToken::new);
 
 /// Sealed proof merge for the private candidate adoption fence. The snapshots
-/// only share existing authority buffers; `retained_bytes` counts newly owned
-/// name DATA and the exact new map Arc payload. Inline seals need no allocation.
 #[cfg(feature = "native-mount")]
 pub(crate) struct PreparedCandidateAdoption {
     dependencies: CheckoutDependencies,
@@ -8193,9 +7814,6 @@ impl PreparedCandidateAdoption {
 
 impl<A, O> Checkout<A, O> {
     /// Replaces this checkout with `candidate`, a private candidate begun
-    /// from `base`, when this checkout is still the state `base` copied
-    /// apart from observations its readers have added since; the candidate
-    /// then carries those observations too. Returns whether it replaced.
     #[cfg(feature = "native-mount")]
     pub(crate) fn adopt_candidate(&mut self, base: &Self, candidate: Self) -> bool {
         let Ok(receipt) = self.prepare_candidate_adoption_measured(
@@ -8214,10 +7832,6 @@ impl<A, O> Checkout<A, O> {
     }
 
     /// The proof `candidate` would carry over this checkout: its own merged
-    /// with every observation this checkout's readers added since `base`.
-    /// None when anything else changed since `base`, publication included,
-    /// since installing the candidate would undo that change. Every field is
-    /// compared, so none can change unnoticed.
     #[cfg(feature = "native-mount")]
     fn candidate_proof(&self, base: &Self, candidate: &Self) -> Option<CheckoutDependencies> {
         self.prepare_candidate_adoption_measured(
@@ -8226,7 +7840,6 @@ impl<A, O> Checkout<A, O> {
     }
 
     /// Prepares the exact candidate proof under the original caller's limits.
-    /// No mutation is installed until the nonallocating adoption fence.
     #[cfg(feature = "native-mount")]
     pub(crate) fn prepare_candidate_adoption_measured(
         &self,
@@ -8243,8 +7856,6 @@ impl<A, O> Checkout<A, O> {
     }
 
     /// Prepares on the original native operation's full resource carrier.
-    /// Every new key/map ticket is attached to the same candidate producer
-    /// before this returns; callers neither merge a receipt nor adopt bytes.
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub(crate) fn prepare_candidate_adoption_with_native_work(
         &self,
@@ -8269,7 +7880,6 @@ impl<A, O> Checkout<A, O> {
             return Ok(None);
         }
         // Only this candidate's original admitted producer can own NEW merge
-        // buffers. Its borrowed immutable authority maps are never adopted.
         let producer = (candidate.dependencies.data_custody.physical_retained_bytes() != 0)
             .then_some(&candidate.dependencies.data_custody);
         let live = self.dependencies.proof().dependencies.clone();
@@ -8288,9 +7898,6 @@ impl<A, O> Checkout<A, O> {
     }
 
     /// Installs only the proof sealed by preparation. Both snapshots retain
-    /// their original Arcs, so any intervening observation forces COW and
-    /// invalidates its seal. Rejection and successful installation allocate
-    /// nothing, including after the caller has crossed its authority fence.
     #[cfg(feature = "native-mount")]
     pub(crate) fn adopt_prepared_candidate(
         &mut self,
@@ -8309,7 +7916,6 @@ impl<A, O> Checkout<A, O> {
                 return false;
             }
             // Retain the candidate's absorbed-walk memory: its sealed proof
-            // only gains the live readers' observations.
             proof.dependencies = prepared.dependencies;
         }
         *self = candidate;
@@ -8383,16 +7989,11 @@ impl<A, O> Checkout<A, O> {
     }
 
     /// Whether reads retain exact observations for safe rebase and commit.
-    /// An observer tracks exactly when its owner does.
     fn tracks_observations(&self) -> bool {
         self.mode.consistency != ConsistencyMode::Pinned || self.dependencies.observing
     }
 
     /// Creates an immutable reader for this checkout's current private candidate.
-    ///
-    /// The reader snapshots the exact authenticated root already held by the
-    /// checkout, including pending private overlay state, without authority or
-    /// storage work. Later checkout mutations do not change the snapshot.
     #[must_use]
     pub fn snapshot_reader(&self) -> PinnedReader<A, O> {
         PinnedReader {
@@ -8403,11 +8004,6 @@ impl<A, O> Checkout<A, O> {
     }
 
     /// Creates an immutable reader for a pinned checkout.
-    ///
-    /// # Errors
-    ///
-    /// Rejects checkouts that track observations, including observers of a
-    /// tracking checkout, before any storage work.
     pub fn pinned_reader(&self) -> Result<PinnedReader<A, O>, FsError> {
         if self.tracks_observations() {
             return Err(FsError::MutationNotAllowed);
@@ -8416,7 +8012,6 @@ impl<A, O> Checkout<A, O> {
     }
 
     /// Funds only the legacy readonly root copy. It keeps standalone query
-    /// semantics and never clones proof/Mux state or grants native root scope.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn pinned_reader_for_materialization_with_work(
         &self,
@@ -8472,7 +8067,6 @@ impl<A, O> Checkout<A, O> {
     }
 
     /// Consumes an original-native checkout into a cheap cloneable readonly
-    /// reader, moving its exact working roots and existing collection hold.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn into_pinned_reader_with_native_work(
         self,
@@ -8501,7 +8095,6 @@ impl<A, O> Checkout<A, O> {
     }
 
     /// Creates an immutable content writer that can stage independent sources
-    /// concurrently before this checkout admits their ordered mutations.
     #[must_use]
     pub fn content_stager(&self) -> ContentStager<A, O> {
         ContentStager {
@@ -8610,13 +8203,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 
     /// Looks up file records by stable identity, reading each distinct
-    /// file-table frontier once for the whole batch, so one reader answers
-    /// a directory page's identity questions together.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured batch-bound, authentication, cancellation, storage,
-    /// allocation, or bounded-work failures.
     pub async fn file_records_by_id(
         &self,
         file_ids: &[FileId],
@@ -8643,7 +8229,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 
     /// Looks up one authenticated stable identity on the original native journal.
-    /// A file record is Copy and retains no heap allocation after the query.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn file_record_by_id_with_native_work(
         &self,
@@ -8669,7 +8254,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 
     /// Finds bounded sorted aliases using the canonical cached reverse traversal.
-    /// The supplied root and its existing hold are borrowed, never reopened.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn paths_for_file_id_with_native_work(
         &self,
@@ -8690,7 +8274,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 
     /// Projects only the first sorted alias; all reverse-query buffers keep
-    /// original custody until the selected portable string has been produced.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn first_path_for_file_id_with_native_work(
         &self,
@@ -8840,7 +8423,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 
     /// Reads the exact symbolic-link packet, including producer-measured capacity.
-    /// Its bytes retain the original physical backing/header guards on every alias.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn read_record_symbolic_link_owned_with_native_work(
         &self,
@@ -8905,7 +8487,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 
     /// Reads ordered named attributes, retaining original names/vector custody.
-    /// Each returned byte view independently retains its producer's native guard.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn read_named_attributes_with_native_work(
         &self, root: ObjectId, work: &crate::NativeMaterializationWork,
@@ -8953,8 +8534,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 
     /// Reads resolved handles without another namespace traversal.
-    /// The tuple's allocation owns only its result vector; every byte view
-    /// retains the canonical producer's intrinsic original-native custody.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn read_resolved_ranges_with_native_work(
         &self,
@@ -8990,8 +8569,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 
     /// Resolves ordered paths into native-reader handles for later range reads.
-    /// The returned tuple destroys its vector before its guard; each handle
-    /// aliases the existing original-funded root carrier without another pin.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn resolve_file_ranges_with_native_work(
         &self,
@@ -9093,9 +8670,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 
     /// Lists ordered directory binding pages with at most `concurrency`
-    /// requests in flight while preserving input order. Finite budgets are
-    /// consumed sequentially so concurrent requests cannot each admit the
-    /// complete group budget.
     pub async fn list_directory_pages(
         &self,
         requests: &[DirectoryPageRequest],
@@ -9155,8 +8729,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 
     /// Resolves one bounded directory page into generation-scoped child
-    /// handles in the same authenticated traversal. Child metadata is fetched
-    /// as one object batch; no child path is looked up again.
     pub async fn resolve_directory_page(
         &self,
         path: &NamespacePath,
@@ -9337,8 +8909,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 
     /// Reads metadata for an already authenticated record on the original journal.
-    /// The returned metadata is Copy; the provider's physical byte owner retains
-    /// any native allocation until decoding has finished.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn read_record_metadata_with_native_work(
         &self,
@@ -9555,14 +9125,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 
     /// Reads every named attribute under one metadata attribute root, in
-    /// order, with its complete value. The total value bytes are bounded by
-    /// the volume's maximum read size.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured attribute-tree, blob, cancellation, storage,
-    /// allocation, or bounded-work failures, and an invalid range when the
-    /// values together exceed the read bound.
     pub async fn read_named_attributes(
         &self,
         root: ObjectId,
@@ -9641,7 +9203,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 
     /// Resolves and describes paths once, returning reader-scoped handles for
-    /// later body reads without another namespace traversal.
     pub async fn resolve_files(
         &self,
         paths: &[NamespacePath],
@@ -9714,7 +9275,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 
     /// Reads ranges from already resolved files with bounded concurrency and
-    /// no additional namespace traversal.
     pub async fn read_resolved_ranges(
         &self,
         requests: &[ResolvedFileRangeReadRequest<'_, A, O>],
@@ -10287,15 +9847,6 @@ where
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     /// Prepares one bounded two-parent merge against this checkout's immutable base.
-    ///
-    /// Independent file identities merge without scanning equal Merkle subtrees.
-    /// A conflict leaves the checkout unchanged; a successful result is an
-    /// authenticated unpublished generation that must be committed or discarded.
-    ///
-    /// # Errors
-    ///
-    /// Rejects non-writable/prepared checkouts, foreign generations, truncated
-    /// change frontiers, malformed storage, cancellation, or bounded-work failure.
     pub async fn prepare_merge(
         &mut self,
         theirs: GenerationId,
@@ -10401,16 +9952,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Builds a deterministic complete manifest for the current immutable or
-    /// sparse candidate generation without publishing authority.
-    ///
-    /// A dirty checkout first writes one unreachable checkpoint root; the
-    /// complete closure is then authenticated and sorted. Object bodies remain
-    /// independently transferable through [`Fs::export_object`].
-    ///
-    /// # Errors
-    ///
-    /// Returns typed checkpoint, closure, cancellation, storage, allocation,
-    /// authentication, or bounded-work failures.
     pub async fn export_manifest(
         &self,
         budget: WorkBudget,
@@ -10438,16 +9979,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Writes the immutable generation-root checkpoint for the current sparse
-    /// candidate without publishing authority.
-    ///
-    /// A clean checkout returns its selected generation with zero object work.
-    /// Repeated dirty checkpoints are content-addressed and therefore exactly
-    /// idempotent. The checkout and its pending publication state are unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed canonical encoding, storage, cancellation, allocation, or
-    /// bounded-work failures.
     pub async fn checkpoint(
         &self,
         budget: WorkBudget,
@@ -10505,7 +10036,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Reuses prepared merges and unchanged roots; otherwise constructs the
-    /// canonical checkpoint on the same original native invocation.
     #[cfg(not(target_arch = "wasm32"))]
     async fn checkpoint_root_with_native_work(
         &self,
@@ -10525,11 +10055,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Discards a private candidate and reauthenticates its immutable base.
-    ///
-    /// # Errors
-    ///
-    /// Rejects non-overlay modes and returns exact cancellation, storage,
-    /// decode, or budget failures without changing the checkout on failure.
     pub async fn discard(
         &mut self,
         budget: WorkBudget,
@@ -10564,14 +10089,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Explicitly advances one clean manual or tracking checkout to head.
-    ///
-    /// Equal generations avoid an immutable-object read. Dirty overlays are
-    /// retained and rejected because adopting them requires safe rebase.
-    ///
-    /// # Errors
-    ///
-    /// Rejects pinned, live, or dirty checkouts and returns exact authority,
-    /// storage, authentication, cancellation, or budget failures.
     pub async fn refresh_head(
         &mut self,
         budget: WorkBudget,
@@ -10643,16 +10160,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Safely advances to the current head and rebases the private candidate.
-    ///
-    /// Only exact regions captured by reads and mutation preconditions are
-    /// compared. A conflict leaves the checkout unchanged. A safe dirty rebase
-    /// combines the immutable candidate with the new base without retaining
-    /// an unbounded operation log.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured authority, probe, decode, replay, cancellation, or
-    /// budget failures without changing the checkout unless the full rebase succeeds.
     pub async fn rebase_head(
         &mut self,
         maximum_conflicts: u32,
@@ -10707,7 +10214,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Reclassifies exact dependencies on the original native invocation.
-    /// Keep the decision before its guard until conflict data is consumed.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn rebase_head_with_native_work(
         &mut self,
@@ -10853,7 +10359,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             }
         }
         // Working-root transfer is the final fallible step. No operation
-        // identity is changed, and the installation cannot partially fail.
         self.install_root_replacement(candidate_object, rebased.value, prepared);
         self.base_file_table = candidate_file_table;
         self.generation_root = candidate_object;
@@ -10996,12 +10501,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Explicitly performs the same observation-safe head advancement used
-    /// automatically before live reads.
-    ///
-    /// # Errors
-    ///
-    /// Rejects non-live checkouts and returns a typed region conflict rather
-    /// than crossing any prior observation or pending mutation dependency.
     pub async fn refresh_live(
         &mut self,
         budget: WorkBudget,
@@ -11252,46 +10751,41 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         records.retire(accounting)
     }
 
-    async fn identity_base_records_with_accounting(
-        &self,
-        operation: &Mutation,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+    fn identity_base_records_with_accounting<'a, 'accounting>(
+        &'a self,
+        operation: &'a Mutation,
+        accounting: &'a mut crate::kernel::allocation::KernelAccounting<'accounting>,
         cancellation: &CancellationToken,
-    ) -> Result<(Option<FileRecord>, Option<FileRecord>), FsError> {
-        let (first_id, second_id) = match operation {
-            Mutation::File { file_id, .. } => (Some(*file_id), None),
-            Mutation::CloneFileRange { source_file_id, destination_file_id, .. } =>
-                (Some(*source_file_id), Some(*destination_file_id)),
-            _ => (None, None),
-        };
-        let first = if let Some(file_id) = first_id {
-            let record = crate::kernel::lookup_file_record_async_with_accounting(
-                &self.volume.fs.inner.objects, self.base_root.file_table, file_id,
-                DecodeLimits::for_volume(self.volume.config), accounting, cancellation, None,
-            ).await?;
-            record.0
-        } else { None };
-        let second = if second_id == first_id {
-            first
-        } else if let Some(file_id) = second_id {
-            let record = crate::kernel::lookup_file_record_async_with_accounting(
-                &self.volume.fs.inner.objects, self.base_root.file_table, file_id,
-                DecodeLimits::for_volume(self.volume.config), accounting, cancellation, None,
-            ).await?;
-            record.0
-        } else { None };
-        Ok((first, second))
+    ) -> impl std::future::Future<Output = Result<(Option<FileRecord>, Option<FileRecord>), FsError>> + Send + 'a + use<'a, 'accounting, A, O> {
+        let cancellation = cancellation.clone();
+        async move {
+            let (first_id, second_id) = match operation {
+                Mutation::File { file_id, .. } => (Some(*file_id), None),
+                Mutation::CloneFileRange { source_file_id, destination_file_id, .. } =>
+                    (Some(*source_file_id), Some(*destination_file_id)),
+                _ => (None, None),
+            };
+            let first = if let Some(file_id) = first_id {
+                let record = crate::kernel::lookup_file_record_async_with_accounting(
+                    &self.volume.fs.inner.objects, self.base_root.file_table, file_id,
+                    DecodeLimits::for_volume(self.volume.config), accounting, &cancellation, None,
+                ).await?;
+                record.0
+            } else { None };
+            let second = if second_id == first_id {
+                first
+            } else if let Some(file_id) = second_id {
+                let record = crate::kernel::lookup_file_record_async_with_accounting(
+                    &self.volume.fs.inner.objects, self.base_root.file_table, file_id,
+                    DecodeLimits::for_volume(self.volume.config), accounting, &cancellation, None,
+                ).await?;
+                record.0
+            } else { None };
+            Ok((first, second))
+        }
     }
 
     /// Atomically applies one ordered mutation batch to this private checkout.
-    ///
-    /// The immutable base remains unchanged. A failed batch may leave harmless
-    /// unreferenced objects but never replaces the checkout candidate.
-    ///
-    /// # Errors
-    ///
-    /// Rejects non-writable modes and returns exact planning, storage,
-    /// cancellation, semantic, or work-budget failures.
     pub async fn mutate(
         &mut self,
         operations: Vec<Mutation>,
@@ -11339,18 +10833,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Applies and durably publishes one direct-live mutation operation.
-    ///
-    /// Authority races are automatically rebased only when every exact read
-    /// and mutation dependency remains unchanged. The stable operation ID is
-    /// reused across those safe retries. A region conflict or exhausted retry
-    /// bound leaves the sparse candidate available to [`Self::resume_live`] or
-    /// [`Self::discard`].
-    ///
-    /// # Errors
-    ///
-    /// Rejects non-live modes, an existing unresolved candidate, zero bounds,
-    /// and returns exact mutation, rebase, publication, cancellation, storage,
-    /// or work-budget failures.
     pub async fn mutate_live(
         &mut self,
         operations: Vec<Mutation>,
@@ -11400,17 +10882,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Compiles, atomically applies, and durably publishes one authored live transaction.
-    ///
-    /// This is the canonical byte-oriented direct-live orchestration boundary
-    /// for language SDKs. It preserves generated file identities and one exact
-    /// work receipt across content staging, sparse mutation, safe rebase, and
-    /// authority publication.
-    ///
-    /// # Errors
-    ///
-    /// Returns the combined failures of [`Self::apply_authored_transaction`]
-    /// and [`Self::resume_live`]. An unresolved publication retains the sparse
-    /// candidate for an exact [`Self::resume_live`] retry.
     pub async fn apply_authored_live(
         &mut self,
         authored: Vec<AuthoredMutation>,
@@ -11450,15 +10921,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Resumes publication of an unresolved direct-live candidate.
-    ///
-    /// The caller must reuse the original operation ID after an indeterminate
-    /// transport result. Exact authority idempotency resolves whether that
-    /// operation was already durable.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same failures as [`Self::mutate_live`] and rejects a clean
-    /// checkout.
     pub async fn resume_live(
         &mut self,
         operation_id: OperationId,
@@ -11498,54 +10960,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(publication)
     }
 
-    pub(crate) async fn resume_live_guarded<E, F, Fut>(
-        &mut self,
-        operation_id: OperationId,
-        maximum_attempts: u32,
-        maximum_conflicts: u32,
-        permit: PublicationPermit,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-        before_publication: &mut F,
-        operation_context: Option<Digest>,
-    ) -> crate::MeasuredResult<FsReceipt<LiveMutationOutcome>, E>
-    where
-        E: From<FsError> + Send,
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + Send,
-    {
-        self.validate_live_operation_unboxed(maximum_attempts)
-            .map_err(|error| OperationFailure::before_work(E::from(error)))?;
-        if !self.has_pending_mutations() {
-            return Err(OperationFailure::before_work(E::from(FsError::NoPendingMutations)));
-        }
-        match self.live_operation_id {
-            Some(retained) if retained != operation_id =>
-                return Err(OperationFailure::before_work(E::from(FsError::PendingLiveMutation))),
-            Some(_) => {}
-            None => self.live_operation_id = Some(operation_id),
-        }
-        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(budget, cancellation);
-        let mut publication = GuardedLivePublication { before_publication, operation_context };
-        let result = self.publish_live_with_accounting(
-            operation_id, maximum_attempts, maximum_conflicts, permit,
-            &mut accounting, cancellation, &mut publication, None,
-        ).await;
-        let (outcome, allocation) = result
-            .map_err(|error| OperationFailure::new(error, accounting.spent()))?;
-        drop(allocation);
-        if matches!(outcome,
-            LiveMutationOutcome::Committed { .. }
-                | LiveMutationOutcome::AlreadyCommitted { .. }
-                | LiveMutationOutcome::IdempotencyConflict { .. })
-        {
-            self.live_operation_id = None;
-        }
-        Ok(FsReceipt { value: outcome, work: accounting.spent() })
-    }
-
     /// Resumes the existing live retry controller on the original operation.
-    /// Conflict data must remain ahead of the returned allocation guard.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn resume_live_guarded_with_native_work<'a, E, F, Fut>(
         &mut self,
@@ -11745,7 +11160,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Runs the same private candidate engine with the actual paid operation
-    /// vector and every owned namespace path on the original invocation.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn mutate_with_native_work(
         &mut self,
@@ -11782,7 +11196,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Transfers an already-paid operation vector to the canonical candidate
-    /// engine without releasing or re-adopting any live input capacity.
     pub(crate) async fn mutate_owned_with_accounting(
         &mut self,
         mut operations: crate::kernel::Owned<Vec<Mutation>>,
@@ -12129,33 +11542,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting.check()
     }
 
-    async fn admit_binding_name(
-        &mut self,
-        path: &NamespacePath,
-        pending: &[(NamespacePath, FileId)],
-        allowed: &[FileId],
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<(), FsError> {
-        let parent_pending = match path.split_last() {
-            Some((parent, _)) => pending_binding_path(parent, pending,
-                self.volume.config.case_sensitivity, accounting)?.is_some(),
-            None => false,
-        };
-        self.admit_new_name_with_accounting(path, accounting, cancellation, allowed, parent_pending).await?;
-        if self.volume.config.case_sensitivity == CaseSensitivity::ProfileFolded
-            && let Some((parent, name)) = path.split_last()
-        {
-            for (other, id) in pending {
-                if let Some((other_parent, other_name)) = other.split_last()
-                    && parent == other_parent && name != other_name && !allowed.contains(id)
-                    && name_fold_equal(name, other_name, accounting)?
-                {
-                    return Err(FsError::NameCollision);
+    fn admit_binding_name<'a, 'accounting>(
+        &'a mut self,
+        path: &'a NamespacePath,
+        pending: &'a [(NamespacePath, FileId)],
+        allowed: &'a [FileId],
+        accounting: &'a mut crate::kernel::allocation::KernelAccounting<'accounting>,
+        cancellation: &'a CancellationToken,
+    ) -> impl std::future::Future<Output = Result<(), FsError>> + Send + 'a {
+        async move {
+            let parent_pending = match path.split_last() {
+                Some((parent, _)) => pending_binding_path(parent, pending,
+                    self.volume.config.case_sensitivity, accounting)?.is_some(),
+                None => false,
+            };
+            self.admit_new_name_with_accounting(path, accounting, cancellation, allowed, parent_pending).await?;
+            if self.volume.config.case_sensitivity == CaseSensitivity::ProfileFolded
+                && let Some((parent, name)) = path.split_last()
+            {
+                for (other, id) in pending {
+                    if let Some((other_parent, other_name)) = other.split_last()
+                        && parent == other_parent && name != other_name && !allowed.contains(id)
+                        && name_fold_equal(name, other_name, accounting)?
+                    {
+                        return Err(FsError::NameCollision);
+                    }
                 }
             }
+            Ok(())
         }
-        Ok(())
     }
 
     async fn canonicalize_new_mutation_parents(
@@ -12308,16 +11723,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Compiles and atomically applies one complete caller-authored transaction.
-    ///
-    /// Immutable byte and metadata objects are admitted before the candidate
-    /// root is replaced. Failure may leave unreachable immutable objects, but
-    /// never a partially changed checkout candidate.
-    ///
-    /// # Errors
-    ///
-    /// Rejects excessive input, unsupported kinds, invalid ranges,
-    /// non-writable checkouts, semantic conflicts, cancellation, storage
-    /// failures, or work beyond the caller's exact budget.
     pub async fn apply_authored_transaction(
         &mut self,
         authored: Vec<AuthoredMutation>,
@@ -12354,8 +11759,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Applies a large ordered capture without exposing an intermediate candidate.
-    /// Immutable staged objects may remain unreachable after failure, but the
-    /// caller's checkout is replaced only after every bounded batch succeeds.
     pub(crate) async fn apply_authored_bulk_transaction(
         &mut self,
         authored: Vec<AuthoredMutation>,
@@ -12381,9 +11784,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Applies authored inputs on their original invocation. The incoming guard
-    /// retains vector backing, paths, and producer-known opaque source capacity.
-    /// Source custody remains live through compilation without inferring hidden
-    /// Bytes backing. The returned guard retains the created-ID vector.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn apply_authored_transaction_with_native_work(
         &mut self,
@@ -12411,8 +11811,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Borrows producer-owned authored paths and opaque payloads on the original
-    /// invocation. The caller keeps their source custody and actual vector-slot
-    /// witness live throughout this call; only copied SDK paths are owned here.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn apply_borrowed_authored_transaction_with_native_work(
         &mut self,
@@ -12509,7 +11907,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
     #[cfg(not(target_arch = "wasm32"))]
     /// Runs bounded authored batches in a guarded private candidate, installing
-    /// that candidate only after all batches succeed on the same invocation.
     pub(crate) async fn apply_authored_bulk_transaction_with_native_work(
         &mut self,
         authored: Vec<AuthoredMutation>,
@@ -12649,8 +12046,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> Result<Self, FsError> {
         cancellation.check()?;
         // Registry-owned token metadata must not retain a scoped resource
-        // ticket back to its containing root. Admit it before Arc::new, and
-        // declare its guard first so rollback destroys the token first.
         let mut token_allocation = original.claim_checkout_token_metadata()?;
         let custody = Arc::new(crate::kernel::ProofDataCustody::default());
         cancellation.check()?;
@@ -12676,7 +12071,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting.admit(copied)?;
         let proof_bytes = crate::foundation::usize_to_u64(size_of::<Mutex<Proof>>());
         // This guard is declared before the physical proof so every error
-        // destroys the independent Arc/Mutex before retiring its admission.
         let mut proof_allocation = accounting.claim_owned(proof_bytes, 1)?;
         // Immutable proof maps remain shared by the canonical Arc COW engine.
         let mut dependencies = self.dependencies.independent_with_custody(custody);
@@ -12729,7 +12123,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Logical bytes retained by this handle's independent proof/root admission,
-    /// excluding shared immutable proof maps and allocator/Arc headers.
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
         self.proof_owned_bytes
             + crate::foundation::usize_to_u64(self.base_root.parents.capacity() * size_of::<GenerationId>())
@@ -12737,9 +12130,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// The same SDK producer's admitted physical claims, from a fresh checkout
-    /// constructor or an independent measured private candidate. Holding this
-    /// witness neither holds a proof map nor adopts borrowed/shared storage.
-    /// The token allocation is admitted separately from its primitive payloads.
     pub(crate) fn private_control_custody(&self) -> Arc<crate::kernel::ProofDataCustody> {
         Arc::clone(&self.dependencies.data_custody)
     }
@@ -12813,7 +12203,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Transfers only the authenticated working root's already-paid parent
-    /// buffer before authority publication. The remaining proof guard is intact.
     #[cfg(not(target_arch = "wasm32"))]
     fn prepare_root_working_control_with_native_work(
         &self,
@@ -12852,9 +12241,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Measures actual retained proof keys, path buffers and name buffers.
-    /// Borrowed graph data is not adopted by this inspection. BTree node
-    /// layout, allocator metadata and immutable content-store bodies are
-    /// deliberately outside this logical-data observation.
     pub(crate) fn proof_data_snapshot_measured(
         &self,
         budget: WorkBudget,
@@ -12889,8 +12275,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Reads completed logical retention in constant work, including after
-    /// cancellation. Cached capacities are updated by the canonical graph
-    /// mutators; this never allocates, rewalks paths or confers authority.
     pub(crate) fn proof_data_snapshot_completed(&self) -> ProofDataSnapshot {
         let proof = self.dependencies.proof();
         ProofDataSnapshot {
@@ -12901,31 +12285,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 proof.observed_data_bytes,
             ),
         }
-    }
-
-    /// Private native integrity comparison over an immutable selected reader.
-    /// It can accumulate a capture diff but carries no authority head, so it
-    /// cannot publish or fence the source volume, including exclusive writers.
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn unpublishable_capture_candidate_measured(
-        &self,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<Self> {
-        self.private_candidate_measured(budget, cancellation).map(|receipt| FsReceipt {
-            value: receipt.value.into_unpublishable_capture_candidate(),
-            work: receipt.work,
-        })
-    }
-
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
-    pub(crate) fn unpublishable_capture_candidate_with_native_work(
-        &self,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<Self, FsError> {
-        self.private_candidate_with_native_work(original, cancellation)
-            .map(Self::into_unpublishable_capture_candidate)
     }
 
     #[cfg(feature = "native-mount")]
@@ -12940,9 +12299,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Creates a read-only observer of this checkout's current candidate.
-    ///
-    /// A live checkout is observed at its current generation: advancing it is
-    /// a mutation of the owner, never of an observer.
     #[cfg(feature = "native-mount")]
     pub(crate) fn observer(&self) -> CheckoutObserver<'_, A, O> {
         self.observer_measured(WorkBudget::UNBOUNDED, &UNBOUNDED_CHECKOUT_CANCELLATION)
@@ -12950,7 +12306,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Constructs an observing alias and its own paid roots on the original
-    /// invocation, without adopting the borrowed proof's constructor payload.
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub(crate) fn observer_with_native_work(
         &self,
@@ -13047,11 +12402,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
 
     /// Diffs this checkout's candidate against another candidate of the same
-    /// volume, without recording an observation.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured diff, storage, cancellation, or bounded-work failures.
     #[cfg(feature = "native-mount")]
     pub(crate) async fn candidate_diff(
         &self,
@@ -13098,7 +12448,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Creates a read-only view of this checkout's current candidate that
-    /// records no observation, for bookkeeping that is not a semantic read.
     #[cfg(feature = "native-mount")]
     pub(crate) fn inspector(&self) -> CheckoutObserver<'_, A, O> {
         self.inspector_measured(WorkBudget::UNBOUNDED, &UNBOUNDED_CHECKOUT_CANCELLATION)
@@ -13165,7 +12514,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Copies only paid namespace paths; opaque source backing stays borrowed
-    /// under the producer's custody throughout the canonical compiler await.
     async fn compile_borrowed_authored_mutation_with_accounting(
         &self,
         authored: &AuthoredMutation,
@@ -13186,7 +12534,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Lowers every authored kind on the caller's existing allocation context.
-    /// Input data is destroyed before any untransferred custody is retired.
     async fn compile_authored_mutation_with_accounting(
         &self,
         authored: crate::kernel::Owned<AuthoredMutation>,
@@ -13446,7 +12793,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Compiles an authenticated immutable record through the canonical
-    /// authored-identity and empty-directory constructors.
     pub(crate) async fn compile_copied_record_measured(
         &self,
         path: NamespacePath,
@@ -13466,7 +12812,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Moves the producer's exact path custody without another allocation.
-    /// Compilation stages immutable objects but grants no publication authority.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn compile_copied_record_with_native_work(
         &self,
@@ -13697,17 +13042,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(value)
     }
 
-    async fn stage_empty_tree(
-        &self,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<ObjectId> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(budget, cancellation);
-        let result = self.stage_empty_tree_with_accounting(&mut accounting, cancellation).await;
-        result.map(|value| FsReceipt { value, work: accounting.spent() })
-            .map_err(|error| OperationFailure::new(error, accounting.spent()))
-    }
-
     async fn stage_empty_tree_with_accounting(
         &self,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
@@ -13751,12 +13085,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Rejects a new namespace binding that violates the volume's name
-    /// policy before any mutation is attempted: a name that is not canonical
-    /// NFC under `UnicodePolicy::RequireNfc`, or a name that collides with an
-    /// existing sibling once case-folded under
-    /// `CaseSensitivity::ProfileFolded`. A no-op under the default
-    /// `Sensitive`/`Preserve` policy, and for the volume root (which has no
-    /// siblings to collide with).
     async fn admit_new_name(
         &mut self,
         path: &NamespacePath,
@@ -13798,118 +13126,89 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(())
     }
 
-    /// Scans `parent`'s entries for one whose name is not byte-identical to
-    /// `target` but shares its [`LogicalName::case_fold_key`], returning that
-    /// sibling's exact canonical name. Used both to reject a colliding create
-    /// ([`Self::admit_new_name`]) and to resolve a case-insensitive lookup
-    /// that missed on an exact match.
-    ///
-    /// `parent_components` come from an already-admitted path's own prefix,
-    /// so reconstructing it cannot exceed the same volume's bounds; if it
-    /// somehow did, this returns `Ok(None)` rather than inventing an
-    /// unrelated error â€” callers fall back to their own exact-match result.
-    async fn find_case_folded_sibling(
-        &mut self,
-        parent_components: &[LogicalName],
-        target: &LogicalName,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-        allowed_file_ids: &[FileId],
-    ) -> FsResult<Option<LogicalName>> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(budget, cancellation);
-        let result = self.find_case_folded_sibling_with_accounting(
-            parent_components, target, &mut accounting, cancellation, allowed_file_ids,
-        ).await;
-        result.map(|value| FsReceipt { value: value.map(|owned| owned.0), work: accounting.spent() })
-            .map_err(|error| OperationFailure::new(error, accounting.spent()))
-    }
-
-    async fn find_case_folded_sibling_with_accounting(
-        &mut self,
-        parent_components: &[LogicalName],
-        target: &LogicalName,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-        allowed_file_ids: &[FileId],
-    ) -> Result<Option<(LogicalName, crate::kernel::allocation::KernelOwnedAllocation)>, FsError> {
-        let mut frame_custody = None;
-        let (mut future, frame_bytes) = crate::heap_future::in_heap_admitted(
-            &mut *accounting,
-            |context, bytes| {
-                frame_custody = Some(context.claim_owned(bytes, u64::from(bytes != 0))?);
-                Ok::<(), FsError>(())
-            },
-            |accounting| async move {
-                let allocation = accounting.claim_owned(0, 0)?;
-                let mut parent = (
-                    NamespacePath::new(Vec::new(), self.volume.config.limits).map_err(name_path_error)?,
-                    allocation,
-                );
-                for name in parent_components {
-                    let next = parent.0.child_with_accounting(
-                        name, self.volume.config.limits, accounting, cancellation,
-                    )?;
-                    let bytes = parent.0.retained_bytes();
-                    retire_name_owned(std::mem::replace(&mut parent, next), bytes, accounting)?;
-                }
-                let folded_target = name_fold_key(target, accounting)?;
-                let mut after: Option<(LogicalName, crate::kernel::allocation::KernelOwnedAllocation)> = None;
-                let found = loop {
-                    accounting.check()?;
-                    let page = self.list_directory_with_bound_with_accounting(
-                        &parent.0, after.as_ref().map(|owned| &owned.0), false,
-                        CASE_FOLD_COLLISION_SCAN_PAGE, accounting, cancellation,
-                    ).await?;
-                    let mut found = None;
-                    for entry in &page.0.entries {
-                        let folded_entry = name_fold_key(&entry.name, accounting)?;
-                        let collision = entry.name != *target && !allowed_file_ids.contains(&entry.file_id)
-                            && folded_entry.0 == folded_target.0;
-                        let bytes = folded_entry.0.capacity() as u64;
-                        retire_name_owned(folded_entry, bytes, accounting)?;
-                        if collision
-                        {
-                            found = Some(entry.name.clone_with_accounting(accounting, cancellation)?);
-                            break;
+    fn find_case_folded_sibling_with_accounting<'a, 'accounting>(
+        &'a mut self,
+        parent_components: &'a [LogicalName],
+        target: &'a LogicalName,
+        accounting: &'a mut crate::kernel::allocation::KernelAccounting<'accounting>,
+        cancellation: &'a CancellationToken,
+        allowed_file_ids: &'a [FileId],
+    ) -> impl std::future::Future<Output = Result<Option<(LogicalName, crate::kernel::allocation::KernelOwnedAllocation)>, FsError>> + Send + 'a {
+        async move {
+            let mut frame_custody = None;
+            let (future, frame_bytes) = crate::heap_future::in_heap_admitted(
+                &mut *accounting,
+                |context, bytes| {
+                    frame_custody = Some(context.claim_owned(bytes, u64::from(bytes != 0))?);
+                    Ok::<(), FsError>(())
+                },
+                |accounting| async move {
+                    let allocation = accounting.claim_owned(0, 0)?;
+                    let mut parent = (
+                        NamespacePath::new(Vec::new(), self.volume.config.limits).map_err(name_path_error)?,
+                        allocation,
+                    );
+                    for name in parent_components {
+                        let next = parent.0.child_with_accounting(
+                            name, self.volume.config.limits, accounting, cancellation,
+                        )?;
+                        let bytes = parent.0.retained_bytes();
+                        retire_name_owned(std::mem::replace(&mut parent, next), bytes, accounting)?;
+                    }
+                    let folded_target = name_fold_key(target, accounting)?;
+                    let mut after: Option<(LogicalName, crate::kernel::allocation::KernelOwnedAllocation)> = None;
+                    let found = loop {
+                        accounting.check()?;
+                        let page = self.list_directory_with_bound_with_accounting(
+                            &parent.0, after.as_ref().map(|owned| &owned.0), false,
+                            CASE_FOLD_COLLISION_SCAN_PAGE, accounting, cancellation,
+                        ).await?;
+                        let mut found = None;
+                        for entry in &page.0.entries {
+                            let folded_entry = name_fold_key(&entry.name, accounting)?;
+                            let collision = entry.name != *target && !allowed_file_ids.contains(&entry.file_id)
+                                && folded_entry.0 == folded_target.0;
+                            let bytes = folded_entry.0.capacity() as u64;
+                            retire_name_owned(folded_entry, bytes, accounting)?;
+                            if collision
+                            {
+                                found = Some(entry.name.clone_with_accounting(accounting, cancellation)?);
+                                break;
+                            }
                         }
-                    }
-                    let has_more = page.0.has_more;
-                    if let Some(old) = after.take() {
-                        let bytes = old.0.retained_bytes() as u64;
-                        retire_name_owned(old, bytes, accounting)?;
-                    }
-                    after = match page.0.entries.last().filter(|_| has_more && found.is_none()) {
-                        Some(entry) => Some(entry.name.clone_with_accounting(accounting, cancellation)?),
-                        None => None,
+                        let has_more = page.0.has_more;
+                        if let Some(old) = after.take() {
+                            let bytes = old.0.retained_bytes() as u64;
+                            retire_name_owned(old, bytes, accounting)?;
+                        }
+                        after = match page.0.entries.last().filter(|_| has_more && found.is_none()) {
+                            Some(entry) => Some(entry.name.clone_with_accounting(accounting, cancellation)?),
+                            None => None,
+                        };
+                        let bytes = page.0.entries.iter().try_fold(
+                            (page.0.entries.capacity() * size_of::<crate::kernel::TreeEntry>()) as u64,
+                            |bytes, entry| bytes.checked_add(entry.name.retained_bytes() as u64).ok_or(WorkError::Overflow),
+                        )?;
+                        retire_name_owned(page, bytes, accounting)?;
+                        if found.is_some() || !has_more { break found; }
                     };
-                    let bytes = page.0.entries.iter().try_fold(
-                        (page.0.entries.capacity() * size_of::<crate::kernel::TreeEntry>()) as u64,
-                        |bytes, entry| bytes.checked_add(entry.name.retained_bytes() as u64).ok_or(WorkError::Overflow),
-                    )?;
-                    retire_name_owned(page, bytes, accounting)?;
-                    if found.is_some() || !has_more { break found; }
-                };
-                let bytes = parent.0.retained_bytes();
-                retire_name_owned(parent, bytes, accounting)?;
-                let bytes = folded_target.0.capacity() as u64;
-                retire_name_owned(folded_target, bytes, accounting)?;
-                Ok(found)
-            },
-        )?;
-        let result = future.as_mut().await;
-        drop(future);
-        let mut frame_custody = frame_custody.ok_or(FsError::PendingMutationAllocationFailed)?;
-        Self::release_name_custody(&mut frame_custody, frame_bytes, accounting)?;
-        result
+                    let bytes = parent.0.retained_bytes();
+                    retire_name_owned(parent, bytes, accounting)?;
+                    let bytes = folded_target.0.capacity() as u64;
+                    retire_name_owned(folded_target, bytes, accounting)?;
+                    Ok(found)
+                },
+            )?;
+            let mut future: std::pin::Pin<Box<dyn std::future::Future<Output = _> + Send + '_>> = future;
+            let result = future.as_mut().await;
+            drop(future);
+            let mut frame_custody = frame_custody.ok_or(FsError::PendingMutationAllocationFailed)?;
+            Self::release_name_custody(&mut frame_custody, frame_bytes, accounting)?;
+            result
+        }
     }
 
     /// Creates a regular file, embedding tiny content and sparsely staging
-    /// larger content in one atomic checkout mutation batch.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured path, identity, encoding, blob, mutation, storage,
-    /// cancellation, allocation, or bounded-work failures.
     pub async fn create_file(
         &mut self,
         path: NamespacePath,
@@ -13998,11 +13297,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Creates an empty directory without scanning its parent or siblings.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured path, encoding, mutation, storage, cancellation,
-    /// allocation, or bounded-work failures.
     pub async fn create_directory(
         &mut self,
         path: NamespacePath,
@@ -14079,11 +13373,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Creates a symbolic link whose target bytes remain opaque and exact.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed capability, path, blob, metadata, mutation, storage,
-    /// cancellation, allocation, or bounded-work failures.
     pub async fn create_symbolic_link(
         &mut self,
         path: NamespacePath,
@@ -14114,11 +13403,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Reads exact opaque symbolic-link target bytes without following it.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed absence, kind, corruption, cancellation, storage,
-    /// allocation, or bounded-work failures.
     pub async fn read_symbolic_link(
         &mut self,
         path: &NamespacePath,
@@ -14167,11 +13451,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Creates a FIFO, socket, or explicit mounted-volume boundary.
-    ///
-    /// # Errors
-    ///
-    /// Rejects payload-bearing kinds and returns typed metadata, mutation,
-    /// storage, cancellation, or bounded-work failures.
     pub async fn create_empty_special(
         &mut self,
         path: NamespacePath,
@@ -14191,11 +13470,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Creates an exact POSIX character or block device identity.
-    ///
-    /// # Errors
-    ///
-    /// Rejects non-device kinds and returns typed metadata, mutation, storage,
-    /// cancellation, or bounded-work failures.
     pub async fn create_device(
         &mut self,
         path: NamespacePath,
@@ -14220,11 +13494,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Creates an opaque Windows reparse-point payload.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed path, blob, metadata, mutation, storage, cancellation,
-    /// allocation, or bounded-work failures.
     pub async fn create_reparse_point(
         &mut self,
         path: NamespacePath,
@@ -14256,11 +13525,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Reads exact opaque Windows reparse-point bytes without interpreting them.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed absence, kind, corruption, cancellation, storage,
-    /// allocation, or bounded-work failures.
     pub async fn read_reparse_point(
         &mut self,
         path: &NamespacePath,
@@ -14361,11 +13625,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Replaces one file range with caller bytes, preserving sparse untouched ranges.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured path, blob, mutation, storage, cancellation,
-    /// allocation, or bounded-work failures.
     pub async fn write_file(
         &mut self,
         path: NamespacePath,
@@ -14399,15 +13658,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Captures one regular file as an ephemeral path-independent open view.
-    ///
-    /// The returned file shares authenticated immutable objects with this
-    /// volume. Its later mutations are visible only through copies of this
-    /// detached value and are never published into a generation.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed absence, non-regular kind, path, storage, cancellation,
-    /// dependency, or bounded-work failures.
     pub async fn detach_regular_file(
         &mut self,
         path: &NamespacePath,
@@ -14457,14 +13707,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Reads one authenticated candidate file record by stable identity.
-    ///
-    /// Tracking modes retain a complete file-record dependency. More precise
-    /// byte and metadata APIs below retain only their semantic regions.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed absence, authentication, storage, cancellation,
-    /// dependency, allocation, or bounded-work failures.
     pub async fn read_file_record_by_id(
         &mut self, file_id: FileId, budget: WorkBudget, cancellation: &CancellationToken,
     ) -> FsResult<FileRecord> {
@@ -14509,11 +13751,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Reads one exact logical range by stable file identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured absence, non-regular kind, range, authentication,
-    /// dependency, cancellation, storage, allocation, or bounded-work failures.
     pub async fn read_file_range_by_id(
         &mut self,
         file_id: FileId,
@@ -14526,11 +13763,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Reads at most `maximum_bytes`, clipping to the current logical EOF in
-    /// the same checkout view used to read content.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same typed failures as [`Self::read_file_range_by_id`].
     pub async fn read_file_up_to_by_id(
         &mut self,
         file_id: FileId,
@@ -14644,16 +13876,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Plans one bounded sparse range by stable file identity without reading
-    /// content blobs or resolving namespace bindings.
-    ///
-    /// `None` identifies inline regular content. Tracking modes retain the
-    /// exact byte-range dependency represented by the returned plan.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured absence, non-regular kind, invalid bounds,
-    /// authentication, dependency, cancellation, allocation, storage, or
-    /// bounded-work failures.
     pub async fn plan_file_extents_by_id(
         &mut self,
         file_id: FileId,
@@ -14732,11 +13954,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Finds the first sparse data or hole boundary by stable file identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured absence, non-regular kind, malformed extent,
-    /// dependency, cancellation, storage, allocation, or bounded-work failures.
     pub async fn seek_file_extent_by_id(
         &mut self, file_id: FileId, offset: u64, target: ExtentSeekTarget,
         budget: WorkBudget, cancellation: &CancellationToken,
@@ -14803,11 +14020,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Reads complete canonical metadata by stable file identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured absence, authentication, decode, dependency, storage,
-    /// cancellation, allocation, or bounded-work failures.
     pub async fn read_metadata_by_id(
         &mut self, file_id: FileId, budget: WorkBudget, cancellation: &CancellationToken,
     ) -> FsResult<FileMetadata> {
@@ -14855,11 +14067,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Reads one exact named attribute by stable file identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured metadata, attribute-tree, blob, storage,
-    /// authentication, cancellation, allocation, or bounded-work failures.
     pub async fn read_named_attribute_by_id(
         &mut self,
         file_id: FileId,
@@ -14904,21 +14111,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self.read_named_attribute_owned_by_id_with_accounting(file_id, name, &mut accounting, cancellation).await
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn read_named_attribute_by_id_with_native_work(
-        &mut self, file_id: FileId, name: &AttributeName,
-        work: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<Option<acyclic_stream::OwnedBytes>, FsError> {
-        self.read_named_attribute_owned_by_id_with_native_work(file_id, name, work, cancellation).await
-            .map(|chunk| chunk.map(|chunk| chunk.bytes))
-    }
-
     /// Lists one bounded page of named attributes by stable file identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured metadata, pagination, storage, authentication,
-    /// cancellation, allocation, or bounded-work failures.
     pub async fn list_named_attributes_by_id(
         &mut self, file_id: FileId, after: Option<&AttributeName>, maximum_entries: u32,
         budget: WorkBudget, cancellation: &CancellationToken,
@@ -14954,11 +14147,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Inserts or replaces one named attribute by stable file identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured precondition, metadata, blob, attribute-tree, storage,
-    /// mutation, cancellation, allocation, or bounded-work failures.
     pub async fn write_named_attribute_by_id(
         &mut self, file_id: FileId, name: AttributeName, value: impl Into<acyclic_stream::OwnedBytes>,
         mode: NamedAttributeWriteMode, budget: WorkBudget, cancellation: &CancellationToken,
@@ -14973,11 +14161,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Removes one named attribute by stable file identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns authenticated absence or the same measured failures as
-    /// [`Self::write_named_attribute_by_id`].
     pub async fn remove_named_attribute_by_id(
         &mut self, file_id: FileId, name: AttributeName,
         budget: WorkBudget, cancellation: &CancellationToken,
@@ -15106,13 +14289,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Applies one content change to the regular file at `path`, stamping
-    /// its content-change times in the same mutation when `times` asks to.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured path, blob, metadata, mutation, storage,
-    /// cancellation, allocation, or bounded-work failures. The candidate
-    /// changes only if the change and its time stamp both apply.
     pub async fn change_content(
         &mut self,
         path: NamespacePath,
@@ -15126,14 +14302,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Applies one content change to a regular file by stable identity,
-    /// stamping its content-change times in the same mutation when `times`
-    /// asks to. Authenticated absence never scans the namespace.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured blob, metadata, mutation, storage, cancellation,
-    /// allocation, or bounded-work failures. The candidate changes only if
-    /// the change and its time stamp both apply.
     pub async fn change_content_by_id(
         &mut self,
         file_id: FileId,
@@ -15147,7 +14315,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Applies content whose source custody remains with the native caller
-    /// until this future physically finishes streaming its opaque bytes.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn change_content_by_id_with_native_work(
         &mut self,
@@ -15193,7 +14360,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Input custody covers paths; opaque source custody stays with its caller
-    /// until this future has physically finished reading the source.
     pub(crate) async fn compile_content_with_accounting<F: ContentFile>(
         &mut self,
         input: crate::kernel::Owned<(F, ContentChange<F>)>,
@@ -15278,19 +14444,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Applies independent changes as if one at a time in order, landing
-    /// them as one mutation whenever they all apply.
-    ///
-    /// Each result is exactly what applying that change alone after its
-    /// successful predecessors returns: when the combined mutation fails,
-    /// every compiled change is retried alone in order, so one change's
-    /// failure never fails another. A change that fails leaves only harmless
-    /// unreferenced staged objects. `budget` bounds the whole invocation,
-    /// including compilation, the combined attempt, and ordered retries.
-    ///
-    /// # Errors
-    ///
-    /// Fails as a whole if output admission or exact work accounting fails.
-    /// Other failures, including an exhausted remainder, belong to each change.
     pub async fn apply_group(
         &mut self,
         changes: Vec<GroupedChange>,
@@ -15361,7 +14514,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let mut input = input;
         let result = async {
             // Only the input slots move into this guard. Original paths,
-            // metadata and shared source bytes remain caller-owned inputs.
             for change in input.value.drain(..) {
                 let guard = split_allocation(&mut input.allocation, 0)?;
                 let change_input = Owned::new(change, guard, 0);
@@ -15470,11 +14622,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Replaces one range of an attached regular file by stable identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured blob, mutation, storage, cancellation, allocation, or
-    /// bounded-work failures. Authenticated absence never scans the namespace.
     pub async fn write_file_by_id(
         &mut self,
         file_id: FileId,
@@ -15494,11 +14641,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Replaces complete canonical metadata by stable identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured encoding, storage, mutation, cancellation, allocation,
-    /// or bounded-work failures.
     pub async fn set_metadata_by_id(
         &mut self, file_id: FileId, metadata: FileMetadata,
         budget: WorkBudget, cancellation: &CancellationToken,
@@ -15518,13 +14660,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Replaces complete metadata and optionally logical size as one attached
-    /// file-table transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured encoding, storage, sparse mutation, cancellation,
-    /// allocation, or bounded-work failures. The candidate record changes only
-    /// if the complete ordered batch succeeds.
     pub async fn set_attributes_by_id(
         &mut self, file_id: FileId, metadata: FileMetadata, logical_bytes: Option<u64>,
         budget: WorkBudget, cancellation: &CancellationToken,
@@ -15568,10 +14703,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Changes logical length by stable identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same measured failures as [`Self::mutate`].
     pub async fn resize_file_by_id(
         &mut self,
         file_id: FileId,
@@ -15590,10 +14721,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Punches a hole or writes allocated zeros by stable identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same measured failures as [`Self::mutate`].
     pub async fn zero_file_range_by_id(
         &mut self,
         file_id: FileId,
@@ -15618,10 +14745,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Allocates sparse holes by stable identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same measured failures as [`Self::mutate`].
     pub async fn preallocate_file_by_id(
         &mut self,
         file_id: FileId,
@@ -15641,10 +14764,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Clones one sparse logical range between stable identities.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same measured failures as [`Self::mutate`].
     #[allow(
         clippy::too_many_arguments,
         reason = "mirrors the POSIX copy_file_range shape: two identities, two offsets, a length, plus budget and cancellation"
@@ -15675,34 +14794,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Removes one namespace binding with an optional exact identity precondition.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same measured failures as [`Self::mutate`].
-    pub async fn remove(
-        &mut self,
+    pub fn remove<'a>(
+        &'a mut self,
         path: NamespacePath,
         expected_file_id: Option<FileId>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> FsResult<()> {
-        self.mutate(
-            vec![Mutation::Remove {
-                path,
-                expected_file_id: expected_file_id
-                    .map_or(MetadataField::Unavailable, MetadataField::Value),
-            }],
-            budget,
-            cancellation,
-        )
-        .await
+    ) -> impl std::future::Future<Output = FsResult<()>> + Send + 'a + use<'a, A, O> {
+        let cancellation = cancellation.clone();
+        async move {
+            self.mutate(
+                vec![Mutation::Remove {
+                    path,
+                    expected_file_id: expected_file_id
+                        .map_or(MetadataField::Unavailable, MetadataField::Value),
+                }],
+                budget,
+                &cancellation,
+            )
+            .await
+        }
     }
 
     /// Atomically renames one binding within this volume.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same measured failures as [`Self::mutate`].
     pub async fn rename(
         &mut self,
         source: NamespacePath,
@@ -15724,10 +14838,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Creates another binding to an existing non-directory file.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same measured failures as [`Self::mutate`].
     pub async fn hard_link(
         &mut self,
         source: NamespacePath,
@@ -15747,14 +14857,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Replaces the complete canonical metadata record for one existing file.
-    ///
-    /// The encoded metadata object is admitted before the checkout mutation;
-    /// failed publication can leave only an unreachable immutable object.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured metadata encoding, object-storage, cancellation,
-    /// mutation, allocation, or bounded-work failures.
     pub async fn set_metadata(
         &mut self,
         path: NamespacePath,
@@ -15788,14 +14890,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Replaces complete metadata and optionally logical size as one path transaction.
-    ///
-    /// Immutable metadata may be staged first, but the candidate changes only
-    /// when both the metadata and optional sparse resize validate and apply.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured encoding, storage, sparse mutation, cancellation,
-    /// allocation, or bounded-work failures.
     pub async fn set_attributes(
         &mut self,
         path: NamespacePath,
@@ -15828,10 +14922,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Changes a regular file's logical length while preserving sparse semantics.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same measured failures as [`Self::mutate`].
     pub async fn resize_file(
         &mut self,
         path: NamespacePath,
@@ -15850,10 +14940,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Punches a hole or preserves physical allocation as canonical zeros.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same measured failures as [`Self::mutate`].
     pub async fn zero_file_range(
         &mut self,
         path: NamespacePath,
@@ -15878,15 +14964,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Allocates sparse holes while preserving all existing file content.
-    ///
-    /// With `keep_size = false`, the file grows to include the complete range.
-    /// A keep-size request extending beyond EOF is rejected explicitly because
-    /// invisible host allocation is not part of the portable authenticated format.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed range, capability, sparse-mutation, storage, cancellation,
-    /// or bounded-work failures.
     pub async fn preallocate_file(
         &mut self,
         path: NamespacePath,
@@ -15906,10 +14983,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Clones one logical range by immutable extent reference without reading bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same measured failures as [`Self::mutate`].
     pub async fn clone_file_range(
         &mut self,
         request: FileCloneRequest,
@@ -15932,19 +15005,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Streams caller content into immutable authenticated chunks without
-    /// materializing the complete source in memory.
-    ///
-    /// The returned reference can be used by
-    /// [`AuthoredMutation::CreateFileFromContent`] or
-    /// [`AuthoredMutation::WriteFromContent`] in one later atomic transaction.
-    /// Unused staged content is harmless and collectible. Native authored
-    /// transactions stage the same authenticated closure on their original
-    /// operation ledger, retaining completed work when staging fails.
-    ///
-    /// # Errors
-    ///
-    /// Rejects zero or volume-exceeding source bounds and returns exact source,
-    /// storage, cancellation, allocation, encoding, or work-budget failures.
     pub async fn stage_content<R: AsyncBlobSource>(
         &self,
         source: &mut R,
@@ -16022,15 +15082,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Checkpoints, authenticates, and conditionally publishes this overlay.
-    ///
-    /// The caller supplies a stable operation identity and must reuse it only
-    /// for an exact retry. Semantic authority conflicts are returned as values;
-    /// failed or rejected publication leaves the private overlay intact.
-    ///
-    /// # Errors
-    ///
-    /// Rejects clean/non-writable checkouts and returns exact checkpoint,
-    /// closure, authority, cancellation, or budget failures.
     pub async fn commit(
         &mut self,
         operation_id: OperationId,
@@ -16061,7 +15112,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Publishes this overlay only while the supplied durable operation lease
-    /// remains active at the authority linearization point.
     pub async fn commit_with_permit(
         &mut self,
         operation_id: OperationId,
@@ -16076,7 +15126,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Runs the caller's measured asynchronous owner check at the original
-    /// publication seal, after authenticating and draining the exact closure.
     pub async fn commit_with_permit_guarded<E, F, Fut>(
         &mut self,
         operation_id: OperationId,
@@ -16136,7 +15185,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Anchors a separately journaled lazy overlay to an exact checkout
-    /// publication, even when the checkout's authored root is unchanged.
     #[cfg(feature = "native-mount")]
     pub(crate) async fn commit_with_permit_even_if_clean(
         &mut self,
@@ -16158,8 +15206,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Seals the original companion operation even when its authored root is unchanged.
-    /// A supplied, already admitted producer token owns only the new root
-    /// buffers; no old checkout control or observed DATA is adopted.
     pub(crate) async fn commit_with_permit_even_if_clean_guarded<E, F, Fut>(
         &mut self,
         operation_id: OperationId,
@@ -16206,7 +15252,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .authority_head
             .ok_or_else(|| OperationFailure::before_work(FsError::WritableCheckoutRequiresHead))?;
         // Native-source operations must linearize even when capture produced no
-        // mutations. Publishing the unchanged root is their atomic head fence.
         self.publish_pending_against(
             operation_id,
             Some(operation_context),
@@ -16416,7 +15461,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Seals this checkout using the original native invocation, retaining the
-    /// exact owner callback cause without allocating a measured failure.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn commit_with_permit_guarded_with_native_work<'a, E, F, Fut>(
         &mut self,
@@ -16595,7 +15639,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             std::mem::size_of::<Mutex<Option<VerifiedPublication<A, O>>>>() + 2 * size_of::<usize>(),
         );
         // This actual slot is admitted before Arc's allocator. Its guard is
-        // declared first so every failure destroys the Arc before release.
         let mut slot_allocation = original.claim(custody_bytes).map_err(FsError::from).map_err(E::from)?;
         let publication_slot = Arc::new(Mutex::new(None));
         let proven_at = self.volume.fs.inner.objects.collection_sweeps();
@@ -16632,7 +15675,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Resolves only the original durable operation. A lost acknowledgement
-    /// reopens its exact predecessor and does not reseal or append again.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn retry_stale_commit_guarded_with_native_work<'a, E, F, Fut>(
         &mut self,
@@ -16927,12 +15969,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Resolves an exact path without following links or scanning unrelated subtrees.
-    ///
-    /// # Errors
-    ///
-    /// Returns a measured failure for invalid profile semantics, malformed
-    /// authenticated routing, missing root records, non-directory traversal,
-    /// cancellation, backend failure, or budget exhaustion.
     pub async fn lookup_no_follow(
         &mut self,
         path: &NamespacePath,
@@ -16944,12 +15980,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Resolves one exact path and decodes its authenticated metadata without
-    /// repeating the namespace or file-table traversal.
-    ///
-    /// # Errors
-    ///
-    /// Returns the lookup failures plus bounded object-read or metadata-decode
-    /// failures. Authenticated absence performs no metadata read.
     pub async fn lookup_no_follow_with_metadata(
         &mut self, path: &NamespacePath, budget: WorkBudget, cancellation: &CancellationToken,
     ) -> FsResult<Option<PathMetadataLookup>> {
@@ -17191,14 +16221,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Resolves a bounded path batch while sharing directory and file-table frontiers.
-    ///
-    /// Input order and duplicates are preserved. The operation never follows
-    /// links, reads file bodies, or scans unrelated namespace subtrees.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same measured fail-closed outcomes as [`Self::lookup_no_follow`],
-    /// plus explicit empty and excessive-batch rejection.
     pub async fn lookup_batch_no_follow(
         &mut self,
         paths: &[NamespacePath],
@@ -17224,8 +16246,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Reads immutable source evidence for selected restoration. Authenticated
-    /// non-directory ancestors prove descendant absence, without changing the
-    /// ordinary no-follow semantics or performing another lookup.
     pub(crate) async fn lookup_batch_no_follow_selected(
         &mut self,
         paths: &[NamespacePath],
@@ -17405,14 +16425,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Returns one bounded authenticated page from a directory.
-    ///
-    /// Tracking checkouts retain the exact cursor interval as an observation,
-    /// preventing an automatic rebase from crossing inserted or removed names.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured path, kind, pagination, dependency, storage,
-    /// cancellation, or bounded-work failures.
     pub async fn list_directory(
         &mut self,
         path: &NamespacePath,
@@ -17579,16 +16591,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Returns one directory page with all child records fetched in one shared
-    /// authenticated file-table batch.
-    ///
-    /// This is the native-mount enumeration surface: it avoids one path lookup
-    /// per child while preserving the same cursor observation as
-    /// [`Self::list_directory`].
-    ///
-    /// # Errors
-    ///
-    /// Returns the listing failures plus authenticated file-table failures or
-    /// a typed namespace/file-table consistency error.
     pub async fn list_directory_records(
         &mut self,
         path: &NamespacePath,
@@ -17696,14 +16698,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Reads complete canonical metadata for one exact path.
-    ///
-    /// Tracking checkouts retain the metadata identity independently from file
-    /// content, allowing unrelated content changes to rebase safely.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured absence, path, decode, dependency, storage,
-    /// cancellation, or bounded-work failures.
     pub async fn read_metadata(
         &mut self, path: &NamespacePath, budget: WorkBudget, cancellation: &CancellationToken,
     ) -> FsResult<FileMetadata> {
@@ -17732,12 +16726,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Reads one exact named attribute without reading unrelated attribute
-    /// payloads or pages.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured path, metadata, attribute-tree, blob, cancellation,
-    /// storage, allocation, or bounded-work failures.
     pub async fn read_named_attribute(
         &mut self,
         path: &NamespacePath,
@@ -17753,12 +16741,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Reads the same exact named attribute, preserving its producer's actual
-    /// controlled payload capacity before the owned buffer becomes opaque bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same measured path, metadata, attribute, blob, cancellation,
-    /// storage, allocation, and bounded-work failures as the ordinary projection.
     pub async fn read_named_attribute_owned(
         &mut self, path: &NamespacePath, name: &AttributeName,
         budget: WorkBudget, cancellation: &CancellationToken,
@@ -17796,12 +16778,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Lists one bounded page of exact named-attribute identities without
-    /// reading any attribute payload bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured path, metadata, pagination, cancellation, storage,
-    /// allocation, or bounded-work failures.
     pub async fn list_named_attributes(
         &mut self, path: &NamespacePath, after: Option<&AttributeName>, maximum_entries: u32,
         budget: WorkBudget, cancellation: &CancellationToken,
@@ -17833,15 +16809,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Inserts or replaces one named attribute and atomically updates the
-    /// path's metadata reference in the checkout candidate.
-    ///
-    /// Immutable payload and attribute pages are staged first; a rejected
-    /// precondition can leave only unreachable authenticated objects.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured precondition, path, blob, attribute-tree, metadata,
-    /// mutation, cancellation, storage, allocation, or bounded-work failures.
     pub async fn write_named_attribute(
         &mut self,
         path: NamespacePath,
@@ -17922,11 +16889,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Removes one existing named attribute and atomically updates metadata.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FsError::NotFound`] for authenticated absence and otherwise
-    /// the same bounded failures as [`Self::write_named_attribute`].
     pub async fn remove_named_attribute(
         &mut self,
         path: NamespacePath,
@@ -17979,17 +16941,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Plans the sparse physical representation of one exact regular-file range.
-    ///
-    /// `None` identifies tiny inline content; callers should use
-    /// [`Self::read_file_range`] for that bounded body. A returned plan contains
-    /// holes, allocated-zero spans, and immutable-content spans without reading
-    /// content blobs or unrelated extent pages.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured path, kind, range, authentication, dependency,
-    /// cancellation, storage, allocation, excessive-span, or bounded-work
-    /// failures.
     pub async fn plan_file_extents(
         &mut self,
         path: &NamespacePath,
@@ -18075,16 +17026,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Finds the first sparse data or hole boundary after one logical offset.
-    ///
-    /// Namespace and extent roots are resolved once. The extent traversal then
-    /// advances monotonically across authenticated leaf frontiers without
-    /// reading file bodies or restarting at the root.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured absence, non-regular kind, invalid offset, malformed
-    /// extent graph, cancellation, backend, dependency, or bounded-work
-    /// failures.
     pub async fn seek_file_extent(
         &mut self, path: &NamespacePath, offset: u64, target: ExtentSeekTarget,
         budget: WorkBudget, cancellation: &CancellationToken,
@@ -18127,22 +17068,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(value)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn seek_file_extent_with_native_work(
-        &mut self, path: &NamespacePath, offset: u64, target: ExtentSeekTarget,
-        work: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<Option<u64>, FsError> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(work, cancellation);
-        self.seek_file_extent_with_accounting(path, offset, target, &mut accounting, cancellation).await
-    }
-
     /// Reads one exact logical regular-file range without materializing holes
-    /// or unrelated extent and blob subtrees.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured path, kind, range, authentication, dependency,
-    /// cancellation, storage, allocation, or bounded-work failures.
     pub async fn read_file_range(
         &mut self,
         path: &NamespacePath,
@@ -18215,17 +17141,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         ).await;
         readonly_cleanup_standalone(accounting, before, 0)?;
         result.map(|(record, allocation)| { drop(allocation); record })
-    }
-
-    async fn observe_identity_region(
-        &mut self,
-        region: DependencyRegion,
-        work: WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<WorkCounters, OperationFailure<FsError>> {
-        self.observe_identity_regions([Some(region), None], work, budget, cancellation)
-            .await
     }
 
     async fn observe_identity_regions(
@@ -18601,11 +17516,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
     }
 
     /// Finds the first sparse data or hole boundary without a namespace binding.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured malformed-extent, cancellation, backend, allocation,
-    /// or bounded-work failures.
     pub async fn seek(
         &self,
         offset: u64,
@@ -18684,12 +17594,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
     }
 
     /// Replaces complete metadata on this detached file only.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured encoding, storage, cancellation, allocation, or
-    /// bounded-work failures. A failed operation leaves the detached record
-    /// unchanged.
     pub async fn set_metadata(
         &mut self, metadata: FileMetadata, budget: WorkBudget, cancellation: &CancellationToken,
     ) -> FsResult<()> {
@@ -18707,16 +17611,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
     }
 
     /// Replaces complete metadata and optionally logical size as one detached
-    /// record transition.
-    ///
-    /// Immutable metadata bytes may be staged before validation finishes, but
-    /// the visible detached record changes only after every requested update
-    /// succeeds.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured encoding, storage, sparse mutation, cancellation,
-    /// allocation, or bounded-work failures.
     pub async fn set_attributes(
         &mut self, metadata: FileMetadata, logical_bytes: Option<u64>,
         budget: WorkBudget, cancellation: &CancellationToken,
@@ -18756,11 +17650,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
     }
 
     /// Reads one exact named attribute from the detached metadata frontier.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured metadata, attribute-tree, blob, storage,
-    /// authentication, cancellation, allocation, or bounded-work failures.
     pub async fn read_named_attribute(
         &self,
         name: &AttributeName,
@@ -18852,11 +17741,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
     }
 
     /// Lists one bounded page of detached named-attribute identities.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured metadata, pagination, storage, authentication,
-    /// cancellation, allocation, or bounded-work failures.
     pub async fn list_named_attributes(
         &self,
         after: Option<&AttributeName>,
@@ -18909,11 +17793,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
     }
 
     /// Inserts or replaces one detached named attribute atomically.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured precondition, metadata, blob, attribute-tree, storage,
-    /// cancellation, allocation, or bounded-work failures.
     pub async fn write_named_attribute(
         &mut self, name: AttributeName, value: impl Into<acyclic_stream::OwnedBytes>, mode: NamedAttributeWriteMode,
         budget: WorkBudget, cancellation: &CancellationToken,
@@ -18928,11 +17807,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
     }
 
     /// Removes one existing detached named attribute atomically.
-    ///
-    /// # Errors
-    ///
-    /// Returns authenticated absence or the same measured failures as
-    /// [`Self::write_named_attribute`].
     pub async fn remove_named_attribute(
         &mut self, name: AttributeName, budget: WorkBudget, cancellation: &CancellationToken,
     ) -> FsResult<FileMetadata> {
@@ -18975,11 +17849,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
     }
 
     /// Reads complete authenticated metadata for this detached file.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured storage, authentication, cancellation, allocation, or
-    /// bounded-work failures.
     pub async fn read_metadata(
         &self,
         budget: WorkBudget,
@@ -19041,11 +17910,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
     }
 
     /// Reads one bounded sparse range without requiring a namespace binding.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed range, storage, authentication, cancellation, allocation,
-    /// or bounded-work failures.
     pub async fn read_range(
         &self,
         range: ByteRange,
@@ -19095,10 +17959,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
     }
 
     /// Reads at most `maximum_bytes`, clipping to this detached record's EOF.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same typed failures as [`Self::read_range`].
     pub async fn read_up_to(
         &self,
         offset: u64,
@@ -19111,19 +17971,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
         let work = accounting.spent();
         result.map(|value| FsReceipt { value, work })
             .map_err(|error| OperationFailure::new(error, work))
-    }
-
-    /// Clips and reads the exact retained record on the original native journal.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn read_up_to_with_native_work(
-        &self,
-        offset: u64,
-        maximum_bytes: u32,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<FileRangeRead, FsError> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-        self.read_up_to_with_accounting(offset, maximum_bytes, &mut accounting, cancellation).await
     }
 
     async fn read_up_to_with_accounting(
@@ -19158,14 +18005,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
     }
 
     /// Applies one content change and, when `metadata` is given, replaces
-    /// the complete metadata in the same detached record transition: the
-    /// visible record changes only if both succeed. A detached file has no
-    /// other file to clone from, so that change cannot be expressed.
-    ///
-    /// # Errors
-    ///
-    /// Returns measured blob, encoding, mutation, storage, cancellation,
-    /// allocation, or bounded-work failures.
     pub async fn change_content(
         &mut self,
         change: ContentChange<std::convert::Infallible>,
@@ -19181,7 +18020,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
     }
 
     /// Streams caller-retained source bytes and updates the actual detached
-    /// record only after both the content and metadata transitions succeed.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn change_content_with_native_work(
         &mut self,
@@ -19315,8 +18153,6 @@ fn exact_mutation_regions(
         }
         Mutation::Resize { .. } => {
             // Resize can discard an arbitrarily large suffix. Until a compact
-            // authenticated extent-summary region exists, the complete record
-            // is the only bounded proof that cannot miss delete-vs-modify.
             regions[0] =
                 first.map(|record| (Some(record), DependencyRegion::FileRecord(record.file_id)));
         }
@@ -19635,7 +18471,6 @@ async fn diff_generation_file_tables_with_accounting<O: AsyncObjectStore>(
             });
         }
         // The original diff Vec is physically destroyed before retiring its
-        // control capacity. Moved name buffers remain on the output guard.
         drop(entries);
         accounting.release_owned(&mut bindings.allocation, buffer_bytes)?;
         bindings.bytes = bindings.bytes.checked_sub(buffer_bytes).ok_or(WorkError::Overflow)?;
@@ -19731,8 +18566,6 @@ async fn collect_generation_ancestors<O: AsyncObjectStore>(
             let Err(position) = position else { continue; };
             if visited.value.len() == maximum {
                 // Retain the entire unread target frontier, not just the item
-                // which crossed the read bound. Existing authenticated entries
-                // take precedence over an unexamined frontier occurrence.
                 while let Some(frontier) = next_lineage_value(&pending.value, &mut cursor, accounting)? {
                     if let Err(index) = crate::kernel::binary_search_with_accounting(
                         &visited.value, accounting, |candidate| candidate.0.cmp(&frontier),
@@ -19823,8 +18656,6 @@ async fn find_first_generation_ancestor<O: AsyncObjectStore>(
                     })));
                 }
                 // A filtered fork's initial namespace is its delta baseline.
-                // Carry it on this path only; another merge parent may reach a
-                // nearer ancestor without crossing the filtered boundary.
                 let boundary = if baseline.is_none()
                     && root.value.required_features & GenerationRoot::FILTERED_FORK != 0
                 {
@@ -20029,12 +18860,6 @@ fn root_parent_bytes(root: &GenerationRoot) -> Result<u64, FsError> {
         .ok_or(FsError::Work(WorkError::Overflow))
 }
 
-fn roots_parent_bytes(roots: &[&GenerationRoot]) -> Result<u64, FsError> {
-    roots.iter().try_fold(0_u64, |bytes, root| {
-        bytes.checked_add(root_parent_bytes(root)?).ok_or(FsError::Work(WorkError::Overflow))
-    })
-}
-
 fn root_parent_buffer(
     parents: &[GenerationId],
     live_owned_bytes: u64,
@@ -20087,21 +18912,6 @@ fn attribute_encode_error(error: crate::kernel::AttributeEncodeError) -> FsError
         crate::kernel::AttributeEncodeError::AllocationFailed(error) =>
             FsError::EncodedAllocationFailed(error),
     }
-}
-
-fn grouped_operations_bytes(operations: &Vec<Mutation>) -> Result<u64, FsError> {
-    operations.iter().try_fold(
-        crate::foundation::usize_to_u64(operations.capacity() * size_of::<Mutation>()),
-        |mut bytes, operation| {
-            if let Some([first, second]) = operation.paths() {
-                bytes = bytes.checked_add(first.retained_bytes()).ok_or(FsError::Work(WorkError::Overflow))?;
-                if !std::ptr::eq(first, second) {
-                    bytes = bytes.checked_add(second.retained_bytes()).ok_or(FsError::Work(WorkError::Overflow))?;
-                }
-            }
-            Ok(bytes)
-        },
-    )
 }
 
 fn clone_grouped_mutation_with_accounting(
@@ -20169,17 +18979,6 @@ fn clone_grouped_mutation_with_accounting(
     }
 }
 
-fn merge_grouped_work(
-    work: &mut WorkCounters,
-    backend: WorkCounters,
-    live_bytes: u64,
-    budget: WorkBudget,
-) -> Result<(), OperationFailure<FsError>> {
-    *work = work.with_backend(backend, live_bytes)
-        .map_err(|error| OperationFailure::new(error.into(), *work))?;
-    work.verify(budget).map_err(|error| OperationFailure::new(error.into(), *work))
-}
-
 fn empty_metadata() -> FileMetadata {
     FileMetadata::default()
 }
@@ -20205,13 +19004,11 @@ fn derived_operation_id(volume_id: VolumeId) -> (OperationId, WorkCounters) {
 }
 
 /// Relays failures from the audited original workspace producers without
-/// allocating a replacement diagnostic or adopting foreign/intrinsic custody.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn native_workspace_failure(
     error: crate::workspace::WorkspaceError,
 ) -> (crate::workspace::WorkspaceError, Option<crate::NativeAllocation>) {
     // These producers construct fixed typed errors; any native conflict already
-    // owns its guard. Opaque backend/OS causes remain intact and are not re-funded.
     (error, None)
 }
 
@@ -20296,7 +19093,6 @@ fn identity_hash_work(domain: &[u8]) -> WorkCounters {
 }
 
 /// A fork's two first records: the retention of its source generation, under
-/// the returned retention authority, and the new workspace's creation.
 fn fork_records_with_accounting<A, O>(
     source: &Volume<A, O>,
     source_root: ObjectId,
@@ -20404,7 +19200,6 @@ fn creation_commit_with_accounting(
         return Ok(ProposedCommit { operation_id, fingerprint, payload });
     }
     // Audited bytes 1.12: only a spare-capacity Vec allocates the private owner.
-    // Its bookkeeping is not logical payload, but its allocation operation is real.
     let owner = WorkCounters {
         allocation_operations: u64::from(encoded.0.capacity() != encoded.0.len()),
         ..WorkCounters::default()
