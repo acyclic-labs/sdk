@@ -14,15 +14,9 @@ export const DEFAULT_MEMORY_FS_OPTIONS: MemoryFsOptions = Object.freeze({
   objectCache: DEFAULT_OBJECT_CACHE_OPTIONS,
 });
 
-export function resolveMemoryFsOptions(options: MemoryFsOptions | undefined): MemoryFsOptions {
-  // Rust owns memory option admission. Keep this helper limited to resolving
-  // the ergonomic JavaScript default before crossing the generated boundary.
-  return options ?? DEFAULT_MEMORY_FS_OPTIONS;
-}
-
 export async function openMemoryFsWith(
   options: MemoryFsOptions | undefined,
   load: (options: MemoryFsOptions) => Promise<WasmRawFs>,
 ): Promise<FsVolumeEngine> {
-  return adaptWasmFs(await load(resolveMemoryFsOptions(options)), options?.observer);
+  return adaptWasmFs(await load(options ?? DEFAULT_MEMORY_FS_OPTIONS), options?.observer);
 }

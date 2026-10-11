@@ -201,8 +201,8 @@ async fn original_native_root_custody_and_current_reference_are_provider_owned()
     assert_eq!(advanced.epoch, reference.epoch + 1);
     assert!(matches!(source.validate_current_with_native_work(reference, &work), Err(DemandError::StaleSource)));
     assert_eq!(source.validate_root_with_native_work(&root, identity, &work)?, advanced);
-    let ordinary = NativeDemandSource::open_with_reference(
-        &root, FilesystemProfile::Portable, VolumeLimits::default(), reference,
+    let ordinary = NativeDemandSource::open(
+        &root, FilesystemProfile::Portable, VolumeLimits::default(), Some(reference), None,
     ).await?;
     let prefix = work.receipt();
     assert!(matches!(ordinary.validate_root_with_native_work(&root, identity, &work), Err(DemandError::NativeWorkUnavailable)));
@@ -449,7 +449,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
 async fn attachment_creation_failure_and_companion_admission_keep_exact_prior_work() -> TestResult {
     let directory = tempfile::tempdir()?;
     let source = Arc::new(NativeDemandSource::open(
-        directory.path(), FilesystemProfile::Portable, VolumeLimits::default(),
+        directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None,
     ).await?);
     let config = VolumeConfig::portable(Lifecycle::Ephemeral);
     let operation = OperationId::new();
@@ -614,7 +614,7 @@ fn requested(name: &str) -> Result<NamespacePath, Box<dyn std::error::Error>> {
 async fn native_request_denials_precede_real_io_and_buffer_allocation() -> TestResult {
     let directory = tempfile::tempdir()?;
     std::fs::write(directory.path().join("file"), b"actual source bytes")?;
-    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default()).await?;
+    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None).await?;
     let path = requested("file")?;
     let token = CancellationToken::new();
     let budget = finite_budget()?;
@@ -663,7 +663,7 @@ async fn native_request_denials_precede_real_io_and_buffer_allocation() -> TestR
 async fn native_read_failure_retains_bytes_spent_before_current_fence_denial() -> TestResult {
     let directory = tempfile::tempdir()?;
     std::fs::write(directory.path().join("file"), b"native-read")?;
-    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default()).await?;
+    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None).await?;
     let path = requested("file")?;
     let token = CancellationToken::new();
     let budget = finite_budget()?;
@@ -695,7 +695,7 @@ async fn native_read_failure_retains_bytes_spent_before_current_fence_denial() -
 async fn native_continuation_replays_consumed_entries_after_budget_denial() -> TestResult {
     let directory = tempfile::tempdir()?;
     for index in 0..8 { std::fs::write(directory.path().join(format!("entry-{index}")), b"body")?; }
-    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default()).await?;
+    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None).await?;
     let path = requested("")?;
     let token = CancellationToken::new();
     let budget = finite_budget()?;
@@ -729,7 +729,7 @@ async fn filtered_native_source_forwards_allowances_and_retains_real_failures() 
     let directory = tempfile::tempdir()?;
     std::fs::write(directory.path().join("visible"), b"visible")?;
     std::fs::write(directory.path().join("private"), b"private")?;
-    let native = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default()).await?;
+    let native = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None).await?;
     let source = FilteredDemandSource::new(native, vec![requested("private")?]);
     let token = CancellationToken::new();
     let budget = finite_budget()?;
@@ -765,7 +765,7 @@ async fn finite_native_utf16_paths_preserve_unpaired_names_and_restart() -> Test
     let bytes = units.into_iter().flat_map(u16::to_le_bytes).collect::<Vec<_>>();
     let name = LogicalName::new(NameEncoding::WindowsUtf16Le, bytes, limits.maximum_component_bytes)?;
     let path = NamespacePath::new(vec![name.clone()], limits)?;
-    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Windows, limits).await?;
+    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Windows, limits, None, None).await?;
     let token = CancellationToken::new();
     let budget = finite_budget()?;
     let node = source.lookup(source.reference(), &path, budget, &token).await?.value.ok_or("opaque file absent")?;
@@ -783,8 +783,8 @@ async fn finite_native_utf16_paths_preserve_unpaired_names_and_restart() -> Test
         .await.err().ok_or("native UTF16 path/read allocation exceeded allowance")?;
     assert!(matches!(failure.error, DemandError::Work(_)));
     failure.work.verify(limited)?;
-    let reopened = NativeDemandSource::open_with_reference(
-        directory.path(), FilesystemProfile::Windows, limits, source.reference(),
+    let reopened = NativeDemandSource::open(
+        directory.path(), FilesystemProfile::Windows, limits, Some(source.reference()), None,
     ).await?;
     let read = reopened.read_range(reopened.reference(), &path, node.version, 0, 6, budget, &token).await?;
     assert_eq!(read.value.bytes.as_ref(), b"opaque");
@@ -796,7 +796,7 @@ async fn finite_native_utf16_paths_preserve_unpaired_names_and_restart() -> Test
 async fn filtered_page_reserves_comparisons_before_committing_native_cursor() -> TestResult {
     let directory = tempfile::tempdir()?;
     for name in ["a", "b", "c"] { std::fs::write(directory.path().join(name), b"actual")?; }
-    let native = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default()).await?;
+    let native = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None).await?;
     let source = FilteredDemandSource::new(native, vec![requested("private")?, requested("excluded")?]);
     let root = requested("")?;
     let token = CancellationToken::new();
@@ -829,7 +829,7 @@ async fn filtered_page_reserves_comparisons_before_committing_native_cursor() ->
 async fn native_unpublished_pages_restore_initial_and_continuation_positions() -> TestResult {
     let directory = tempfile::tempdir()?;
     for name in ["a", "b", "c", "d"] { std::fs::write(directory.path().join(name), b"body")?; }
-    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default()).await?;
+    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None).await?;
     let root = requested("")?;
     let token = CancellationToken::new();
     let budget = finite_budget()?;
@@ -870,7 +870,7 @@ async fn native_unpublished_pages_restore_initial_and_continuation_positions() -
 async fn native_late_publication_cancellation_and_cleanup_denial_preserve_retry() -> TestResult {
     let directory = tempfile::tempdir()?;
     for name in ["a", "b", "c"] { std::fs::write(directory.path().join(name), b"actual")?; }
-    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default()).await?;
+    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None).await?;
     let root = requested("")?;
     let live = CancellationToken::new();
     let budget = finite_budget()?;

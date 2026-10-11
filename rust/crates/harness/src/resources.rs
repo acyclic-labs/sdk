@@ -17,7 +17,7 @@ pub(crate) fn copy_metadata_string(
 }
 
 /// Stable identity of a replaceable resource provider.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, schemars::JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ProviderRef {
     /// Globally unique namespace, such as `acyclic` or a reverse DNS name.
@@ -183,21 +183,6 @@ impl ProviderRef {
                     { Error::Invalid("provider capacity inventory overflows".into()) }
                 })
             })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn clone_in_native_allocation(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-        allocation: &mut acyclic_fs::NativeAllocation,
-    ) -> Result<Self> {
-        Ok(Self {
-            namespace: crate::conversation::clone_native_reference_text_into(
-                &self.namespace, work, allocation)?,
-            family: crate::conversation::clone_native_reference_text_into(
-                &self.family, work, allocation)?,
-            version: crate::conversation::clone_native_reference_text_into(
-                &self.version, work, allocation)?,
-        })
     }
 
     /// Globally unique provider namespace.

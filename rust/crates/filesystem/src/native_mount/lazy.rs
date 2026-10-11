@@ -7511,7 +7511,7 @@ where
 
     fn fence_changes(&self) -> Result<(), MountSourceError> {
         self.source_watch.as_ref().map_or(Ok(()), |watch| {
-            watch.fence(WorkBudget::UNBOUNDED, &CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| lazy_error(failure.error.into()))
+            watch.fence(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| lazy_error(failure.error.into()))
         })
     }
 
@@ -9402,7 +9402,7 @@ mod tests {
             NativeDemandSource::open(
                 source_root.path(),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await?,
         );
@@ -9507,7 +9507,7 @@ mod tests {
             NativeDemandSource::open(
                 source_root,
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await?,
         );
@@ -9739,7 +9739,7 @@ mod tests {
         let root = tempfile::tempdir()?;
         std::fs::write(root.path().join("source-only"), b"source")?;
         let demand = Arc::new(crate::demand::native::NativeDemandSource::open(
-            root.path(), FilesystemProfile::Portable, VolumeLimits::default(),
+            root.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None,
         ).await?);
         let fs = crate::Fs::memory();
         let store = crate::MemoryLazyWorkspaceStore::default();
@@ -9913,7 +9913,7 @@ mod tests {
             std::fs::write(source_root.path().join("a"), b"source")?;
             std::fs::hard_link(source_root.path().join("a"), source_root.path().join("b"))?;
             let demand = Arc::new(crate::demand::native::NativeDemandSource::open(
-                source_root.path(), FilesystemProfile::Portable, VolumeLimits::default(),
+                source_root.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None,
             ).await?);
             let simulation = Simulation::default();
             let (authority, objects) = simulation.stores();
@@ -10067,7 +10067,7 @@ mod tests {
             NativeDemandSource::open(
                 source_root.path(),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await?,
         );
@@ -10140,7 +10140,7 @@ mod tests {
             NativeDemandSource::open(
                 source_root.path(),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await?,
         );
@@ -10232,7 +10232,7 @@ mod tests {
             NativeDemandSource::open(
                 source_root.path(),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await?,
         );
@@ -10310,7 +10310,7 @@ mod tests {
             NativeDemandSource::open(
                 source_root.path(),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await?,
         );
@@ -10418,7 +10418,7 @@ mod tests {
             NativeDemandSource::open(
                 source_root.path(),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await?,
         );
@@ -10514,7 +10514,7 @@ mod tests {
                 NativeDemandSource::open(
                     source_root.path(),
                     FilesystemProfile::Portable,
-                    VolumeLimits::default(),
+                    VolumeLimits::default(), None, None,
                 )
                 .await?,
             );
@@ -11346,7 +11346,7 @@ mod tests {
         Ok(crate::demand::native::NativeDemandSource::open(
             source,
             FilesystemProfile::Portable,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?)
     }
@@ -12494,7 +12494,7 @@ mod tests {
         Ok(crate::demand::native::NativeDemandSource::open(
             source,
             profile,
-            crate::model::VolumeLimits::default(),
+            crate::model::VolumeLimits::default(), None, None,
         )
         .await?)
     }

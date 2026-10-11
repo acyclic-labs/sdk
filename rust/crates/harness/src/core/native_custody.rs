@@ -2,7 +2,7 @@
 use super::*;
 use crate::store::history::HistoryIo;
 
-/// Physical field-copy producers keep temporary payloads inside their quota's lifetime and transfer only the allowance actually produced by that copy.
+/// Copies text into the supplied quota.
 pub(crate) fn copy_text(
     source: &str, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<String> {
@@ -212,9 +212,6 @@ macro_rules! physical_clone_factory {
     };
 }
 physical_clone_factory!(native_effect_clone_with_custody, EffectState, copy_effect);
-physical_clone_factory!(native_extension_record_clone_with_custody, ExtensionRecord, copy_extension_record);
-physical_clone_factory!(native_extension_configuration_clone_with_custody, ExtensionConfiguration, copy_configuration);
-physical_clone_factory!(native_event_reference_clone_with_custody, EventReference, copy_reference);
 physical_clone_factory!(native_value_clone_with_custody, Value, copy_value);
 pub(crate) fn copy_boxed<T>(
     source: &T, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
@@ -272,16 +269,6 @@ pub(super) fn copy_resolution(
 physical_clone_factory!(native_interaction_ticket_clone_with_custody, InteractionTicket, copy_ticket);
 physical_clone_factory!(native_interaction_resolution_clone_with_custody, InteractionResolution, copy_resolution);
 physical_clone_factory!(native_interaction_outcome_clone_with_custody, InteractionOutcome, copy_interaction_outcome);
-fn copy_interaction_state(
-    source: &(InteractionTicket, Option<InteractionResolution>),
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<(InteractionTicket, Option<InteractionResolution>)> {
-    let ticket = copy_ticket(&source.0, quota)?;
-    let resolution = source.1.as_ref().map(|resolution| copy_resolution(resolution, quota)).transpose()?;
-    Ok((ticket, resolution))
-}
-physical_clone_factory!(native_interaction_state_clone_with_custody,
-    (InteractionTicket, Option<InteractionResolution>), copy_interaction_state);
 pub(crate) fn copy_capabilities(
     source: &Capabilities, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<Capabilities> {
@@ -1301,4 +1288,3 @@ pub(super) fn admission_from_owned_value(
     quota.transfer();
     Ok((admission, added))
 }
-

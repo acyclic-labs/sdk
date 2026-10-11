@@ -1,5 +1,5 @@
 use super::{ContentResidencyVerifier, InteractionRouter, IssuedContextPurpose, Limits, RuntimeScope, TaskContext, ToolContext, ToolTaskContext};
-use crate::{Error, FileRef, NativeFutureBundle, Result, durable_host::TaskJournalOwner};
+use crate::{Error, NativeFutureBundle, Result, conversation::FileRef, durable_host::TaskJournalOwner};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use std::sync::Arc;
 
@@ -13,8 +13,6 @@ pub(super) struct NativeMetadataSource {
 pub(super) struct NativeToolAcceptance {
     task: crate::TaskId,
     operation: crate::OperationId,
-    producer_limits: Limits,
-    request_digest: [u8; 32],
 }
 
 fn boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
@@ -42,7 +40,7 @@ pub struct NativeTaskContext {
 }
 
 impl TaskContext {
-    /// Called only after the SDK context producer has completed every observed metadata allocation and retained the corresponding original guards.
+    /// Records custody after the SDK producer completes metadata allocation.
     pub(super) fn mark_native_metadata_source(
         &mut self,
         work: &NativeMaterializationWork,
@@ -356,47 +354,7 @@ impl NativeTaskContext {
 }
 
 impl ToolContext {
-    /// Canonical Stock/DurableToolRunner-only: called after actual protected ToolStarted acceptance (or an authenticated exact replay).
-    pub(crate) fn record_native_tool_acceptance(
-        &self, task: crate::TaskId, operation: crate::OperationId, call_id: &str,
-        producer_limits: Limits, request_digest: [u8; 32], work: &NativeMaterializationWork,
-    ) -> Result<()> {
-        self.verify_native_tool_acceptance_identity(task, operation, call_id, work)?;
-        let accepted = NativeToolAcceptance { task, operation, producer_limits, request_digest };
-        match self.accepted_native_tool.set(accepted) {
-            Ok(()) => Ok(()),
-            Err(replayed) if self.accepted_native_tool.get() == Some(&replayed) => Ok(()),
-            Err(_) => Err(boundary(crate::wire::ErrorCode::Unauthorized,
-                "tool context already accepted a different protected invocation")),
-        }
-    }
-
-    /// Original accepted FULL eight-dimensional limits, never execution rights.
-    pub(crate) fn native_tool_acceptance_limits(
-        &self, task: crate::TaskId, operation: crate::OperationId, call_id: &str,
-        work: &NativeMaterializationWork,
-    ) -> Result<Option<Limits>> {
-        self.verify_native_tool_acceptance_identity(task, operation, call_id, work)?;
-        Ok(self.accepted_native_tool.get().map(|accepted| accepted.producer_limits))
-    }
-
-    fn verify_native_tool_acceptance_identity(
-        &self, task: crate::TaskId, operation: crate::OperationId, call_id: &str,
-        work: &NativeMaterializationWork,
-    ) -> Result<()> {
-        let context = self.validate_native_bound_context(work)?;
-        if context.durable_task != Some(task) || self.operation_id != operation
-            || self.call_id != call_id
-        {
-            return Err(boundary(crate::wire::ErrorCode::Unauthorized,
-                "accepted tool invocation differs from its issued context"));
-        }
-        work.charge(WorkCounters { bytes_examined: call_id.len() as u64,
-            items_examined: 1, ..WorkCounters::default() })
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(())
-    }
-
+    /// Records protected ToolStarted acceptance.
     fn accepted_native_context(&self, work: &NativeMaterializationWork) -> Result<&TaskContext> {
         let context = self.validate_native_bound_context(work)?;
         if !context.native_metadata_source.as_ref()
@@ -494,7 +452,7 @@ impl ToolContext {
         Ok(view)
     }
 
-    /// Rechecks an accepted action's exact path and effective permission without exposing a namespace handle or creating a transferable authorization.
+    /// Checks the accepted action's path and effective permission.
     #[cfg(feature = "native-execution")]
     pub async fn authorize_working_file_with_native_work(
         &self, relative: &std::path::Path,
@@ -505,7 +463,7 @@ impl ToolContext {
         Ok(())
     }
 
-    /// Reads the exact held mount selection under this accepted invocation's effective READ scope; no broader namespace resource escapes the check.
+    /// Reads the held selection under this invocation's effective scope.
     #[cfg(feature = "native-execution")]
     pub async fn read_working_file_with_native_work(
         &self, relative: &std::path::Path, maximum: usize,
@@ -565,7 +523,7 @@ impl ToolContext {
         })
     }
 
-    /// Checks stock restrictions against this tool's current effective scope without cloning the original task or allocating a candidate scope.
+    /// Checks stock restrictions against the effective scope.
     pub(crate) fn validate_stock_scope_with_native_work(
         &self, requested: &RuntimeScope, limits: Limits,
         work: &NativeMaterializationWork,
@@ -578,14 +536,14 @@ impl ToolContext {
         validate_scope_attenuation(self.effective_scope(), requested, limits, work)
     }
 
-    /// Narrows only tool-local authority, preserving the same issued task and its original metadata, owner bindings and dispatch/read purpose.
+    /// Narrows tool authority while preserving its issued task.
     pub fn with_native_scope(
         self, requested: &RuntimeScope, work: &NativeMaterializationWork,
     ) -> Result<Self> {
         self.with_native_effective_scope(requested, requested.limits, work)
     }
 
-    /// Applies stock grants/run restrictions with its separately configured execution limits, matching the ordinary stock context's scoped engine.
+    /// Applies stock grants and run restrictions.
     pub fn with_native_stock_scope(
         self, requested: &RuntimeScope, execution_limits: Limits,
         work: &NativeMaterializationWork,
@@ -606,7 +564,7 @@ impl ToolContext {
         Ok(self)
     }
 
-    /// Retains an already SDK-issued native interaction router for this tool without cloning or changing its original task, scope or policy.
+    /// Retains the issued interaction router.
     pub(crate) fn with_native_interactions(
         mut self, router: Arc<dyn InteractionRouter>, work: &NativeMaterializationWork,
     ) -> Result<Self> {

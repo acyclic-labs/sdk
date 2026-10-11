@@ -2194,7 +2194,7 @@ mod tests {
         std::fs::write(physical.path().join("unselected/cold.txt"), b"unread sibling")?;
         let fs = Fs::memory();
         let demand = Arc::new(NativeDemandSource::open(
-            physical.path(), FilesystemProfile::Portable, VolumeLimits::default(),
+            physical.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None,
         ).await?);
         let lazy = LazyWorkspace::attach(
             &fs, "measured-customer-root", demand, MemoryLazyWorkspaceStore::default(),
@@ -2298,7 +2298,7 @@ mod tests {
         let destination = tempfile::tempdir()?;
         let fs = Fs::memory();
         let demand = Arc::new(NativeDemandSource::open(
-            physical.path(), FilesystemProfile::Portable, VolumeLimits::default(),
+            physical.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None,
         ).await?);
         let lazy = LazyWorkspace::attach(
             &fs, "measured-native-customer", demand, MemoryLazyWorkspaceStore::default(),
@@ -2868,7 +2868,7 @@ mod tests {
             NativeDemandSource::open(
                 source.path(),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await?,
         );

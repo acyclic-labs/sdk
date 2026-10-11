@@ -1,24 +1,17 @@
 import type { ClientCommand, Connection, ReplayCursor, Transport } from "./client.js";
 import { RequestScheduler, requestAborted } from "./client-requests.js";
 
-/** Provider-specific reservation, checked by the shared scheduler before work.
- * Include retained commands/cursors and provider buffers, not just wire bytes.
- * The underlying transport remains responsible for bounded inbound framing.
- */
+/** Reserve retained commands, cursors and buffers before work; the transport bounds inbound frames. */
 export interface TransportReservations {
   connect(cursors: ReadonlyMap<string, ReplayCursor>): number;
   send(command: ClientCommand): number;
 }
 
-/** Composes existing transport correlation/replay with finite request admission.
- * Never retries, deduplicates writes, buffers delivery history or claims an
- * aborted send was rejected. Share its scheduler with foreground hydration.
- */
+/** Share finite request admission with hydration; preserve transport correlation and replay. */
 export class ScheduledTransport<Event> implements Transport<Event> {
   constructor(readonly transport: Transport<Event>, readonly scheduler: RequestScheduler,
     readonly reservations: TransportReservations,
-    /** Late cancelled connects have no receiving owner; cleanup failures must
-     * still reach the host. Delivered connections report close failures directly. */
+    /** Report late cancelled connection cleanup failures to the host. */
     readonly onCleanupError: (error: unknown) => void = error => { queueMicrotask(() => { throw error; }); }) {}
 
   async connect(cursors: ReadonlyMap<string, ReplayCursor>, signal?: AbortSignal): Promise<Connection<Event>> {
