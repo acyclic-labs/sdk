@@ -923,8 +923,9 @@ async fn pi_operator_input_original_upload_is_root_only_even_for_actual_created_
         allocation_budget(), &CancellationToken::new()).await.unwrap();
     assert_eq!(retry.value, operator);
     let plan = fixture.plan().await;
-    let child = fixture.coordinator().advance(&fixture.context, &fixture.journal, fixture.fence.clone(), &plan,
-        fixture.source.clone(), allocation_budget(), CancellationToken::new()).await.unwrap().unwrap();
+    let coordinator = fixture.coordinator();
+    let child = fixture.advance_with(&coordinator, &fixture.context, &fixture.journal,
+        &fixture.fence, &plan, fixture.source.clone(), allocation_budget(), CancellationToken::new()).await.unwrap().unwrap();
     let attempt = fixture.runtime.runtime.run_operation(&Worker { id: "operator-child-read-denial".into(),
         available: Default::default(), labels: Default::default() }, child.binding.task_id,
         &fixture.runtime.runtime.commands(), 1).await.unwrap().unwrap();

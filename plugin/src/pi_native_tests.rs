@@ -521,18 +521,18 @@ fn actual_builtin_locator_normalizes_only_native_components_and_keeps_original_c
     let work = NativeMaterializationWork::new(super::super::native_root_source::budget(), &cancellation).unwrap();
     let (_, manifest) = binding_and_manifest();
     let mapping = &manifest.volumes[0];
-    let locator = builtin_relative(mapping, &manifest.options.root, Path::new("notes/file.txt"), &work).unwrap();
-    assert_eq!(locator.value, "scratch/notes/file.txt");
-    assert!(locator._custody.shares_ledger(&work.retain_owned(0).unwrap()));
+    let locator = crate::pi_builtin::mounted_relative_path(&manifest, mapping, Path::new("notes/file.txt"), &work).unwrap();
+    assert_eq!(locator.0, Path::new("scratch/notes/file.txt"));
+    assert!(locator.1.shares_ledger(&work.retain_owned(0).unwrap()));
     for invalid_path in ["", ".", "../outside", "notes/../outside", "notes/\0outside"] {
-        assert!(builtin_relative(mapping, &manifest.options.root, Path::new(invalid_path), &work).is_err());
+        assert!(crate::pi_builtin::mounted_relative_path(&manifest, mapping, Path::new(invalid_path), &work).is_err());
     }
-    assert!(builtin_relative(mapping, &manifest.options.root, &root_path().join("outside"), &work).is_err());
+    assert!(crate::pi_builtin::mounted_relative_path(&manifest, mapping, &root_path().join("outside"), &work).is_err());
     #[cfg(unix)]
-    assert!(builtin_relative(mapping, &manifest.options.root, Path::new("notes\\outside"), &work).is_err());
+    assert!(crate::pi_builtin::mounted_relative_path(&manifest, mapping, Path::new("notes\\outside"), &work).is_err());
     #[cfg(windows)]
-    assert_eq!(builtin_relative(mapping, &manifest.options.root, Path::new("notes\\file.txt"), &work).unwrap().value,
-        "scratch/notes/file.txt");
+    assert_eq!(crate::pi_builtin::mounted_relative_path(&manifest, mapping, Path::new("notes\\file.txt"), &work).unwrap().0,
+        Path::new("scratch/notes/file.txt"));
 }
 
 #[test]
@@ -541,15 +541,20 @@ fn actual_publication_metadata_is_admitted_before_mutation_and_preserves_origina
     let work = NativeMaterializationWork::new(super::super::native_root_source::budget(), &cancellation).unwrap();
     let (_, manifest) = binding_and_manifest();
     let original = work.retain_owned(0).unwrap();
-    let state = PiNativePublicationState::new(&manifest, &work).unwrap();
-    assert!(state.custody.shares_ledger(&original));
-    assert!(state.copies[0].as_ref().unwrap().custody.shares_ledger(&original));
-    let failure = state.failure(Error::Unauthorized("original owner denied before mutation".into()), Some(0));
+    let (destination, custody) = acyclic_harness::filesystem::copy_native_mapping_with_work(
+        &manifest.volumes[0], &work).unwrap();
+    assert!(custody.shares_ledger(&original));
+    let failure = acyclic_harness::filesystem::NativeViewPublicationError {
+        cause: Error::Unauthorized("original owner denied before mutation".into()),
+        accounting_failure: None, work: work.receipt(), destination: Some(destination),
+        completed: Vec::new(), published: Vec::new(), custody: Some(custody),
+        rendering_failure: None, diagnostic: None,
+    };
     assert!(failure.completed.is_empty());
     assert_eq!(failure.destination.as_ref(), manifest.volumes.first());
     assert!(matches!(&failure.cause, Error::Unauthorized(message) if message == "original owner denied before mutation"));
     assert!(failure.rendering_failure.is_none() && failure.diagnostic.is_none());
-    assert!(failure.custody.shares_ledger(&original));
+    assert!(failure.custody.as_ref().unwrap().shares_ledger(&original));
 }
 
 #[test]

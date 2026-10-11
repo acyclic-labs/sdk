@@ -636,6 +636,11 @@ Native TaskContext input, session and cleanup-result reads retain the SDK's
 intrinsic `OwnedBytes` directly through validation and decoding. Consumers
 borrow its slice; they never extract, rebuild or retire a separate byte guard.
 Decoded DTO metadata custody remains separate from payload ownership.
+Terminal-result verification checks the original receipt, bounded Created-Results
+content and unchanged outcome; it grants no cleanup authority. Published Project
+selection retains the SDK candidate custody through source authorization, then
+validates it against the protected publication and operation-bound READ. Missing
+publication remains indeterminate; HEAD and the input generation cannot replace it.
 Intent loading, original runtime binding and request construction use borrowed DTOs and the original bounded
 native codec before owned copies. A partial startup retains the actual native
 session, including its source watcher and destination guard, until bounded stop
@@ -657,10 +662,10 @@ and malformed protected metadata returns a static typed boundary error.
 Runner construction borrows the staged plan; the original SDK provider owns its
 funded plan graph, rather than a second unguarded runner copy.
 Publication permits come only from the original task's actual SDK reservation.
-Normal cleanup confirms the authenticated native process result and stops the
-actual project drivers, retaining SDK session scratch. Explicit scratch disposal
-requires the original opaque created-child Scratch proof, original native
-root/leaf/preparation identities and current-fenced WRITE on every deletion.
+Cleanup retains the SDK process-and-view drain receipt and session scratch.
+Scratch disposal requires that receipt for the same view, task, fence, command
+and original work, plus the retained creator packet, opaque Created-Scratch proof
+and fresh current-fenced WRITE before each deletion.
 Unknown pre-journal paths or replaced directories are preserved as uncertainty.
 Original preparation rollback is not post-execution session cleanup.
 Pinned process fixtures preserve the whole canonical reservation failure. Their
@@ -688,6 +693,9 @@ Required source-bound lanes (not executed by this change):
   inspection/diff, destination imports/root writeback, independent outside-model
   host inspection/consent with a wrong-digest engine denial, forged-source/
   destination/caller denials, and service reopen/model switch without repetition.
+  The actual service drains and exits successfully before restart; reopened
+  inspection and diff must still contain the published child edit, rejecting a
+  substituted initial project generation.
 - Rust `required_pinned_pi_native_*` tests require absolute
   `ACYCLIC_PI_TEST_NODE`, `ACYCLIC_PI_TEST_CLI` (the package's
   `dist/bundle/cli.js`) and `ACYCLIC_PI_TEST_PROVIDER_DIR` (an owned directory

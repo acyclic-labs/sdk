@@ -23,8 +23,8 @@ export function piEnvironment(directory: string): NodeJS.ProcessEnv {
 }
 
 /** Invoke the pinned native CLI with bounded output and isolated host settings. */
-export async function invokePi(args: string[], cwd: string, directory: string) {
-  const environment = piEnvironment(directory);
+export async function invokePi(args: string[], cwd: string, directory: string,
+  environment: NodeJS.ProcessEnv = piEnvironment(directory)) {
   const invocation = execute(process.execPath, [cli, ...args], {
     cwd, env: environment, windowsHide: true,
     timeout: 60_000, maxBuffer: 1024 * 1024, encoding: "utf8",

@@ -389,18 +389,20 @@ pub(crate) fn validate_state_bounds(state: &AdapterState) -> Result<(), String> 
         return Err("adapter route or lease exceeds the root bound".to_owned());
     }
     if state.pending.iter().any(|pending| {
-        let pending_key = pending.mount_name();
-        pending
-            .mount_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            != Some(pending_key.as_str())
-            || pending
-                .mount_path
-                .parent()
-                .and_then(Path::file_name)
-                .and_then(|name| name.to_str())
-                != Some("w")
+        let invalid_location = match &pending.task_binding {
+            PluginTaskBinding::HostManaged => {
+                let pending_key = pending.mount_name();
+                pending.mount_path.file_name().and_then(|name| name.to_str()) != Some(pending_key.as_str())
+                    || pending.mount_path.parent().and_then(Path::file_name).and_then(|name| name.to_str()) != Some("w")
+            }
+            PluginTaskBinding::Pi(binding) => {
+                let task_directory = blake3::hash(&binding.task_id.into_bytes()).to_hex();
+                pending.mount_path.file_name().and_then(|name| name.to_str()) != Some("view")
+                    || pending.mount_path.parent().and_then(Path::file_name).and_then(|name| name.to_str()) != Some(task_directory.as_str())
+                    || pending.mount_path.parent().and_then(Path::parent).and_then(Path::file_name).and_then(|name| name.to_str()) != Some("agents")
+            }
+        };
+        invalid_location
             || pending
                 .roots
                 .iter()

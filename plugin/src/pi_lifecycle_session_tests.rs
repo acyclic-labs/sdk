@@ -25,7 +25,7 @@ fn created_route(fixture: &Fixture, plan: &pi_fork::PiForkPlan,
 async fn created_native_catalog_requires_original_alias_operation_uuid_and_creator() {
     let fixture = Fixture::new().await;
     let plan = fixture.plan().await;
-    let prepared = fixture.coordinator().advance(&fixture.context, &fixture.journal,
+    let prepared = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal,
         fixture.fence.clone(), &plan, fixture.source.clone(),
         pi_root_provider::allocation_budget(), CancellationToken::new())
         .await.unwrap().unwrap();
@@ -57,7 +57,7 @@ async fn created_native_catalog_requires_original_alias_operation_uuid_and_creat
 async fn cold_source_observation_retains_original_cut_without_claiming_child_work() {
     let fixture = Fixture::new().await;
     let plan = fixture.plan().await;
-    let prepared = fixture.coordinator().advance(&fixture.context, &fixture.journal,
+    let prepared = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal,
         fixture.fence.clone(), &plan, fixture.source.clone(),
         pi_root_provider::allocation_budget(), CancellationToken::new())
         .await.unwrap().unwrap();
@@ -81,7 +81,7 @@ async fn cold_source_observation_retains_original_cut_without_claiming_child_wor
 async fn cold_created_child_dispatch_is_only_initial_and_unreserved() {
     let fixture = Fixture::new().await;
     let plan = fixture.plan().await;
-    let prepared = fixture.coordinator().advance(&fixture.context, &fixture.journal,
+    let prepared = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal,
         fixture.fence.clone(), &plan, fixture.source.clone(),
         pi_root_provider::allocation_budget(), CancellationToken::new())
         .await.unwrap().unwrap();

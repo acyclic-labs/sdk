@@ -1716,11 +1716,11 @@ async fn pi_real_preparation_pending_reserved_and_succeeded_never_report_future_
     }));
     drop(observed);
     assert_eq!(query.live_allocation_bytes(), 0);
-    let report = fixture.coordinator().prepare(&fixture.context, &fixture.journal,
-        fixture.fence.clone(), &plan, fixture.source.clone(),
+    let report = fixture.prepare_with(&fixture.coordinator(), &fixture.context, &fixture.journal,
+        &fixture.fence, &plan, fixture.source.clone(),
         crate::pi_root_provider::allocation_budget(), acyclic_fs::CancellationToken::new())
         .await.unwrap().unwrap();
-    report.validate().unwrap();
+    report.value.validate().unwrap();
     assert!(host.observe_admission(plan.request.child.task_id()).await.is_err());
     let reopen_work = acyclic_fs::NativeMaterializationWork::new(
         crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap();
@@ -1769,7 +1769,7 @@ async fn pi_real_preparation_changed_planned_binding_parent_and_foreign_key_fail
     }
     let mut stale = fixture.fence.clone();
     stale.reservation_id = "stale-original-parent-fence".into();
-    assert!(fixture.coordinator().prepare(&fixture.context, &fixture.journal, stale,
+    assert!(fixture.prepare_with(&fixture.coordinator(), &fixture.context, &fixture.journal, &stale,
         &plan, fixture.source.clone(), crate::pi_root_provider::allocation_budget(),
         acyclic_fs::CancellationToken::new()).await.is_err());
     assert!(fixture.runtime.runtime.task_host().observe_admission(

@@ -7,6 +7,42 @@ use super::*;
 use acyclic_harness::filesystem::TaskWorkerAttempt;
 use acyclic_harness::distributed::WorkPull;
 use acyclic_harness::{Error, Result as RootResult};
+use std::future::Future;
+
+pub(super) struct PiNativeJob<T> {
+    handle: tokio::task::JoinHandle<RootResult<T>>,
+    custody: Option<acyclic_fs::NativeAllocation>,
+}
+
+impl<T> Future for PiNativeJob<T> {
+    type Output = RootResult<T>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, context: &mut std::task::Context<'_>)
+        -> std::task::Poll<Self::Output>
+    {
+        let job = self.get_mut();
+        match Future::poll(std::pin::Pin::new(&mut job.handle), context) {
+            std::task::Poll::Pending => std::task::Poll::Pending,
+            std::task::Poll::Ready(Ok(result)) => std::task::Poll::Ready(result),
+            std::task::Poll::Ready(Err(source)) => std::task::Poll::Ready(
+                Err(Error::NativeSupervisor { source, custody: job.custody.take() })),
+        }
+    }
+}
+
+pub(super) fn spawn_native_job<T, F, B>(
+    work: &acyclic_fs::NativeMaterializationWork, build: B,
+) -> RootResult<PiNativeJob<T>>
+where
+    T: Send + 'static,
+    F: Future<Output = RootResult<T>> + Send + 'static,
+    B: FnOnce() -> F,
+{
+    let custody = work.retain_owned(std::mem::size_of::<(TaskId, PiNativeJob<T>)>() as u64)
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    let future = acyclic_harness::NativeFutureBundle::new(work, build)?;
+    Ok(PiNativeJob { handle: tokio::spawn(future), custody: Some(custody) })
+}
 
 impl PiSession {
     pub(super) fn native_host_with_native_work(
@@ -34,10 +70,7 @@ impl PiSession {
         &mut self, caller: TaskId, target: TaskId,
         query_work: &acyclic_fs::NativeMaterializationWork,
     ) -> RootResult<()> {
-        let cleanup = CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            pi_root_provider::allocation_budget(), &cleanup,
-        ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let work = query_work;
         // Authenticate the complete original graph and the actual caller before
         // publishing cancellation or changing its route catalog.
         let _graph_receipt = pi_recovery::observe_pi_session_with_native_work(
@@ -49,7 +82,8 @@ impl PiSession {
         if !caller_admission.0.grants.contains("operation:cancel") {
             return Err(Error::Invalid("Pi caller lacks its original cancellation grant".to_owned()));
         }
-        let tasks = self.native_subtree(target)?;
+        let subtree = self.native_subtree(target, query_work)?;
+        let tasks = &subtree.0;
         let host = self.native_host_with_native_work(query_work)?;
         let PluginTaskBinding::Pi(root) = &self.state.task_binding else {
             return Err(Error::Invalid("Pi cancellation lost its original root".to_owned()));
@@ -79,7 +113,7 @@ impl PiSession {
 
         // Order every independent provider stop before awaiting any process
         // future. Those futures may still be waiting on an RPC to this actor.
-        for task in &tasks {
+        for task in tasks {
             let _outcome_receipt = match self.runtime.runtime.task_host()
                 .outcome_with_native_work(*task, &work).await {
                 Ok(receipt) => Some(receipt),
@@ -100,8 +134,11 @@ impl PiSession {
                         WorkPull::Claimed(_) | WorkPull::Unresolved { .. } => {
                             let native = host.clone();
                             let task = *task;
-                            self.native_jobs.insert(task,
-                                tokio::spawn(async move { native.recover_child(task).await }));
+                            match spawn_native_job(query_work,
+                                || async move { native.recover_child(task).await }) {
+                                Ok(job) => { self.native_jobs.insert(task, job); }
+                                Err(error) => retain_first_failure(&mut failure, Err(error)),
+                            }
                         }
                         WorkPull::Idle => {}
                     },
@@ -109,7 +146,7 @@ impl PiSession {
                 }
             }
         }
-        for task in &tasks {
+        for task in tasks {
             if let Err(error) = host.signal_stop_child(*task, &work).await {
                 retain_first_failure(&mut failure, Err(error));
             }
@@ -152,7 +189,9 @@ impl PiSession {
 
         // Source selection is a separate graph from parentage. In particular,
         // a foreign selected child is never replaced by its parent or Root.
-        let mut remaining: Vec<TaskId> = plans.keys().copied().collect();
+        let _remaining_custody = pi_recovery::vector_slots::<TaskId>(plans.len(), query_work)?;
+        let mut remaining = Vec::with_capacity(plans.len());
+        remaining.extend(plans.keys().copied());
         let mut root_sources = BTreeMap::new();
         let mut child_sources = BTreeMap::new();
         while !remaining.is_empty() {
@@ -170,7 +209,7 @@ impl PiSession {
                         Arc::clone(source)
                     } else {
                         let root = self.roots.get(root_key).ok_or_else(|| Error::Invalid("Pi original selected Root was not restored before child recovery".to_owned()))?;
-                        let source = Arc::new(root.workspace.clone());
+                        let source = Arc::clone(&root.workspace);
                         root_sources.insert(root_key, source.clone());
                         source
                     }
@@ -207,16 +246,18 @@ impl PiSession {
                 WorkPull::Claimed(_) | WorkPull::Unresolved { .. } => {
                     let native = native.clone();
                     let task = *task;
-                    self.native_jobs.insert(task,
-                        tokio::spawn(async move { native.recover_child(task).await }));
+                    let job = spawn_native_job(query_work,
+                        || async move { native.recover_child(task).await })?;
+                    self.native_jobs.insert(task, job);
                 }
                 WorkPull::Idle if original_native_first_dispatch_pending(
                     &self.runtime, &self.stream, &protected, plan, query_work,
                 ).await? => {
                     let native = native.clone();
                     let task = *task;
-                    self.native_jobs.insert(task,
-                        tokio::spawn(async move { native.run_child(task).await }));
+                    let job = spawn_native_job(query_work,
+                        || async move { native.run_child(task).await })?;
+                    self.native_jobs.insert(task, job);
                 }
                 WorkPull::Idle => {}
             }
@@ -246,14 +287,21 @@ impl PiSession {
                 None
             }
         };
-        let mut tasks = std::collections::BTreeSet::new();
+        let task_capacity = self.native_jobs.len().checked_add(self.state.routes.len())
+            .ok_or_else(|| Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow),
+                custody: None,
+            })?;
+        let _task_custody = pi_recovery::vector_slots::<TaskId>(task_capacity, work)?;
+        let mut tasks = Vec::with_capacity(task_capacity);
         tasks.extend(self.native_jobs.keys().copied());
         for route in self.state.routes.values() {
             if let PluginTaskBinding::Pi(binding) = &route.task_binding {
-                tasks.insert(binding.task_id);
+                tasks.push(binding.task_id);
             }
         }
-        let tasks: Vec<TaskId> = tasks.into_iter().collect();
+        tasks.sort_unstable();
+        tasks.dedup();
         let native = if tasks.is_empty() { None } else {
             match self.native_host_with_native_work(&work) {
                 Ok(native) => Some(native),
@@ -319,19 +367,31 @@ impl PiSession {
         mode: NativeDrainMode, work: &acyclic_fs::NativeMaterializationWork,
         failure: &mut Option<Error>,
     ) {
+        let _drain_custody = match pi_recovery::vector_slots::<(TaskId, PiNativeJob<()>)>(
+            tasks.len(), work,
+        ) {
+            Ok(custody) => custody,
+            Err(error) => {
+                retain_first_failure(failure, Err(error));
+                return;
+            }
+        };
         let mut drains = Vec::with_capacity(tasks.len());
         for task in tasks {
             let native = native.clone();
-            let work = work.clone();
+            let retained_work = work.clone();
             let task = *task;
-            drains.push((task, tokio::spawn(async move {
+            match spawn_native_job(work, || async move {
                 native.drain_stopped_child(task, mode == NativeDrainMode::Deactivate,
-                    &work).await
-            })));
+                    &retained_work).await
+            }) {
+                Ok(drain) => drains.push((task, drain)),
+                Err(error) => retain_first_failure(failure, Err(error)),
+            }
         }
         for (task, drain) in drains {
             match drain.await {
-                Ok(Ok(_)) if mode != NativeDrainMode::Preserve => {
+                Ok(()) if mode != NativeDrainMode::Preserve => {
                     for route in self.state.routes.values_mut() {
                         if matches!(&route.task_binding, PluginTaskBinding::Pi(binding)
                             if binding.task_id == task)
@@ -340,16 +400,17 @@ impl PiSession {
                         }
                     }
                 }
-                Ok(Ok(_)) => {}
-                Ok(Err(error)) => retain_first_failure(failure, Err(error)),
-                Err(error) => retain_first_failure(failure,
-                    Err(Error::Storage(format!("Pi original native drainage {task} failed: {error}")))),
+                Ok(()) => {}
+                Err(error) => retain_first_failure(failure, Err(error)),
             }
         }
     }
 
-    fn native_subtree(&self, target: TaskId) -> RootResult<Vec<TaskId>> {
-        let mut tasks = Vec::new();
+    fn native_subtree(&self, target: TaskId, work: &acyclic_fs::NativeMaterializationWork)
+        -> RootResult<(Vec<TaskId>, acyclic_fs::NativeAllocation)>
+    {
+        let custody = pi_recovery::vector_slots::<TaskId>(self.state.routes.len(), work)?;
+        let mut tasks = Vec::with_capacity(self.state.routes.len());
         for route in self.state.routes.values() {
             let PluginTaskBinding::Pi(binding) = &route.task_binding else {
                 return Err(Error::Invalid("Pi native subtree contains another host's route".to_owned()));
@@ -358,14 +419,14 @@ impl PiSession {
                 tasks.push(binding.task_id);
             }
         }
-        Ok(tasks)
+        Ok((tasks, custody))
     }
 
     async fn join_native_jobs(&mut self, tasks: &[TaskId], failure: &mut Option<Error>) {
         for task in tasks {
             let Some(job) = self.native_jobs.remove(task) else { continue; };
             let result = match job.await {
-                Ok(Ok((attempt, allocation))) => {
+                Ok((attempt, allocation)) => {
                     let result = match attempt {
                         Some(TaskWorkerAttempt::Unresolved { error, .. }) => Err(error),
                         Some(attempt) => { drop(attempt); Ok(()) }
@@ -374,8 +435,7 @@ impl PiSession {
                     drop(allocation);
                     result
                 }
-                Ok(Err(error)) => Err(error),
-                Err(error) => Err(Error::Storage(format!("Pi original native worker {task} failed: {error}"))),
+                Err(error) => Err(error),
             };
             retain_first_failure(failure, result);
         }

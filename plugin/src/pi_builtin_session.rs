@@ -38,7 +38,7 @@ impl PiSession {
             pi_workflow::PiWorkflowHost::new(&self.relative_directory, self.runtime.clone(), self.filesystem.clone(),
                 self.stream.clone(), &self.resources, &self.state).with_builtin_controls(&host)
                 .with_work(work.clone()).control_command_with_native_work(command).await?
-        } else { host.child_io(&request).await? };
+        } else { self.native_child_builtin_command(owner, &native, &request, &work).await? };
         let binding = self.binding(caller)?;
         #[derive(Serialize)]
         struct Response<'a> {
@@ -58,6 +58,57 @@ impl PiSession {
         drop(value);
         drop(custody);
         Ok((response, Some(response_custody)))
+    }
+
+    async fn native_child_builtin_command(
+        &self, owner: &pi_owner::PiOwnerConfig,
+        native: &Arc<pi_native_host::PiNativeCommandHost>, request: &PiBuiltinRequest,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> RootResult<(Value, acyclic_fs::NativeAllocation)> {
+        use acyclic_harness::filesystem::{TaskCommandHost as _, TaskCommandProgress, TOOL_TASK_COMMAND_KIND};
+        let live = native.live_source(request.caller, work).await?
+            .ok_or_else(|| invalid("builtin caller has no current original native invocation"))?;
+        crate::pi_builtin::authorize_owner(live.context.context(), &live.owner, request.caller, work).await?;
+        if live.binding.task_id != request.caller {
+            return Err(invalid("builtin command substituted the original native task binding"));
+        }
+        // Clone only the genuine held owner's fence, paying its two actual
+        // String producers before construction. No reservation is reacquired.
+        let original_fence = live.owner.task_binding().1;
+        let reservation = work.display(&original_fence.reservation_id).map_err(native_error)?;
+        let _reservation_custody = reservation.1;
+        let placement = work.display(&original_fence.placement).map_err(native_error)?;
+        let _placement_custody = placement.1;
+        let fence = acyclic_harness::scheduler::LeaseFence {
+            reservation_id: reservation.0, placement: placement.0,
+        };
+        #[derive(Serialize)]
+        struct ToolCommand<'a> { name: &'a str, revision: &'a str, arguments: &'a PiBuiltinRequest }
+        // The stock ToolTaskCommand decoder consumes this exact closed record;
+        // borrowing arguments avoids an intermediate cloned JSON tree.
+        let payload = pi_root_provider::guarded_pi_value(&ToolCommand {
+            name: PI_BUILTIN_COMMAND_KIND, revision: crate::pi_builtin::PI_BUILTIN_TOOL_REVISION,
+            arguments: request,
+        }, MAXIMUM_BUILTIN_BYTES * 2, work)?;
+        let _payload_custody = payload.1;
+        let operation = request.operation(owner.policy().root_task);
+        let staged = pi_root_provider::stage_pi_input_with_native_work(
+            owner, &self.filesystem, operation, "command", &payload.0, work).await?;
+        let _reference_custody = staged.1;
+        let kind = work.display(TOOL_TASK_COMMAND_KIND).map_err(native_error)?;
+        let _kind_custody = kind.1;
+        let command = acyclic_harness::workflow::WorkflowCommand {
+            operation_id: operation, kind: kind.0, payload: staged.0,
+        };
+        let commands = self.runtime.runtime.commands();
+        // Stock dispatch owns immutable arguments, original ToolStarted and
+        // reconciliation. An existing started effect is never reseeded here.
+        match commands.execute_with_native_work(live.context.clone(), fence, command, payload.0, work)?.await? {
+            TaskCommandProgress::ReadyWithNativeCustody { value, custody } => Ok((value, custody)),
+            TaskCommandProgress::Ready(_) => Err(invalid("native builtin acknowledgement lost its original SDK custody")),
+            TaskCommandProgress::Pending | TaskCommandProgress::Indeterminate =>
+                Err(acyclic_harness::Error::Indeterminate(operation)),
+        }
     }
 }
 

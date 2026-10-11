@@ -224,7 +224,6 @@ fn strip_native_prefix<'a>(path: &'a Path, root: &Path) -> Option<&'a Path> {
     Some(selected.as_path())
 }
 
-
 pub(crate) fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
     Error::NativeWork { cause, custody: None }
 }
@@ -315,7 +314,7 @@ fn validate_declared_working_roles(
     Ok(())
 }
 
-fn mounted_relative_path(
+pub(crate) fn mounted_relative_path(
     manifest: &acyclic_harness::filesystem::NativeViewManifest,
     mapping: &acyclic_harness::filesystem::NativeVolumeMapping,
     leaf: &Path,
@@ -325,7 +324,11 @@ fn mounted_relative_path(
         .map_err(|_| denied("mounted volume is outside its original namespace root"))?;
     if prefix.as_os_str().is_empty()
         || prefix.components().any(|part| !matches!(part, Component::Normal(_)))
-        || leaf.components().any(|part| !matches!(part, Component::Normal(_))) {
+        || leaf.as_os_str().is_empty()
+        || prefix.components().chain(leaf.components()).any(|part| match part {
+            Component::Normal(value) => value.to_str().is_none_or(|value| value.contains(['\\', '\0'])),
+            _ => true,
+        }) {
         return Err(denied("mounted path is not a regular original namespace leaf"));
     }
     let capacity = prefix.as_os_str().len().checked_add(leaf.as_os_str().len())
@@ -340,6 +343,15 @@ fn mounted_relative_path(
     path.push(prefix);
     path.push(leaf);
     Ok((path, custody))
+}
+
+fn require_builtin_mapping_access(
+    mapping: &acyclic_harness::filesystem::NativeVolumeMapping, io: &PiBuiltinIo,
+) -> Result<()> {
+    if !matches!(io, PiBuiltinIo::Read { .. }) && !mapping.writable {
+        return Err(denied("builtin native volume is not an original writable destination"));
+    }
+    Ok(())
 }
 
 async fn accepted_builtin_io(
@@ -370,6 +382,7 @@ async fn accepted_builtin_io(
     let manifest = context.native_working_manifest_with_native_work(work)?;
     validate_declared_working_roles(&input.binding, manifest)?;
     let (mapping, leaf) = select_native_path(&request.path, &input.binding, manifest)?;
+    require_builtin_mapping_access(mapping, &request.io)?;
     let variants = match &request.io { PiBuiltinIo::Read { variants, .. } => variants.as_slice(), _ => &[] };
     let leaves = scoped_variants(variants, &mapping.path)?;
     let volume_role = if mapping.volume == input.binding.scratch.volume { "SCRATCH" } else { "PROJECT" };
@@ -476,6 +489,7 @@ impl acyclic_harness::tool::ToolExecutor for PiBuiltinToolExecutor {
         })
     }
 }
+
 type Owner = acyclic_harness::durable_host::TaskJournalOwner<acyclic_stream::LocalStream>;
 
 /// Borrows original providers and creator handles; it owns no second journal,
@@ -594,73 +608,6 @@ impl<'a> PiBuiltinHost<'a> {
         Ok(acyclic_harness::filesystem::TaskCommandProgress::ReadyWithNativeCustody { value, custody })
     }
 
-    pub(crate) async fn child_io(&self, request: &PiBuiltinRequest) -> Result<(serde_json::Value, NativeAllocation)> {
-        request.validate()?;
-        if request.caller == self.protected.policy().root_task {
-            return Err(denied("physical Root must use its original mediated source command"));
-        }
-        let live = self.native.live_source(request.caller, &self.work).await?
-            .ok_or_else(|| denied("builtin caller has no current original native view"))?;
-        authorize_owner(live.context.context(), &live.owner, request.caller, &self.work).await?;
-        if live.binding.task_id != request.caller {
-            return Err(denied("builtin native binding substituted its original task"));
-        }
-        let (mapping, relative) = select_native_path(&request.path, &live.binding, live.view.manifest())?;
-        authorize_volume(&live.owner, &mapping.volume, mapping.writable, &request.io, &self.work)?;
-        let variants = match &request.io { PiBuiltinIo::Read { variants, .. } => variants.as_slice(), _ => &[] };
-        let relatives = scoped_variants(variants, &mapping.path)?;
-        let operation = request.operation(self.protected.policy().root_task);
-        let volume_role = if mapping.volume == live.binding.scratch.volume { "SCRATCH" } else { "PROJECT" };
-        match &request.io {
-            PiBuiltinIo::Read { maximum_bytes, .. } | PiBuiltinIo::EditRead { maximum_bytes } => {
-                let mut last_absence = None;
-                for (path, candidate) in std::iter::once(relative).chain(relatives.into_iter().flatten())
-                    .zip(std::iter::once(&request.path).chain(variants.iter())) {
-                    match live.view.read_builtin_file(&live.owner, live.context.context(), operation, &mapping.volume,
-                        path, *maximum_bytes as usize, &self.work).await {
-                        Ok((bytes, custody)) => {
-                            let response = match authorize_owner(live.context.context(), &live.owner, request.caller, &self.work).await {
-                                Ok(()) => read_response(&bytes, candidate, volume_role, &self.work),
-                                Err(error) => Err(error),
-                            };
-                            drop(bytes);
-                            drop(custody);
-                            return response;
-                        }
-                        Err(error) if is_absent(&error) => { last_absence = Some(error); }
-                        Err(error) => return Err(error),
-                    }
-                }
-                Err(last_absence.expect("the requested candidate is always checked"))
-            }
-            PiBuiltinIo::Write { content } | PiBuiltinIo::EditWrite { content, .. } => {
-                let expected = match &request.io {
-                    PiBuiltinIo::EditWrite { expected_sha256, .. } => Some(expected_digest(expected_sha256)?),
-                    _ => None,
-                };
-                live.view.write_builtin_file(&live.owner, live.context.context(), operation, &mapping.volume,
-                    relative, content, matches!(request.io, PiBuiltinIo::Write { .. }), expected, &self.work).await?;
-                authorize_owner(live.context.context(), &live.owner, request.caller, &self.work).await?;
-                #[derive(Serialize)]
-                struct Response<'a> { written: bool, path: &'a str, volume_role: &'a str }
-                crate::pi_root_provider::guarded_pi_value(&Response { written: true, path: &request.path, volume_role },
-                    8192, &self.work)
-            }
-        }
-    }
-}
-
-fn authorize_volume(owner: &Owner, volume: &acyclic_harness::conversation::VolumeRef,
-    writable: bool, io: &PiBuiltinIo, work: &NativeMaterializationWork) -> Result<()> {
-    use acyclic_harness::conversation::VolumeOperation;
-    owner.require_volume_grant_with_native_work(volume, VolumeOperation::Read, work)?;
-    if !matches!(io, PiBuiltinIo::Read { .. }) {
-        if !writable {
-            return Err(denied("builtin native volume is not an original writable destination"));
-        }
-        owner.require_volume_grant_with_native_work(volume, VolumeOperation::Write, work)?;
-    }
-    Ok(())
 }
 
 fn select_native_path<'a, 'p>(path: &'p str, binding: &crate::PiTaskBinding,

@@ -30,10 +30,9 @@ impl PiSession {
         if event == "TaskWriteback" && caller != owner.policy().root_task {
             return Err(acyclic_harness::Error::Invalid("Pi writeback requires the original Root caller and operator consent".to_owned()));
         }
-        let source = self.alias_task(&string(arguments, source_field).map_err(acyclic_harness::Error::Invalid)?)
-            .map_err(acyclic_harness::Error::Invalid)?;
+        let source = self.alias_task(&string(arguments, source_field).map_err(acyclic_harness::Error::Invalid)?)?;
         let root = optional_selected_string(arguments, "root", 128)?;
-        let source_binding = self.binding(source).map_err(acyclic_harness::Error::Invalid)?;
+        let source_binding = self.binding(source)?;
         let root_key = match root.as_deref() {
             Some(key) if source_binding.project_volumes.contains_key(key) => key.to_owned(),
             Some(_) => return Err(acyclic_harness::Error::Invalid("selected root is not an original source project".to_owned())),
@@ -48,7 +47,7 @@ impl PiSession {
         };
         let destination = match arguments.get("destination") {
             None | Some(Value::Null) => None,
-            Some(Value::String(alias)) => Some(self.alias_task(alias).map_err(acyclic_harness::Error::Invalid)?),
+            Some(Value::String(alias)) => Some(self.alias_task(alias)?),
             Some(_) => return Err(acyclic_harness::Error::Invalid("selected destination must be an actual task alias".to_owned())),
         };
         let paths = match arguments.get("paths") {

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { SessionManager, parseSessionEntries } from "@earendil-works/pi-coding-agent";
+import { discoverAndLoadExtensions, SessionManager, parseSessionEntries } from "@earendil-works/pi-coding-agent";
 import type { PiInboxMessage } from "../../pi/index.ts";
 import { loadPiContextHelpers } from "./pi-fixture.ts";
 
@@ -17,6 +17,61 @@ const {
   visibleControlResult, observePiTaskUntilTerminal, persistedPiInboxCursor, consumePiInbox, approvePiWriteback,
 } = await loadPiContextHelpers();
 
+test("the native Pi loader resolves and registers the extension outside the host package", async () => {
+  const isolated = mkdtempSync(fileURLToPath(new URL(".pi-loader-", import.meta.url)));
+  try {
+    const loaded = await discoverAndLoadExtensions(
+      [fileURLToPath(new URL("../../pi/index.ts", import.meta.url))], isolated, isolated);
+    assert.deepEqual(loaded.errors, []);
+    assert.equal(loaded.extensions.length, 1);
+    assert.ok(loaded.extensions[0].commands.has("acyclic-doctor"));
+    assert.deepEqual([...loaded.extensions[0].tools.keys()].sort(), [
+      "acyclic_agents", "acyclic_cancel", "acyclic_context", "acyclic_diff", "acyclic_import",
+      "acyclic_inspect", "acyclic_model", "acyclic_send", "acyclic_spawn", "acyclic_steer",
+      "acyclic_wait", "acyclic_writeback",
+    ]);
+    assert.ok(loaded.extensions[0].handlers.has("session_start"));
+    for (const event of ["agent_start", "agent_end", "session_shutdown"]) {
+      assert.ok(loaded.extensions[0].handlers.has(event));
+    }
+    for (const registered of loaded.extensions[0].tools.values()) {
+      const schema = registered.definition.parameters;
+      assert.equal(schema.additionalProperties, false);
+      for (const field of ["caller", "callerproof", "caller_proof", "signer", "environment", "tasklease"]) {
+        assert.ok(!Object.hasOwn(schema.properties, field), `${registered.definition.name} must not expose ${field}`);
+      }
+    }
+    for (const name of ["acyclic_inspect", "acyclic_diff"]) {
+      const registered = loaded.extensions[0].tools.get(name);
+      assert.ok(registered);
+      const schema = registered.definition.parameters;
+      assert.equal(schema.properties.directory.type, "string");
+      assert.equal(schema.properties.directory.maxLength, 4096);
+      assert.ok(!schema.required.includes("directory"));
+      assert.equal(schema.properties.cursor.type, "string");
+      assert.equal(schema.properties.maximum_entries.maximum, 256);
+    }
+    const spawn = loaded.extensions[0].tools.get("acyclic_spawn");
+    assert.ok(spawn);
+    assert.equal(spawn.definition.parameters.properties.context.default, "scratch");
+    assert.ok(!spawn.definition.parameters.required.includes("context"));
+    for (const name of ["acyclic_spawn", "acyclic_inspect", "acyclic_diff", "acyclic_import", "acyclic_writeback"]) {
+      const registered = loaded.extensions[0].tools.get(name);
+      assert.ok(registered);
+      const schema = registered.definition.parameters;
+      assert.equal(schema.properties.root.type, "string");
+      assert.equal(schema.properties.root.minLength, 1);
+      assert.equal(schema.properties.root.maxLength, 128);
+      assert.ok(!schema.required.includes("root"));
+      assert.ok(!Object.hasOwn(schema.properties.root, "default"), "root must not infer a CWD/path alias");
+    }
+    const writeback = loaded.extensions[0].tools.get("acyclic_writeback");
+    assert.ok(writeback);
+    assert.ok(!Object.hasOwn(writeback.definition.parameters.properties, "approval_digest"), "model must not supply human approval");
+  } finally {
+    rmSync(isolated, { recursive: true });
+  }
+});
 
 function spawnMessage(id: string) {
   return {
