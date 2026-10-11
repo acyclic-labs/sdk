@@ -1496,6 +1496,32 @@ pub enum Error {
     },
 }
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn native_work_error_code(cause: &acyclic_fs::NativeTreeMaterializationError) -> ErrorCode {
+    use acyclic_fs::NativeTreeMaterializationError as Native;
+    match cause {
+        Native::InvalidLayout
+        | Native::InvalidPreimage
+        | Native::InvalidPath(_)
+        | Native::OverlappingPaths
+        | Native::PayloadTooLarge { .. } => ErrorCode::Invalid,
+        Native::MissingTarget(_) | Native::MissingPreimage(_) => ErrorCode::NotFound,
+        Native::ExternalMutation(_)
+        | Native::UnexpectedBackup(_)
+        | Native::AllocationChanged { .. }
+        | Native::PreimageConflict => ErrorCode::Conflict,
+        Native::UnsupportedRename | Native::UnverifiedSourceMetadata(_) => ErrorCode::Unsupported,
+        // A native failure alone does not authenticate an uncertain Harness admission.
+        // Only Indeterminate(original_operation) makes that claim.
+        Native::Io(_)
+        | Native::Cancelled
+        | Native::Work(_)
+        | Native::Allocation(_)
+        | Native::AllocationFailed(_)
+        | Native::IndeterminatePreparation => ErrorCode::Storage,
+    }
+}
+
 impl Error {
     /// Stable wire classification from which every adapter derives its status.
     #[must_use]
@@ -1539,33 +1565,7 @@ impl Error {
             | Self::NativeWorkspacePublication { .. }
             | Self::NativeTimeout { .. } => ErrorCode::Storage,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::NativeWork { cause, .. } => {
-                use acyclic_fs::NativeTreeMaterializationError as Native;
-                match cause {
-                    Native::InvalidLayout
-                    | Native::InvalidPreimage
-                    | Native::InvalidPath(_)
-                    | Native::OverlappingPaths
-                    | Native::PayloadTooLarge { .. } => ErrorCode::Invalid,
-                    Native::MissingTarget(_) | Native::MissingPreimage(_) => ErrorCode::NotFound,
-                    Native::ExternalMutation(_)
-                    | Native::UnexpectedBackup(_)
-                    | Native::AllocationChanged { .. }
-                    | Native::PreimageConflict => ErrorCode::Conflict,
-                    Native::UnsupportedRename | Native::UnverifiedSourceMetadata(_) => {
-                        ErrorCode::Unsupported
-                    }
-                    // A native failure alone does not authenticate an uncertain
-                    // Harness admission. Only Indeterminate(original_operation)
-                    // makes that claim.
-                    Native::Io(_)
-                    | Native::Cancelled
-                    | Native::Work(_)
-                    | Native::Allocation(_)
-                    | Native::AllocationFailed(_)
-                    | Native::IndeterminatePreparation => ErrorCode::Storage,
-                }
-            }
+            Self::NativeWork { cause, .. } => native_work_error_code(cause),
         }
     }
 
