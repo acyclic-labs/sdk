@@ -149,7 +149,7 @@ impl<'a> TrustedDecodeReservation<'a> {
 
 /// Audited closed Harness DTOs only, including their Value/string/vector containers.
 pub(crate) trait PreparationRecord: serde::de::DeserializeOwned + Serialize {
-    fn maximum_slot_bytes() -> u64;
+    fn maximum_slot_bytes() -> u64 { preparation_slot_bytes::<Self>() }
     /// Audited static fields, discriminators, expected types, and custom error labels reachable by this closed visitor; include list punctuation.
     fn diagnostic_label_bytes() -> u64 { crate::contract::preparation_serde_diagnostic_label_bytes() }
     /// Payload/scratch allowance before the audited visitor, including custom DTO reconstruction/cache temporaries and the closed codec diagnostic base exactly once.
@@ -238,11 +238,7 @@ pub(crate) fn preparation_slot_bytes<T>() -> u64 {
 macro_rules! audited_preparation_records {
     ($($record:ty => $schema:ident),+ $(,)?) => {$(
         impl PreparationRecord for $record {
-            fn maximum_slot_bytes() -> u64 { preparation_slot_bytes::<Self>() }
-            fn diagnostic_label_bytes() -> u64 {
-                crate::contract::preparation_serde_diagnostic_label_bytes()
-            }
-            fn json_value_schema() -> crate::contract::JsonValueSchema {
+                fn json_value_schema() -> crate::contract::JsonValueSchema {
                 crate::contract::JsonValueSchema::$schema
             }
         }
@@ -277,9 +273,6 @@ impl PreparationRecord for crate::Outcome<serde_json::Value> {
             std::mem::size_of::<String>(),
             std::mem::size_of::<crate::OperationId>(),
         ].into_iter().max().unwrap_or(0) as u64
-    }
-    fn diagnostic_label_bytes() -> u64 {
-        crate::contract::preparation_serde_diagnostic_label_bytes()
     }
     fn json_value_schema() -> crate::contract::JsonValueSchema {
         crate::contract::JsonValueSchema::TaskOutcome
@@ -779,30 +772,6 @@ impl PreparationIo {
         }
     }
 
-    pub(crate) fn encode_for_clone<T: Serialize>(&self, value: &T, maximum_bytes: u64) -> Result<acyclic_stream::OwnedBytes> {
-        let bounds = self.encoding_bounds(maximum_bytes)?;
-        let mut transferred = DecodeReservation { io: self, bytes: 0 };
-        let encoded = self.encode_at_bounds(value, bounds, true, &mut |next| {
-            match next {
-                crate::contract::JsonCodecCharge::Release { .. } => Ok(()),
-                crate::contract::JsonCodecCharge::Retain { bytes } => {
-                    self.codec_charge(next, true)?;
-                    transferred.bytes = transferred.bytes.checked_add(bytes)
-                        .ok_or_else(|| self.invalid("clone admission overflow"))?;
-                    Ok(())
-                }
-                next => self.codec_charge(next, true),
-            }
-        })?;
-        if self.uses_native_work() {
-            transferred.bytes = transferred.bytes.checked_sub(encoded.capacity() as u64)
-                .ok_or_else(|| self.invalid("clone byte ownership exceeds admitted quota"))?;
-        }
-        let encoded = source_bytes_from_vec(encoded, Some(self))?;
-        transferred.bytes = 0;
-        Ok(encoded)
-    }
-
     pub(crate) fn capability<T: Serialize>(&self, value: &T, prefix: &str) -> Result<String> {
         let _encoded_hold;
         let encoded = self.encode_json(value, self.remaining()?.bytes_encoded, true)?;
@@ -1147,18 +1116,12 @@ pub(crate) trait UploadRecord: serde::de::DeserializeOwned {
 }
 
 impl UploadRecord for FileRef {
-    fn diagnostic_label_bytes() -> u64 {
-        crate::contract::preparation_serde_diagnostic_label_bytes()
-    }
     fn logical_owned_bytes(&self) -> Result<u64> {
         FileRef::logical_owned_bytes(self)
     }
 }
 
 impl UploadRecord for (FileRef, Option<crate::resources::GenerationRef>) {
-    fn diagnostic_label_bytes() -> u64 {
-        crate::contract::preparation_serde_diagnostic_label_bytes()
-    }
     fn logical_owned_bytes(&self) -> Result<u64> {
         let mut bytes = self.0.logical_owned_bytes()?;
         if let Some(generation) = &self.1 {
@@ -1478,7 +1441,7 @@ pub(in crate::filesystem) async fn create_guarded<A: AsyncAuthorityStore, O: Asy
     host: &FilesystemHost<A, O>, name: &str, key: &IdempotencyKey, io: Option<&PreparationIo>,
     preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
     #[cfg(not(target_arch = "wasm32"))]
-    native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::NativeResourcePreparationCreationGuard>>,
+    native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::TaskResourcePreparation>>,
 ) -> Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = io.and_then(PreparationIo::original_native_work) {
@@ -1555,7 +1518,7 @@ pub(in crate::filesystem) async fn apply_guarded<A: AsyncAuthorityStore, O: Asyn
     key: &IdempotencyKey, io: Option<&PreparationIo>,
     preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
     #[cfg(not(target_arch = "wasm32"))]
-    native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::NativeResourcePreparationCreationGuard>>,
+    native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::TaskResourcePreparation>>,
 ) -> Result<crate::resources::GenerationRef> {
     let generation = apply_generation_task_guarded(
         host, reference, expected, mutations, key, io, preparation,
@@ -1571,7 +1534,7 @@ pub(in crate::filesystem) async fn apply_generation_task_guarded<A: AsyncAuthori
     key: &IdempotencyKey, io: Option<&PreparationIo>,
     preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
     #[cfg(not(target_arch = "wasm32"))]
-    native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::NativeResourcePreparationCreationGuard>>,
+    native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::TaskResourcePreparation>>,
 ) -> Result<acyclic_fs::Generation<A, O>> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
@@ -1901,7 +1864,7 @@ pub(in crate::filesystem) async fn retain_generation<A: AsyncAuthorityStore, O: 
         original.spent(encoding)?;
         return generation.pin_with_native_work(identity, original, &io.cancellation)
             .await.map(|_| ()).map_err(|(source, custody)| LazyWorkspaceError::NativeWorkspaceCause(
-                acyclic_fs::NativeLazyWorkspaceCause { source, custody }));
+                acyclic_fs::lazy_workspace::NativeLazyWorkspaceCause { source, custody }));
     }
     io.spent_workspace(encoding).map_err(LazyWorkspaceError::WorkspaceCause)?;
     let result = generation.pin_measured(
@@ -1930,129 +1893,73 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
     host: &FilesystemHost<A, O>, source: &VolumeRef, grant: &ContentGrant,
     source_generation: &crate::resources::GenerationRef, child: &VolumeRef,
     paths: Option<Vec<String>>, key: &IdempotencyKey, io: Option<&PreparationIo>,
-) -> Result<super::super::WorkspaceObservation> {
-    fork_inner(host, source, grant, source_generation, child, paths, key, io,
-        #[cfg(not(target_arch = "wasm32"))]
-        None,
-    ).await
-}
-
-pub(in crate::filesystem) async fn fork_guarded<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    host: &FilesystemHost<A, O>, source: &VolumeRef, grant: &ContentGrant,
-    source_generation: &crate::resources::GenerationRef, child: &VolumeRef,
-    paths: Option<Vec<String>>, key: &IdempotencyKey, io: Option<&PreparationIo>,
     preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
     #[cfg(not(target_arch = "wasm32"))]
-    native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::NativeResourcePreparationCreationGuard>>,
+    native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::TaskResourcePreparation>>,
 ) -> Result<super::super::WorkspaceObservation> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = io.and_then(PreparationIo::original_native_work) {
-        native_creation_guard.ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "task-bound native fork requires its original issued creation guard"))?.verify_creation_with_native_work(original)?.await?;
+        native_creation_guard.ok_or(native_error(crate::wire::ErrorCode::Unauthorized,
+            "task-bound native fork requires its original issued creation guard"))?
+            .verify_creation_with_native_work(original)?.await?;
     } else if let Some(preparation) = preparation { preparation.verify_creation().await?; }
     #[cfg(target_arch = "wasm32")]
     if let Some(preparation) = preparation { preparation.verify_creation().await?; }
-    let observed = fork_inner(host, source, grant, source_generation, child, paths, key, io,
-        #[cfg(not(target_arch = "wasm32"))]
-        native_creation_guard,
-    ).await?;
-    if let Some(preparation) = preparation {
-        #[cfg(not(target_arch = "wasm32"))]
-        if io.and_then(PreparationIo::original_native_work).is_none() {
-            preparation.verify_creation().await?;
+    grant.require_with_io(source, VolumeOperation::Read, io)?;
+    let observed = if let Some(io) = io {
+        let mut history = io.history_io();
+        source.validate_with_work(&mut Some(&mut history))?;
+        child.validate_with_work(&mut Some(&mut history))?;
+        if source.provider() != &host.provider || child.provider() != &host.provider || source == child {
+            return Err(invalid(Some(io), "volume fork has a foreign or identical destination"));
         }
-        #[cfg(target_arch = "wasm32")]
-        preparation.verify_creation().await?;
-    }
-    Ok(observed)
-}
-
-async fn fork_inner<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    host: &FilesystemHost<A, O>, source: &VolumeRef, grant: &ContentGrant,
-    source_generation: &crate::resources::GenerationRef, child: &VolumeRef,
-    paths: Option<Vec<String>>, key: &IdempotencyKey, io: Option<&PreparationIo>,
-    #[cfg(not(target_arch = "wasm32"))]
-    native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::NativeResourcePreparationCreationGuard>>,
-) -> Result<super::super::WorkspaceObservation> {
-    let Some(io) = io else {
-        grant.require(source, VolumeOperation::Read)?;
-        return host.fork_volume_pinned(source, source_generation, child, paths, key).await;
-    };
-    grant.require_with_io(source, VolumeOperation::Read, Some(io))?;
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(original) = io.original_native_work() {
-        source.validate_with_native_work(original)?;
-        child.validate_with_native_work(original)?;
-        if source.provider() != &host.provider || child.provider() != &host.provider
-            || source == child
-        {
-            return Err(native_error(crate::wire::ErrorCode::Invalid, "volume fork has a foreign or identical destination"));
-        }
-        let source_reference = content_workspace(&host.provider, source, Some(io))?;
-        let workspace = open(host, &source_reference, io).await?;
+        let source_ref = content_workspace(&host.provider, source, Some(io))?;
+        let workspace = open(host, &source_ref, io).await?;
         let pinned = generation(host, &workspace, source_generation, io).await?;
         retain(host, &pinned, io).await?;
         let child_name = volume_storage_name(child, Some(io))?;
-        let hashing = WorkCounters {
-            bytes_hashed: key.0.len() as u64, ..WorkCounters::UNCHARGED
-        };
-        original.admit(hashing)
-            .map_err(Error::from)?;
-        let creation = super::super::filesystem_key(key);
-        original.spent(hashing)
-            .map_err(Error::from)?;
-        let options = acyclic_fs::ForkOptions::from_generation(pinned, creation);
-        let options = match paths {
-            Some(paths) => options.inherit_paths(paths),
-            None => options,
-        };
-        let forked = if let Some(guard) = native_creation_guard {
-            let guard = std::sync::Arc::clone(guard);
+        let hashing = WorkCounters { bytes_hashed: key.as_str().len() as u64, ..Default::default() };
+        io.preflight(hashing)?;
+        let operation = super::super::filesystem_key(key);
+        io.charge(hashing)?;
+        let options = acyclic_fs::ForkOptions::from_generation(pinned, operation);
+        let options = match paths { Some(paths) => options.inherit_paths(paths), None => options };
+        #[cfg(not(target_arch = "wasm32"))]
+        let forked = if let Some(original) = io.original_native_work() {
+            let guard = Arc::clone(native_creation_guard.expect("native creation guard was verified"));
             let mut before = move |work: &acyclic_fs::NativeMaterializationWork| {
                 let verified = guard.verify_creation_with_native_work(work);
                 async move { verified?.await }
             };
-            workspace.fork_with_permit_guarded_with_native_work(
-                &child_name, options, acyclic_fs::PublicationPermit::Unrestricted,
-                original, &io.cancellation, &mut before,
-            ).await?
+            workspace.fork_with_permit_guarded_with_native_work(&child_name, options,
+                acyclic_fs::PublicationPermit::Unrestricted, original, &io.cancellation, &mut before).await?
         } else {
-            workspace.fork_with_native_work(
-                &child_name, options, original, &io.cancellation,
-            ).await.map_err(native_workspace_error)?
+            io.receive(workspace.fork_measured(&child_name, options, io.remaining()?, &io.cancellation).await)?
         };
-        let initial = forked.operation_generation_with_native_work(
-            creation, original, &io.cancellation,
-        ).await.map_err(native_workspace_error)?
-            .ok_or(native_error(crate::wire::ErrorCode::Storage, "fork creation has no durable original generation"))?;
+        #[cfg(target_arch = "wasm32")]
+        let forked = io.receive(workspace.fork_measured(&child_name, options, io.remaining()?, &io.cancellation).await)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let initial = if let Some(original) = io.original_native_work() {
+            forked.operation_generation_with_native_work(operation, original, &io.cancellation)
+                .await.map_err(native_workspace_error)?
+        } else {
+            io.receive(forked.operation_generation_measured(operation, io.remaining()?, &io.cancellation).await)?
+        };
+        #[cfg(target_arch = "wasm32")]
+        let initial = io.receive(forked.operation_generation_measured(operation, io.remaining()?, &io.cancellation).await)?;
+        let initial = initial.ok_or_else(|| failure(Some(io), crate::wire::ErrorCode::Storage,
+            "fork creation has no durable original generation"))?;
         retain(host, &initial, io).await?;
-        let provider = host.provider.clone_with_io(io)?;
-        let reference = WorkspaceRef::new(provider, child_name.into_bytes(), None)?;
-        return Ok(super::super::WorkspaceObservation {
-            workspace: reference,
+        super::super::WorkspaceObservation {
+            workspace: WorkspaceRef::new(host.provider.clone_with_io(io)?, child_name.into_bytes(), None)?,
             generation: generation_ref(host, &initial, Some(io))?,
-        });
-    }
-    source.validate()?;
-    child.validate()?;
-    host.validate_provider(source.provider())?;
-    host.validate_provider(child.provider())?;
-    if source == child { return Err(Error::Invalid("volume fork requires a distinct destination".into())); }
-    let source_ref = workspace_ref(host.provider.clone(), &source.storage_name()?)?;
-    let workspace = open(host, &source_ref, io).await?;
-    let source = generation(host, &workspace, source_generation, io).await?;
-    retain(host, &source, io).await?;
-    let child_name = child.storage_name()?;
-    let key = super::super::filesystem_key(key);
-    let options = acyclic_fs::ForkOptions::from_generation(source, key);
-    let options = match paths { Some(paths) => options.inherit_paths(paths), None => options };
-    let forked = io.receive(workspace.fork_measured(&child_name, options, io.remaining()?, &io.cancellation).await)?;
-    let initial = io.receive(forked.operation_generation_measured(key, io.remaining()?, &io.cancellation).await)?
-        .ok_or_else(|| Error::Storage("fork creation has no durable generation".into()))?;
-    retain(host, &initial, io).await?;
-    Ok(super::super::WorkspaceObservation {
-        workspace: workspace_ref(host.provider.clone(), &child_name)?,
-        generation: host.generation_ref(&initial)?,
-    })
+        }
+    } else {
+        host.fork_volume_pinned(source, source_generation, child, paths, key).await?
+    };
+    if !io.is_some_and(PreparationIo::uses_native_work)
+        && let Some(preparation) = preparation { preparation.verify_creation().await?; }
+    Ok(observed)
 }
 
 #[cfg(test)]
@@ -2140,17 +2047,23 @@ mod tests {
         let selected_read = ContentGrant::verify(&issuer.verifier(), &scope, &source, VolumeOperation::Read)?;
         let caller_read = ContentGrant::verify(&issuer.verifier(), &scope, &caller, VolumeOperation::Read)?;
         assert!(matches!(fork(&host, &source, &caller_read, &selected_generation, &denied_child,
-            None, &IdempotencyKey::new("denied-source-read")?, None).await, Err(Error::Unauthorized(_))));
+            None, &IdempotencyKey::new("denied-source-read")?, None, None,
+            #[cfg(not(target_arch = "wasm32"))]
+            None).await, Err(Error::Unauthorized(_))));
         let denied_ref = workspace_ref(provider.clone(), &denied_child.storage_name()?)?;
         assert!(host.resolve(&denied_ref).await.is_err());
         assert!(fork(&host, &source, &selected_read, &wrong_generation, &denied_child,
-            None, &IdempotencyKey::new("wrong-generation")?, None).await.is_err());
+            None, &IdempotencyKey::new("wrong-generation")?, None, None,
+            #[cfg(not(target_arch = "wasm32"))]
+            None).await.is_err());
         assert!(host.resolve(&denied_ref).await.is_err());
         let later_generation = host.apply(&initial.workspace, Some(&selected_generation),
             &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"later".to_vec() }],
             &IdempotencyKey::new("later-generation")?).await?;
         let forked = fork(&host, &source, &selected_read, &selected_generation, &child,
-            None, &IdempotencyKey::new("pinned-selected-fork")?, None).await?;
+            None, &IdempotencyKey::new("pinned-selected-fork")?, None, None,
+            #[cfg(not(target_arch = "wasm32"))]
+            None).await?;
         assert_eq!(host.read(&forked.workspace, Some(&forked.generation), "/value.txt", 32).await?,
             bytes::Bytes::from_static(b"selected"));
         host.apply(&forked.workspace, Some(&forked.generation),

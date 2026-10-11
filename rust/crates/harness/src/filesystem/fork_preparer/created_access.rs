@@ -2,10 +2,9 @@
 
 use super::*;
 use crate::{
-    Capabilities,
+    Capabilities, TaskId,
     conversation::ContentFuture,
-    core::Limits,
-    conversation::{Attachment, ContentPublisher, FileRef, PrivateDirectoryPage},
+    conversation::{Attachment, ContentPublisher, FileRef, Limits, PrivateDirectoryPage, VolumeClass, VolumeOwner},
     core::AuthorityIssuer,
     resource_preparation::{CreatedContentBinding, CreatedReferenceBinding, CreatedResourceOperation,
         CreatedResourceReceipt, ResourceCreationProofRef, ResourceCreationProvider, ResourcePreparationRequest},
@@ -697,8 +696,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
                 io.remaining()?, &io.cancellation).await)?;
             for entry in page.entries {
                 let kind = match entry.kind {
-                    acyclic_fs::SourceNodeKind::RegularFile => crate::conversation::PrivateDirectoryEntryKind::File,
-                    acyclic_fs::SourceNodeKind::Directory => crate::conversation::PrivateDirectoryEntryKind::Directory,
+                    acyclic_fs::demand::SourceNodeKind::RegularFile => crate::conversation::PrivateDirectoryEntryKind::File,
+                    acyclic_fs::demand::SourceNodeKind::Directory => crate::conversation::PrivateDirectoryEntryKind::Directory,
                     _ => continue,
                 };
                 let name = entry.name.unicode_text().ok_or_else(|| io.invalid("Root directory name is not representable losslessly"))?;
@@ -751,18 +750,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
     fn supports_native_read(&self, volume: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
         if volume != &self.allocation.request.volume { return Ok(false); }
         self.reader.supports_native_read(volume, work)
-    }
-    fn observe_received_copy_with_native_work<'a>(
-        &'a self, volume: &'a VolumeRef,
-        proof: &'a crate::runtime::ReceivedCopyReadWitness<'_>,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<FileRef>, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            self.authenticate(volume, &io).await?;
-            drop(io);
-            self.reader.observe_received_copy_with_native_work(volume, proof, work)?.await
-        })
     }
     fn read_with_native_work<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork)
@@ -1500,7 +1487,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             host: self.host.clone(), owner: self.issuer.audience().clone(),
             request: request.clone(), proof: proof.clone(), origin: allocation.origin.clone(),
             generation: allocation.generation.clone(), prepared_generation: allocation.prepared_generation,
-            volume: allocation.volume.clone(), reader, writer,
+            volume: allocation.volume.clone(), agent: allocation.agent,
+            creation_operation: allocation.creation_operation, reader, writer,
         });
         let count = allocation.reference_files.len();
         let operation_count = count.checked_add(2)
@@ -1569,7 +1557,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
     fn created_scope<const N: usize>(
         &self, agent: crate::AgentId, prefix: &str, proof: &ResourceCreationProofRef,
         suffix: String, capabilities: [String; N], io: &PreparationIo,
-    ) -> Result<crate::Scope> {
+    ) -> Result<Scope> {
         use std::fmt::Write as _;
         let length = prefix.len().checked_add(36 + 1).and_then(|length| length.checked_add(suffix.len()))
             .ok_or_else(|| Error::Invalid("creator scope identity overflow".into()))?;

@@ -129,6 +129,10 @@ struct SeedBinding {
     digest: [u8; 32],
 }
 
+impl bounded_io::UploadRecord for SeedBinding {
+    fn logical_owned_bytes(&self) -> Result<u64> { Ok(0) }
+}
+
 impl bounded_io::UploadRecord for AllocationClaim {
     fn logical_owned_bytes(&self) -> Result<u64> {
         let provider = self.volume.provider();
@@ -177,13 +181,10 @@ macro_rules! preparation_journal_records {
     ($($record:ty),+ $(,)?) => {$(
         impl bounded_io::PreparationRecord for $record {
             fn maximum_slot_bytes() -> u64 { bounded_io::preparation_slot_bytes::<Self>() }
-            fn diagnostic_label_bytes() -> u64 {
-                crate::contract::preparation_serde_diagnostic_label_bytes()
-            }
         }
     )+};
 }
-preparation_journal_records!(AllocationClaim, SeedBinding, CaptureAttempt, CaptureResult, ForkRequest, ForkReport);
+preparation_journal_records!(AllocationClaim, SeedBinding, CaptureAttempt, CaptureResult);
 
 /// Idempotent local capture of an exact Stream-backed parent snapshot and its Filesystem project/private resources.
 pub struct FilesystemForkPreparer<A, O> {
@@ -249,7 +250,7 @@ struct PreparationAttempt<'a, A, O> {
     io: Option<PreparationIo>,
     task_preparation: Option<&'a TaskResourcePreparation>,
     #[cfg(not(target_arch = "wasm32"))]
-    native_creation_guard: Option<Arc<crate::resource_preparation::NativeResourcePreparationCreationGuard>>,
+    native_creation_guard: Option<Arc<crate::resource_preparation::TaskResourcePreparation>>,
 }
 
 impl<A, O> std::ops::Deref for PreparationAttempt<'_, A, O> {
@@ -849,7 +850,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         self.require_native_projection_work(work)?;
         let mut attempt = self.attempt_with_preparation(Some(preparation.as_ref()))?;
         self.check_request(request, attempt.io.as_ref(), Some(preparation.as_ref()))?;
-        attempt.native_creation_guard = Some(preparation.owned_creation_guard_with_native_work(work)?);
+        attempt.native_creation_guard = Some(Arc::clone(preparation));
         crate::NativeFutureBundle::new(work, || async move {
             preparation.verify_creation_with_native_work(work)?.await?;
             let io = attempt.io.as_ref().expect("original native preparer owns its IO");
@@ -1305,7 +1306,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
         let private_grant = self.read_grant(source_private)?;
         let project_grant = self.project_read_grant(&request, source_project, source_generation)?;
         self.verify_task_lease(false).await?;
-        let private_observation = bounded_io::fork_guarded(
+        let private_observation = bounded_io::fork(
             &self.host, source_private, &private_grant, private_generation, &private,
             Some(self.clone_paths(paths)?), &private_key, self.io.as_ref(), self.task_preparation,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1325,7 +1326,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
         let project_key = IdempotencyKey::new(bounded_io::format_text(
             format_args!("fork:{}:{request_digest}:project", request.operation_id), self.io.as_ref())?)?;
         self.verify_task_lease(false).await?;
-        let child_project = bounded_io::fork_guarded(
+        let child_project = bounded_io::fork(
             &self.host, source_project, &project_grant, source_generation,
             &request.preparation.child_project_volume, None, &project_key, self.io.as_ref(), self.task_preparation,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1334,7 +1335,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
         let (child_result_volume, child_result_generation) = if let Some(volume) = &request.preparation.child_result_volume {
             self.verify_task_lease(false).await?;
             let key = self.key(format_args!("fork:{}:{request_digest}:result",request.operation_id))?;
-            let result = bounded_io::fork_guarded(
+            let result = bounded_io::fork(
                 &self.host, source_private, &private_grant, private_generation, volume,
                 Some(Vec::new()), &key, self.io.as_ref(), self.task_preparation,
                 #[cfg(not(target_arch = "wasm32"))]
@@ -1920,7 +1921,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &self, seed: &ForkSeed, maximum_bytes: u64, io: Option<&PreparationIo>,
         preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
         #[cfg(not(target_arch = "wasm32"))]
-        native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::NativeResourcePreparationCreationGuard>>,
+        native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::TaskResourcePreparation>>,
     ) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
@@ -1970,7 +1971,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &self, claim: AllocationClaim, maximum_bytes: u64, io: Option<&PreparationIo>,
         preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
         #[cfg(not(target_arch = "wasm32"))]
-        native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::NativeResourcePreparationCreationGuard>>,
+        native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::TaskResourcePreparation>>,
     ) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
@@ -2095,7 +2096,7 @@ async fn write_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T: Serialize>
     maximum_bytes: u64, key: &IdempotencyKey, io: Option<&PreparationIo>,
     preparation: Option<&TaskResourcePreparation>,
     #[cfg(not(target_arch = "wasm32"))]
-    guard: Option<&Arc<crate::resource_preparation::NativeResourcePreparationCreationGuard>>,
+    guard: Option<&Arc<crate::resource_preparation::TaskResourcePreparation>>,
 ) -> Result<()> {
     let bytes = encode(value, maximum_bytes, io)?;
     let hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();

@@ -1554,10 +1554,6 @@ mod tests {
                 Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(_), .. })));
             assert_eq!(calls.load(Ordering::SeqCst), 0);
             assert_eq!(work.receipt(), before);
-            assert!(matches!(io.encode_for_clone(&CountingToken(&calls), 1024),
-                Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(_), .. })));
-            assert_eq!(work.receipt(), before);
-            assert_eq!(calls.load(Ordering::SeqCst), 0);
             assert!(matches!(io.encode_json(&CountingToken(&calls), 0, true), Err(Error::Invalid(_))));
             assert_eq!(calls.load(Ordering::SeqCst), 0);
             cancellation.cancel();
