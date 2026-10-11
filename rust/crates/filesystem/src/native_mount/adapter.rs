@@ -410,7 +410,7 @@ impl CaptureInputScratch for NativeCaptureScratchAllocation<'_> {
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
         let extra = actual.checked_sub(requested).ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
         if extra != 0 {
-            let (allocation, recorded) = self.work.record_completed_allocation(extra);
+            let (allocation, recorded) = self.work.record_completed_allocation(extra, None);
             self.absorb(allocation);
             recorded.map_err(MountSourceError::NativeWork)?;
         }

@@ -1847,7 +1847,7 @@ fn measured_slots<T>(
         .map_err(crate::materializer::NativeTreeMaterializationError::AllocationFailed)?;
     let actual = (values.capacity() * element) as u64;
     let late = if actual > bytes {
-        let (mut excess, result) = work.record_completed_allocation(actual - bytes);
+        let (mut excess, result) = work.record_completed_allocation(actual - bytes, None);
         replacement.absorb(&mut excess)?;
         result
     } else {
