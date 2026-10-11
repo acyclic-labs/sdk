@@ -265,6 +265,12 @@ The configured Task creator authenticates its existing owner-scope MAC
 separately from that conversation proof. Matching audience names are not enough:
 a different creator key rejects before filesystem IO, and the creator audience
 is never coerced into the root conversation audience.
+Native root scope reopen consumes only configured opaque bootstrap tokens and
+the matching protected original `Started` reservation. It reuses the canonical
+creator receipt verifier, rather than fabricating child preparation provenance.
+Root writers retain the same existing coordinator-only publication lease;
+callbacks never retain a host/context cycle, and a terminal historical READ
+cannot acquire a fresh write lease.
 
 Native preparation may attach one genuine `NativeTaskWorkingView` to that
 same issued dispatch context. Its retained physical view and original owner

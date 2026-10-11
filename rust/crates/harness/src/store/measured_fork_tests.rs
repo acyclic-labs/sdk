@@ -552,6 +552,26 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     ).await, Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
     assert_eq!(cancelled.receipt().backend_read_operations, before.backend_read_operations);
     assert_eq!(cancelled.receipt().backend_write_operations, before.backend_write_operations);
+    let mut source_io = crate::store::history::native_work_io(&query)
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    let observation_scope = creator.root_for_agent(
+        agent, "owner", fixture.root_scope.grants().clone(),
+    );
+    let original_reservation = crate::distributed::original_reservation_proof_with_work(
+        &fixture.stream, owner.root_bootstrap_owner(), &observation_scope, &creator.verifier(),
+        original_root.operation_id, bootstrap.binding().fence(), &mut Some(&mut source_io),
+    ).await?;
+    fixture.host.verify_original_root_bootstrap_source_with_native_work(
+        &original_reservation, &original_root, bootstrap.binding(), &query,
+    )?;
+    let before = query.receipt();
+    assert!(matches!(fixture.host.verify_original_root_bootstrap_source_with_native_work(
+        &original_reservation, &substituted_root, bootstrap.binding(), &query,
+    ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert_eq!(query.receipt().backend_read_operations, before.backend_read_operations);
+    assert_eq!(query.receipt().backend_write_operations, before.backend_write_operations);
+    drop(original_reservation);
+    drop(source_io);
     drop(substituted_root);
     drop(original_root);
     drop(root_custody);

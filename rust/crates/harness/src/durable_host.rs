@@ -2025,6 +2025,24 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.verify_read_access_with_native_work(work).await
     }
 
+    /// Retains the existing coordinator-only publication guard, never this host
+    /// or task context. Historical READ ownership cannot issue this WRITE guard.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn root_bootstrap_publication_lease_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Arc<dyn crate::resource_preparation::CreatedTaskLease>> {
+        self.authenticated_root_binding_with_native_work(work).await?;
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        crate::store::history::HistoryIo::retain_owned(
+            &mut io, std::mem::size_of::<CreatedTaskPublicationLease<P>>() as u64,
+        )?;
+        let fence = host_fence_with_work(&self.fence, &mut Some(&mut io))?;
+        self.host.created_publication_lease_with_work(
+            self.operation_id(), Some(fence), self.deadline_epoch_ms, &mut Some(&mut io),
+        )
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn original_root_admission_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
@@ -4005,6 +4023,80 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         })
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn verify_original_root_bootstrap_source_with_native_work(
+        &self, original: &crate::distributed::OriginalReservationProof,
+        root: &TaskAdmissionRecord, binding: &crate::store::VerifiedRootBinding,
+        native: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let mut io = crate::store::history::native_work_io(native)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
+        let declaration = original.declaration();
+        declaration.verify_owner_with_work(&self.owner, &self.verifier, &mut observer)?;
+        if root.parent.is_some() || !root.resource_proofs.is_empty()
+            || declaration.operation_id != root.operation_id
+            || binding.original_task() != crate::runtime::task_id_for_admission(root.operation_id)
+            || binding.fence() != original.original_fence()
+            || declaration.owner_scope.agent() != Some(binding.agent())
+            || self.owner_scope.agent() != Some(binding.agent())
+        {
+            return Err(Self::admission_boundary(&mut observer, crate::wire::ErrorCode::Unauthorized,
+                "bootstrap binding differs from its canonical original root reservation"));
+        }
+        let digest = host_digest_with_work(
+            root, acyclic_stream::MAX_RECORD_BYTES as u64, &mut observer,
+        )?;
+        if digest != binding.admission_digest() {
+            return Err(Self::admission_boundary(&mut observer, crate::wire::ErrorCode::Unauthorized,
+                "bootstrap root input differs from its protected original workflow"));
+        }
+        Ok(())
+    }
+
+    /// Restores only configured, originally allocated ROOT content. The
+    /// original Started proof is READ custody, never a current publication lease.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) async fn verify_root_bootstrap_access_with_native_work(
+        &self, root: &TaskAdmissionRecord,
+        native: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<crate::resource_preparation::CreatedResourceAccess>> {
+        use crate::resource_preparation::{CreatedResourceAccess, RootBootstrapContentContext};
+        let mut access: Option<CreatedResourceAccess> = None;
+        for provider in &self.resource_creation {
+            for source in provider.root_bootstrap_sources(root.operation_id) {
+                native.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })
+                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                let Some((request, witness)) = source else { continue; };
+                let binding = witness.binding();
+                let mut io = crate::store::history::native_work_io(native)
+                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                let original = crate::distributed::original_reservation_proof_with_work(
+                    &self.stream, &self.owner, &self.owner_scope, &self.verifier,
+                    root.operation_id, binding.fence(), &mut Some(&mut io),
+                ).await?;
+                let context = RootBootstrapContentContext::from_verified_original_root_with_native_work(
+                    self, &original, root, binding, native,
+                ).await?;
+                let received = provider.verify_root_bootstrap_with_native_work(
+                    context, request, native,
+                )?.await?;
+                let next = CreatedResourceAccess::consume_root_bootstrap_with_native_work(
+                    context, request, received.0, received.1, native,
+                )?;
+                access = Some(match access.take() {
+                    Some(current) => current.merge_root_bootstrap_with_native_work(next, native)?,
+                    None => next,
+                });
+                // Original source DTOs stay live until the borrowed context and
+                // provider callback retire; the enclosing IO owns their custody.
+                drop(original);
+                drop(io);
+            }
+        }
+        Ok(access)
+    }
+
     async fn resume_scope_with_work(
         &self, task: TaskId, operation: OperationId,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -4015,6 +4107,20 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let admission = self.admission_with_work(operation, work).await?;
         let (scope, scope_bytes) = self.authenticated_scope_with_work(&admission, work).await?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let (scope, scope_bytes) = if admission.parent.is_none() && admission.resource_proofs.is_empty()
+            && let Some(native) = work.as_deref().and_then(|io| io.original_native_work()).cloned()
+        {
+            match self.verify_root_bootstrap_access_with_native_work(&admission, &native).await? {
+                Some(access) => {
+                    let restored = scope.with_created_access_with_work(&admission, Some(access), work)?;
+                    drop(scope);
+                    if let Some(io) = work.as_deref_mut() { io.release_owned(scope_bytes)?; }
+                    restored
+                }
+                None => (scope, scope_bytes),
+            }
+        } else { (scope, scope_bytes) };
         let deadline_epoch_ms = admission.run_limits.deadline_epoch_ms;
         let has_created = !admission.resource_proofs.is_empty();
         let admission_bytes = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
@@ -4049,6 +4155,26 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 None => None,
             }
         };
+        let lease = self.created_publication_lease_with_work(operation, fence, deadline_epoch_ms, work)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let scope = match native.as_ref() {
+            Some(native) => scope.with_created_publication_lease_with_native_work(lease, native)?,
+            None => scope.with_created_publication_lease(lease)?,
+        };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let scope = scope.with_created_publication_lease(lease)?;
+        Ok((scope, scope_bytes))
+    }
+
+    // Both callers retain this exact SDK logical Self before copying a fence.
+    // The existing observer transfers that same claim into the immutable lease.
+    fn created_publication_lease_with_work(
+        &self, operation: OperationId, fence: Option<crate::scheduler::LeaseFence>,
+        deadline_epoch_ms: Option<u64>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Arc<dyn crate::resource_preparation::CreatedTaskLease>> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let native = work.as_deref().is_some_and(|io| io.original_native_work().is_some());
         let mut lease = CreatedTaskPublicationLease {
             coordinator: Arc::clone(&self.coordinator),
             owner: match work.as_deref_mut() {
@@ -4062,7 +4188,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             _native_custody: None,
         };
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if native.is_some() {
+        if native {
             let mut bytes = (std::mem::size_of::<CreatedTaskPublicationLease<P>>() as u64)
                 .checked_add(lease.owner.id.capacity() as u64)
                 .and_then(|bytes| bytes.checked_add(lease.scope.logical_owned_bytes().ok()?))
@@ -4083,14 +4209,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             })?;
         }
         let lease = Arc::new(lease);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let scope = match native.as_ref() {
-            Some(native) => scope.with_created_publication_lease_with_native_work(lease, native)?,
-            None => scope.with_created_publication_lease(lease)?,
-        };
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let scope = scope.with_created_publication_lease(lease)?;
-        Ok((scope, scope_bytes))
+        Ok(lease)
     }
 
     /// Binds journal publications to the authenticated task's exact current lease.
