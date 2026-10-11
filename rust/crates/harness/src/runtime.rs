@@ -4448,16 +4448,50 @@ struct PaidPolicyValue<T> {
 fn validate_native_policy_identity(
     paid: &PaidPolicyValue<ComponentIdentity>, work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
+    let custody = paid.custody.as_ref().ok_or(Error::NativeBoundary {
+        code: crate::wire::ErrorCode::Conflict,
+        reason: "policy identity does not retain its original ledger",
+    })?;
+    // Bound identities are compared with the structurally validated original:
+    // any implementation change must remain Conflict, not a fresh Invalid.
+    validate_policy_identity_custody_with_native_work(&paid.value, custody, work)
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn validate_policy_identity_custody_with_native_work(
+    identity: &ComponentIdentity, custody: &acyclic_fs::NativeAllocation,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<()> {
     let bytes = (std::mem::size_of::<ComponentIdentity>() as u64)
-        .checked_add(paid.value.name.capacity() as u64)
-        .and_then(|bytes| bytes.checked_add(paid.value.version.capacity() as u64));
-    if !paid.custody.as_ref().is_some_and(|custody| custody.work().shares_ledger(work)
-        && bytes.is_some_and(|bytes| custody.bytes() >= bytes))
-    {
+        .checked_add(identity.name.capacity() as u64)
+        .and_then(|bytes| bytes.checked_add(identity.version.capacity() as u64));
+    if !custody.work().shares_ledger(work) || bytes.is_none_or(|bytes| custody.bytes() < bytes) {
         return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
             reason: "policy identity does not retain its original ledger" });
     }
     work.remaining()?;
+    Ok(())
+}
+
+/// Shared SDK startup boundary for already-owned policy metadata.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn validate_policy_identity_with_native_work(
+    identity: &ComponentIdentity, custody: &acyclic_fs::NativeAllocation,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<()> {
+    validate_policy_identity_custody_with_native_work(identity, custody, work)?;
+    if !crate::contract::is_valid_component_label(&identity.name) {
+        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+            reason: "policy name is invalid" });
+    }
+    if !crate::contract::is_valid_component_label(&identity.version) {
+        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+            reason: "policy version is invalid" });
+    }
+    if identity.digest == [0; 32] {
+        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+            reason: "policy implementation digest is empty" });
+    }
     Ok(())
 }
 
@@ -10989,10 +11023,16 @@ mod tests {
         let (policy, definition, invocation) = native_policy_fixture_inputs();
         let scope = RuntimeScope::new(Capabilities::new(["tool:call:test.echo"]), Limits::default())?;
         let before = work.receipt().allocation_operations;
-        let (identity, custody) = policy.identity_with_native_work(&work)?;
+        let (mut identity, custody) = policy.identity_with_native_work(&work)?;
         assert_eq!(custody.bytes(), std::mem::size_of::<ComponentIdentity>() as u64
             + identity.name.capacity() as u64 + identity.version.capacity() as u64);
         assert_eq!(work.receipt().allocation_operations, before + 2);
+        validate_policy_identity_with_native_work(&identity, &custody, &work)?;
+        identity.name.clear();
+        let observed = work.receipt();
+        assert!(matches!(validate_policy_identity_with_native_work(&identity, &custody, &work),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "policy name is invalid" })));
+        assert_eq!(work.receipt(), observed);
         drop(NativePolicyPayload { value: identity, custody });
         let (decision, custody) = policy.evaluate_with_native_work(&invocation, &scope, &work)?.await?;
         let ToolPolicyDecision::RequireApproval { prompt } = decision else { panic!("fixture approval"); };
