@@ -8221,48 +8221,106 @@ mod tests {
         }
     }
 
+    macro_rules! source_methods {
+        ($($name:ident($($arg:ident: $ty:ty),*) $(-> $result:ty)?;)*) => {
+            $(fn $name(&self, $($arg: $ty),*) $(-> $result)? {
+                self.inner.$name($($arg),*)
+            })*
+        };
+    }
+
     impl MountFilesystem for GatedSource {
-        fn native_callback_guard(&self)
-            -> Option<Arc<dyn super::super::NativeMountCallbackGuard>>
-        {
-            self.inner.native_callback_guard()
+        source_methods! {
+            native_callback_guard() -> Option<Arc<dyn super::super::NativeMountCallbackGuard>>;
+            native_original_work() -> Result<Option<super::super::NativeMountMeterWork>, MountSourceError>;
+            supports_posix_named_attributes() -> bool;
+            flush_on_handle_close() -> bool;
+            view_is_stable() -> bool;
+            view_stamp() -> Option<ViewStamp>;
+            node_unchanged_since(file_id: FileId, stamp: ViewStamp) -> bool;
+            unchanged_since(path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp) -> bool;
+            listing_unchanged_since(path: &MountPath, stamp: ViewStamp) -> bool;
+            observe_view(observer: Weak<dyn ViewObserver>);
+            observe_view_with_meter(observer: Weak<dyn ViewObserver>, work: &super::super::NativeMountMeterWork) -> Result<(), MountSourceError>;
+            fence_changes_with_meter(work: &super::super::NativeMountMeterWork) -> Result<(), MountSourceError>;
+            acquire_binding_lease_with_meter(epoch: Option<u64>, work: &super::super::NativeMountMeterWork) -> Result<Box<dyn MountViewLease>, MountSourceError>;
+            capture_host_paths_with_meter(root: &Path, paths: &[MountPath], identity: crate::NativeRootIdentity, work: &super::super::NativeMountMeterWork) -> Result<(), MountSourceError>;
+            capture_host_subtree_with_meter(root: &Path, path: &MountPath, identity: crate::NativeRootIdentity, work: &super::super::NativeMountMeterWork) -> Result<(), MountSourceError>;
+            read_pinned_with_meter(path: &MountPath, pin: super::super::MountContentPin, offset: u64, length: u64, piece: u32, sink: &mut super::super::NativeMountContentSink<'_>, work: &super::super::NativeMountMeterWork) -> Result<(), MountSourceError>;
+            read_link_with_meter(path: &MountPath, work: &super::super::NativeMountMeterWork) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
+            read_range_with_meter(path: &MountPath, offset: u64, length: u32, work: &super::super::NativeMountMeterWork) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
+            read_directory_with_meter(path: &MountPath, cursor: Option<&[u8]>, maximum: u32, work: &super::super::NativeMountMeterWork) -> Result<MountDirectoryPage, MountSourceError>;
+            observe_view_with_work(observer: Weak<dyn ViewObserver>, work: &mut super::super::NativeMountWork<'_>) -> Result<(), MountSourceError>;
+            fence_changes_with_work(work: &mut super::super::NativeMountWork<'_>) -> Result<(), MountSourceError>;
+            binding_epoch() -> Option<u64>;
+            acquire_view_lease() -> Result<Box<dyn MountViewLease>, MountSourceError>;
+            acquire_binding_lease(expected_epoch: Option<u64>) -> Result<Box<dyn MountViewLease>, MountSourceError>;
+            acquire_binding_lease_with_work(expected_epoch: Option<u64>, work: &mut super::super::NativeMountWork<'_>) -> Result<Box<dyn MountViewLease>, MountSourceError>;
+            lookup_with_work(path: &MountPath, work: &mut super::super::NativeMountWork<'_>) -> Result<Option<MountLookup>, MountSourceError>;
+            lookup_pinned_with_work(path: &MountPath, work: &mut super::super::NativeMountWork<'_>) -> Result<Option<(MountLookup, Option<super::super::MountContentPin>)>, MountSourceError>;
+            read_pinned_with_work(path: &MountPath, pin: super::super::MountContentPin, offset: u64, length: u64, piece: u32, sink: &mut super::super::NativeMountContentSink<'_>, work: &mut super::super::NativeMountWork<'_>) -> Result<(), MountSourceError>;
+            open_file(path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError>;
+            detach_file(path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError>;
+            read_link(path: &MountPath) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
+            read_link_with_work(path: &MountPath, work: &mut super::super::NativeMountWork<'_>) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
+            read_range(path: &MountPath, offset: u64, length: u32) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
+            read_range_with_work(path: &MountPath, offset: u64, length: u32, work: &mut super::super::NativeMountWork<'_>) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
+            seek(path: &MountPath, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError>;
+            read_directory(path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32) -> Result<MountDirectoryPage, MountSourceError>;
+            read_directory_with_work(path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32, work: &mut super::super::NativeMountWork<'_>) -> Result<MountDirectoryPage, MountSourceError>;
+            create_file(path: &MountPath, metadata: FileMetadata) -> Result<MountLookup, MountSourceError>;
+            create_symbolic_link(path: &MountPath, target: Bytes, metadata: FileMetadata) -> Result<MountLookup, MountSourceError>;
+            create_special(path: &MountPath, kind: MountNodeKind, device: Option<(u32, u32)>, metadata: FileMetadata) -> Result<MountLookup, MountSourceError>;
+            set_attributes(path: &MountPath, metadata: FileMetadata, logical_bytes: Option<u64>) -> Result<(), MountSourceError>;
+            list_attributes(path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32) -> Result<MountAttributePage, MountSourceError>;
+            write_attribute(path: &MountPath, name: &[u8], value: Bytes, mode: MountAttributeWriteMode) -> Result<(), MountSourceError>;
+            remove_attribute(path: &MountPath, name: &[u8]) -> Result<(), MountSourceError>;
+            write_range(path: &MountPath, offset: u64, bytes: Bytes) -> Result<(), MountSourceError>;
+            resize(path: &MountPath, logical_bytes: u64) -> Result<(), MountSourceError>;
+            allocate_range(path: &MountPath, offset: u64, length: u64, operation: MountRangeAllocation) -> Result<(), MountSourceError>;
+            clone_range(source: &MountPath, source_offset: u64, destination: &MountPath, destination_offset: u64, length: u64) -> Result<(), MountSourceError>;
+            clone_range_by_id(source_file_id: FileId, source_offset: u64, destination_file_id: FileId, destination_offset: u64, length: u64) -> Result<(), MountSourceError>;
+            remove(path: &MountPath, expected: Option<FileId>) -> Result<(), MountSourceError>;
+            rename(source: &MountPath, destination: &MountPath, replace: bool) -> Result<(), MountSourceError>;
+            hard_link(source: &MountPath, destination: &MountPath) -> Result<(), MountSourceError>;
+            flush() -> Result<(), MountSourceError>;
+            capture_host_path(source_root: &std::path::Path, path: &MountPath) -> Result<(), MountSourceError>;
+            capture_host_paths(source_root: &std::path::Path, paths: &[MountPath]) -> Result<(), MountSourceError>;
+            capture_host_subtree(source_root: &std::path::Path, path: &MountPath) -> Result<(), MountSourceError>;
+            capture_host_paths_with_work(source_root: &std::path::Path, paths: &[MountPath], expected_root_identity: crate::NativeRootIdentity, work: &mut super::super::NativeMountWork<'_>) -> Result<(), MountSourceError>;
+            capture_host_subtree_with_work(source_root: &std::path::Path, path: &MountPath, expected_root_identity: crate::NativeRootIdentity, work: &mut super::super::NativeMountWork<'_>) -> Result<(), MountSourceError>;
+            remove_with_meter(path: &MountPath, expected: Option<FileId>, work: &super::super::NativeMountMeterWork) -> Result<(), MountSourceError>;
+            remove_with_work(path: &MountPath, expected: Option<FileId>, work: &mut super::super::NativeMountWork<'_>) -> Result<(), MountSourceError>;
+            rename_with_meter(source: &MountPath, destination: &MountPath, replace: bool, work: &super::super::NativeMountMeterWork) -> Result<(), MountSourceError>;
+            rename_with_work(source: &MountPath, destination: &MountPath, replace: bool, work: &mut super::super::NativeMountWork<'_>) -> Result<(), MountSourceError>;
+            set_attributes_with_meter(path: &MountPath, metadata: FileMetadata, logical_bytes: Option<u64>, work: &super::super::NativeMountMeterWork) -> Result<(), MountSourceError>;
+            set_attributes_with_work(path: &MountPath, metadata: FileMetadata, logical_bytes: Option<u64>, work: &mut super::super::NativeMountWork<'_>) -> Result<(), MountSourceError>;
+            flush_with_meter(work: &super::super::NativeMountMeterWork) -> Result<(), MountSourceError>;
+            flush_with_work(work: &mut super::super::NativeMountWork<'_>) -> Result<(), MountSourceError>;
+            open_file_with_meter(path: &MountPath, work: &super::super::NativeMountMeterWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
+            open_file_with_lookup_with_meter(path: &MountPath, work: &super::super::NativeMountMeterWork) -> Result<((Arc<dyn MountOpenFile>, u64), MountLookup), MountSourceError>;
+            open_created_with_meter(path: &MountPath, created: &MountLookup, work: &super::super::NativeMountMeterWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
+            detach_file_with_meter(path: &MountPath, work: &super::super::NativeMountMeterWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
+            create_file_with_meter(path: &MountPath, metadata: FileMetadata, work: &super::super::NativeMountMeterWork) -> Result<MountLookup, MountSourceError>;
+            create_absent_file_with_meter(path: &MountPath, metadata: FileMetadata, stamp: ViewStamp, work: &super::super::NativeMountMeterWork) -> Result<MountLookup, MountSourceError>;
+            create_symbolic_link_with_meter(path: &MountPath, target: crate::kernel::OwnedSourceChunk, metadata: FileMetadata, work: &super::super::NativeMountMeterWork) -> Result<MountLookup, MountSourceError>;
+            create_special_with_meter(path: &MountPath, kind: MountNodeKind, device: Option<(u32,u32)>, metadata: FileMetadata, work: &super::super::NativeMountMeterWork) -> Result<MountLookup, MountSourceError>;
+            list_attributes_with_meter(path: &MountPath, cursor: Option<&[u8]>, maximum: u32, work: &super::super::NativeMountMeterWork) -> Result<(super::super::MountAttributePage, crate::NativeAllocation), MountSourceError>;
+            write_attribute_with_meter(path: &MountPath, name: &[u8], value: crate::kernel::OwnedSourceChunk, mode: super::super::MountAttributeWriteMode, work: &super::super::NativeMountMeterWork) -> Result<(), MountSourceError>;
+            remove_attribute_with_meter(path: &MountPath, name: &[u8], work: &super::super::NativeMountMeterWork) -> Result<(), MountSourceError>;
+            clone_range_by_id_with_meter(source: FileId, source_offset: u64, destination: FileId, destination_offset: u64, length: u64, work: &super::super::NativeMountMeterWork) -> Result<(), MountSourceError>;
+            hard_link_with_meter(source: &MountPath, destination: &MountPath, work: &super::super::NativeMountMeterWork) -> Result<(), MountSourceError>;
+            folded_path_with_meter(path: &MountPath, work: &super::super::NativeMountMeterWork) -> Result<Option<(MountPath,u64)>, MountSourceError>;
+            view_is_stable_with_meter(work: &super::super::NativeMountMeterWork) -> Result<bool, MountSourceError>;
+            view_stamp_with_meter(work: &super::super::NativeMountMeterWork) -> Result<Option<ViewStamp>, MountSourceError>;
+            binding_epoch_with_meter(work: &super::super::NativeMountMeterWork) -> Result<Option<u64>, MountSourceError>;
+            unchanged_since_with_meter(path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp, work: &super::super::NativeMountMeterWork) -> Result<bool, MountSourceError>;
+            reported_unchanged_since_with_meter(path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp, work: &super::super::NativeMountMeterWork) -> Result<bool, MountSourceError>;
+            shutdown_with_meter(work: &super::super::NativeMountMeterWork) -> Result<bool, MountSourceError>;
+            node_unchanged_since_with_meter(file_id: FileId, stamp: ViewStamp, work: &super::super::NativeMountMeterWork) -> Result<bool, MountSourceError>;
+            listing_unchanged_since_with_meter(path: &MountPath, stamp: ViewStamp, work: &super::super::NativeMountMeterWork) -> Result<bool, MountSourceError>;
         }
 
-        fn native_original_work(&self)
-            -> Result<Option<super::super::NativeMountMeterWork>, MountSourceError>
-        {
-            self.inner.native_original_work()
-        }
-
-        fn supports_posix_named_attributes(&self) -> bool {
-            self.inner.supports_posix_named_attributes()
-        }
-        fn flush_on_handle_close(&self) -> bool {
-            self.inner.flush_on_handle_close()
-        }
-        fn view_is_stable(&self) -> bool {
-            self.inner.view_is_stable()
-        }
-        fn view_stamp(&self) -> Option<ViewStamp> {
-            self.inner.view_stamp()
-        }
-        fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
-            self.inner.node_unchanged_since(file_id, stamp)
-        }
-        fn unchanged_since(
-            &self,
-            path: &MountPath,
-            file_id: Option<FileId>,
-            stamp: ViewStamp,
-        ) -> bool {
-            self.inner.unchanged_since(path, file_id, stamp)
-        }
-        fn listing_unchanged_since(&self, path: &MountPath, stamp: ViewStamp) -> bool {
-            self.inner.listing_unchanged_since(path, stamp)
-        }
-        fn observe_view(&self, observer: Weak<dyn ViewObserver>) {
-            self.inner.observe_view(observer)
-        }
         fn lookup_with_meter(
             &self, path: &MountPath, work: &super::super::NativeMountMeterWork,
         ) -> Result<Option<MountLookup>, MountSourceError> {
@@ -8277,162 +8335,13 @@ mod tests {
             self.pass(path, &self.gated_lookup);
             self.inner.lookup_pinned_with_meter(path, work)
         }
-        fn observe_view_with_meter(
-            &self, observer: Weak<dyn ViewObserver>, work: &super::super::NativeMountMeterWork,
-        ) -> Result<(), MountSourceError> {
-            self.inner.observe_view_with_meter(observer, work)
-        }
-        fn fence_changes_with_meter(&self, work: &super::super::NativeMountMeterWork) -> Result<(), MountSourceError> {
-            self.inner.fence_changes_with_meter(work)
-        }
-        fn acquire_binding_lease_with_meter(
-            &self, epoch: Option<u64>, work: &super::super::NativeMountMeterWork,
-        ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
-            self.inner.acquire_binding_lease_with_meter(epoch, work)
-        }
-        fn capture_host_paths_with_meter(
-            &self, root: &Path, paths: &[MountPath], identity: crate::NativeRootIdentity,
-            work: &super::super::NativeMountMeterWork,
-        ) -> Result<(), MountSourceError> {
-            self.inner.capture_host_paths_with_meter(root, paths, identity, work)
-        }
-        fn capture_host_subtree_with_meter(
-            &self, root: &Path, path: &MountPath, identity: crate::NativeRootIdentity,
-            work: &super::super::NativeMountMeterWork,
-        ) -> Result<(), MountSourceError> {
-            self.inner.capture_host_subtree_with_meter(root, path, identity, work)
-        }
-        fn read_pinned_with_meter(
-            &self, path: &MountPath, pin: super::super::MountContentPin, offset: u64, length: u64,
-            piece: u32, sink: &mut super::super::NativeMountContentSink<'_>,
-            work: &super::super::NativeMountMeterWork,
-        ) -> Result<(), MountSourceError> {
-            self.inner.read_pinned_with_meter(path, pin, offset, length, piece, sink, work)
-        }
-        fn read_link_with_meter(
-            &self, path: &MountPath, work: &super::super::NativeMountMeterWork,
-        ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-            self.inner.read_link_with_meter(path, work)
-        }
-        fn read_range_with_meter(
-            &self, path: &MountPath, offset: u64, length: u32, work: &super::super::NativeMountMeterWork,
-        ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-            self.inner.read_range_with_meter(path, offset, length, work)
-        }
-        fn read_directory_with_meter(
-            &self, path: &MountPath, cursor: Option<&[u8]>, maximum: u32,
-            work: &super::super::NativeMountMeterWork,
-        ) -> Result<MountDirectoryPage, MountSourceError> {
-            self.inner.read_directory_with_meter(path, cursor, maximum, work)
-        }
-        fn observe_view_with_work(
-            &self, observer: Weak<dyn ViewObserver>, work: &mut super::super::NativeMountWork<'_>,
-        ) -> Result<(), MountSourceError> {
-            self.inner.observe_view_with_work(observer, work)
-        }
-        fn fence_changes_with_work(
-            &self, work: &mut super::super::NativeMountWork<'_>,
-        ) -> Result<(), MountSourceError> {
-            self.inner.fence_changes_with_work(work)
-        }
-        fn binding_epoch(&self) -> Option<u64> {
-            self.inner.binding_epoch()
-        }
-        fn acquire_view_lease(&self) -> Result<Box<dyn MountViewLease>, MountSourceError> {
-            self.inner.acquire_view_lease()
-        }
-        fn acquire_binding_lease(
-            &self,
-            expected_epoch: Option<u64>,
-        ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
-            self.inner.acquire_binding_lease(expected_epoch)
-        }
-        fn acquire_binding_lease_with_work(
-            &self, expected_epoch: Option<u64>, work: &mut super::super::NativeMountWork<'_>,
-        ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
-            self.inner.acquire_binding_lease_with_work(expected_epoch, work)
-        }
+
         fn lookup(&self, path: &MountPath) -> Result<Option<MountLookup>, MountSourceError> {
             self.record_read(path);
             self.pass(path, &self.gated_lookup);
             self.inner.lookup(path)
         }
-        fn lookup_with_work(
-            &self, path: &MountPath, work: &mut super::super::NativeMountWork<'_>,
-        ) -> Result<Option<MountLookup>, MountSourceError> {
-            self.inner.lookup_with_work(path, work)
-        }
-        fn lookup_pinned_with_work(
-            &self, path: &MountPath, work: &mut super::super::NativeMountWork<'_>,
-        ) -> Result<Option<(MountLookup, Option<super::super::MountContentPin>)>, MountSourceError> {
-            self.inner.lookup_pinned_with_work(path, work)
-        }
-        fn read_pinned_with_work(
-            &self, path: &MountPath, pin: super::super::MountContentPin, offset: u64, length: u64,
-            piece: u32, sink: &mut super::super::NativeMountContentSink<'_>,
-            work: &mut super::super::NativeMountWork<'_>,
-        ) -> Result<(), MountSourceError> {
-            self.inner.read_pinned_with_work(path, pin, offset, length, piece, sink, work)
-        }
-        fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-            self.inner.open_file(path)
-        }
-        fn detach_file(
-            &self,
-            path: &MountPath,
-        ) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-            self.inner.detach_file(path)
-        }
-        fn read_link(&self, path: &MountPath) -> Result<acyclic_stream::OwnedBytes, MountSourceError> {
-            self.inner.read_link(path)
-        }
-        fn read_link_with_work(
-            &self, path: &MountPath, work: &mut super::super::NativeMountWork<'_>,
-        ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-            self.inner.read_link_with_work(path, work)
-        }
-        fn read_range(
-            &self,
-            path: &MountPath,
-            offset: u64,
-            length: u32,
-        ) -> Result<acyclic_stream::OwnedBytes, MountSourceError> {
-            self.inner.read_range(path, offset, length)
-        }
-        fn read_range_with_work(
-            &self, path: &MountPath, offset: u64, length: u32, work: &mut super::super::NativeMountWork<'_>,
-        ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-            self.inner.read_range_with_work(path, offset, length, work)
-        }
-        fn seek(
-            &self,
-            path: &MountPath,
-            offset: u64,
-            target: MountSeekTarget,
-        ) -> Result<Option<u64>, MountSourceError> {
-            self.inner.seek(path, offset, target)
-        }
-        fn read_directory(
-            &self,
-            path: &MountPath,
-            cursor: Option<&[u8]>,
-            maximum_entries: u32,
-        ) -> Result<MountDirectoryPage, MountSourceError> {
-            self.inner.read_directory(path, cursor, maximum_entries)
-        }
-        fn read_directory_with_work(
-            &self, path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32,
-            work: &mut super::super::NativeMountWork<'_>,
-        ) -> Result<MountDirectoryPage, MountSourceError> {
-            self.inner.read_directory_with_work(path, cursor, maximum_entries, work)
-        }
-        fn create_file(
-            &self,
-            path: &MountPath,
-            metadata: FileMetadata,
-        ) -> Result<MountLookup, MountSourceError> {
-            self.inner.create_file(path, metadata)
-        }
+
         fn create_directory(
             &self,
             path: &MountPath,
@@ -8441,31 +8350,7 @@ mod tests {
             self.pass(path, &self.gated_directory);
             self.inner.create_directory(path, metadata)
         }
-        fn create_symbolic_link(
-            &self,
-            path: &MountPath,
-            target: Bytes,
-            metadata: FileMetadata,
-        ) -> Result<MountLookup, MountSourceError> {
-            self.inner.create_symbolic_link(path, target, metadata)
-        }
-        fn create_special(
-            &self,
-            path: &MountPath,
-            kind: MountNodeKind,
-            device: Option<(u32, u32)>,
-            metadata: FileMetadata,
-        ) -> Result<MountLookup, MountSourceError> {
-            self.inner.create_special(path, kind, device, metadata)
-        }
-        fn set_attributes(
-            &self,
-            path: &MountPath,
-            metadata: FileMetadata,
-            logical_bytes: Option<u64>,
-        ) -> Result<(), MountSourceError> {
-            self.inner.set_attributes(path, metadata, logical_bytes)
-        }
+
         fn read_attribute(
             &self,
             path: &MountPath,
@@ -8474,226 +8359,17 @@ mod tests {
             self.record_read(path);
             self.inner.read_attribute(path, name)
         }
-        fn list_attributes(
-            &self,
-            path: &MountPath,
-            cursor: Option<&[u8]>,
-            maximum_entries: u32,
-        ) -> Result<MountAttributePage, MountSourceError> {
-            self.inner.list_attributes(path, cursor, maximum_entries)
-        }
-        fn write_attribute(
-            &self,
-            path: &MountPath,
-            name: &[u8],
-            value: Bytes,
-            mode: MountAttributeWriteMode,
-        ) -> Result<(), MountSourceError> {
-            self.inner.write_attribute(path, name, value, mode)
-        }
-        fn remove_attribute(&self, path: &MountPath, name: &[u8]) -> Result<(), MountSourceError> {
-            self.inner.remove_attribute(path, name)
-        }
-        fn write_range(
-            &self,
-            path: &MountPath,
-            offset: u64,
-            bytes: Bytes,
-        ) -> Result<(), MountSourceError> {
-            self.inner.write_range(path, offset, bytes)
-        }
-        fn resize(&self, path: &MountPath, logical_bytes: u64) -> Result<(), MountSourceError> {
-            self.inner.resize(path, logical_bytes)
-        }
-        fn allocate_range(
-            &self,
-            path: &MountPath,
-            offset: u64,
-            length: u64,
-            operation: MountRangeAllocation,
-        ) -> Result<(), MountSourceError> {
-            self.inner.allocate_range(path, offset, length, operation)
-        }
-        fn clone_range(
-            &self,
-            source: &MountPath,
-            source_offset: u64,
-            destination: &MountPath,
-            destination_offset: u64,
-            length: u64,
-        ) -> Result<(), MountSourceError> {
-            self.inner.clone_range(
-                source,
-                source_offset,
-                destination,
-                destination_offset,
-                length,
-            )
-        }
-        fn clone_range_by_id(
-            &self,
-            source_file_id: FileId,
-            source_offset: u64,
-            destination_file_id: FileId,
-            destination_offset: u64,
-            length: u64,
-        ) -> Result<(), MountSourceError> {
-            self.inner.clone_range_by_id(
-                source_file_id,
-                source_offset,
-                destination_file_id,
-                destination_offset,
-                length,
-            )
-        }
-        fn remove(
-            &self,
-            path: &MountPath,
-            expected: Option<FileId>,
-        ) -> Result<(), MountSourceError> {
-            self.inner.remove(path, expected)
-        }
-        fn rename(
-            &self,
-            source: &MountPath,
-            destination: &MountPath,
-            replace: bool,
-        ) -> Result<(), MountSourceError> {
-            self.inner.rename(source, destination, replace)
-        }
-        fn hard_link(
-            &self,
-            source: &MountPath,
-            destination: &MountPath,
-        ) -> Result<(), MountSourceError> {
-            self.inner.hard_link(source, destination)
-        }
-        fn flush(&self) -> Result<(), MountSourceError> {
-            self.inner.flush()
-        }
-        fn capture_host_path(
-            &self,
-            source_root: &std::path::Path,
-            path: &MountPath,
-        ) -> Result<(), MountSourceError> {
-            self.inner.capture_host_path(source_root, path)
-        }
-        fn capture_host_paths(
-            &self,
-            source_root: &std::path::Path,
-            paths: &[MountPath],
-        ) -> Result<(), MountSourceError> {
-            self.inner.capture_host_paths(source_root, paths)
-        }
-        fn capture_host_subtree(
-            &self,
-            source_root: &std::path::Path,
-            path: &MountPath,
-        ) -> Result<(), MountSourceError> {
-            self.inner.capture_host_subtree(source_root, path)
-        }
-        fn capture_host_paths_with_work(
-            &self, source_root: &std::path::Path, paths: &[MountPath],
-            expected_root_identity: crate::NativeRootIdentity,
-            work: &mut super::super::NativeMountWork<'_>,
-        ) -> Result<(), MountSourceError> {
-            self.inner.capture_host_paths_with_work(source_root, paths, expected_root_identity, work)
-        }
-        fn capture_host_subtree_with_work(
-            &self, source_root: &std::path::Path, path: &MountPath,
-            expected_root_identity: crate::NativeRootIdentity,
-            work: &mut super::super::NativeMountWork<'_>,
-        ) -> Result<(), MountSourceError> {
-            self.inner.capture_host_subtree_with_work(source_root, path, expected_root_identity, work)
-        }
 
-        fn remove_with_meter(&self, path: &MountPath, expected: Option<FileId>, work: &super::super::NativeMountMeterWork) -> Result<(), MountSourceError> {
-            self.inner.remove_with_meter(path, expected, work)
-        }
-        fn remove_with_work(&self, path: &MountPath, expected: Option<FileId>, work: &mut super::super::NativeMountWork<'_>) -> Result<(), MountSourceError> {
-            self.inner.remove_with_work(path, expected, work)
-        }
-        fn rename_with_meter(&self, source: &MountPath, destination: &MountPath, replace: bool, work: &super::super::NativeMountMeterWork) -> Result<(), MountSourceError> {
-            self.inner.rename_with_meter(source, destination, replace, work)
-        }
-        fn rename_with_work(&self, source: &MountPath, destination: &MountPath, replace: bool, work: &mut super::super::NativeMountWork<'_>) -> Result<(), MountSourceError> {
-            self.inner.rename_with_work(source, destination, replace, work)
-        }
-        fn set_attributes_with_meter(&self, path: &MountPath, metadata: FileMetadata, logical_bytes: Option<u64>, work: &super::super::NativeMountMeterWork) -> Result<(), MountSourceError> {
-            self.inner.set_attributes_with_meter(path, metadata, logical_bytes, work)
-        }
-        fn set_attributes_with_work(&self, path: &MountPath, metadata: FileMetadata, logical_bytes: Option<u64>, work: &mut super::super::NativeMountWork<'_>) -> Result<(), MountSourceError> {
-            self.inner.set_attributes_with_work(path, metadata, logical_bytes, work)
-        }
-        fn flush_with_meter(&self, work: &super::super::NativeMountMeterWork) -> Result<(), MountSourceError> { self.inner.flush_with_meter(work) }
-        fn flush_with_work(&self, work: &mut super::super::NativeMountWork<'_>) -> Result<(), MountSourceError> { self.inner.flush_with_work(work) }
-        fn open_file_with_meter(&self, path: &MountPath, work: &super::super::NativeMountMeterWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
-            self.inner.open_file_with_meter(path, work)
-        }
-        fn open_file_with_lookup_with_meter(&self, path: &MountPath, work: &super::super::NativeMountMeterWork) -> Result<((Arc<dyn MountOpenFile>, u64), MountLookup), MountSourceError> {
-            self.inner.open_file_with_lookup_with_meter(path, work)
-        }
-        fn open_created_with_meter(&self, path: &MountPath, created: &MountLookup, work: &super::super::NativeMountMeterWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
-            self.inner.open_created_with_meter(path, created, work)
-        }
-        fn detach_file_with_meter(&self, path: &MountPath, work: &super::super::NativeMountMeterWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
-            self.inner.detach_file_with_meter(path, work)
-        }
-        fn create_file_with_meter(&self, path: &MountPath, metadata: FileMetadata, work: &super::super::NativeMountMeterWork) -> Result<MountLookup, MountSourceError> {
-            self.inner.create_file_with_meter(path, metadata, work)
-        }
-        fn create_absent_file_with_meter(&self, path: &MountPath, metadata: FileMetadata, stamp: ViewStamp, work: &super::super::NativeMountMeterWork) -> Result<MountLookup, MountSourceError> {
-            self.inner.create_absent_file_with_meter(path, metadata, stamp, work)
-        }
         fn create_directory_with_meter(&self, path: &MountPath, metadata: FileMetadata, work: &super::super::NativeMountMeterWork) -> Result<MountLookup, MountSourceError> {
             self.pass(path, &self.gated_directory);
             self.inner.create_directory_with_meter(path, metadata, work)
         }
-        fn create_symbolic_link_with_meter(&self, path: &MountPath, target: crate::kernel::OwnedSourceChunk, metadata: FileMetadata, work: &super::super::NativeMountMeterWork) -> Result<MountLookup, MountSourceError> {
-            self.inner.create_symbolic_link_with_meter(path, target, metadata, work)
-        }
-        fn create_special_with_meter(&self, path: &MountPath, kind: MountNodeKind, device: Option<(u32,u32)>, metadata: FileMetadata, work: &super::super::NativeMountMeterWork) -> Result<MountLookup, MountSourceError> {
-            self.inner.create_special_with_meter(path, kind, device, metadata, work)
-        }
+
         fn read_attribute_with_meter(&self, path: &MountPath, name: &[u8], work: &super::super::NativeMountMeterWork) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
             self.record_read(path);
             self.inner.read_attribute_with_meter(path, name, work)
         }
-        fn list_attributes_with_meter(&self, path: &MountPath, cursor: Option<&[u8]>, maximum: u32, work: &super::super::NativeMountMeterWork) -> Result<(super::super::MountAttributePage, crate::NativeAllocation), MountSourceError> {
-            self.inner.list_attributes_with_meter(path, cursor, maximum, work)
-        }
-        fn write_attribute_with_meter(&self, path: &MountPath, name: &[u8], value: crate::kernel::OwnedSourceChunk, mode: super::super::MountAttributeWriteMode, work: &super::super::NativeMountMeterWork) -> Result<(), MountSourceError> {
-            self.inner.write_attribute_with_meter(path, name, value, mode, work)
-        }
-        fn remove_attribute_with_meter(&self, path: &MountPath, name: &[u8], work: &super::super::NativeMountMeterWork) -> Result<(), MountSourceError> {
-            self.inner.remove_attribute_with_meter(path, name, work)
-        }
-        fn clone_range_by_id_with_meter(&self, source: FileId, source_offset: u64, destination: FileId, destination_offset: u64, length: u64, work: &super::super::NativeMountMeterWork) -> Result<(), MountSourceError> {
-            self.inner.clone_range_by_id_with_meter(source, source_offset, destination, destination_offset, length, work)
-        }
-        fn hard_link_with_meter(&self, source: &MountPath, destination: &MountPath, work: &super::super::NativeMountMeterWork) -> Result<(), MountSourceError> {
-            self.inner.hard_link_with_meter(source, destination, work)
-        }
-        fn folded_path_with_meter(&self, path: &MountPath, work: &super::super::NativeMountMeterWork) -> Result<Option<(MountPath,u64)>, MountSourceError> {
-            self.inner.folded_path_with_meter(path, work)
-        }
-        fn view_is_stable_with_meter(&self, work: &super::super::NativeMountMeterWork) -> Result<bool, MountSourceError> { self.inner.view_is_stable_with_meter(work) }
-        fn view_stamp_with_meter(&self, work: &super::super::NativeMountMeterWork) -> Result<Option<ViewStamp>, MountSourceError> { self.inner.view_stamp_with_meter(work) }
-        fn binding_epoch_with_meter(&self, work: &super::super::NativeMountMeterWork) -> Result<Option<u64>, MountSourceError> { self.inner.binding_epoch_with_meter(work) }
-        fn unchanged_since_with_meter(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp, work: &super::super::NativeMountMeterWork) -> Result<bool, MountSourceError> {
-            self.inner.unchanged_since_with_meter(path, file_id, stamp, work)
-        }
-        fn reported_unchanged_since_with_meter(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp, work: &super::super::NativeMountMeterWork) -> Result<bool, MountSourceError> {
-            self.inner.reported_unchanged_since_with_meter(path, file_id, stamp, work)
-        }
-        fn shutdown_with_meter(&self, work: &super::super::NativeMountMeterWork) -> Result<bool, MountSourceError> { self.inner.shutdown_with_meter(work) }
 
-        fn node_unchanged_since_with_meter(&self, file_id: FileId, stamp: ViewStamp, work: &super::super::NativeMountMeterWork) -> Result<bool, MountSourceError> {
-            self.inner.node_unchanged_since_with_meter(file_id, stamp, work)
-        }
-        fn listing_unchanged_since_with_meter(&self, path: &MountPath, stamp: ViewStamp, work: &super::super::NativeMountMeterWork) -> Result<bool, MountSourceError> {
-            self.inner.listing_unchanged_since_with_meter(path, stamp, work)
-        }
     }
 
     fn finishes_within(limit: Duration, operation: impl FnOnce() + Send + 'static) -> bool {
