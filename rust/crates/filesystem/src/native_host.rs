@@ -170,6 +170,222 @@ fn native_read_with_work<W: NativeHostWork>(work: &mut W) -> Result<(), W::Error
     work.record(delta)
 }
 
+// Field order keeps concrete native storage alive under its original ledger
+// until the storage itself is destroyed, including on every early return.
+struct NativeEnvironmentBuffer<T> {
+    data: Vec<T>,
+    allocation: crate::materializer::NativeAllocation,
+}
+
+fn native_environment_buffer<T>(
+    capacity: usize, mut work: &crate::materializer::NativeMaterializationWork,
+) -> Result<NativeEnvironmentBuffer<T>, crate::materializer::NativeTreeMaterializationError> {
+    let bytes = capacity.checked_mul(std::mem::size_of::<T>()).ok_or(crate::WorkError::Overflow)?;
+    let mut allocation = work.claim(bytes as u64)?;
+    let mut data = Vec::new();
+    let reserved = data.try_reserve_exact(capacity);
+    let actual = data.capacity().checked_mul(std::mem::size_of::<T>()).ok_or(crate::WorkError::Overflow)?;
+    // Even a failed reservation can leave completed backing. Observe it before
+    // returning either the real allocator cause or a late original-work error.
+    let reconciled = work.reconcile_allocation(&mut allocation, actual as u64);
+    reserved.map_err(<&crate::materializer::NativeMaterializationWork as NativeHostWork>::allocation_failed)?;
+    reconciled?;
+    Ok(NativeEnvironmentBuffer { data, allocation })
+}
+
+/// Reads current-process control metadata, never application BODY bytes or a
+/// filesystem root capability. The caller still owns all authority/proof checks.
+#[cfg(unix)]
+pub(crate) fn environment_variable_with_work(
+    name: &OsStr, maximum_bytes: usize, work: &crate::materializer::NativeMaterializationWork,
+) -> Result<Option<(OsString, crate::materializer::NativeAllocation)>, crate::materializer::NativeTreeMaterializationError> {
+    use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+    work.admit(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })?;
+    let name = name.as_bytes();
+    for byte in name {
+        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+        if *byte == 0 { return Err(io::Error::from(io::ErrorKind::InvalidInput).into()); }
+    }
+    let copy = WorkCounters { bytes_copied: name.len() as u64, ..WorkCounters::UNCHARGED };
+    work.admit(copy)?;
+    let mut terminated = native_environment_buffer::<u8>(
+        name.len().checked_add(1).ok_or(crate::WorkError::Overflow)?, work,
+    )?;
+    terminated.data.extend_from_slice(name);
+    terminated.data.push(0);
+    work.record_admitted(copy)?;
+    let value = native_attempt(&mut &*work,
+        WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED }, || {
+            // SAFETY: the name is live and NUL-terminated. POSIX getenv returns
+            // the actual environment string, not an owned or temporary copy.
+            // Concurrent readers are allowed; no reader here modifies it.
+            //
+            // As with std's Unix environment readers and native process
+            // inheritance, unsafe process environment mutation must not race
+            // this entire synchronous borrow/scan/copy. Rust set_var/remove_var
+            // explicitly require no concurrent reads outside std::env; foreign
+            // setenv/putenv/environ mutation must uphold the same requirement.
+            // A private SDK mutex could not enforce that foreign/std contract.
+            // https://doc.rust-lang.org/std/env/fn.set_var.html#safety
+            // https://pubs.opengroup.org/onlinepubs/9799919799/functions/getenv.html
+            Ok(unsafe { libc::getenv(terminated.data.as_ptr().cast()) })
+        })?;
+    work.admit(WorkCounters::UNCHARGED)?;
+    if value.is_null() { return Ok(None); }
+    let mut length = 0;
+    loop {
+        let step = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
+        work.admit(step)?;
+        // SAFETY: getenv's live string remains valid under the mutation
+        // contract above. Each byte is inspected before advancing; we never
+        // pass its terminating NUL or inspect more than maximum_bytes + 1.
+        let byte = unsafe { *value.add(length).cast::<u8>() };
+        work.record_admitted(step)?;
+        if byte == 0 { break; }
+        if length == maximum_bytes {
+            return Err(io::Error::from(io::ErrorKind::FileTooLarge).into());
+        }
+        length = length.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+    }
+    let copy = WorkCounters { bytes_copied: length as u64, ..WorkCounters::UNCHARGED };
+    work.admit(copy)?;
+    let mut output = native_environment_buffer::<u8>(length, work)?;
+    // SAFETY: the bounded scan established exactly this many initialized
+    // non-NUL bytes. Unsafe environment mutation still cannot race the copy.
+    output.data.extend_from_slice(unsafe { std::slice::from_raw_parts(value.cast::<u8>(), length) });
+    work.record_admitted(copy)?;
+    work.admit(WorkCounters::UNCHARGED)?;
+    // Unix OsString consumes the same concrete Vec allocation without decoding
+    // or copying it. The returned tuple destroys data before its guard.
+    Ok(Some((OsString::from_vec(output.data), output.allocation)))
+}
+
+#[cfg(windows)]
+fn native_environment_query(
+    name: &[u16], buffer: Option<&mut [u16]>,
+    work: &crate::materializer::NativeMaterializationWork,
+) -> Result<Option<usize>, crate::materializer::NativeTreeMaterializationError> {
+    use windows::Win32::Foundation::{ERROR_ENVVAR_NOT_FOUND, ERROR_SUCCESS, GetLastError, SetLastError};
+    use windows::Win32::System::Environment::GetEnvironmentVariableW;
+    native_attempt(&mut &*work,
+        WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED }, || {
+            // SAFETY: the validated terminated name and optional initialized
+            // buffer remain live through this synchronous call. Its checked
+            // slice length fits DWORD; Windows serializes environment changes.
+            let (count, error) = unsafe {
+                SetLastError(ERROR_SUCCESS);
+                let count = GetEnvironmentVariableW(windows::core::PCWSTR(name.as_ptr()), buffer);
+                (count, GetLastError())
+            };
+            if count != 0 { return Ok(Some(count as usize)); }
+            if error == ERROR_ENVVAR_NOT_FOUND { return Ok(None); }
+            if error == ERROR_SUCCESS { return Ok(Some(0)); }
+            Err(io::Error::from_raw_os_error(error.0 as i32))
+        })
+}
+
+#[cfg(windows)]
+fn native_environment_encoded_length(
+    wide: &[u16], work: &crate::materializer::NativeMaterializationWork,
+) -> Result<usize, crate::materializer::NativeTreeMaterializationError> {
+    let mut length = 0usize;
+    let mut index = 0;
+    while index < wide.len() {
+        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+        let unit = wide[index];
+        let mut bytes = if unit < 0x80 { 1 } else if unit < 0x800 { 2 } else { 3 };
+        if (0xD800..=0xDBFF).contains(&unit) && index + 1 < wide.len() {
+            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+            if (0xDC00..=0xDFFF).contains(&wide[index + 1]) {
+                bytes = 4;
+                index += 1;
+            }
+        }
+        length = length.checked_add(bytes).ok_or(crate::WorkError::Overflow)?;
+        index += 1;
+    }
+    Ok(length)
+}
+
+/// Bounds native UTF-16 requests and the logical OsString result separately:
+/// neither raw control-buffer bytes nor hidden std allocator calls are BODY
+/// reads or fabricated allocation-operation counts.
+#[cfg(windows)]
+pub(crate) fn environment_variable_with_work(
+    name: &OsStr, maximum_bytes: usize, mut work: &crate::materializer::NativeMaterializationWork,
+) -> Result<Option<(OsString, crate::materializer::NativeAllocation)>, crate::materializer::NativeTreeMaterializationError> {
+    use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
+    work.admit(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })?;
+    let mut units = 0usize;
+    for unit in name.encode_wide() {
+        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+        if unit == 0 { return Err(io::Error::from(io::ErrorKind::InvalidInput).into()); }
+        units = units.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+    }
+    let encoded = WorkCounters {
+        bytes_encoded: units.checked_mul(2).ok_or(crate::WorkError::Overflow)? as u64,
+        ..WorkCounters::UNCHARGED
+    };
+    work.admit(encoded)?;
+    let mut terminated = native_environment_buffer::<u16>(
+        units.checked_add(1).ok_or(crate::WorkError::Overflow)?, work,
+    )?;
+    terminated.data.extend(name.encode_wide());
+    terminated.data.push(0);
+    work.record_admitted(encoded)?;
+    let Some(mut capacity) = native_environment_query(&terminated.data, None, work)? else {
+        work.admit(WorkCounters::UNCHARGED)?;
+        return Ok(None);
+    };
+    work.admit(WorkCounters::UNCHARGED)?;
+    if capacity == 0 { return Ok(Some((OsString::new(), work.empty_allocation()))); }
+    // One UTF-16 unit produces at least one encoded byte. Include only the
+    // native NUL in this request cap, not in the caller's logical value cap.
+    let maximum_units = maximum_bytes.saturating_add(1).min(u32::MAX as usize);
+    loop {
+        if capacity > maximum_units {
+            return Err(io::Error::from(io::ErrorKind::FileTooLarge).into());
+        }
+        work.admit(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })?;
+        // This claim uses the original remaining live-byte allowance, before
+        // the allocator or next OS request. No retry can grow beyond that root
+        // allowance or the declared logical cap.
+        let mut buffer = native_environment_buffer::<u16>(capacity, work)?;
+        buffer.data.resize(capacity, 0);
+        let Some(count) = native_environment_query(&terminated.data, Some(&mut buffer.data), work)? else {
+            work.admit(WorkCounters::UNCHARGED)?;
+            return Ok(None);
+        };
+        work.admit(WorkCounters::UNCHARGED)?;
+        if count >= capacity {
+            // The OS reports the required capacity including NUL. Contents
+            // are undefined in this branch and are never examined or decoded.
+            drop(buffer);
+            capacity = count;
+            continue;
+        }
+        buffer.data.truncate(count);
+        let logical_bytes = native_environment_encoded_length(&buffer.data, work)?;
+        if logical_bytes > maximum_bytes {
+            return Err(io::Error::from(io::ErrorKind::FileTooLarge).into());
+        }
+        let encoded = WorkCounters { bytes_encoded: logical_bytes as u64, ..WorkCounters::UNCHARGED };
+        work.admit(encoded)?;
+        // Reserve logical decode output before calling the opaque safe std
+        // conversion. Its private allocations are not fabricated SDK attempts.
+        let mut allocation = work.reserve_opaque_decode(logical_bytes as u64)?;
+        let output = OsString::from_wide(&buffer.data);
+        // Both completed facts must survive any late capacity/cancellation
+        // refusal. Output is declared after its guard, so it drops first.
+        let reconciled = work.reconcile_allocation(&mut allocation, output.capacity() as u64);
+        let recorded = work.record_admitted(encoded);
+        reconciled?;
+        recorded?;
+        work.admit(WorkCounters::UNCHARGED)?;
+        return Ok(Some((output, allocation)));
+    }
+}
+
 /// Copies an existing native encoding without decoding UTF-16 or fabricating
 /// encoded bytes. The returned allocation token owns the live path bytes.
 pub(crate) fn clone_path_with_work<W: NativeHostWork>(
@@ -322,15 +538,96 @@ pub(crate) fn normalize_root_path_measured<W: NativeHostWork<Error = DemandError
     result
 }
 
+#[cfg(windows)]
+pub(crate) fn current_directory_with_work<W: NativeHostWork>(
+    work: &mut W,
+) -> Result<(std::path::PathBuf, W::Allocation), W::Error> {
+    use std::os::windows::ffi::OsStringExt as _;
+    use windows::Win32::System::Environment::GetCurrentDirectoryW;
+    let read = WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED };
+    // The zero-length probe reads the real process CWD control without an
+    // allocator. A concurrent CWD change can require another bounded attempt.
+    let mut requested = work.attempt_io(read, || {
+        // SAFETY: None advertises zero writable units.
+        let count = unsafe { GetCurrentDirectoryW(None) };
+        if count == 0 { Err(io::Error::last_os_error()) } else { Ok(count as usize) }
+    })?;
+    loop {
+        let bytes = requested.checked_mul(std::mem::size_of::<u16>())
+            .ok_or(crate::WorkError::Overflow)?;
+        let mut scratch_allocation = work.claim(bytes as u64)?;
+        let mut scratch = Vec::<u16>::new();
+        if let Err(error) = scratch.try_reserve_exact(requested) {
+            work.release(scratch_allocation)?;
+            return Err(W::allocation_failed(error));
+        }
+        let actual = scratch.capacity().checked_mul(std::mem::size_of::<u16>())
+            .ok_or(crate::WorkError::Overflow)?;
+        if let Err(error) = work.reconcile_allocation(&mut scratch_allocation, actual as u64) {
+            drop(scratch);
+            work.release(scratch_allocation)?;
+            return Err(error);
+        }
+        scratch.resize(requested, 0);
+        let result = (|| {
+            let count = work.attempt_io(read, || {
+                // SAFETY: the initialized slice advertises exactly its writable
+                // units; Win32 reports a required count when it does not fit.
+                let count = unsafe { GetCurrentDirectoryW(Some(&mut scratch)) };
+                if count == 0 { Err(io::Error::last_os_error()) } else { Ok(count as usize) }
+            })?;
+            if count >= scratch.len() { return Ok(Err(count)); }
+            let logical_max = count.checked_mul(3).ok_or(crate::WorkError::Overflow)?;
+            let copy = WorkCounters { bytes_copied: (count as u64).checked_mul(2)
+                .ok_or(crate::WorkError::Overflow)?, ..WorkCounters::UNCHARGED };
+            work.admit(copy)?;
+            // Safe std decoding is opaque, not a fabricated allocator attempt.
+            // Keep the raw input resident until actual output is reconciled.
+            let mut allocation = work.reserve_opaque_decode(logical_max as u64)?;
+            let path = std::path::PathBuf::from(OsString::from_wide(&scratch[..count]));
+            if let Err(error) = work.reconcile_allocation(&mut allocation, path.capacity() as u64) {
+                drop(path);
+                work.release(allocation)?;
+                return Err(error);
+            }
+            if let Err(error) = work.record(copy).and_then(|()| work.check()) {
+                drop(path);
+                work.release(allocation)?;
+                return Err(error);
+            }
+            Ok(Ok((path, allocation)))
+        })();
+        drop(scratch);
+        let released = work.release(scratch_allocation);
+        match result {
+            Ok(Ok((path, allocation))) => {
+                if let Err(error) = released {
+                    drop(path);
+                    work.release(allocation)?;
+                    return Err(error);
+                }
+                return Ok((path, allocation));
+            }
+            Ok(Err(next)) => { released?; requested = next; }
+            Err(error) => { released?; return Err(error); }
+        }
+    }
+}
+
 #[cfg(unix)]
 fn cwd_buffer_measured<W: NativeHostWork<Error = DemandError, Allocation = u64>>(
     length: usize, work: &mut W,
 ) -> Result<Vec<u8>, DemandError> {
-    work.claim(length as u64)?;
+    let mut allocation = work.claim(length as u64)?;
     let mut bytes = Vec::new();
     if let Err(error) = bytes.try_reserve_exact(length) {
-        work.release(length as u64)?;
-        return Err(io::Error::new(io::ErrorKind::OutOfMemory, error).into());
+        work.release(allocation)?;
+        return Err(W::allocation_failed(error));
+    }
+    if let Err(error) = work.reconcile_allocation(&mut allocation, bytes.capacity() as u64) {
+        drop(bytes);
+        work.release(allocation)?;
+        return Err(error);
     }
     Ok(bytes)
 }
@@ -342,6 +639,8 @@ fn cwd_open_measured<W: NativeHostWork<Error = DemandError>>(name: &std::ffi::CS
     loop {
         let result = native_attempt(work,
             WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED }, || {
+                // SAFETY: `name` is terminated and borrowed across open; a
+                // successful descriptor is fresh and immediately owned by File.
                 let fd = unsafe { libc::open(name.as_ptr(), flags) };
                 if fd < 0 { Err(io::Error::last_os_error()) }
                 else { Ok(unsafe { File::from_raw_fd(fd) }) }
@@ -366,16 +665,20 @@ fn cwd_metadata_flags() -> i32 {
 }
 
 #[cfg(target_os = "linux")]
-fn cwd_path_measured<W: NativeHostWork<Error = DemandError, Allocation = u64>>(work: &mut W) -> Result<std::path::PathBuf, DemandError> {
+pub(crate) fn cwd_path_measured<W: NativeHostWork<Error = DemandError, Allocation = u64>>(work: &mut W) -> Result<std::path::PathBuf, DemandError> {
     use std::os::unix::ffi::OsStringExt as _;
     // The Linux syscall itself stops at PATH_MAX; glibc's hidden ancestry
     // fallback is deliberately replaced by the shared measured reader below.
     let mut capacity = 256;
     loop {
+        work.admit(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })?;
         let mut bytes = cwd_buffer_measured(capacity, work)?;
         let result = loop {
             let result = native_attempt(work,
                 WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED }, || {
+                    // SAFETY: the live vector has the advertised writable
+                    // capacity; SYS_getcwd never writes beyond that byte bound.
+                    // Only the validated successful initialized prefix gets len.
                     let count = unsafe {
                         libc::syscall(libc::SYS_getcwd, bytes.as_mut_ptr(), bytes.capacity())
                     };
@@ -430,16 +733,19 @@ fn cwd_path_measured<W: NativeHostWork<Error = DemandError, Allocation = u64>>(w
 }
 
 #[cfg(target_os = "macos")]
-fn cwd_path_measured<W: NativeHostWork<Error = DemandError, Allocation = u64>>(work: &mut W) -> Result<std::path::PathBuf, DemandError> {
+pub(crate) fn cwd_path_measured<W: NativeHostWork<Error = DemandError, Allocation = u64>>(work: &mut W) -> Result<std::path::PathBuf, DemandError> {
     use std::os::fd::AsRawFd as _;
     use std::os::unix::ffi::OsStringExt as _;
     let current = cwd_open_measured(c".", work)?;
+    work.admit(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })?;
     let mut bytes = cwd_buffer_measured(libc::PATH_MAX as usize, work)?;
     bytes.resize(libc::PATH_MAX as usize, 0);
     let result = (|| {
         loop {
             let result = native_attempt(work,
                 WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED }, || {
+                    // SAFETY: the held descriptor stays live and the initialized
+                    // buffer is PATH_MAX bytes, as required by F_GETPATH.
                     if unsafe { libc::fcntl(current.as_raw_fd(), libc::F_GETPATH, bytes.as_mut_ptr()) } < 0 {
                         Err(io::Error::last_os_error())
                     } else { Ok(()) }
@@ -498,10 +804,23 @@ fn cwd_ancestor_name_measured<W: NativeHostWork<Error = DemandError, Allocation 
             | { #[cfg(target_os = "linux")] { libc::O_NOATIME }
                 #[cfg(not(target_os = "linux"))] { 0 } },
         || native_read_with_work(work))?);
-    work.claim(HostStatReader::BUFFER_BYTES as u64)?;
+    let mut allocation = work.claim(HostStatReader::BUFFER_BYTES as u64)?;
+    let units = HostStatReader::BUFFER_BYTES / std::mem::size_of::<u64>();
+    let mut buffer = Vec::<u64>::new();
+    if let Err(error) = buffer.try_reserve_exact(units) {
+        work.release(allocation)?;
+        return Err(W::allocation_failed(error));
+    }
+    if let Err(error) = work.reconcile_allocation(&mut allocation,
+        (buffer.capacity() * std::mem::size_of::<u64>()) as u64) {
+        drop(buffer);
+        work.release(allocation)?;
+        return Err(error);
+    }
+    buffer.resize(units, 0);
     let mut reader = HostStatReader {
         directory,
-        buffer: vec![0; HostStatReader::BUFFER_BYTES / std::mem::size_of::<u64>()],
+        buffer,
         next: 0, filled: 0, exhausted: false,
         #[cfg(target_os = "macos")]
         base: 0,
@@ -10509,6 +10828,29 @@ mod bounded_record_tests {
             -> (T, Result<(), Self::Error>) {
             reservation.attempt_recorded(operation)
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn current_directory_late_decode_cancellation_retires_actual_output_and_scratch() -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = crate::CancellationToken::new();
+        let mut budget = WorkBudget::UNBOUNDED;
+        budget.peak_allocation_bytes = ACCOUNTING_STATE_BYTES + 1024 * 1024;
+        budget.backend_read_operations = 16;
+        budget.allocation_operations = 16;
+        budget.bytes_copied = 1024 * 1024;
+        budget.source_bytes_read = 0;
+        let work = crate::materializer::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, _)| cause)?;
+        let mut boundary = CancelAfterName { work: &work, cancellation: &cancellation, cancel_on_write: false };
+        assert!(matches!(current_directory_with_work(&mut boundary),
+            Err(crate::materializer::NativeTreeMaterializationError::Cancelled)));
+        assert!(work.receipt().backend_read_operations >= 2);
+        assert!(work.receipt().bytes_copied > 0);
+        assert_eq!(work.receipt().source_bytes_read, 0);
+        assert_eq!(materialization_live_bytes(&work)?, ACCOUNTING_STATE_BYTES);
+        work.receipt().verify(budget)?;
+        Ok(())
     }
 
     #[test]

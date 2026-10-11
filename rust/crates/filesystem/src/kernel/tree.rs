@@ -1,6 +1,6 @@
 //! Canonical authenticated directory-page encoding.
 
-use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder};
+use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder, ReadAllocationStep, EncodeAllocationStep, EncodeWorkStep, EncodeAccounting};
 use super::codec::{DecodedPageKind, DecodedPageShape};
 use super::types::{
     FileKind, LogicalName, NameEncoding, TreeChild, TreeEntry, TreePage, TreePageError,
@@ -8,7 +8,7 @@ use super::types::{
 };
 use crate::foundation::{FileId, usize_to_u64};
 use crate::storage::{ObjectId, ObjectKind, object_digest};
-use super::allocation::AllocationLedger;
+use super::allocation::{AllocationLedger, KernelAccounting, KernelOwnedAllocation};
 use crate::{CancellationToken, MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
 use thiserror::Error;
 
@@ -50,7 +50,7 @@ pub fn encode_tree_page_measured(
     live_owned_bytes: u64,
 ) -> MeasuredResult<OperationReceipt<Vec<u8>>, TreePageEncodeError> {
     match page {
-        TreePage::Leaf(entries) => encode_tree_leaf_entries_measured(entries, maximum_items, budget, Some(cancellation), live_owned_bytes),
+        TreePage::Leaf(entries) => encode_tree_leaf_entries_measured(entries, maximum_items, budget, Some(cancellation), live_owned_bytes, None),
         TreePage::Internal(children) => encode_tree_internal_children_measured(
             children.iter().map(|child| (&child.first_name, child.page)),
             maximum_items, budget, Some(cancellation), live_owned_bytes,
@@ -75,21 +75,91 @@ pub enum TreePageEncodeError {
 fn project_encoding(result: MeasuredResult<OperationReceipt<Vec<u8>>, TreePageEncodeError>) -> Result<Vec<u8>, CanonicalDecodeError> {
     result.map(|receipt| receipt.value).map_err(|failure| match failure.error {
         TreePageEncodeError::Canonical(error) => error,
-        TreePageEncodeError::Work(_) => CanonicalDecodeError::LengthOverflow,
-        TreePageEncodeError::Cancelled(_) => unreachable!("unobserved cancellation"),
+        TreePageEncodeError::Work(error) => CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Work(error)),
+        TreePageEncodeError::Cancelled(_) => CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static("filesystem operation was cancelled")),
     })
 }
 
 pub(crate) fn encode_tree_leaf_entries(entries: &[TreeEntry], maximum_items: u32) -> Result<Vec<u8>, CanonicalDecodeError> {
-    project_encoding(encode_tree_leaf_entries_measured(entries, maximum_items, WorkBudget::UNBOUNDED, None, 0))
+    project_encoding(encode_tree_leaf_entries_measured(entries, maximum_items, WorkBudget::UNBOUNDED, None, 0, None))
 }
 
-fn encode_tree_leaf_entries_measured(
+/// Runs the canonical writer on the caller's ledger and returns its actual
+/// encoded-buffer capacity custody for native original-work callers.
+pub(crate) fn encode_tree_page_with_accounting(
+    page: &TreePage,
+    maximum_items: u32,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(Vec<u8>, KernelOwnedAllocation), crate::FsError> {
+    cancellation.check()?;
+    match page {
+        TreePage::Leaf(entries) => encode_tree_leaf_entries_with_accounting(
+            entries, maximum_items, accounting, None, None,
+        ),
+        TreePage::Internal(children) => encode_tree_internal_children_with_accounting(
+            children.iter().map(|child| (&child.first_name, child.page)), maximum_items, accounting,
+        ),
+    }
+}
+
+/// Borrows leaf entries and encodes outside the original-root mutex.
+pub(super) fn encode_tree_leaf_entries_with_accounting(
+    entries: &[TreeEntry],
+    maximum_items: u32,
+    accounting: &mut KernelAccounting<'_>,
+    semantic_tail: Option<u8>,
+    data_custody: Option<&super::ProofDataCustody>,
+) -> Result<(Vec<u8>, KernelOwnedAllocation), crate::FsError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let native_original = accounting.native_work().is_some();
+    let mut encoding = EncodeAccounting::new(accounting);
+    let result = encode_tree_leaf_entries_with_steps(
+        entries, maximum_items, semantic_tail, data_custody,
+        |step| encoding.observe(step),
+        |error| {
+            #[cfg(not(target_arch = "wasm32"))]
+            if native_original {
+                return crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(error));
+            }
+            let _ = error;
+            CanonicalDecodeError::AllocationFailed.into()
+        },
+    );
+    encoding.finish(result)
+}
+
+/// Borrows internal children; reservation and copies are outside Root loans.
+pub(super) fn encode_tree_internal_children_with_accounting<'a, I>(
+    children: I,
+    maximum_items: u32,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(Vec<u8>, KernelOwnedAllocation), crate::FsError>
+where I: Clone + ExactSizeIterator<Item = (&'a LogicalName, ObjectId)> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let native_original = accounting.native_work().is_some();
+    let mut encoding = EncodeAccounting::new(accounting);
+    let result = encode_tree_internal_children_with_steps(
+        children, maximum_items, |step| encoding.observe(step),
+        |error| {
+            #[cfg(not(target_arch = "wasm32"))]
+            if native_original {
+                return crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(error));
+            }
+            let _ = error;
+            CanonicalDecodeError::AllocationFailed.into()
+        },
+    );
+    encoding.finish(result)
+}
+
+pub(super) fn encode_tree_leaf_entries_measured(
     entries: &[TreeEntry],
     maximum_items: u32,
     budget: WorkBudget,
     cancellation: Option<&CancellationToken>,
     live_owned_bytes: u64,
+    semantic_tail: Option<u8>,
 ) -> MeasuredResult<OperationReceipt<Vec<u8>>, TreePageEncodeError> {
     let mut work = WorkCounters::default();
     let mut allocations = AllocationLedger::default();
@@ -97,21 +167,38 @@ fn encode_tree_leaf_entries_measured(
         if let Some(cancellation) = cancellation { cancellation.check()?; }
         allocations.claim_bytes(live_owned_bytes, 0, &mut work, budget)
             .map_err(|error| error.into_work_or(TreePageEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
-        let length = tree_leaf_encoded_length(entries, maximum_items, &mut work, budget, cancellation)?;
-        let copied = (length - DOMAIN.len() - 2 - 1 - 4 - entries.len() * 6) as u64;
-        if let Some(cancellation) = cancellation { cancellation.check()?; }
-        let mut encoder = admit_tree_encoder(length, copied, &mut allocations, &mut work, budget)?;
-        encoder.u8(LEAF_TAG);
-        encoder.u32(entries.len() as u32);
-        for entry in entries {
-            encode_name(&mut encoder, &entry.name);
-            encoder.fixed(&entry.file_id.into_bytes());
-            encoder.u8(entry.kind.tag());
-        }
-        finish_tree_encoder(encoder, length, copied, &mut work, budget)
+        encode_tree_leaf_entries_with_allocations(
+            entries, maximum_items, &mut allocations, &mut work, budget,
+            cancellation, semantic_tail, None,
+            |_| TreePageEncodeError::Canonical(CanonicalDecodeError::AllocationFailed),
+        )
     })();
     result.map(|value| OperationReceipt { value, work })
         .map_err(|error| OperationFailure::new(error, work))
+}
+
+/// The canonical leaf encoder on the caller's actual live allocation ledger.
+pub(super) fn encode_tree_leaf_entries_with_allocations<E>(
+    entries: &[TreeEntry], maximum_items: u32,
+    allocations: &mut AllocationLedger, work: &mut WorkCounters, budget: WorkBudget,
+    cancellation: Option<&CancellationToken>, semantic_tail: Option<u8>,
+    data_custody: Option<&super::ProofDataCustody>,
+    allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
+) -> Result<Vec<u8>, E>
+where E: From<CanonicalDecodeError> + From<crate::WorkError> + From<crate::CancellationError> {
+    let before = allocations.live_bytes();
+    let result = encode_tree_leaf_entries_with_steps(
+        entries, maximum_items, semantic_tail, data_custody,
+        |step| observe_tree_standalone(step, allocations, work, budget, cancellation),
+        allocation_error,
+    );
+    if result.is_err() {
+        // Any encoder/output has physically dropped before releasing its claim.
+        let owned = allocations.live_bytes().checked_sub(before).ok_or(crate::WorkError::Overflow)?;
+        allocations.release(owned)
+            .map_err(|error| error.into_work_or(E::from(crate::WorkError::Overflow)))?;
+    }
+    result
 }
 
 pub(crate) fn encode_tree_internal_children<'a, I>(children: I, maximum_items: u32) -> Result<Vec<u8>, CanonicalDecodeError>
@@ -133,57 +220,218 @@ where I: Clone + ExactSizeIterator<Item = (&'a LogicalName, ObjectId)> {
         if let Some(cancellation) = cancellation { cancellation.check()?; }
         allocations.claim_bytes(live_owned_bytes, 0, &mut work, budget)
             .map_err(|error| error.into_work_or(TreePageEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
-        let length = tree_internal_encoded_length(children.clone(), maximum_items, &mut work, budget, cancellation)?;
-        let copied = (length - DOMAIN.len() - 2 - 1 - 4 - children.len() * 5) as u64;
-        if let Some(cancellation) = cancellation { cancellation.check()?; }
-        let mut encoder = admit_tree_encoder(length, copied, &mut allocations, &mut work, budget)?;
-        encoder.u8(INTERNAL_TAG);
-        encoder.u32(children.len() as u32);
-        for (name, page) in children {
-            encode_name(&mut encoder, name);
-            encoder.fixed(page.digest.as_bytes());
-        }
-        finish_tree_encoder(encoder, length, copied, &mut work, budget)
+        encode_tree_internal_children_with_allocations(
+            children, maximum_items, &mut allocations, &mut work, budget, cancellation,
+            |_| TreePageEncodeError::Canonical(CanonicalDecodeError::AllocationFailed),
+        )
     })();
     result.map(|value| OperationReceipt { value, work })
         .map_err(|error| OperationFailure::new(error, work))
 }
 
-fn tree_leaf_encoded_length(
-    entries: &[TreeEntry],
+pub(super) fn encode_tree_internal_children_with_allocations<'a, I, E>(
+    children: I,
     maximum_items: u32,
+    allocations: &mut AllocationLedger,
     work: &mut WorkCounters,
     budget: WorkBudget,
     cancellation: Option<&CancellationToken>,
-) -> Result<usize, TreePageEncodeError> {
+    allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
+) -> Result<Vec<u8>, E>
+where
+    I: Clone + ExactSizeIterator<Item = (&'a LogicalName, ObjectId)>,
+    E: From<CanonicalDecodeError> + From<crate::WorkError> + From<crate::CancellationError>,
+{
+    let before = allocations.live_bytes();
+    let result = encode_tree_internal_children_with_steps(
+        children, maximum_items,
+        |step| observe_tree_standalone(step, allocations, work, budget, cancellation),
+        allocation_error,
+    );
+    if result.is_err() {
+        let owned = allocations.live_bytes().checked_sub(before).ok_or(crate::WorkError::Overflow)?;
+        allocations.release(owned)
+            .map_err(|error| error.into_work_or(E::from(crate::WorkError::Overflow)))?;
+    }
+    result
+}
+
+fn observe_tree_standalone<E>(
+    step: EncodeWorkStep,
+    allocations: &mut AllocationLedger,
+    work: &mut WorkCounters,
+    budget: WorkBudget,
+    cancellation: Option<&CancellationToken>,
+) -> Result<(), E>
+where E: From<CanonicalDecodeError> + From<crate::WorkError> + From<crate::CancellationError> {
+    match step {
+        EncodeWorkStep::Check => {
+            if let Some(cancellation) = cancellation { cancellation.check()?; }
+        }
+        EncodeWorkStep::Admit(delta) => work.admit(&delta, &budget)?,
+        EncodeWorkStep::Completed(delta) => {
+            work.try_add_assign(&delta)?;
+            work.verify(budget)?;
+            if let Some(cancellation) = cancellation { cancellation.check()?; }
+        }
+        EncodeWorkStep::Allocation(EncodeAllocationStep::Reserve { capacity }) => {
+            allocations.claim_elements::<u8>(capacity, work, budget)
+                .map_err(|error| error.into_work_or(E::from(CanonicalDecodeError::AllocationFailed)))?;
+        }
+        EncodeWorkStep::Allocation(EncodeAllocationStep::Capacity { admitted_bytes, actual_bytes }) => {
+            if actual_bytes > admitted_bytes {
+                allocations.record_owned_bytes(actual_bytes - admitted_bytes, work)
+                    .map_err(|error| error.into_work_or(E::from(CanonicalDecodeError::AllocationFailed)))?;
+                work.verify(budget)?;
+            }
+        }
+        EncodeWorkStep::Allocation(EncodeAllocationStep::BeforeHeader { bytes }) => {
+            work.admit(&WorkCounters { bytes_encoded: bytes, ..WorkCounters::default() }, &budget)?;
+        }
+        EncodeWorkStep::Allocation(EncodeAllocationStep::HeaderWritten { bytes }) => {
+            work.try_add_assign(&WorkCounters { bytes_encoded: bytes, ..WorkCounters::default() })?;
+            work.verify(budget)?;
+            if let Some(cancellation) = cancellation { cancellation.check()?; }
+        }
+    }
+    Ok(())
+}
+
+/// Attributes only reached physical completions, including a late refusal.
+fn observe_tree_step<E: From<crate::WorkError>>(
+    observe: &mut impl FnMut(EncodeWorkStep) -> Result<(), E>,
+    step: EncodeWorkStep,
+    data_custody: Option<&super::ProofDataCustody>,
+) -> Result<(), E> {
+    let completed = data_custody.and_then(|_| match &step {
+        EncodeWorkStep::Completed(delta) => Some(*delta),
+        EncodeWorkStep::Allocation(EncodeAllocationStep::Capacity { actual_bytes, .. }) => Some(WorkCounters {
+            allocation_operations: u64::from(*actual_bytes != 0),
+            peak_allocation_bytes: *actual_bytes, ..WorkCounters::default()
+        }),
+        EncodeWorkStep::Allocation(EncodeAllocationStep::HeaderWritten { bytes }) => Some(WorkCounters {
+            bytes_encoded: *bytes, ..WorkCounters::default()
+        }),
+        _ => None,
+    });
+    let observed = observe(step);
+    let attributed = match (data_custody, completed) {
+        (Some(owner), Some(delta)) => owner.record_completed_leaf_work(delta),
+        _ => Ok(()),
+    };
+    observed?;
+    attributed.map_err(Into::into)
+}
+
+fn encode_tree_leaf_entries_with_steps<E>(
+    entries: &[TreeEntry],
+    maximum_items: u32,
+    semantic_tail: Option<u8>,
+    data_custody: Option<&super::ProofDataCustody>,
+    mut observe: impl FnMut(EncodeWorkStep) -> Result<(), E>,
+    allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
+) -> Result<Vec<u8>, E>
+where E: From<CanonicalDecodeError> + From<crate::WorkError> {
+    let mut emit = |step| observe_tree_step(&mut observe, step, data_custody);
+    emit(EncodeWorkStep::Check)?;
+    let page_length = tree_leaf_encoded_length(entries, maximum_items, &mut emit)?;
+    let copied = (page_length - DOMAIN.len() - 2 - 1 - 4 - entries.len() * 6) as u64;
+    let length = page_length.checked_add(usize::from(semantic_tail.is_some()))
+        .ok_or(CanonicalDecodeError::LengthOverflow)?;
+    emit(EncodeWorkStep::Admit(WorkCounters {
+        bytes_encoded: length as u64, bytes_copied: copied, ..WorkCounters::default()
+    }))?;
+    emit(EncodeWorkStep::Check)?;
+    let mut encoder = Encoder::with_exact_capacity_with_steps(
+        DOMAIN, VERSION, length, |step| emit(EncodeWorkStep::Allocation(step)), allocation_error,
+    )?;
+    encoder.u8(LEAF_TAG);
+    encoder.u32(entries.len() as u32);
+    for entry in entries {
+        encode_name(&mut encoder, &entry.name);
+        encoder.fixed(&entry.file_id.into_bytes());
+        encoder.u8(entry.kind.tag());
+    }
+    if let Some(tail) = semantic_tail { encoder.u8(tail); }
+    emit(EncodeWorkStep::Completed(WorkCounters {
+        bytes_encoded: (length - DOMAIN.len() - 2) as u64,
+        bytes_copied: copied, ..WorkCounters::default()
+    }))?;
+    Ok(encoder.finish())
+}
+
+fn encode_tree_internal_children_with_steps<'a, I, E>(
+    children: I,
+    maximum_items: u32,
+    mut observe: impl FnMut(EncodeWorkStep) -> Result<(), E>,
+    allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
+) -> Result<Vec<u8>, E>
+where
+    I: Clone + ExactSizeIterator<Item = (&'a LogicalName, ObjectId)>,
+    E: From<CanonicalDecodeError>,
+{
+    observe(EncodeWorkStep::Check)?;
+    let length = tree_internal_encoded_length(children.clone(), maximum_items, &mut observe)?;
+    let copied = (length - DOMAIN.len() - 2 - 1 - 4 - children.len() * 5) as u64;
+    observe(EncodeWorkStep::Admit(WorkCounters {
+        bytes_encoded: length as u64, bytes_copied: copied, ..WorkCounters::default()
+    }))?;
+    observe(EncodeWorkStep::Check)?;
+    let mut encoder = Encoder::with_exact_capacity_with_steps(
+        DOMAIN, VERSION, length, |step| observe(EncodeWorkStep::Allocation(step)), allocation_error,
+    )?;
+    encoder.u8(INTERNAL_TAG);
+    encoder.u32(children.len() as u32);
+    for (name, page) in children {
+        encode_name(&mut encoder, name);
+        encoder.fixed(page.digest.as_bytes());
+    }
+    observe(EncodeWorkStep::Completed(WorkCounters {
+        bytes_encoded: (length - DOMAIN.len() - 2) as u64,
+        bytes_copied: copied, ..WorkCounters::default()
+    }))?;
+    Ok(encoder.finish())
+}
+
+fn tree_leaf_encoded_length<E: From<CanonicalDecodeError>>(
+    entries: &[TreeEntry],
+    maximum_items: u32,
+    observe: &mut impl FnMut(EncodeWorkStep) -> Result<(), E>,
+) -> Result<usize, E> {
     if count(entries.len())? > maximum_items {
         return Err(invariant(TreePageError::TooManyItems).into());
     }
     let mut length = DOMAIN.len() + 2 + 1 + 4;
     let mut prior: Option<&LogicalName> = None;
     for entry in entries {
-        if let Some(cancellation) = cancellation { cancellation.check()?; }
-        work.charge_items(1, &budget)?;
-        if prior.is_some_and(|name| name >= &entry.name) {
-            return Err(invariant(TreePageError::NamesNotStrictlyOrdered).into());
-        }
-        count(entry.name.as_bytes().len())?;
-        length = length.checked_add(1 + 4 + 16 + 1)
-            .and_then(|value| value.checked_add(entry.name.as_bytes().len()))
-            .ok_or(CanonicalDecodeError::LengthOverflow)?;
+        observe(EncodeWorkStep::Check)?;
+        let item = WorkCounters { items_examined: 1, ..WorkCounters::default() };
+        observe(EncodeWorkStep::Admit(item))?;
+        let next = (|| {
+            if prior.is_some_and(|name| name >= &entry.name) {
+                return Err(invariant(TreePageError::NamesNotStrictlyOrdered));
+            }
+            count(entry.name.as_bytes().len())?;
+            length.checked_add(1 + 4 + 16 + 1)
+                .and_then(|value| value.checked_add(entry.name.as_bytes().len()))
+                .ok_or(CanonicalDecodeError::LengthOverflow)
+        })();
+        observe(EncodeWorkStep::Completed(item))?;
+        length = next?;
         prior = Some(&entry.name);
     }
     Ok(length)
 }
 
-fn tree_internal_encoded_length<'a, I>(
+fn tree_internal_encoded_length<'a, I, E>(
     children: I,
     maximum_items: u32,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-    cancellation: Option<&CancellationToken>,
-) -> Result<usize, TreePageEncodeError>
-where I: ExactSizeIterator<Item = (&'a LogicalName, ObjectId)> {
+    observe: &mut impl FnMut(EncodeWorkStep) -> Result<(), E>,
+) -> Result<usize, E>
+where
+    I: ExactSizeIterator<Item = (&'a LogicalName, ObjectId)>,
+    E: From<CanonicalDecodeError>,
+{
     if children.len() == 0 {
         return Err(invariant(TreePageError::EmptyInternalPage).into());
     }
@@ -193,43 +441,26 @@ where I: ExactSizeIterator<Item = (&'a LogicalName, ObjectId)> {
     let mut length = DOMAIN.len() + 2 + 1 + 4;
     let mut prior: Option<&LogicalName> = None;
     for (name, page) in children {
-        if let Some(cancellation) = cancellation { cancellation.check()?; }
-        work.charge_items(1, &budget)?;
-        if prior.is_some_and(|value| value >= name) {
-            return Err(invariant(TreePageError::NamesNotStrictlyOrdered).into());
-        }
-        if page.kind != ObjectKind::TreePage {
-            return Err(invariant(TreePageError::WrongChildKind).into());
-        }
-        count(name.as_bytes().len())?;
-        length = length.checked_add(1 + 4 + 32)
-            .and_then(|value| value.checked_add(name.as_bytes().len()))
-            .ok_or(CanonicalDecodeError::LengthOverflow)?;
+        observe(EncodeWorkStep::Check)?;
+        let item = WorkCounters { items_examined: 1, ..WorkCounters::default() };
+        observe(EncodeWorkStep::Admit(item))?;
+        let next = (|| {
+            if prior.is_some_and(|value| value >= name) {
+                return Err(invariant(TreePageError::NamesNotStrictlyOrdered));
+            }
+            if page.kind != ObjectKind::TreePage {
+                return Err(invariant(TreePageError::WrongChildKind));
+            }
+            count(name.as_bytes().len())?;
+            length.checked_add(1 + 4 + 32)
+                .and_then(|value| value.checked_add(name.as_bytes().len()))
+                .ok_or(CanonicalDecodeError::LengthOverflow)
+        })();
+        observe(EncodeWorkStep::Completed(item))?;
+        length = next?;
         prior = Some(name);
     }
     Ok(length)
-}
-
-fn admit_tree_encoder(length: usize, copied: u64, allocations: &mut AllocationLedger, work: &mut WorkCounters, budget: WorkBudget) -> Result<Encoder, TreePageEncodeError> {
-    work.admit(&WorkCounters { bytes_encoded: length as u64, bytes_copied: copied, ..WorkCounters::default() }, &budget)?;
-    let admitted = allocations.claim_elements::<u8>(length, work, budget)
-        .map_err(|error| error.into_work_or(TreePageEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
-    let encoder = Encoder::with_exact_capacity(DOMAIN, VERSION, length)?;
-    let header_bytes = (DOMAIN.len() + 2) as u64;
-    work.charge(&WorkCounters { bytes_encoded: header_bytes, ..WorkCounters::default() }, &budget)?;
-    if encoder.capacity() as u64 > admitted {
-        // Allocator excess is already physically live; record it before refusal.
-        allocations.claim_bytes(encoder.capacity() as u64 - admitted, 0, work, WorkBudget::UNBOUNDED)
-            .map_err(|error| error.into_work_or(TreePageEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
-        work.verify(budget)?;
-    }
-    Ok(encoder)
-}
-
-fn finish_tree_encoder(encoder: Encoder, length: usize, copied: u64, work: &mut WorkCounters, budget: WorkBudget) -> Result<Vec<u8>, TreePageEncodeError> {
-    let body_bytes = (length - DOMAIN.len() - 2) as u64;
-    work.charge(&WorkCounters { bytes_encoded: body_bytes, bytes_copied: copied, ..WorkCounters::default() }, &budget)?;
-    Ok(encoder.finish())
 }
 
 pub(crate) fn tree_page_decode_shape(
@@ -295,57 +526,106 @@ pub fn decode_tree_page(
     bytes: &[u8],
     limits: DecodeLimits,
 ) -> Result<TreePage, CanonicalDecodeError> {
-    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_page_object_bytes())?;
-    let page_tag = decoder.u8()?;
-    let item_count = decoder.u32()?;
+    decode_tree_page_with_steps(bytes, limits, &mut |_| Ok(()))
+}
+
+/// Decodes the canonical page while observing actual allocation, copy, and item boundaries.
+pub(crate) fn decode_tree_page_with_steps<E: From<CanonicalDecodeError>>(
+    bytes: &[u8],
+    limits: DecodeLimits,
+    observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+) -> Result<TreePage, E> {
+    decode_tree_page_mapped_with_steps(
+        bytes, limits, observe, TreePage::Leaf, TreePage::Internal,
+        |first_name, page| TreeChild { first_name, page },
+        |child| &child.first_name,
+    )
+}
+
+// Construct destination children in the original parser's reserved vector. In
+// particular, persistent reads never allocate a second conversion vector.
+pub(crate) fn decode_tree_page_mapped_with_steps<E, C, P>(
+    bytes: &[u8],
+    limits: DecodeLimits,
+    observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+    leaf: impl FnOnce(Vec<TreeEntry>) -> P,
+    internal: impl FnOnce(Vec<C>) -> P,
+    child: impl Fn(LogicalName, ObjectId) -> C,
+    child_name: impl Fn(&C) -> &LogicalName,
+) -> Result<P, E>
+where
+    E: From<CanonicalDecodeError>,
+{
+    let mut decoder = Decoder::new_with_steps(bytes, DOMAIN, VERSION, limits.maximum_page_object_bytes(), observe)?;
+    let page_tag = decoder.u8_with_steps(observe)?;
+    let item_count = decoder.u32_with_steps(observe)?;
     if item_count > limits.maximum_page_items {
         return Err(CanonicalDecodeError::FieldTooLarge {
             observed: item_count,
             maximum: limits.maximum_page_items,
-        });
+        }.into());
     }
     let capacity = usize::try_from(item_count).map_err(|_| CanonicalDecodeError::LengthOverflow)?;
-    let page = match page_tag {
+    match page_tag {
         LEAF_TAG => {
             let mut entries = Vec::new();
-            entries
-                .try_reserve_exact(capacity)
-                .map_err(|_| CanonicalDecodeError::AllocationFailed)?;
-            for _ in 0..item_count {
-                let name = decode_name(&mut decoder, limits.maximum_name_bytes)?;
-                let file_id = FileId::from_bytes(decoder.fixed()?);
-                let kind = FileKind::from_tag(decoder.u8()?).map_err(invariant)?;
-                entries.push(TreeEntry {
-                    name,
-                    file_id,
-                    kind,
-                });
+            let admitted_bytes = usize_to_u64(capacity.checked_mul(std::mem::size_of::<TreeEntry>())
+                .ok_or(CanonicalDecodeError::LengthOverflow)?);
+            observe(ReadAllocationStep::Allocate { bytes: admitted_bytes, operations: u64::from(capacity != 0) })?;
+            if let Err(error) = entries.try_reserve_exact(capacity) {
+                observe(ReadAllocationStep::ReserveFailed(error))?;
+                return Err(CanonicalDecodeError::AllocationFailed.into());
             }
-            TreePage::Leaf(entries)
+            observe(ReadAllocationStep::Capacity {
+                admitted_bytes,
+                actual_bytes: usize_to_u64(entries.capacity() * std::mem::size_of::<TreeEntry>()),
+            })?;
+            for _ in 0..item_count {
+                observe(ReadAllocationStep::BeforeItem)?;
+                let name = decode_name_with_steps(&mut decoder, limits.maximum_name_bytes, observe)?;
+                let file_id = FileId::from_bytes(decoder.fixed_with_steps::<16, E>(observe)?);
+                let kind = FileKind::from_tag(decoder.u8_with_steps(observe)?).map_err(invariant)?;
+                entries.push(TreeEntry { name, file_id, kind });
+                observe(ReadAllocationStep::Item)?;
+            }
+            decoder.finish()?;
+            let page = TreePage::Leaf(entries);
+            page.validate(limits.maximum_page_items).map_err(invariant)?;
+            let TreePage::Leaf(entries) = page else { unreachable!() };
+            Ok(leaf(entries))
         }
         INTERNAL_TAG => {
             let mut children = Vec::new();
-            children
-                .try_reserve_exact(capacity)
-                .map_err(|_| CanonicalDecodeError::AllocationFailed)?;
-            for _ in 0..item_count {
-                let first_name = decode_name(&mut decoder, limits.maximum_name_bytes)?;
-                let page = digest_object(ObjectKind::TreePage, decoder.fixed()?);
-                children.push(TreeChild { first_name, page });
+            let admitted_bytes = usize_to_u64(capacity.checked_mul(std::mem::size_of::<C>())
+                .ok_or(CanonicalDecodeError::LengthOverflow)?);
+            observe(ReadAllocationStep::Allocate { bytes: admitted_bytes, operations: u64::from(capacity != 0 && std::mem::size_of::<C>() != 0) })?;
+            if let Err(error) = children.try_reserve_exact(capacity) {
+                observe(ReadAllocationStep::ReserveFailed(error))?;
+                return Err(CanonicalDecodeError::AllocationFailed.into());
             }
-            TreePage::Internal(children)
+            observe(ReadAllocationStep::Capacity {
+                admitted_bytes,
+                actual_bytes: usize_to_u64(children.capacity() * std::mem::size_of::<C>()),
+            })?;
+            for _ in 0..item_count {
+                observe(ReadAllocationStep::BeforeItem)?;
+                let first_name = decode_name_with_steps(&mut decoder, limits.maximum_name_bytes, observe)?;
+                let page = digest_object(ObjectKind::TreePage, decoder.fixed_with_steps::<32, E>(observe)?);
+                children.push(child(first_name, page));
+                observe(ReadAllocationStep::Item)?;
+            }
+            decoder.finish()?;
+            if children.is_empty() {
+                return Err(invariant(TreePageError::EmptyInternalPage).into());
+            }
+            if children.windows(2).any(|pair| matches!(pair, [left, right] if child_name(left) >= child_name(right))) {
+                return Err(invariant(TreePageError::NamesNotStrictlyOrdered).into());
+            }
+            // Every child identity above is constructed with ObjectKind::TreePage.
+            Ok(internal(children))
         }
-        tag => {
-            return Err(CanonicalDecodeError::UnknownTag {
-                field: "tree_page",
-                tag,
-            });
-        }
-    };
-    decoder.finish()?;
-    page.validate(limits.maximum_page_items)
-        .map_err(invariant)?;
-    Ok(page)
+        tag => Err(CanonicalDecodeError::UnknownTag { field: "tree_page", tag }.into()),
+    }
 }
 
 /// Computes the typed authenticated identity of one validated tree page.
@@ -368,13 +648,14 @@ fn encode_name(encoder: &mut Encoder, name: &LogicalName) {
     encoder.fixed(name.as_bytes());
 }
 
-fn decode_name(
+fn decode_name_with_steps<E: From<CanonicalDecodeError>>(
     decoder: &mut Decoder<'_>,
     maximum_name_bytes: u32,
-) -> Result<LogicalName, CanonicalDecodeError> {
-    let encoding = NameEncoding::from_tag(decoder.u8()?).map_err(invariant)?;
-    let bytes = decoder.bounded_bytes(maximum_name_bytes)?;
-    LogicalName::new(encoding, bytes, maximum_name_bytes).map_err(invariant)
+    observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+) -> Result<LogicalName, E> {
+    let encoding = NameEncoding::from_tag(decoder.u8_with_steps(observe)?).map_err(invariant)?;
+    let bytes = decoder.bounded_bytes_with_steps(maximum_name_bytes, observe)?;
+    LogicalName::new(encoding, bytes, maximum_name_bytes).map_err(|error| invariant(error).into())
 }
 
 fn count(length: usize) -> Result<u32, CanonicalDecodeError> {
@@ -382,7 +663,7 @@ fn count(length: usize) -> Result<u32, CanonicalDecodeError> {
 }
 
 fn invariant(error: TreePageError) -> CanonicalDecodeError {
-    CanonicalDecodeError::Invariant(error.to_string())
+    CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Tree(error))
 }
 
 #[cfg(test)]

@@ -17,6 +17,18 @@ pub(crate) struct DecodedPageShape {
     pub(crate) nested_bytes: u64,
 }
 
+/// Admission, actual reserve failures, and completion points of canonical owned-buffer readers.
+pub(crate) enum ReadAllocationStep {
+    Allocate { bytes: u64, operations: u64 },
+    /// Emitted only after a failed reserve; no-op observers retain the canonical error.
+    ReserveFailed(std::collections::TryReserveError),
+    Capacity { admitted_bytes: u64, actual_bytes: u64 },
+    BeforeCopy(u64),
+    Copied(u64),
+    BeforeItem,
+    Item,
+}
+
 /// Allocation and collection bounds for one canonical object decode.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct DecodeLimits {
@@ -75,6 +87,125 @@ impl DecodeLimits {
     }
 }
 
+/// Actual reservation and header-write boundaries of the one canonical writer.
+pub(crate) enum EncodeAllocationStep {
+    Reserve { capacity: usize },
+    Capacity { admitted_bytes: u64, actual_bytes: u64 },
+    BeforeHeader { bytes: u64 },
+    HeaderWritten { bytes: u64 },
+}
+
+/// Work boundaries of the canonical writer body, outside every original-root loan.
+pub(crate) enum EncodeWorkStep {
+    Check,
+    Admit(crate::WorkCounters),
+    Completed(crate::WorkCounters),
+    Allocation(EncodeAllocationStep),
+}
+
+/// Funds a canonical writer through short scalar original-ledger operations.
+///
+/// Allocators, byte writes, validation, and callbacks run outside the root loan.
+/// `finish` transfers the buffer and its guard together, or destroys the buffer
+/// before retiring its failed-operation capacity.
+pub(crate) struct EncodeAccounting<'a, 'root> {
+    accounting: &'a mut super::allocation::KernelAccounting<'root>,
+    owned_bytes: u64,
+    allocation: Option<super::allocation::KernelOwnedAllocation>,
+}
+
+impl<'a, 'root> EncodeAccounting<'a, 'root> {
+    pub(crate) fn new(accounting: &'a mut super::allocation::KernelAccounting<'root>) -> Self {
+        Self { accounting, owned_bytes: 0, allocation: None }
+    }
+
+    pub(crate) fn observe(&mut self, step: EncodeWorkStep) -> Result<(), crate::FsError> {
+        match step {
+            EncodeWorkStep::Check => self.accounting.check(),
+            EncodeWorkStep::Admit(delta) => self.accounting.admit(delta),
+            EncodeWorkStep::Completed(delta) => self.accounting.record_completed(delta),
+            EncodeWorkStep::Allocation(EncodeAllocationStep::Reserve { capacity }) => {
+                let requested = usize_to_u64(capacity);
+                let next_owned = self.owned_bytes.checked_add(requested)
+                    .ok_or(crate::WorkError::Overflow)?;
+                let mut allocation = self.accounting.claim_owned(requested, u64::from(capacity != 0))?;
+                self.owned_bytes = next_owned;
+                if let Some(owned) = self.allocation.as_mut() {
+                    owned.absorb(&mut allocation)?;
+                } else {
+                    self.allocation = Some(allocation);
+                }
+                Ok(())
+            }
+            EncodeWorkStep::Allocation(EncodeAllocationStep::Capacity { admitted_bytes, actual_bytes }) => {
+                self.owned_bytes = self.owned_bytes.checked_sub(admitted_bytes)
+                    .and_then(|other| other.checked_add(actual_bytes)).ok_or(crate::WorkError::Overflow)?;
+                let allocation = self.allocation.as_mut().ok_or(crate::WorkError::Overflow)?;
+                self.accounting.reconcile_owned(allocation, admitted_bytes, actual_bytes)
+            }
+            EncodeWorkStep::Allocation(EncodeAllocationStep::BeforeHeader { bytes }) =>
+                self.accounting.admit(crate::WorkCounters { bytes_encoded: bytes, ..crate::WorkCounters::default() }),
+            EncodeWorkStep::Allocation(EncodeAllocationStep::HeaderWritten { bytes }) =>
+                self.accounting.record_completed(crate::WorkCounters { bytes_encoded: bytes, ..crate::WorkCounters::default() }),
+        }
+    }
+
+    pub(crate) fn finish(
+        mut self,
+        result: Result<Vec<u8>, crate::FsError>,
+    ) -> Result<(Vec<u8>, super::allocation::KernelOwnedAllocation), crate::FsError> {
+        match result {
+            Ok(bytes) => {
+                if let Err(error) = self.accounting.check() {
+                    drop(bytes);
+                    self.retire()?;
+                    return Err(error);
+                }
+                let Some(allocation) = self.allocation.take() else {
+                    drop(bytes);
+                    return Err(crate::WorkError::Overflow.into());
+                };
+                self.owned_bytes = 0;
+                Ok((bytes, allocation))
+            }
+            Err(error) => {
+                self.retire()?;
+                Err(error)
+            }
+        }
+    }
+
+    fn retire(&mut self) -> Result<(), crate::FsError> {
+        let Some(allocation) = self.allocation.take() else { return Ok(()); };
+        let bytes = std::mem::take(&mut self.owned_bytes);
+        match allocation {
+            super::allocation::KernelOwnedAllocation::Standalone => {
+                match self.accounting {
+                    super::allocation::KernelAccounting::Standalone { allocations, .. } =>
+                        allocations.release(bytes),
+                    super::allocation::KernelAccounting::BorrowedStandalone { allocations, .. } =>
+                        allocations.release(bytes),
+                    #[cfg(not(target_arch = "wasm32"))]
+                    super::allocation::KernelAccounting::NativeOriginal { .. } =>
+                        return Err(crate::WorkError::Overflow.into()),
+                }.map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            super::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
+                drop(allocation);
+                Ok(())
+            }
+        }
+    }
+}
+
+impl Drop for EncodeAccounting<'_, '_> {
+    fn drop(&mut self) {
+        let retired = self.retire();
+        debug_assert!(retired.is_ok(), "canonical encoder funding must retire its exact live capacity");
+    }
+}
+
 pub(crate) struct Encoder {
     bytes: Vec<u8>,
 }
@@ -92,19 +223,37 @@ impl Encoder {
         version: u16,
         capacity: usize,
     ) -> Result<Self, CanonicalDecodeError> {
-        let minimum = domain
-            .len()
-            .checked_add(2)
+        Self::with_exact_capacity_with_steps(
+            domain, version, capacity, |_| Ok(()),
+            |_| CanonicalDecodeError::AllocationFailed,
+        )
+    }
+
+    /// The same exact-capacity producer with original-ledger admission before
+    /// reservation and actual-capacity reconciliation before any header write.
+    pub(crate) fn with_exact_capacity_with_steps<E: From<CanonicalDecodeError>>(
+        domain: &[u8],
+        version: u16,
+        capacity: usize,
+        mut observe: impl FnMut(EncodeAllocationStep) -> Result<(), E>,
+        allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
+    ) -> Result<Self, E> {
+        let minimum = domain.len().checked_add(2)
             .ok_or(CanonicalDecodeError::LengthOverflow)?;
         if capacity < minimum {
-            return Err(CanonicalDecodeError::LengthOverflow);
+            return Err(CanonicalDecodeError::LengthOverflow.into());
         }
+        observe(EncodeAllocationStep::Reserve { capacity })?;
         let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(capacity)
-            .map_err(|_| CanonicalDecodeError::AllocationFailed)?;
+        bytes.try_reserve_exact(capacity).map_err(allocation_error)?;
+        observe(EncodeAllocationStep::Capacity {
+            admitted_bytes: usize_to_u64(capacity),
+            actual_bytes: usize_to_u64(bytes.capacity()),
+        })?;
+        observe(EncodeAllocationStep::BeforeHeader { bytes: usize_to_u64(minimum) })?;
         bytes.extend_from_slice(domain);
         bytes.extend_from_slice(&version.to_le_bytes());
+        observe(EncodeAllocationStep::HeaderWritten { bytes: usize_to_u64(minimum) })?;
         Ok(Self { bytes })
     }
 
@@ -162,12 +311,22 @@ impl<'a> Decoder<'a> {
         expected_version: u16,
         maximum_object_bytes: u64,
     ) -> Result<Self, CanonicalDecodeError> {
+        Self::new_with_steps(bytes, domain, expected_version, maximum_object_bytes, &mut |_| Ok(()))
+    }
+
+    pub(crate) fn new_with_steps<E: From<CanonicalDecodeError>>(
+        bytes: &'a [u8],
+        domain: &[u8],
+        expected_version: u16,
+        maximum_object_bytes: u64,
+        observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<Self, E> {
         let observed = usize_to_u64(bytes.len());
         if observed > maximum_object_bytes {
             return Err(CanonicalDecodeError::ObjectTooLarge {
                 observed,
                 maximum: maximum_object_bytes,
-            });
+            }.into());
         }
         let header_length = domain
             .len()
@@ -177,16 +336,18 @@ impl<'a> Decoder<'a> {
             .get(..domain.len())
             .ok_or(CanonicalDecodeError::WrongDomain)?;
         if bytes.len() < header_length || domain_prefix != domain {
-            return Err(CanonicalDecodeError::WrongDomain);
+            return Err(CanonicalDecodeError::WrongDomain.into());
         }
+        observe(ReadAllocationStep::BeforeCopy(2))?;
         let version_bytes: [u8; 2] = bytes
             .get(domain.len()..header_length)
             .ok_or(CanonicalDecodeError::Truncated)?
             .try_into()
             .map_err(|_| CanonicalDecodeError::Truncated)?;
+        observe(ReadAllocationStep::Copied(2))?;
         let version = u16::from_le_bytes(version_bytes);
         if version != expected_version {
-            return Err(CanonicalDecodeError::UnsupportedVersion(version));
+            return Err(CanonicalDecodeError::UnsupportedVersion(version).into());
         }
         Ok(Self {
             bytes,
@@ -195,69 +356,115 @@ impl<'a> Decoder<'a> {
     }
 
     pub(crate) fn u8(&mut self) -> Result<u8, CanonicalDecodeError> {
-        let value = *self
-            .bytes
-            .get(self.cursor)
-            .ok_or(CanonicalDecodeError::Truncated)?;
-        self.cursor = self
-            .cursor
-            .checked_add(1)
-            .ok_or(CanonicalDecodeError::LengthOverflow)?;
+        self.u8_with_steps(&mut |_| Ok(()))
+    }
+
+    pub(crate) fn u8_with_steps<E: From<CanonicalDecodeError>>(
+        &mut self, observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<u8, E> {
+        let source = self.bytes.get(self.cursor).ok_or(CanonicalDecodeError::Truncated)?;
+        let next = self.cursor.checked_add(1).ok_or(CanonicalDecodeError::LengthOverflow)?;
+        observe(ReadAllocationStep::BeforeCopy(1))?;
+        let value = *source;
+        self.cursor = next;
+        observe(ReadAllocationStep::Copied(1))?;
         Ok(value)
     }
 
     pub(crate) fn u32(&mut self) -> Result<u32, CanonicalDecodeError> {
-        let bytes: [u8; 4] = self
-            .take(4)?
-            .try_into()
-            .map_err(|_| CanonicalDecodeError::Truncated)?;
-        Ok(u32::from_le_bytes(bytes))
+        self.u32_with_steps(&mut |_| Ok(()))
+    }
+
+    pub(crate) fn u32_with_steps<E: From<CanonicalDecodeError>>(
+        &mut self, observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<u32, E> {
+        Ok(u32::from_le_bytes(self.fixed_with_steps::<4, E>(observe)?))
     }
 
     pub(crate) fn u64(&mut self) -> Result<u64, CanonicalDecodeError> {
-        let bytes: [u8; 8] = self
-            .take(8)?
-            .try_into()
-            .map_err(|_| CanonicalDecodeError::Truncated)?;
-        Ok(u64::from_le_bytes(bytes))
+        self.u64_with_steps(&mut |_| Ok(()))
+    }
+
+    pub(crate) fn u64_with_steps<E: From<CanonicalDecodeError>>(
+        &mut self, observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<u64, E> {
+        Ok(u64::from_le_bytes(self.fixed_with_steps::<8, E>(observe)?))
     }
 
     pub(crate) fn i64(&mut self) -> Result<i64, CanonicalDecodeError> {
-        let bytes: [u8; 8] = self
-            .take(8)?
-            .try_into()
-            .map_err(|_| CanonicalDecodeError::Truncated)?;
-        Ok(i64::from_le_bytes(bytes))
+        self.i64_with_steps(&mut |_| Ok(()))
+    }
+
+    pub(crate) fn i64_with_steps<E: From<CanonicalDecodeError>>(
+        &mut self, observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<i64, E> {
+        Ok(i64::from_le_bytes(self.fixed_with_steps::<8, E>(observe)?))
     }
 
     pub(crate) fn fixed<const N: usize>(&mut self) -> Result<[u8; N], CanonicalDecodeError> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| CanonicalDecodeError::Truncated)
+        self.fixed_with_steps::<N, CanonicalDecodeError>(&mut |_| Ok(()))
+    }
+
+    pub(crate) fn fixed_with_steps<const N: usize, E: From<CanonicalDecodeError>>(
+        &mut self, observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<[u8; N], E> {
+        let source = self.take(N)?;
+        let copied = usize_to_u64(N);
+        observe(ReadAllocationStep::BeforeCopy(copied))?;
+        let value = source.try_into().map_err(|_| CanonicalDecodeError::Truncated)?;
+        observe(ReadAllocationStep::Copied(copied))?;
+        Ok(value)
     }
 
     pub(crate) fn bounded_slice(
         &mut self,
         maximum: u32,
     ) -> Result<&'a [u8], CanonicalDecodeError> {
-        let length = self.u32()?;
+        self.bounded_slice_with_steps(maximum, &mut |_| Ok(()))
+    }
+
+    pub(crate) fn bounded_slice_with_steps<E: From<CanonicalDecodeError>>(
+        &mut self,
+        maximum: u32,
+        observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<&'a [u8], E> {
+        let length = self.u32_with_steps(observe)?;
         if length > maximum {
             return Err(CanonicalDecodeError::FieldTooLarge {
                 observed: length,
                 maximum,
-            });
+            }.into());
         }
         let length = usize::try_from(length).map_err(|_| CanonicalDecodeError::LengthOverflow)?;
-        self.take(length)
+        self.take(length).map_err(Into::into)
     }
 
     pub(crate) fn bounded_bytes(&mut self, maximum: u32) -> Result<Vec<u8>, CanonicalDecodeError> {
-        let source = self.bounded_slice(maximum)?;
+        self.bounded_bytes_with_steps(maximum, &mut |_| Ok(()))
+    }
+
+    pub(crate) fn bounded_bytes_with_steps<E: From<CanonicalDecodeError>>(
+        &mut self,
+        maximum: u32,
+        observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<Vec<u8>, E> {
+        let source = self.bounded_slice_with_steps(maximum, observe)?;
+        let length = source.len();
         let mut value = Vec::new();
-        value
-            .try_reserve_exact(source.len())
-            .map_err(|_| CanonicalDecodeError::AllocationFailed)?;
+        let admitted_bytes = usize_to_u64(length);
+        observe(ReadAllocationStep::Allocate {
+            bytes: admitted_bytes, operations: u64::from(length != 0),
+        })?;
+        if let Err(error) = value.try_reserve_exact(length) {
+            observe(ReadAllocationStep::ReserveFailed(error))?;
+            return Err(CanonicalDecodeError::AllocationFailed.into());
+        }
+        observe(ReadAllocationStep::Capacity {
+            admitted_bytes, actual_bytes: usize_to_u64(value.capacity()),
+        })?;
+        observe(ReadAllocationStep::BeforeCopy(admitted_bytes))?;
         value.extend_from_slice(source);
+        observe(ReadAllocationStep::Copied(admitted_bytes))?;
         Ok(value)
     }
 
@@ -301,6 +508,41 @@ impl<'a> Decoder<'a> {
             Err(CanonicalDecodeError::TrailingBytes)
         }
     }
+}
+
+/// Allocation-free semantic causes retained by canonical codecs and name clones.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum CanonicalInvariant {
+    /// A fixed canonical-domain diagnostic.
+    #[error("{0}")]
+    Static(&'static str),
+    /// Tree-page validation failed.
+    #[error(transparent)]
+    Tree(#[from] super::types::TreePageError),
+    /// Logical-name validation failed using its actual validation error type.
+    #[error(transparent)]
+    Name(super::types::TreePageError),
+    /// Attribute-page or attribute-name validation failed.
+    #[error(transparent)]
+    Attribute(#[from] super::attribute::AttributeError),
+    /// File-table validation failed.
+    #[error(transparent)]
+    FileTable(#[from] super::file_table::FileTableError),
+    /// Inline regular-file data validation failed.
+    #[error(transparent)]
+    InlineFileData(#[from] super::file_table::InlineFileDataError),
+    /// Extent-page validation failed.
+    #[error(transparent)]
+    Extent(#[from] super::types::ExtentPageError),
+    /// Canonical work accounting failed.
+    #[error(transparent)]
+    Work(#[from] crate::WorkError),
+    /// A metadata reference names an object in the wrong domain.
+    #[error("{field} has the wrong object kind")]
+    MetadataReferenceKind {
+        /// Stable metadata field name.
+        field: &'static str,
+    },
 }
 
 /// Fail-closed canonical object decoding failures.
@@ -350,7 +592,7 @@ pub enum CanonicalDecodeError {
     },
     /// Decoded fields violate a semantic page invariant.
     #[error("canonical object invariant failed: {0}")]
-    Invariant(String),
+    Invariant(#[source] CanonicalInvariant),
 }
 
 #[cfg(test)]
