@@ -418,7 +418,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 loop {
                     let (page, allocation) = list_tree_entries_async_with_accounting(
                         &self.inner.objects, entries, cursor.as_ref().map(|cursor| &cursor.value),
-                        limits.maximum_page_items, limits, accounting, cancellation, None,
+                        limits.maximum_page_items, limits, accounting, cancellation.clone(), None,
                     ).await?;
                     let mut page = Owned::new(page, allocation, 0);
                     page.bytes = page.value.entries.iter().try_fold(workspace_vec_bytes(&page.value.entries), |bytes, entry| {

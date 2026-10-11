@@ -1385,17 +1385,6 @@ pub(crate) async fn bounded_operation_with_retained_quota<P: StreamProvider>(
     }
 }
 
-pub(super) async fn verify_operation_locator<P: StreamProvider>(
-    client: &StreamClient<P>,
-    authority: &Authority,
-    verifier: &AuthorityVerifier,
-    index: &Record,
-    location: &OperationLocation,
-    maximum_bytes: u64,
-) -> Result<(Event, u64)> {
-    verify_operation_locator_with_work(client, authority, verifier, index, location, maximum_bytes, &mut None).await
-}
-
 pub(crate) async fn verify_operation_locator_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
     authority: &Authority,
@@ -1580,17 +1569,6 @@ pub(crate) async fn find_message_with_work<P: StreamProvider>(
     release_owned_after_drop(result, owned, work)
 }
 
-pub(crate) async fn find_message_sequence<P: StreamProvider>(
-    client: &StreamClient<P>,
-    authority: &Authority,
-    verifier: &AuthorityVerifier,
-    sequence: u64,
-    through_revision: u64,
-    maximum_bytes: u64,
-) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
-    find_message_sequence_with_work(client, authority, verifier, sequence, through_revision, maximum_bytes, &mut None).await
-}
-
 pub(crate) async fn find_message_sequence_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
     authority: &Authority,
@@ -1710,7 +1688,7 @@ async fn verify_message_locator_with_work<P: StreamProvider>(
         }
         let (event, consumed_bytes) = verify_operation_locator_with_work(
             client, authority, verifier, index, &location.location, maximum_bytes, work).await?;
-        let owned = if work.is_some() { crate::core::event_clone_reservation(&event)? } else { 0 };
+        let owned = if work.is_some() { crate::core::source_inventory(&event)? } else { 0 };
         let selected = (|| {
             if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
             if location.sequence == 0 {

@@ -854,13 +854,13 @@ mod bindings {
         ) -> Result<Vec<u8>, JsValue> {
             let bytes = match &self.engine {
                 BrowserWorkspaceEngine::IndexedDb(value) => {
-                    value.read_range(&path, offset, length).await
+                    Box::pin(value.read_range(&path, offset, length)).await
                 }
                 BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
-                    value.read_range(&path, offset, length).await
+                    Box::pin(value.read_range(&path, offset, length)).await
                 }
                 BrowserWorkspaceEngine::Memory(value) => {
-                    value.read_range(&path, offset, length).await
+                    Box::pin(value.read_range(&path, offset, length)).await
                 }
             }
             .map_err(js_error)?;
@@ -6953,7 +6953,7 @@ mod bindings {
         Ok(match operation {
             TransactionOperation::CreateFile { path, bytes } => AuthoredMutation::CreateFile {
                 path: browser_path(&path, profile, limits)?,
-                bytes: bytes::Bytes::from(bytes.into_vec()),
+                bytes: acyclic_stream::OwnedBytes::from(bytes.into_vec()),
                 metadata,
             },
             TransactionOperation::CreateDirectory { path } => AuthoredMutation::CreateDirectory {
@@ -6963,7 +6963,7 @@ mod bindings {
             TransactionOperation::CreateSymbolicLink { path, target } => {
                 AuthoredMutation::CreateSymbolicLink {
                     path: browser_path(&path, profile, limits)?,
-                    target: bytes::Bytes::from(target.into_vec()),
+                    target: acyclic_stream::OwnedBytes::from(target.into_vec()),
                     metadata,
                 }
             }
@@ -6989,7 +6989,7 @@ mod bindings {
             TransactionOperation::CreateReparsePoint { path, payload } => {
                 AuthoredMutation::CreateReparsePoint {
                     path: browser_path(&path, profile, limits)?,
-                    payload: bytes::Bytes::from(payload.into_vec()),
+                    payload: acyclic_stream::OwnedBytes::from(payload.into_vec()),
                     metadata,
                 }
             }
@@ -7028,7 +7028,7 @@ mod bindings {
             } => AuthoredMutation::Write {
                 path: browser_path(&path, profile, limits)?,
                 offset,
-                bytes: bytes::Bytes::from(bytes.into_vec()),
+                bytes: acyclic_stream::OwnedBytes::from(bytes.into_vec()),
             },
             TransactionOperation::SetMetadata {
                 path,

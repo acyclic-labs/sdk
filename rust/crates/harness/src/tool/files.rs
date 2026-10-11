@@ -681,11 +681,11 @@ impl FileTool {
 pub(super) mod native {
     use super::*;
 
-    pub(super) fn invalid(reason: &'static str) -> Error {
+    pub(in crate::tool) fn invalid(reason: &'static str) -> Error {
         Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason }
     }
 
-    pub(super) fn context(
+    pub(in crate::tool) fn context(
         context: &ToolContext, invocation: &ToolInvocation, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         work.remaining()?;
@@ -707,7 +707,7 @@ pub(super) mod native {
         Ok(())
     }
 
-    pub(super) fn public_path(path: &str, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+    pub(in crate::tool) fn public_path(path: &str, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         crate::conversation::validate_content_path_with_native_work(path, work)?;
         if crate::conversation::is_internal_path(path) {
             return Err(Error::NativeBoundary {
@@ -717,7 +717,7 @@ pub(super) mod native {
         Ok(())
     }
 
-    pub(super) fn bound<T: Serialize>(value: &T, maximum: u64, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+    pub(in crate::tool) fn bound<T: Serialize>(value: &T, maximum: u64, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let diagnostic_bytes = crate::contract::sdk_json_diagnostic_bytes();
         io.claim(diagnostic_bytes)?;
@@ -755,7 +755,7 @@ pub(super) mod native {
         })
     }
 
-    pub(super) fn summary_reference(
+    pub(in crate::tool) fn summary_reference(
         file: &FileRef, maximum: usize, arguments: std::fmt::Arguments<'_>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
