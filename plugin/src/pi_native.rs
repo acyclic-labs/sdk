@@ -1138,13 +1138,20 @@ impl<P: StreamProvider + 'static> PiNativeRunner<P> {
         self.receipt_with_native_work(&self.work).await
     }
 
+    fn original_attempt_with_native_work(
+        &self, work: &NativeMaterializationWork,
+    ) -> Result<EffectAttemptId> {
+        let effect = task_effect_id_with_native_work(self.owner.task_id(), self.command, work)?;
+        Ok(EffectAttemptId::from_bytes(effect.into_bytes()))
+    }
+
     /// Read the original launch/observation journal on the caller's actual
     /// bounded ledger. Historical capture/publication work is not charged again.
     pub(crate) async fn receipt_with_native_work(
         &self, work: &NativeMaterializationWork,
     ) -> std::result::Result<Option<NativeProcessReceipt>, NativeReceiptError> {
-        let effect = task_effect_id_with_native_work(self.owner.task_id(), self.command, work).map_err(NativeReceiptError::Owner)?;
-        self.provider.receipt_with_native_work(EffectAttemptId::from_bytes(effect.into_bytes()), work).await
+        let attempt = self.original_attempt_with_native_work(work).map_err(NativeReceiptError::Owner)?;
+        self.provider.receipt_with_native_work(attempt, work).await
     }
 
     /// Signal every original warm supervisor before lifecycle awaits any job.
@@ -1152,8 +1159,8 @@ impl<P: StreamProvider + 'static> PiNativeRunner<P> {
     pub(crate) async fn signal_stop(
         &self, work: &NativeMaterializationWork, cleanup_cancellation: &CancellationToken,
     ) -> std::result::Result<(), NativeReceiptError> {
-        let effect = task_effect_id_with_native_work(self.owner.task_id(), self.command, work).map_err(NativeReceiptError::Owner)?;
-        self.provider.signal_stop(EffectAttemptId::from_bytes(effect.into_bytes()), work, cleanup_cancellation).await
+        let attempt = self.original_attempt_with_native_work(work).map_err(NativeReceiptError::Owner)?;
+        self.provider.signal_stop(attempt, work, cleanup_cancellation).await
     }
 
     /// Join and authenticate the same producer's actual process/stdio drainage.
@@ -1161,8 +1168,8 @@ impl<P: StreamProvider + 'static> PiNativeRunner<P> {
     pub(crate) async fn request_stop(
         &self, work: &NativeMaterializationWork, cleanup_cancellation: &CancellationToken,
     ) -> std::result::Result<NativeProcessReceipt, NativeReceiptError> {
-        let effect = task_effect_id_with_native_work(self.owner.task_id(), self.command, work).map_err(NativeReceiptError::Owner)?;
-        self.provider.request_stop(EffectAttemptId::from_bytes(effect.into_bytes()), work, cleanup_cancellation).await
+        let attempt = self.original_attempt_with_native_work(work).map_err(NativeReceiptError::Owner)?;
+        self.provider.request_stop(attempt, work, cleanup_cancellation).await
     }
 
 
