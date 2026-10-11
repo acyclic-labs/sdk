@@ -124,6 +124,7 @@ mod darwin_mount;
 #[cfg(target_os = "macos")]
 pub use darwin_mount::DarwinTeardownFailure;
 #[cfg(target_os = "linux")]
+#[allow(unsafe_code, reason = "FUSE mount, descriptor transfer and recovery syscalls")]
 mod fuse;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -3623,6 +3624,7 @@ impl NativeMountStartupStorage {
     ) -> Result<Self, NativeMountStartupAdmissionError> {
         Self::new(&work.native_materialization_work())
     }
+    #[allow(unsafe_code, reason = "startup failure storage is initialized before ownership transfer")]
     fn failed(mut self, error: NativeMountError, owner: NativeMountSession) -> NativeMountStartupFailure {
         let mut buffer = self.buffer.take().expect("admitted constructor storage");
         buffer.write(NativeMountStartupFailureState { error, owner, retired: self.retired.take() });
