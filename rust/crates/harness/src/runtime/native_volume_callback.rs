@@ -87,14 +87,7 @@ impl<P: StreamProvider + 'static> NativeVolumeCallbackGuard<P> {
         &self, owner: &TaskJournalOwner<P>, volume: &VolumeRef, writable: bool,
         work: &NativeMaterializationWork,
     ) -> Result<Arc<dyn NativeMountCallbackGuard>> {
-        work.charge(WorkCounters::default()).map_err(native_error)?;
-        if !std::ptr::eq(owner, self.original.owner.as_ref())
-            || owner.task_binding() != self.original.owner.task_binding()
-            || !self.original.custody.work().shares_ledger(work)
-        {
-            return Err(denied("native preparation differs from its original callback owner or work family"));
-        }
-        require_volume(&self.original, volume, writable, work)?;
+        self.require_volume_with_native_work(owner, volume, writable, work)?;
         // Includes every inline reference, selected Work and volume header.
         // The canonical reference copier separately admits its deep capacities.
         let mut custody = work.retain_owned(std::mem::size_of::<VolumeCallback<P>>() as u64)
@@ -109,6 +102,23 @@ impl<P: StreamProvider + 'static> NativeVolumeCallbackGuard<P> {
         Ok(Arc::new(VolumeCallback {
             original: Arc::clone(&self.original), volume, writable, work: work.clone(), custody,
         }))
+    }
+
+    /// Borrows the same declaration checks without allocating a callback that
+    /// preparation would immediately discard. Physical attachment constructs
+    /// the single paid callback with `for_volume` on its actual selected work.
+    pub(crate) fn require_volume_with_native_work(
+        &self, owner: &TaskJournalOwner<P>, volume: &VolumeRef, writable: bool,
+        work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        work.charge(WorkCounters::default()).map_err(native_error)?;
+        if !std::ptr::eq(owner, self.original.owner.as_ref())
+            || owner.task_binding() != self.original.owner.task_binding()
+            || !self.original.custody.work().shares_ledger(work)
+        {
+            return Err(denied("native preparation differs from its original callback owner or work family"));
+        }
+        require_volume(&self.original, volume, writable, work)
     }
 }
 
