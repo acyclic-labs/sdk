@@ -303,7 +303,7 @@ async fn call(shared: &Shared, request_id: &Value, params: &Value) -> Value {
     }
     let outcome = match &shared.context {
         Some(context) => {
-            let pinned = match context.tool::<Value, Value>(&tool.definition.name) {
+            let pinned = match context.tool::<&Value, Value>(&tool.definition.name) {
                 Ok(pinned) if pinned.definition() == &tool.definition => pinned,
                 Ok(_) => return error_result("admitted Codex tool revision changed"),
                 Err(error) => return error_result(format!("{name} is not admitted: {error}")),

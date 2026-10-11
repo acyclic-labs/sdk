@@ -422,7 +422,7 @@ async fn private_connection(
         _ = replaced.changed() => return Ok(()),
         receiver = shared.notifications.lock() => receiver,
     };
-    let (completed, mut replies) = mpsc::channel::<(bool, Result<JSONRPCMessage>)>(MAX_PENDING_REQUESTS);
+    let (completed, mut replies) = mpsc::channel::<(bool, acyclic_harness::Result<JSONRPCMessage>)>(MAX_PENDING_REQUESTS);
     let mut phase = SessionPhase::New;
     loop {
         tokio::select! {
