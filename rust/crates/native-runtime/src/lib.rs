@@ -1828,6 +1828,12 @@ impl Drop for OwnedNativeByteReservation {
 pub trait NativeReadMeter: Send + Sync {
     /// Checks the original request's cancellation and ownership conditions.
     fn check(&self) -> io::Result<()>;
+    /// Returns a pre-existing allocation-lifetime owner when this request
+    /// meter also retains terminal-only request custody. The returned owner
+    /// must share the same invocation ledger, resource allowance, cancellation,
+    /// and limits, but must not retain that request's retirement anchor.
+    /// This is a pure Arc getter: no allocation, IO, or additional authority.
+    fn allocation_owner(&self) -> Option<Arc<dyn NativeReadMeter>> { None }
     /// Withholds a concrete request's possible operations without inventing
     /// spent work; allowance remains unavailable to reentrant callbacks.
     fn reserve_operations(&self, kind: NativeOperationKind, count: u64) -> io::Result<()>;
@@ -1930,20 +1936,20 @@ impl ReadAllocation {
     pub fn new(meter: &Arc<dyn NativeReadMeter>, bytes: usize) -> io::Result<Self> {
         let bytes = bytes as u64;
         if bytes == 0 { meter.check()?; } else { meter.allocate(bytes)?; }
-        Ok(Self { meter: Arc::clone(meter), bytes })
+        Ok(Self { meter: meter.allocation_owner().unwrap_or_else(|| Arc::clone(meter)), bytes })
     }
 
     /// Borrows the same original meter without an allocation or resource grant.
     pub fn empty(meter: &Arc<dyn NativeReadMeter>) -> Self {
-        Self { meter: Arc::clone(meter), bytes: 0 }
+        Self { meter: meter.allocation_owner().unwrap_or_else(|| Arc::clone(meter)), bytes: 0 }
     }
 
     /// Admits retention of an existing transferred payload, with zero
     /// allocation operations. No new allocator call is represented here.
     pub fn adopt(meter: &Arc<dyn NativeReadMeter>, bytes: usize) -> io::Result<Self> {
-        let mut allocation = Self::empty(meter);
-        allocation.resize_retained(bytes)?;
-        Ok(allocation)
+        let bytes = bytes as u64;
+        if bytes == 0 { meter.check()?; } else { meter.adopt(bytes)?; }
+        Ok(Self { meter: meter.allocation_owner().unwrap_or_else(|| Arc::clone(meter)), bytes })
     }
 
     /// Admits another genuine positive allocation attempt before it occurs.
@@ -4408,7 +4414,7 @@ mod tests {
         }
     }
 
-    struct ReadBudgetMeter {
+    pub(super) struct ReadBudgetMeter {
         operations: AtomicU64,
         withheld_operations: std::sync::Mutex<u64>,
         read: AtomicU64,
@@ -4426,7 +4432,7 @@ mod tests {
     }
 
     impl ReadBudgetMeter {
-        fn new(operation_limit: u64, byte_limit: u64) -> Self {
+        pub(super) fn new(operation_limit: u64, byte_limit: u64) -> Self {
             Self {
                 operations: AtomicU64::new(0), read: AtomicU64::new(0),
                 withheld_operations: std::sync::Mutex::new(0),
@@ -4953,7 +4959,10 @@ mod tests {
         let physical_calls = if cfg!(windows) { 2 } else { 1 };
         let meter = Arc::new(ReadBudgetMeter::new(physical_calls, 8));
         let read = file.read_bounded_async(0, 8, meter.clone())?;
-        assert!(with_inline_blocking(|| complete_measured(read)).is_err());
+        assert!({
+            let _blocking = ScopedInlineBlocking::enter();
+            complete_measured(read)
+        }.is_err());
         assert_eq!(meter.read.load(Ordering::Acquire), 3);
         assert_eq!(meter.operations.load(Ordering::Acquire), physical_calls);
         assert!(meter.allocations.load(Ordering::Acquire) >= 3);
@@ -4974,7 +4983,10 @@ mod tests {
         limits.cancel_after_read = true;
         let meter = Arc::new(limits);
         let read = file.read_bounded_async(0, 8, meter.clone())?;
-        let error = match with_inline_blocking(|| complete_measured(read)) {
+        let error = match {
+            let _blocking = ScopedInlineBlocking::enter();
+            complete_measured(read)
+        } {
             Err(error) => error,
             Ok(_) => panic!("cancelled read returned success"),
         };
@@ -4994,7 +5006,10 @@ mod tests {
         let file = bounded_write_file(&path, false)?;
         let meter = Arc::new(ReadBudgetMeter::new(8, 8));
         let read = file.read_bounded_async(0, 8, meter.clone())?;
-        let result = with_inline_blocking(|| complete_measured(read))?;
+        let result = {
+            let _blocking = ScopedInlineBlocking::enter();
+            complete_measured(read)
+        }?;
         assert_eq!(result.bytes.as_ref(), b"abc");
         assert_eq!(result.buffer_capacity, 8);
         assert_eq!(meter.memory.load(Ordering::Acquire), result.buffer_capacity as u64);
@@ -5038,7 +5053,10 @@ mod tests {
         let meter = Arc::new(ReadBudgetMeter::new(8, 3));
         let borrowed = Arc::downgrade(&meter);
         let read = file.read_bounded_async(0, 3, meter.clone())?;
-        let result = with_inline_blocking(|| complete_measured(read))?;
+        let result = {
+            let _blocking = ScopedInlineBlocking::enter();
+            complete_measured(read)
+        }?;
         assert_eq!(result.bytes.as_ref(), b"abc");
         assert!(file.tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none());
         drop(result);
@@ -5100,9 +5118,10 @@ mod tests {
         input.seek(SeekFrom::Start(2))?;
         let file = NativeFile::from_file(input)?;
         let meter = Arc::new(ReadBudgetMeter::new(4, 3));
-        let result = with_inline_blocking(|| {
+        let result = {
+            let _blocking = ScopedInlineBlocking::enter();
             complete_measured(file.read_bounded_async(0, 3, meter.clone())?)
-        })?;
+        }?;
         assert_eq!(result.bytes.as_ref(), b"abc");
         assert_eq!(meter.operations.load(Ordering::Acquire), 4);
         assert_eq!(meter.read.load(Ordering::Acquire), 3);
@@ -5122,9 +5141,10 @@ mod tests {
         std::fs::write(&path, b"abc")?;
         let file = NativeFile::from_file(File::open(&path)?)?;
         let meter = Arc::new(ReadBudgetMeter::new(2, 3));
-        let result = with_inline_blocking(|| {
-            complete_measured(file.read_bounded_async(0, 3, meter.clone())?)
-        });
+        let result = {
+            let _blocking = ScopedInlineBlocking::enter();
+            file.read_bounded_async(0, 3, meter.clone()).and_then(complete_measured)
+        };
         assert!(result.is_err());
         assert_eq!(meter.operations.load(Ordering::Acquire), 2);
         assert_eq!(meter.read.load(Ordering::Acquire), 0);
@@ -5175,7 +5195,10 @@ mod tests {
         };
         let meter = Arc::new(ReadBudgetMeter::new(8, 8));
         let read = file.read_bounded_async(0, 3, meter.clone())?;
-        assert!(with_inline_blocking(|| complete_measured(read)).is_err());
+        assert!({
+            let _blocking = ScopedInlineBlocking::enter();
+            complete_measured(read)
+        }.is_err());
         assert_eq!(meter.operations.load(Ordering::Acquire), 1);
         assert_eq!(meter.read.load(Ordering::Acquire), 0);
         assert_eq!(meter.memory.load(Ordering::Acquire), 0);
@@ -5206,8 +5229,10 @@ mod tests {
             move || body.store(true, Ordering::Release), meter.clone(),
         ).expect("finite envelope budget");
         meter.cancelled.store(true, Ordering::Release);
-        let error = with_inline_blocking(|| complete_measured(task))
-            .expect_err("cancelled envelope must not execute its body");
+        let error = {
+            let _blocking = ScopedInlineBlocking::enter();
+            complete_measured(task)
+        }.expect_err("cancelled envelope must not execute its body");
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
         assert!(!called.load(Ordering::Acquire));
         assert_eq!(meter.allocations.load(Ordering::Acquire), 2);
@@ -5222,7 +5247,8 @@ mod tests {
             || -> () { panic!("controlled native host task panic") }, meter.clone(),
         ).expect("finite envelope budget");
         let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            with_inline_blocking(|| complete_measured(task))
+            let _blocking = ScopedInlineBlocking::enter();
+            complete_measured(task)
         })).expect_err("the observing poll must resume the original panic");
         assert_eq!(payload.downcast_ref::<&'static str>(),
             Some(&"controlled native host task panic"));
