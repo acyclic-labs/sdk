@@ -21,15 +21,38 @@ use crate::{
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{
-    AppendOutcome, IdempotencyKey as StreamKey, StreamClient, StreamError, StreamProvider,
+    AppendOutcome, IdempotencyKey as StreamKey, OwnedBytes, StreamClient, StreamError, StreamProvider,
 };
-use bytes::Bytes;
 use futures::TryStreamExt as _;
 use crate::store::history::HistoryIo as _;
 use std::{
     collections::BTreeSet,
     sync::{Arc, Mutex},
 };
+
+fn freeze_retained_bytes(
+    bytes: Vec<u8>, io: Option<&PreparationIo>,
+) -> Result<(OwnedBytes, u64)> {
+    let mut borrowed = io.map(PreparationIo::history_io);
+    let mut work = borrowed.as_mut()
+        .map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
+    crate::store::operations::owned_bytes_from_retained_vec(bytes, &mut work)
+}
+
+fn external_read_hold<'a>(
+    bytes: &OwnedBytes, io: Option<&'a PreparationIo>,
+) -> Result<Option<super::DecodeReservation<'a>>> {
+    let Some(io) = io else { return Ok(None); };
+    #[cfg(not(target_arch = "wasm32"))]
+    if io.original_native_work().is_some() {
+        return Ok(None);
+    }
+    let retained = bytes.retained_capacity().ok_or_else(|| observation_boundary(
+        Some(io), crate::wire::ErrorCode::Unsupported,
+        "workflow byte backing capacity is unavailable",
+    ))?;
+    io.guard_owned(retained as u64).map(Some)
+}
 
 struct VerifiedSummary {
     admission: WorkflowAdmission,
@@ -353,7 +376,7 @@ where
         }
         let _bytes;
         let bytes = self.read_bound_content(reference, io).await?;
-        _bytes = io.map(|io| io.guard_owned(bytes.len() as u64)).transpose()?;
+        _bytes = external_read_hold(&bytes, io)?;
         let record: WorkflowRecord = match io {
             Some(io) => io.decode_preparation::<WorkflowRecord>(&bytes)?.into_retained(),
             None => crate::contract::json_from_slice(&bytes)
@@ -691,7 +714,7 @@ where
         Ok(Some((record, held)))
     }
 
-    async fn read_bound_content(&self, reference: &FileRef, io: Option<&PreparationIo>) -> Result<Bytes> {
+    async fn read_bound_content(&self, reference: &FileRef, io: Option<&PreparationIo>) -> Result<OwnedBytes> {
         match io {
             Some(io) => {
                 #[cfg(not(target_arch = "wasm32"))]
@@ -721,7 +744,7 @@ where
                 let read = ContentGrant::verify(
                     &self.verifier, &self.scope, &self.volume, VolumeOperation::Read,
                 )?;
-                self.host.read_content(reference, &read, self.maximum_payload_bytes).await
+                self.host.read_content(reference, &read, self.maximum_payload_bytes).await.map(Into::into)
             }
         }
     }
@@ -1036,7 +1059,7 @@ where
         }
         let _bytes;
         let bytes = self.read_bound_content(&reference, io).await?;
-        _bytes = io.map(|io| io.guard_owned(bytes.len() as u64)).transpose()?;
+        _bytes = external_read_hold(&bytes, io)?;
         let admission: WorkflowAdmission = match io {
             Some(io) => io.decode_preparation::<WorkflowAdmission>(&bytes)?.into_retained(),
             None => crate::contract::json_from_slice(&bytes)
@@ -1128,7 +1151,7 @@ where
             }
             let _bytes;
             let bytes = self.read_bound_content(&command.payload, io).await?;
-            _bytes = io.map(|io| io.guard_owned(bytes.len() as u64)).transpose()?;
+            _bytes = external_read_hold(&bytes, io)?;
         }
         Ok(())
     }
@@ -1314,7 +1337,10 @@ where
             None => serde_json::to_vec(&reference)
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         };
-        _bytes = io.map(|io| io.guard_owned(bytes.capacity() as u64)).transpose()?;
+        let (bytes, retained) = freeze_retained_bytes(bytes, io)?;
+        _bytes = if retained == 0 { None } else {
+            io.map(|io| io.guard_owned(retained)).transpose()?
+        };
         if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
             return Err(Error::Invalid(
                 "workflow reference exceeds Stream limit".into(),
@@ -1335,25 +1361,24 @@ where
             }
             blake3::hash(hash_input.as_bytes())
         };
-        // The key copy owns exactly the digest payload; the append engine admits
-        // its concrete Bytes-vector slots before allocating its envelope.
-        let _key = io.map(|io| io.reserve_decode(digest.as_bytes().len() as u64)).transpose()?;
-        if let Some(io) = io {
-            let copying = acyclic_fs::WorkCounters {
-                bytes_copied: digest.as_bytes().len() as u64, ..Default::default()
-            };
-            io.preflight(copying)?;
-            io.allocation_attempt(digest.as_bytes().len() as u64)?;
-            io.charge(copying)?;
-        }
-        let key = StreamKey::new(Bytes::copy_from_slice(digest.as_bytes())).map_err(|error| {
+        // Fund the actual digest vector before freezing its original byte
+        // custody into the key, including all append-envelope aliases.
+        let _key;
+        let key_bytes = super::fork_preparer_io::clone_bytes(digest.as_bytes(), io)?;
+        let (key_bytes, retained) = freeze_retained_bytes(key_bytes, io)?;
+        _key = if retained == 0 { None } else {
+            io.map(|io| io.guard_owned(retained)).transpose()?
+        };
+        let key = StreamKey::new(key_bytes).map_err(|error| {
             #[cfg(not(target_arch = "wasm32"))]
             if io.is_some() {
-                return Error::NativeStream { source: error, custody: None };
+                return Error::NativeStream {
+                    code: crate::wire::ErrorCode::Invalid, source: error, custody: None,
+                };
             }
             Error::Invalid(error.to_string())
         })?;
-        let body = Bytes::from(bytes);
+        let body = bytes;
         if let Some(owner) = &self.owner {
             let mut borrowed = io.map(PreparationIo::history_io);
             let mut work = borrowed.as_mut()
@@ -1452,7 +1477,7 @@ where
         {
             let _pinned_bytes;
             let pinned_bytes = self.read_bound_content(&reference, io).await?;
-            _pinned_bytes = io.map(|io| io.guard_owned(pinned_bytes.len() as u64)).transpose()?;
+            _pinned_bytes = external_read_hold(&pinned_bytes, io)?;
             let _pinned;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let pinned: WorkflowAdmission = match io {
@@ -1473,7 +1498,10 @@ where
             Some(io) => io.encode_json(&reference, acyclic_stream::MAX_RECORD_BYTES as u64, false)?,
             None => serde_json::to_vec(&reference).map_err(|error| Error::Invalid(error.to_string()))?,
         };
-        _bytes = io.map(|io| io.guard_owned(bytes.capacity() as u64)).transpose()?;
+        let (bytes, retained) = freeze_retained_bytes(bytes, io)?;
+        _bytes = if retained == 0 { None } else {
+            io.map(|io| io.guard_owned(retained)).transpose()?
+        };
         if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
             return Err(Error::Invalid("workflow admission reference exceeds Stream limit".into()));
         }
@@ -1492,19 +1520,22 @@ where
             }
             blake3::hash(input.as_bytes())
         };
-        let _key = io.map(|io| io.reserve_decode(digest.as_bytes().len() as u64)).transpose()?;
-        if let Some(io) = io {
-            let copying = acyclic_fs::WorkCounters { bytes_copied: digest.as_bytes().len() as u64, ..Default::default() };
-            io.preflight(copying)?;
-            io.allocation_attempt(digest.as_bytes().len() as u64)?;
-            io.charge(copying)?;
-        }
-        let key = StreamKey::new(Bytes::copy_from_slice(digest.as_bytes())).map_err(|error| {
+        let _key;
+        let key_bytes = super::fork_preparer_io::clone_bytes(digest.as_bytes(), io)?;
+        let (key_bytes, retained) = freeze_retained_bytes(key_bytes, io)?;
+        _key = if retained == 0 { None } else {
+            io.map(|io| io.guard_owned(retained)).transpose()?
+        };
+        let key = StreamKey::new(key_bytes).map_err(|error| {
             #[cfg(not(target_arch = "wasm32"))]
-            if io.is_some() { return Error::NativeStream { source: error, custody: None }; }
+            if io.is_some() {
+                return Error::NativeStream {
+                    code: crate::wire::ErrorCode::Invalid, source: error, custody: None,
+                };
+            }
             Error::Invalid(error.to_string())
         })?;
-        let body = Bytes::from(bytes);
+        let body = bytes;
         if let Some(owner) = &self.owner {
             let mut borrowed = io.map(PreparationIo::history_io);
             let mut work = borrowed.as_mut()

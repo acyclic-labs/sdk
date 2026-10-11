@@ -266,6 +266,12 @@ History record vectors reserve the actual canonical `ObservedRecord` element
 size through the same generic capacity engine. Native record metadata custody
 remains inside that record, and its byte storage remains inside `OwnedBytes`;
 neither guard is extracted or replaced by another record wrapper.
+Workflow append bodies and idempotency-key digest vectors use the canonical
+retained-vector promotion before any append IO or byte alias escapes. Native
+byte claims move into `OwnedBytes` on the original ledger, without a second
+claim or external byte guard; ordinary retention is released only after its
+carrier is destroyed. Digest copies fund the actual vector capacity rather
+than assuming a fixed digest length covers shared byte-control allocation.
 Native scheduler-payload, content-reader, and content-publisher constructors
 likewise authenticate borrowed configuration before funding metadata copies.
 Their intrinsic guard outlives owned fields; `into_native_shared` admits the actual
