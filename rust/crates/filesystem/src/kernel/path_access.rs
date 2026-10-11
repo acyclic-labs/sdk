@@ -1,261 +1,236 @@
 //! Exact no-follow namespace-path resolution over authenticated frontiers.
+//!
+//! Standalone and native callers use the same lookup, observation and shared-prefix
+//! batch machines. Native cache slots and returned dependency buffers retain the
+//! original invocation guard; provider byte aliases retain their source owner.
 
-use super::allocation::{AllocationError, AllocationLedger};
-use super::probe::{capture_directory_name_state, capture_file_record_state};
-use super::{
-    AuthenticatedProbeError, DecodeLimits, Dependency, DependencyRegion, DependencyState, FileKind,
-    FilePayload, FileRecord, FileRecordReadError, LogicalName, NamespacePath, NamespacePathError,
-    TreeReadError, lookup_file_record_async, lookup_file_records_async, lookup_tree_entries_async,
-    lookup_tree_entry_async,
-};
+use super::allocation::{KernelAccounting, KernelOwnedAllocation};
+use super::{AuthenticatedProbeError, DecodeLimits, Dependency, DependencyRegion, DependencyState,
+    FileKind, FilePayload, FileRecord, FileRecordReadError, LogicalName, NamespacePath,
+    NamespacePathError, TreeReadError};
 use crate::async_storage::{self, AsyncObjectStore};
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
-use crate::heap_future::in_heap;
 use crate::model::{VolumeConfig, VolumeConfigError};
 #[cfg(test)]
 use crate::model::FilesystemProfile;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
-use crate::storage::{
-    ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectReceipt,
-    ObjectResult, ObjectStoreError,
-};
+use crate::storage::{ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest,
+    ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStoreError};
 use bytes::Bytes;
 use std::cmp::Ordering;
 use std::mem::size_of;
+use std::ops::{Deref, DerefMut};
 use std::sync::{Mutex, MutexGuard};
 use thiserror::Error;
 
-struct CachedObject {
-    object_id: ObjectId,
-    bytes: Bytes,
+/// Data always precedes its allocation guard in physical destruction order.
+struct GuardedVec<T> {
+    values: Vec<T>,
+    allocation: KernelOwnedAllocation,
+}
+impl<T> Deref for GuardedVec<T> {
+    type Target = Vec<T>;
+    fn deref(&self) -> &Self::Target { &self.values }
+}
+impl<T> DerefMut for GuardedVec<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.values }
 }
 
+fn reserve_slots<T>(count: usize, accounting: &mut KernelAccounting<'_>, custody: Option<&super::ProofDataCustody>) -> Result<GuardedVec<T>, crate::FsError> {
+    let (values, allocation) = accounting.with_owned_allocations(|allocations, work, budget, cancellation| {
+        cancellation.check()?;
+        let admitted = allocations.claim_elements::<T>(count, work, budget)
+            .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
+        if let Some(owner) = custody {
+            owner.record_completed_leaf_work(WorkCounters {
+                allocation_operations: u64::from(count != 0),
+                peak_allocation_bytes: admitted,
+                ..WorkCounters::UNCHARGED
+            })?;
+        }
+        let mut values = Vec::new();
+        if values.try_reserve_exact(count).is_err() {
+            allocations.release(admitted).map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
+            return Err(crate::FsError::HandleAllocationFailed);
+        }
+        let actual = usize_to_u64(values.capacity()).checked_mul(size_of::<T>() as u64).ok_or(WorkError::Overflow)?;
+        allocations.record_owned_bytes(actual.checked_sub(admitted).ok_or(WorkError::Overflow)?, work)
+            .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
+        if actual > admitted {
+            if let Some(owner) = custody {
+                owner.record_completed_leaf_work(WorkCounters { peak_allocation_bytes: actual, ..WorkCounters::UNCHARGED })?;
+            }
+        }
+        work.verify(budget)?;
+        Ok(values)
+    })?;
+    Ok(GuardedVec { values, allocation })
+}
+
+/// Reports the existing short-frame primitive, never an adopted payload.
+struct FrameObservation<'a> {
+    owner: Option<&'a super::ProofDataCustody>,
+    bytes: u64,
+}
+impl FrameObservation<'_> {
+    fn admitted(&mut self, bytes: u64) -> Result<(), crate::FsError> {
+        if let Some(owner) = self.owner {
+            owner.record_heap_future_event(crate::heap_future::HeapFutureEvent::Admitted(WorkCounters {
+                allocation_operations: u64::from(bytes != 0),
+                peak_allocation_bytes: bytes,
+                ..WorkCounters::UNCHARGED
+            }))?;
+            self.bytes = bytes;
+        }
+        Ok(())
+    }
+}
+impl Drop for FrameObservation<'_> {
+    fn drop(&mut self) {
+        if let Some(owner) = self.owner.filter(|_| self.bytes != 0) {
+            owner.record_heap_future_event(crate::heap_future::HeapFutureEvent::Released(self.bytes))
+                .expect("the actual path frame dies before its observation retires");
+        }
+    }
+}
+
+struct CachedObject { object_id: ObjectId, bytes: Bytes }
 struct CacheState {
-    /// Open-addressed table, a power of two long, grown by doubling up to
-    /// [`OperationReadCache::slot_limit`] as entries arrive: most operations
-    /// read a few objects, so reserving the whole bound up front would clear
-    /// memory they never touch.
-    slots: Vec<Option<CachedObject>>,
+    slots: GuardedVec<Option<CachedObject>>,
     entry_count: usize,
     retained_owned_bytes: u64,
-    external_resident_bytes: u64,
+    /// Standalone slots already present in the caller's allocation ledger.
+    accounted_bytes: u64,
+    accounted_slot_bytes: u64,
 }
-
 struct OperationReadCache<'a, S> {
     store: &'a S,
     state: Mutex<CacheState>,
     maximum_entries: usize,
     slot_limit: usize,
-    /// The table's full bound, which the operation's work accounts for
-    /// whether or not it grows that far.
-    metadata_bytes: u64,
+    data_custody: Option<&'a super::ProofDataCustody>,
 }
-
-/// Holds one existing short-frame box claim until that whole box is dropped.
-struct CacheFutureAllocation<'a, S> {
-    cache: &'a OperationReadCache<'a, S>,
-    bytes: u64,
-}
-
-impl<S> Drop for CacheFutureAllocation<'_, S> {
-    fn drop(&mut self) {
-        if self.bytes != 0 {
-            self.cache.release_external_resident_bytes(self.bytes);
-        }
-    }
-}
-
-/// Slots a new cache starts with.
 const INITIAL_CACHE_SLOTS: usize = 16;
-
 impl<'a, S> OperationReadCache<'a, S> {
-    fn new(
-        store: &'a S,
-        maximum_entries: usize,
-        budget: WorkBudget,
-    ) -> Result<(Self, WorkCounters), PathLookupFailure> {
-        let slot_count = maximum_entries
-            .checked_mul(2)
-            .and_then(usize::checked_next_power_of_two)
-            .ok_or_else(|| {
-                OperationFailure::before_work(PathLookupError::Work(WorkError::Overflow))
-            })?;
-        let table = usize_to_u64(slot_count)
-            .checked_mul(usize_to_u64(size_of::<Option<CachedObject>>()))
-            .ok_or_else(|| {
-                OperationFailure::before_work(PathLookupError::Work(WorkError::Overflow))
-            })?;
-        // Charged for the table's whole life up front: growing to its
-        // limit holds the last half-size table beside the full one, and
-        // allocates once per doubling.
-        let requested = table.saturating_add(table / 2);
-        let allocations = 1 + u64::from(
-            (slot_count / INITIAL_CACHE_SLOTS.min(slot_count).max(1)).trailing_zeros(),
-        );
-        WorkCounters {
-            allocation_operations: allocations,
-            peak_allocation_bytes: requested,
-            ..WorkCounters::default()
-        }
-        .verify(budget)
-        .map_err(|error| OperationFailure::before_work(error.into()))?;
-        let mut slots = Vec::new();
-        let initial = slot_count.min(INITIAL_CACHE_SLOTS);
-        slots
-            .try_reserve_exact(initial)
-            .map_err(|_| OperationFailure::before_work(PathLookupError::AllocationFailed))?;
-        slots.resize_with(initial, || None);
-        let metadata_bytes = requested;
-        let work = WorkCounters {
-            allocation_operations: allocations,
-            peak_allocation_bytes: metadata_bytes,
-            ..WorkCounters::default()
-        };
-        work.verify(budget)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        Ok((
-            Self {
-                store,
-                state: Mutex::new(CacheState {
-                    slots,
-                    entry_count: 0,
-                    retained_owned_bytes: 0,
-                    external_resident_bytes: 0,
-                }),
-                maximum_entries,
-                slot_limit: slot_count,
-                metadata_bytes,
-            },
-            work,
-        ))
+    fn new(store: &'a S, maximum_entries: usize, accounting: &mut KernelAccounting<'_>,
+        data_custody: Option<&'a super::ProofDataCustody>) -> Result<Self, crate::FsError> {
+        let slot_limit = maximum_entries.checked_mul(2).and_then(usize::checked_next_power_of_two)
+            .ok_or(WorkError::Overflow)?.max(1);
+        usize_to_u64(slot_limit).checked_mul(size_of::<Option<CachedObject>>() as u64).ok_or(WorkError::Overflow)?;
+        let mut slots = reserve_slots::<Option<CachedObject>>(slot_limit.min(INITIAL_CACHE_SLOTS), accounting, data_custody)?;
+        let bytes = usize_to_u64(slots.capacity()).checked_mul(size_of::<Option<CachedObject>>() as u64).ok_or(WorkError::Overflow)?;
+        slots.resize_with(slot_limit.min(INITIAL_CACHE_SLOTS), || None);
+        if let Some(owner) = data_custody { owner.add_operation_cache_bytes(bytes)?; }
+        Ok(Self { store, state: Mutex::new(CacheState { slots, entry_count: 0,
+            retained_owned_bytes: 0, accounted_bytes: bytes, accounted_slot_bytes: bytes }), maximum_entries, slot_limit, data_custody })
     }
-
-    fn probe(&self, object_id: ObjectId) -> Result<(Option<ObjectRead>, u64), ObjectFailure> {
-        let (hit, _, examined) = probe_slots(&self.lock_state().slots, object_id)?;
-        Ok((hit, examined))
+    fn lock_state(&self) -> MutexGuard<'_, CacheState> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
-
-    /// Keeps `bytes` as `object_id`'s content, growing the table while it is
-    /// at least half full; true when it was kept.
-    fn admit(&self, object_id: ObjectId, bytes: &Bytes) -> Result<bool, ObjectStoreError> {
+    fn slot_bytes(state: &CacheState) -> Result<u64, WorkError> {
+        usize_to_u64(state.slots.capacity()).checked_mul(size_of::<Option<CachedObject>>() as u64).ok_or(WorkError::Overflow)
+    }
+    fn extra_resident(&self) -> Result<u64, ObjectStoreError> {
+        let state = self.lock_state();
+        Self::slot_bytes(&state)?.checked_add(state.retained_owned_bytes)
+            .and_then(|bytes| bytes.checked_sub(state.accounted_bytes)).ok_or(WorkError::Overflow.into())
+    }
+    /// Copies no backing bytes: native aliases retain the provider's physical owner.
+    fn probe(&self, object_id: ObjectId, accounting: &mut KernelAccounting<'_>) -> Result<Option<ObjectRead>, crate::FsError> {
+        let state = self.lock_state();
+        Ok(probe_slots(&state.slots, object_id, accounting, self.data_custody)?.0)
+    }
+    /// The very same slot-growth and rehash leaves serve both accounting modes.
+    fn admit(&self, object_id: ObjectId, bytes: &Bytes, owned_bytes: u64,
+        accounting: &mut KernelAccounting<'_>) -> Result<bool, crate::FsError> {
         let mut state = self.lock_state();
-        if state.entry_count >= self.maximum_entries {
-            return Ok(false);
-        }
-        if state.entry_count.saturating_mul(2) >= state.slots.len()
-            && state.slots.len() < self.slot_limit
-        {
-            let length = state.slots.len().saturating_mul(2).min(self.slot_limit);
-            let mut grown = Vec::new();
-            grown
-                .try_reserve_exact(length)
-                .map_err(|_| ObjectStoreError::Work(WorkError::Overflow))?;
+        if state.entry_count >= self.maximum_entries { return Ok(false); }
+        if probe_slots(&state.slots, object_id, accounting, None)?.0.is_some() { return Ok(false); }
+        if state.entry_count.saturating_mul(2) >= state.slots.len() && state.slots.len() < self.slot_limit {
+            let length = state.slots.len().checked_mul(2).ok_or(WorkError::Overflow)?.min(self.slot_limit);
+            let mut grown = reserve_slots::<Option<CachedObject>>(length, accounting, self.data_custody)?;
             grown.resize_with(length, || None);
-            for entry in std::mem::take(&mut state.slots).into_iter().flatten() {
-                let (_, vacant, _) =
-                    probe_slots(&grown, entry.object_id).map_err(|failure| failure.error)?;
-                #[allow(
-                    clippy::indexing_slicing,
-                    reason = "probe_slots returns an index masked by the table's power-of-two length"
-                )]
-                {
-                    grown[vacant] = Some(entry);
+            let old_bytes = Self::slot_bytes(&state)?;
+            // Charge all rehash probes before moving each old entry. On failure,
+            // the remaining original slots still own their untouched payloads.
+            for entry in state.slots.iter_mut() {
+                if let Some(value) = entry.as_ref() {
+                    let vacant = probe_slots(&grown, value.object_id, accounting, None)?.1;
+                    grown[vacant] = entry.take();
                 }
             }
-            state.slots = grown;
+            let old = std::mem::replace(&mut state.slots, grown);
+            drop(old);
+            release_standalone(accounting, old_bytes.saturating_sub(state.accounted_slot_bytes))?;
+            if let Some(owner) = self.data_custody {
+                owner.add_operation_cache_bytes(Self::slot_bytes(&state)?.checked_sub(old_bytes).ok_or(WorkError::Overflow)?)?;
+            }
         }
-        let (hit, vacant, _) =
-            probe_slots(&state.slots, object_id).map_err(|failure| failure.error)?;
-        if hit.is_some() {
-            return Ok(false);
-        }
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "probe_slots returns an index masked by the table's power-of-two length"
-        )]
-        {
-            state.slots[vacant] = Some(CachedObject {
-                object_id,
-                bytes: bytes.clone(),
-            });
-        }
+        let vacant = probe_slots(&state.slots, object_id, accounting, None)?.1;
+        state.slots[vacant] = Some(CachedObject { object_id, bytes: bytes.clone() });
         state.entry_count += 1;
+        state.retained_owned_bytes = state.retained_owned_bytes.checked_add(owned_bytes).ok_or(WorkError::Overflow)?;
+        if let Some(owner) = self.data_custody { owner.add_operation_cache_bytes(owned_bytes)?; }
         Ok(true)
     }
-
-    fn resident_bytes(&self) -> Result<u64, ObjectFailure> {
-        let state = self.lock_state();
-        self.metadata_bytes
-            .checked_add(state.external_resident_bytes)
-            .ok_or_else(|| ObjectFailure::before_work(ObjectStoreError::Work(WorkError::Overflow)))?
-            .checked_add(state.retained_owned_bytes)
-            .ok_or_else(|| ObjectFailure::before_work(ObjectStoreError::Work(WorkError::Overflow)))
-    }
-
-    fn add_external_resident_bytes(&self, bytes: u64) -> Result<u64, WorkError> {
-        let mut state = self.lock_state();
-        state.external_resident_bytes = state
-            .external_resident_bytes
-            .checked_add(bytes)
-            .ok_or(WorkError::Overflow)?;
-        Ok(state.external_resident_bytes)
-    }
-
-    fn release_external_resident_bytes(&self, bytes: u64) {
-        let mut state = self.lock_state();
-        state.external_resident_bytes = state.external_resident_bytes.checked_sub(bytes)
-            .expect("cache future custody releases after physical box destruction");
-    }
-
-    fn lock_state(&self) -> MutexGuard<'_, CacheState> {
-        match self.state.lock() {
-            Ok(state) => state,
-            Err(poisoned) => poisoned.into_inner(),
-        }
-    }
-}
-
-/// Finds `object_id` in an open-addressed `slots` table whose length is a
-/// power of two: its content if present, the slot where it belongs, and the
-/// slots examined.
-fn probe_slots(
-    slots: &[Option<CachedObject>],
-    object_id: ObjectId,
-) -> Result<(Option<ObjectRead>, usize, u64), ObjectFailure> {
-    let mask = slots.len() - 1;
-    let mut index = object_hash(object_id) & mask;
-    let mut examined = 0_u64;
-    for _ in 0..slots.len() {
-        examined = examined.saturating_add(1);
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "every table OperationReadCache builds is a power of two long (a power-of-two limit, a start below it, and doublings); index is initialized as `object_hash(object_id) & mask` and updated only as `(index + 1) & mask` where `mask = slots.len() - 1`, so index is always < slots.len()"
-        )]
-        match &slots[index] {
-            Some(entry) if entry.object_id == object_id => {
-                return Ok((
-                    Some(ObjectRead {
-                        bytes: entry.bytes.clone(),
-                        retention: ObjectReadRetention::Shared,
-                    }),
-                    index,
-                    examined,
-                ));
+    /// Reconciles only actual standalone backing residency, never native receipts.
+    fn reconcile(&self, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
+        match accounting {
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelAccounting::NativeOriginal { .. } => Ok(()),
+            _ => {
+                let mut state = self.lock_state();
+                let actual = Self::slot_bytes(&state)?.checked_add(state.retained_owned_bytes).ok_or(WorkError::Overflow)?;
+                // Growth's standalone callback releases its own old-slot claim;
+                // the caller retains the old baseline until this short leaf.
+                accounting.with_allocations(|allocations, work, budget, _| {
+                    if actual >= state.accounted_bytes {
+                        allocations.record_owned_bytes(actual - state.accounted_bytes, work)
+                            .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
+                    } else {
+                        allocations.release(state.accounted_bytes - actual)
+                            .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
+                    }
+                    work.verify(budget)?;
+                    Ok(())
+                })?;
+                state.accounted_bytes = actual;
+                state.accounted_slot_bytes = Self::slot_bytes(&state)?;
+                Ok(())
             }
-            Some(_) => index = (index + 1) & mask,
-            None => return Ok((None, index, examined)),
         }
     }
-    Err(ObjectFailure::new(
-        ObjectStoreError::Corrupt,
-        WorkCounters {
-            items_examined: examined,
-            ..WorkCounters::default()
-        },
-    ))
 }
-
+impl<S> Drop for OperationReadCache<'_, S> {
+    fn drop(&mut self) {
+        let state = self.state.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let bytes = Self::slot_bytes(state).and_then(|slots| slots.checked_add(state.retained_owned_bytes).ok_or(WorkError::Overflow))
+            .expect("cache residency was admitted before retaining each payload");
+        drop(std::mem::take(&mut state.slots.values));
+        if let Some(owner) = self.data_custody { owner.release_operation_cache_bytes(bytes); }
+    }
+}
+fn probe_slots(slots: &[Option<CachedObject>], object_id: ObjectId, accounting: &mut KernelAccounting<'_>,
+    custody: Option<&super::ProofDataCustody>)
+    -> Result<(Option<ObjectRead>, usize), crate::FsError> {
+    let mask = slots.len().checked_sub(1).ok_or(ObjectStoreError::Corrupt)?;
+    let mut index = object_hash(object_id) & mask;
+    for _ in 0..slots.len() {
+        accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+        let slot = &slots[index];
+        if let Some(owner) = custody {
+            owner.record_completed_leaf_work(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+        }
+        match slot {
+            Some(entry) if entry.object_id == object_id => return Ok((Some(ObjectRead {
+                bytes: entry.bytes.clone(), retention: ObjectReadRetention::Shared }), index)),
+            Some(_) => index = (index + 1) & mask,
+            None => return Ok((None, index)),
+        }
+    }
+    Err(ObjectStoreError::Corrupt.into())
+}
 fn object_hash(object_id: ObjectId) -> usize {
     let mut hash = usize::from(object_id.kind.canonical_tag());
     for byte in object_id.digest.as_bytes() {
@@ -264,210 +239,200 @@ fn object_hash(object_id: ObjectId) -> usize {
     }
     hash
 }
-
-fn compare_object_id(left: ObjectId, right: ObjectId) -> Ordering {
-    left.kind
-        .canonical_tag()
-        .cmp(&right.kind.canonical_tag())
-        .then_with(|| left.digest.cmp(&right.digest))
+fn compare_object_id(left: &ObjectId, right: &ObjectId) -> Ordering {
+    left.kind.canonical_tag().cmp(&right.kind.canonical_tag()).then_with(|| left.digest.cmp(&right.digest))
 }
-
-fn budget_after_resident(
-    mut budget: WorkBudget,
-    resident: u64,
-) -> Result<WorkBudget, ObjectFailure> {
-    budget.peak_allocation_bytes = budget
-        .peak_allocation_bytes
-        .checked_sub(resident)
-        .ok_or_else(|| {
-            ObjectFailure::before_work(ObjectStoreError::Work(WorkError::BudgetExceeded {
-                counter: "peak_allocation_bytes",
-                observed: resident,
-                maximum: budget.peak_allocation_bytes,
-            }))
-        })?;
-    Ok(budget)
-}
-
-fn merge_backend_peak(
-    prior: WorkCounters,
-    backend: WorkCounters,
-    resident: u64,
-    budget: WorkBudget,
-) -> Result<WorkCounters, ObjectFailure> {
-    let work = prior
-        .with_backend(backend, resident)
-        .map_err(|error| ObjectFailure::new(error.into(), prior))?;
-    work.verify(budget)
-        .map_err(|error| ObjectFailure::new(error.into(), work))?;
-    Ok(work)
-}
-
-fn merge_backend_failure(
-    prior: WorkCounters,
-    backend: WorkCounters,
-    resident: u64,
-    error: ObjectStoreError,
-) -> ObjectFailure {
-    match prior.with_backend(backend, resident) {
-        Ok(work) => ObjectFailure::new(error, work),
-        Err(overflow) => ObjectFailure::new(overflow.into(), prior),
+fn object_error(error: crate::FsError) -> ObjectStoreError {
+    match error {
+        crate::FsError::Object(error) => error,
+        crate::FsError::Work(error) => ObjectStoreError::Work(error),
+        crate::FsError::Cancelled(_) => ObjectStoreError::Cancelled,
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::FsError::NativeKernel(error) => ObjectStoreError::Native(error),
+        _ => ObjectStoreError::Io(std::io::ErrorKind::OutOfMemory.into()),
     }
 }
 
+/// A standalone provider callback subtracts only backing not already present
+/// in its caller's original allocation ledger.
+fn provider_remaining(accounting: &KernelAccounting<'_>, resident: u64) -> Result<WorkBudget, crate::FsError> {
+    let mut remaining = accounting.remaining()?;
+    remaining.peak_allocation_bytes = remaining.peak_allocation_bytes.checked_sub(resident).ok_or(
+        WorkError::BudgetExceeded { counter: "peak_allocation_bytes", observed: resident, maximum: remaining.peak_allocation_bytes },
+    )?;
+    Ok(remaining)
+}
+
+/// Standalone receipts are composed at their actual callback boundary. Native
+/// hooks below do not call this leaf: they already charge the original ledger.
+fn compose_backend(accounting: &mut KernelAccounting<'_>, backend: WorkCounters, resident: u64) -> Result<(), crate::FsError> {
+    accounting.with_allocations(|_, work, budget, _| {
+        *work = work.with_backend(backend, resident)?;
+        work.verify(budget)?;
+        Ok(())
+    })
+}
 impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
-    fn decoded_cache_get(
-        &self,
-        key: async_storage::DecodedCacheKey,
-    ) -> Result<Option<async_storage::DecodedCacheValue>, ObjectStoreError> {
-        self.store.decoded_cache_get(key)
+    fn decoded_cache_get(&self, key: async_storage::DecodedCacheKey)
+        -> Result<Option<async_storage::DecodedCacheValue>, ObjectStoreError> { self.store.decoded_cache_get(key) }
+    fn decoded_cache_admit(&self, key: async_storage::DecodedCacheKey, value: async_storage::DecodedCacheValue)
+        -> Result<async_storage::DecodedCacheAdmission, ObjectStoreError> { self.store.decoded_cache_admit(key, value) }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn decoded_cache_get_with_native_work(&self, key: async_storage::DecodedCacheKey, work: &crate::NativeMaterializationWork)
+        -> Result<Option<async_storage::DecodedCacheValue>, ObjectStoreError> { self.store.decoded_cache_get_with_native_work(key, work) }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn decoded_cache_admit_with_native_work(&self, key: async_storage::DecodedCacheKey, value: async_storage::DecodedCacheValue,
+        work: &crate::NativeMaterializationWork) -> Result<async_storage::DecodedCacheAdmission, ObjectStoreError> {
+        self.store.decoded_cache_admit_with_native_work(key, value, work)
     }
-
-    fn decoded_cache_admit(
-        &self,
-        key: async_storage::DecodedCacheKey,
-        value: async_storage::DecodedCacheValue,
-    ) -> Result<async_storage::DecodedCacheAdmission, ObjectStoreError> {
-        self.store.decoded_cache_admit(key, value)
+    async fn put(&self, object_id: ObjectId, bytes: Bytes, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<()> {
+        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        let result = async {
+            let resident = self.extra_resident()?;
+            let remaining = provider_remaining(&accounting, resident)?;
+            match self.store.put(object_id, bytes, remaining, cancellation).await {
+                Ok(receipt) => compose_backend(&mut accounting, receipt.work, resident),
+                Err(failure) => {
+                    compose_backend(&mut accounting, *failure.work, resident)?;
+                    Err(failure.error.into())
+                }
+            }
+        }.await;
+        let work = accounting.spent();
+        result.map(|()| ObjectReceipt { value: (), work }).map_err(|error| ObjectFailure::new(object_error(error), work))
     }
-
-    async fn put(
-        &self,
-        object_id: ObjectId,
-        bytes: Bytes,
-        budget: WorkBudget,
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn put_with_native_work(&self, object_id: ObjectId, bytes: Bytes,
+        work: &crate::NativeMaterializationWork, cancellation: &CancellationToken)
+        -> Result<(), ObjectStoreError> {
+        self.store.put_with_native_work(object_id, bytes, work, cancellation).await
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn put_hashed_with_native_work(&self, object: crate::storage::HashedObject,
+        work: &crate::NativeMaterializationWork, cancellation: &CancellationToken)
+        -> Result<(), ObjectStoreError> {
+        self.store.put_hashed_with_native_work(object, work, cancellation).await
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn put_many_with_native_work(&self, writes: &[crate::storage::ObjectWrite],
+        work: &crate::NativeMaterializationWork, cancellation: &CancellationToken)
+        -> Result<(), ObjectStoreError> {
+        self.store.put_many_with_native_work(writes, work, cancellation).await
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn flush_before_publish_with_native_work(&self, scope: async_storage::PublicationScope<'_>,
+        work: &crate::NativeMaterializationWork, cancellation: &CancellationToken)
+        -> Result<crate::PublicationHold, ObjectStoreError> {
+        self.store.flush_before_publish_with_native_work(scope, work, cancellation).await
+    }
+    async fn prepare_generation_publication(
+        &self, request: &crate::kernel::PublishGenerationRequest,
+        proof: &crate::kernel::GenerationProof, append: &crate::GuardedAppend,
+        scope: crate::PublicationScope<'_>, budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
         let resident = self.resident_bytes()?;
-        let backend_budget = budget_after_resident(budget, resident)?;
-        let receipt =
-            AsyncObjectStore::put(self.store, object_id, bytes, backend_budget, cancellation)
-                .await
-                .map_err(|failure| {
-                    merge_backend_failure(
-                        WorkCounters::default(),
-                        *failure.work,
-                        resident,
-                        failure.error,
-                    )
-                })?;
+        let receipt = self.store.prepare_generation_publication(
+            request, proof, append, scope, budget_after_resident(budget, resident)?, cancellation,
+        ).await.map_err(|failure| {
+            merge_backend_failure(WorkCounters::default(), *failure.work, resident, failure.error)
+        })?;
         let work = merge_backend_peak(WorkCounters::default(), receipt.work, resident, budget)?;
         Ok(ObjectReceipt { value: (), work })
     }
-
-    async fn read(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        budget: WorkBudget,
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn prepare_generation_publication_with_native_work(
+        &self, request: &crate::kernel::PublishGenerationRequest,
+        proof: &crate::kernel::GenerationProof, append: &crate::GuardedAppend,
+        scope: crate::PublicationScope<'_>, original: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> ObjectResult<ObjectRead> {
-        let (hit, examined) = self.probe(object_id)?;
-        let hit_work = WorkCounters {
-            items_examined: examined,
-            ..WorkCounters::default()
-        };
-        if let Some(value) = hit {
-            let observed = usize_to_u64(value.bytes.len());
-            if observed > maximum_bytes {
-                return Err(ObjectFailure::new(
-                    ObjectStoreError::TooLarge {
-                        observed,
-                        maximum: maximum_bytes,
-                    },
-                    hit_work,
-                ));
-            }
-            hit_work
-                .verify(budget)
-                .map_err(|error| ObjectFailure::new(error.into(), hit_work))?;
-            return Ok(ObjectReceipt {
-                value,
-                work: hit_work,
-            });
-        }
-
-        let resident = self.resident_bytes()?;
-        let backend_budget = budget_after_resident(budget, resident)?;
-        let receipt = AsyncObjectStore::read(
-            self.store,
-            object_id,
-            maximum_bytes,
-            backend_budget,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| {
-            merge_backend_failure(hit_work, *failure.work, resident, failure.error)
-        })?;
-        let owned_bytes = match receipt.value.retention {
-            ObjectReadRetention::Shared => 0,
-            ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
-        };
-        let work = merge_backend_peak(hit_work, receipt.work, resident, budget)?;
-        let admitted = self
-            .admit(object_id, &receipt.value.bytes)
-            .map_err(|error| ObjectFailure::new(error, work))?;
-        if admitted {
-            let mut state = self.lock_state();
-            state.retained_owned_bytes = state
-                .retained_owned_bytes
-                .checked_add(owned_bytes)
-                .ok_or_else(|| {
-                    ObjectFailure::new(ObjectStoreError::Work(WorkError::Overflow), work)
-                })?;
-        }
-        Ok(ObjectReceipt {
-            value: receipt.value,
-            work,
-        })
+    ) -> Result<(), ObjectStoreError> {
+        self.store.prepare_generation_publication_with_native_work(
+            request, proof, append, scope, original, cancellation,
+        ).await
     }
-
-    async fn read_many(
-        &self,
-        requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<Vec<ObjectRead>> {
+    async fn read(&self, object_id: ObjectId, maximum_bytes: u64, budget: WorkBudget,
+        cancellation: &CancellationToken) -> ObjectResult<ObjectRead> {
+        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        let result = async {
+            if let Some(value) = self.probe(object_id, &mut accounting)? {
+                if usize_to_u64(value.bytes.len()) > maximum_bytes {
+                    return Err(ObjectStoreError::TooLarge { observed: usize_to_u64(value.bytes.len()), maximum: maximum_bytes }.into());
+                }
+                return Ok(value);
+            }
+            let resident = self.extra_resident()?;
+            let remaining = provider_remaining(&accounting, resident)?;
+            let receipt = self.store.read(object_id, maximum_bytes, remaining, cancellation).await;
+            let receipt = match receipt {
+                Ok(receipt) => receipt,
+                Err(failure) => {
+                    if let Some(owner) = self.data_custody { owner.record_completed_leaf_work(*failure.work)?; }
+                    compose_backend(&mut accounting, *failure.work, resident)?;
+                    return Err(failure.error.into());
+                }
+            };
+            if let Some(owner) = self.data_custody { owner.record_completed_leaf_work(receipt.work)?; }
+            compose_backend(&mut accounting, receipt.work, resident)?;
+            let owned = match receipt.value.retention { ObjectReadRetention::Shared => 0, ObjectReadRetention::Owned { logical_bytes } => logical_bytes };
+            // Resident backend aliases coexist with a new table during growth.
+            accounting.with_allocations(|allocations, work, _, _| {
+                allocations.record_owned_bytes(resident.checked_add(owned).ok_or(WorkError::Overflow)?, work)
+                    .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
+                Ok(())
+            })?;
+            let mut value = receipt.value;
+            if self.admit(object_id, &value.bytes, owned, &mut accounting)? { value.retention = ObjectReadRetention::Shared; }
+            Ok::<_, crate::FsError>(value)
+        }.await;
+        let work = accounting.spent();
+        result.map(|value| ObjectReceipt { value, work }).map_err(|error| ObjectFailure::new(object_error(error), work))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn read_with_native_work(&self, object_id: ObjectId, maximum_bytes: u64,
+        work: &crate::NativeMaterializationWork, cancellation: &CancellationToken)
+        -> Result<async_storage::NativeObjectRead, ObjectStoreError> {
+        let mut accounting = KernelAccounting::native(work, cancellation);
+        accounting.check().map_err(object_error)?;
+        if let Some(value) = self.probe(object_id, &mut accounting).map_err(object_error)? {
+            if usize_to_u64(value.bytes.len()) > maximum_bytes {
+                return Err(ObjectStoreError::TooLarge { observed: usize_to_u64(value.bytes.len()), maximum: maximum_bytes });
+            }
+            return async_storage::NativeObjectRead::shared(value);
+        }
+        // No cache lock or original ledger borrow spans this backend await.
+        let read = self.store.read_with_native_work(object_id, maximum_bytes, work, cancellation).await?;
+        self.admit(object_id, &read.read().bytes, 0, &mut accounting).map_err(object_error)?;
+        Ok(read)
+    }
+    async fn read_with_custody(&self, object_id: ObjectId, maximum_bytes: u64, budget: WorkBudget,
+        cancellation: &CancellationToken, observation: Option<async_storage::ObjectReadObservation<'_>>) -> ObjectResult<ObjectRead> {
+        let already_observed = observation.is_some_and(|observation| self.data_custody.is_some_and(|owner| observation.is_for(owner)));
+        let result = self.read(object_id, maximum_bytes, budget, cancellation).await;
+        match observation { Some(observation) if !already_observed => observation.complete(result), _ => result }
+    }
+    async fn read_many(&self, requests: &[ObjectReadRequest], budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<Vec<ObjectRead>> {
         async_storage::read_many_sequential_async(self, requests, budget, cancellation).await
     }
-
-    async fn contains(
-        &self,
-        object_id: ObjectId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<bool> {
-        let (hit, examined) = self.probe(object_id)?;
-        if hit.is_some() {
-            let work = WorkCounters {
-                items_examined: examined,
-                ..WorkCounters::default()
-            };
-            work.verify(budget)
-                .map_err(|error| ObjectFailure::before_work(error.into()))?;
-            return Ok(ObjectReceipt { value: true, work });
-        }
-        let prior = WorkCounters {
-            items_examined: examined,
-            ..WorkCounters::default()
-        };
-        let resident = self.resident_bytes()?;
-        let remaining = prior
-            .remaining(budget)
-            .map_err(|error| ObjectFailure::before_work(error.into()))?;
-        let backend_budget = budget_after_resident(remaining, resident)?;
-        let receipt =
-            AsyncObjectStore::contains(self.store, object_id, backend_budget, cancellation)
-                .await
-                .map_err(|failure| {
-                    merge_backend_failure(prior, *failure.work, resident, failure.error)
-                })?;
-        let work = merge_backend_peak(prior, receipt.work, resident, budget)?;
-        Ok(ObjectReceipt {
-            value: receipt.value,
-            work,
-        })
+    async fn contains(&self, object_id: ObjectId, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<bool> {
+        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        let result = async {
+            if self.probe(object_id, &mut accounting)?.is_some() { return Ok(true); }
+            let resident = self.extra_resident()?;
+            let remaining = provider_remaining(&accounting, resident)?;
+            match self.store.contains(object_id, remaining, cancellation).await {
+                Ok(receipt) => {
+                    compose_backend(&mut accounting, receipt.work, resident)?;
+                    Ok(receipt.value)
+                }
+                Err(failure) => {
+                    compose_backend(&mut accounting, *failure.work, resident)?;
+                    Err(failure.error.into())
+                }
+            }
+        }.await;
+        let work = accounting.spent();
+        result.map(|value| ObjectReceipt { value, work }).map_err(|error| ObjectFailure::new(object_error(error), work))
     }
 }
 
@@ -525,50 +490,6 @@ pub struct PathBatchLookup {
     /// Exact shared-prefix, file-table, backend, copy, and allocation work.
     pub work: WorkCounters,
 }
-
-#[derive(Clone, Copy)]
-struct PendingBinding {
-    path_index: usize,
-    file_id: crate::foundation::FileId,
-    kind: FileKind,
-}
-
-#[derive(Clone, Copy)]
-struct ActivePath {
-    path_index: usize,
-    directory: ObjectId,
-}
-
-#[derive(Clone, Copy)]
-enum PathQueries<'a> {
-    Owned(&'a [NamespacePath]),
-    Borrowed(&'a [&'a NamespacePath]),
-}
-
-impl<'a> PathQueries<'a> {
-    const fn len(self) -> usize {
-        match self {
-            Self::Owned(paths) => paths.len(),
-            Self::Borrowed(paths) => paths.len(),
-        }
-    }
-
-    const fn is_empty(self) -> bool {
-        self.len() == 0
-    }
-
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "PathQueries is a private helper and every call site in this module indexes with a value already bounded by `0..self.len()` (loop bounds `for index in 0..paths.len()`, or path_index/query_indices values that were themselves drawn from such a loop and threaded through fixed-length, never-resized scratch vectors), matching the array-of-two-slice contract of Mutation::paths elsewhere in this crate"
-    )]
-    fn get(self, index: usize) -> &'a NamespacePath {
-        match self {
-            Self::Owned(paths) => &paths[index],
-            Self::Borrowed(paths) => paths[index],
-        }
-    }
-}
-
 /// Path resolution failure retaining all completed work.
 pub type PathLookupFailure = OperationFailure<PathLookupError>;
 
@@ -619,6 +540,103 @@ pub enum PathLookupError {
     Work(#[from] WorkError),
 }
 
+/// The payload's original allocation remains attached until its caller drops it.
+/// Callers moving the value must carry the second `into_parts` component too.
+pub(crate) struct AccountedPath<T> {
+    value: T,
+    allocation: KernelOwnedAllocation,
+}
+impl<T> AccountedPath<T> {
+    pub(crate) fn value(&self) -> &T { &self.value }
+    pub(crate) fn into_parts(self) -> (T, KernelOwnedAllocation) { (self.value, self.allocation) }
+}
+fn absorb_allocation(target: &mut KernelOwnedAllocation, incoming: &mut KernelOwnedAllocation) -> Result<(), crate::FsError> {
+    match (target, incoming) {
+        (KernelOwnedAllocation::Standalone, KernelOwnedAllocation::Standalone) => Ok(()),
+        #[cfg(not(target_arch = "wasm32"))]
+        (KernelOwnedAllocation::NativeOriginal(target), KernelOwnedAllocation::NativeOriginal(incoming)) => {
+            target.absorb(incoming)?;
+            Ok(())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        _ => Err(crate::NativeTreeMaterializationError::InvalidLayout.into()),
+    }
+}
+fn release_standalone(accounting: &mut KernelAccounting<'_>, bytes: u64) -> Result<(), crate::FsError> {
+    let ledger = match accounting {
+        KernelAccounting::Standalone { allocations, .. } => allocations,
+        KernelAccounting::BorrowedStandalone { allocations, .. } => &mut **allocations,
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelAccounting::NativeOriginal { .. } => return Ok(()),
+    };
+    ledger.release(bytes).map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))
+}
+struct GuardedValue<T> { value: T, allocation: KernelOwnedAllocation }
+fn drop_slots<T>(values: GuardedVec<T>, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
+    let bytes = match &values.allocation {
+        KernelOwnedAllocation::Standalone => Some(usize_to_u64(values.capacity()).checked_mul(size_of::<T>() as u64).ok_or(WorkError::Overflow)?),
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelOwnedAllocation::NativeOriginal(_) => None,
+    };
+    drop(values);
+    if let Some(bytes) = bytes { release_standalone(accounting, bytes)?; }
+    Ok(())
+}
+fn drop_bindings(values: GuardedVec<Option<super::TreeEntry>>, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
+    let bytes = match &values.allocation {
+        KernelOwnedAllocation::Standalone => Some(usize_to_u64(values.capacity()).checked_mul(size_of::<Option<super::TreeEntry>>() as u64)
+            .and_then(|bytes| values.iter().flatten().try_fold(bytes, |bytes, entry| bytes.checked_add(usize_to_u64(entry.name.retained_bytes()))))
+            .ok_or(WorkError::Overflow)?),
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelOwnedAllocation::NativeOriginal(_) => None,
+    };
+    drop(values);
+    if let Some(bytes) = bytes { release_standalone(accounting, bytes)?; }
+    Ok(())
+}
+fn drop_cache<S>(cache: OperationReadCache<'_, S>, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
+    match accounting {
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelAccounting::NativeOriginal { .. } => { drop(cache); Ok(()) }
+        _ => {
+            let retained = cache.lock_state().accounted_bytes;
+            drop(cache);
+            release_standalone(accounting, retained)
+        }
+    }
+}
+fn copy_name(source: &LogicalName, maximum: u32, accounting: &mut KernelAccounting<'_>,
+    custody: Option<&super::ProofDataCustody>) -> Result<(LogicalName, KernelOwnedAllocation), crate::FsError> {
+    // Use the same canonical clone leaf, including its per-field observation.
+    accounting.with_owned_allocations(|allocations, work, budget, _| {
+        super::persistent_io::clone_key::<super::tree_mutation::TreeFormat>(
+            source, maximum, budget, allocations, work, custody,
+            custody.map_or(0, super::ProofDataCustody::operation_cache_bytes),
+        ).map_err(|error| match error {
+            super::persistent_io::Error::AllocationFailed => crate::FsError::HandleAllocationFailed,
+            super::persistent_io::Error::Allocation(error) => error.into_work_or(crate::FsError::HandleAllocationFailed),
+            super::persistent_io::Error::Storage(error) => error.into(),
+            super::persistent_io::Error::Decode(error) => error.into(),
+            super::persistent_io::Error::Work(error) => error.into(),
+        })
+    })
+}
+fn path_error(error: crate::FsError) -> PathLookupError {
+    match error {
+        crate::FsError::Path(error) => error,
+        crate::FsError::Config(error) => PathLookupError::Config(error),
+        crate::FsError::FileRecord(error) => PathLookupError::FileTable(error),
+        crate::FsError::Object(ObjectStoreError::Work(error)) => PathLookupError::Work(error),
+        crate::FsError::Object(error) => PathLookupError::Tree(TreeReadError::Storage(error)),
+        crate::FsError::Work(error) => PathLookupError::Work(error),
+        crate::FsError::Cancelled(_) => PathLookupError::Tree(TreeReadError::Cancelled),
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::FsError::NativeKernel(error) => PathLookupError::Tree(TreeReadError::Storage(ObjectStoreError::Native(error))),
+        crate::FsError::Decode(error) => PathLookupError::Tree(TreeReadError::Decode(error)),
+        _ => PathLookupError::AllocationFailed,
+    }
+}
+
 /// Resolves one exact path without following terminal or intermediate links.
 ///
 /// This synchronous surface drives the same asynchronous composition used by
@@ -663,91 +681,7 @@ pub async fn lookup_path_async<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<PathLookup, PathLookupFailure> {
-    in_heap(move || async move {
-        cancellation.check().map_err(|_| {
-            OperationFailure::before_work(PathLookupError::Tree(TreeReadError::Cancelled))
-        })?;
-        validate_path(path, config)?;
-        let limits = DecodeLimits::for_volume(config);
-        let maximum_cache_entries = maximum_cache_entries(path, config)?;
-        let (cache, mut work) = OperationReadCache::new(store, maximum_cache_entries, budget)?;
-        let root = lookup_file_record_async(
-            &cache,
-            generation.file_table,
-            generation.root_file_id,
-            limits,
-            remaining(work, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::FileTable))?;
-        work = add(work, root.work)?;
-        let mut current = root
-            .record
-            .ok_or_else(|| OperationFailure::new(PathLookupError::MissingRootRecord, work))?;
-        if path.is_root() {
-            return Ok(PathLookup {
-                record: Some(current),
-                parent: None,
-                resolved_components: 0,
-                work,
-            });
-        }
-
-        let mut parent = None;
-        for (index, component) in path.components().iter().enumerate() {
-            parent = Some(current);
-            let FilePayload::Directory { entries } = current.payload else {
-                return Err(OperationFailure::new(PathLookupError::NotDirectory, work));
-            };
-            if current.kind != FileKind::Directory {
-                return Err(OperationFailure::new(PathLookupError::KindMismatch, work));
-            }
-            let binding = lookup_tree_entry_async(
-                &cache,
-                entries,
-                component,
-                limits,
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::Tree))?;
-            work = add(work, binding.work)?;
-            let Some(binding) = binding.entry else {
-                return Ok(PathLookup {
-                    record: None,
-                    parent,
-                    resolved_components: u16::try_from(index).unwrap_or(u16::MAX),
-                    work,
-                });
-            };
-            let record = lookup_file_record_async(
-                &cache,
-                generation.file_table,
-                binding.file_id,
-                limits,
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::FileTable))?;
-            work = add(work, record.work)?;
-            current = record
-                .record
-                .ok_or_else(|| OperationFailure::new(PathLookupError::KindMismatch, work))?;
-            if current.kind != binding.kind {
-                return Err(OperationFailure::new(PathLookupError::KindMismatch, work));
-            }
-        }
-        Ok(PathLookup {
-            record: Some(current),
-            parent,
-            resolved_components: u16::try_from(path.depth()).unwrap_or(u16::MAX),
-            work,
-        })
-    })
-    .await
+    lookup_path_async_with_custody(store, generation, path, config, budget, cancellation, None).await
 }
 
 /// Resolves one path and captures the exact semantic regions needed for a safe rebase.
@@ -808,290 +742,6 @@ pub(crate) async fn observe_path_with_data_async<S: AsyncObjectStore>(
     ).await
 }
 
-async fn observe_path_with_terminal_async<S: AsyncObjectStore>(
-    store: &S,
-    generation: &super::GenerationRoot,
-    path: &NamespacePath,
-    config: VolumeConfig,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-    capture_terminal: bool,
-    data_custody: Option<&super::ProofDataCustody>,
-) -> Result<ObservedPathLookup, PathLookupFailure> {
-    in_heap(move || async move {
-        cancellation.check().map_err(|_| {
-            OperationFailure::before_work(PathLookupError::Tree(TreeReadError::Cancelled))
-        })?;
-        validate_path(path, config)?;
-
-        let limits = DecodeLimits::for_volume(config);
-        let maximum_cache_entries = maximum_cache_entries(path, config)?;
-        let (cache, mut work) = OperationReadCache::new(store, maximum_cache_entries, budget)?;
-        let mut allocations = AllocationLedger::default();
-        let mut dependencies = reserve_fixed::<Dependency>(
-            path.depth().saturating_add(1),
-            &mut allocations,
-            &mut work,
-            budget,
-        )?;
-        let dependency_vector_bytes = allocations.live_bytes();
-        cache
-            .add_external_resident_bytes(dependency_vector_bytes)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        let combined_resident = cache
-            .resident_bytes()
-            .map_err(|failure| OperationFailure::new(map_cache_error(failure.error), work))?;
-        work.peak_allocation_bytes = work.peak_allocation_bytes.max(combined_resident);
-        work.verify(budget)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-
-        let root = lookup_file_record_async(
-            &cache,
-            generation.file_table,
-            generation.root_file_id,
-            limits,
-            remaining(work, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::FileTable))?;
-        work = add(work, root.work)?;
-        let current = root
-            .record
-            .ok_or_else(|| OperationFailure::new(PathLookupError::MissingRootRecord, work))?;
-        if path.is_root() {
-            if !capture_terminal {
-                return Ok(ObservedPathLookup {
-                    lookup: PathLookup {
-                        record: Some(current),
-                        parent: None,
-                        resolved_components: 0,
-                        work,
-                    },
-                    dependencies,
-                });
-            }
-            let state = capture_file_record_state(
-                current,
-                remaining(work, budget)?,
-                WorkCounters::default(),
-            )
-            .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::Dependency))?;
-            work = add(work, state.work)?;
-            dependencies.push(Dependency {
-                region: DependencyRegion::FileRecord(current.file_id),
-                expected: state.value,
-            });
-            return Ok(ObservedPathLookup {
-                lookup: PathLookup {
-                    record: Some(current),
-                    parent: None,
-                    resolved_components: 0,
-                    work,
-                },
-                dependencies,
-            });
-        }
-
-        observe_descendants(
-            ObserveContext {
-                cache: &cache,
-                generation,
-                path,
-                limits,
-                budget,
-                cancellation,
-                capture_terminal,
-                data_custody,
-            },
-            current,
-            dependencies,
-            dependency_vector_bytes,
-            work,
-        )
-        .await
-    })
-    .await
-}
-
-struct ObserveContext<'a, S> {
-    cache: &'a OperationReadCache<'a, S>,
-    generation: &'a super::GenerationRoot,
-    path: &'a NamespacePath,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-    cancellation: &'a CancellationToken,
-    capture_terminal: bool,
-    data_custody: Option<&'a super::ProofDataCustody>,
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "one bounded traversal observes every descendant kind with exact dependency accounting"
-)]
-async fn observe_descendants<S: AsyncObjectStore>(
-    context: ObserveContext<'_, S>,
-    current: FileRecord,
-    dependencies: Vec<Dependency>,
-    external_resident_bytes: u64,
-    work: WorkCounters,
-) -> Result<ObservedPathLookup, PathLookupFailure> {
-    let mut frame = CacheFutureAllocation { cache: context.cache, bytes: 0 };
-    let (mut future, _) = crate::heap_future::in_heap_admitted(
-        (context, current, dependencies, external_resident_bytes, work),
-        |state, bytes| {
-            let (context, _, _, external, work) = state;
-            context.cancellation.check().map_err(|_| OperationFailure::new(
-                PathLookupError::Tree(TreeReadError::Cancelled), *work,
-            ))?;
-            let resident = context.cache.resident_bytes()
-                .map_err(|failure| OperationFailure::new(map_cache_error(failure.error), *work))?;
-            let next = resident.checked_add(bytes)
-                .ok_or_else(|| OperationFailure::new(PathLookupError::Work(WorkError::Overflow), *work))?;
-            work.charge_allocation(u64::from(bytes != 0), next, &context.budget)
-                .map_err(|error| OperationFailure::new(error.into(), *work))?;
-            *external = context.cache.add_external_resident_bytes(bytes)
-                .map_err(|error| OperationFailure::new(error.into(), *work))?;
-            frame.bytes = bytes;
-            if let Some(custody) = context.data_custody {
-                custody.record_data_work(WorkCounters {
-                    allocation_operations: u64::from(bytes != 0),
-                    peak_allocation_bytes: next,
-                    ..WorkCounters::default()
-                }).map_err(|error| OperationFailure::new(error.into(), *work))?;
-            }
-            Ok::<(), PathLookupFailure>(())
-        },
-        |(context, mut current, mut dependencies, mut external_resident_bytes, mut work)| async move {
-        let mut parent = None;
-        for (index, component) in context.path.components().iter().enumerate() {
-            let copied = copy_observation_name(
-                context.cache,
-                component,
-                context.limits.maximum_name_bytes,
-                external_resident_bytes,
-                work,
-                context.budget,
-                context.data_custody,
-            )?;
-            let dependency_name = copied.name;
-            external_resident_bytes = copied.external_resident_bytes;
-            work = copied.work;
-            parent = Some(current);
-            let FilePayload::Directory { entries } = current.payload else {
-                if !context.capture_terminal {
-                    // Mutation dependency observation may traverse a path that
-                    // exists only after earlier private mutations replaced this
-                    // base file with a directory. The positive edge to the old
-                    // file is the exact base dependency; no descendant existed.
-                    return Ok(ObservedPathLookup {
-                        lookup: PathLookup {
-                            record: None,
-                            parent,
-                            resolved_components: u16::try_from(index).unwrap_or(u16::MAX),
-                            work,
-                        },
-                        dependencies,
-                    });
-                }
-                return Err(OperationFailure::new(PathLookupError::NotDirectory, work));
-            };
-            if current.kind != FileKind::Directory {
-                return Err(OperationFailure::new(PathLookupError::KindMismatch, work));
-            }
-            let binding = lookup_tree_entry_async(
-                context.cache,
-                entries,
-                component,
-                context.limits,
-                remaining(work, context.budget)?,
-                context.cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::Tree))?;
-            work = add(work, binding.work)?;
-            let Some(binding) = binding.entry else {
-                dependencies.push(Dependency {
-                    region: DependencyRegion::DirectoryName {
-                        directory_id: current.file_id,
-                        name: dependency_name,
-                    },
-                    expected: DependencyState::Absent,
-                });
-                return Ok(ObservedPathLookup {
-                    lookup: PathLookup {
-                        record: None,
-                        parent,
-                        resolved_components: u16::try_from(index).unwrap_or(u16::MAX),
-                        work,
-                    },
-                    dependencies,
-                });
-            };
-            let state = capture_directory_name_state(
-                &binding,
-                remaining(work, context.budget)?,
-                WorkCounters::default(),
-            )
-            .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::Dependency))?;
-            work = add(work, state.work)?;
-            let binding_file_id = binding.file_id;
-            let binding_kind = binding.kind;
-            dependencies.push(Dependency {
-                region: DependencyRegion::DirectoryName {
-                    directory_id: current.file_id,
-                    name: dependency_name,
-                },
-                expected: state.value,
-            });
-            let record = lookup_file_record_async(
-                context.cache,
-                context.generation.file_table,
-                binding_file_id,
-                context.limits,
-                remaining(work, context.budget)?,
-                context.cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::FileTable))?;
-            work = add(work, record.work)?;
-            current = record
-                .record
-                .ok_or_else(|| OperationFailure::new(PathLookupError::KindMismatch, work))?;
-            if current.kind != binding_kind {
-                return Err(OperationFailure::new(PathLookupError::KindMismatch, work));
-            }
-        }
-        if context.capture_terminal {
-            let state = capture_file_record_state(
-                current,
-                remaining(work, context.budget)?,
-                WorkCounters::default(),
-            )
-            .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::Dependency))?;
-            work = add(work, state.work)?;
-            dependencies.push(Dependency {
-                region: DependencyRegion::FileRecord(current.file_id),
-                expected: state.value,
-            });
-        }
-        Ok(ObservedPathLookup {
-            lookup: PathLookup {
-                record: Some(current),
-                parent,
-                resolved_components: u16::try_from(context.path.depth()).unwrap_or(u16::MAX),
-                work,
-            },
-            dependencies,
-        })
-        },
-    )?;
-    let result = future.as_mut().await;
-    drop(future);
-    drop(frame);
-    result
-}
-
 /// Resolves a non-empty exact path batch through shared authenticated prefixes.
 ///
 /// Input order and duplicates are preserved. Paths sharing a directory prefix
@@ -1143,9 +793,27 @@ pub async fn lookup_paths_async<S: AsyncObjectStore>(
         budget,
         cancellation,
         None,
+        PathBatchMode::NoFollow,
     )
     .await
     .map(|observed| observed.lookup)
+}
+
+/// Read-only selected restoration evidence over the same authenticated walk.
+/// A missing or non-directory ancestor proves that its requested descendant is
+/// absent. Ordinary no-follow lookup keeps its non-directory error semantics.
+pub(crate) async fn lookup_paths_selected_async<S: AsyncObjectStore>(
+    store: &S,
+    generation: &super::GenerationRoot,
+    paths: &[NamespacePath],
+    config: VolumeConfig,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<PathBatchLookup, PathLookupFailure> {
+    lookup_path_queries_async(
+        store, generation, PathQueries::Owned(paths), false, config, budget,
+        cancellation, None, PathBatchMode::SelectedRestore,
+    ).await.map(|observed| observed.lookup)
 }
 
 /// Resolves a non-empty no-follow path batch with shared work while
@@ -1173,6 +841,7 @@ pub async fn observe_paths_async<S: AsyncObjectStore>(
         budget,
         cancellation,
         None,
+        PathBatchMode::NoFollow,
     )
     .await
 }
@@ -1188,6 +857,7 @@ pub(crate) async fn observe_paths_with_data_async<S: AsyncObjectStore>(
 ) -> Result<ObservedPathBatch, PathLookupFailure> {
     lookup_path_queries_async(
         store, generation, PathQueries::Owned(paths), true, config, budget, cancellation, Some(data_custody),
+        PathBatchMode::NoFollow,
     ).await
 }
 
@@ -1203,6 +873,7 @@ pub(crate) async fn observe_path_refs_async<S: AsyncObjectStore>(
 ) -> Result<ObservedPathBatch, PathLookupFailure> {
     lookup_path_queries_async(
         store, generation, PathQueries::Borrowed(paths), true, config, budget, cancellation, Some(data_custody),
+        PathBatchMode::NoFollow,
     ).await
 }
 
@@ -1231,6 +902,7 @@ pub async fn lookup_path_refs_async<S: AsyncObjectStore>(
         budget,
         cancellation,
         None,
+        PathBatchMode::NoFollow,
     )
     .await
     .map(|observed| observed.lookup)
@@ -1258,633 +930,456 @@ pub fn lookup_path_refs<S: crate::ImmediateObjectStore>(
     ))
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "scalar and batch lookups share one bounded resolution loop"
-)]
-async fn lookup_path_queries_async<S: AsyncObjectStore>(
-    store: &S,
-    generation: &super::GenerationRoot,
-    paths: PathQueries<'_>,
-    observe: bool,
-    config: VolumeConfig,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
+#[derive(Clone, Copy)]
+enum PathBatchMode {
+    NoFollow,
+    SelectedRestore,
+}
+
+
+pub(crate) async fn lookup_path_async_with_custody<S: AsyncObjectStore>(
+    store: &S, generation: &super::GenerationRoot, path: &NamespacePath, config: VolumeConfig,
+    budget: WorkBudget, cancellation: &CancellationToken, data_custody: Option<&super::ProofDataCustody>,
+) -> Result<PathLookup, PathLookupFailure> {
+    let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    let result = lookup_path_async_with_accounting(store, generation, path, config, &mut accounting, cancellation, data_custody).await;
+    result.map_err(|error| OperationFailure::new(path_error(error), accounting.spent()))
+}
+
+pub(crate) async fn lookup_path_async_with_accounting<S: AsyncObjectStore>(
+    store: &S, generation: &super::GenerationRoot, path: &NamespacePath, config: VolumeConfig,
+    accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
     data_custody: Option<&super::ProofDataCustody>,
-) -> Result<ObservedPathBatch, PathLookupFailure> {
-    in_heap(move || async move {
-    cancellation.check().map_err(|_| {
-        OperationFailure::before_work(PathLookupError::Tree(TreeReadError::Cancelled))
-    })?;
-    config
-        .validate()
-        .map_err(|error| OperationFailure::before_work(error.into()))?;
-    if paths.is_empty() {
-        return Err(OperationFailure::before_work(PathLookupError::EmptyBatch));
-    }
-    if u32::try_from(paths.len()).unwrap_or(u32::MAX) > config.limits.maximum_paths_per_batch {
-        return Err(OperationFailure::before_work(PathLookupError::TooManyPaths));
-    }
-    for index in 0..paths.len() {
-        validate_path(paths.get(index), config)?;
-    }
+) -> Result<PathLookup, crate::FsError> {
+    let result = resolve_path_with_accounting(store, generation, path, config, accounting, cancellation, data_custody, false, false).await?;
+    Ok(result.value.lookup)
+}
 
-    let total_components = (0..paths.len())
-        .try_fold(0_usize, |total, index| {
-            total
-                .checked_add(paths.get(index).depth())
-                .ok_or(PathLookupError::Work(WorkError::Overflow))
-        })
-        .map_err(OperationFailure::before_work)?;
-    // This cache is only an optimization. A worst-case page-height estimate
-    // multiplied by every requested component can reserve hundreds of MiB for
-    // a batch whose actual shared working set is tiny (for example Cargo's
-    // files under one target directory). Bound the cache, not the lookup.
-    const MAXIMUM_BATCH_CACHE_ENTRIES: usize = 4_096;
-    let cache_entries = maximum_cache_entries_for_components(total_components, config)?
-        .min(MAXIMUM_BATCH_CACHE_ENTRIES);
-    let (cache, mut work) = OperationReadCache::new(store, cache_entries, budget)?;
-    let mut allocations = AllocationLedger::default();
-    allocations
-        .claim_bytes(cache.metadata_bytes, 0, &mut work, budget)
-        .map_err(|error| allocation_failure(error, work))?;
+pub(crate) async fn observe_path_async_with_accounting<S: AsyncObjectStore>(
+    store: &S, generation: &super::GenerationRoot, path: &NamespacePath, config: VolumeConfig,
+    accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+    data_custody: Option<&super::ProofDataCustody>, capture_terminal: bool,
+) -> Result<AccountedPath<ObservedPathLookup>, crate::FsError> {
+    resolve_path_with_accounting(store, generation, path, config, accounting, cancellation, data_custody, true, capture_terminal).await
+}
+async fn observe_path_with_terminal_async<S: AsyncObjectStore>(
+    store: &S, generation: &super::GenerationRoot, path: &NamespacePath, config: VolumeConfig,
+    budget: WorkBudget, cancellation: &CancellationToken, capture_terminal: bool,
+    data_custody: Option<&super::ProofDataCustody>,
+) -> Result<ObservedPathLookup, PathLookupFailure> {
+    let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    observe_path_async_with_accounting(store, generation, path, config, &mut accounting, cancellation, data_custody, capture_terminal)
+        .await.map(|result| result.value).map_err(|error| OperationFailure::new(path_error(error), accounting.spent()))
+}
 
-    let count = paths.len();
-    let mut entries = reserve_fixed::<PathBatchEntry>(count, &mut allocations, &mut work, budget)?;
-    let mut current =
-        reserve_fixed::<Option<FileRecord>>(count, &mut allocations, &mut work, budget)?;
-    let mut done = reserve_fixed::<u8>(count, &mut allocations, &mut work, budget)?;
-    let mut active = reserve_fixed::<ActivePath>(count, &mut allocations, &mut work, budget)?;
-    let mut names = reserve_fixed::<LogicalName>(count, &mut allocations, &mut work, budget)?;
-    let mut query_indices = reserve_fixed::<usize>(count, &mut allocations, &mut work, budget)?;
-    let mut pending = reserve_fixed::<PendingBinding>(count, &mut allocations, &mut work, budget)?;
-    let mut file_ids =
-        reserve_fixed::<crate::foundation::FileId>(count, &mut allocations, &mut work, budget)?;
-    // Each path observes at most one edge per component and its terminal.
-    let mut dependencies = reserve_fixed::<Dependency>(
-        if observe {
-            total_components.saturating_add(count)
-        } else {
-            0
-        },
-        &mut allocations,
-        &mut work,
-        budget,
-    )?;
-    entries.resize(
-        count,
-        PathBatchEntry {
-            record: None,
-            parent: None,
-            resolved_components: 0,
-        },
-    );
-    current.resize(count, None);
-    done.resize(count, 0);
-    let limits = DecodeLimits::for_volume(config);
-    let root = lookup_file_record_async(
-        &cache,
-        generation.file_table,
-        generation.root_file_id,
-        limits,
-        batch_sub_budget(work, budget, orchestration_live(&cache, allocations)?)?,
-        cancellation,
-    )
-    .await
-    .map_err(|failure| {
-        merge_batch_failure(
-            work,
-            *failure.work,
-            orchestration_live(&cache, allocations).unwrap_or(u64::MAX),
-            PathLookupError::FileTable(failure.error),
-        )
-    })?;
-    work = merge_batch_work(
-        work,
-        root.work,
-        orchestration_live(&cache, allocations)?,
-        budget,
-    )?;
-    let root_record = root
-        .record
-        .ok_or_else(|| OperationFailure::new(PathLookupError::MissingRootRecord, work))?;
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "entries, current, and done are each reserved and resized to exactly `count == paths.len()` above (reserve_fixed + entries.resize(count, ..)/current.resize(count, None)/done.resize(count, 0)) and are never resized again, so any index in 0..paths.len() is in bounds for all three"
-    )]
-    for index in 0..paths.len() {
-        let path = paths.get(index);
-        if path.is_root() {
-            entries[index].record = Some(root_record);
-            done[index] = 1;
-            if observe {
-                observe_record(&mut dependencies, root_record, &mut work, budget)?;
-            }
-        } else {
-            current[index] = Some(root_record);
-        }
-    }
-
-    let maximum_depth = (0..paths.len())
-        .map(|index| paths.get(index).depth())
-        .max()
-        .unwrap_or(0);
-    for depth in 0..maximum_depth {
-        pending.clear();
-        active.clear();
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "done and current are each resized to exactly `count == paths.len()` once, before this loop, and never resized again, so any index in 0..paths.len() is in bounds for both"
-        )]
-        for index in 0..paths.len() {
-            if done[index] != 0 || paths.get(index).depth() <= depth {
-                continue;
-            }
-            let FilePayload::Directory { entries: directory } = current[index]
-                .ok_or_else(|| OperationFailure::new(PathLookupError::KindMismatch, work))?
-                .payload
-            else {
-                return Err(OperationFailure::new(PathLookupError::NotDirectory, work));
-            };
-            active.push(ActivePath {
-                path_index: index,
-                directory,
-            });
-        }
-        let comparisons = std::cell::Cell::new(0_u64);
-        active.sort_unstable_by(|left, right| {
-            comparisons.set(comparisons.get().saturating_add(1));
-            compare_object_id(left.directory, right.directory)
-                .then_with(|| left.path_index.cmp(&right.path_index))
-        });
-        work = work
-            .checked_add(WorkCounters {
-                items_examined: comparisons.get(),
-                ..WorkCounters::default()
-            })
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        work.verify(budget)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        let mut cursor = 0_usize;
-        while cursor < active.len() {
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "guarded by the enclosing `while cursor < active.len()` condition"
-            )]
-            let directory = active[cursor].directory;
-            let group_start = cursor;
-            cursor += 1;
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "short-circuit: `cursor < active.len()` is checked first in the same `&&` expression before active[cursor] is evaluated"
-            )]
-            while cursor < active.len() && active[cursor].directory == directory {
-                cursor += 1;
-            }
-            names.clear();
-            query_indices.clear();
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "group_start starts each outer iteration equal to the prior cursor (<= active.len()) and only cursor advances (via the bounded while loops above) before this slice is taken, so group_start <= cursor <= active.len()"
-            )]
-            for item in &active[group_start..cursor] {
-                query_indices.push(item.path_index);
-            }
-            let mut nested_bytes = 0_u64;
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "index is a path_index drawn from `active`, whose entries were pushed only when `paths.get(index).depth() > depth` in the loop above (the `if done[index] != 0 || paths.get(index).depth() <= depth { continue; }` guard), so depth < paths.get(*index).depth() == components().len()"
-            )]
-            for index in &query_indices {
-                let source = &paths.get(*index).components()[depth];
-                let (name, owned_bytes) = copy_batch_name(
-                    source,
-                    config.limits.maximum_component_bytes,
-                    &mut allocations,
-                    &mut work,
-                    budget,
-                    data_custody,
-                )?;
-                nested_bytes = nested_bytes.checked_add(owned_bytes).ok_or_else(|| {
-                    OperationFailure::new(PathLookupError::Work(WorkError::Overflow), work)
-                })?;
-                names.push(name);
-            }
-            let looked_up = lookup_tree_entries_async(
-                &cache,
-                directory,
-                &names,
-                config.limits.maximum_paths_per_batch,
-                limits,
-                batch_sub_budget(work, budget, orchestration_live(&cache, allocations)?)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| {
-                merge_batch_failure(
-                    work,
-                    *failure.work,
-                    orchestration_live(&cache, allocations).unwrap_or(u64::MAX),
-                    PathLookupError::Tree(failure.error),
-                )
+async fn resolve_path_with_accounting<S: AsyncObjectStore>(
+    store: &S, generation: &super::GenerationRoot, path: &NamespacePath, config: VolumeConfig,
+    accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+    data_custody: Option<&super::ProofDataCustody>, observe: bool, capture_terminal: bool,
+) -> Result<AccountedPath<ObservedPathLookup>, crate::FsError> {
+    accounting.check()?;
+    validate_path(path, config, accounting)?;
+    let cache_entries = maximum_cache_entries_for_components(path.depth(), config)
+        .map_err(|failure| crate::FsError::Path(failure.error))?;
+    let initial_live = standalone_live(accounting)?;
+    let mut frame_guard = None;
+    let mut frame_observation = FrameObservation { owner: data_custody, bytes: 0 };
+    let (mut future, _) = crate::heap_future::in_heap_admitted(
+        (&mut *accounting, store, generation, path, data_custody),
+        |(accounting, ..), bytes| {
+            let (_, guard) = accounting.with_owned_allocations(|allocations, work, budget, _| {
+                allocations.claim_bytes(bytes, u64::from(bytes != 0), work, budget)
+                    .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
+                Ok(())
             })?;
-            work = merge_batch_work(
-                work,
-                looked_up.work,
-                orchestration_live(&cache, allocations)?,
-                budget,
-            )?;
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "index is drawn from query_indices, whose entries are path_index values sourced from the earlier `0..paths.len()` loop; entries, current, and done are each resized to exactly `count == paths.len()` once and never resized again, so *index is always in bounds for all three"
-            )]
-            for ((index, binding), name) in query_indices
-                .iter()
-                .zip(looked_up.entries)
-                .zip(names.drain(..))
-            {
-                if observe {
-                    // The observed edge keeps the name copied for the query.
-                    let directory_id = current[*index]
-                        .ok_or_else(|| OperationFailure::new(PathLookupError::KindMismatch, work))?
-                        .file_id;
-                    let expected = match &binding {
-                        Some(binding) => {
-                            let state = capture_directory_name_state(
-                                binding,
-                                remaining(work, budget)?,
-                                WorkCounters::default(),
-                            )
-                            .map_err(|failure| {
-                                failure.map_with_prior_work(work, PathLookupError::Dependency)
-                            })?;
-                            work = add(work, state.work)?;
-                            state.value
-                        }
+            frame_guard = Some(guard);
+            frame_observation.admitted(bytes)?;
+            Ok::<(), crate::FsError>(())
+        },
+        |(accounting, store, generation, path, data_custody)| async move {
+            let limits = DecodeLimits::for_volume(config);
+            let cache = OperationReadCache::new(store, cache_entries, accounting, data_custody)?;
+            let mut dependencies = reserve_slots::<Dependency>(if observe { path.depth().saturating_add(1) } else { 0 }, accounting, data_custody)?;
+            let root = super::file_table::lookup_file_record_async_with_accounting(&cache, generation.file_table,
+                generation.root_file_id, limits, accounting, cancellation, data_custody).await?;
+            cache.reconcile(accounting)?;
+            let (root_record, root_guard) = root;
+            let mut current = root_record.ok_or(PathLookupError::MissingRootRecord)?;
+            drop(root_guard);
+            let mut parent = None;
+            let mut resolved = 0;
+            let mut found = true;
+            for (index, component) in path.components().iter().enumerate() {
+                accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+                parent = Some(current);
+                let FilePayload::Directory { entries } = current.payload else {
+                    if observe && !capture_terminal { found = false; break; }
+                    return Err(PathLookupError::NotDirectory.into());
+                };
+                if current.kind != FileKind::Directory { return Err(PathLookupError::KindMismatch.into()); }
+                let copied = if observe {
+                    let (name, guard) = copy_name(component, limits.maximum_name_bytes, accounting, data_custody)?;
+                    Some(GuardedValue { value: name, allocation: guard })
+                } else { None };
+                let (entry, entry_guard) = super::read::lookup_tree_entry_async_with_accounting(&cache, entries, component,
+                    limits, accounting, cancellation, data_custody).await?;
+                let entry = GuardedValue { value: entry, allocation: entry_guard };
+                cache.reconcile(accounting)?;
+                if let Some(copied) = copied {
+                    let expected = match &entry.value {
+                        Some(entry) => super::probe::capture_directory_name_state_with_accounting(entry, accounting, Some(cancellation), data_custody)?,
                         None => DependencyState::Absent,
                     };
-                    dependencies.push(Dependency {
-                        region: DependencyRegion::DirectoryName { directory_id, name },
-                        expected,
-                    });
+                    let GuardedValue { value: name, allocation: mut guard } = copied;
+                    // Original guards combine without copying data or charging again.
+                    if let Err(error) = absorb_allocation(&mut dependencies.allocation, &mut guard) { drop(name); return Err(error); }
+                    dependencies.push(Dependency { region: DependencyRegion::DirectoryName { directory_id: current.file_id, name }, expected });
                 }
-                if let Some(binding) = binding {
-                    pending.push(PendingBinding {
-                        path_index: *index,
-                        file_id: binding.file_id,
-                        kind: binding.kind,
-                    });
-                } else {
-                    entries[*index] = PathBatchEntry {
-                        record: None,
-                        parent: current[*index],
-                        resolved_components: u16::try_from(depth).unwrap_or(u16::MAX),
-                    };
-                    done[*index] = 1;
-                }
-            }
-            if !observe {
-                allocations
-                    .release(nested_bytes)
-                    .map_err(|error| allocation_failure(error, work))?;
-            }
-        }
-        if pending.is_empty() {
-            continue;
-        }
-        file_ids.clear();
-        file_ids.extend(pending.iter().map(|binding| binding.file_id));
-        let records = lookup_file_records_async(
-            &cache,
-            generation.file_table,
-            &file_ids,
-            config.limits.maximum_paths_per_batch,
-            limits,
-            batch_sub_budget(work, budget, orchestration_live(&cache, allocations)?)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| {
-            merge_batch_failure(
-                work,
-                *failure.work,
-                orchestration_live(&cache, allocations).unwrap_or(u64::MAX),
-                PathLookupError::FileTable(failure.error),
-            )
-        })?;
-        work = merge_batch_work(
-            work,
-            records.work,
-            orchestration_live(&cache, allocations)?,
-            budget,
-        )?;
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "binding.path_index is a PendingBinding.path_index, which is always constructed from query_indices entries (see `pending.push(PendingBinding { path_index: *index, .. })` above), themselves sourced from the `0..paths.len()` loop; entries, current, and done are each resized to exactly `count == paths.len()` once and never resized again, so binding.path_index is always in bounds for all three"
-        )]
-        for (binding, record) in pending.iter().zip(records.records) {
-            let record =
-                record.ok_or_else(|| OperationFailure::new(PathLookupError::KindMismatch, work))?;
-            if record.kind != binding.kind {
-                return Err(OperationFailure::new(PathLookupError::KindMismatch, work));
-            }
-            let next_depth = depth + 1;
-            if next_depth == paths.get(binding.path_index).depth() {
-                if observe {
-                    observe_record(&mut dependencies, record, &mut work, budget)?;
-                }
-                entries[binding.path_index] = PathBatchEntry {
-                    record: Some(record),
-                    parent: current[binding.path_index],
-                    resolved_components: u16::try_from(next_depth).unwrap_or(u16::MAX),
+                let Some(binding) = entry.value.as_ref() else { found = false; resolved = index; drop(entry); break; };
+                let file_id = binding.file_id;
+                let kind = binding.kind;
+                let entry_bytes = match &entry.allocation {
+                    KernelOwnedAllocation::Standalone => Some(usize_to_u64(binding.name.retained_bytes())),
+                    #[cfg(not(target_arch = "wasm32"))]
+                    KernelOwnedAllocation::NativeOriginal(_) => None,
                 };
-                done[binding.path_index] = 1;
-                current[binding.path_index] = None;
-            } else {
-                current[binding.path_index] = Some(record);
+                drop(entry);
+                if let Some(bytes) = entry_bytes { release_standalone(accounting, bytes)?; }
+                let (record, record_guard) = super::file_table::lookup_file_record_async_with_accounting(&cache, generation.file_table,
+                    file_id, limits, accounting, cancellation, data_custody).await?;
+                cache.reconcile(accounting)?;
+                current = record.ok_or(PathLookupError::KindMismatch)?;
+                drop(record_guard);
+                if current.kind != kind { return Err(PathLookupError::KindMismatch.into()); }
+                resolved = index + 1;
             }
-        }
-    }
-    if done.contains(&0) {
-        return Err(OperationFailure::new(PathLookupError::KindMismatch, work));
-    }
-    let retained_allocation_bytes = usize_to_u64(entries.capacity())
-        .checked_mul(usize_to_u64(size_of::<PathBatchEntry>()))
-        .ok_or_else(|| OperationFailure::new(PathLookupError::Work(WorkError::Overflow), work))?;
-    Ok(ObservedPathBatch {
-        lookup: PathBatchLookup {
-            entries,
-            retained_allocation_bytes,
-            work,
+            if observe && found && capture_terminal {
+                let expected = super::probe::capture_file_record_state_with_accounting(current, accounting, Some(cancellation), data_custody)?;
+                dependencies.push(Dependency { region: DependencyRegion::FileRecord(current.file_id), expected });
+            }
+            // Move result buffers first, then move their unchanged original guards.
+            let GuardedVec { values: dependencies, allocation } = dependencies;
+            let result = AccountedPath { value: ObservedPathLookup { lookup: PathLookup { record: found.then_some(current), parent,
+                resolved_components: u16::try_from(resolved).unwrap_or(u16::MAX), work: accounting.spent() }, dependencies }, allocation };
+            drop_cache(cache, accounting)?;
+            Ok(result)
         },
-        dependencies,
-    })
-})
-        .await
+    )?;
+    let result = future.as_mut().await;
+    drop(future);
+    drop(frame_observation);
+    drop(frame_guard);
+    if initial_live.is_some() {
+        let retained = match &result {
+            Ok(result) => dependency_bytes(&result.value.dependencies, result.value.dependencies.capacity())?,
+            Err(_) => 0,
+        };
+        cleanup_standalone(accounting, initial_live, retained)?;
+    }
+    result.map(|mut result| { result.value.lookup.work = accounting.spent(); result })
 }
 
-/// Captures one resolved terminal record as an observation.
-fn observe_record(
-    dependencies: &mut Vec<Dependency>,
-    record: FileRecord,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-) -> Result<(), PathLookupFailure> {
-    let state =
-        capture_file_record_state(record, remaining(*work, budget)?, WorkCounters::default())
-            .map_err(|failure| failure.map_with_prior_work(*work, PathLookupError::Dependency))?;
-    *work = add(*work, state.work)?;
-    dependencies.push(Dependency {
-        region: DependencyRegion::FileRecord(record.file_id),
-        expected: state.value,
-    });
+fn active_order(left: &ActivePath, right: &ActivePath, accounting: &mut KernelAccounting<'_>) -> Result<Ordering, crate::FsError> {
+    accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+    Ok(compare_object_id(&left.directory, &right.directory).then_with(|| left.path_index.cmp(&right.path_index)))
+}
+fn sift_active(values: &mut [ActivePath], mut root: usize, end: usize, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
+    loop {
+        let Some(mut child) = root.checked_mul(2).and_then(|index| index.checked_add(1)).filter(|index| *index < end) else { return Ok(()); };
+        if child + 1 < end && active_order(&values[child], &values[child + 1], accounting)? == Ordering::Less { child += 1; }
+        if active_order(&values[root], &values[child], accounting)? != Ordering::Less { return Ok(()); }
+        values.swap(root, child);
+        root = child;
+    }
+}
+fn sort_active(values: &mut [ActivePath], accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
+    for root in (0..values.len() / 2).rev() { sift_active(values, root, values.len(), accounting)?; }
+    for end in (1..values.len()).rev() {
+        values.swap(0, end);
+        sift_active(values, 0, end, accounting)?;
+    }
     Ok(())
 }
+#[derive(Clone, Copy)]
+struct PendingBinding { path_index: usize, file_id: crate::foundation::FileId, kind: FileKind }
+#[derive(Clone, Copy)]
+struct ActivePath { path_index: usize, directory: ObjectId }
+#[derive(Clone, Copy)]
+enum PathQueries<'a> { Owned(&'a [NamespacePath]), Borrowed(&'a [&'a NamespacePath]) }
+impl<'a> PathQueries<'a> {
+    fn len(self) -> usize { match self { Self::Owned(paths) => paths.len(), Self::Borrowed(paths) => paths.len() } }
+    fn get(self, index: usize) -> &'a NamespacePath { match self { Self::Owned(paths) => &paths[index], Self::Borrowed(paths) => paths[index] } }
+}
 
-fn validate_path(path: &NamespacePath, config: VolumeConfig) -> Result<(), PathLookupFailure> {
-    config
-        .validate()
-        .map_err(|error| OperationFailure::before_work(error.into()))?;
+pub(crate) async fn lookup_paths_async_with_accounting<S: AsyncObjectStore>(
+    store: &S, generation: &super::GenerationRoot, paths: &[NamespacePath], config: VolumeConfig,
+    accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken, custody: Option<&super::ProofDataCustody>,
+) -> Result<AccountedPath<PathBatchLookup>, crate::FsError> {
+    let AccountedPath { value, allocation } = path_queries_with_accounting(store, generation, PathQueries::Owned(paths), false,
+        config, accounting, cancellation, custody, PathBatchMode::NoFollow).await?;
+    Ok(AccountedPath { value: value.lookup, allocation })
+}
+
+pub(crate) async fn lookup_path_refs_async_with_accounting<S: AsyncObjectStore>(
+    store: &S, generation: &super::GenerationRoot, paths: &[&NamespacePath], config: VolumeConfig,
+    accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken, custody: Option<&super::ProofDataCustody>,
+) -> Result<AccountedPath<PathBatchLookup>, crate::FsError> {
+    let AccountedPath { value, allocation } = path_queries_with_accounting(store, generation, PathQueries::Borrowed(paths), false,
+        config, accounting, cancellation, custody, PathBatchMode::NoFollow).await?;
+    Ok(AccountedPath { value: value.lookup, allocation })
+}
+pub(crate) async fn observe_paths_async_with_accounting<S: AsyncObjectStore>(
+    store: &S, generation: &super::GenerationRoot, paths: &[NamespacePath], config: VolumeConfig,
+    accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken, custody: Option<&super::ProofDataCustody>,
+) -> Result<AccountedPath<ObservedPathBatch>, crate::FsError> {
+    path_queries_with_accounting(store, generation, PathQueries::Owned(paths), true, config, accounting, cancellation, custody,
+        PathBatchMode::NoFollow).await
+}
+async fn lookup_path_queries_async<S: AsyncObjectStore>(
+    store: &S, generation: &super::GenerationRoot, paths: PathQueries<'_>, observe: bool, config: VolumeConfig,
+    budget: WorkBudget, cancellation: &CancellationToken, data_custody: Option<&super::ProofDataCustody>, mode: PathBatchMode,
+) -> Result<ObservedPathBatch, PathLookupFailure> {
+    let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    path_queries_with_accounting(store, generation, paths, observe, config, &mut accounting, cancellation, data_custody, mode)
+        .await.map(|result| result.value).map_err(|error| OperationFailure::new(path_error(error), accounting.spent()))
+}
+fn retire_name_bytes(allocation: &mut KernelOwnedAllocation, accounting: &mut KernelAccounting<'_>, bytes: u64) -> Result<(), crate::FsError> {
+    match allocation {
+        KernelOwnedAllocation::Standalone => release_standalone(accounting, bytes),
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelOwnedAllocation::NativeOriginal(allocation) => allocation.release(bytes).map_err(Into::into),
+    }
+}
+fn standalone_live(accounting: &mut KernelAccounting<'_>) -> Result<Option<u64>, crate::FsError> {
+    match accounting {
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelAccounting::NativeOriginal { .. } => Ok(None),
+        _ => accounting.with_allocations(|allocations, _, _, _| Ok(Some(allocations.live_bytes()))),
+    }
+}
+fn cleanup_standalone(accounting: &mut KernelAccounting<'_>, initial: Option<u64>, retained: u64) -> Result<(), crate::FsError> {
+    if let Some(initial) = initial {
+        let live = match accounting {
+            KernelAccounting::Standalone { allocations, .. } => allocations.live_bytes(),
+            KernelAccounting::BorrowedStandalone { allocations, .. } => allocations.live_bytes(),
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelAccounting::NativeOriginal { .. } => return Ok(()),
+        };
+        let release = live.checked_sub(initial).and_then(|bytes| bytes.checked_sub(retained)).ok_or(WorkError::Overflow)?;
+        release_standalone(accounting, release)?;
+    }
+    Ok(())
+}
+fn dependency_bytes(dependencies: &[Dependency], capacity: usize) -> Result<u64, WorkError> {
+    dependencies.iter().try_fold(usize_to_u64(capacity).checked_mul(size_of::<Dependency>() as u64).ok_or(WorkError::Overflow)?,
+        |bytes, dependency| bytes.checked_add(match &dependency.region {
+            DependencyRegion::DirectoryName { name, .. } => usize_to_u64(name.retained_bytes()), _ => 0,
+        }).ok_or(WorkError::Overflow))
+}
+
+async fn path_queries_with_accounting<S: AsyncObjectStore>(
+    store: &S, generation: &super::GenerationRoot, paths: PathQueries<'_>, observe: bool, config: VolumeConfig,
+    accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+    data_custody: Option<&super::ProofDataCustody>, mode: PathBatchMode,
+) -> Result<AccountedPath<ObservedPathBatch>, crate::FsError> {
+    accounting.check()?;
+    config.validate()?;
+    if paths.len() == 0 { return Err(PathLookupError::EmptyBatch.into()); }
+    if u32::try_from(paths.len()).unwrap_or(u32::MAX) > config.limits.maximum_paths_per_batch { return Err(PathLookupError::TooManyPaths.into()); }
+    let mut total_components = 0_usize;
+    for index in 0..paths.len() {
+        validate_path(paths.get(index), config, accounting)?;
+        total_components = total_components.checked_add(paths.get(index).depth()).ok_or(WorkError::Overflow)?;
+    }
+    let cache_entries = maximum_cache_entries_for_components(total_components, config)
+        .map_err(|failure| crate::FsError::Path(failure.error))?.min(4096);
+    let initial_live = standalone_live(accounting)?;
+    let mut frame_guard = None;
+    let mut frame_observation = FrameObservation { owner: data_custody, bytes: 0 };
+    let (mut future, _) = crate::heap_future::in_heap_admitted(
+        (&mut *accounting, store, generation, paths, data_custody),
+        |(accounting, ..), bytes| {
+            let (_, guard) = accounting.with_owned_allocations(|allocations, work, budget, _| {
+                allocations.claim_bytes(bytes, u64::from(bytes != 0), work, budget)
+                    .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
+                Ok(())
+            })?;
+            frame_guard = Some(guard);
+            frame_observation.admitted(bytes)?;
+            Ok::<(), crate::FsError>(())
+        },
+        |(accounting, store, generation, paths, data_custody)| async move {
+            let cache = OperationReadCache::new(store, cache_entries, accounting, data_custody)?;
+            let count = paths.len();
+            let limits = DecodeLimits::for_volume(config);
+            let mut dependencies = reserve_slots::<Dependency>(if observe { total_components.checked_add(count).ok_or(WorkError::Overflow)? } else { 0 }, accounting, data_custody)?;
+            let mut entries = reserve_slots::<PathBatchEntry>(count, accounting, data_custody)?;
+            let mut current = reserve_slots::<Option<FileRecord>>(count, accounting, data_custody)?;
+            let mut done = reserve_slots::<u8>(count, accounting, data_custody)?;
+            let mut active = reserve_slots::<ActivePath>(count, accounting, data_custody)?;
+            let mut names = reserve_slots::<LogicalName>(count, accounting, data_custody)?;
+            let mut query_indices = reserve_slots::<usize>(count, accounting, data_custody)?;
+            let mut pending = reserve_slots::<PendingBinding>(count, accounting, data_custody)?;
+            let mut file_ids = reserve_slots::<crate::foundation::FileId>(count, accounting, data_custody)?;
+            entries.resize(count, PathBatchEntry { record: None, parent: None, resolved_components: 0 });
+            current.resize(count, None);
+            done.resize(count, 0);
+            let (root, root_guard) = super::file_table::lookup_file_record_async_with_accounting(&cache, generation.file_table,
+                generation.root_file_id, limits, accounting, cancellation, data_custody).await?;
+            cache.reconcile(accounting)?;
+            let root = root.ok_or(PathLookupError::MissingRootRecord)?;
+            drop(root_guard);
+            for index in 0..count {
+                accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+                if paths.get(index).is_root() {
+                    entries[index].record = Some(root);
+                    done[index] = 1;
+                    if observe {
+                        let expected = super::probe::capture_file_record_state_with_accounting(root, accounting, Some(cancellation), data_custody)?;
+                        dependencies.push(Dependency { region: DependencyRegion::FileRecord(root.file_id), expected });
+                    }
+                } else { current[index] = Some(root); }
+            }
+            let maximum_depth = (0..count).map(|index| paths.get(index).depth()).max().unwrap_or(0);
+            for depth in 0..maximum_depth {
+                pending.clear();
+                active.clear();
+                for index in 0..count {
+                    accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+                    if done[index] != 0 || paths.get(index).depth() <= depth { continue; }
+                    let FilePayload::Directory { entries: directory } = current[index].ok_or(PathLookupError::KindMismatch)?.payload else {
+                        if matches!(mode, PathBatchMode::SelectedRestore) {
+                            entries[index] = PathBatchEntry { record: None, parent: None, resolved_components: u16::try_from(depth).unwrap_or(u16::MAX) };
+                            done[index] = 1;
+                            continue;
+                        }
+                        return Err(PathLookupError::NotDirectory.into());
+                    };
+                    active.push(ActivePath { path_index: index, directory });
+                }
+                sort_active(&mut active, accounting)?;
+                let mut cursor = 0;
+                while cursor < active.len() {
+                    let directory = active[cursor].directory;
+                    let start = cursor;
+                    cursor += 1;
+                    while cursor < active.len() {
+                        accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+                        if active[cursor].directory != directory { break; }
+                        cursor += 1;
+                    }
+                    names.clear();
+                    query_indices.clear();
+                    let mut copied_bytes = 0_u64;
+                    for item in &active[start..cursor] {
+                        query_indices.push(item.path_index);
+                        let (name, guard) = copy_name(&paths.get(item.path_index).components()[depth], limits.maximum_name_bytes, accounting, data_custody)?;
+                        let copied = GuardedValue { value: name, allocation: guard };
+                        copied_bytes = copied_bytes.checked_add(usize_to_u64(copied.value.retained_bytes())).ok_or(WorkError::Overflow)?;
+                        let GuardedValue { value: name, allocation: mut guard } = copied;
+                        let owner = if observe { &mut dependencies.allocation } else { &mut names.allocation };
+                        if let Err(error) = absorb_allocation(owner, &mut guard) { drop(name); return Err(error); }
+                        names.push(name);
+                    }
+                    let (bindings, bindings_guard) = super::read::lookup_tree_entries_async_with_accounting(&cache, directory, &names,
+                        config.limits.maximum_paths_per_batch, limits, accounting, cancellation, data_custody).await?;
+                    let bindings = GuardedVec { values: bindings, allocation: bindings_guard };
+                    cache.reconcile(accounting)?;
+                    for ((index, binding), name) in query_indices.iter().zip(bindings.iter()).zip(names.drain(..)) {
+                        if observe {
+                            let expected = match binding {
+                                Some(binding) => super::probe::capture_directory_name_state_with_accounting(binding, accounting, Some(cancellation), data_custody)?,
+                                None => DependencyState::Absent,
+                            };
+                            dependencies.push(Dependency { region: DependencyRegion::DirectoryName {
+                                directory_id: current[*index].ok_or(PathLookupError::KindMismatch)?.file_id, name }, expected });
+                        }
+                        if let Some(binding) = binding {
+                            pending.push(PendingBinding { path_index: *index, file_id: binding.file_id, kind: binding.kind });
+                        } else {
+                            entries[*index] = PathBatchEntry { record: None, parent: current[*index], resolved_components: u16::try_from(depth).unwrap_or(u16::MAX) };
+                            done[*index] = 1;
+                        }
+                    }
+                    drop_bindings(bindings, accounting)?;
+                    if !observe { retire_name_bytes(&mut names.allocation, accounting, copied_bytes)?; }
+                }
+                if pending.is_empty() { continue; }
+                file_ids.clear();
+                file_ids.extend(pending.iter().map(|binding| binding.file_id));
+                let (records, records_guard) = super::file_table::lookup_file_records_async_with_accounting(&cache, generation.file_table,
+                    &file_ids, config.limits.maximum_paths_per_batch, limits, accounting, cancellation, data_custody).await?;
+                let records = GuardedVec { values: records, allocation: records_guard };
+                cache.reconcile(accounting)?;
+                for (binding, record) in pending.iter().zip(records.iter().copied()) {
+                    let record = record.ok_or(PathLookupError::KindMismatch)?;
+                    if record.kind != binding.kind { return Err(PathLookupError::KindMismatch.into()); }
+                    let next_depth = depth + 1;
+                    if next_depth == paths.get(binding.path_index).depth() {
+                        if observe {
+                            let expected = super::probe::capture_file_record_state_with_accounting(record, accounting, Some(cancellation), data_custody)?;
+                            dependencies.push(Dependency { region: DependencyRegion::FileRecord(record.file_id), expected });
+                        }
+                        entries[binding.path_index] = PathBatchEntry { record: Some(record), parent: current[binding.path_index],
+                            resolved_components: u16::try_from(next_depth).unwrap_or(u16::MAX) };
+                        done[binding.path_index] = 1;
+                        current[binding.path_index] = None;
+                    } else { current[binding.path_index] = Some(record); }
+                }
+                drop_slots(records, accounting)?;
+            }
+            if done.contains(&0) { return Err(PathLookupError::KindMismatch.into()); }
+            let retained_allocation_bytes = usize_to_u64(entries.capacity()).checked_mul(size_of::<PathBatchEntry>() as u64).ok_or(WorkError::Overflow)?;
+            // Scratch dies before guards; output arrays keep their exact guards.
+            drop_slots(file_ids, accounting)?;
+            drop_slots(pending, accounting)?;
+            drop_slots(query_indices, accounting)?;
+            drop_slots(names, accounting)?;
+            drop_slots(active, accounting)?;
+            drop_slots(done, accounting)?;
+            drop_slots(current, accounting)?;
+            let GuardedVec { values: dependencies, mut allocation } = dependencies;
+            let GuardedVec { values: entries, allocation: mut entries_guard } = entries;
+            if let Err(error) = absorb_allocation(&mut allocation, &mut entries_guard) { drop(entries); drop(dependencies); return Err(error); }
+            let result = AccountedPath { value: ObservedPathBatch { lookup: PathBatchLookup { entries, retained_allocation_bytes, work: accounting.spent() }, dependencies }, allocation };
+            drop_cache(cache, accounting)?;
+            Ok(result)
+        },
+    )?;
+    let result = future.as_mut().await;
+    drop(future);
+    drop(frame_observation);
+    drop(frame_guard);
+    if initial_live.is_some() {
+        let retained = match &result {
+            Ok(result) => result.value.lookup.retained_allocation_bytes.checked_add(
+                dependency_bytes(&result.value.dependencies, result.value.dependencies.capacity())?).ok_or(WorkError::Overflow)?,
+            Err(_) => 0,
+        };
+        cleanup_standalone(accounting, initial_live, retained)?;
+    }
+    result.map(|mut result| { result.value.lookup.work = accounting.spent(); result })
+}
+
+fn validate_path(path: &NamespacePath, config: VolumeConfig, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
+    config.validate()?;
     if path.encoded_bytes() > config.limits.maximum_path_bytes
         || path.depth() > usize::from(config.limits.maximum_path_depth)
     {
-        return Err(OperationFailure::before_work(PathLookupError::PathBounds));
+        return Err(PathLookupError::PathBounds.into());
     }
     let maximum_component_bytes =
         usize::try_from(config.limits.maximum_component_bytes).unwrap_or(usize::MAX);
     for component in path.components() {
+        accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
         if component.as_bytes().len() > maximum_component_bytes {
-            return Err(OperationFailure::before_work(PathLookupError::PathBounds));
+            return Err(PathLookupError::PathBounds.into());
         }
         if !component.encoding().is_admitted_in_profile(config.profile) {
-            return Err(OperationFailure::before_work(
-                PathLookupError::UnsupportedNameEncoding,
-            ));
+            return Err(PathLookupError::UnsupportedNameEncoding.into());
         }
     }
     Ok(())
-}
-
-fn reserve_fixed<T>(
-    count: usize,
-    allocations: &mut AllocationLedger,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-) -> Result<Vec<T>, PathLookupFailure> {
-    let bytes = allocations
-        .claim_elements::<T>(count, work, budget)
-        .map_err(|error| allocation_failure(error, *work))?;
-    let mut values = Vec::new();
-    if values.try_reserve_exact(count).is_err() {
-        allocations
-            .release(bytes)
-            .map_err(|error| allocation_failure(error, *work))?;
-        return Err(OperationFailure::new(
-            PathLookupError::AllocationFailed,
-            *work,
-        ));
-    }
-    Ok(values)
-}
-
-fn copy_batch_name(
-    source: &LogicalName,
-    maximum_bytes: u32,
-    allocations: &mut AllocationLedger,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-    data_custody: Option<&super::ProofDataCustody>,
-) -> Result<(LogicalName, u64), PathLookupFailure> {
-    let bytes = usize_to_u64(source.as_bytes().len());
-    allocations.claim_bytes(bytes, u64::from(bytes != 0), work, budget)
-        .map_err(|error| allocation_failure(error, *work))?;
-    if let Some(custody) = data_custody {
-        custody.record_data_work(WorkCounters {
-            allocation_operations: u64::from(bytes != 0),
-            peak_allocation_bytes: work.peak_allocation_bytes,
-            ..WorkCounters::default()
-        }).map_err(|error| OperationFailure::new(error.into(), *work))?;
-    }
-    let mut copied = Vec::new();
-    copied.try_reserve_exact(source.as_bytes().len())
-        .map_err(|_| OperationFailure::new(PathLookupError::AllocationFailed, *work))?;
-    let copied_work = work
-        .checked_add(WorkCounters {
-            bytes_copied: bytes,
-            ..WorkCounters::default()
-        })
-        .map_err(|error| OperationFailure::new(error.into(), *work))?;
-    copied_work
-        .verify(budget)
-        .map_err(|error| OperationFailure::new(error.into(), *work))?;
-    if let Some(custody) = data_custody {
-        custody.record_data_work(WorkCounters { bytes_copied: bytes, ..WorkCounters::default() })
-            .map_err(|error| OperationFailure::new(error.into(), *work))?;
-    }
-    copied.extend_from_slice(source.as_bytes());
-    *work = copied_work;
-    let name = LogicalName::new(source.encoding(), copied, maximum_bytes)
-        .map_err(|_| OperationFailure::new(PathLookupError::KindMismatch, *work))?;
-    Ok((name, bytes))
-}
-
-struct CopiedObservationName {
-    name: LogicalName,
-    external_resident_bytes: u64,
-    work: WorkCounters,
-}
-
-fn copy_observation_name<S>(
-    cache: &OperationReadCache<'_, S>,
-    source: &LogicalName,
-    maximum_bytes: u32,
-    external_resident_bytes: u64,
-    work: WorkCounters,
-    budget: WorkBudget,
-    data_custody: Option<&super::ProofDataCustody>,
-) -> Result<CopiedObservationName, PathLookupFailure> {
-    let bytes = usize_to_u64(source.as_bytes().len());
-    let next_external = external_resident_bytes
-        .checked_add(bytes)
-        .ok_or_else(|| OperationFailure::new(PathLookupError::Work(WorkError::Overflow), work))?;
-    let resident_before = cache
-        .resident_bytes()
-        .map_err(|failure| OperationFailure::new(map_cache_error(failure.error), work))?;
-    let simultaneous = resident_before
-        .checked_add(bytes)
-        .ok_or_else(|| OperationFailure::new(PathLookupError::Work(WorkError::Overflow), work))?;
-    let allocation_attempt = work
-        .checked_add(WorkCounters {
-            allocation_operations: 1,
-            ..WorkCounters::default()
-        })
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    let mut admitted = allocation_attempt;
-    admitted.peak_allocation_bytes = admitted.peak_allocation_bytes.max(simultaneous);
-    admitted
-        .verify(budget)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-
-    if let Some(custody) = data_custody {
-        custody.record_data_work(WorkCounters {
-            allocation_operations: 1,
-            peak_allocation_bytes: simultaneous,
-            ..WorkCounters::default()
-        }).map_err(|error| OperationFailure::new(error.into(), work))?;
-    }
-    let mut copied = Vec::new();
-    copied
-        .try_reserve_exact(source.as_bytes().len())
-        .map_err(|_| {
-            OperationFailure::new(PathLookupError::AllocationFailed, allocation_attempt)
-        })?;
-    let copied_work = admitted
-        .checked_add(WorkCounters {
-            bytes_copied: bytes,
-            ..WorkCounters::default()
-        })
-        .map_err(|error| OperationFailure::new(error.into(), admitted))?;
-    copied_work
-        .verify(budget)
-        .map_err(|error| OperationFailure::new(error.into(), admitted))?;
-    if let Some(custody) = data_custody {
-        custody.record_data_work(WorkCounters { bytes_copied: bytes, ..WorkCounters::default() })
-            .map_err(|error| OperationFailure::new(error.into(), admitted))?;
-    }
-    copied.extend_from_slice(source.as_bytes());
-    let name = LogicalName::new(source.encoding(), copied, maximum_bytes)
-        .map_err(|_| OperationFailure::new(PathLookupError::KindMismatch, copied_work))?;
-    let retained = cache
-        .add_external_resident_bytes(bytes)
-        .map_err(|error| OperationFailure::new(error.into(), copied_work))?;
-    if retained != next_external {
-        return Err(OperationFailure::new(
-            PathLookupError::Work(WorkError::Overflow),
-            copied_work,
-        ));
-    }
-    Ok(CopiedObservationName {
-        name,
-        external_resident_bytes: retained,
-        work: copied_work,
-    })
-}
-
-fn allocation_failure(error: AllocationError, work: WorkCounters) -> PathLookupFailure {
-    OperationFailure::new(error.into_work_or(PathLookupError::AllocationFailed), work)
-}
-
-fn map_cache_error(error: ObjectStoreError) -> PathLookupError {
-    match error {
-        ObjectStoreError::Work(error) => PathLookupError::Work(error),
-        error => PathLookupError::Tree(TreeReadError::Storage(error)),
-    }
-}
-
-fn orchestration_live<S>(
-    cache: &OperationReadCache<'_, S>,
-    allocations: AllocationLedger,
-) -> Result<u64, PathLookupFailure> {
-    allocations
-        .live_bytes()
-        .checked_sub(cache.metadata_bytes)
-        .ok_or_else(|| OperationFailure::before_work(PathLookupError::Work(WorkError::Overflow)))
-}
-
-fn batch_sub_budget(
-    work: WorkCounters,
-    budget: WorkBudget,
-    orchestration_live: u64,
-) -> Result<WorkBudget, PathLookupFailure> {
-    let mut remaining = remaining(work, budget)?;
-    remaining.peak_allocation_bytes = remaining
-        .peak_allocation_bytes
-        .checked_sub(orchestration_live)
-        .ok_or_else(|| {
-            OperationFailure::new(
-                PathLookupError::Work(WorkError::BudgetExceeded {
-                    counter: "peak_allocation_bytes",
-                    observed: orchestration_live,
-                    maximum: remaining.peak_allocation_bytes,
-                }),
-                work,
-            )
-        })?;
-    Ok(remaining)
-}
-
-fn merge_batch_work(
-    prior: WorkCounters,
-    nested: WorkCounters,
-    orchestration_live: u64,
-    budget: WorkBudget,
-) -> Result<WorkCounters, PathLookupFailure> {
-    let merged = prior
-        .with_backend(nested, orchestration_live)
-        .map_err(|error| OperationFailure::new(error.into(), prior))?;
-    merged
-        .verify(budget)
-        .map_err(|error| OperationFailure::new(error.into(), merged))?;
-    Ok(merged)
-}
-
-fn merge_batch_failure(
-    prior: WorkCounters,
-    nested: WorkCounters,
-    orchestration_live: u64,
-    error: PathLookupError,
-) -> PathLookupFailure {
-    match prior.with_backend(nested, orchestration_live) {
-        Ok(merged) => OperationFailure::new(error, merged),
-        Err(overflow) => OperationFailure::new(overflow.into(), prior),
-    }
-}
-
-fn maximum_cache_entries(
-    path: &NamespacePath,
-    config: VolumeConfig,
-) -> Result<usize, PathLookupFailure> {
-    maximum_cache_entries_for_components(path.depth(), config)
 }
 
 fn maximum_cache_entries_for_components(
@@ -1900,18 +1395,6 @@ fn maximum_cache_entries_for_components(
         .ok_or_else(|| OperationFailure::before_work(PathLookupError::Work(WorkError::Overflow)))?;
     Ok(maximum
         .min(usize::try_from(config.limits.maximum_objects_per_generation).unwrap_or(usize::MAX)))
-}
-
-#[inline]
-fn add(left: WorkCounters, right: WorkCounters) -> Result<WorkCounters, PathLookupFailure> {
-    left.checked_add(right)
-        .map_err(|error| OperationFailure::new(error.into(), left))
-}
-
-#[inline]
-fn remaining(work: WorkCounters, budget: WorkBudget) -> Result<WorkBudget, PathLookupFailure> {
-    work.remaining(budget)
-        .map_err(|error| OperationFailure::new(error.into(), work))
 }
 
 #[cfg(all(test, feature = "memory"))]

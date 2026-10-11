@@ -33,27 +33,78 @@ const MAXIMUM_WORKSPACE_NAME_BYTES: usize = 255;
 ///
 /// Names are NFC-normalized, case-sensitive UTF-8 and cannot be reused for a
 /// different workspace in one filesystem namespace.
-#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct WorkspaceName(Arc<str>);
+pub struct WorkspaceName(
+    Arc<str>,
+    #[cfg(not(target_arch = "wasm32"))] Option<Arc<NativeWorkspaceNameCustody>>,
+);
+
+impl Clone for WorkspaceName {
+    fn clone(&self) -> Self {
+        Self(
+            Arc::clone(&self.0),
+            #[cfg(not(target_arch = "wasm32"))]
+            self.1.as_ref().map(Arc::clone),
+        )
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct NativeWorkspaceNameCustody {
+    // The last spelling alias is destroyed before its original-ledger guard.
+    _name: Arc<str>,
+    _allocation: crate::NativeAllocation,
+}
+
+impl PartialEq for WorkspaceName {
+    fn eq(&self, other: &Self) -> bool { self.as_str() == other.as_str() }
+}
+
+impl Eq for WorkspaceName {}
+
+impl PartialOrd for WorkspaceName {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for WorkspaceName {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+
+impl std::hash::Hash for WorkspaceName {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(self.as_str(), state);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<crate::NativeTreeMaterializationError> for WorkspaceError {
+    fn from(error: crate::NativeTreeMaterializationError) -> Self {
+        Self::from(FsError::NativeKernel(error))
+    }
+}
 
 fn workspace_name_scratch_witness(
     name: &str,
     work: &mut crate::WorkCounters,
     budget: crate::WorkBudget,
     cancellation: &crate::CancellationToken,
+    original_cancellation: Option<&crate::CancellationToken>,
 ) -> Result<crate::WorkCounters, WorkspaceError> {
     let mut pending = 0_u64;
     let mut maximum_pending = 0_u64;
     let mut maximum_chunk = 0_u64;
     for character in name.chars() {
-        cancellation.check()?;
+        check_workspace_name_cancellation(cancellation, original_cancellation)?;
         work.charge_items(1, &budget)?;
         let mut chunk = 0_u64;
         let mut failure = None;
         unicode_normalization::char::decompose_canonical(character, |scalar| {
             if failure.is_some() { return; }
             let result = (|| -> Result<(), WorkspaceError> {
-                cancellation.check()?;
+                check_workspace_name_cancellation(cancellation, original_cancellation)?;
                 work.charge_items(1, &budget)?;
                 chunk = chunk.checked_add(1).ok_or(crate::WorkError::Overflow)?;
                 if unicode_normalization::char::canonical_combining_class(scalar) == 0 {
@@ -95,6 +146,157 @@ fn workspace_name_scratch_witness(
     })
 }
 
+fn check_workspace_name_cancellation(
+    cancellation: &crate::CancellationToken,
+    original_cancellation: Option<&crate::CancellationToken>,
+) -> Result<(), WorkspaceError> {
+    cancellation.check()?;
+    if let Some(original) = original_cancellation { original.check()?; }
+    Ok(())
+}
+
+fn admit_workspace_name_scratch(
+    additional: u64,
+    witness: u64,
+    allocations: &crate::kernel::allocation::AllocationLedger,
+    work: &crate::WorkCounters,
+    budget: crate::WorkBudget,
+) -> Result<(), WorkspaceError> {
+    let peak = allocations.live_bytes().checked_add(additional)
+        .and_then(|bytes| bytes.checked_add(witness))
+        .ok_or(crate::WorkError::Overflow)?;
+    work.admit(&crate::WorkCounters {
+        peak_allocation_bytes: peak, ..crate::WorkCounters::UNCHARGED
+    }, &budget)?;
+    Ok(())
+}
+
+fn grow_workspace_name_bytes(
+    output: &mut Vec<u8>,
+    witness: u64,
+    allocations: &mut crate::kernel::allocation::AllocationLedger,
+    work: &mut crate::WorkCounters,
+    budget: crate::WorkBudget,
+) -> Result<(), WorkspaceError> {
+    if output.len() < output.capacity() { return Ok(()); }
+    let capacity = output.capacity().checked_mul(2).map(|value| value.max(1))
+        .ok_or(crate::WorkError::Overflow)?;
+    let copied = crate::WorkCounters {
+        bytes_copied: output.len() as u64, ..crate::WorkCounters::UNCHARGED
+    };
+    work.admit(&copied, &budget)?;
+    admit_workspace_name_scratch(capacity as u64, witness, allocations, work, budget)?;
+    let claimed = allocations.claim_elements::<u8>(capacity, work, budget)
+        .map_err(workspace_allocation_error)?;
+    let mut replacement = Vec::new();
+    if replacement.try_reserve_exact(capacity).is_err() {
+        drop(replacement);
+        allocations.release(claimed).map_err(workspace_allocation_error)?;
+        return Err(WorkspaceNameError::Allocation.into());
+    }
+    let actual = replacement.capacity() as u64;
+    if actual > claimed {
+        allocations.record_owned_bytes(actual - claimed, work)
+            .map_err(workspace_allocation_error)?;
+        if let Err(error) = admit_workspace_name_scratch(0, witness, allocations, work, budget) {
+            drop(replacement);
+            allocations.release(actual).map_err(workspace_allocation_error)?;
+            return Err(error);
+        }
+    }
+    work.charge(&copied, &budget)?;
+    replacement.append(output);
+    let previous = std::mem::replace(output, replacement);
+    let previous_bytes = previous.capacity() as u64;
+    drop(previous);
+    allocations.release(previous_bytes).map_err(workspace_allocation_error)?;
+    Ok(())
+}
+
+fn normalize_workspace_name(
+    name: &str,
+    allocations: &mut crate::kernel::allocation::AllocationLedger,
+    work: &mut crate::WorkCounters,
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
+    original_cancellation: Option<&crate::CancellationToken>,
+    custody_bytes: u64,
+) -> Result<Arc<str>, WorkspaceError> {
+    check_workspace_name_cancellation(cancellation, original_cancellation)?;
+    let witness = workspace_name_scratch_witness(
+        name, work, budget, cancellation, original_cancellation,
+    )?;
+    admit_workspace_name_scratch(
+        0, witness.peak_allocation_bytes, allocations, work, budget,
+    )?;
+    let mut output = Vec::new();
+    let result = (|| {
+        {
+            let mut normalized = name.nfc();
+            loop {
+                check_workspace_name_cancellation(cancellation, original_cancellation)?;
+                work.charge_items(1, &budget)?;
+                let Some(character) = normalized.next() else { break };
+                let mut encoded = [0; 4];
+                for byte in character.encode_utf8(&mut encoded).as_bytes() {
+                    grow_workspace_name_bytes(
+                        &mut output, witness.peak_allocation_bytes, allocations, work, budget,
+                    )?;
+                    work.charge(&crate::WorkCounters {
+                        bytes_copied: 1, ..crate::WorkCounters::UNCHARGED
+                    }, &budget)?;
+                    output.push(*byte);
+                }
+            }
+        }
+        check_workspace_name_cancellation(cancellation, original_cancellation)?;
+        work.charge_items(output.len() as u64, &budget)?;
+        let canonical = std::str::from_utf8(&output).map_err(WorkspaceError::engine)?;
+        if canonical.is_empty() { return Err(WorkspaceNameError::Empty.into()); }
+        if canonical == "." || canonical == ".." { return Err(WorkspaceNameError::Reserved.into()); }
+        if canonical.len() > MAXIMUM_WORKSPACE_NAME_BYTES { return Err(WorkspaceNameError::TooLong.into()); }
+        for character in canonical.chars() {
+            check_workspace_name_cancellation(cancellation, original_cancellation)?;
+            work.charge_items(1, &budget)?;
+            if character.is_control() || matches!(character, '/' | '\\') {
+                return Err(WorkspaceNameError::InvalidCharacter.into());
+            }
+        }
+        let copied = crate::WorkCounters {
+            bytes_copied: canonical.len() as u64, ..crate::WorkCounters::UNCHARGED
+        };
+        work.admit(&copied, &budget)?;
+        if custody_bytes != 0 {
+            // Admit the whole output pair before either allocation claim, so
+            // a refused spelling cannot report an unconstructed custody Arc.
+            let spelling_peak = allocations.live_bytes().checked_add(canonical.len() as u64)
+                .ok_or(crate::WorkError::Overflow)?;
+            let custody_peak = spelling_peak.checked_sub(output.capacity() as u64)
+                .and_then(|bytes| bytes.checked_add(custody_bytes))
+                .ok_or(crate::WorkError::Overflow)?;
+            let peak = spelling_peak.max(custody_peak);
+            work.admit(&crate::WorkCounters {
+                allocation_operations: 2,
+                peak_allocation_bytes: peak,
+                ..copied
+            }, &budget)?;
+        }
+        allocations.claim_bytes(canonical.len() as u64, 1, work, budget)
+            .map_err(workspace_allocation_error)?;
+        work.charge(&copied, &budget)?;
+        Ok(Arc::from(canonical))
+    })();
+    let bytes = output.capacity() as u64;
+    drop(output);
+    allocations.release(bytes).map_err(workspace_allocation_error)?;
+    let name = result?;
+    if custody_bytes != 0 {
+        allocations.claim_bytes(custody_bytes, 1, work, budget)
+            .map_err(workspace_allocation_error)?;
+    }
+    Ok(name)
+}
+
 impl WorkspaceName {
     /// Canonicalizes and validates one friendly workspace name.
     ///
@@ -122,54 +324,45 @@ impl WorkspaceName {
         cancellation: &crate::CancellationToken,
     ) -> crate::MeasuredResult<crate::OperationReceipt<Self>, WorkspaceError> {
         let mut work = crate::WorkCounters::UNCHARGED;
-        let result = (|| {
-            cancellation.check()?;
-            let witness = workspace_name_scratch_witness(name.as_ref(), &mut work, budget, cancellation)?;
-            work.admit(&witness, &budget)?;
-            let mut producing_budget = budget;
-            producing_budget.peak_allocation_bytes = producing_budget.peak_allocation_bytes
-                .checked_sub(witness.peak_allocation_bytes).ok_or(crate::WorkError::Overflow)?;
-            let mut allocations = crate::kernel::allocation::AllocationLedger::default();
-            let mut output = Vec::new();
-            {
-                let mut normalized = name.as_ref().nfc();
-                loop {
-                    cancellation.check()?;
-                    work.charge_items(1, &producing_budget)?;
-                    let Some(character) = normalized.next() else { break };
-                    let mut encoded = [0; 4];
-                    for byte in character.encode_utf8(&mut encoded).as_bytes() {
-                        grow_workspace_vec(&mut output, &mut allocations, &mut work, producing_budget, cancellation)?;
-                        work.charge(&crate::WorkCounters {
-                            bytes_copied: 1, ..crate::WorkCounters::UNCHARGED
-                        }, &producing_budget)?;
-                        output.push(*byte);
-                    }
-                }
-            }
-            cancellation.check()?;
-            work.charge_items(output.len() as u64, &budget)?;
-            let canonical = std::str::from_utf8(&output).map_err(WorkspaceError::engine)?;
-            if canonical.is_empty() { return Err(WorkspaceNameError::Empty.into()); }
-            if canonical == "." || canonical == ".." { return Err(WorkspaceNameError::Reserved.into()); }
-            if canonical.len() > MAXIMUM_WORKSPACE_NAME_BYTES { return Err(WorkspaceNameError::TooLong.into()); }
-            for character in canonical.chars() {
-                cancellation.check()?;
-                work.charge_items(1, &budget)?;
-                if character.is_control() || matches!(character, '/' | '\\') {
-                    return Err(WorkspaceNameError::InvalidCharacter.into());
-                }
-            }
-            let copied = crate::WorkCounters { bytes_copied: canonical.len() as u64, ..crate::WorkCounters::UNCHARGED };
-            work.admit(&copied, &budget)?;
-            allocations.claim_bytes(canonical.len() as u64, 1, &mut work, budget)
-                .map_err(workspace_allocation_error)?;
-            work.charge(&copied, &budget)?;
-            Ok(Self(Arc::from(canonical)))
-        })();
-        result
-            .map(|value| crate::OperationReceipt { value, work })
+        let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+        normalize_workspace_name(
+            name.as_ref(), &mut allocations, &mut work, budget, cancellation, None, 0,
+        )
+            .map(|name| crate::OperationReceipt {
+                value: Self(name, #[cfg(not(target_arch = "wasm32"))] None),
+                work,
+            })
             .map_err(|error| crate::OperationFailure::new(error, work))
+    }
+
+    /// Canonicalizes one name on the native invocation's original work ledger.
+    ///
+    /// # Errors
+    ///
+    /// Returns the canonical name error, cancellation, or original work denial.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new_with_native_work(
+        name: &str,
+        original: &crate::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<Self, WorkspaceError> {
+        cancellation.check()?;
+        let (name, allocation) = original.with_owned_allocations(
+            |allocations, work, budget, original_cancellation| {
+                normalize_workspace_name(
+                    name, allocations, work, budget, cancellation,
+                    Some(original_cancellation),
+                    std::mem::size_of::<NativeWorkspaceNameCustody>() as u64,
+                )
+            },
+        )?;
+        // Construct only after the original AL loan has ended: the guard must
+        // never be captured or dropped inside a closure holding that ledger.
+        let custody = Arc::new(NativeWorkspaceNameCustody {
+            _name: Arc::clone(&name),
+            _allocation: allocation,
+        });
+        Ok(Self(name, Some(custody)))
     }
 
     pub(crate) fn retained_bytes(&self) -> u64 {
@@ -240,19 +433,44 @@ impl WorkspaceId {
         cancellation: &crate::CancellationToken,
     ) -> crate::MeasuredResult<crate::OperationReceipt<Self>, WorkspaceError> {
         let mut work = crate::WorkCounters::UNCHARGED;
-        let result = (|| {
-            cancellation.check()?;
-            work.charge(&crate::WorkCounters {
-                bytes_hashed: (WORKSPACE_ID_DOMAIN.len() + namespace.len()
-                    + std::mem::size_of::<u64>() + name.as_str().len()) as u64,
-                bytes_copied: 16,
-                ..crate::WorkCounters::UNCHARGED
-            }, &budget)?;
-            Ok(Self::derive(namespace, name))
-        })();
+        let result = Self::derive_with_work(namespace, name, &mut work, budget, cancellation);
         result
             .map(|value| crate::OperationReceipt { value, work })
             .map_err(|error| crate::OperationFailure::new(error, work))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn derive_with_native_work(
+        namespace: [u8; 16],
+        name: &WorkspaceName,
+        original: &crate::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<Self, WorkspaceError> {
+        cancellation.check()?;
+        original.with_allocations(|_, work, budget, original_cancellation| {
+            original_cancellation.check()?;
+            Self::derive_with_work(namespace, name, work, budget, cancellation)
+        })
+    }
+
+    fn derive_with_work(
+        namespace: [u8; 16],
+        name: &WorkspaceName,
+        work: &mut crate::WorkCounters,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<Self, WorkspaceError> {
+        cancellation.check()?;
+        let hashed = WORKSPACE_ID_DOMAIN.len().checked_add(namespace.len())
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<u64>()))
+            .and_then(|bytes| bytes.checked_add(name.as_str().len()))
+            .ok_or(crate::WorkError::Overflow)?;
+        work.charge(&crate::WorkCounters {
+            bytes_hashed: u64::try_from(hashed).map_err(|_| crate::WorkError::Overflow)?,
+            bytes_copied: 16,
+            ..crate::WorkCounters::UNCHARGED
+        }, &budget)?;
+        Ok(Self::derive(namespace, name))
     }
 
     /// Returns the stable opaque bytes for persistence or transport.
@@ -524,6 +742,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         })
     }
 
+    /// Resolves the exact original operation without adopting the current head.
+    ///
+    /// # Errors
+    /// Preserves original-ledger admission, cancellation and authority failures.
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub async fn operation_generation_with_native_work(
+        &self,
+        operation_id: crate::OperationId,
+        work: &crate::native_mount::NativeMountMeterWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<Option<Generation<A, O>>, WorkspaceError> {
+        let original = work.native_materialization_work();
+        let id = self.volume.fs.workspace_operation_generation_with_native_work(
+            &self.volume, operation_id, &original, cancellation,
+        ).await?;
+        Ok(id.map(|id| Generation {
+            workspace: self.clone(), id, publication_closure: None,
+        }))
+    }
+
     /// Proves an immutable result was committed by this workspace's exact
     /// join operation, not by an unrelated mutation with a plausible parent.
     pub async fn verify_join_commit(
@@ -611,7 +849,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> crate::MeasuredResult<crate::OperationReceipt<Generation<A, O>>, WorkspaceError> {
-        in_heap(move || async move {
+        async {
             let receipt = self
                 .volume
                 .checkout(
@@ -628,8 +866,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                 value: Generation { workspace: self.clone(), id: receipt.value.generation_id(), publication_closure: None },
                 work: receipt.work,
             })
-        })
+        }
         .await
+    }
+
+    /// Pins the authenticated head using the invocation's original native work.
+    ///
+    /// # Errors
+    /// Preserves original allocation, cancellation and authentication failures.
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub async fn head_with_native_work(
+        &self, work: &crate::native_mount::NativeMountMeterWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<Generation<A, O>, WorkspaceError> {
+        let checkout = self.engine_checkout_with_native_work(
+            GenerationSelector::Head, CheckoutMode::read_only_pinned(), work, cancellation,
+        ).await?;
+        Ok(Generation { workspace: self.clone(), id: checkout.generation_id(), publication_closure: None })
     }
 
     /// Selects the head generation and reports whether its file table holds
@@ -2366,6 +2619,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             .checkout(selector, mode, budget, cancellation)
             .await
             .map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::default(), WorkspaceError::from))
+    }
+
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub(crate) async fn engine_checkout_with_native_work(
+        &self, selector: GenerationSelector, mode: CheckoutMode,
+        work: &crate::native_mount::NativeMountMeterWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<Checkout<A, O>, WorkspaceError> {
+        let original = work.native_materialization_work();
+        self.volume.checkout_with_native_work(selector, mode, &original, cancellation)
+            .await.map_err(WorkspaceError::from)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn readonly_pinned_reader_with_native_work(
+        &self,
+        generation: GenerationId,
+        original: &crate::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::PinnedReader<A, O>, WorkspaceError> {
+        let checkout = self.volume.checkout_with_native_work(
+            GenerationSelector::Exact(generation),
+            CheckoutMode::read_only_pinned(),
+            original,
+            cancellation,
+        ).await.map_err(WorkspaceError::from)?;
+        checkout.into_pinned_reader_with_native_work(original, cancellation)
+            .map_err(WorkspaceError::from)
     }
 }
 
@@ -7391,6 +7672,14 @@ pub(crate) fn workspace_bounded_error(
     if error.is::<crate::CancellationError>() {
         return Some(WorkspaceError::Cancelled(crate::CancellationError));
     }
+    if let Some(context) = error.downcast_ref::<Box<crate::FsError>>() {
+        return workspace_bounded_error(context.as_ref());
+    }
+    if let Some(crate::FsError::RootReadWorkMerge { prior, backend, error }) = error.downcast_ref::<crate::FsError>() {
+        return Some(WorkspaceError::Filesystem(crate::FsError::RootReadWorkMerge {
+            prior: *prior, backend: *backend, error: *error,
+        }));
+    }
     macro_rules! bounded {
         ($kind:ty; [$($nested:ident),*]; [$($cancelled:ident),*]) => {{
             type ErrorKind = $kind;
@@ -7405,6 +7694,20 @@ pub(crate) fn workspace_bounded_error(
         }};
     }
     bounded!(WorkspaceError; [Cancelled, Filesystem, NamespacePath]; []);
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(crate::FsError::NativeKernel(native)) = error.downcast_ref::<crate::FsError>() {
+        return workspace_bounded_error(native);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(crate::ObjectStoreError::Native(native)) = error.downcast_ref::<crate::ObjectStoreError>() {
+        return workspace_bounded_error(native);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(crate::AuthorityStoreError::NativeOriginal(native)) = error.downcast_ref::<crate::AuthorityStoreError>() {
+        return workspace_bounded_error(native);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    bounded!(crate::NativeTreeMaterializationError; [Io]; [Cancelled]);
     bounded!(crate::FsError;
         [Cancelled, Authority, Object, Closure, Path, Directory, FileRecord, FileRead,
          BlobBuild, BlobRead, AttributeLookup, AttributeList, AttributeMutation,
@@ -7424,10 +7727,10 @@ pub(crate) fn workspace_bounded_error(
     bounded!(crate::kernel::RegularMutationError; [BlobBuild, BlobRead, Extent, Range, Clone, Storage]; []);
     bounded!(crate::kernel::ExtentMutationError; [Storage]; []);
     bounded!(crate::kernel::ExtentCloneError; [Source, Destination]; []);
-    bounded!(crate::kernel::ExtentReadError; [Storage]; [Cancelled]);
+    bounded!(crate::kernel::ExtentReadError; [Storage, Context]; [Cancelled]);
     bounded!(crate::kernel::BlobBuildError; [Source, Storage]; [Cancelled]);
-    bounded!(crate::kernel::BlobReadError; [Storage]; [Cancelled]);
-    bounded!(crate::kernel::FileRangeReadError; [Extent, Blob]; [Cancelled]);
+    bounded!(crate::kernel::BlobReadError; [Storage, Context]; [Cancelled]);
+    bounded!(crate::kernel::FileRangeReadError; [Extent, Blob, Context]; [Cancelled]);
     bounded!(crate::kernel::DirectoryReadError; [Storage]; [Cancelled]);
     bounded!(crate::kernel::AttributeLookupError; [Storage]; [Cancelled]);
     bounded!(crate::kernel::AttributeListError; [Storage]; [Cancelled]);
@@ -7438,6 +7741,8 @@ pub(crate) fn workspace_bounded_error(
     bounded!(crate::kernel::CheckpointError; [Storage]; []);
     bounded!(crate::kernel::ClosureError; [Storage]; []);
     bounded!(crate::kernel::PublicationError; [Closure, Objects, Authority]; []);
+    #[cfg(not(target_arch = "wasm32"))]
+    bounded!(crate::materializer::NativeTreeMaterializationError; [Io]; [Cancelled]);
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     bounded!(crate::DemandError; []; [Cancelled]);
     #[cfg(feature = "native-mount")]
@@ -7448,6 +7753,7 @@ pub(crate) fn workspace_bounded_error(
             MountSourceError::Cancelled => Some(WorkspaceError::Cancelled(crate::CancellationError)),
             MountSourceError::Filesystem(error) => workspace_bounded_error(error),
             MountSourceError::NamespacePath(error) => workspace_bounded_error(error),
+            MountSourceError::NativeWork(error) => workspace_bounded_error(error),
             _ => None,
         };
     }
@@ -7459,6 +7765,9 @@ pub(crate) fn workspace_bounded_error(
 
 impl From<FsError> for WorkspaceError {
     fn from(error: FsError) -> Self {
+        if matches!(&error, FsError::RootReadWorkMerge { .. }) {
+            return Self::Filesystem(error);
+        }
         if let Some(bounded) = workspace_bounded_error(&error) {
             return bounded;
         }
