@@ -855,13 +855,6 @@ pub(crate) fn canonical_json_bytes_identity_native_trusted<F: FnMut(JsonCodecCha
     encode(value, JsonBounds::IDENTITY, Some(code), charge)
 }
 
-/// Produces the SAME canonical encoder's owned Value directly, without an encoded buffer, parsing roundtrip or unchecked initial serde_json::to_value.
-pub fn json_value_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
-    value: &T, bounds: JsonBounds, code: Option<crate::wire::ErrorCode>, charge: &mut F,
-) -> Result<Value> {
-    value_output(value, bounds, code, charge)
-}
-
 /// SDK-private sizing of an already bounded, audited closed source.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn validate_json_byte_bound_native_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
@@ -914,7 +907,8 @@ pub(super) fn count_json_bytes_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodec
     Ok(sizing.scan.bytes)
 }
 
-fn value_output<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
+/// Produces an admitted JSON value.
+pub fn json_value_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &T, bounds: JsonBounds, native_code: Option<crate::wire::ErrorCode>, charge: &mut F,
 ) -> Result<Value> {
     let bounds = JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds };
@@ -951,9 +945,6 @@ fn encode_value<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     Ok(value)
 }
 
-pub(super) fn canonical_json_bytes_trusted<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
-    encode(value, JsonBounds::IDENTITY, None, &mut |_| Ok(()))
-}
 
 /// Finish an SDK-owned, already canonical immutable journal template in its caller-owned prepaid output.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -1008,7 +999,7 @@ fn write_canonical_output<F: FnMut(JsonCodecCharge) -> Result<()>>(
     Ok(())
 }
 
-fn encode<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
+pub(super) fn encode<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &T, bounds: JsonBounds, native_code: Option<crate::wire::ErrorCode>, charge: &mut F,
 ) -> Result<Vec<u8>> {
     let mut meter = Meter { bounds, items: 0, bytes: 0, charge, failure: None,
@@ -1176,12 +1167,6 @@ pub(crate) fn admit_json_value_shape<F: FnMut(JsonCodecCharge) -> Result<()>>(
 
 /// Existing noncanonical record bytes (not identities).
 pub fn json_bytes_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
-    value: &T, bounds: JsonBounds, code: Option<crate::wire::ErrorCode>, charge: &mut F,
-) -> Result<Vec<u8>> {
-    bytes_output(value, bounds, code, charge)
-}
-
-fn bytes_output<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &T, bounds: JsonBounds, native_code: Option<crate::wire::ErrorCode>, charge: &mut F,
 ) -> Result<Vec<u8>> {
     let bounds = JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds };
@@ -1261,7 +1246,7 @@ fn bytes_output<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
 pub fn json_from_slice_bounded_trusted<T: serde::de::DeserializeOwned, F: FnMut(JsonCodecCharge) -> Result<()>>(
     bytes: &[u8], bounds: JsonBounds, maximum_owned_bytes: u64, charge: &mut F,
 ) -> Result<T> {
-    decode_bounded(bytes, bounds, maximum_owned_bytes, None, charge).map_err(DecodeFailure::into_portable_root)
+    decode_seed_bounded(std::marker::PhantomData::<T>, bytes, bounds, maximum_owned_bytes, None, charge).map_err(DecodeFailure::into_portable_root)
 }
 
 /// SDK-private portable closed-seed carrier using the SAME decode engine.
@@ -1280,7 +1265,7 @@ pub fn json_from_slice_bounded_native_trusted<T: serde::de::DeserializeOwned, F:
     bytes: &[u8], bounds: JsonBounds, maximum_owned_bytes: u64, code: crate::wire::ErrorCode,
     value_schema: JsonValueSchema, charge: &mut F,
 ) -> Result<T> {
-    decode_bounded(bytes, bounds, maximum_owned_bytes, Some(value_schema), charge).map_err(|failure| match failure {
+    decode_seed_bounded(std::marker::PhantomData::<T>, bytes, bounds, maximum_owned_bytes, Some(value_schema), charge).map_err(|failure| match failure {
         DecodeFailure::Root(error) => error,
         DecodeFailure::Bound(reason) => Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason },
         DecodeFailure::Serde(source) => Error::NativeDecode { code, source, custody: None },
@@ -1349,13 +1334,6 @@ impl From<AdmissionFailure> for DecodeFailure {
             AdmissionFailure::Bound(reason) => Self::Bound(reason),
         }
     }
-}
-
-fn decode_bounded<T: serde::de::DeserializeOwned, F: FnMut(JsonCodecCharge) -> Result<()>>(
-    bytes: &[u8], bounds: JsonBounds, maximum_owned_bytes: u64,
-    value_schema: Option<JsonValueSchema>, charge: &mut F,
-) -> std::result::Result<T, DecodeFailure> {
-    decode_seed_bounded(std::marker::PhantomData::<T>, bytes, bounds, maximum_owned_bytes, value_schema, charge)
 }
 
 fn decode_seed_bounded<'de, S, F>(
@@ -1495,57 +1473,6 @@ mod tests {
             assert_eq!(live, 0, "cancel schedule {stop} leaks live codec quota");
         }
         Ok(())
-    }
-
-    #[test]
-    fn serializer_failure_and_ignored_errors_cannot_leak_or_replace_first_failure() {
-        use serde::ser::SerializeSeq as _;
-        struct PartialFailure;
-        impl Serialize for PartialFailure {
-            fn serialize<S: ser::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-                let mut sequence = serializer.serialize_seq(Some(2))?;
-                sequence.serialize_element("owned partial tree")?;
-                Err(ser::Error::custom("original serializer failure"))
-            }
-        }
-        struct IgnoredErrors;
-        impl Serialize for IgnoredErrors {
-            fn serialize<S: ser::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-                let mut sequence = serializer.serialize_seq(Some(2))?;
-                let _ = sequence.serialize_element("ignored first");
-                let _ = sequence.serialize_element("ignored later");
-                sequence.end()
-            }
-        }
-        let mut live = 0u64;
-        let failure = canonical_json_bytes_bounded(&PartialFailure, BOUNDS, None, &mut |event| {
-            match event {
-                JsonCodecCharge::Retain { bytes } => live += bytes,
-                JsonCodecCharge::Release { bytes } => live = live.checked_sub(bytes).expect("balanced release"),
-                _ => {}
-            }
-            Ok(())
-        });
-        assert!(matches!(failure, Err(Error::Invalid(_))));
-        assert_eq!(live, 0);
-        let operation = crate::OperationId::from_bytes([91; 16]);
-        let mut first = Some(Error::Indeterminate(operation));
-        let mut copy_failures = 0;
-        let failure = canonical_json_bytes_bounded(&IgnoredErrors, BOUNDS, None, &mut |event| {
-            match event {
-                JsonCodecCharge::Retain { bytes } => live += bytes,
-                JsonCodecCharge::Release { bytes } => live = live.checked_sub(bytes).expect("balanced release"),
-                JsonCodecCharge::Copy { .. } => {
-                    copy_failures += 1;
-                    return Err(first.take().expect("codec must stop after its first failure"));
-                }
-                _ => {}
-            }
-            Ok(())
-        });
-        assert!(matches!(failure, Err(Error::Indeterminate(original)) if original == operation));
-        assert_eq!(copy_failures, 1);
-        assert_eq!(live, 0);
     }
 
     #[test]

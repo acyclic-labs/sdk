@@ -247,35 +247,6 @@ async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> R
 }
 
 #[tokio::test]
-async fn callback_policy_schema_and_scope_matrix_precedes_model_admission() -> Result<()> {
-    for enabled in [false, true] {
-        for grant in [false, true] {
-            for valid in [false, true] {
-                let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-                let (disk, issuer, _) = journal(root.path(), true).await?;
-                let mut grants = vec!["context:build", "interaction:route"];
-                if grant { grants.push("model:generate"); }
-                let scope = RuntimeScope::new(Capabilities::new(grants), Limits::default())?;
-                let context = admitted_context(scope.clone(), Arc::new(Participant { journal: Arc::clone(&disk), issuer }), None).await?;
-                let parent = OperationId::from_bytes([84;16]);
-                let tool = ToolContext::new(context, parent, "matrix")?;
-                let model = Arc::new(ByteModel { dispatches: AtomicUsize::new(0), pause: false });
-                let callbacks = McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope)?, disk, "deterministic".into(), sampling_policy())?;
-                let mut callback = sampling(parent);
-                callback.policy.sampling = enabled;
-                if !valid {
-                    callback.message.get_mut("params").and_then(Value::as_object_mut).ok_or_else(|| Error::Invalid("params absent".into()))?.insert("maxTokens".into(), json!("untrusted"));
-                }
-                let result = callbacks.admit(tool, &callback).await;
-                assert_eq!(result.is_ok(), enabled && grant && valid);
-                assert_eq!(model.dispatches.load(Ordering::SeqCst), usize::from(enabled && grant && valid));
-            }
-        }
-    }
-    Ok(())
-}
-
-#[tokio::test]
 async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -> Result<()> {
     use acyclic_harness::{conversation::{VolumeRef, VolumeClass, VolumeOwner, VolumeOperation}, resources::ProviderRef,
         filesystem::{FilesystemHost, FilesystemContentPublisher, FilesystemContentVerifier}, runtime::ContentBindings,

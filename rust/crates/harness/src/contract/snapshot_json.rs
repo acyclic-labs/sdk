@@ -1,7 +1,7 @@
 //! Closed Snapshot-schema quota for the original authenticated checkpoint path.
 
 use super::{JsonBounds, JsonCodecCharge};
-use crate::{Error, Result, core::Snapshot};
+use crate::Result;
 
 pub(super) const SNAPSHOT_DIAGNOSTICS: &str = concat!(
     "Snapshot Projection ConversationStateWire ArchivedConversationPrefix ",

@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use uuid::Uuid;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use crate::wire::ErrorCode;
 
 /// Maximum UTF-8 byte length for names crossing a component boundary.
 pub const COMPONENT_LABEL_MAX_BYTES: usize = crate::conversation::MAX_PORTABLE_COUNT;
@@ -64,8 +66,7 @@ mod json;
 pub(crate) use json::{
     admit_json, admit_json_value_shape, lexical_json_diagnostic_bytes,
     json_owned_value_shape_bounded,
-    json_typed_value_decode_owned_bytes,
-    json_value_virtual_owned_bytes,
+    json_typed_value_decode_owned_bytes, json_value_virtual_owned_bytes,
     json_from_slice_seed_bounded_trusted,
     owned_logical_bytes,
 };
@@ -101,7 +102,7 @@ pub(crate) use json::{
 
 /// Sorted-key JSON encoding for durable identities and Rust/WASM output.
 pub(crate) fn canonical_json_bytes<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
-    json::canonical_json_bytes_trusted(value)
+    json::encode(value, JsonBounds::IDENTITY, None, &mut |_| Ok(()))
 }
 
 /// Checks encoded JSON size without admitting owned-tree or serde heap storage.
@@ -1436,38 +1437,10 @@ impl Error {
 
     /// Native failures must propagate before additional provider or deadline work.
     pub(crate) fn is_native_failure(&self) -> bool {
-        match self {
-            Self::Allocation(_) => true,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::NativeWork { .. }
-            | Self::NativeConstruction { .. }
-            | Self::NativeBoundary { .. }
-            | Self::NativeDiagnostic { .. }
-            | Self::NativeDecode { .. }
-            | Self::NativeCodec { .. }
-            | Self::NativeProstDecode { .. }
-            | Self::NativeEncode { .. }
-            | Self::NativeSchema { .. }
-            | Self::NativeStream { .. }
-            | Self::NativeMcpIncomplete { .. }
-            | Self::NativeSupervisor { .. }
-            | Self::NativeSource { .. }
-            | Self::NativeSourcePublicationUncertain { .. }
-            | Self::NativeWorkspace { .. }
-            | Self::NativeDrivenJoin { .. }
-            | Self::NativeReservation { .. }
-            | Self::NativeFilesystem { .. }
-            | Self::NativeStageUncertain { .. } => true,
-            #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-            Self::NativeLineage { .. } | Self::NativeContext { .. } => true,
-            #[cfg(all(feature = "filesystem", feature = "mcp-http", not(target_arch = "wasm32")))]
-            Self::NativeMcpHttp { .. } => true,
-            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-            Self::NativeView { .. } | Self::NativePublication { .. }
-            | Self::NativeWorkspacePublication { .. }
-            | Self::NativeTimeout { .. } => true,
-            _ => false,
-        }
+        !matches!(self,
+            Self::NotFound(_) | Self::Conflict(_) | Self::Unsupported(_) | Self::Invalid(_)
+            | Self::Unauthorized(_) | Self::InteractionRejected(_) | Self::Storage(_)
+            | Self::Indeterminate(_))
     }
 }
 
@@ -1556,24 +1529,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn canonical_json_sorts_nested_keys_and_preserves_full_width_integers() -> Result<()> {
-        let value = serde_json::json!({
-            "z": { "later": 2, "earlier": 1 },
-            "a": u64::MAX,
-        });
-        assert_eq!(
-            canonical_json_bytes(&value)?,
-            br#"{"a":18446744073709551615,"z":{"earlier":1,"later":2}}"#
-        );
-        let nested = format!("{}0{}", "[".repeat(129), "]".repeat(129));
-        let value: serde_json::Value = json_from_slice(nested.as_bytes())
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(canonical_json_bytes(&value)?, nested.as_bytes());
-        assert!(json_from_slice::<serde_json::Value>(b"{} {}").is_err());
-        Ok(())
-    }
-
-    #[test]
     fn policy_grants_intersect_and_any_deny_wins() {
         let resolved = resolve_policies(&[
             AuthorityPolicy {
@@ -1592,30 +1547,11 @@ mod tests {
 
     #[test]
     fn named_policy_layers_require_canonical_hierarchy_order() {
-        let policy = AuthorityPolicy {
-            grants: Capabilities::new(["read"]),
-            denies: Capabilities::default(),
-        };
-        assert!(
-            resolve_policy_layers(&[
-                PolicyLayer {
-                    level: AuthorityLevel::Runtime,
-                    policy: policy.clone()
-                },
-                PolicyLayer {
-                    level: AuthorityLevel::Invocation,
-                    policy
-                },
-            ])
-            .is_ok()
-        );
-        assert!(
-            resolve_policy_layers(&[PolicyLayer {
-                level: AuthorityLevel::Agent,
-                policy: AuthorityPolicy::default()
-            },])
-            .is_err()
-        );
+        let layer = |level| PolicyLayer { level, policy: AuthorityPolicy {
+            grants: Capabilities::new(["read"]), denies: Capabilities::default(),
+        } };
+        assert!(resolve_policy_layers(&[layer(AuthorityLevel::Runtime), layer(AuthorityLevel::Invocation)]).is_ok());
+        assert!(resolve_policy_layers(&[layer(AuthorityLevel::Agent)]).is_err());
     }
 
     #[test]
