@@ -760,6 +760,8 @@ pub enum Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
     NativeStream {
+        /// Preserved contract classification for the original provider failure.
+        code: ErrorCode,
         /// The original provider error, moved without string conversion.
         #[source]
         source: acyclic_stream::StreamError,
@@ -865,10 +867,9 @@ impl Error {
             Self::Indeterminate(_) => ErrorCode::Indeterminate,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeBoundary { code, .. } | Self::NativeDiagnostic { code, .. }
-            | Self::NativeDecode { code, .. } => *code,
+            | Self::NativeDecode { code, .. } | Self::NativeStream { code, .. } => *code,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeConstruction { .. }
-            | Self::NativeStream { .. }
             | Self::NativeSupervisor { .. }
             | Self::NativeSource { .. }
             | Self::NativeWorkspace { .. } => ErrorCode::Storage,
