@@ -415,11 +415,10 @@ pub trait ResourceCreationProvider: acyclic_stream::ProviderPlatform {
     fn verify_with_native_work<'a>(
         &'a self, _request: &'a ResourcePreparationRequest,
         _proof: &'a ResourceCreationProofRef, _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<
-        (CreatedResourceReceipt, acyclic_fs::NativeAllocation),
-    >> {
-        Box::pin(async {
-            Err(Error::Unsupported("provider has no original native-ledger creator verifier".into()))
+    ) -> Result<crate::NativeFutureBundle<'a, (CreatedResourceReceipt, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "provider has no original native-ledger creator verifier",
         })
     }
 }

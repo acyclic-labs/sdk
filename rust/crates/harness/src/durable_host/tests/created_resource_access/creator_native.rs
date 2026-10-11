@@ -13,7 +13,7 @@ async fn original_native_creator_scope_carries_custody_through_real_content_io()
     let work = NativeMaterializationWork::new(creation_control_budget(), &cancellation)
         .expect("finite original native invocation");
     let baseline = work.remaining().expect("remaining native quota").peak_allocation_bytes;
-    let (receipt, custody) = creator.verify_with_native_work(&created.request, proof, &work).await?;
+    let (receipt, custody) = creator.verify_with_native_work(&created.request, proof, &work)?.await?;
     assert!(custody.bytes() > 0);
     assert!(work.remaining().expect("remaining native quota").peak_allocation_bytes < baseline);
     assert!(work.receipt().backend_read_operations > 0);
@@ -25,9 +25,9 @@ async fn original_native_creator_scope_carries_custody_through_real_content_io()
     let (file, file_custody) = writer.stage_once_with_native_work(
         OperationId::from_bytes([177;16]), "native-creator/result.txt", b"actual native created bytes",
         "text/plain", "result.txt", &work,
-    ).await?;
+    )?.await?;
     assert_eq!(file.volume(), &created.private);
-    let (bytes, read_custody) = binding.reader.read_with_native_work(&file, 1024, &work).await?;
+    let (bytes, read_custody) = binding.reader.read_with_native_work(&file, 1024, &work)?.await?;
     assert_eq!(bytes, b"actual native created bytes");
     drop(bytes);
     drop(read_custody);
@@ -51,14 +51,25 @@ async fn original_native_creator_denies_quota_cancel_and_forged_evidence() -> Re
     let mut denied = creation_control_budget();
     denied.backend_read_operations = 0;
     let work = NativeMaterializationWork::new(denied, &cancellation).expect("finite denied invocation");
-    assert!(matches!(creator.verify_with_native_work(&created.request, proof, &work).await,
+    assert!(matches!(creator.verify_with_native_work(&created.request, proof, &work)?.await,
         Err(Error::NativeWork { .. })));
     assert_eq!(work.receipt().backend_read_operations, 0);
     assert_eq!(work.receipt().backend_write_operations, 0);
+    let mut allocator_denied = creation_control_budget();
+    // Its sole allocation constructs the genuine original ledger, leaving no
+    // attempt for the verifier's future or any IO body.
+    allocator_denied.allocation_operations = 1;
+    let exhausted = NativeMaterializationWork::new(allocator_denied, &cancellation)
+        .expect("admitted original ledger with exhausted allocator allowance");
+    assert!(matches!(creator.verify_with_native_work(&created.request, proof, &exhausted),
+        Err(Error::NativeWork { .. })));
+    assert_eq!(exhausted.receipt().allocation_operations, 1);
+    assert_eq!(exhausted.receipt().backend_read_operations, 0);
+    assert_eq!(exhausted.receipt().backend_write_operations, 0);
     let cancelled = NativeMaterializationWork::new(creation_control_budget(), &cancellation)
         .expect("finite original invocation");
     cancellation.cancel();
-    assert!(matches!(creator.verify_with_native_work(&created.request, proof, &cancelled).await,
+    assert!(matches!(creator.verify_with_native_work(&created.request, proof, &cancelled),
         Err(Error::NativeWork { .. })));
     assert_eq!(cancelled.receipt().backend_read_operations, 0);
     let live = CancellationToken::new();
@@ -71,7 +82,7 @@ async fn original_native_creator_denies_quota_cancel_and_forged_evidence() -> Re
         }
         let work = NativeMaterializationWork::new(creation_control_budget(), &live)
             .expect("finite adversarial native invocation");
-        assert!(matches!(creator.verify_with_native_work(&created.request, &forged, &work).await,
+        assert!(matches!(creator.verify_with_native_work(&created.request, &forged, &work)?.await,
             Err(Error::Unauthorized(_))));
         assert_eq!(work.receipt().backend_write_operations, 0);
     }

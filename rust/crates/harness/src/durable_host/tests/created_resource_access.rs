@@ -23,6 +23,36 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) type MemoryFilesystem = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
 
+#[cfg(not(target_arch = "wasm32"))]
+fn creation_control_budget() -> acyclic_fs::WorkBudget {
+    acyclic_fs::WorkBudget {
+        authority_records_read: 512,
+        authority_records_appended: 128,
+        authority_bytes_read: 1_048_576,
+        authority_bytes_written: 1_048_576,
+        object_probes: 512,
+        backend_read_operations: 512,
+        backend_write_operations: 128,
+        durability_operations: 128,
+        page_reads: 512,
+        page_writes: 128,
+        object_bytes_read: 1_048_576,
+        object_bytes_written: 1_048_576,
+        bytes_hashed: 4_194_304,
+        bytes_copied: 4_194_304,
+        bytes_encoded: 4_194_304,
+        source_bytes_read: 1_048_576,
+        source_path_components: 128,
+        source_entries_visited: 512,
+        output_bytes: 1_048_576,
+        items_examined: 1024,
+        items_returned: 512,
+        allocation_operations: 4096,
+        peak_allocation_bytes: 4_194_304,
+        materializations: 128,
+    }
+}
+
 struct CreatedControlMachine {
     identity: MachineIdentity,
     schema: Value,

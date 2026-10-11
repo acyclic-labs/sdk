@@ -254,8 +254,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
     fn verify_with_native_work<'a>(
         &'a self, request: &'a ResourcePreparationRequest, proof: &'a ResourceCreationProofRef,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> BoxFuture<'a, Result<(CreatedResourceReceipt, acyclic_fs::NativeAllocation)>> {
-        Box::pin(async move {
+    ) -> Result<crate::NativeFutureBundle<'a, (CreatedResourceReceipt, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             let receipt = self.verify_with_io(request, proof, Some(&io)).await?;
             // This is conservative closed-capture quota plus real owned scopes/
@@ -539,23 +539,23 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
     #[cfg(not(target_arch = "wasm32"))]
     fn read_with_native_work<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork)
-        -> ContentFuture<'a, Result<(Vec<u8>, acyclic_fs::NativeAllocation)>> {
-        Box::pin(async move {
+        -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             self.reauthenticate_with_io(file, &io).await?;
             drop(io);
-            self.reader.read_with_native_work(file, maximum_bytes.min(self.allocation.request.maximum_bytes), work).await
+            self.reader.read_with_native_work(file, maximum_bytes.min(self.allocation.request.maximum_bytes), work)?.await
         })
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn verify_with_native_work<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork)
-        -> ContentFuture<'a, Result<()>> {
-        Box::pin(async move {
+        -> Result<crate::NativeFutureBundle<'a, ()>> {
+        crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             self.reauthenticate_with_io(file, &io).await?;
             drop(io);
-            self.reader.verify_with_native_work(file, maximum_bytes.min(self.allocation.request.maximum_bytes), work).await
+            self.reader.verify_with_native_work(file, maximum_bytes.min(self.allocation.request.maximum_bytes), work)?.await
         })
     }
     fn read_measured<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
@@ -610,23 +610,23 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
     #[cfg(not(target_arch = "wasm32"))]
     fn read_with_native_work<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork)
-        -> ContentFuture<'a, Result<(Vec<u8>, acyclic_fs::NativeAllocation)>> {
-        Box::pin(async move {
+        -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             self.reauthenticate_with_io(file.volume(), &io).await?;
             drop(io);
-            self.reader.read_with_native_work(file, maximum_bytes.min(self.request.maximum_bytes), work).await
+            self.reader.read_with_native_work(file, maximum_bytes.min(self.request.maximum_bytes), work)?.await
         })
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn verify_with_native_work<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork)
-        -> ContentFuture<'a, Result<()>> {
-        Box::pin(async move {
+        -> Result<crate::NativeFutureBundle<'a, ()>> {
+        crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             self.reauthenticate_with_io(file.volume(), &io).await?;
             drop(io);
-            self.reader.verify_with_native_work(file, maximum_bytes.min(self.request.maximum_bytes), work).await
+            self.reader.verify_with_native_work(file, maximum_bytes.min(self.request.maximum_bytes), work)?.await
         })
     }
     fn read_measured<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
@@ -706,12 +706,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
     #[cfg(not(target_arch = "wasm32"))]
     fn stage_once_with_native_work<'a>(&'a self, operation: OperationId, path: &'a str, bytes: &'a [u8],
         media_type: &'a str, display_name: &'a str, work: &'a acyclic_fs::NativeMaterializationWork)
-        -> ContentFuture<'a, Result<(FileRef, acyclic_fs::NativeAllocation)>> {
-        Box::pin(async move {
+        -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             self.reauthenticate_with_io(&self.volume, &io).await?;
             drop(io);
-            self.writer.stage_once_with_native_work(operation, path, bytes, media_type, display_name, work).await
+            self.writer.stage_once_with_native_work(operation, path, bytes, media_type, display_name, work)?.await
         })
     }
     fn observe_staged_once_measured<'a>(&'a self, operation: OperationId, maximum_bytes: u64,
