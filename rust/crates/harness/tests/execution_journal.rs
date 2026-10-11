@@ -152,7 +152,7 @@ impl ExecutionJournal for TerminalCasLoser {
         operation: OperationId,
         key: String,
         bytes: Vec<u8>,
-        media_type: &'static str,
+        media_type: &'a str,
     ) -> BoxFuture<'a, Result<FileRef>> {
         self.inner.stage(operation, key, bytes, media_type)
     }
@@ -248,7 +248,7 @@ impl ExecutionJournal for CompletedDescriptorSpy {
         operation: OperationId,
         key: String,
         bytes: Vec<u8>,
-        media: &'static str,
+        media: &'a str,
     ) -> BoxFuture<'a, Result<FileRef>> {
         self.inner.stage(operation, key, bytes, media)
     }
@@ -421,14 +421,18 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
             },
         )
         .await?;
+    let media_type = ["application", "json"].join("/");
     let invocation = journal_a
         .stage(
             operation,
             "tool:invocation".into(),
             b"{}".to_vec(),
-            "application/json",
+            &media_type,
         )
         .await?;
+    assert_eq!(invocation.descriptor().media_type(), media_type);
+    drop(media_type);
+    assert_eq!(journal_b.load(&invocation).await?, b"{}");
     let event = ExecutionEvent::ToolStarted {
         step: 0,
         call_id: operation.to_string(),

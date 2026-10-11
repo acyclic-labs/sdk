@@ -100,7 +100,7 @@ impl ExecutionJournal for FaultJournal {
         op: OperationId,
         key: String,
         bytes: Vec<u8>,
-        media: &'static str,
+        media: &'a str,
     ) -> BoxFuture<'a, Result<FileRef>> {
         Box::pin(async move {
             if self.fault == Fault::ResultStage

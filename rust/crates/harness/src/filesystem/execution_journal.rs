@@ -1333,7 +1333,7 @@ where
         operation_id: OperationId,
         idempotency_key: String,
         bytes: Vec<u8>,
-        media_type: &'static str,
+        media_type: &'a str,
     ) -> BoxFuture<'a, Result<FileRef>> {
         let span = obs_span!("acyclic.harness.journal.stage", bytes = bytes.len());
         traced(span, async move {

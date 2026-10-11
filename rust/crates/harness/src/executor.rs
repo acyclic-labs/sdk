@@ -309,12 +309,13 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
 
     /// Stages immutable private bytes before any referring observation is appended.
     /// Retries with the same key and different bytes must fail closed.
+    /// The media type is borrowed for this staging future, not promoted to a static string.
     fn stage<'a>(
         &'a self,
         operation_id: OperationId,
         idempotency_key: String,
         bytes: Vec<u8>,
-        media_type: &'static str,
+        media_type: &'a str,
     ) -> BoxFuture<'a, Result<FileRef>>;
 
     /// Reads an exact version under the journal owner's grant and verifies its descriptor.
@@ -5057,7 +5058,7 @@ mod tests {
             operation_id: OperationId,
             idempotency_key: String,
             bytes: Vec<u8>,
-            media_type: &'static str,
+            media_type: &'a str,
         ) -> BoxFuture<'a, Result<FileRef>> {
             async move {
                 let key = format!("{operation_id}:{idempotency_key}");
@@ -7197,7 +7198,7 @@ mod tests {
             operation: OperationId,
             key: String,
             bytes: Vec<u8>,
-            media: &'static str,
+            media: &'a str,
         ) -> BoxFuture<'a, Result<FileRef>> {
             self.journal.stage(operation, key, bytes, media)
         }

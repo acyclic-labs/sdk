@@ -155,7 +155,7 @@ impl ExecutionJournal for JournalSpy {
         operation: OperationId,
         key: String,
         bytes: Vec<u8>,
-        media_type: &'static str,
+        media_type: &'a str,
     ) -> BoxProviderFuture<'a, Result<FileRef>> {
         self.writes.fetch_add(1, Ordering::SeqCst);
         self.inner.stage(operation, key, bytes, media_type)

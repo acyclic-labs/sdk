@@ -25,10 +25,10 @@ impl NativeWorkspace {
     }
     /// Publish an exact retained candidate against its original observed head.
     #[napi]
-    pub async fn restore_generation(&self, generation: &NativeGeneration, if_current: Buffer, idempotency_key: Buffer, lease: Option<&NativeOperationWindowLease>) -> Result<NativeWorkspaceRestoreResult> {
+    pub async fn restore_generation(&self, generation: &NativeGeneration, if_current: Buffer, idempotency_key: Buffer, lease: Option<NativeOperationWindowLease>) -> Result<NativeWorkspaceRestoreResult> {
         let current = acyclic_fs::GenerationId::new(crate::Digest::from_bytes(crate::fixed_32(&if_current, "generation identity")?));
         let key = crate::native_idempotency_key(Some(idempotency_key))?;
-        let outcome = self.inner.restore_generation_with_permit(&generation.inner, current, key, publication_permit(lease)?).await.map_err(napi_error)?;
+        let outcome = self.inner.restore_generation_with_permit(&generation.inner, current, key, publication_permit(lease.as_ref())?).await.map_err(napi_error)?;
         use acyclic_fs::workspace::WorkspaceRestore;
         let (kind, generation) = match outcome {
             WorkspaceRestore::Restored(generation) => ("restored", Some(generation)),
