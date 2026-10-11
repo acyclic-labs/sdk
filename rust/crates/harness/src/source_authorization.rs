@@ -132,14 +132,35 @@ impl ProjectSourceAuthorization {
     }
 
     pub(crate) fn scope_label(&self) -> Result<String> {
+        self.scope_label_with_work(&mut None)
+    }
+
+    pub(crate) fn scope_label_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<String> {
+        const LABEL_BYTES: usize = "project-source:".len() + 64;
         let descriptor = (
             PROJECT_SOURCE_READ_PURPOSE,
             &self.owner, self.caller_task, self.caller_admission_digest, &self.caller_fence,
             self.operation_id, self.source_task, &self.project, &self.generation,
             &self.native_snapshot, self.graph_root, self.maximum_work, self.maximum_bytes,
         );
-        let bytes = crate::contract::canonical_json_bytes(&descriptor)?;
-        Ok(format!("project-source:{}", blake3::hash(&bytes).to_hex()))
+        let digest = crate::contract::canonical_json_digest_with_work(
+            &descriptor, self.maximum_bytes, work,
+        )?;
+        let mut label = String::new();
+        if let Some(observer) = work.as_deref_mut() {
+            observer.reserve_text(&mut label, LABEL_BYTES)?;
+            observer.admit_encoding(LABEL_BYTES as u64)?;
+        } else {
+            label.reserve_exact(LABEL_BYTES);
+        }
+        label.push_str("project-source:");
+        label.push_str(blake3::Hash::from_bytes(digest).to_hex().as_str());
+        if let Some(observer) = work.as_deref_mut() {
+            observer.encoded_bytes(LABEL_BYTES as u64)?;
+        }
+        Ok(label)
     }
 
     pub(crate) fn verify_scope(&self, verifier: &AuthorityVerifier) -> Result<()> {

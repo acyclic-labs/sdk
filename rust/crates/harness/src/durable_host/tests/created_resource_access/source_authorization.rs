@@ -94,6 +94,24 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     #[cfg(not(target_arch = "wasm32"))]
     {
         let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(creation_control_budget(), &cancellation)
+            .expect("finite original label operation");
+        let baseline = work.remaining().expect("remaining source-label bytes").peak_allocation_bytes;
+        let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+        let mut observer = io.history_io();
+        let label = handle.authorization().scope_label_with_work(&mut Some(&mut observer))?;
+        assert_eq!(label, handle.authorization().scope_label()?);
+        assert_eq!(label, handle.authorization().policy_scope.id());
+        assert!(work.receipt().bytes_hashed > 0);
+        assert!(work.remaining().expect("retained actual label").peak_allocation_bytes < baseline);
+        drop(label);
+        drop(observer);
+        drop(io);
+        assert_eq!(work.remaining().expect("released label").peak_allocation_bytes, baseline);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let cancellation = acyclic_fs::CancellationToken::new();
         let mut budget = creation_control_budget();
         budget.allocation_operations = 1;
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
