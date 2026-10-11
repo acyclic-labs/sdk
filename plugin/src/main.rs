@@ -19,14 +19,29 @@ mod obs;
 mod native_root_source;
 mod pi;
 mod pi_binding;
+mod pi_builtin;
+mod pi_caller;
+mod pi_conversation;
+mod pi_inspection;
+mod pi_fork;
+mod pi_fork_host;
+mod pi_lazy_capture;
+mod pi_mail;
 mod pi_owner;
 mod pi_recovery;
 mod pi_registration;
 mod pi_root;
 mod pi_root_allocation;
 mod pi_root_inputs;
+mod pi_root_provider;
 mod pi_runtime;
 mod pi_task;
+mod pi_workflow;
+mod pi_native;
+mod pi_native_host;
+mod pi_selected_host;
+mod pi_operator;
+mod pi_operator_host;
 mod roots;
 mod service;
 mod service_log;
@@ -108,50 +123,94 @@ use service_session::SessionController;
 use tool_input::*;
 use util::*;
 
-/// Unified Acyclic CLI, local service, host hook bridges, and installer.
-fn main() {
-    obs::init();
-    let result = main_result();
-    obs::finish();
-    if let Err(error) = result {
-        eprintln!("{error}");
-        std::process::exit(1);
+/// Native failures retain their SDK ownership through the final CLI write.
+#[derive(Debug)]
+enum CliFailure {
+    Native(acyclic_harness::Error),
+    NativeControl(ControlRequestError),
+    NativeIo(io::Error),
+    Ordinary(Box<dyn std::error::Error + Send + Sync>),
+    ClosedFailed(service::SessionCloseState),
+}
+
+impl std::fmt::Display for CliFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Native(error) => std::fmt::Display::fmt(error, formatter),
+            Self::NativeControl(error) => std::fmt::Display::fmt(error, formatter),
+            Self::NativeIo(error) => std::fmt::Display::fmt(error, formatter),
+            Self::Ordinary(error) => std::fmt::Display::fmt(error, formatter),
+            Self::ClosedFailed(_) => formatter.write_str("service shutdown state is failed"),
+        }
     }
 }
 
-fn main_result() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+impl From<acyclic_harness::Error> for CliFailure {
+    fn from(error: acyclic_harness::Error) -> Self { Self::Native(error) }
+}
+
+impl From<ControlRequestError> for CliFailure {
+    fn from(error: ControlRequestError) -> Self { Self::NativeControl(error) }
+}
+
+impl From<Box<dyn std::error::Error + Send + Sync>> for CliFailure {
+    fn from(error: Box<dyn std::error::Error + Send + Sync>) -> Self { Self::Ordinary(error) }
+}
+
+impl From<io::Error> for CliFailure {
+    fn from(error: io::Error) -> Self { Self::Ordinary(error.into()) }
+}
+
+impl From<serde_json::Error> for CliFailure {
+    fn from(error: serde_json::Error) -> Self { Self::Ordinary(error.into()) }
+}
+
+impl From<String> for CliFailure {
+    fn from(error: String) -> Self { Self::Ordinary(error.into()) }
+}
+
+/// Unified Acyclic CLI, local service, host hook bridges, and installer.
+fn main() -> std::process::ExitCode {
+    obs::init();
+    let result = main_result();
+    obs::finish();
+    match result {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn main_result() -> Result<(), CliFailure> {
     let mut arguments = env::args().skip(1);
     match arguments.next().as_deref() {
-        Some("__hook") => return run_native_hook(&arguments.collect::<Vec<_>>()),
+        Some("__hook") => return run_native_hook(&arguments.collect::<Vec<_>>()).map_err(CliFailure::Ordinary),
         Some("__mcp") => return codex_hook_mcp::serve().map_err(Into::into),
         Some("__pi") => return run_pi_control(&arguments.collect::<Vec<_>>()),
         _ => {}
     }
     if is_foreground_cli_invocation() {
-        let result = tokio::runtime::Builder::new_current_thread()
+        tokio::runtime::Builder::new_current_thread()
             .enable_all()
-            .build()
-            .map_err(display)?
-            .block_on(run())
-            .map_err(display);
-        result.map_err(io::Error::other)?;
+            .build()?
+            .block_on(run())?;
         return Ok(());
     }
     let result = std::thread::Builder::new()
         .name("acyclic".to_owned())
         .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
+        .spawn(|| -> Result<(), CliFailure> {
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .thread_stack_size(32 * 1024 * 1024)
-                .build()
-                .map_err(display)?
+                .build()?
                 .block_on(run())
-                .map_err(display)
         })?
         .join()
         .map_err(|_| io::Error::other("control-plane thread panicked"))?;
-    result.map_err(io::Error::other)?;
+    result?;
     Ok(())
 }
 
@@ -178,7 +237,8 @@ fn run_native_hook(arguments: &[String]) -> Result<(), Box<dyn std::error::Error
                             cwd,
                             input,
                             ServiceStart::Allowed,
-                        ))
+                            None,
+                        )).map(|(value, _)| value).map_err(display)
                     })
                     .unwrap_or_else(|error| failure.answer(&error)),
                 Err(error) => failure.answer(&error),
@@ -192,16 +252,69 @@ fn run_native_hook(arguments: &[String]) -> Result<(), Box<dyn std::error::Error
 
 /// Pi controls use the same service transport, but errors are not native-hook
 /// fail-open answers and uncertain requests are never automatically resent.
-fn run_pi_control(arguments: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn run_pi_control(arguments: &[String]) -> Result<(), CliFailure> {
     let [event] = arguments else {
-        return Err(io::Error::other("acyclic __pi requires one operation").into());
+        return Err(acyclic_harness::Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Invalid,
+            reason: "acyclic __pi requires one operation",
+        }.into());
     };
-    let (cwd, input) = read_native_hook_call().map_err(io::Error::other)?;
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
-    let response = runtime.block_on(forward_native_hook("pi", event, cwd, input, ServiceStart::Allowed))
-        .map_err(io::Error::other)?;
-    serde_json::to_writer(io::stdout().lock(), &response)?;
+    let cancellation = CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        pi_root_provider::allocation_budget(), &cancellation,
+    ).map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
+    let mut input = service_process::read_native_control_input(io::stdin().lock(), &work)?;
+    if !input.0.is_object() {
+        return Err(acyclic_harness::Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Invalid,
+            reason: "Pi control must be an object",
+        }.into());
+    }
+    if let Some(environment) = work.environment_variable(
+        std::ffi::OsStr::new(pi_caller::CALLER_ENVIRONMENT), MAXIMUM_CONTROL_MESSAGE_BYTES,
+    ).map_err(native_cli_work_error)? {
+        let text = environment.0.to_str().ok_or(acyclic_harness::Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Invalid,
+            reason: "Pi caller scope is not UTF-8",
+        })?;
+        let mut caller = service_process::decode_native_control_input(text.as_bytes(), &work)?;
+        drop(environment);
+        // Transfer the real same-ledger custody before moving its value into
+        // the request. No caller-supplied scope overrides this protected input.
+        input.1.absorb(&mut caller.1).map_err(native_cli_work_error)?;
+        let mut key = guarded_cli_text(&["caller"], &work)?;
+        input.1.absorb(&mut key.1).map_err(native_cli_work_error)?;
+        input.0.as_object_mut().expect("object checked above")
+            .insert(std::mem::take(&mut key.0), std::mem::take(&mut caller.0));
+    }
+    let mut cwd = work.current_directory().map_err(native_cli_work_error)?;
+    input.1.absorb(&mut cwd.1).map_err(native_cli_work_error)?;
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()
+        .map_err(CliFailure::NativeIo)?;
+    let response = runtime.block_on(forward_native_hook(
+        "pi", event, std::mem::take(&mut cwd.0), std::mem::take(&mut input.0),
+        ServiceStart::Allowed, Some(&work),
+    ))?;
+    drop(cwd);
+    drop(input);
+    if response.1.is_none() {
+        return Err(acyclic_harness::Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Storage,
+            reason: "native Pi control response lost its allocation custody",
+        }.into());
+    }
+    let encoded = service_process::encode_native_control_value(&response.0, &work)?;
+    work.admit(acyclic_fs::WorkCounters::UNCHARGED).map_err(native_cli_work_error)?;
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(&encoded.0).map_err(CliFailure::NativeIo)?;
+    stdout.flush().map_err(CliFailure::NativeIo)?;
+    drop(encoded);
+    drop(response);
     Ok(())
+}
+
+fn native_cli_work_error(cause: acyclic_fs::NativeTreeMaterializationError) -> acyclic_harness::Error {
+    acyclic_harness::Error::NativeWork { cause, custody: None }
 }
 
 /// The working directory and input of the native hook on standard input.
@@ -259,31 +372,103 @@ async fn forward_native_hook(
     cwd: PathBuf,
     input: Value,
     service_start: ServiceStart,
-) -> Result<Value, String> {
-    // The service canonicalizes whichever path a hook resolves to.
+    original_work: Option<&acyclic_fs::NativeMaterializationWork>,
+) -> Result<(Value, Option<acyclic_fs::NativeAllocation>), ControlRequestError> {
+    // The service canonicalizes whichever path a hook resolves to. This is
+    // still the single hook startup/retransmission policy for every host.
     let data = default_data_directory();
-    let envelope = ControlEnvelope::new(native_hook_request(host, event, cwd, input));
-    if service_start == ServiceStart::Allowed && matches!(event, "SessionStart" | "sessionStart") {
-        // Session boundaries are the one cheap, deterministic place to advance
-        // an idle service to the installed binary. Tool hooks stay on the direct
-        // single-round-trip path, and a service with live mounts remains intact.
-        ensure_service(&data).await?;
-        return send_control_envelope(&data, &envelope)
-            .await
-            .map_err(|error| error.to_string());
-    }
-    match send_control_envelope_once(&data, &envelope).await {
-        Ok(response) => Ok(response),
-        // An unavailable service never received the envelope, so this is the
-        // only retransmission, and no deadline applies to it.
-        Err(ControlRequestError::Unavailable(_)) if service_start == ServiceStart::Allowed => {
-            ensure_service(&data).await?;
-            send_control_envelope(&data, &envelope)
-                .await
-                .map_err(|error| error.to_string())
+    let envelope = match original_work {
+        Some(work) => {
+            let mut name = guarded_hook_name(host, event, work)
+                .map_err(ControlRequestError::NativeWork)?;
+            let request = ControlRequest {
+                version: 1,
+                command: ControlCommand::Hook,
+                cwd,
+                argv: Vec::new(),
+                name: std::mem::take(&mut name.0),
+                arguments: input,
+            };
+            let mut envelope = ControlEnvelope::new_with_native_work(request, work)
+                .map_err(ControlRequestError::NativeWork)?;
+            envelope.1.absorb(&mut name.1).map_err(|cause| {
+                ControlRequestError::NativeWork(acyclic_harness::Error::NativeWork {
+                    cause, custody: None,
+                })
+            })?;
+            (envelope.0, Some(envelope.1))
         }
-        Err(error) => Err(error.to_string()),
+        None => (ControlEnvelope::new(native_hook_request(host, event, cwd, input)), None),
+    };
+    if service_start == ServiceStart::Allowed && matches!(event, "SessionStart" | "sessionStart") {
+        // Session boundaries may advance an idle service, never a live mount.
+        ensure_service(&data).await.map_err(ControlRequestError::Unavailable)?;
+        return send_hook_envelope(&data, &envelope.0, original_work, false).await;
     }
+    match send_hook_envelope(&data, &envelope.0, original_work, true).await {
+        Ok(response) => Ok(response),
+        // Only unavailability proves the service did not receive the envelope.
+        // Uncertain receipts are never automatically resent.
+        Err(ControlRequestError::Unavailable(_)) if service_start == ServiceStart::Allowed => {
+            ensure_service(&data).await.map_err(ControlRequestError::Unavailable)?;
+            send_hook_envelope(&data, &envelope.0, original_work, false).await
+        }
+        Err(error) => Err(error),
+    }
+}
+
+async fn send_hook_envelope(
+    data: &Path,
+    envelope: &ControlEnvelope<ControlRequest>,
+    work: Option<&acyclic_fs::NativeMaterializationWork>,
+    once: bool,
+) -> Result<(Value, Option<acyclic_fs::NativeAllocation>), ControlRequestError> {
+    match (work, once) {
+        (Some(work), true) => {
+            service_process::send_control_envelope_once_with_native_work(data, envelope, work)
+                .await.map(|(value, custody)| (value, Some(custody)))
+        }
+        (Some(work), false) => {
+            service_process::send_control_envelope_with_native_work(data, envelope, work)
+                .await.map(|(value, custody)| (value, Some(custody)))
+        }
+        (None, true) => send_control_envelope_once(data, envelope).await.map(|value| (value, None)),
+        (None, false) => send_control_envelope(data, envelope).await.map(|value| (value, None)),
+    }
+}
+
+fn guarded_hook_name(
+    host: &str,
+    event: &str,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> acyclic_harness::Result<(String, acyclic_fs::NativeAllocation)> {
+    guarded_cli_text(&[host, ":", event], work)
+}
+
+fn guarded_cli_text(
+    parts: &[&str],
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> acyclic_harness::Result<(String, acyclic_fs::NativeAllocation)> {
+    let bytes = parts.iter().try_fold(0_usize, |size, part| size.checked_add(part.len()))
+        .filter(|size| *size <= MAXIMUM_CONTROL_MESSAGE_BYTES)
+        .ok_or(acyclic_harness::Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Invalid,
+            reason: "native CLI metadata exceeds its byte bound",
+        })?;
+    let allocation = work.claim(bytes as u64)
+        .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+    let mut name = String::new();
+    name.try_reserve_exact(bytes)
+        .map_err(acyclic_fs::NativeTreeMaterializationError::AllocationFailed)
+        .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+    work.charge(acyclic_fs::WorkCounters {
+        bytes_copied: bytes as u64,
+        ..acyclic_fs::WorkCounters::UNCHARGED
+    }).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+    for part in parts {
+        name.push_str(part);
+    }
+    Ok((name, allocation))
 }
 
 /// The service request for one native hook event.
@@ -434,6 +619,7 @@ fn is_foreground_cli_invocation() -> bool {
                     | "discard"
                     | "install"
                     | "uninstall"
+                    | "pi"
                     | "__service-drain"
                     | "__installer-rename"
                     | "__verify-certification"
@@ -446,7 +632,7 @@ fn is_foreground_cli_invocation() -> bool {
     })
 }
 
-async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn run() -> Result<(), CliFailure> {
     let mut arguments = env::args().skip(1).collect::<Vec<_>>();
     let invocation_cwd = env::current_dir()?.canonicalize()?;
     let mut cwd = invocation_cwd.clone();
@@ -462,7 +648,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .is_some_and(|argument| matches!(argument.as_str(), "--help" | "-h"))
     {
         println!(
-            "Acyclic {}\n\nUsage: acyclic [COMMAND]\n\nCommands:\n  install HOST       Install host integration\n  uninstall HOST [--purge]\n                       Remove integration; preserve durable state unless purged\n  doctor [--json]    Diagnose the release installation\n  git ARGS...        Run Git compatibility commands\n  agents [--json]    List recursive agent workspace status\n  discard WORKSPACE  Discard a child workspace\n  mcp                 Serve MCP over standard input/output",
+            "Acyclic {}\n\nUsage: acyclic [COMMAND]\n\nCommands:\n  install HOST       Install host integration\n  uninstall HOST [--purge]\n                       Remove integration; preserve durable state unless purged\n  doctor [--json]    Diagnose the release installation\n  git ARGS...        Run Git compatibility commands\n  agents [--json]    List recursive agent workspace status\n  discard WORKSPACE  Discard a child workspace\n  pi approvals --session SESSION --operation TOOL_ID [--json]\n                       Inspect an original Root operator approval\n  pi approve --session SESSION --operation TOOL_ID --digest DIGEST\n             --decision approve|decline\n                       Resolve and publish the exact Root-approved selection\n  mcp                 Serve MCP over standard input/output",
             env!("CARGO_PKG_VERSION")
         );
         return Ok(());
@@ -512,6 +698,29 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             )
             .into());
         }
+        return Ok(());
+    }
+    if arguments.first().is_some_and(|command| command == "pi") {
+        let response_custody;
+        let response;
+        (response, response_custody) = pi_operator::run_cli(
+            &default_data_directory(), cwd, arguments.get(1..).unwrap_or_default(),
+        ).await?;
+        let encoded_custody;
+        let encoded;
+        (encoded, encoded_custody) = service_process::encode_native_control_value(
+            &response, response_custody.work(),
+        )?;
+        {
+            let mut stdout = io::stdout().lock();
+            stdout.write_all(&encoded)?;
+            stdout.write_all(b"\n")?;
+            stdout.flush()?;
+        }
+        drop(encoded);
+        drop(encoded_custody);
+        drop(response);
+        drop(response_custody);
         return Ok(());
     }
     if let Some(command) = arguments.first().map(String::as_str)
@@ -611,10 +820,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .first()
         .is_some_and(|argument| argument == "__service")
     {
-        return run_service(default_data_directory())
-            .await
-            .map_err(io::Error::other)
-            .map_err(Into::into);
+        return match run_service(default_data_directory()).await? {
+            service::SessionCloseState::Closed => Ok(()),
+            failed @ service::SessionCloseState::Failed => Err(CliFailure::ClosedFailed(failed)),
+        };
     }
     let commandless = arguments
         .first()

@@ -82,6 +82,26 @@ impl RequestId {
         Self(uuid::Uuid::new_v4().to_string())
     }
 
+    fn fresh_with_native_work(
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> acyclic_harness::Result<(Self, acyclic_fs::NativeAllocation)> {
+        let allocation = work.claim(36).map_err(|cause| acyclic_harness::Error::NativeWork {
+            cause, custody: None,
+        })?;
+        let mut text = String::new();
+        text.try_reserve_exact(36)
+            .map_err(acyclic_fs::NativeTreeMaterializationError::AllocationFailed)
+            .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        work.charge(acyclic_fs::WorkCounters {
+            bytes_copied: 36,
+            ..acyclic_fs::WorkCounters::UNCHARGED
+        }).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let id = uuid::Uuid::new_v4();
+        let mut encoded = [0_u8; 36];
+        text.push_str(id.hyphenated().encode_lower(&mut encoded));
+        Ok((Self(text), allocation))
+    }
+
     fn validate(&self) -> Result<(), String> {
         validate_id("request ID", &self.0)
     }
@@ -136,6 +156,26 @@ impl<T> ControlEnvelope<T> {
             operation: OperationId::fresh(),
             request,
         }
+    }
+
+    /// Keeps the original protocol and fresh identities while admitting their
+    /// actual owned request-ID bytes before growth. The caller separately
+    /// retains its request payload custody through the last envelope use.
+    pub(crate) fn new_with_native_work(
+        request: T,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> acyclic_harness::Result<(Self, acyclic_fs::NativeAllocation)> {
+        let identity = RequestId::fresh_with_native_work(work)?;
+        work.charge(acyclic_fs::WorkCounters {
+            bytes_hashed: CONTROL_SCHEMA.len() as u64,
+            ..acyclic_fs::WorkCounters::UNCHARGED
+        }).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        Ok((Self {
+            protocol: ProtocolOffer::current(),
+            request_id: identity.0,
+            operation: OperationId::fresh(),
+            request,
+        }, identity.1))
     }
 
     pub(crate) fn validate(&self) -> Result<(), String> {
@@ -850,6 +890,63 @@ fn validate_id(kind: &str, value: &str) -> Result<(), String> {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_envelope_preserves_wire_identity_with_original_metadata_custody() {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            crate::pi_root_provider::allocation_budget(), &cancellation,
+        ).expect("original finite ledger");
+        let before = work.receipt();
+        let envelope = ControlEnvelope::new_with_native_work("request", &work)
+            .expect("native envelope");
+        envelope.0.validate().expect("unchanged wire identity");
+        assert_eq!(envelope.0.protocol, ProtocolOffer::current());
+        assert_eq!(envelope.1.bytes(), 36);
+        assert!(work.shares_ledger(envelope.1.work()));
+        assert_eq!(envelope.0.request_id.as_str().len(), 36);
+        assert_eq!(uuid::Uuid::parse_str(envelope.0.request_id.as_str())
+            .expect("UUID request").get_version(), Some(uuid::Version::Random));
+        let spent = work.receipt();
+        assert_eq!(spent.allocation_operations - before.allocation_operations, 1);
+        assert_eq!(spent.bytes_copied - before.bytes_copied, 36);
+        assert_eq!(spent.bytes_hashed - before.bytes_hashed, CONTROL_SCHEMA.len() as u64);
+        drop(envelope);
+    }
+
+    #[test]
+    fn native_envelope_quota_denies_before_identity_growth_or_protocol_hash() {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let mut budget = crate::pi_root_provider::allocation_budget();
+        budget.allocation_operations = 1;
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .expect("only original ledger allocation admitted");
+        let before = work.receipt();
+        let error = ControlEnvelope::new_with_native_work("request", &work)
+            .expect_err("no request-ID allocation allowance");
+        assert!(matches!(error, acyclic_harness::Error::NativeWork { .. }));
+        let spent = work.receipt();
+        assert_eq!(spent.allocation_operations, before.allocation_operations);
+        assert_eq!(spent.bytes_copied, before.bytes_copied);
+        assert_eq!(spent.bytes_hashed, before.bytes_hashed);
+    }
+
+    #[test]
+    fn native_envelope_cancellation_denies_before_identity_growth_or_protocol_hash() {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            crate::pi_root_provider::allocation_budget(), &cancellation,
+        ).expect("original finite ledger");
+        let before = work.receipt();
+        cancellation.cancel();
+        let error = ControlEnvelope::new_with_native_work("request", &work)
+            .expect_err("cancelled original request");
+        assert!(matches!(error, acyclic_harness::Error::NativeWork { .. }));
+        let spent = work.receipt();
+        assert_eq!(spent.allocation_operations, before.allocation_operations);
+        assert_eq!(spent.bytes_copied, before.bytes_copied);
+        assert_eq!(spent.bytes_hashed, before.bytes_hashed);
+    }
 
     fn begin(
         ledger: &ControlLedger,
