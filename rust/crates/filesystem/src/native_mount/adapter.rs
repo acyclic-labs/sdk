@@ -2829,6 +2829,7 @@ impl<A, O> SharedCheckout<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
+        let cancellation = cancellation.clone();
         in_heap(move || async move {
             loop {
                 let checkout = self.lock_settled().await;
@@ -2852,7 +2853,7 @@ impl<A, O> SharedCheckout<A, O> {
                     claimed
                 };
                 drop(checkout);
-                self.apply_grouped_requests(requests, cancellation).await;
+                self.apply_grouped_requests(requests, &cancellation).await;
             }
         })
         .await;
@@ -3899,13 +3900,18 @@ impl<A, O> SharedCheckout<A, O> {
         await_measured_lock_with_meter(self.lock_settled(), meter, cancellation, lifetime).await
     }
 
-    pub(super) async fn lock_settled_with_native_work(
-        &self, original: &super::NativeMountMeterWork,
+    pub(super) fn lock_settled_with_native_work<'a>(
+        &'a self, original: &super::NativeMountMeterWork,
         cancellation: &CancellationToken, lifetime: Option<&CancellationToken>,
-    ) -> Result<SharedCheckoutGuard<'_, A, O>, MountSourceError> {
-        await_measured_lock_with_carrier(
-            self.lock_settled(), &mut NativeDemandCarrier::Native(original), cancellation, lifetime,
-        ).await
+    ) -> impl Future<Output = Result<SharedCheckoutGuard<'a, A, O>, MountSourceError>> + Send + 'a + use<'a, A, O> {
+        let original = original.clone();
+        let cancellation = cancellation.clone();
+        let lifetime = lifetime.cloned();
+        async move {
+            await_measured_lock_with_carrier(
+                self.lock_settled(), &mut NativeDemandCarrier::Native(&original), &cancellation, lifetime.as_ref(),
+            ).await
+        }
     }
 
     /// Records `pending` as created: its name changed now, though its

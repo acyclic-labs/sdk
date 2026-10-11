@@ -2069,9 +2069,6 @@ struct NativeOwnedCleanupState {
     pending: crate::WorkCounters,
     // Host preflights cannot consume accepted runtime token partitions.
     host_pending: crate::WorkCounters,
-    allocation_plan: Vec<NativeOwnedAllocationCredit>,
-    // The plan's physical Vec and unconsumed reservations drop first.
-    _plan_metadata: Option<NativeAllocation>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
