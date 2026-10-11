@@ -967,7 +967,7 @@ async fn native_stock_model_configuration_denies_before_copy_or_provider_on_orig
     for cancelled in [false, true] {
         let cancellation = acyclic_fs::CancellationToken::new();
         let mut budget = acyclic_fs::WorkBudget::default();
-        if !cancelled { budget.peak_allocation_bytes = 0; }
+        if !cancelled { budget.peak_allocation_bytes = acyclic_fs::NativeMaterializationWork::accounting_state_bytes(); }
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         if cancelled { cancellation.cancel(); }
