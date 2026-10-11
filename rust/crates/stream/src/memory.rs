@@ -9,6 +9,8 @@
 //! Accepted commits/appends carry late causes to Local's canonical durability drain.
 //! Deadline-bound new facts check the trusted provider clock at publication;
 //! previously retained idempotent outcomes are replayed before deadline checks.
+//! Provider failures created here have static causes; their public native error
+//! carrier retains an empty original-meter guard rather than fabricating payload.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
@@ -31,7 +33,7 @@ use acyclic_native_runtime::{
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
     NativeObservedRecord, NativeProviderFuture, NativeRecordStream, NativeStreamOutput,
-    NativeStreamResult,
+    NativeStreamFailure, NativeStreamResult,
 };
 
 #[derive(Debug)]
@@ -274,7 +276,9 @@ fn native<T>(
             output.value,
             output.allocation.allocation.unwrap_or_else(|| ReadAllocation::empty(meter)),
         ))),
-        Err(MemoryFailure::Provider(error)) => Ok(Err(error)),
+        Err(MemoryFailure::Provider(error)) => Ok(Err(NativeStreamFailure::new(
+            error, ReadAllocation::empty(meter),
+        ))),
         Err(MemoryFailure::Observer(error)) => Err(error),
     }
 }
@@ -504,12 +508,12 @@ impl MemoryStream {
         deadline_unix_millis: Option<u64>,
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeStreamResult<CommitOutcome> {
-        match self.native_commit_completion_inner(request, deadline_unix_millis, meter).await? {
+        match self.native_commit_completion_inner(request, deadline_unix_millis, Arc::clone(&meter)).await? {
             Ok(completion) => match completion.error {
                 Some(error) => Err(error),
                 None => Ok(Ok(completion.outcome)),
             },
-            Err(error) => Ok(Err(error)),
+            Err(error) => Ok(Err(NativeStreamFailure::new(error, ReadAllocation::empty(&meter)))),
         }
     }
 
@@ -627,12 +631,12 @@ impl MemoryStream {
         mut request: AppendRequest,
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeStreamResult<AppendOutcome> {
-        match self.native_append_completion_borrowed_inner(&mut request, meter).await? {
+        match self.native_append_completion_borrowed_inner(&mut request, Arc::clone(&meter)).await? {
             Ok(completion) => match completion.error {
                 Some(error) => Err(error),
                 None => Ok(Ok(completion.outcome)),
             },
-            Err(error) => Ok(Err(error)),
+            Err(error) => Ok(Err(NativeStreamFailure::new(error, ReadAllocation::empty(&meter)))),
         }
     }
 
@@ -1004,7 +1008,7 @@ struct NativeMemoryRecordCursor {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl futures::Stream for NativeMemoryRecordCursor {
-    type Item = std::io::Result<Result<NativeObservedRecord, StreamError>>;
+    type Item = std::io::Result<Result<NativeObservedRecord, NativeStreamFailure>>;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
@@ -1320,7 +1324,9 @@ impl StreamProvider for MemoryStream {
         let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
         let original = Arc::clone(&meter);
         NativeProviderFuture::new(&original, async move {
-            if let Err(error) = validate_limit(request.limit) { return Ok(Err(error)); }
+            if let Err(error) = validate_limit(request.limit) {
+                return Ok(Err(NativeStreamFailure::new(error, ReadAllocation::empty(&meter))));
+            }
             let allocation = observer.allocate(std::mem::size_of::<NativeMemoryRecordCursor>())?;
             // Allocate the real control box now, not after a denied read or
             // cancellation. Completion only moves already-owned fields.
@@ -2479,6 +2485,33 @@ mod tests {
         use super::*;
         use std::sync::atomic::AtomicBool;
 
+        // Keep the original public error custodian intact even when a control
+        // returns early; never erase it with a boxed/stringified test adapter.
+        type MemoryResult<T> = Result<T, ControlFailure>;
+        enum ControlFailure {
+            Provider(StreamError),
+            Observer(std::io::Error),
+            Native(NativeStreamFailure),
+        }
+        impl std::fmt::Debug for ControlFailure {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    Self::Provider(error) => std::fmt::Debug::fmt(error, formatter),
+                    Self::Observer(error) => std::fmt::Debug::fmt(error, formatter),
+                    Self::Native(error) => std::fmt::Debug::fmt(error, formatter),
+                }
+            }
+        }
+        impl From<StreamError> for ControlFailure {
+            fn from(error: StreamError) -> Self { Self::Provider(error) }
+        }
+        impl From<std::io::Error> for ControlFailure {
+            fn from(error: std::io::Error) -> Self { Self::Observer(error) }
+        }
+        impl From<NativeStreamFailure> for ControlFailure {
+            fn from(error: NativeStreamFailure) -> Self { Self::Native(error) }
+        }
+
         struct Meter {
             held: AtomicU64,
             allocations: AtomicU64,
@@ -2705,7 +2738,7 @@ mod tests {
             let mut changed = request.clone();
             changed.records = vec![Bytes::from_static(b"changed")];
             assert!(matches!(provider.native_append(changed, meter.original()).await?,
-                Err(StreamError::IdempotencyMismatch)));
+                Err(error) if matches!(error.source(), StreamError::IdempotencyMismatch)));
             let wrong_kind = CommitRequest {
                 conditions: vec![CommitCondition::Tail { path: request.path.clone(), expected: 1 }],
                 mutations: vec![CommitMutation::Append {
@@ -2714,7 +2747,7 @@ mod tests {
                 idempotency_key: key(b"native-append")?,
             };
             assert!(matches!(provider.native_commit(wrong_kind, meter.original()).await?,
-                Err(StreamError::IdempotencyMismatch)));
+                Err(error) if matches!(error.source(), StreamError::IdempotencyMismatch)));
             let mut conflict = request.clone();
             conflict.if_tail = Some(7);
             conflict.idempotency_key = Some(key(b"native-append-conflict")?);
@@ -3034,9 +3067,9 @@ mod tests {
                 clock_after_copy: Some((clock.clone(), 101)), ..Meter::default()
             });
             assert!(matches!(provider.native_commit_before(request.clone(), 100, late.original()).await?,
-                Err(StreamError::DeadlineElapsed)));
+                Err(error) if matches!(error.source(), StreamError::DeadlineElapsed)));
             assert!(matches!(provider.native_commit_before(request.clone(), 101, late.original()).await?,
-                Err(StreamError::DeadlineElapsed)));
+                Err(error) if matches!(error.source(), StreamError::DeadlineElapsed)));
             {
                 let state = provider.state.read().await;
                 assert_eq!(state.decision, 0);
@@ -3052,7 +3085,7 @@ mod tests {
             let mut conflict = request.clone();
             conflict.idempotency_key = key(b"native-conflict-deadline")?;
             assert!(matches!(provider.native_commit_before(conflict.clone(), 101, late.original()).await?,
-                Err(StreamError::DeadlineElapsed)));
+                Err(error) if matches!(error.source(), StreamError::DeadlineElapsed)));
             assert!(provider.inspect_idempotency(conflict.idempotency_key).await?.is_none());
             assert_eq!(provider.state.read().await.decision, 1);
             clock.0.store(1_000, Ordering::SeqCst);
