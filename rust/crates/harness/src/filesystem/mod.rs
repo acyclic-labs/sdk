@@ -184,8 +184,8 @@ where
     fn stage_with_native_work<'a>(
         &'a self, operation_id: crate::OperationId, idempotency_key: &'a str,
         bytes: &'a [u8], work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> BoxFuture<'a, Result<(FileRef, acyclic_fs::NativeAllocation)>> {
-        Box::pin(async move {
+    ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             let file = self.stage_with_io(
                 operation_id, idempotency_key, bytes, Some(&io)).await?;

@@ -1125,14 +1125,14 @@ mod tests {
             finite_content_budget(), &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let operation = OperationId::new();
         let (file, hold) = scheduler.stage_with_native_work(
-            operation, "canonical-original-key", br#"{"input":1}"#, &work).await?;
+            operation, "canonical-original-key", br#"{"input":1}"#, &work)?.await?;
         assert_eq!(hold.bytes(), file.logical_owned_bytes()?);
         let (retry, retry_hold) = scheduler.stage_with_native_work(
-            operation, "canonical-original-key", br#"{"input":1}"#, &work).await?;
+            operation, "canonical-original-key", br#"{"input":1}"#, &work)?.await?;
         assert_eq!(retry, file);
         assert_eq!(scheduler.stage(operation, "canonical-original-key", br#"{"input":1}"#).await?, file);
         assert!(scheduler.stage_with_native_work(
-            operation, "canonical-original-key", br#"{"input":2}"#, &work).await.is_err());
+            operation, "canonical-original-key", br#"{"input":2}"#, &work)?.await.is_err());
         drop(retry);
         drop(retry_hold);
         drop(file);
@@ -1142,7 +1142,7 @@ mod tests {
         let denied_work = acyclic_fs::NativeMaterializationWork::new(
             denied, &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         assert!(matches!(scheduler.stage_with_native_work(
-            OperationId::new(), "canonical-original-key", b"never", &denied_work).await,
+            OperationId::new(), "canonical-original-key", b"never", &denied_work)?.await,
             Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::Work(_), custody: None })));
         assert_eq!(denied_work.receipt().bytes_hashed, 0);
