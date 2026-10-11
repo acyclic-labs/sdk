@@ -60,6 +60,17 @@ impl NativeHistoryIo<'_> {
 }
 
 impl HistoryIo for NativeHistoryIo<'_> {
+    fn original_native_work(&self) -> Option<&NativeMaterializationWork> { Some(self.work) }
+    fn absorb_native_custody(&mut self, mut incoming: NativeAllocation) -> Result<()> {
+        if !self.work.shares_ledger(incoming.work()) {
+            return Err(Error::NativeWork {
+                cause: NativeTreeMaterializationError::InvalidLayout, custody: Some(incoming),
+            });
+        }
+        self.custody.absorb(&mut incoming).map_err(|cause| Error::NativeWork {
+            cause, custody: Some(incoming),
+        })
+    }
     fn check_cancellation(&self) -> Result<()> {
         self.work.cancellation().check()
             .map_err(|_| self.native_error(NativeTreeMaterializationError::Cancelled))
@@ -152,12 +163,10 @@ impl HistoryIo for NativeHistoryIo<'_> {
         let decoded = io.decode_preparation::<serde_json::Value>(bytes)?;
         let retained = io.owned_bytes()?;
         let value = decoded.into_retained();
-        let mut incoming = io.into_native_custody(retained)?;
+        let incoming = io.into_native_custody(retained)?;
         // Both guards originate from this exact finite native ledger; merging
         // transfers already admitted custody, without another claim or copy.
-        self.custody.absorb(&mut incoming).map_err(|cause| Error::NativeWork {
-            cause, custody: Some(incoming),
-        })?;
+        self.absorb_native_custody(incoming)?;
         Ok(value)
     }
     fn hashed_bytes(&mut self, bytes: u64) -> Result<()> { self.charge(WorkCounters { bytes_hashed: bytes, ..WorkCounters::default() }) }
@@ -206,12 +215,10 @@ impl HistoryIo for NativeHistoryIo<'_> {
             {
                 return Err(Error::Unsupported("content verifier does not expose the original native work boundary".into()));
             }
-            let (bytes, mut guard) = verifier.read_with_native_work(
+            let (bytes, guard) = verifier.read_with_native_work(
                 reference, reference.descriptor().byte_length(), self.work,
             ).await?;
-            self.custody.absorb(&mut guard).map_err(|cause| Error::NativeWork {
-                cause, custody: Some(guard),
-            })?;
+            self.absorb_native_custody(guard)?;
             Ok(bytes)
         })
     }
@@ -228,6 +235,35 @@ mod tests {
             peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes(),
             ..WorkBudget::default()
         }
+    }
+
+    #[test]
+    fn native_observer_borrows_exact_ledger_and_preserves_rejected_custody() {
+        let cancellation = CancellationToken::new();
+        let mut budget = control_budget();
+        budget.peak_allocation_bytes += 16;
+        let work = NativeMaterializationWork::new(budget, &cancellation)
+            .expect("original ledger");
+        let foreign = NativeMaterializationWork::new(budget, &cancellation)
+            .expect("distinct original ledger");
+        let mut io = native_work_io(&work).expect("original observer");
+        assert!(std::ptr::eq(io.original_native_work().expect("native ledger borrow"), &work));
+        let incoming = foreign.retain_owned(16).expect("foreign held allowance");
+        let prefix = work.receipt();
+        let rejection = io.absorb_native_custody(incoming).expect_err("distinct ledger rejects");
+        let Error::NativeWork {
+            cause: NativeTreeMaterializationError::InvalidLayout, custody: Some(guard),
+        } = rejection else { panic!("original typed cause and guard must survive"); };
+        assert_eq!(guard.bytes(), 16);
+        assert!(guard.work().shares_ledger(&foreign));
+        assert_eq!(io.custody.bytes(), 0);
+        assert_eq!(work.receipt(), prefix);
+        drop(guard);
+        let incoming = work.retain_owned(16).expect("same-ledger held allowance");
+        let prefix = work.receipt();
+        io.absorb_native_custody(incoming).expect("same-ledger transfer");
+        assert_eq!(io.custody.bytes(), 16);
+        assert_eq!(work.receipt(), prefix, "adoption makes no new claim or call");
     }
 
     #[test]

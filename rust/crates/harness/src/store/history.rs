@@ -50,6 +50,15 @@ pub(crate) trait HistoryIo: Send {
     fn decode_json_value(&mut self, _bytes: &[u8]) -> Result<serde_json::Value> {
         Err(Error::Unsupported("this history observer has no guarded JSON value decoder".into()))
     }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn original_native_work(&self) -> Option<&acyclic_fs::NativeMaterializationWork> { None }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn absorb_native_custody(&mut self, incoming: acyclic_fs::NativeAllocation) -> Result<()> {
+        Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+            custody: Some(incoming),
+        })
+    }
     fn hashed_bytes(&mut self, bytes: u64) -> Result<()>;
     fn admit_acknowledgment(&self, bytes: u64, count: u64) -> Result<()>;
     fn acknowledged(&mut self, bytes: u64, count: u64) -> Result<()>;
