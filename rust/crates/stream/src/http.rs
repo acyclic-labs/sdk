@@ -432,7 +432,7 @@ impl StreamProvider for HttpStream {
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         let wire = wire::AppendRequest {
             path: request.path.to_string(),
-            records: request.records,
+            records: request.records.into_iter().map(Bytes::from_owner).collect(),
             if_tail: request.if_tail,
             idempotency_key: request
                 .idempotency_key
@@ -628,7 +628,7 @@ fn parse_records(value: &Value) -> Result<Vec<Record>, StreamError> {
             }
             Ok(Record {
                 sequence: parse_u64(field(value, "sequence")?)?,
-                value: bytes,
+                value: bytes.into(),
                 commit_id: parse_id(field(value, "commitId")?)?,
                 committed_at_micros: parse_u64(field(value, "committedAtMicros")?)?,
             })
