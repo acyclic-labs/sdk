@@ -716,6 +716,50 @@ async fn original_native_worker_precancel_and_metadata_denial_preserve_exact_lea
 }
 
 #[tokio::test]
+async fn native_stock_builtin_precancel_preserves_original_recovery_before_dispatch() -> Result<()> {
+    for kind in [
+        super::super::MAIL_SEND_TASK_COMMAND_KIND,
+        super::super::MAIL_RECEIVE_TASK_COMMAND_KIND,
+        super::super::FORK_PREPARE_TASK_COMMAND_KIND,
+        super::super::TASK_ADMIT_PREPARED_COMMAND_KIND,
+        super::super::TASK_CANCEL_COMMAND_KIND,
+        super::super::EFFECT_TASK_COMMAND_KIND,
+    ] {
+        let fixture = Fixture::new().await?;
+        fixture.machine.native.store(true, Ordering::SeqCst);
+        let runtime = fixture.runtime().await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::default(), &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let (lease, custody) = fixture.native_lease_command(&runtime, kind, Value::Null, &work).await?;
+        let original = lease.clone();
+        let bytes = custody.bytes();
+        cancellation.cancel();
+        let before = work.receipt();
+        let (attempt, custody) = runtime.resume_task_with_native_work(
+            lease, custody, &runtime.commands(), 2, &work,
+        ).await?;
+        match attempt {
+            TaskWorkerAttempt::Unresolved { lease, error } => {
+                assert_eq!(lease, original);
+                assert!(matches!(error, Error::NativeWork { .. }));
+                assert!(error.is_native_failure());
+                drop(lease);
+                drop(error);
+            }
+            _ => return Err(Error::Invalid("stock builtin replaced original precancelled recovery".into())),
+        }
+        assert!(custody.matches_work(&work));
+        assert!(custody.bytes() >= bytes);
+        assert_eq!(work.receipt(), before);
+        assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
+        drop(custody);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn native_stock_tool_lost_ack_reconciles_original_fence_without_redispatch() -> Result<()> {
     let fixture = Fixture::new().await?;
     fixture.machine.native.store(true, Ordering::SeqCst);

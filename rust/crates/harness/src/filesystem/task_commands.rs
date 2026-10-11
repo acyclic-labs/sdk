@@ -473,8 +473,8 @@ where
             MAIL_SEND_TASK_COMMAND_KIND if reconciliation_only => self.reconcile_mail_with_io(task, &fence, &command, payload, io).await,
             MAIL_SEND_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND if !reconciliation_only => self.mail_command_with_io(task, context.context(), &fence, &command, payload, io).await,
             TASK_ADMIT_COMMAND_KIND | TASK_OBSERVE_COMMAND_KIND => self.task_command_with_io(task, context.context(), &fence, &command, payload, reconciliation_only, io).await,
-            FORK_PREPARE_TASK_COMMAND_KIND if !reconciliation_only => {
-                self.prepare_fork_command(task, &context, &fence, &command, payload, admission.input, io).await
+            FORK_PREPARE_TASK_COMMAND_KIND if !reconciliation_only || io.is_some() => {
+                self.prepare_fork_command(task, &context, &fence, &command, payload, admission.input, reconciliation_only, io).await
             }
             TASK_ADMIT_PREPARED_COMMAND_KIND => {
                 self.admit_prepared_command(task, &fence, &command, payload, reconciliation_only, io).await
@@ -524,7 +524,7 @@ where
     async fn prepare_fork_command(
         &self, task: TaskId, context: &CommandContext, fence: &LeaseFence,
         command: &WorkflowCommand, payload: Value, retained_input: Value,
-        io: Option<&super::PreparationIo>,
+        reconciliation_only: bool, io: Option<&super::PreparationIo>,
     ) -> Result<TaskCommandProgress> {
         use super::task_runtime::observed::boundary;
         use crate::wire::ErrorCode;
@@ -546,6 +546,9 @@ where
                 task, command.operation_id, &request, work,
             )? {
                 preparation
+            } else if reconciliation_only {
+                return Err(boundary(Some(io), ErrorCode::Unsupported,
+                    "original fork token is not retained by this command binding"));
             } else {
                 let request_bytes = (std::mem::size_of::<crate::resource_preparation::ResourcePreparationRequest>() as u64)
                     .checked_add(request.logical_owned_bytes()?).ok_or_else(|| boundary(
@@ -559,13 +562,29 @@ where
             let fork: super::ForkRequest = mail::decode_borrowed_command(&preparation.request().payload, io)?;
             let source = self.runtime.recursive_source().ok_or_else(|| boundary(
                 Some(io), ErrorCode::Unsupported, "fork preparation source is not configured"))?;
-            let retained = source.preparation_with_native_work(
-                shared, &preparation, &io.cancellation, work,
-            )?.await?;
+            let retained = if reconciliation_only {
+                source.preparation_for_reconciliation_with_native_work(
+                    shared, &preparation, &io.cancellation, work,
+                )?.await?
+            } else {
+                source.preparation_with_native_work(
+                    shared, &preparation, &io.cancellation, work,
+                )?.await?
+            };
             io.absorb_native_custody(retained.1)?;
             if retained.0.request != fork {
                 return Err(boundary(Some(io), ErrorCode::Unauthorized,
                     "resolved fork source differs from original request"));
+            }
+            if reconciliation_only {
+                let report = retained.0.preparer.reconcile_for_task_with_native_work(
+                    &preparation, &fork, work,
+                )?.await?;
+                io.absorb_native_custody(report.1)?;
+                return match report.0 {
+                    Some(_) => mail::reconciled(Some(io)),
+                    None => Ok(TaskCommandProgress::Indeterminate),
+                };
             }
             let report = retained.0.preparer.prepare_for_task_with_native_work(
                 &preparation, &fork, work,
