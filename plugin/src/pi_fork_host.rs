@@ -1,14 +1,14 @@
-//! Ordinary Pi fork controls over the one retained catalog and task journal.
+//! Native Pi fork controls over the one retained catalog and task journal.
 //! Preparation admission precedes the catalog power-loss barrier; creation never does.
 use crate::{AdapterState, PendingSpawn, PendingSpawnLifecycle, PluginTaskBinding, ServiceResources,
-    pi_fork::{PiForkCoordinator, PiForkOperations, PiForkPlan, PreparedPiFork, RetainedSpawnCommit, original_operation, derived},
+    pi_fork::{PiForkCoordinator, PiForkOperations, PiForkPlan, PreparedPiFork, RetainedSpawnCommit, original_operation_with_native_work, derived_with_native_work},
     pi_native::{planned_native_paths}, pi_native_host::{PiNativeCommandHost, PiNativeRuntime, PiNativeFilesystem},
     pi_owner::PiOwnerConfig, pi_root_inputs::PiRootRequest, pi_root_provider::PiRootHandle,
     pi_task::{PiTaskInput, PiTaskExecution}};
 use acyclic_fs::{CancellationToken, LazySnapshotRef, WorkBudget, NativeMaterializationWork};
 use acyclic_harness::{Error, Result, TaskId, OperationId,
     durable_host::TaskJournalOwner, filesystem::{TaskCommandHost, TaskCommandProgress, ForkPreparationLimits},
-    core::SchemaRegistry, runtime::TaskContext, scheduler::LeaseFence,
+    core::SchemaRegistry, runtime::TaskContext, NativeTaskContext, NativeFutureBundle, scheduler::LeaseFence,
     store::StreamAggregate, workflow::WorkflowCommand};
 use acyclic_stream::{LocalStream, StreamClient};
 use serde::{Deserialize, Serialize};
@@ -62,38 +62,44 @@ struct PiObservedSourceReply<'a> {
     root_key: &'a str,
 }
 
+struct NativeOwned<T> {
+    value: T,
+    custody: acyclic_fs::NativeAllocation,
+}
+
+#[derive(Serialize)]
+struct BorrowedRootRequest<'a> {
+    binding: &'a crate::PiTaskBinding,
+    root: &'a crate::pi_root::PiRootIntent,
+}
+
+const FORK_COMMAND_DIAGNOSTIC_LABEL_BYTES: u64 = crate::pi_fork::FORK_PLAN_DIAGNOSTIC_LABEL_BYTES
+    + crate::pi_root_provider::pi_serde_diagnostic_labels_bytes(&["PiForkCommand", "commit", "root_source"]);
+const OBSERVE_COMMAND_DIAGNOSTIC_LABEL_BYTES: u64 = OBSERVED_SOURCE_DIAGNOSTIC_LABEL_BYTES
+    + crate::pi_root_provider::pi_serde_diagnostic_labels_bytes(&["PiObserveSourceCommand"]);
+
 pub(crate) struct PiForkHost<'a> {
     runtime: Arc<PiNativeRuntime>,
     filesystem: Arc<PiNativeFilesystem>,
     stream: StreamClient<LocalStream>,
-    resources: ServiceResources,
-    protected: PiOwnerConfig,
+    resources: &'a ServiceResources,
+    protected: Arc<PiOwnerConfig>,
     retained: &'a AdapterState,
     roots: &'a BTreeMap<String, PiRootHandle>,
     native: Arc<PiNativeCommandHost>,
     pending: Mutex<Vec<PendingSpawn>>,
     prepared: Mutex<BTreeMap<TaskId, PreparedPiFork>>,
-    work: Option<NativeMaterializationWork>,
 }
 
 impl<'a> PiForkHost<'a> {
     #[allow(clippy::too_many_arguments, reason = "original catalog, provider handles and protected runtime are independent")]
     pub(crate) fn new(runtime: Arc<PiNativeRuntime>, filesystem: Arc<PiNativeFilesystem>,
-        stream: StreamClient<LocalStream>, resources: ServiceResources, protected: PiOwnerConfig,
+        stream: StreamClient<LocalStream>, resources: &'a ServiceResources, protected: Arc<PiOwnerConfig>,
         retained: &'a AdapterState, roots: &'a BTreeMap<String, PiRootHandle>, native: Arc<PiNativeCommandHost>) -> Self {
         Self { runtime, filesystem, stream, resources, protected, retained, roots, native,
-            pending: Mutex::new(Vec::new()), prepared: Mutex::new(BTreeMap::new()), work: None }
+            pending: Mutex::new(Vec::new()), prepared: Mutex::new(BTreeMap::new()) }
     }
 
-    pub(crate) fn with_work(mut self, work: NativeMaterializationWork) -> Self {
-        self.work = Some(work);
-        self
-    }
-
-    fn command_work(&self, cancel: &CancellationToken) -> Result<NativeMaterializationWork> {
-        match &self.work { Some(work) => Ok(work.clone()), None => NativeMaterializationWork::new(
-            crate::pi_root_provider::allocation_budget(), cancel).map_err(|(cause, work)| Error::NativeConstruction { cause, work }) }
-    }
 
     /// The actor durably saves these existing Preparing records before another pass.
     pub(crate) fn pending_to_save(&self) -> Result<Vec<PendingSpawn>> {
@@ -106,32 +112,65 @@ impl<'a> PiForkHost<'a> {
     }
 
     fn coordinator(&self, work: &NativeMaterializationWork) -> Result<PiForkCoordinator> {
-        Ok(PiForkCoordinator::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            self.resources.clone(), self.protected.clone())?.with_work(work.clone()))
+        PiForkCoordinator::new_with_native_work(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
+            self.resources, self.protected.clone(), work)
     }
 
-    async fn context(&self, context: TaskContext, fence: &LeaseFence,
-        cancel: &CancellationToken, work: &NativeMaterializationWork) -> Result<(TaskContext, Arc<TaskJournalOwner<LocalStream>>, PiTaskInput)> {
-        self.runtime.verify_owner(&self.protected)?;
-        let task = context.durable_task_id().ok_or_else(|| invalid("Pi fork control has no original task"))?;
-        let owner = Arc::new(self.runtime.runtime.task_host().journal_owner(task, fence.clone()).await?);
-        crate::pi_inspection::authenticate(&context, &owner).await?;
-        let admission = self.runtime.runtime.task_host().observe_admission(task).await?;
-        let input: PiTaskInput = serde_json::from_value(admission.input).map_err(json_error)?;
-        let context = if task == self.protected.policy().root_task {
-            let PiTaskExecution::Host { root, .. } = &input.execution else {
-                return Err(unauthorized("Pi original root input substituted a child"));
-            };
-            let request = PiRootRequest { binding: input.binding.clone(), root: root.clone() };
-            accept_root(&work, crate::pi_root_provider::bind_root_output_context(context, &owner, self.protected.clone(), self.resources.clone(), self.filesystem.clone(), self.stream.clone(), &request, remaining(&work)?, cancel).await)?.value
+    async fn context(&self, shared: Arc<NativeTaskContext>, fence: &LeaseFence,
+        work: &NativeMaterializationWork)
+        -> Result<NativeOwned<(Arc<NativeTaskContext>, Arc<TaskJournalOwner<LocalStream>>, PiTaskInput)>> {
+        self.runtime.verify_owner_with_native_work(&self.protected, work)?;
+        let context = shared.context();
+        let task = context.durable_task_id().ok_or_else(|| unauthorized("Pi fork control has no original task"))?;
+        let mut admission = self.runtime.runtime.task_host().observe_admission_with_native_work(task, work).await?;
+        if admission.0.task_id() != task || admission.0.task != *self.runtime.definition.identity()
+            || context.scope().grants() != &admission.0.grants || context.scope().limits() != admission.0.limits
+            || context.scope().run_limits() != admission.0.run_limits || context.owned_task_fence()? != *fence {
+            return Err(unauthorized("Pi fork control differs from its original admission or fence"));
+        }
+        let maximum = self.protected.policy().maximum_payload_bytes.min(admission.0.limits.file_bytes);
+        let bytes = crate::pi_root_provider::canonical_pi_value_with_native_work(&admission.0.input, maximum, work)?;
+        let mut input = crate::pi_root_provider::guarded_pi_decode::<PiTaskInput>(&bytes.0, maximum,
+            self.protected.policy().maximum_payload_bytes, acyclic_harness::JsonValueSchema::None,
+            crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work)?;
+        if input.0.binding.task_id != task {
+            return Err(unauthorized("Pi fork control substituted its admitted task binding"));
+        }
+        let owner = self.runtime.runtime.task_host().journal_owner_with_native_work(task, fence, work).await?
+            .into_native_shared(work)?;
+        owner.verify_with_native_work(false, work).await?;
+        let shared = if task == self.protected.policy().root_task {
+            let request = self.root_request(&input.0, work)?;
+            crate::pi_root_provider::bind_root_output_context_with_native_work(shared, &owner,
+                self.protected.clone(), self.resources, self.filesystem.clone(), self.stream.clone(),
+                &request.value, work).await?
         } else {
-            context.with_output_volume(&input.binding.scratch.volume)?
+            shared.with_output_volume_with_native_work(&input.0.binding.scratch.volume, work)?
         };
-        Ok((context, owner, input))
+        admission.1.absorb(&mut input.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(NativeOwned { value: (shared, owner, input.0), custody: admission.1 })
     }
 
-    async fn source(&self, context: &TaskContext, owner: &TaskJournalOwner<LocalStream>,
-        command: &PiForkCommand, plan: Option<&PiForkPlan>, cancel: &CancellationToken,
+    fn root_request(&self, input: &PiTaskInput, work: &NativeMaterializationWork) -> Result<NativeOwned<PiRootRequest>> {
+        let PiTaskExecution::Host { root, .. } = &input.execution else {
+            return Err(unauthorized("Pi original root input substituted a child"));
+        };
+        self.decode(&BorrowedRootRequest { binding: &input.binding, root },
+            crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES, work)
+    }
+
+    fn decode<T: serde::de::DeserializeOwned, S: Serialize>(&self, value: &S,
+        label_bytes: u64, work: &NativeMaterializationWork) -> Result<NativeOwned<T>> {
+        let maximum = self.protected.policy().maximum_payload_bytes;
+        let bytes = crate::pi_root_provider::canonical_pi_value_with_native_work(value, maximum, work)?;
+        let (value, custody) = crate::pi_root_provider::guarded_pi_decode(&bytes.0, maximum, maximum,
+            acyclic_harness::JsonValueSchema::None, label_bytes, work)?;
+        Ok(NativeOwned { value, custody })
+    }
+
+
+    async fn source(&self, shared: &Arc<NativeTaskContext>, owner: &Arc<TaskJournalOwner<LocalStream>>,
+        caller: &PiTaskInput, command: &PiForkCommand, plan: Option<&PiForkPlan>,
         work: &NativeMaterializationWork)
         -> Result<(Arc<crate::LocalLazyWorkspace>, LazySnapshotRef, Option<acyclic_fs::NativeAllocation>)> {
         let root_key = command.commit.child.project_volumes.keys().next()
@@ -147,23 +186,28 @@ impl<'a> PiForkHost<'a> {
                 .ok_or_else(|| invalid("Pi selected child has no actual reopened creator workspace"))?
         };
         if let Some(plan) = plan {
-            accept(&work, source.validate_snapshot_measured(plan.frozen, remaining(&work)?, cancel).await)?;
+            source.validate_snapshot_with_native_work(plan.frozen, work).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
             return Ok((source, plan.frozen, None));
         }
         let mut source_custody = None;
         let frozen = if command.commit.source_task == self.protected.policy().root_task {
             if let Some(frozen) = command.root_source {
-                accept(&work, source.validate_snapshot_measured(frozen, remaining(&work)?, cancel).await)?;
+                source.validate_snapshot_with_native_work(frozen, work).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
                 frozen
             } else if owner.task_id() == self.protected.policy().root_task {
                 let actual = self.roots.get(root_key).ok_or_else(|| invalid("Pi selected root handle missing"))?;
-                accept_root(&work, crate::pi_lazy_capture::freeze_root_source(owner.task_id(), context, owner, &actual.physical, &source, remaining(&work)?, cancel).await)?.value
+                let (snapshot, custody) = freeze_created_root_source(self.protected.clone(), self.resources,
+                    self.filesystem.clone(), self.stream.clone(), shared, owner, caller, root_key, actual, work).await?;
+                source_custody = Some(custody);
+                snapshot
             } else {
                 return Err(invalid("Pi selected Root requires its real original Root observe control receipt"));
             }
         } else {
-            let outcome = self.runtime.runtime.task_host().outcome(command.commit.source_task).await?;
-            if outcome.as_ref().is_some_and(|outcome| outcome.is_terminal()) {
+            let source_owner = self.runtime.runtime.task_host().readonly_journal_owner_with_native_work(
+                command.commit.source_task, work).await?;
+            let outcome = source_owner.outcome_with_native_work(work).await?;
+            if outcome.0.as_ref().is_some_and(|outcome| outcome.is_terminal()) {
                 let (snapshot, custody) = self.native.selection_snapshot(command.commit.source_task, work).await?;
                 source_custody = Some(custody);
                 snapshot
@@ -178,7 +222,7 @@ impl<'a> PiForkHost<'a> {
             } else {
                 let frozen = self.native.source_frozen(command.commit.source_task)
                     .ok_or_else(|| invalid("Pi undispatched source lost its actual first native companion"))?;
-                accept(&work, source.validate_snapshot_measured(frozen, remaining(&work)?, cancel).await)?;
+                source.validate_snapshot_with_native_work(frozen, work).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
                 frozen
             }
         };
@@ -209,22 +253,23 @@ impl<'a> PiForkHost<'a> {
             mount_path: paths.view_root, lifecycle: PendingSpawnLifecycle::Preparing })
     }
 
-    async fn fork(&self, context: TaskContext, fence: LeaseFence, command: WorkflowCommand,
-        payload: Value, reconcile: bool) -> Result<TaskCommandProgress> {
-        let mut input: PiForkCommand = serde_json::from_value(payload).map_err(json_error)?;
-        input.commit.launch.invocation.environment.retain(|key, _| !reserved_key(key));
-        let cancel = CancellationToken::new();
-        let work = self.command_work(&cancel)?;
+    async fn fork(&self, shared: Arc<NativeTaskContext>, fence: LeaseFence, command: WorkflowCommand,
+        payload: Value, reconcile: bool, work: &NativeMaterializationWork) -> Result<TaskCommandProgress> {
+        let mut supplied: NativeOwned<PiForkCommand> = self.decode(&payload, FORK_COMMAND_DIAGNOSTIC_LABEL_BYTES, work)?;
+        supplied.value.commit.launch.invocation.environment.retain(|key, _| !reserved_key(key));
+        let input = supplied.value;
         let cancel = work.cancellation().clone();
-        let budget = remaining(&work)?;
-        let (context, owner, caller) = self.context(context, &fence, &cancel, &work).await?;
-        let original = original_operation(self.protected.policy().root_task, owner.task_id(), &input.commit.sdk_operation);
+        let actual = self.context(shared, &fence, work).await?;
+        let (shared, owner, caller) = &actual.value;
+        let context = shared.context();
+        let original = original_operation_with_native_work(self.protected.policy().root_task, owner.task_id(), &input.commit.sdk_operation, &work)?;
+        let operations = PiForkOperations::new_with_native_work(original, &work)?;
         if command.operation_id != original || input.commit.caller != owner.task_id()
             || input.commit.launch.source.parent_session_id != caller.binding.native_session_id {
             return Err(unauthorized("Pi fork control changed its original caller/SDK operation"));
         }
         if self.retained.pending.iter().any(|pending| pending.agent_id.as_deref() == Some(input.commit.alias.as_str())
-            && pending.fork_key != PiForkOperations::new(original).fork.into_bytes()) {
+            && pending.fork_key != operations.fork.into_bytes()) {
             return Err(Error::Conflict("Pi requested alias is already reserved by another original fork".into()));
         }
         if self.retained.routes.values().any(|route| route.agent_id == input.commit.alias
@@ -234,13 +279,23 @@ impl<'a> PiForkHost<'a> {
         let coordinator = self.coordinator(&work)?;
         let existing = coordinator.load_plan(&context, original, remaining(&work)?, &cancel).await?;
         if reconcile && existing.is_none() { return Ok(TaskCommandProgress::Pending); }
-        let (source, frozen, _source_custody) = self.source(&context, &owner, &input, existing.as_ref(), &cancel, &work).await?;
-        let (authority, issuer, _) = self.protected.conversation_authority(owner.task_id(), caller.binding.agent_id,
-            context.scope().grants().clone())?;
-        let parent = accept(&work, StreamAggregate::open_measured(&self.stream, authority, issuer.verifier(), SchemaRegistry::new(), remaining(&work)?, &cancel).await)?.value.with_limits(context.scope().limits())?;
+        let (source, frozen, _source_custody) = self.source(shared, owner, caller, &input, existing.as_ref(), work).await?;
+        let conversation = self.protected.conversation_authority_with_native_work(owner.task_id(),
+            caller.binding.agent_id, context.scope().grants(), work)?;
+        let mut authority = NativeOwned { value: conversation.0, custody: conversation.1 };
+        let verifier = authority.value.1.verifier_with_native_work(work)?;
+        let mut verifier = NativeOwned { value: verifier.0, custody: verifier.1 };
+        let parent = StreamAggregate::open_with_native_work(&self.stream, authority.value.0,
+            verifier.value, SchemaRegistry::new(), work).await?;
+        let mut parent_custody = parent.1;
+        drop(authority.value.1);
+        drop(authority.value.2);
+        parent_custody.absorb(&mut authority.custody).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        parent_custody.absorb(&mut verifier.custody).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let parent = parent.0.with_limits(context.scope().limits())?;
         let plan = coordinator.begin(&context, &owner, fence.clone(), parent, source.clone(), frozen, input.commit, ForkPreparationLimits { resources: 128, work: 1_000_000,
             bytes: self.protected.policy().maximum_payload_bytes }, remaining(&work)?, cancel.clone()).await?;
-        let saved = self.retained.pending.iter().find(|pending| pending.fork_key == PiForkOperations::new(original).fork.into_bytes());
+        let saved = self.retained.pending.iter().find(|pending| pending.fork_key == operations.fork.into_bytes());
         if let Some(saved) = saved {
             let PluginTaskBinding::Pi(binding) = &saved.task_binding else { return Err(unauthorized("Pi pending substituted host-managed admission")); };
             let root_key = plan.commit.child.project_volumes.keys().next().ok_or_else(|| invalid("Pi child project missing"))?;
@@ -281,20 +336,21 @@ impl<'a> PiForkHost<'a> {
         Ok(result)
     }
 
-    async fn observe_source(&self, context: TaskContext, fence: LeaseFence, command: WorkflowCommand,
-        payload: Value) -> Result<TaskCommandProgress> {
-        let input: PiObserveSourceCommand = serde_json::from_value(payload).map_err(json_error)?;
-        let cancel = CancellationToken::new();
-        let work = self.command_work(&cancel)?;
+    async fn observe_source(&self, shared: Arc<NativeTaskContext>, fence: LeaseFence, command: WorkflowCommand,
+        payload: Value, work: &NativeMaterializationWork) -> Result<TaskCommandProgress> {
+        let supplied: NativeOwned<PiObserveSourceCommand> = self.decode(&payload, OBSERVE_COMMAND_DIAGNOSTIC_LABEL_BYTES, work)?;
+        let input = supplied.value;
         let cancel = work.cancellation().clone();
-        let (context, owner, _) = self.context(context, &fence, &cancel, &work).await?;
-        let original = original_operation(self.protected.policy().root_task, input.caller, &input.sdk_operation);
+        let actual_context = self.context(shared, &fence, work).await?;
+        let (shared, owner, caller) = &actual_context.value;
+        let context = shared.context();
+        let original = original_operation_with_native_work(self.protected.policy().root_task, input.caller, &input.sdk_operation, &work)?;
         if owner.task_id() != self.protected.policy().root_task || input.sdk_operation.is_empty()
-            || command.operation_id != derived(original, "observe-root-source") {
+            || command.operation_id != derived_with_native_work(original, "observe-root-source", &work)? {
             return Err(unauthorized("Pi Root observer changed its actual owner or original SDK operation"));
         }
         crate::pi_inspection::authorize_selected_source(&self.runtime.runtime, self.protected.policy().root_task,
-            &context, &owner, input.caller, self.protected.policy().session_limits.depth).await?;
+            context, owner, input.caller, self.protected.policy().session_limits.depth, work).await?;
         let actual = self.roots.get(&input.root_key).ok_or_else(|| invalid("Pi observed root has no actual lazy producer"))?;
         if let Some(reference) = crate::pi_root_provider::observe_pi_input_with_native_work(&self.protected, &self.filesystem, command.operation_id, "root-source-observation", &work).await? {
             let bytes = self.coordinator(&work)?.read_original_input(&reference.0, remaining(&work)?, &cancel).await?;
@@ -305,10 +361,12 @@ impl<'a> PiForkHost<'a> {
             if observed.caller != input.caller || observed.sdk_operation != input.sdk_operation || observed.root_key != input.root_key {
                 return Err(unauthorized("Pi original Root observation retry changed its source request"));
             }
-            accept(&work, actual.workspace.validate_snapshot_measured(observed.snapshot, remaining(&work)?, &cancel).await)?;
+            actual.workspace.validate_snapshot_with_native_work(observed.snapshot, work).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
             return ready(&PiObservedSourceReply { snapshot: observed.snapshot, root_key: &observed.root_key }, &work);
         }
-        let snapshot = accept_root(&work, crate::pi_lazy_capture::freeze_root_source(owner.task_id(), &context, &owner, &actual.physical, &actual.workspace, remaining(&work)?, &cancel).await)?.value;
+        let frozen = freeze_created_root_source(self.protected.clone(), self.resources,
+            self.filesystem.clone(), self.stream.clone(), shared, owner, caller, &input.root_key, actual, work).await?;
+        let snapshot = frozen.0;
         owner.verify_with_native_work(false, &work).await?;
         let observed = ObservedSource { caller: input.caller, sdk_operation: input.sdk_operation,
             root_key: input.root_key, snapshot };
@@ -319,22 +377,66 @@ impl<'a> PiForkHost<'a> {
 }
 
 impl TaskCommandHost for PiForkHost<'_> {
-    fn execute<'a>(&'a self, context: TaskContext, fence: LeaseFence, command: WorkflowCommand,
-        payload: Value) -> acyclic_stream::BoxProviderFuture<'a, Result<TaskCommandProgress>> {
-        Box::pin(async move { match command.kind.as_str() {
-            PI_FORK_COMMAND_KIND => self.fork(context, fence, command, payload, false).await,
-            PI_OBSERVE_SOURCE_COMMAND_KIND => self.observe_source(context, fence, command, payload).await,
-            _ => Err(Error::Unsupported("command is not an original Pi fork/source control".into())),
+    fn execute<'a>(&'a self, _context: TaskContext, _fence: LeaseFence, _command: WorkflowCommand,
+        _payload: Value) -> acyclic_stream::BoxProviderFuture<'a, Result<TaskCommandProgress>> {
+        Box::pin(async { Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unsupported,
+            reason: "Pi fork controls require their original native task context and work" }) })
+    }
+
+    fn execute_with_native_work<'a>(&'a self, context: Arc<NativeTaskContext>, fence: LeaseFence,
+        command: WorkflowCommand, payload: Value, work: &'a NativeMaterializationWork)
+        -> Result<NativeFutureBundle<'a, TaskCommandProgress>> {
+        NativeFutureBundle::new(work, || async move { match command.kind.as_str() {
+            PI_FORK_COMMAND_KIND => self.fork(context, fence, command, payload, false, work).await,
+            PI_OBSERVE_SOURCE_COMMAND_KIND => self.observe_source(context, fence, command, payload, work).await,
+            _ => Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unsupported,
+                reason: "command is not an original Pi fork/source control" }),
         } })
     }
-    fn reconcile<'a>(&'a self, context: TaskContext, fence: LeaseFence, command: WorkflowCommand,
-        payload: Value) -> acyclic_stream::BoxProviderFuture<'a, Result<TaskCommandProgress>> {
-        Box::pin(async move { match command.kind.as_str() {
-            PI_FORK_COMMAND_KIND => self.fork(context, fence, command, payload, true).await,
-            PI_OBSERVE_SOURCE_COMMAND_KIND => self.observe_source(context, fence, command, payload).await,
-            _ => Err(Error::Unsupported("command is not an original Pi fork/source control".into())),
+
+    fn reconcile_with_native_work<'a>(&'a self, context: Arc<NativeTaskContext>, fence: LeaseFence,
+        command: WorkflowCommand, payload: Value, work: &'a NativeMaterializationWork)
+        -> Result<NativeFutureBundle<'a, TaskCommandProgress>> {
+        NativeFutureBundle::new(work, || async move { match command.kind.as_str() {
+            PI_FORK_COMMAND_KIND => self.fork(context, fence, command, payload, true, work).await,
+            PI_OBSERVE_SOURCE_COMMAND_KIND => self.observe_source(context, fence, command, payload, work).await,
+            _ => Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unsupported,
+                reason: "command is not an original Pi fork/source control" }),
         } })
     }
+}
+
+#[allow(clippy::too_many_arguments, reason = "the original creator, current owner and native source remain explicit")]
+pub(crate) async fn freeze_created_root_source(
+    protected: Arc<PiOwnerConfig>, resources: &ServiceResources, filesystem: Arc<PiNativeFilesystem>,
+    stream: StreamClient<LocalStream>, shared: &Arc<NativeTaskContext>,
+    owner: &Arc<TaskJournalOwner<LocalStream>>, input: &PiTaskInput, key: &str,
+    actual: &PiRootHandle, work: &NativeMaterializationWork,
+) -> Result<(LazySnapshotRef, acyclic_fs::NativeAllocation)> {
+    let PiTaskExecution::Host { root, .. } = &input.execution else {
+        return Err(unauthorized("Root source substituted its original admitted bootstrap input"));
+    };
+    let maximum = protected.policy().maximum_payload_bytes;
+    let bytes = crate::pi_root_provider::canonical_pi_value_with_native_work(
+        &BorrowedRootRequest { binding: &input.binding, root }, maximum, work)?;
+    let request = crate::pi_root_provider::guarded_pi_decode::<PiRootRequest>(&bytes.0, maximum, maximum,
+        acyclic_harness::JsonValueSchema::None,
+        crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES, work)?;
+    let preparation = crate::pi_root_provider::load_original_preparation_with_native_work(
+        &protected, &filesystem, &request.0, shared.clone(), work).await?;
+    let original = crate::pi_root_provider::observe_root_allocation(protected.clone(),
+        resources, filesystem.clone(), stream.clone(), preparation, work).await?
+        .ok_or_else(|| unauthorized("Root freeze has no actual original created allocation"))?;
+    crate::pi_lazy_capture::freeze_root_source_with_native_work(protected.policy().root_task,
+        shared.context(), owner, &actual.physical, &actual.workspace, work, || async {
+            owner.verify_with_native_work(false, work).await?;
+            let preparation = crate::pi_root_provider::load_original_preparation_with_native_work(
+                &protected, &filesystem, &request.0, shared.clone(), work).await?;
+            crate::pi_root_provider::guard_created_root_source_with_native_work(protected.clone(),
+                resources, filesystem.clone(), stream.clone(), preparation,
+                owner, key, &original.0.1, work).await?;
+            owner.verify_with_native_work(false, work).await
+        }).await
 }
 fn same_identity(left: &crate::PiTaskBinding, right: &crate::PiTaskBinding) -> bool {
     left.task_id == right.task_id && left.agent_id == right.agent_id && left.native_session_id == right.native_session_id
@@ -346,35 +448,20 @@ fn reserved_key(key: &str) -> bool {
         .iter().any(|reserved| key.eq_ignore_ascii_case(reserved))
         || key.get(.."ACYCLIC_PI_CALLER_".len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case("ACYCLIC_PI_CALLER_"))
 }
-fn json_error(error: serde_json::Error) -> Error { Error::Invalid(error.to_string()) }
-fn invalid(message: &str) -> Error { Error::Invalid(message.into()) }
-fn unauthorized(message: &str) -> Error { Error::Unauthorized(message.into()) }
+fn invalid(message: &'static str) -> Error {
+    Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: message }
+}
+fn unauthorized(message: &'static str) -> Error {
+    Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: message }
+}
 
 fn ready<T: Serialize>(response: &T, work: &NativeMaterializationWork) -> Result<TaskCommandProgress> {
     let (value, custody) = crate::pi_root_provider::guarded_pi_value(response,
         crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8, work)?;
     Ok(TaskCommandProgress::ReadyWithNativeCustody { value, custody })
 }
-fn measured<E: std::fmt::Display>(failure: acyclic_fs::OperationFailure<E>) -> Error {
-    Error::Storage(format!("{}; work={:?}", failure.error, failure.work))
-}
 
 fn remaining(work: &NativeMaterializationWork) -> Result<WorkBudget> {
     work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })
 }
 
-fn accept<T, E: std::fmt::Display>(work: &NativeMaterializationWork,
-    result: acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<T>, E>) -> Result<acyclic_fs::OperationReceipt<T>> {
-    let spent = match &result { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
-    work.spent(spent).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    remaining(work)?;
-    result.map_err(measured)
-}
-
-fn accept_root<T>(work: &NativeMaterializationWork,
-    result: crate::pi_root_provider::PiMeasuredResult<acyclic_fs::OperationReceipt<T>>) -> Result<acyclic_fs::OperationReceipt<T>> {
-    let spent = match &result { Ok(receipt) => receipt.work, Err((_, spent)) => *spent };
-    work.spent(spent).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    result.map_err(|(cause, _)| cause)
-}

@@ -541,7 +541,9 @@ fn pi_native_session_source_preserves_value_before_guard_destruction_order() {
     assert!(send.find("work.retain_owned(message.len()").unwrap()
         < send.find("message: message.to_owned()").unwrap());
     let operator = include_str!("pi_operator_session.rs");
-    assert!(operator.contains("control_command_with_native_work(command).await"));
+    assert!(operator.contains("control_command_with_native_work(command.0).await"));
+    assert!(operator.contains("let command = pi_operator_host::stage_operator_command("));
+    assert!(!operator.contains("_command_custody"));
     assert!(operator.contains(".map(|(value, allocation)| (value, Some(allocation)))"));
     assert!(!operator.contains(".map(|value| (value, None))"));
     assert!(!session.contains(".control_command(command)"));
