@@ -598,7 +598,7 @@ impl ExecutionJournal for Journal {
         operation_id: OperationId,
         idempotency_key: String,
         bytes: Vec<u8>,
-        media_type: &'static str,
+        media_type: &'a str,
     ) -> BoxFuture<'a, Result<FileRef>> {
         async move {
             let key = format!("{operation_id}:{idempotency_key}");
