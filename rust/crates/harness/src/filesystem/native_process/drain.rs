@@ -11,6 +11,8 @@ pub struct NativeProcessDrainProof {
     request: DrainRequest,
     receipt: NativeProcessReceipt,
     plan: Arc<TaskEffectPlan>,
+    // Derived by the canonical task/command binding before dispatch or recovery.
+    effect_id: EffectId,
     _provider_custody: Arc<Mutex<NativeAllocation>>,
     _custody: NativeAllocation,
 }
@@ -76,6 +78,17 @@ impl NativeProcessDrainProof {
             || self.request.request().view != preparation.manifest
         {
             return Err(boundary(crate::wire::ErrorCode::Conflict, "process drain proof differs from the original task, fence or physical namespace"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn require_command_binding(&self, command: OperationId) -> Result<()> {
+        if self.receipt.command != command
+            || self.receipt.effect.effect_id != self.effect_id
+            || self.receipt.effect.attempt_id != crate::EffectAttemptId::from_bytes(self.effect_id.into_bytes())
+            || self.receipt.effect.provider != self.plan.provider
+        {
+            return Err(boundary(crate::wire::ErrorCode::Conflict, "process drain proof differs from its original approved command"));
         }
         Ok(())
     }
@@ -221,11 +234,13 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             let held_view: Arc<dyn Any + Send + Sync> = view.clone();
             let proof = NativeProcessDrainProof {
                 view: held_view, request, receipt, plan: Arc::clone(&self.plan),
+                effect_id: self.effect_id,
                 _provider_custody: Arc::clone(provider_custody), _custody: custody,
             };
             proof.require_view_binding::<P, A, O>(
                 view.as_ref(), &self.owner, original,
             )?;
+            proof.require_command_binding(self.command)?;
             Ok(proof)
         })
     }
