@@ -2333,7 +2333,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let mut io = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         crate::store::history::HistoryIo::retain_owned(&mut io,
-            std::mem::size_of::<crate::distributed::WorkPull>() as u64)?;
+            std::mem::size_of::<crate::distributed::WorkPull>()
+                .max(std::mem::size_of::<crate::filesystem::TaskWorkerAttempt>()) as u64)?;
         let output = self.pull_operation_with_work(worker, operation_id, &mut Some(&mut io)).await?;
         let custody = io.into_custody();
         Ok((output, custody))
@@ -2363,7 +2364,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let mut io = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         crate::store::history::HistoryIo::retain_owned(&mut io,
-            std::mem::size_of::<crate::distributed::WorkPull>() as u64)?;
+            std::mem::size_of::<crate::distributed::WorkPull>()
+                .max(std::mem::size_of::<crate::filesystem::TaskWorkerAttempt>()) as u64)?;
         let output = self.recover_work_with_work(task, &mut Some(&mut io)).await?;
         let custody = io.into_custody();
         Ok((output, custody))
@@ -5874,6 +5876,8 @@ pub(crate) mod tests {
         let (recovered, recovered_guard) = fixture.host.recover_work_with_native_work(fixture.root, &work).await?;
         let WorkPull::Claimed(lease) = recovered else { panic!("original reservation was not recovered"); };
         assert_eq!(lease.reservation, fixture.root_lease.reservation);
+        assert!(recovered_guard.bytes() >= std::mem::size_of::<WorkPull>()
+            .max(std::mem::size_of::<crate::filesystem::TaskWorkerAttempt>()) as u64);
         fixture.host.start_task_with_native_work(&lease, &work).await?;
         let mut stale = lease.clone();
         stale.reservation.placement.push_str("-foreign");

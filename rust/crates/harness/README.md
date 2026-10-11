@@ -87,7 +87,8 @@ input, outcome and settlement. Resume consumes the funded input and original
 idempotency key without replacement; callers retain their producer custody
 through the await. Scalar cancellation reads do not clone operation state.
 Returned DTOs carry `NativeAllocation` custody through their last consumer;
-drop the DTO before its guard. Native failures propagate before deadline clocks
+pull/recovery prepay worker packet metadata before claiming. Drop the DTO before
+its guard. Native failures propagate before deadline clocks
 or cancellation/retry work. Metrics cover visible SDK calls and original record
 bytes, not opaque provider allocations or physical I/O. Quiescent suspension
 uses the existing execution, scheduler and pending-publication tail CAS.
