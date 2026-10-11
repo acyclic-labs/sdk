@@ -607,6 +607,21 @@ impl PiNativeCommandHost {
         Some(mount)
     }
 
+    pub(crate) fn project_work(&self, task: TaskId,
+        volume: &acyclic_harness::conversation::VolumeRef,
+    ) -> Option<NativeMaterializationWork> {
+        let prepared = self.prepared(task)?;
+        if !prepared.binding.project_volumes.values().any(|bound| bound == volume) { return None; }
+        let view = self.live_view(task)?;
+        let entry = self.find_entry(task)?;
+        let handles = entry.handles.try_lock().ok()?;
+        let mount = handles.project.as_ref()?;
+        let mapping = view.manifest().volumes.iter().find(|mapping|
+            &mapping.volume == volume && matches!(&mapping.namespace, NativeVolumeNamespace::LazyMount { .. }))?;
+        if mapping.path != mount.path() { return None; }
+        handles.project_work.clone()
+    }
+
     pub(crate) fn project_publication(&self, task: TaskId,
         volume: &acyclic_harness::conversation::VolumeRef,
     ) -> Option<PublicationPermit> {
@@ -1719,8 +1734,11 @@ fn receipt_error(error: NativeReceiptError) -> Error {
         NativeReceiptError::Native(error) => native_error(error),
         NativeReceiptError::Backend(error) => Error::Storage(error.to_string()),
         NativeReceiptError::Record(message) => Error::Conflict(message.into()),
-        NativeReceiptError::Decode { source, custody: _custody } => Error::Storage(source.to_string()),
-        NativeReceiptError::Codec { source, custody: _custody } => source,
+        NativeReceiptError::Decode { source, custody } => Error::NativeDecode {
+            code: acyclic_harness::wire::ErrorCode::Storage, source, custody,
+        },
+        NativeReceiptError::Codec { code, source, custody } => Error::NativeCodec { code, source, custody },
+        NativeReceiptError::Supervisor(source) => Error::NativeSupervisor { source, custody: None },
     }
 }
 
@@ -1732,3 +1750,7 @@ fn preparation_journal_error(error: NativePreparationJournalError) -> Error {
         NativePreparationJournalError::Record(message) => Error::Conflict(message.into()),
     }
 }
+
+#[cfg(test)]
+#[path = "pi_native_host_tests.rs"]
+mod tests;
