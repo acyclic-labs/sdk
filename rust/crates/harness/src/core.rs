@@ -1715,16 +1715,21 @@ impl ExtensionAdmission {
     ) -> Result<Self> {
         if work.is_none() { return Ok(self.clone()); }
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let cloned = (|| -> Result<Self> {
-            let source = native_custody::copy_reference(&self.source, &mut quota)?;
-            let selected = native_custody::copy_vector(&self.selected, &mut quota, native_custody::copy_dependency)?;
-            let configurations = native_custody::copy_vector(
-                &self.configurations, &mut quota, native_custody::copy_configuration,
-            )?;
-            Ok(Self { source, selected, configurations })
-        })()?;
+        let cloned = self.copy_with_quota(&mut quota)?;
         quota.transfer();
         Ok(cloned)
+    }
+
+    pub(crate) fn copy_with_quota(
+        &self, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    ) -> Result<Self> {
+        if quota.work().is_none() { return Ok(self.clone()); }
+        let source = native_custody::copy_reference(&self.source, quota)?;
+        let selected = native_custody::copy_vector(
+            &self.selected, quota, native_custody::copy_dependency)?;
+        let configurations = native_custody::copy_vector(
+            &self.configurations, quota, native_custody::copy_configuration)?;
+        Ok(Self { source, selected, configurations })
     }
 
     /// Exact committed selection event that supplied these bindings.

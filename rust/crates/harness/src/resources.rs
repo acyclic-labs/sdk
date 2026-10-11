@@ -620,6 +620,25 @@ typed_reference!(
     Checkpoint,
     "Reference to an immutable sandbox checkpoint."
 );
+
+impl CheckpointRef {
+    pub(crate) fn clone_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        if work.is_none() { return Ok(self.clone()); }
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let reference = self.as_resource();
+        let provider = crate::core::copy_provider(reference.provider(), &mut quota)?;
+        let key = crate::core::copy_copy_vector(reference.key(), &mut quota)?;
+        let version = reference.version()
+            .map(|value| crate::core::copy_text(value, &mut quota)).transpose()?;
+        let reference = ResourceRef::new_with_work(
+            reference.kind(), provider, key, version, quota.work())?;
+        let output = Self::from_resource_with_work(reference, quota.work())?;
+        quota.transfer();
+        Ok(output)
+    }
+}
 typed_reference!(StreamRef, Stream, "Reference to a Stream-owned history.");
 typed_reference!(
     ContextRef,
