@@ -111,4 +111,18 @@ buffers; standard-library bucket layout, allocator overhead and RSS are opaque
 and excluded, as with BTree nodes. A real growth reservation counts an SDK
 allocation attempt; public map capacity is not a physical bucket-byte witness.
 
+Known `Arc<Self>` metadata and owned payloads are admitted before the SDK
+allocation attempt and charged until `Self` is destroyed. The last intrinsic
+guard follows owned vectors, strings, queues and handles; opaque standard-library
+Arc backing retained by `Weak` after `Self` destruction is excluded. This is not
+a physical allocator-block, parser-heap or RSS guarantee. Private serde codec
+error backing is similarly opaque; SDK-created diagnostic paths and strings
+still retain their original paid custody.
+
+Original native accounting holds its shared lock only for admission, completed
+counters and custody bookkeeping. Allocation, serialization, physical I/O and
+observer callbacks run outside that lock. Native transaction frontdoors feed
+the same canonical authored-mutation compiler with the actual input custody;
+immutable borrowed `Bytes` are not adopted as new allocations.
+
 Start with the [embedded workspace example](https://github.com/acyclic-labs/sdk/blob/main/rust/crates/filesystem/examples/embedded_workspace.rs), the [hosted example](https://github.com/acyclic-labs/sdk/blob/main/README.md), or the [Rust API](https://docs.rs/acyclic-fs/latest/acyclic_fs/). The [v2 protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/filesystem) defines compatibility.

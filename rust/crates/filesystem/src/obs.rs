@@ -193,6 +193,29 @@ pub(crate) fn measured_on<T, E: ErrorKind>(
     result
 }
 
+/// Records the same operation summary for a native inline failure prefix.
+/// Failure observation does not require allocating a counter box.
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(unused_variables, reason = "WASM records no spans")
+)]
+pub(crate) fn measured_inline_on<T, E: ErrorKind>(
+    span: &OperationSpan,
+    result: Result<T, (E, WorkCounters)>,
+    work: impl FnOnce(&T) -> &WorkCounters,
+) -> Result<T, (E, WorkCounters)> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if !span.span.is_disabled() {
+        let (work, kind) = match &result {
+            Ok(value) => (work(value), None),
+            Err((error, spent)) => (spent, Some(error.kind())),
+        };
+        record_outcome(&span.span, kind);
+        record_work(&span.span, work);
+    }
+    result
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn record_work(span: &tracing::Span, work: &WorkCounters) {
     if !span.is_disabled() {

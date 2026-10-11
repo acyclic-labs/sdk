@@ -14,6 +14,19 @@ Each handle retains a disposable Rust cache and catches up only new journal comm
 
 `MemoryStream` and `LocalStream` retain retry outcomes and immutable commit envelopes indefinitely within their explicit capacity limits. Replay precedes capacity admission; a new identity fails closed when the store is full. An admitted identity cannot execute again or acquire another digest after a clock advance. `LocalStream` preserves these outcomes through journal replay and snapshots. Recovery enforces the same capacity limits as live admission. Hosted services must provide the same no-reexecution guarantee under their own durable account-wide retry authority; local checks do not qualify that service behavior.
 
+Native `MemoryStream` and `LocalStream` operations use the existing provider
+engine with the original `NativeReadMeter`, including retained-window reads,
+conditional commits and provider-clock deadlines. Input copies, accepted worker
+frames, raw record buffers and persistent retry payloads retain their actual
+original custody through completion and mandatory durability drain. Initialize
+native I/O services explicitly before exposing the finite provider.
+These limits describe SDK-observable calls and logical known payload/control
+storage, not provider-internal physical I/O, delivery acknowledgments or RSS.
+Known `Arc` contents are charged until their `Self` is destroyed; opaque
+standard-library allocation backing retained by `Weak` after that point is
+excluded. Caller input vectors are borrowed or copied with admission, never
+adopted as if the SDK had allocated them.
+
 The `http` feature provides `http::HttpStream`, implementing the same provider interface over hosted JSON routes. It accepts HTTPS (or loopback HTTP for local tests), a bearer token, a response byte bound, and an optional private CA. Follow validates the starting cursor against the tail once, then lazily polls contiguous pages of at most 256 records. It drains each page under consumer backpressure before fetching again, waits 250 ms after an empty page, and reports a terminal error once. Dropping the stream cancels its pending read or idle wait. Mutations are not automatically retried. Canonical successful Commit and committed retry observations include the full immutable `envelope`, so mutation-only credentials need no follow-up commit read. Published compact-only servers still require `commits/read` access for those operations.
 
 Native servers can use `http_response::encode(route, protobuf_bytes, maximum_json_bytes)` to project generated append, fork, Commit, commit-read, child-page and retry-observation responses through the same Rust code used by WASM. The successful Commit retains its existing `ok`, `commitId`, `tails` and `forks` fields and adds the complete `envelope`. The encoder does not authorize or durably accept mutations.

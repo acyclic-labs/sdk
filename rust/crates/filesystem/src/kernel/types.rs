@@ -69,6 +69,36 @@ impl LogicalName {
         Ok(Self { encoding, bytes })
     }
 
+    /// Owns bytes emitted from the same already-validated Unicode spelling.
+    /// Only the canonical namespace producer may skip the redundant validation.
+    pub(super) fn from_validated_bytes(encoding: NameEncoding, bytes: Vec<u8>) -> Self {
+        Self { encoding, bytes }
+    }
+
+    pub(crate) fn try_clone_with_steps<E: From<CanonicalDecodeError>>(
+        &self,
+        maximum_bytes: u32,
+        steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<Self, E> {
+        use super::codec::ReadAllocationStep;
+        let length = self.bytes.len();
+        let mut bytes = Vec::new();
+        steps(ReadAllocationStep::Allocate { bytes: length as u64, operations: 1 })?;
+        if let Err(error) = bytes.try_reserve_exact(length) {
+            steps(ReadAllocationStep::ReserveFailed(error))?;
+            return Err(CanonicalDecodeError::AllocationFailed.into());
+        }
+        steps(ReadAllocationStep::Capacity {
+            admitted_bytes: length as u64,
+            actual_bytes: bytes.capacity() as u64,
+        })?;
+        steps(ReadAllocationStep::BeforeCopy(length as u64))?;
+        bytes.extend_from_slice(&self.bytes);
+        steps(ReadAllocationStep::Copied(length as u64))?;
+        Self::new(self.encoding, bytes, maximum_bytes)
+            .map_err(|error| E::from(CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Name(error))))
+    }
+
     fn validate_bytes(
         encoding: NameEncoding,
         bytes: &[u8],

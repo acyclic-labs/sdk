@@ -1,5 +1,390 @@
 use super::*;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod original_namespace_controls {
+    use super::*;
+    use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
+
+    fn is_budget_error(error: &crate::FsError) -> bool {
+        matches!(error, crate::FsError::NativeKernel(
+            crate::NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded { .. })
+        ))
+    }
+
+    #[test]
+    fn original_child_and_unicode_projection_keep_all_live_original_claims()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let limits = VolumeLimits::default();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let (path, path_guard) = NamespacePath::parse_in_profile_with_accounting(
+            "/é/𝄞", FilesystemProfile::Windows, limits, &mut accounting, &cancellation,
+        )?;
+        let name = LogicalName::new(NameEncoding::WindowsUtf16Le, vec![b'n', 0],
+            limits.maximum_component_bytes)?;
+        let (child, child_guard) = path.child_with_accounting(
+            &name, limits, &mut accounting, &cancellation,
+        )?;
+        let before = original.receipt();
+        let (text, text_guard) = child.unicode_text_with_accounting(&mut accounting, &cancellation)?;
+        let (KernelOwnedAllocation::NativeOriginal(path_guard),
+            KernelOwnedAllocation::NativeOriginal(child_guard),
+            KernelOwnedAllocation::NativeOriginal(text_guard)) = (path_guard, child_guard, text_guard)
+        else { return Err("output is not attached to original accounting".into()); };
+        assert_eq!(text, "/é/𝄞/n");
+        assert_eq!(path_guard.bytes(), path.retained_bytes());
+        assert_eq!(child_guard.bytes(), child.retained_bytes());
+        assert_eq!(text_guard.bytes(), text.capacity() as u64);
+        assert!(text_guard.shares_ledger(&path_guard));
+        assert!(child_guard.shares_ledger(&path_guard));
+        assert_eq!(original.live_allocation_bytes(),
+            baseline + path_guard.bytes() + child_guard.bytes() + text_guard.bytes());
+        assert_eq!(original.receipt().bytes_encoded - before.bytes_encoded, text.len() as u64);
+        assert_eq!(original.receipt().output_bytes - before.output_bytes, text.len() as u64);
+        assert_eq!(original.receipt().allocation_operations - before.allocation_operations, 1);
+        drop(text);
+        drop(text_guard);
+        drop(child);
+        drop(child_guard);
+        assert_eq!(original.live_allocation_bytes(), baseline + path_guard.bytes());
+        drop(path);
+        drop(path_guard);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        Ok(())
+    }
+
+    #[test]
+    fn original_projection_rejects_opaque_units_and_output_quota_before_storage()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = CancellationToken::new();
+        let limits = VolumeLimits::default();
+        let opaque = NamespacePath::new(vec![LogicalName::new(
+            NameEncoding::WindowsUtf16Le, vec![0x00, 0xd8], limits.maximum_component_bytes,
+        )?], limits)?;
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let before = original.receipt();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let error = opaque.unicode_text_with_accounting(&mut accounting, &cancellation)
+            .err().ok_or("opaque UTF16 was projected through replacement Unicode")?;
+        assert!(matches!(error, crate::FsError::Path(crate::kernel::PathLookupError::NamespacePath(
+            NamespacePathError::NonUnicodeProjection,
+        ))));
+        assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
+        assert_eq!(original.receipt().bytes_encoded, before.bytes_encoded);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+
+        let original = crate::NativeMaterializationWork::new(
+            WorkBudget { output_bytes: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
+        ).map_err(|(error, _)| error)?;
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let (path, path_guard) = NamespacePath::parse_in_profile_with_accounting(
+            "/a/b", FilesystemProfile::Portable, limits, &mut accounting, &cancellation,
+        )?;
+        let before = original.receipt();
+        let live = original.live_allocation_bytes();
+        let error = path.unicode_text_with_accounting(&mut accounting, &cancellation)
+            .err().ok_or("output quota allocated Unicode projection")?;
+        assert!(is_budget_error(&error));
+        assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
+        assert_eq!(original.receipt().bytes_encoded, before.bytes_encoded);
+        assert_eq!(original.receipt().output_bytes, before.output_bytes);
+        assert_eq!(original.live_allocation_bytes(), live);
+        drop(path);
+        drop(path_guard);
+        Ok(())
+    }
+
+    #[test]
+    fn original_positive_allocation_budget_exhausts_before_path_storage()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = CancellationToken::new();
+        let controller_operations = {
+            let probe = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+                .map_err(|(error, _)| error)?;
+            probe.receipt().allocation_operations
+        };
+        let budget = WorkBudget {
+            allocation_operations: controller_operations.checked_add(2).ok_or("allocation quota overflow")?,
+            ..WorkBudget::UNBOUNDED
+        };
+        let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let (paid_path, paid_guard) = NamespacePath::parse_in_profile_with_accounting(
+            "/paid", FilesystemProfile::Portable, VolumeLimits::default(),
+            &mut accounting, &cancellation,
+        )?;
+        drop(paid_path);
+        drop(paid_guard);
+        assert_eq!(original.receipt().allocation_operations, budget.allocation_operations);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        let before = original.receipt();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let error = NamespacePath::parse_in_profile_with_accounting(
+            "/a/b", FilesystemProfile::Portable, VolumeLimits::default(),
+            &mut accounting, &cancellation,
+        ).err().ok_or("exhausted original allocated a path")?;
+        assert!(is_budget_error(&error));
+        let after = original.receipt();
+        assert_eq!(after.allocation_operations, before.allocation_operations);
+        assert_eq!(after.peak_allocation_bytes, before.peak_allocation_bytes);
+        assert_eq!(after.bytes_copied, before.bytes_copied);
+        assert_eq!(after.bytes_encoded, before.bytes_encoded);
+        assert_eq!(after.source_path_components - before.source_path_components, 2);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        Ok(())
+    }
+
+    #[test]
+    fn original_cancellation_precedes_parse_and_clone_allocations()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = NamespacePath::from_portable(
+            &PortablePath::parse("/valid", VolumeLimits::default())?, VolumeLimits::default(),
+        )?;
+        let cancellation = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let before = original.receipt();
+        cancellation.cancel();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        for result in [
+            NamespacePath::parse_in_profile_with_accounting(
+                "/valid", FilesystemProfile::Portable, VolumeLimits::default(),
+                &mut accounting, &cancellation,
+            ),
+            source.clone_with_accounting(&mut accounting, &cancellation),
+        ] {
+            let error = result.err().ok_or("cancelled original produced a path")?;
+            assert!(matches!(error, crate::FsError::NativeKernel(
+                crate::NativeTreeMaterializationError::Cancelled
+            )));
+            assert_eq!(original.receipt(), before);
+            assert_eq!(original.live_allocation_bytes(), baseline);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn original_invalid_grammar_and_profile_bounds_allocate_and_copy_nothing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let limits = VolumeLimits::default();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        for (text, bounded) in [
+            ("relative", limits), ("/a//b", limits), ("/.", limits),
+            ("/..", limits), ("/a/", limits), ("/nul\0", limits),
+            ("/ab", VolumeLimits { maximum_component_bytes: 3, ..limits }),
+            ("/ab/c", VolumeLimits { maximum_path_bytes: 7, ..limits }),
+            ("/a/b", VolumeLimits { maximum_path_depth: 1, ..limits }),
+        ] {
+            let expected = NamespacePath::parse_in_profile_measured(
+                text, FilesystemProfile::Windows, bounded, WorkBudget::UNBOUNDED,
+                &cancellation, 0,
+            ).err().ok_or("ordinary engine accepted invalid path")?;
+            let before = original.receipt();
+            let error = NamespacePath::parse_in_profile_with_accounting(
+                text, FilesystemProfile::Windows, bounded, &mut accounting, &cancellation,
+            ).err().ok_or("original engine accepted invalid path")?;
+            assert!(matches!(&error, crate::FsError::Path(
+                PathLookupError::NamespacePath(cause)
+            ) if cause == &expected.error));
+            let after = original.receipt();
+            assert_eq!(after.allocation_operations, before.allocation_operations);
+            assert_eq!(after.peak_allocation_bytes, before.peak_allocation_bytes);
+            assert_eq!(after.bytes_copied, before.bytes_copied);
+            assert_eq!(after.bytes_encoded, before.bytes_encoded);
+            assert_eq!(original.live_allocation_bytes(), baseline);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn original_all_profiles_preserve_exact_capacity_utf16_and_decomposed_unicode()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = CancellationToken::new();
+        let limits = VolumeLimits::default();
+        for profile in [
+            FilesystemProfile::Portable, FilesystemProfile::Browser,
+            FilesystemProfile::Posix, FilesystemProfile::Windows,
+        ] {
+            let text = "/e\u{301}/𝄞";
+            let expected = NamespacePath::parse_in_profile_measured(
+                text, profile, limits, WorkBudget::UNBOUNDED, &cancellation, 0,
+            )?;
+            let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+                .map_err(|(error, _)| error)?;
+            let baseline = original.live_allocation_bytes();
+            let before = original.receipt();
+            let mut accounting = KernelAccounting::native(&original, &cancellation);
+            let (path, guard) = NamespacePath::parse_in_profile_with_accounting(
+                text, profile, limits, &mut accounting, &cancellation,
+            )?;
+            let KernelOwnedAllocation::NativeOriginal(guard) = guard else {
+                return Err("path guard does not retain the original ledger".into());
+            };
+            assert_eq!(path, expected.value);
+            assert_eq!(path.components()[0].unicode_text().as_deref(), Some("e\u{301}"));
+            if profile == FilesystemProfile::Windows {
+                assert_eq!(path.components()[0].as_bytes(), &[0x65, 0, 1, 3]);
+                assert_eq!(path.components()[1].as_bytes(), &[0x34, 0xd8, 0x1e, 0xdd]);
+            }
+            assert_eq!(guard.bytes(), path.retained_bytes());
+            let after = original.receipt();
+            assert_eq!(after.allocation_operations - before.allocation_operations, 3);
+            assert_eq!(after.bytes_copied - before.bytes_copied, expected.work.bytes_copied);
+            assert_eq!(after.bytes_encoded - before.bytes_encoded, expected.work.bytes_encoded);
+            assert_eq!(after.source_path_components - before.source_path_components, 2);
+            assert_eq!(after.items_examined - before.items_examined, 2);
+            assert_eq!(after.peak_allocation_bytes, baseline + guard.bytes());
+            assert_eq!(original.live_allocation_bytes(), baseline + guard.bytes());
+            drop(path);
+            drop(guard);
+            assert_eq!(original.live_allocation_bytes(), baseline);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn original_clone_preserves_opaque_native_units_and_name_constraints()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let limits = VolumeLimits::default();
+        let cancellation = CancellationToken::new();
+        for (encoding, bytes) in [
+            (NameEncoding::WindowsUtf16Le, vec![0, 0xd8]),
+            (NameEncoding::WindowsUtf16Le, vec![0, 0xdc]),
+            (NameEncoding::PosixBytes, vec![0xff, b'a']),
+        ] {
+            let source = NamespacePath::new(vec![
+                LogicalName::new(encoding, bytes, limits.maximum_component_bytes)?,
+            ], limits)?;
+            let expected = source.clone_measured(WorkBudget::UNBOUNDED, &cancellation, 0)?;
+            let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+                .map_err(|(error, _)| error)?;
+            let baseline = original.live_allocation_bytes();
+            let before = original.receipt();
+            let mut accounting = KernelAccounting::native(&original, &cancellation);
+            let (path, guard) = source.clone_with_accounting(&mut accounting, &cancellation)?;
+            let KernelOwnedAllocation::NativeOriginal(guard) = guard else {
+                return Err("clone guard does not retain the original ledger".into());
+            };
+            assert_eq!(path, source);
+            assert_eq!(path, expected.value);
+            assert_eq!(guard.bytes(), path.retained_bytes());
+            assert_eq!(original.receipt().bytes_copied - before.bytes_copied, 2);
+            assert_eq!(original.receipt().bytes_encoded, before.bytes_encoded);
+            assert_eq!(original.receipt().allocation_operations - before.allocation_operations, 2);
+            assert_eq!(original.receipt().peak_allocation_bytes, baseline + guard.bytes());
+            drop(path);
+            drop(guard);
+            assert_eq!(original.live_allocation_bytes(), baseline);
+        }
+        for bytes in [vec![0xd8], vec![0, 0], vec![b'/' , 0], vec![b'\\', 0]] {
+            assert!(LogicalName::new(NameEncoding::WindowsUtf16Le, bytes, 255).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn original_two_owned_paths_share_live_ledger_and_retire_after_outputs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let (first, first_guard) = NamespacePath::parse_in_profile_with_accounting(
+            "/e\u{301}/𝄞", FilesystemProfile::Windows, VolumeLimits::default(),
+            &mut accounting, &cancellation,
+        )?;
+        let (second, second_guard) = first.clone_with_accounting(&mut accounting, &cancellation)?;
+        let KernelOwnedAllocation::NativeOriginal(first_guard) = first_guard else {
+            return Err("first guard is not original".into());
+        };
+        let KernelOwnedAllocation::NativeOriginal(second_guard) = second_guard else {
+            return Err("second guard is not original".into());
+        };
+        assert_eq!(first, second);
+        assert!(first_guard.shares_ledger(&second_guard));
+        assert_eq!(first_guard.bytes(), first.retained_bytes());
+        assert_eq!(second_guard.bytes(), second.retained_bytes());
+        let overlap = baseline + first_guard.bytes() + second_guard.bytes();
+        assert_eq!(original.live_allocation_bytes(), overlap);
+        assert_eq!(original.receipt().peak_allocation_bytes, overlap);
+        let peak = original.receipt().peak_allocation_bytes;
+        drop(second);
+        drop(second_guard);
+        assert_eq!(original.live_allocation_bytes(), baseline + first_guard.bytes());
+        drop(first);
+        drop(first_guard);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.receipt().peak_allocation_bytes, peak);
+        Ok(())
+    }
+
+    #[test]
+    fn original_partial_quota_failures_preserve_actual_prefix_and_retire_claims()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = CancellationToken::new();
+        let limits = VolumeLimits::default();
+        let source = NamespacePath::parse_in_profile_measured(
+            "/a/bb", FilesystemProfile::Portable, limits, WorkBudget::UNBOUNDED,
+            &cancellation, 0,
+        )?.value;
+        let component_capacity = source.retained_bytes()
+            - source.components().iter().map(|name| name.retained_bytes() as u64).sum::<u64>();
+        let first_capacity = source.components()[0].retained_bytes() as u64;
+        let controller_operations = {
+            let probe = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+                .map_err(|(error, _)| error)?;
+            probe.receipt().allocation_operations
+        };
+        for clone in [false, true] {
+            for allocation_quota in [false, true] {
+                let budget = WorkBudget {
+                    allocation_operations: if allocation_quota {
+                        controller_operations.checked_add(2).ok_or("allocation quota overflow")?
+                    } else { u64::MAX },
+                    bytes_copied: if allocation_quota { u64::MAX } else { 1 },
+                    ..WorkBudget::UNBOUNDED
+                };
+                let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+                    .map_err(|(error, _)| error)?;
+                let baseline = original.live_allocation_bytes();
+                let before = original.receipt();
+                let mut accounting = KernelAccounting::native(&original, &cancellation);
+                let result = if clone {
+                    source.clone_with_accounting(&mut accounting, &cancellation)
+                } else {
+                    NamespacePath::parse_in_profile_with_accounting(
+                        "/a/bb", FilesystemProfile::Portable, limits,
+                        &mut accounting, &cancellation,
+                    )
+                };
+                let error = result.err().ok_or("partial quota unexpectedly completed")?;
+                assert!(is_budget_error(&error));
+                let after = original.receipt();
+                assert_eq!(after.bytes_copied - before.bytes_copied, 1);
+                assert_eq!(after.bytes_encoded, before.bytes_encoded);
+                assert_eq!(after.allocation_operations - before.allocation_operations, 2);
+                assert_eq!(after.source_path_components - before.source_path_components, 2);
+                assert_eq!(after.peak_allocation_bytes, baseline + component_capacity + first_capacity);
+                assert_eq!(original.live_allocation_bytes(), baseline);
+            }
+        }
+        Ok(())
+    }
+}
+
 #[test]
 fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std::error::Error>> {
     let limits = VolumeLimits::default();

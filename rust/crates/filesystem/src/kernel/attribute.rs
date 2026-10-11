@@ -1,7 +1,7 @@
 //! Authenticated scalable named attributes, alternate streams, and resource forks.
 
 use super::codec::{
-    CanonicalDecodeError, DecodeLimits, DecodedPageKind, DecodedPageShape, Decoder, Encoder,
+    CanonicalDecodeError, DecodeLimits, DecodedPageKind, DecodedPageShape, Decoder, Encoder, ReadAllocationStep,
 };
 use super::types::digest_object;
 use crate::foundation::usize_to_u64;
@@ -67,6 +67,30 @@ impl AttributeName {
             return Err(AttributeError::InvalidName);
         }
         Ok(Self { class, bytes })
+    }
+
+    pub(crate) fn try_clone_with_steps<E: From<CanonicalDecodeError>>(
+        &self,
+        maximum_bytes: u32,
+        steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<Self, E> {
+        use super::codec::ReadAllocationStep;
+        let length = self.bytes.len();
+        let mut bytes = Vec::new();
+        steps(ReadAllocationStep::Allocate { bytes: length as u64, operations: 1 })?;
+        if let Err(error) = bytes.try_reserve_exact(length) {
+            steps(ReadAllocationStep::ReserveFailed(error))?;
+            return Err(CanonicalDecodeError::AllocationFailed.into());
+        }
+        steps(ReadAllocationStep::Capacity {
+            admitted_bytes: length as u64,
+            actual_bytes: bytes.capacity() as u64,
+        })?;
+        steps(ReadAllocationStep::BeforeCopy(length as u64))?;
+        bytes.extend_from_slice(&self.bytes);
+        steps(ReadAllocationStep::Copied(length as u64))?;
+        Self::new(self.class, bytes, maximum_bytes)
+            .map_err(|error| E::from(invariant(error)))
     }
 
     /// Returns source semantics.
@@ -216,6 +240,72 @@ pub fn encode_attribute_page_measured(
     }
 }
 
+/// Uses the original invocation ledger; destroy bytes before their returned guard.
+pub(crate) fn encode_attribute_page_with_accounting(
+    page: &AttributePage,
+    maximum_items: u32,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+) -> Result<(Vec<u8>, super::allocation::KernelOwnedAllocation), crate::FsError> {
+    match page {
+        AttributePage::Leaf(entries) => encode_attribute_leaf_entries_with_accounting(entries, maximum_items, accounting),
+        AttributePage::Internal(children) => encode_attribute_internal_children_with_accounting(
+            children.iter().map(|child| (&child.first_name, child.page)), maximum_items, accounting,
+        ),
+    }
+}
+
+pub(super) fn encode_attribute_leaf_entries_with_accounting(
+    entries: &[AttributeEntry],
+    maximum_items: u32,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+) -> Result<(Vec<u8>, super::allocation::KernelOwnedAllocation), crate::FsError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let original = accounting.native_work().is_some();
+    #[cfg(target_arch = "wasm32")]
+    let original = false;
+    let mut funding = super::codec::EncodeAccounting::new(accounting);
+    let result = encode_attribute_leaf_entries_with_steps(
+        entries, maximum_items, |step| funding.observe(step),
+        |source| attribute_encode_error(AttributeEncodeError::AllocationFailed(source), original),
+    );
+    funding.finish(result)
+}
+
+pub(super) fn encode_attribute_internal_children_with_accounting<'a, I>(
+    children: I,
+    maximum_items: u32,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+) -> Result<(Vec<u8>, super::allocation::KernelOwnedAllocation), crate::FsError>
+where
+    I: Clone + ExactSizeIterator<Item = (&'a AttributeName, ObjectId)>,
+{
+    #[cfg(not(target_arch = "wasm32"))]
+    let original = accounting.native_work().is_some();
+    #[cfg(target_arch = "wasm32")]
+    let original = false;
+    let mut funding = super::codec::EncodeAccounting::new(accounting);
+    let result = encode_attribute_internal_children_with_steps(
+        children, maximum_items, |step| funding.observe(step),
+        |source| attribute_encode_error(AttributeEncodeError::AllocationFailed(source), original),
+    );
+    funding.finish(result)
+}
+
+pub(super) fn attribute_encode_error(error: AttributeEncodeError, original: bool) -> crate::FsError {
+    #[cfg(target_arch = "wasm32")]
+    let _ = original;
+    match error {
+        AttributeEncodeError::Canonical(error) => error.into(),
+        AttributeEncodeError::Work(error) => error.into(),
+        AttributeEncodeError::Cancelled(error) => error.into(),
+        #[cfg(not(target_arch = "wasm32"))]
+        AttributeEncodeError::AllocationFailed(error) if original => crate::FsError::NativeKernel(
+            crate::NativeTreeMaterializationError::AllocationFailed(error),
+        ),
+        AttributeEncodeError::AllocationFailed(_) => CanonicalDecodeError::AllocationFailed.into(),
+    }
+}
+
 /// Failure from the actual bounded canonical attribute encoder.
 #[derive(Debug, Error)]
 pub enum AttributeEncodeError {
@@ -228,13 +318,18 @@ pub enum AttributeEncodeError {
     /// Encoding was cancelled.
     #[error(transparent)]
     Cancelled(#[from] crate::CancellationError),
+    /// The actual fallible canonical-buffer reservation failed.
+    #[error("canonical attribute allocation failed: {0}")]
+    AllocationFailed(#[source] std::collections::TryReserveError),
 }
 
 impl AttributeEncodeError {
     fn into_canonical(self) -> CanonicalDecodeError {
         match self {
             Self::Canonical(error) => error,
-            error => CanonicalDecodeError::Invariant(error.to_string()),
+            Self::AllocationFailed(_) => CanonicalDecodeError::AllocationFailed,
+            Self::Work(error) => CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Work(error)),
+            Self::Cancelled(_) => CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static("filesystem operation was cancelled")),
         }
     }
 }
@@ -255,45 +350,94 @@ fn encode_attribute_leaf_entries_engine(
     cancellation: Option<&CancellationToken>,
 ) -> MeasuredResult<OperationReceipt<Vec<u8>>, AttributeEncodeError> {
     let mut work = WorkCounters::default();
-    let result = (|| {
-        cancellation.map_or(Ok(()), CancellationToken::check)?;
-        if count(entries.len())? > maximum_items {
-            return Err(invariant(AttributeError::InvalidPage).into());
-        }
-        let mut length = DOMAIN.len() + 2 + 1 + 4;
-        let mut copied = 0_u64;
-        let mut prior = None;
-        for entry in entries {
-            cancellation.map_or(Ok(()), CancellationToken::check)?;
-            work.charge_items(1, &budget)?;
-            if prior.is_some_and(|prior| prior >= &entry.name) || entry.value.kind != ObjectKind::Blob {
-                return Err(invariant(AttributeError::InvalidPage).into());
-            }
-            length = length.checked_add(attribute_leaf_item_encoded_length(entry)?)
-                .ok_or(CanonicalDecodeError::LengthOverflow)?;
-            copied = copied.checked_add(usize_to_u64(entry.name.as_bytes().len()))
-                .and_then(|bytes| bytes.checked_add(32)).ok_or(WorkError::Overflow)?;
-            prior = Some(&entry.name);
-        }
-        cancellation.map_or(Ok(()), CancellationToken::check)?;
-        work.admit(&WorkCounters { items_examined: usize_to_u64(entries.len()), bytes_encoded: usize_to_u64(length), bytes_copied: copied, ..WorkCounters::default() }, &budget)?;
-        let mut encoder = start_attribute_encoder(length, &mut work, budget)?;
-        charge_attribute_encoding(&mut work, budget, 1 + 4, 0)?;
-        encoder.u8(1);
-        encoder.u32(count(entries.len())?);
-        for entry in entries {
-            cancellation.map_or(Ok(()), CancellationToken::check)?;
-            work.charge_items(1, &budget)?;
-            let copied = usize_to_u64(entry.name.as_bytes().len()).checked_add(32).ok_or(WorkError::Overflow)?;
-            charge_attribute_encoding(&mut work, budget, attribute_leaf_item_encoded_length(entry)?, copied)?;
-            encode_name(&mut encoder, &entry.name)?;
-            encoder.u64(entry.value_bytes);
-            encoder.fixed(entry.value.digest.as_bytes());
-        }
-        Ok(encoder.finish())
-    })();
+    let mut allocations = super::allocation::AllocationLedger::default();
+    let result = encode_attribute_leaf_entries_with_allocations(
+        entries, maximum_items, &mut allocations, &mut work, budget, cancellation,
+    );
     result.map(|value| OperationReceipt { value, work })
         .map_err(|error| OperationFailure::new(error, work))
+}
+
+pub(super) fn encode_attribute_leaf_entries_with_allocations(
+    entries: &[AttributeEntry],
+    maximum_items: u32,
+    allocations: &mut super::allocation::AllocationLedger,
+    work: &mut WorkCounters,
+    budget: WorkBudget,
+    cancellation: Option<&CancellationToken>,
+) -> Result<Vec<u8>, AttributeEncodeError> {
+    let before = allocations.live_bytes();
+    let result = encode_attribute_leaf_entries_with_steps(
+        entries, maximum_items,
+        |step| observe_attribute_encoding(step, allocations, work, budget, cancellation),
+        AttributeEncodeError::AllocationFailed,
+    );
+    if result.is_err() {
+        let owned = allocations.live_bytes().checked_sub(before).ok_or(WorkError::Overflow)?;
+        allocations.release(owned)
+            .map_err(|error| error.into_work_or(AttributeEncodeError::Work(WorkError::Overflow)))?;
+    }
+    result
+}
+
+pub(super) fn encode_attribute_leaf_entries_with_steps<E>(
+    entries: &[AttributeEntry],
+    maximum_items: u32,
+    mut observe: impl FnMut(super::codec::EncodeWorkStep) -> Result<(), E>,
+    allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
+) -> Result<Vec<u8>, E>
+where
+    E: From<CanonicalDecodeError> + From<WorkError>,
+{
+    use super::codec::EncodeWorkStep;
+    observe(EncodeWorkStep::Check)?;
+    if count(entries.len())? > maximum_items {
+        return Err(invariant(AttributeError::InvalidPage).into());
+    }
+    let mut length = DOMAIN.len() + 2 + 1 + 4;
+    let mut copied = 0_u64;
+    let mut prior = None;
+    for entry in entries {
+        observe(EncodeWorkStep::Check)?;
+        let examined = WorkCounters { items_examined: 1, ..WorkCounters::default() };
+        observe(EncodeWorkStep::Admit(examined))?;
+        let valid = !prior.is_some_and(|prior| prior >= &entry.name) && entry.value.kind == ObjectKind::Blob;
+        observe(EncodeWorkStep::Completed(examined))?;
+        if !valid {
+            return Err(invariant(AttributeError::InvalidPage).into());
+        }
+        length = length.checked_add(attribute_leaf_item_encoded_length(entry)?)
+            .ok_or(CanonicalDecodeError::LengthOverflow)?;
+        copied = copied.checked_add(usize_to_u64(entry.name.as_bytes().len()))
+            .and_then(|bytes| bytes.checked_add(32)).ok_or(WorkError::Overflow)?;
+        prior = Some(&entry.name);
+    }
+    observe(EncodeWorkStep::Admit(WorkCounters {
+        items_examined: usize_to_u64(entries.len()), bytes_encoded: usize_to_u64(length),
+        bytes_copied: copied, ..WorkCounters::default()
+    }))?;
+    let mut encoder = Encoder::with_exact_capacity_with_steps(
+        DOMAIN, VERSION, length,
+        |step| observe(EncodeWorkStep::Allocation(step)), allocation_error,
+    )?;
+    let header = WorkCounters { bytes_encoded: 5, ..WorkCounters::default() };
+    observe(EncodeWorkStep::Admit(header))?;
+    encoder.u8(1);
+    encoder.u32(count(entries.len())?);
+    observe(EncodeWorkStep::Completed(header))?;
+    for entry in entries {
+        observe(EncodeWorkStep::Check)?;
+        let encoded = WorkCounters {
+            items_examined: 1, bytes_encoded: usize_to_u64(attribute_leaf_item_encoded_length(entry)?),
+            bytes_copied: usize_to_u64(entry.name.as_bytes().len()) + 32, ..WorkCounters::default()
+        };
+        observe(EncodeWorkStep::Admit(encoded))?;
+        encode_name(&mut encoder, &entry.name)?;
+        encoder.u64(entry.value_bytes);
+        encoder.fixed(entry.value.digest.as_bytes());
+        observe(EncodeWorkStep::Completed(encoded))?;
+    }
+    Ok(encoder.finish())
 }
 
 pub(crate) fn encode_attribute_internal_children_measured<'a, I>(
@@ -318,75 +462,142 @@ where
     I: Clone + ExactSizeIterator<Item = (&'a AttributeName, ObjectId)>,
 {
     let mut work = WorkCounters::default();
-    let result = (|| {
-        cancellation.map_or(Ok(()), CancellationToken::check)?;
-        let item_count = count(children.len())?;
-        if item_count == 0 || item_count > maximum_items {
-            return Err(invariant(AttributeError::InvalidPage).into());
-        }
-        let mut length = DOMAIN.len() + 2 + 1 + 4;
-        let mut copied = 0_u64;
-        let mut prior = None;
-        for (name, page) in children.clone() {
-            cancellation.map_or(Ok(()), CancellationToken::check)?;
-            work.charge_items(1, &budget)?;
-            if prior.is_some_and(|prior| prior >= name) || page.kind != ObjectKind::AttributePage {
-                return Err(invariant(AttributeError::InvalidPage).into());
-            }
-            length = length.checked_add(attribute_internal_item_encoded_length(name)?)
-                .ok_or(CanonicalDecodeError::LengthOverflow)?;
-            copied = copied.checked_add(usize_to_u64(name.as_bytes().len()))
-                .and_then(|bytes| bytes.checked_add(32)).ok_or(WorkError::Overflow)?;
-            prior = Some(name);
-        }
-        cancellation.map_or(Ok(()), CancellationToken::check)?;
-        work.admit(&WorkCounters { items_examined: u64::from(item_count), bytes_encoded: usize_to_u64(length), bytes_copied: copied, ..WorkCounters::default() }, &budget)?;
-        let mut encoder = start_attribute_encoder(length, &mut work, budget)?;
-        charge_attribute_encoding(&mut work, budget, 1 + 4, 0)?;
-        encoder.u8(2);
-        encoder.u32(item_count);
-        for (name, page) in children {
-            cancellation.map_or(Ok(()), CancellationToken::check)?;
-            work.charge_items(1, &budget)?;
-            let copied = usize_to_u64(name.as_bytes().len()).checked_add(32).ok_or(WorkError::Overflow)?;
-            charge_attribute_encoding(&mut work, budget, attribute_internal_item_encoded_length(name)?, copied)?;
-            encode_name(&mut encoder, name)?;
-            encoder.fixed(page.digest.as_bytes());
-        }
-        Ok(encoder.finish())
-    })();
+    let mut allocations = super::allocation::AllocationLedger::default();
+    let result = encode_attribute_internal_children_with_allocations(
+        children, maximum_items, &mut allocations, &mut work, budget, cancellation,
+    );
     result.map(|value| OperationReceipt { value, work })
         .map_err(|error| OperationFailure::new(error, work))
 }
 
-fn charge_attribute_encoding(
+pub(super) fn encode_attribute_internal_children_with_allocations<'a, I>(
+    children: I,
+    maximum_items: u32,
+    allocations: &mut super::allocation::AllocationLedger,
     work: &mut WorkCounters,
     budget: WorkBudget,
-    encoded: usize,
-    copied: u64,
-) -> Result<(), WorkError> {
-    work.charge(&WorkCounters { bytes_encoded: usize_to_u64(encoded), bytes_copied: copied, ..WorkCounters::default() }, &budget)
+    cancellation: Option<&CancellationToken>,
+) -> Result<Vec<u8>, AttributeEncodeError>
+where
+    I: Clone + ExactSizeIterator<Item = (&'a AttributeName, ObjectId)>,
+{
+    let before = allocations.live_bytes();
+    let result = encode_attribute_internal_children_with_steps(
+        children, maximum_items,
+        |step| observe_attribute_encoding(step, allocations, work, budget, cancellation),
+        AttributeEncodeError::AllocationFailed,
+    );
+    if result.is_err() {
+        let owned = allocations.live_bytes().checked_sub(before).ok_or(WorkError::Overflow)?;
+        allocations.release(owned)
+            .map_err(|error| error.into_work_or(AttributeEncodeError::Work(WorkError::Overflow)))?;
+    }
+    result
 }
 
-fn start_attribute_encoder(
-    length: usize,
+pub(super) fn encode_attribute_internal_children_with_steps<'a, E, I>(
+    children: I,
+    maximum_items: u32,
+    mut observe: impl FnMut(super::codec::EncodeWorkStep) -> Result<(), E>,
+    allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
+) -> Result<Vec<u8>, E>
+where
+    E: From<CanonicalDecodeError> + From<WorkError>,
+    I: Clone + ExactSizeIterator<Item = (&'a AttributeName, ObjectId)>,
+{
+    use super::codec::EncodeWorkStep;
+    observe(EncodeWorkStep::Check)?;
+    let item_count = count(children.len())?;
+    if item_count == 0 || item_count > maximum_items {
+        return Err(invariant(AttributeError::InvalidPage).into());
+    }
+    let mut length = DOMAIN.len() + 2 + 1 + 4;
+    let mut copied = 0_u64;
+    let mut prior = None;
+    for (name, page) in children.clone() {
+        observe(EncodeWorkStep::Check)?;
+        let examined = WorkCounters { items_examined: 1, ..WorkCounters::default() };
+        observe(EncodeWorkStep::Admit(examined))?;
+        let valid = !prior.is_some_and(|prior| prior >= name) && page.kind == ObjectKind::AttributePage;
+        observe(EncodeWorkStep::Completed(examined))?;
+        if !valid {
+            return Err(invariant(AttributeError::InvalidPage).into());
+        }
+        length = length.checked_add(attribute_internal_item_encoded_length(name)?)
+            .ok_or(CanonicalDecodeError::LengthOverflow)?;
+        copied = copied.checked_add(usize_to_u64(name.as_bytes().len()))
+            .and_then(|bytes| bytes.checked_add(32)).ok_or(WorkError::Overflow)?;
+        prior = Some(name);
+    }
+    observe(EncodeWorkStep::Admit(WorkCounters {
+        items_examined: u64::from(item_count), bytes_encoded: usize_to_u64(length),
+        bytes_copied: copied, ..WorkCounters::default()
+    }))?;
+    let mut encoder = Encoder::with_exact_capacity_with_steps(
+        DOMAIN, VERSION, length,
+        |step| observe(EncodeWorkStep::Allocation(step)), allocation_error,
+    )?;
+    let header = WorkCounters { bytes_encoded: 5, ..WorkCounters::default() };
+    observe(EncodeWorkStep::Admit(header))?;
+    encoder.u8(2);
+    encoder.u32(item_count);
+    observe(EncodeWorkStep::Completed(header))?;
+    for (name, page) in children {
+        observe(EncodeWorkStep::Check)?;
+        let encoded = WorkCounters {
+            items_examined: 1, bytes_encoded: usize_to_u64(attribute_internal_item_encoded_length(name)?),
+            bytes_copied: usize_to_u64(name.as_bytes().len()) + 32, ..WorkCounters::default()
+        };
+        observe(EncodeWorkStep::Admit(encoded))?;
+        encode_name(&mut encoder, name)?;
+        encoder.fixed(page.digest.as_bytes());
+        observe(EncodeWorkStep::Completed(encoded))?;
+    }
+    Ok(encoder.finish())
+}
+
+fn observe_attribute_encoding(
+    step: super::codec::EncodeWorkStep,
+    allocations: &mut super::allocation::AllocationLedger,
     work: &mut WorkCounters,
     budget: WorkBudget,
-) -> Result<Encoder, AttributeEncodeError> {
-    let mut allocations = super::allocation::AllocationLedger::default();
-    let header = DOMAIN.len() + 2;
-    work.admit(&WorkCounters { bytes_encoded: usize_to_u64(header), ..WorkCounters::default() }, &budget)?;
-    let admitted = allocations.claim_elements::<u8>(length, work, budget)
-        .map_err(|error| error.into_work_or(AttributeEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
-    let encoder = Encoder::with_exact_capacity(DOMAIN, VERSION, length)?;
-    charge_attribute_encoding(work, budget, header, 0)?;
-    let actual = usize_to_u64(encoder.capacity());
-    if actual > admitted {
-        allocations.claim_bytes(actual - admitted, 0, work, WorkBudget::UNBOUNDED)
-            .map_err(|error| error.into_work_or(AttributeEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
-        work.verify(budget)?;
-    }
-    Ok(encoder)
+    cancellation: Option<&CancellationToken>,
+) -> Result<(), AttributeEncodeError> {
+    use super::codec::{EncodeAllocationStep, EncodeWorkStep};
+    let completed = match step {
+        EncodeWorkStep::Check => {
+            cancellation.map_or(Ok(()), CancellationToken::check)?;
+            return Ok(());
+        }
+        EncodeWorkStep::Admit(delta) => {
+            work.admit(&delta, &budget)?;
+            return Ok(());
+        }
+        EncodeWorkStep::Completed(delta) => delta,
+        EncodeWorkStep::Allocation(EncodeAllocationStep::Reserve { capacity }) => {
+            allocations.claim_elements::<u8>(capacity, work, budget)
+                .map_err(|error| error.into_work_or(AttributeEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
+            return Ok(());
+        }
+        EncodeWorkStep::Allocation(EncodeAllocationStep::Capacity { admitted_bytes, actual_bytes }) => {
+            if actual_bytes > admitted_bytes {
+                allocations.record_owned_bytes(actual_bytes - admitted_bytes, work)
+                    .map_err(|error| error.into_work_or(AttributeEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
+            }
+            work.verify(budget)?;
+            return Ok(());
+        }
+        EncodeWorkStep::Allocation(EncodeAllocationStep::BeforeHeader { bytes }) => {
+            work.admit(&WorkCounters { bytes_encoded: bytes, ..WorkCounters::default() }, &budget)?;
+            return Ok(());
+        }
+        EncodeWorkStep::Allocation(EncodeAllocationStep::HeaderWritten { bytes }) =>
+            WorkCounters { bytes_encoded: bytes, ..WorkCounters::default() },
+    };
+    work.try_add_assign(&completed)?;
+    work.verify(budget)?;
+    cancellation.map_or(Ok(()), CancellationToken::check)?;
+    Ok(())
 }
 
 pub(crate) fn attribute_leaf_page_encoded_length(
@@ -492,55 +703,105 @@ pub fn decode_attribute_page(
     bytes: &[u8],
     limits: DecodeLimits,
 ) -> Result<AttributePage, CanonicalDecodeError> {
-    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_page_object_bytes())?;
-    let tag = decoder.u8()?;
-    let item_count = decoder.u32()?;
+    decode_attribute_page_with_steps(bytes, limits, &mut |_| Ok(()))
+}
+
+/// Observes allocation, copy, and completed-item boundaries in the canonical decoder.
+pub(crate) fn decode_attribute_page_with_steps<E: From<CanonicalDecodeError>>(
+    bytes: &[u8],
+    limits: DecodeLimits,
+    observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+) -> Result<AttributePage, E> {
+    decode_attribute_page_mapped_with_steps(
+        bytes, limits, observe, AttributePage::Leaf, AttributePage::Internal,
+        |first_name, page| AttributeChild { first_name, page },
+        |child| &child.first_name,
+    )
+}
+
+// Build the caller's child representation directly in the admitted vector.
+pub(crate) fn decode_attribute_page_mapped_with_steps<E, C, P>(
+    bytes: &[u8],
+    limits: DecodeLimits,
+    observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+    leaf: impl FnOnce(Vec<AttributeEntry>) -> P,
+    internal: impl FnOnce(Vec<C>) -> P,
+    child: impl Fn(AttributeName, ObjectId) -> C,
+    child_name: impl Fn(&C) -> &AttributeName,
+) -> Result<P, E>
+where
+    E: From<CanonicalDecodeError>,
+{
+    let mut decoder = Decoder::new_with_steps(bytes, DOMAIN, VERSION, limits.maximum_page_object_bytes(), observe)?;
+    let tag = decoder.u8_with_steps(observe)?;
+    let item_count = decoder.u32_with_steps(observe)?;
     if item_count > limits.maximum_page_items {
         return Err(CanonicalDecodeError::FieldTooLarge {
             observed: item_count,
             maximum: limits.maximum_page_items,
-        });
+        }.into());
     }
     let capacity = usize::try_from(item_count).map_err(|_| CanonicalDecodeError::LengthOverflow)?;
-    let page = match tag {
+    match tag {
         1 => {
             let mut entries = Vec::new();
-            entries
-                .try_reserve_exact(capacity)
-                .map_err(|_| CanonicalDecodeError::AllocationFailed)?;
-            for _ in 0..item_count {
-                entries.push(AttributeEntry {
-                    name: decode_name(&mut decoder, limits.maximum_name_bytes)?,
-                    value_bytes: decoder.u64()?,
-                    value: digest_object(ObjectKind::Blob, decoder.fixed()?),
-                });
+            let admitted_bytes = usize_to_u64(capacity.checked_mul(std::mem::size_of::<AttributeEntry>())
+                .ok_or(CanonicalDecodeError::LengthOverflow)?);
+            observe(ReadAllocationStep::Allocate { bytes: admitted_bytes, operations: u64::from(capacity != 0) })?;
+            if let Err(error) = entries.try_reserve_exact(capacity) {
+                observe(ReadAllocationStep::ReserveFailed(error))?;
+                return Err(CanonicalDecodeError::AllocationFailed.into());
             }
-            AttributePage::Leaf(entries)
+            observe(ReadAllocationStep::Capacity {
+                admitted_bytes,
+                actual_bytes: usize_to_u64(entries.capacity() * std::mem::size_of::<AttributeEntry>()),
+            })?;
+            for _ in 0..item_count {
+                observe(ReadAllocationStep::BeforeItem)?;
+                entries.push(AttributeEntry {
+                    name: decode_name_with_steps(&mut decoder, limits.maximum_name_bytes, observe)?,
+                    value_bytes: decoder.u64_with_steps(observe)?,
+                    value: digest_object(ObjectKind::Blob, decoder.fixed_with_steps::<32, E>(observe)?),
+                });
+                observe(ReadAllocationStep::Item)?;
+            }
+            decoder.finish()?;
+            let page = AttributePage::Leaf(entries);
+            page.validate(limits.maximum_page_items).map_err(invariant)?;
+            let AttributePage::Leaf(entries) = page else { unreachable!() };
+            Ok(leaf(entries))
         }
         2 => {
             let mut children = Vec::new();
-            children
-                .try_reserve_exact(capacity)
-                .map_err(|_| CanonicalDecodeError::AllocationFailed)?;
-            for _ in 0..item_count {
-                children.push(AttributeChild {
-                    first_name: decode_name(&mut decoder, limits.maximum_name_bytes)?,
-                    page: digest_object(ObjectKind::AttributePage, decoder.fixed()?),
-                });
+            let admitted_bytes = usize_to_u64(capacity.checked_mul(std::mem::size_of::<C>())
+                .ok_or(CanonicalDecodeError::LengthOverflow)?);
+            observe(ReadAllocationStep::Allocate { bytes: admitted_bytes, operations: u64::from(capacity != 0 && std::mem::size_of::<C>() != 0) })?;
+            if let Err(error) = children.try_reserve_exact(capacity) {
+                observe(ReadAllocationStep::ReserveFailed(error))?;
+                return Err(CanonicalDecodeError::AllocationFailed.into());
             }
-            AttributePage::Internal(children)
+            observe(ReadAllocationStep::Capacity {
+                admitted_bytes,
+                actual_bytes: usize_to_u64(children.capacity() * std::mem::size_of::<C>()),
+            })?;
+            for _ in 0..item_count {
+                observe(ReadAllocationStep::BeforeItem)?;
+                let first_name = decode_name_with_steps(&mut decoder, limits.maximum_name_bytes, observe)?;
+                let page = digest_object(ObjectKind::AttributePage, decoder.fixed_with_steps::<32, E>(observe)?);
+                children.push(child(first_name, page));
+                observe(ReadAllocationStep::Item)?;
+            }
+            decoder.finish()?;
+            if children.is_empty()
+                || children.windows(2).any(|pair| matches!(pair, [left, right] if child_name(left) >= child_name(right)))
+            {
+                return Err(invariant(AttributeError::InvalidPage).into());
+            }
+            // Child object kinds are fixed by the canonical constructor above.
+            Ok(internal(children))
         }
-        value => {
-            return Err(CanonicalDecodeError::UnknownTag {
-                field: "attribute_page",
-                tag: value,
-            });
-        }
-    };
-    decoder.finish()?;
-    page.validate(limits.maximum_page_items)
-        .map_err(invariant)?;
-    Ok(page)
+        tag => Err(CanonicalDecodeError::UnknownTag { field: "attribute_page", tag }.into()),
+    }
 }
 
 /// Computes one typed authenticated attribute-page identity.
@@ -581,13 +842,14 @@ fn encode_name(encoder: &mut Encoder, name: &AttributeName) -> Result<(), Canoni
     encoder.bounded_bytes(name.as_bytes())
 }
 
-fn decode_name(
+fn decode_name_with_steps<E: From<CanonicalDecodeError>>(
     decoder: &mut Decoder<'_>,
     maximum_bytes: u32,
-) -> Result<AttributeName, CanonicalDecodeError> {
-    let class = AttributeClass::from_tag(decoder.u8()?).map_err(invariant)?;
-    let bytes = decoder.bounded_bytes(maximum_bytes)?;
-    AttributeName::new(class, bytes, maximum_bytes).map_err(invariant)
+    observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+) -> Result<AttributeName, E> {
+    let class = AttributeClass::from_tag(decoder.u8_with_steps(observe)?).map_err(invariant)?;
+    let bytes = decoder.bounded_bytes_with_steps(maximum_bytes, observe)?;
+    AttributeName::new(class, bytes, maximum_bytes).map_err(|error| invariant(error).into())
 }
 
 fn count(value: usize) -> Result<u32, CanonicalDecodeError> {
@@ -595,7 +857,7 @@ fn count(value: usize) -> Result<u32, CanonicalDecodeError> {
 }
 
 fn invariant(error: AttributeError) -> CanonicalDecodeError {
-    CanonicalDecodeError::Invariant(error.to_string())
+    CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Attribute(error))
 }
 
 #[cfg(test)]
