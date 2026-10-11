@@ -566,6 +566,21 @@ impl EventStream {
         self.cleanup_admitted(work)
     }
 
+    /// Audits the original withheld physical suffix without admitting any new
+    /// work or consulting cancellation of the root that funded native birth.
+    pub(crate) fn ensure_cleanup_wait_available<W: SourceDemandReadWork>(
+        &self, work: &W,
+    ) -> Result<(), DemandError> {
+        let required = self.cleanup_work();
+        if !self.birth_work(work)
+            || self.cleanup.0 < required.backend_read_operations
+            || self.cleanup.1 < required.backend_write_operations
+        {
+            return Err(DemandError::NativeWorkUnavailable);
+        }
+        Ok(())
+    }
+
     pub(crate) fn is_stopped(&self) -> bool {
         self.stream.is_null() && self.queue.is_null()
     }
@@ -740,7 +755,7 @@ impl EventStream {
                 backend_write_operations: 5, backend_read_operations: 1, ..WorkCounters::UNCHARGED
             }))?;
             cleanup_reserved = true;
-            let requested_context_bytes = size_of::<StreamContext>() as u64;
+            let requested_context_bytes = crate::source_watch::arc_control_bytes::<StreamContext>();
             work.allocate(requested_context_bytes)?;
             context_bytes = requested_context_bytes;
             context = Arc::into_raw(Arc::new(StreamContext {
@@ -792,7 +807,7 @@ impl EventStream {
                 owned_bytes: path_bytes + context_bytes,
                 cleanup: if work.is_native_original() { (1, 5) } else { (0, 0) },
                 original_cleanup: work.is_native_original(),
-                birth: work.native_source_work().map(|work| work.original_demand_work()),
+                birth: work.native_source_work().map(|work| work.original_demand_work().allocation_work()),
                 ownership: ownership.take().expect("startup custody"),
             })
         })();
@@ -825,7 +840,7 @@ impl EventStream {
                     } else { Default::default() },
                     cleanup: if cleanup_reserved && work.is_native_original() { (1, 5) } else { (0, 0) },
                     original_cleanup: cleanup_reserved && work.is_native_original(),
-                    birth: work.native_source_work().map(|work| work.original_demand_work()),
+                    birth: work.native_source_work().map(|work| work.original_demand_work().allocation_work()),
                 };
                 let _cleanup = failed.cleanup_admitted(work);
             }

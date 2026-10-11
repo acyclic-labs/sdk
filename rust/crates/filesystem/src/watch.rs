@@ -1382,11 +1382,11 @@ impl NativeWatch {
             ordinary_root = requested_root.canonicalize()?;
             &ordinary_root
         };
-        let cleanup = original.map(|work| work.reserve_cleanup_write()).transpose()?;
+        let cleanup = original.map(|work| work.allocation_work().reserve_cleanup_write()).transpose()?;
         let held = crate::native_host::HostRoot::open_with_work(root_path, work)
             .map_err(demand_watch_error)?;
         let held_root = NativeWatchHeldRoot {
-            root: Some(held), cleanup, original: original.cloned(),
+            root: Some(held), cleanup, original: original.map(crate::NativeMaterializationWork::allocation_work),
         };
         let metadata = held_root.stat_with_work(Path::new(""), work).map_err(demand_watch_error)?;
         if !metadata.is_dir() { return Err(NativeWatchError::RootIsNotDirectory); }
@@ -1563,7 +1563,8 @@ impl NativeWatch {
             excluded: Vec::new(), excluded_allocation: None,
             epoch: WatchEpoch(0), next_sequence: WatchSequence(0),
             rescan_in_progress: false, root_identity, complete,
-            original_work: original.cloned(), root_allocation, owner_allocation: None,
+            original_work: original.map(crate::NativeMaterializationWork::allocation_work),
+            root_allocation, owner_allocation: None,
             pending_source_watch: None,
         };
         if let Some(cause) = startup_failure {

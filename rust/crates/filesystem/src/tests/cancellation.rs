@@ -366,7 +366,7 @@ fn native_wait_cleanup_credit_is_not_completed_early_or_available_to_other_work(
     let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token)
         .map_err(|(error, _)| error).unwrap();
     let scoped = work.native_volume_work(crate::WorkBudget {
-        items_examined: 2, ..crate::WorkBudget::UNBOUNDED
+        items_examined: 6, ..crate::WorkBudget::UNBOUNDED
     }).unwrap();
     let prefix = work.receipt();
     let prepared = token.prepare_cancelled_with_native_work(&scoped).unwrap();
@@ -378,7 +378,7 @@ fn native_wait_cleanup_credit_is_not_completed_early_or_available_to_other_work(
     assert_eq!(work.receipt(), registered);
     token.cancel();
     drop(prepared);
-    assert_eq!(work.receipt().items_examined, prefix.items_examined + 2);
+    assert_eq!(work.receipt().items_examined, prefix.items_examined + 4);
     assert_eq!(work.receipt().retained_allocation_bytes, prefix.retained_allocation_bytes);
     assert_eq!(token.state.waiters.lock().unwrap().capacity(), 0);
 }
@@ -527,7 +527,7 @@ fn native_waker_replacement_can_cancel_the_same_token_without_lock_reentrancy() 
     impl Drop for CancelOnDrop { fn drop(&mut self) { self.0.cancel(); } }
     let token = CancellationToken::new();
     let work = crate::NativeMaterializationWork::new(crate::WorkBudget {
-        items_examined: 2, ..crate::WorkBudget::UNBOUNDED
+        items_examined: 6, ..crate::WorkBudget::UNBOUNDED
     }, &token).map_err(|(error, _)| error).unwrap();
     let prefix = work.receipt();
     let mut prepared = token.prepare_cancelled_with_native_work(&work).unwrap();
@@ -537,7 +537,7 @@ fn native_waker_replacement_can_cancel_the_same_token_without_lock_reentrancy() 
     assert!(Pin::new(&mut prepared).poll(&mut Context::from_waker(Waker::noop())).is_ready());
     assert!(token.is_cancelled());
     drop(prepared);
-    assert_eq!(work.receipt().items_examined, prefix.items_examined + 2);
+    assert_eq!(work.receipt().items_examined, prefix.items_examined + 4);
     assert_eq!(work.receipt().retained_allocation_bytes, prefix.retained_allocation_bytes);
 }
 
@@ -567,10 +567,10 @@ fn native_linked_child_stop_is_local_and_parent_propagation_uses_prepaid_visits(
         assert_eq!(counter.0.load(Ordering::Relaxed), 1);
         assert!(Pin::new(&mut prepared).poll(&mut Context::from_waker(&wake)).is_ready());
         assert_eq!(waiter_count(&parent), 0, "local stop detaches its original parent subscription");
-        assert_eq!(original.receipt().items_examined, before + 3,
-            "actual child custody lookup, child slot visit, and parent unregister are completed");
+        assert_eq!(original.receipt().items_examined, before + if stop_parent { 5 } else { 3 },
+            "child lookup, delivery, and parent unregister complete; parent stop also completes its own lookup and delivery");
         drop(prepared);
-        assert_eq!(original.receipt().items_examined, before + 4,
+        assert_eq!(original.receipt().items_examined, before + if stop_parent { 6 } else { 4 },
             "the actual child unregister lookup consumes its separate original cleanup credit");
     }
 }

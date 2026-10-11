@@ -44,25 +44,29 @@ struct NativeRegistryLease {
     generation: u64,
     registry_bytes: AtomicU64,
     registered: AtomicU64,
-    cancellation_visits: Mutex<Option<crate::materializer::NativeItemReservation>>,
-    allocation: Mutex<crate::NativeAllocation>,
+    // Logical highwater admitted before allocating this backing. Allocator
+    // capacity rounding must never expose unfunded slots.
+    funded_slots: usize,
+    original: crate::NativeMaterializationWork,
+    cancellation_visits: parking_lot::Mutex<Option<crate::materializer::NativeItemReservation>>,
+    allocation: parking_lot::Mutex<crate::NativeAllocation>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeRegistryLease {
     fn retire_backing(&self) -> Result<(), crate::NativeTreeMaterializationError> {
-        let visits = self.cancellation_visits.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        let visits = self.cancellation_visits.lock().take();
         drop(visits);
         let bytes = self.registry_bytes.swap(0, Ordering::AcqRel);
-        self.allocation.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.allocation.lock()
             .release(bytes)
     }
 
     fn retire_backing_deferred(&self) {
-        let visits = self.cancellation_visits.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        let visits = self.cancellation_visits.lock().take();
         drop(visits);
         let bytes = self.registry_bytes.swap(0, Ordering::AcqRel);
-        self.allocation.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.allocation.lock()
             .release_deferred(bytes);
     }
 }
@@ -72,8 +76,9 @@ fn registry_lease<E>(
     waiters: &[Option<Weak<CancellationWaiter>>],
     mut visit: impl FnMut() -> Result<(), E>,
 ) -> Result<Option<Arc<NativeRegistryLease>>, E> {
-    for slot in waiters.iter().flatten() {
+    for slot in waiters {
         visit()?;
+        let Some(slot) = slot else { continue; };
         if let Some(waiter) = slot.upgrade() {
             let lease = waiter.registry_lease.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
             if lease.is_some() { return Ok(lease); }
@@ -127,8 +132,6 @@ pub(crate) struct PreparedCancellation {
     parent_registration: Option<PreparedCancelled>,
     #[cfg(not(target_arch = "wasm32"))]
     registry_lease: Option<Arc<NativeRegistryLease>>,
-    #[cfg(not(target_arch = "wasm32"))]
-    native_visits: Option<crate::materializer::NativeItemReservation>,
 }
 
 impl PreparedCancellation {
@@ -139,22 +142,19 @@ impl Drop for PreparedCancellation {
     fn drop(&mut self) {
         let Some(waiters) = self.waiters.take() else { return; };
         for slot in waiters {
+            if let Some(waiter) = slot.and_then(|waiter| waiter.upgrade()) {
+                let waker = waiter.waker.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner).take();
+                if let Some(waker) = waker {
+                    let _ = catch_unwind(AssertUnwindSafe(|| waker.wake()));
+                }
+            }
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(credit) = &mut self.native_visits {
-                credit.consume_deferred(1);
-            } else if let Some(lease) = &self.registry_lease {
+            if let Some(lease) = &self.registry_lease {
                 if let Some(credit) = &mut *lease.cancellation_visits.lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                 {
                     credit.consume_deferred(1);
                 }
-            }
-            let Some(waiter) = slot else { continue; };
-            let Some(waiter) = waiter.upgrade() else { continue; };
-            let waker = waiter.waker.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner).take();
-            if let Some(waker) = waker {
-                let _ = catch_unwind(AssertUnwindSafe(|| waker.wake()));
             }
         }
         // The iterator and original buffer have physically dropped.
@@ -325,14 +325,7 @@ impl CancellationToken {
                 parent_registration: None,
                 #[cfg(not(target_arch = "wasm32"))]
                 registry_lease: None,
-                #[cfg(not(target_arch = "wasm32"))]
-                native_visits: None,
             });
-        }
-        if let Some((work, budget)) = admission {
-            work.charge(&crate::WorkCounters {
-                items_examined: waiters.len() as u64, ..crate::WorkCounters::UNCHARGED
-            }, &budget)?;
         }
         #[cfg(not(target_arch = "wasm32"))]
         let lease = {
@@ -343,16 +336,25 @@ impl CancellationToken {
             })?;
             if let Some(lease) = &lease {
                 if let Some(credit) = &mut *lease.cancellation_visits.lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                 {
-                    // This original child promised mandatory stop before join.
-                    // Its prepaid credit records the completed lookup even when
-                    // cancellation has already revoked further ordinary work.
+                    // Record the actual lookup, including empty/dead slots,
+                    // on this backing's original prepaid terminal credit.
                     credit.consume_deferred(visits);
                 }
             }
             lease
         };
+        if let Some((work, budget)) = admission {
+            #[cfg(not(target_arch = "wasm32"))]
+            let ordinary = lease.is_none();
+            #[cfg(target_arch = "wasm32")]
+            let ordinary = true;
+            if ordinary {
+                work.charge(&crate::WorkCounters {
+                    items_examined: waiters.len() as u64, ..crate::WorkCounters::UNCHARGED
+                }, &budget)?;
+            }
+        }
         Ok(self.prepare_cancel_locked(&mut waiters,
             #[cfg(not(target_arch = "wasm32"))]
             lease,
@@ -371,8 +373,6 @@ impl CancellationToken {
                 .unwrap_or_else(std::sync::PoisonError::into_inner).take(),
             #[cfg(not(target_arch = "wasm32"))]
             registry_lease,
-            #[cfg(not(target_arch = "wasm32"))]
-            native_visits: None,
         }
     }
 
@@ -380,21 +380,57 @@ impl CancellationToken {
     pub(crate) fn prepare_cancel_with_native_work(
         &self, original: &crate::NativeMaterializationWork,
     ) -> Result<PreparedCancellation, crate::NativeTreeMaterializationError> {
+        self.prepare_cancel_with_cleanup_wait(original.cancellation())
+    }
+
+    /// Uses only this registry's original before-birth terminal credit. The
+    /// independent token controls waiting, not namespace or task authority.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn prepare_cancel_with_cleanup_wait(
+        &self, wait: &CancellationToken,
+    ) -> Result<PreparedCancellation, crate::NativeTreeMaterializationError> {
+        self.prepare_cancel_cleanup(Some(wait))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn prepare_cancel_accepted_cleanup(
+        &self,
+    ) -> Result<PreparedCancellation, crate::NativeTreeMaterializationError> {
+        self.prepare_cancel_cleanup(None)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn prepare_cancel_cleanup(
+        &self, wait: Option<&CancellationToken>,
+    ) -> Result<PreparedCancellation, crate::NativeTreeMaterializationError> {
+        if let Some(wait) = wait {
+            wait.check().map_err(|_| crate::NativeTreeMaterializationError::Cancelled)?;
+        }
         let mut waiters = self.state.waiters.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.state.cancelled.load(Ordering::Acquire) {
             return Ok(PreparedCancellation {
                 state: Arc::clone(&self.state), waiters: None,
-                parent_registration: None,
-                registry_lease: None, native_visits: None,
+                parent_registration: None, registry_lease: None,
             });
         }
-        let credit = original.reserve_items(waiters.len() as u64)?;
-        let lease = registry_lease(&waiters, || original.charge(crate::WorkCounters {
-            items_examined: 1, ..crate::WorkCounters::UNCHARGED
-        }))?;
-        let mut prepared = self.prepare_cancel_locked(&mut waiters, lease);
-        prepared.native_visits = Some(credit);
-        Ok(prepared)
+        if let Some(wait) = wait {
+            wait.check().map_err(|_| crate::NativeTreeMaterializationError::Cancelled)?;
+        }
+        let mut visits = 0;
+        let lease = registry_lease(&waiters, || {
+            visits += 1;
+            Ok::<(), crate::NativeTreeMaterializationError>(())
+        })?;
+        if let Some(lease) = &lease {
+            let mut credit = lease.cancellation_visits.lock();
+            credit.as_mut().ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?
+                .consume(visits)?;
+        } else if !waiters.is_empty() {
+            // A preexisting ordinary registry has no original native credit.
+            // Its source owner must retain custody and report uncertainty.
+            return Err(crate::NativeTreeMaterializationError::InvalidLayout);
+        }
+        Ok(self.prepare_cancel_locked(&mut waiters, lease))
     }
 
     /// Returns whether cancellation has occurred.
@@ -740,7 +776,26 @@ impl Cancelled<'_> {
                 }
                 if entry.is_none() { free = Some(index); break; }
             }
-            let grows = free.is_none() && waiters.len() == waiters.capacity();
+            #[cfg(not(target_arch = "wasm32"))]
+            let previous_lease = match registry_lease(&waiters, || {
+                self.native_original.map_or(Ok(()), |original| original.charge(crate::WorkCounters {
+                    items_examined: 1, ..crate::WorkCounters::UNCHARGED
+                }))
+            }) {
+                Ok(lease) => lease,
+                Err(error) => return Poll::Ready(Err(error.into())),
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            let mut cancellation_visits = None;
+            #[cfg(not(target_arch = "wasm32"))]
+            let inherited_original = previous_lease.as_ref().map(|lease| lease.original.clone());
+            #[cfg(not(target_arch = "wasm32"))]
+            let native_original = inherited_original.as_ref().or(self.native_original);
+            #[cfg(not(target_arch = "wasm32"))]
+            let funded_slots = previous_lease.as_ref().map_or(waiters.capacity(), |lease| lease.funded_slots);
+            #[cfg(target_arch = "wasm32")]
+            let funded_slots = waiters.capacity();
+            let grows = free.is_none() && waiters.len() == funded_slots;
             let old_bytes = (waiters.capacity() * std::mem::size_of::<Option<Weak<CancellationWaiter>>>()) as u64;
             let count = if grows {
                 match waiters.capacity().max(1).checked_mul(2) {
@@ -754,23 +809,14 @@ impl Cancelled<'_> {
             };
             let waiter_bytes = std::mem::size_of::<CancellationWaiter>() as u64;
             #[cfg(not(target_arch = "wasm32"))]
-            let previous_lease = match registry_lease(&waiters, || {
-                self.native_original.map_or(Ok(()), |original| original.charge(crate::WorkCounters {
-                    items_examined: 1, ..crate::WorkCounters::UNCHARGED
-                }))
-            }) {
-                Ok(lease) => lease,
-                Err(error) => return Poll::Ready(Err(error.into())),
-            };
-            #[cfg(not(target_arch = "wasm32"))]
             let mut growth_visits = None;
             #[cfg(not(target_arch = "wasm32"))]
-            let native_waiter_allocation = if let Some(original) = self.native_original {
+            let native_waiter_allocation = if let Some(original) = native_original {
                 let registry_metadata = if grows { std::mem::size_of::<NativeRegistryLease>() as u64 } else { 0 };
                 let retained = waiter_bytes.checked_add(new_bytes)
                     .and_then(|bytes| bytes.checked_add(registry_metadata));
                 let Some(retained) = retained else { return Poll::Ready(Err(crate::WorkError::Overflow.into())); };
-                let cancellation_items = if grows && self.token.state.parent.is_some() {
+                let cancellation_items = if grows {
                     match (count as u64).checked_mul(2) {
                         Some(items) => items,
                         None => return Poll::Ready(Err(crate::WorkError::Overflow.into())),
@@ -790,6 +836,10 @@ impl Cancelled<'_> {
                 };
                 if grows {
                     growth_visits = match original.reserve_items(waiters.len() as u64) {
+                        Ok(credit) => Some(credit),
+                        Err(error) => return Poll::Ready(Err(error.into())),
+                    };
+                    cancellation_visits = match original.reserve_items(cancellation_items) {
                         Ok(credit) => Some(credit),
                         Err(error) => return Poll::Ready(Err(error.into())),
                     };
@@ -828,7 +878,7 @@ impl Cancelled<'_> {
             }
             let waiter = Arc::new(waiter_value);
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = self.native_original {
+            if let Some(original) = native_original {
                 if let Err(error) = original.record_admitted(crate::WorkCounters {
                     items_examined: 1, ..crate::WorkCounters::UNCHARGED
                 }) { return Poll::Ready(Err(error.into())); }
@@ -843,7 +893,7 @@ impl Cancelled<'_> {
                     meter.pending_registry_bytes = new_bytes;
                 }
                 #[cfg(not(target_arch = "wasm32"))]
-                let mut native_registry_allocation = if let Some(original) = self.native_original {
+                let mut native_registry_allocation = if let Some(original) = native_original {
                     match original.claim_allocation(new_bytes, 1) {
                         Ok(allocation) => Some(allocation),
                         Err(error) => return Poll::Ready(Err(error.into())),
@@ -856,7 +906,7 @@ impl Cancelled<'_> {
                         meter.pending_registry_bytes = 0;
                     }
                     #[cfg(not(target_arch = "wasm32"))]
-                    if self.native_original.is_some() {
+                    if native_original.is_some() {
                         return Poll::Ready(Err(CancellationWaitError::Native(
                             crate::NativeTreeMaterializationError::AllocationFailed(error),
                         )));
@@ -870,7 +920,7 @@ impl Cancelled<'_> {
                     }) { return Poll::Ready(Err(error)); }
                 }
                 #[cfg(not(target_arch = "wasm32"))]
-                let new_lease = if let Some(original) = self.native_original {
+                let new_lease = if let Some(original) = native_original {
                     let actual = (replacement.capacity() * std::mem::size_of::<Option<Weak<CancellationWaiter>>>()) as u64;
                     if let Err(error) = native_registry_allocation.as_mut().expect("native registry allocation")
                         .reconcile_capacity(actual)
@@ -900,26 +950,12 @@ impl Cancelled<'_> {
                         drop(replacement);
                         return Poll::Ready(Err(error.into()));
                     }
-                    let cancellation_visits = if self.token.state.parent.is_some() {
-                        let Some(items) = (replacement.capacity() as u64).checked_mul(2) else {
-                            drop(waiters);
-                            drop(replacement);
-                            return Poll::Ready(Err(crate::WorkError::Overflow.into()));
-                        };
-                        match original.reserve_items(items) {
-                            Ok(credit) => Some(credit),
-                            Err(error) => {
-                                drop(waiters);
-                                drop(replacement);
-                                return Poll::Ready(Err(error.into()));
-                            }
-                        }
-                    } else { None };
                     Some(Arc::new(NativeRegistryLease {
                         state: Arc::downgrade(&self.token.state), generation,
                         registry_bytes: AtomicU64::new(actual), registered: AtomicU64::new(0),
-                        cancellation_visits: Mutex::new(cancellation_visits),
-                        allocation: Mutex::new(metadata),
+                        funded_slots: count, original: original.clone(),
+                        cancellation_visits: parking_lot::Mutex::new(cancellation_visits),
+                        allocation: parking_lot::Mutex::new(metadata),
                     }))
                 } else { None };
                 let copied_bytes = (waiters.len() * std::mem::size_of::<Option<Weak<CancellationWaiter>>>()) as u64;
@@ -937,13 +973,12 @@ impl Cancelled<'_> {
                     // Only Arc aliases of this one backing are changed. Keep
                     // the old lease alive until its physical Vec is dropped.
                     for slot in waiters.iter() {
-                        if let Some(credit) = &mut growth_visits {
-                            credit.consume_deferred(1);
-                        }
-                        let Some(slot) = slot else { continue; };
-                        if let Some(existing) = slot.upgrade() {
+                        if let Some(existing) = slot.as_ref().and_then(Weak::upgrade) {
                             *existing.registry_lease.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = new_lease.clone();
                             if let Some(lease) = &new_lease { lease.registered.fetch_add(1, Ordering::AcqRel); }
+                        }
+                        if let Some(credit) = &mut growth_visits {
+                            credit.consume_deferred(1);
                         }
                     }
                     *waiter.registry_lease.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = new_lease.clone();
@@ -966,7 +1001,7 @@ impl Cancelled<'_> {
                 if let Some(meter) = &mut self.meter { meter.release(old_bytes); }
                 #[cfg(not(target_arch = "wasm32"))]
                 {
-                    let copied = self.native_original.map_or(Ok(()), |original|
+                    let copied = native_original.map_or(Ok(()), |original|
                         original.record_admitted(crate::WorkCounters {
                             bytes_copied: copied_bytes, ..crate::WorkCounters::UNCHARGED
                         }));
@@ -974,7 +1009,7 @@ impl Cancelled<'_> {
                     if let Err(error) = copied.and(retired) { return Poll::Ready(Err(error.into())); }
                 }
                 #[cfg(not(target_arch = "wasm32"))]
-                if let Some(original) = self.native_original {
+                if let Some(original) = native_original {
                     if let Err(error) = original.admit(crate::WorkCounters::UNCHARGED) {
                         return Poll::Ready(Err(error.into()));
                     }
@@ -1109,3 +1144,119 @@ pub struct CancellationError;
 #[cfg(test)]
 #[path = "tests/cancellation.rs"]
 mod tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod native_registry_cleanup_controls {
+    use super::*;
+
+    fn registry_shape(token: &CancellationToken) -> (usize, usize) {
+        let waiters = match token.state.waiters.lock() {
+            Ok(waiters) => waiters,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        (waiters.len(), waiters.capacity())
+    }
+
+    fn budget(items: u64) -> crate::WorkBudget {
+        crate::WorkBudget {
+            items_examined: items, allocation_operations: 64,
+            bytes_read: 0, bytes_written: 0, bytes_hashed: 0,
+            bytes_copied: 4096, live_allocation_bytes: 16384,
+            peak_allocation_bytes: 16384, ..crate::WorkBudget::UNBOUNDED
+        }
+    }
+
+    #[test]
+    fn terminal_delivery_denial_precedes_native_registry_birth() {
+        let root = CancellationToken::new();
+        let token = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(budget(5), &root)
+            .map_err(|(error, _)| error).unwrap();
+        let before = original.receipt();
+        assert!(matches!(token.prepare_cancelled_with_native_work(&original),
+            Err(CancellationWaitError::Native(crate::NativeTreeMaterializationError::Work(_)))));
+        assert_eq!(original.receipt(), before);
+        assert_eq!(registry_shape(&token).1, 0);
+    }
+
+    #[test]
+    fn original_terminal_credit_drains_holes_after_root_stop_once() {
+        let root = CancellationToken::new();
+        let token = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(budget(128), &root)
+            .map_err(|(error, _)| error).unwrap();
+        let first = token.prepare_cancelled_with_native_work(&original).unwrap();
+        let second = token.prepare_cancelled_with_native_work(&original).unwrap();
+        let third = token.prepare_cancelled_with_native_work(&original).unwrap();
+        drop(first);
+        drop(third);
+        assert_eq!(registry_shape(&token).0, 3);
+        root.cancel();
+        let wait = CancellationToken::new();
+        let before = original.receipt();
+        let prepared = token.prepare_cancel_with_cleanup_wait(&wait).unwrap();
+        assert_eq!(original.receipt().items_examined, before.items_examined + 2);
+        assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
+        assert_eq!(original.receipt().retained_allocation_bytes, before.retained_allocation_bytes);
+        prepared.finish();
+        assert_eq!(original.receipt().items_examined, before.items_examined + 5);
+        token.prepare_cancel_with_cleanup_wait(&wait).unwrap().finish();
+        assert_eq!(original.receipt().items_examined, before.items_examined + 5);
+        drop(second);
+        assert_eq!(original.receipt().retained_allocation_bytes, 0);
+    }
+
+    #[test]
+    fn cancelled_cleanup_wait_preserves_live_registry_and_original_prefix() {
+        let root = CancellationToken::new();
+        let token = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(budget(64), &root)
+            .map_err(|(error, _)| error).unwrap();
+        let registered = token.prepare_cancelled_with_native_work(&original).unwrap();
+        root.cancel();
+        let wait = CancellationToken::new();
+        wait.cancel();
+        let before = original.receipt();
+        assert!(matches!(token.prepare_cancel_with_cleanup_wait(&wait),
+            Err(crate::NativeTreeMaterializationError::Cancelled)));
+        assert!(!token.is_cancelled());
+        assert_eq!(original.receipt(), before);
+        assert_eq!(registry_shape(&token).0, 1);
+        drop(registered);
+    }
+
+    #[test]
+    fn ordinary_registration_preserves_native_backing_original_on_growth() {
+        let root = CancellationToken::new();
+        let token = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(budget(128), &root)
+            .map_err(|(error, _)| error).unwrap();
+        let native = token.prepare_cancelled_with_native_work(&original).unwrap();
+        let mut ordinary_first = token.cancelled();
+        let mut ordinary_second = token.cancelled();
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(Pin::new(&mut ordinary_first).poll(&mut context).is_pending());
+        let before_growth = original.receipt();
+        assert!(Pin::new(&mut ordinary_second).poll(&mut context).is_pending());
+        assert!(original.receipt().allocation_operations > before_growth.allocation_operations);
+        assert_eq!(registry_shape(&token).0, 3);
+        root.cancel();
+        token.prepare_cancel_with_cleanup_wait(&CancellationToken::new()).unwrap().finish();
+        drop(ordinary_first);
+        drop(ordinary_second);
+        drop(native);
+        assert_eq!(original.receipt().retained_allocation_bytes, 0);
+    }
+
+    #[test]
+    fn ordinary_preexisting_registry_cannot_fabricate_native_delivery_credit() {
+        let token = CancellationToken::new();
+        let mut ordinary = token.cancelled();
+        assert!(Pin::new(&mut ordinary).poll(&mut Context::from_waker(Waker::noop())).is_pending());
+        assert!(matches!(token.prepare_cancel_with_cleanup_wait(&CancellationToken::new()),
+            Err(crate::NativeTreeMaterializationError::InvalidLayout)));
+        assert!(!token.is_cancelled());
+        assert_eq!(registry_shape(&token).0, 1);
+        drop(ordinary);
+    }
+}

@@ -205,8 +205,7 @@ impl PlatformWatch {
         self.shared.delivery.ensure_stop_available()?;
         let mut custody = self.stream.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(stream) = custody.as_mut() else {
-            self.shared.completed.store(true, Ordering::Release);
-            return Ok(());
+            return if self.is_stopped() { Ok(()) } else { Err(DemandError::WorkerUnavailable) };
         };
         let result = stream.stop_with_work(work);
         let stream_bytes = stream.logical_owned_bytes();
@@ -215,10 +214,63 @@ impl PlatformWatch {
             self.shared.stream_bytes.store(stream_bytes, Ordering::Release);
             self.shared.delivery.exact.store(false, std::sync::atomic::Ordering::Release);
         }
-        if custody.is_none() {
-            self.shared.completed.store(true, Ordering::Release);
-        }
         result
+    }
+
+    /// Uses only the actual stream's original birth-paid cleanup reservation.
+    /// A late caller cancellation is returned after the original queue has
+    /// drained and its native stream, callback context and queue have retired.
+    pub(super) fn stop_with_cleanup_wait(
+        &self, wait: &crate::CancellationToken,
+    ) -> Result<(), DemandError> {
+        wait.check().map_err(|_| DemandError::Cancelled)?;
+        let birth = self.shared.delivery.original.as_ref()
+            .ok_or(DemandError::NativeWorkUnavailable)?;
+        let mut work = crate::demand::NativeSourceWork::from_original_work(birth);
+        self.stop_cleanup_wait_with_work(&mut work, Some(wait))
+    }
+
+    /// Completes only this original stream's accepted before-birth suffix.
+    /// No replacement root or caller cancellation token is constructed.
+    pub(super) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
+        let birth = self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
+        let mut work = crate::demand::NativeSourceWork::from_original_work(birth);
+        self.stop_cleanup_wait_with_work(&mut work, None)
+    }
+
+    fn stop_cleanup_wait_with_work<W: SourceDemandReadWork>(
+        &self, work: &mut W, wait: Option<&crate::CancellationToken>,
+    ) -> Result<(), DemandError> {
+        if let Some(wait) = wait { wait.check().map_err(|_| DemandError::Cancelled)?; }
+        self.shared.delivery.ensure_stop_available()?;
+        let mut custody = if wait.is_some() {
+            match self.stream.try_lock() {
+                Ok(custody) => custody,
+                Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => return Err(DemandError::WorkerUnavailable),
+            }
+        } else { self.stream.lock().unwrap_or_else(std::sync::PoisonError::into_inner) };
+        if let Some(wait) = wait { wait.check().map_err(|_| DemandError::Cancelled)?; }
+        let Some(stream) = custody.as_mut() else {
+            return if self.is_stopped() { Ok(()) } else { Err(DemandError::WorkerUnavailable) };
+        };
+        stream.ensure_cleanup_wait_available(work)?;
+        let result = stream.cleanup_admitted(work);
+        let stream_bytes = stream.logical_owned_bytes();
+        if stream.is_stopped() {
+            *custody = None;
+            self.shared.stream_bytes.store(stream_bytes, Ordering::Release);
+            self.shared.delivery.exact.store(false, Ordering::Release);
+        }
+        if !self.is_stopped() {
+            // A same-queue deferred terminal remains genuine custody, not a
+            // completed stop merely because its controller slot is empty.
+            return result.and(Err(DemandError::WorkerUnavailable));
+        }
+        match wait {
+            Some(wait) => result.and(wait.check().map_err(|_| DemandError::Cancelled)),
+            None => result,
+        }
     }
 
     pub(super) fn is_stopped(&self) -> bool {
@@ -599,6 +651,12 @@ mod tests {
         )?;
         let owned = watch.logical_owned_bytes();
         assert!(!watch.is_stopped());
+        assert!(matches!(
+            watch.stop_with_cleanup_wait(&crate::CancellationToken::new()),
+            Err(crate::DemandError::NativeWorkUnavailable),
+        ));
+        assert!(matches!(watch.stop_accepted_cleanup(), Err(crate::DemandError::NativeWorkUnavailable)));
+        assert_eq!(watch.logical_owned_bytes(), owned);
         for (writes, reads) in [(3, 1), (4, 0)] {
             let mut work = super::DemandWork::new(crate::WorkBudget {
                 backend_write_operations: writes, backend_read_operations: reads,
@@ -703,9 +761,17 @@ mod tests {
                 &mut self, operation: impl FnOnce(&dyn acyclic_native_runtime::NativeReadMeter) -> T,
             ) -> T { self.inner.with_native_read_meter(operation) }
             fn with_original_leaf<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
-                self.inner.with_original_leaf(operation)
+                let before = self.inner.original_arc().with_original_leaf(|work| work.work.backend_write_operations);
+                let result = self.inner.with_original_leaf(operation);
+                let after = self.inner.original_arc().with_original_leaf(|work| work.work.backend_write_operations);
+                if !self.triggered && after > before {
+                    self.triggered = true;
+                    self.cancellation.cancel();
+                }
+                result
             }
             fn is_native_original(&self) -> bool { true }
+            fn native_source_work(&self) -> Option<NativeSourceWork<'_>> { Some(self.inner) }
         }
 
         for late_error in [false, true] {
@@ -767,6 +833,66 @@ mod tests {
             assert_eq!(original.with_original_leaf(|work| work.work), spent);
             drop(retained);
             original.with_original_leaf(|work| work.release(8))?;
+        }
+        crate::fsevents::EventStream::initialize_services()?;
+        for late_wait in [false, true] {
+            let root = tempfile::tempdir()?;
+            let held = crate::native_host::HostRoot::open(root.path())?;
+            let root_cancellation = CancellationToken::new();
+            let mut budget = finite_budget();
+            budget.backend_read_operations = 128;
+            budget.backend_write_operations = 128;
+            budget.allocation_operations = 128;
+            budget.items_examined = 4096;
+            let birth = Arc::new(NativeDemandReadMeter(Mutex::new(DemandWork::new(budget, &root_cancellation))));
+            let mut startup = NativeSourceWork::new(&birth);
+            let delivery = Arc::new(super::super::Delivery::new_with_work(Arc::new(Ignored), &mut startup)?);
+            let watch = super::PlatformWatch::start_with_work(&held, delivery, &mut startup)?;
+            let owned = watch.logical_owned_bytes();
+            let before = birth.with_original_leaf(|work| work.work);
+            let held_budget = birth.with_original_leaf(|work| work.budget);
+            let declined = CancellationToken::new();
+            declined.cancel();
+            assert!(matches!(watch.stop_with_cleanup_wait(&declined), Err(DemandError::Cancelled)));
+            assert!(!watch.is_stopped());
+            assert!(watch.delivery().is_exact());
+            assert_eq!(watch.logical_owned_bytes(), owned);
+            assert_eq!(birth.with_original_leaf(|work| (work.work, work.budget)), (before, held_budget));
+            let wait = CancellationToken::new();
+            let custody = watch.stream.lock().map_err(|_| "poisoned actual stream custody")?;
+            assert!(matches!(watch.stop_with_cleanup_wait(&wait), Err(DemandError::WorkerUnavailable)));
+            drop(custody);
+            assert_eq!(birth.with_original_leaf(|work| work.work), before);
+            root_cancellation.cancel();
+            assert!(matches!(watch.stop_with_work(&mut NativeSourceWork::new(&birth)), Err(DemandError::Cancelled)));
+            if late_wait {
+                let mut cleanup = LateFault {
+                    inner: NativeSourceWork::new(&birth), cancellation: &wait,
+                    error: false, triggered: false,
+                };
+                assert!(matches!(watch.stop_cleanup_wait_with_work(&mut cleanup, Some(&wait)), Err(DemandError::Cancelled)));
+                assert!(cleanup.triggered, "wait cancellation follows the actual original stream stop");
+            } else {
+                watch.stop_with_cleanup_wait(&wait)?;
+            }
+            assert!(watch.is_stopped(), "terminal follows native serial queue drain and context release");
+            assert_eq!(watch.shared.stream_bytes.load(super::Ordering::Acquire), 0);
+            assert!(watch.stream.lock().map_err(|_| "poisoned retired stream custody")?.is_none());
+            assert!(watch.logical_owned_bytes() < owned);
+            let stopped = birth.with_original_leaf(|work| {
+                assert_eq!(work.work.backend_read_operations - before.backend_read_operations, 1);
+                assert_eq!(work.work.backend_write_operations - before.backend_write_operations, 4);
+                assert_eq!(work.work.allocation_operations, before.allocation_operations);
+                assert_eq!(work.work.peak_allocation_bytes, before.peak_allocation_bytes);
+                assert_eq!(work.budget, budget);
+                assert!(work.cancellation().is_cancelled());
+                assert!(matches!(work.check(), Err(DemandError::Cancelled)));
+                work.work
+            });
+            watch.stop_with_cleanup_wait(&CancellationToken::new())?;
+            watch.stop_accepted_cleanup()?;
+            drop(watch);
+            assert_eq!(birth.with_original_leaf(|work| work.work), stopped);
         }
         Ok(())
     }

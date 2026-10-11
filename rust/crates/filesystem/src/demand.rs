@@ -979,7 +979,7 @@ impl SourcePayloadOwnership {
         work.check()?;
         if work.is_native_original() {
             let source = work.native_source_work().ok_or(DemandError::NativeWorkUnavailable)?;
-            let original = source.original_demand_work();
+            let original = source.original_demand_work().allocation_work();
             let custody = NativeMountAllocationCustody::new_on_original(&original)?;
             return Ok(Self { custody: Some(custody), owned_bytes: Default::default(), original: Some(original), allocation: None });
         }
@@ -1464,7 +1464,8 @@ impl SourceWatchAllocationCustody {
 }
 
 /// Live observation of every change made to one source outside every view
-/// of it. Dropping it stops the notifications.
+/// of it. Dropping it requests original birth-paid notification retirement;
+/// unresolved native cleanup is not an attestation of physical quiescence.
 pub trait SourceWatch: Send + Sync {
     /// Returns once every change that completed before the call has reached
     /// the sink.
@@ -1502,6 +1503,23 @@ pub trait SourceWatch: Send + Sync {
     /// Providers without this capability fail before native cleanup begins.
     #[cfg(not(target_arch = "wasm32"))]
     fn stop_with_native_work(&self, _work: NativeSourceWork<'_>) -> Result<(), DemandError> {
+        Err(DemandError::NativeWorkUnavailable)
+    }
+
+    /// Retires this owned subscription against its original birth-paid cleanup.
+    /// The independent token controls waiting only; no new allowance or source
+    /// authority is created. Unknown providers reject before native effects.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stop_with_cleanup_wait(&self, wait: &CancellationToken) -> Result<(), DemandError> {
+        wait.check().map_err(|_| DemandError::Cancelled)?;
+        Err(DemandError::NativeWorkUnavailable)
+    }
+
+    /// Completes only the already-accepted native physical retirement plan,
+    /// with no observer wait token, new allowance or namespace permission.
+    /// Unknown providers reject before cleanup begins.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
         Err(DemandError::NativeWorkUnavailable)
     }
 
@@ -2267,6 +2285,8 @@ pub(crate) struct OriginalDemandWork {
     resource: Option<std::sync::Arc<crate::materializer::NativeResourceAllowance>>,
     capture_origin: Option<std::sync::Weak<CaptureTransientCustody>>,
     invocation: Option<Arc<crate::materializer::NativeInvocationView>>,
+    #[cfg(feature = "native-mount")]
+    execution: Option<Arc<crate::materializer::NativeSourceExecutionView>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2284,7 +2304,11 @@ fn same_resource_view(
 #[cfg(not(target_arch = "wasm32"))]
 impl OriginalDemandWork {
     pub(crate) fn from_meter(state: std::sync::Arc<NativeDemandReadMeter>) -> Self {
-        Self { state, resource: None, capture_origin: None, invocation: None }
+        Self {
+            state, resource: None, capture_origin: None, invocation: None,
+            #[cfg(feature = "native-mount")]
+            execution: None,
+        }
     }
 
     pub(crate) fn from_native_materialization_work(work: &crate::materializer::NativeMaterializationWork) -> Self {
@@ -2293,6 +2317,8 @@ impl OriginalDemandWork {
             resource: work.resource_allowance().cloned(),
             capture_origin: work.capture_origin().cloned(),
             invocation: work.invocation_view_state().cloned(),
+            #[cfg(feature = "native-mount")]
+            execution: work.source_execution_view().cloned(),
         }
     }
 
@@ -2308,11 +2334,31 @@ impl OriginalDemandWork {
         self.invocation.as_ref()
     }
 
+    #[cfg(feature = "native-mount")]
+    pub(crate) fn source_execution_view(&self) -> Option<&Arc<crate::materializer::NativeSourceExecutionView>> {
+        self.execution.as_ref()
+    }
+
+    /// Data custody preserves the original accounting family without retaining
+    /// an accepted physical job's source-reader lease after that job returns.
+    pub(crate) fn allocation_work(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+            resource: self.resource.clone(),
+            capture_origin: self.capture_origin.clone(),
+            invocation: self.invocation.clone(),
+            #[cfg(feature = "native-mount")]
+            execution: None,
+        }
+    }
+
     fn from_source_work(work: NativeSourceWork<'_>) -> Self {
         Self {
             state: Arc::clone(work.original), resource: work.resource.cloned(),
             capture_origin: work.capture_origin.cloned(),
             invocation: work.invocation.cloned(),
+            #[cfg(feature = "native-mount")]
+            execution: work.execution.cloned(),
         }
     }
 
@@ -2416,6 +2462,8 @@ pub struct NativeSourceWork<'a> {
     resource: Option<&'a Arc<crate::materializer::NativeResourceAllowance>>,
     capture_origin: Option<&'a std::sync::Weak<CaptureTransientCustody>>,
     invocation: Option<&'a Arc<crate::materializer::NativeInvocationView>>,
+    #[cfg(feature = "native-mount")]
+    execution: Option<&'a Arc<crate::materializer::NativeSourceExecutionView>>,
     native_original: bool,
     operation_stop: Option<&'a std::sync::atomic::AtomicBool>,
 }
@@ -2423,11 +2471,21 @@ pub struct NativeSourceWork<'a> {
 #[cfg(not(target_arch = "wasm32"))]
 impl<'a> NativeSourceWork<'a> {
     pub(crate) fn new(original: &'a std::sync::Arc<NativeDemandReadMeter>) -> Self {
-        Self { original, resource: None, capture_origin: None, invocation: None, native_original: true, operation_stop: None }
+        Self {
+            original, resource: None, capture_origin: None, invocation: None,
+            #[cfg(feature = "native-mount")]
+            execution: None,
+            native_original: true, operation_stop: None,
+        }
     }
 
     pub(crate) fn ordinary(original: &'a std::sync::Arc<NativeDemandReadMeter>) -> Self {
-        Self { original, resource: None, capture_origin: None, invocation: None, native_original: false, operation_stop: None }
+        Self {
+            original, resource: None, capture_origin: None, invocation: None,
+            #[cfg(feature = "native-mount")]
+            execution: None,
+            native_original: false, operation_stop: None,
+        }
     }
 
     pub(crate) fn from_native_materialization_work(work: &'a crate::materializer::NativeMaterializationWork) -> Self {
@@ -2435,6 +2493,8 @@ impl<'a> NativeSourceWork<'a> {
             original: work.native_read_meter(), resource: work.resource_allowance(),
             capture_origin: work.capture_origin(),
             invocation: work.invocation_view_state(),
+            #[cfg(feature = "native-mount")]
+            execution: work.source_execution_view(),
             native_original: true, operation_stop: None,
         }
     }
@@ -2444,6 +2504,8 @@ impl<'a> NativeSourceWork<'a> {
             original: work.meter(), resource: work.resource_allowance(),
             capture_origin: work.capture_origin(),
             invocation: work.invocation_view_state(),
+            #[cfg(feature = "native-mount")]
+            execution: work.source_execution_view(),
             native_original: true, operation_stop: None,
         }
     }
@@ -2621,10 +2683,21 @@ impl SourceDemandReadWork for NativeSourceWork<'_> {
     fn with_native_read_meter<T>(
         &mut self, operation: impl FnOnce(&dyn acyclic_native_runtime::NativeReadMeter) -> T,
     ) -> T {
-        let original: &dyn acyclic_native_runtime::NativeReadMeter = match (self.invocation, self.resource) {
-            (Some(invocation), _) if invocation.owns_resource(self.resource) => invocation.as_ref(),
-            (_, Some(resource)) => resource.as_ref(),
-            (_, None) => self.original.as_ref(),
+        let original: &dyn acyclic_native_runtime::NativeReadMeter = {
+            #[cfg(feature = "native-mount")]
+            if let Some(execution) = self.execution {
+                if let Some(stop) = self.operation_stop {
+                    return operation(&ScopedSourceReadMeter {
+                        original: execution.as_ref(), failure_root: self.original.as_ref(), stop,
+                    });
+                }
+                return operation(execution.as_ref());
+            }
+            match (self.invocation, self.resource) {
+                (Some(invocation), _) if invocation.owns_resource(self.resource) => invocation.as_ref(),
+                (_, Some(resource)) => resource.as_ref(),
+                (_, None) => self.original.as_ref(),
+            }
         };
         if let Some(stop) = self.operation_stop {
             operation(&ScopedSourceReadMeter { original, failure_root: self.original.as_ref(), stop })
@@ -3182,6 +3255,26 @@ impl DemandWork {
             Err(DemandError::OriginalWorkPoisoned)
         } else { Ok(()) };
         restored.and(recorded).and(invariant)
+    }
+
+    /// Spends accepted credit at an actual start boundary, never after a new
+    /// root admission. Unlike completed-prefix recording, rejection here must
+    /// leave all credit and counters untouched because no operation has begun.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn start_native_reserved_work(&mut self, actual: WorkCounters) -> Result<(), DemandError> {
+        if self.cancellation_wait.native_poisoned
+            || self.cancellation_wait.observer_overflow.as_ref()
+                .is_some_and(|overflow| overflow.entries.is_poisoned()) {
+            return Err(DemandError::OriginalWorkPoisoned);
+        }
+        let pending = actual.remaining(self.cancellation_wait.pending_work)?;
+        let budget = self.budget.checked_add(actual)?;
+        let work = self.work.checked_add(actual)?;
+        work.verify(budget)?;
+        self.cancellation_wait.pending_work = pending;
+        self.budget = budget;
+        self.work = work;
+        Ok(())
     }
 
     /// Restores an original full budget without losing retained quota proofs.
@@ -4818,6 +4911,16 @@ impl SourceWatch for FilteredWatch {
         self.inner.stop_with_native_work(work)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stop_with_cleanup_wait(&self, wait: &CancellationToken) -> Result<(), DemandError> {
+        self.inner.stop_with_cleanup_wait(wait)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
+        self.inner.stop_accepted_cleanup()
+    }
+
     fn is_stopped(&self) -> bool { self.inner.is_stopped() }
 
     fn logical_owned_bytes(&self) -> u64 {
@@ -6382,7 +6485,7 @@ pub mod native {
                 #[cfg(any(target_os = "linux", windows))]
                 watches: std::sync::RwLock::new(NativeSourceWatches::default()),
                 root_custody: input.custody,
-                _original: work.native_source_work().map(|work| work.original_demand_work()),
+                _original: work.native_source_work().map(|work| work.original_demand_work().allocation_work()),
             });
             inner_ownership.retain(inner_bytes, work)?;
             retain_root_control(&inner, &inner_ownership, work)?;
@@ -7252,7 +7355,7 @@ pub mod native {
             });
             publication.ownership.retain(guard_bytes, work)?;
             let original_budget = work.with_original_leaf(|actual| actual.budget_before_pending_items());
-            if let Some(original) = work.native_source_work().map(|work| work.original_demand_work()) {
+            if let Some(original) = work.native_source_work().map(|work| work.original_demand_work().allocation_work()) {
                 work.with_original_leaf(|actual| actual.reserve_pending_items(1))?;
                 publication.original_cleanup = Some(original);
             } else {
@@ -8366,6 +8469,14 @@ pub mod native {
 
         fn stop_with_native_work(&self, mut work: NativeSourceWork<'_>) -> Result<(), DemandError> {
             self.watch.stop_with_work(&mut work)
+        }
+
+        fn stop_with_cleanup_wait(&self, wait: &CancellationToken) -> Result<(), DemandError> {
+            self.watch.stop_with_cleanup_wait(wait)
+        }
+
+        fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
+            self.watch.stop_accepted_cleanup()
         }
 
         fn is_stopped(&self) -> bool { self.watch.is_stopped() }
@@ -11605,7 +11716,7 @@ impl NativeMountAllocationCustody {
     pub(crate) fn new_on_original(original: &OriginalDemandWork) -> Result<Self, DemandError> {
         let metadata = std::mem::size_of::<NativeMountAllocationCustodyData>() as u64;
         original.with_original_leaf(|work| work.claim_native_owned(metadata, 1, &None))??;
-        let mut keeper = original.clone();
+        let mut keeper = original.allocation_work();
         keeper.capture_origin = None;
         let live = Arc::new(NativeMountAllocationCustodyData {
             live: std::sync::atomic::AtomicU64::new(metadata),

@@ -775,13 +775,13 @@ async fn native_continuation_replays_consumed_entries_after_budget_denial() -> T
     assert!(matches!(failure.error, DemandError::Work(_)));
     assert_eq!(failure.work.source_entries_visited, 0);
     failure.work.verify(limited)?;
-    let mut names = first.value.entries.iter().map(|entry| entry.name.as_bytes().to_vec()).collect::<Vec<_>>();
+    let mut names = first.value.entries.iter().map(|entry| entry.name().as_bytes().to_vec()).collect::<Vec<_>>();
     let mut next = Some(cursor);
     while let Some(cursor) = next {
         let mut page = source.list_page(source.reference(), &path, Some(cursor), 2, budget, &token).await?;
         page.work.verify(budget)?;
         page.value.publication.accept(page.work.remaining(budget)?, &token).await?;
-        names.extend(page.value.entries.iter().map(|entry| entry.name.as_bytes().to_vec()));
+        names.extend(page.value.entries.iter().map(|entry| entry.name().as_bytes().to_vec()));
         next = page.value.next;
     }
     names.sort();
@@ -838,7 +838,7 @@ async fn finite_native_utf16_paths_preserve_unpaired_names_and_restart() -> Test
     let mut page = source.list_page(source.reference(), &requested("")?, None, 8, budget, &token).await?;
     page.value.publication.accept(page.work.remaining(budget)?, &token).await?;
     assert_eq!(page.value.entries.len(), 1);
-    assert_eq!(page.value.entries[0].name, name);
+    assert_eq!(page.value.entries[0].name(), &name);
     page.work.verify(budget)?;
     let read = source.read_range(source.reference(), &path, node.version, 0, 6, budget, &token).await?;
     assert_eq!(read.value.bytes.as_ref(), b"opaque");
@@ -885,7 +885,7 @@ async fn filtered_page_reserves_comparisons_before_committing_native_cursor() ->
     next.work.verify(budget)?;
     assert!(next.value.next.is_none());
     let mut names = first.value.entries.iter().chain(next.value.entries.iter())
-        .map(|entry| entry.name.as_bytes().to_vec()).collect::<Vec<_>>();
+        .map(|entry| entry.name().as_bytes().to_vec()).collect::<Vec<_>>();
     names.sort();
     assert_eq!(names, [b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
     Ok(())
@@ -906,11 +906,11 @@ async fn native_unpublished_pages_restore_initial_and_continuation_positions() -
         assert_eq!(page.work.source_entries_visited, 1);
         assert_eq!(page.work.source_bytes_read, 0);
         assert!(page.value.retained_bytes() > 0);
-        let expected = page.value.entries.iter().map(|entry| entry.name.clone()).collect::<Vec<_>>();
+        let expected = page.value.entries.iter().map(|entry| entry.name().clone()).collect::<Vec<_>>();
         drop(page);
         let mut retry = source.list_page(source.reference(), &root, position.clone(), 1, budget, &token).await?;
         assert_eq!(retry.work.source_entries_visited, 1);
-        assert_eq!(retry.value.entries.iter().map(|entry| entry.name.clone()).collect::<Vec<_>>(), expected);
+        assert_eq!(retry.value.entries.iter().map(|entry| entry.name().clone()).collect::<Vec<_>>(), expected);
         let cleanup = retry.value.publication.cleanup_budget();
         assert_eq!(cleanup.items_examined, 1);
         assert_eq!(cleanup.backend_read_operations, 0);
@@ -922,7 +922,7 @@ async fn native_unpublished_pages_restore_initial_and_continuation_positions() -
         retry.work.checked_add(aborted.work)?.verify(budget)?;
         let mut accepted = source.list_page(source.reference(), &root, position.clone(), 1, budget, &token).await?;
         assert_eq!(accepted.work.source_entries_visited, 1);
-        assert_eq!(accepted.value.entries.iter().map(|entry| entry.name.clone()).collect::<Vec<_>>(), expected);
+        assert_eq!(accepted.value.entries.iter().map(|entry| entry.name().clone()).collect::<Vec<_>>(), expected);
         let committed = accepted.value.publication.accept(accepted.work.remaining(budget)?, &token).await?;
         assert_eq!(committed.work, cleanup);
         accepted.work.checked_add(committed.work)?.verify(budget)?;
@@ -947,7 +947,7 @@ async fn native_late_publication_cancellation_and_cleanup_denial_preserve_retry(
         assert!(page.work.items_examined > 0);
         assert!(page.work.allocation_operations > 0);
         page.work.verify(budget)?;
-        let expected = page.value.entries.iter().map(|entry| entry.name.clone()).collect::<Vec<_>>();
+        let expected = page.value.entries.iter().map(|entry| entry.name().clone()).collect::<Vec<_>>();
         let projected = CancellationToken::new();
         let mut remaining = page.work.remaining(budget)?;
         if cancelled { projected.cancel(); } else { remaining.items_examined = 0; }
@@ -976,7 +976,7 @@ async fn native_late_publication_cancellation_and_cleanup_denial_preserve_retry(
         assert_eq!(retained.allocation_operations, page.work.allocation_operations);
         let mut retry = source.list_page(source.reference(), &root, None, 2, budget, &live).await?;
         assert_eq!(retry.work.source_entries_visited, 2);
-        assert_eq!(retry.value.entries.iter().map(|entry| entry.name.clone()).collect::<Vec<_>>(), expected);
+        assert_eq!(retry.value.entries.iter().map(|entry| entry.name().clone()).collect::<Vec<_>>(), expected);
         retry.value.publication.abort(retry.work.remaining(budget)?).await?;
     }
     let mut committed = source.list_page(source.reference(), &root, None, 2, budget, &live).await?;

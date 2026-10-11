@@ -114,6 +114,16 @@ pub struct NativeWorkingSet<A, O> {
     // Owned host-path containers retire after all working-set payload fields.
     _custody: crate::NativeAllocation,
 }
+/// Retains an SDK source after its view-dependent physical work has retired.
+///
+/// Only the SDK retirement engines can create this proof. It retains the
+/// original source and allocation custody without allocating another owner.
+/// It is not namespace-deletion authority or proof of process termination,
+/// and does not certify unrelated immutable base-provider reads.
+pub struct NativeMountDrainProof {
+    _source: Arc<dyn super::MountFilesystem>,
+}
+
 
 
 
@@ -132,6 +142,16 @@ where
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.source_root
+    }
+
+    /// Accepts physical view-dependent I/O on this source's paid retirement gate.
+    ///
+    /// The caller must authenticate its owner, volume and path before issuance.
+    /// This lease is cleanup custody, not a read or write grant.
+    pub fn native_source_io_lease(
+        &self,
+    ) -> Result<super::adapter::NativeSourceIoLease, NativeMountError> {
+        self.source.native_source_io_lease().map_err(NativeMountError::from)
     }
 
     /// Revalidates a prepared native view immediately before a quiescent
@@ -293,16 +313,17 @@ where
             permit, &work.native_mount_work(), cancellation,
             |_| std::future::ready(Ok::<(), MountLifecycleError>(())),
         ).await;
-        result.map(|value| crate::OperationReceipt { value, work: work.receipt() })
+        result.map(|_| crate::OperationReceipt { value: (), work: work.receipt() })
             .map_err(|error| (error.cause, work.receipt()))
     }
 
     /// Captures and publishes through the canonical source, retaining the
     /// caller's typed pre-publication guard error without formatting or boxing.
+    /// Returns the source's actual operation and authored namespace qualification.
     pub async fn sync_with_permit_with_work<F, Fut, E>(
         &self, permit: crate::PublicationPermit, work: &super::NativeMountMeterWork,
         cancellation: &crate::CancellationToken, before_publication: F,
-    ) -> Result<(), NativeMountPublicationFailure<E>>
+    ) -> Result<crate::NativePublicationSnapshot, NativeMountPublicationFailure<E>>
     where
         E: From<MountLifecycleError> + From<MountSourceError> + Send + 'static,
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
@@ -311,7 +332,9 @@ where
         if !self.writable {
             return Err(NativeMountPublicationFailure {
                 cause: E::from(MountLifecycleError::NativePolicy("read-only native view cannot publish")),
+                accounting_failure: None,
                 source_acknowledged: false,
+                publication: None,
             });
         }
         let result = async {
@@ -328,16 +351,35 @@ where
             Ok::<(), MountLifecycleError>(())
         }.await;
         result.map_err(|cause| NativeMountPublicationFailure {
-            cause: E::from(cause), source_acknowledged: false,
+            cause: E::from(cause), accounting_failure: None, source_acknowledged: false, publication: None,
         })?;
-        // This source call is the final SDK operation. Only its actual success
-        // confirms publication; a source error remains honestly unconfirmed.
-        self.source.sync_async_with_permit_native_work_guarded(
-            permit, work, cancellation, before_publication,
-        ).await.map_err(|cause| NativeMountPublicationFailure {
-            cause, source_acknowledged: false,
+        let context = crate::lazy_workspace::NativeSnapshotContext::Authored {
+            workspace_id: self.workspace.id(), config: self.workspace.volume_config(),
+        };
+        let mut acknowledged = None;
+        // This is the final SDK operation. Its own ACK slot survives errors
+        // after a real DATA CAS; absent metadata remains unconfirmed.
+        self.source.sync_async_with_permit_qualified_native_work_guarded_with_ack(
+            permit, work, cancellation, context, &mut acknowledged, before_publication,
+        ).await.map_err(|(cause, accounting_failure)| NativeMountPublicationFailure {
+            cause, accounting_failure, source_acknowledged: acknowledged.is_some(), publication: acknowledged,
         })
     }
+    /// Retires this view's accepted captures using its retained birth credit.
+    ///
+    /// `wait` controls the caller's wait, not the source's original authority.
+    /// An error retains the source and its cleanup credit for a later retry.
+    pub fn retire_with_work(
+        &self,
+        wait: &crate::CancellationToken,
+    ) -> Result<NativeMountDrainProof, MountLifecycleError> {
+        self.source.cancel_with_cleanup_wait(wait)?;
+        if !self.source.capture_retired() {
+            return Err(MountLifecycleError::Native(NativeMountError::ControlPending));
+        }
+        Ok(NativeMountDrainProof { _source: self.source.clone() })
+    }
+
 
     /// Checks the complete selected physical subtree against its admitted
     /// generation without publishing. Host permissions are not a sandbox:
@@ -638,6 +680,16 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
+    /// Accepts physical view-dependent I/O on the actual mounted source gate.
+    ///
+    /// The caller must retain its independent owner, volume and path guards.
+    /// The lease follows accepted I/O through physical completion, not wait drop.
+    pub fn native_source_io_lease(
+        &self,
+    ) -> Result<super::adapter::NativeSourceIoLease, NativeMountError> {
+        self.source.native_source_io_lease().map_err(NativeMountError::from)
+    }
+
     /// Transfers already-paid container capacity into this payload's lifetime.
     ///
     /// No allocation, admission or cancellation check occurs. The first guard
@@ -740,44 +792,51 @@ where
                 self.retain_failed_session();
                 (NativeMountPublicationFailure {
                     cause: E::from(MountLifecycleError::Native(error)), source_acknowledged: false,
+                    accounting_failure: None,
+                    publication: None,
                 }, spent)
             })?;
         let result = self.sync_with_permit_work_guarded(
             permit, &work.native_mount_work(), cancellation, before_publication,
         ).await;
-        result.map(|value| crate::OperationReceipt { value, work: work.receipt() })
+        result.map(|_| crate::OperationReceipt { value: (), work: work.receipt() })
             .map_err(|error| (error, work.receipt()))
     }
 
     /// Publishes on the enclosing operation's unchanged original native meter.
     /// Failure retains whether the real source completed before native visibility
     /// validation failed. An unconfirmed source is not proof of absent publication.
+    /// Success returns the real SDK operation and immutable lazy source cut;
+    /// failure retains qualification only from a real source result or DATA ACK.
     pub async fn sync_with_permit_work_guarded<F, Fut, E>(
         &self,
         permit: crate::PublicationPermit,
         native_work: &super::NativeMountMeterWork,
         cancellation: &crate::CancellationToken,
         before_publication: F,
-    ) -> Result<(), NativeMountPublicationFailure<E>>
+    ) -> Result<crate::NativePublicationSnapshot, NativeMountPublicationFailure<E>>
     where
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         E: From<MountLifecycleError> + From<MountSourceError> + Send + 'static,
     {
+        let mut acknowledged = None;
         let result = async {
             native_work.meter().with_original_leaf(|work| work.check())
-                .map_err(native_demand_lifecycle_error).map_err(E::from)?;
+                .map_err(native_demand_lifecycle_error).map_err(|cause| (E::from(cause), None))?;
             with_live_session(&self.session, |session| session.flush_callbacks_with_meter(native_work))
-                .map_err(E::from)?;
-            self.source.sync_async_with_permit_native_work_guarded(
-                permit, native_work, cancellation, before_publication,
+                .map_err(|cause| (E::from(cause), None))?;
+            self.source.sync_async_with_permit_qualified_native_work_guarded_with_ack(
+                permit, native_work, cancellation, &mut acknowledged, before_publication,
             ).await
         }.await;
         match result {
-            Ok(()) => self.revalidate_acknowledged_publication(native_work),
-            Err(cause) => {
+            Ok(publication) => self.revalidate_acknowledged_publication(native_work, publication),
+            Err((cause, accounting_failure)) => {
                 self.retain_failed_session();
-                Err(NativeMountPublicationFailure { cause, source_acknowledged: false })
+                Err(NativeMountPublicationFailure {
+                    cause, accounting_failure, source_acknowledged: acknowledged.is_some(), publication: acknowledged,
+                })
             }
         }
     }
@@ -785,11 +844,14 @@ where
     fn revalidate_acknowledged_publication<E>(
         &self,
         native_work: &super::NativeMountMeterWork,
-    ) -> Result<(), NativeMountPublicationFailure<E>>
+        publication: crate::NativePublicationSnapshot,
+    ) -> Result<crate::NativePublicationSnapshot, NativeMountPublicationFailure<E>>
     where E: From<MountLifecycleError> {
         let result = with_live_session(&self.session, |session| session.revalidate_with_meter(native_work));
         if result.is_err() { self.retain_failed_session(); }
-        result.map_err(|cause| NativeMountPublicationFailure { cause: E::from(cause), source_acknowledged: true })
+        result.map(|()| publication).map_err(|cause| NativeMountPublicationFailure {
+            cause: E::from(cause), accounting_failure: None, source_acknowledged: true, publication: Some(publication),
+        })
     }
 
     /// Imports an original selected mutation through this mount's SDK owner.
@@ -1107,6 +1169,43 @@ where
         }
         result
     }
+    /// Retires the actual driver, source, watch and fence on birth-time credit.
+    ///
+    /// The token controls waiting only. A failure preserves the remaining
+    /// physical owners; no new meter or unbounded drop cleanup is substituted.
+    /// The returned proof covers this mounted view, not unrelated base reads.
+    pub fn retire_with_work(
+        &self,
+        wait: &crate::CancellationToken,
+    ) -> Result<NativeMountDrainProof, MountLifecycleError> {
+        let mut owner = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let result = (|| {
+            if let Some(session) = owner.as_mut() {
+                session.retain_measured_cleanup_owner();
+                session.stop_with_cleanup_wait(wait).map_err(MountLifecycleError::Native)?;
+                if !session.cleanup_state().cleanup_complete {
+                    return Err(MountLifecycleError::Native(NativeMountError::ControlPending));
+                }
+            } else {
+                // A previous detach retired the session. Use the source's
+                // same idempotent engine, never status alone, for this proof.
+                self.source.cancel_with_cleanup_wait(wait)?;
+            }
+            if !self.source.physically_retired()? {
+                return Err(MountLifecycleError::Native(NativeMountError::ControlPending));
+            }
+            let proof = NativeMountDrainProof { _source: self.source.clone() };
+            drop(owner.take());
+            Ok(proof)
+        })();
+        if result.is_err() {
+            if let Some(session) = owner.as_mut() {
+                session.record_measured_cleanup_failure();
+            }
+        }
+        result
+    }
+
 
     /// Synchronously publishes and detaches for foreign-runtime worker threads.
     pub fn unmount_blocking(&self) -> Result<(), MountLifecycleError> {
@@ -1132,16 +1231,20 @@ where
 
 /// A typed publication failure retaining the SDK source's observed completion.
 ///
-/// `false` means unconfirmed, not absent publication. `true` records only real
-/// source success; it is not namespace authority or physical cleanup evidence.
+/// `false` means unconfirmed, not absent publication. `true` records only an
+/// actual source result or observed DATA ACK, never namespace or cleanup authority.
 #[derive(Debug, Error)]
 #[error("{cause}")]
 pub struct NativeMountPublicationFailure<E> {
     /// The original cause and all its intrinsic allocation custody.
     #[source]
     pub cause: E,
-    /// The actual SDK source returned success before this later failure.
+    /// A distinct accounting failure retained alongside the original cause.
+    pub accounting_failure: Option<MountSourceError>,
+    /// A real source result or DATA ACK was observed before this failure.
     pub source_acknowledged: bool,
+    /// Actual qualified source metadata retained through finalization failure.
+    pub publication: Option<crate::NativePublicationSnapshot>,
 }
 /// Customer mount admission, publication, and lifecycle failures.
 #[derive(Debug, Error)]
@@ -1227,7 +1330,7 @@ where
         let work = crate::NativeMaterializationWork::new(budget, cancellation)
             .map_err(|(error, spent)| (MountLifecycleError::Materialization(error), spent))?;
         let result = self.prepare_native_working_set_with_work(
-            subdirectory, options, budget, &work.native_mount_work(), cancellation, permit,
+            subdirectory, options, budget, &work.native_mount_work(), cancellation, permit, None,
         ).await;
         result.map(|value| crate::OperationReceipt { value, work: work.receipt() })
             .map_err(|error| (error, work.receipt()))
@@ -1235,12 +1338,16 @@ where
 
     /// Exactifies and prepares through one original ledger and resource view.
     /// The capture allowance remains separate for each later invocation.
+    /// `native_original` fixes the source-I/O accounting origin before birth;
+    /// ordinary SDK callers use `None`. This choice is not namespace authority.
     pub async fn prepare_native_working_set_with_work(
         &self, subdirectory: &str, options: &crate::MaterializeOptions,
         capture_budget: crate::WorkBudget, meter: &super::NativeMountMeterWork,
         cancellation: &crate::CancellationToken, permit: crate::PublicationPermit,
+        native_original: Option<&crate::NativeMaterializationWork>,
     ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
         let original = meter.native_materialization_work();
+        super::adapter::validate_native_source_io_binding(&original, native_original)?;
         let mut frame_custody = None;
         let (mut future, _) = crate::heap_future::in_heap_admitted(
             (&original, &mut frame_custody),
@@ -1267,7 +1374,7 @@ where
                     mount.1.absorb(&mut custody)?;
                 }
                 exact.prepare_native_working_set_with_work(
-                    &mount.0, options, capture_budget, meter, cancellation, None,
+                    &mount.0, options, capture_budget, meter, cancellation, None, native_original,
                 ).await
             },
         )?;
@@ -1283,6 +1390,7 @@ where
         callback_guard: Option<&Arc<dyn super::NativeMountCallbackGuard>>,
         native_work: &super::NativeMountMeterWork,
         cancellation: &crate::CancellationToken,
+        native_original: Option<&crate::NativeMaterializationWork>,
     ) -> Result<
         (
             Arc<CheckoutMountSource<A, O>>,
@@ -1293,6 +1401,7 @@ where
         MountLifecycleError,
     > {
         let original = native_work.native_materialization_work();
+        super::adapter::validate_native_source_io_binding(&original, native_original)?;
         let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, cancellation);
         if let Some(expected) = expected_generation {
             let head = self.workspace().head_with_native_work(&original, cancellation)
@@ -1391,7 +1500,7 @@ where
             }
         };
         let authored = CheckoutMountSource::new_at_meter(
-            shared, config, authored_root.0, authored_root_custody, native_work,
+            shared, config, authored_root.0, authored_root_custody, native_work, native_original,
         )?;
         let authored = match callback_guard {
             Some(guard) => authored.with_native_callback_guard(Arc::clone(guard)),
@@ -1438,7 +1547,7 @@ where
     ) -> Result<crate::OperationReceipt<LazyMount<A, O, D, S>>, (MountLifecycleError, crate::WorkCounters)> {
         let work = customer_native_work(budget, cancellation)
             .map_err(|(error, spent)| (MountLifecycleError::Native(error), spent))?;
-        let result = self.mount_with_work(destination.as_ref(), options, None, &work.native_mount_work(), cancellation).await;
+        let result = self.mount_with_work(destination.as_ref(), options, None, &work.native_mount_work(), cancellation, None).await;
         result.map(|value| crate::OperationReceipt { value, work: work.receipt() })
             .map_err(|error| (error, work.receipt()))
     }
@@ -1448,7 +1557,9 @@ where
     /// The work ledger, retained allocation custody and cancellation roots are
     /// borrowed unchanged. Service startup remains outside this operation.
     /// Task-operated mounts must supply their genuine owner/fence/purpose
-    /// guard; `None` is only an explicitly host-configured native source.
+    /// callback guard; an absent guard is only for a host-configured source.
+    /// `native_original` separately fixes native source-I/O accounting before
+    /// birth. Ordinary SDK callers pass `None`; neither value grants authority.
     pub async fn mount_with_work(
         &self,
         destination: &Path,
@@ -1456,9 +1567,11 @@ where
         callback_guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
         native_work: &super::NativeMountMeterWork,
         cancellation: &crate::CancellationToken,
+        native_original: Option<&crate::NativeMaterializationWork>,
     ) -> Result<LazyMount<A, O, D, S>, MountLifecycleError> {
         async {
             let original = native_work.native_materialization_work();
+            super::adapter::validate_native_source_io_binding(&original, native_original)?;
             let destination = original.copy_path(destination)
                 .map_err(|error| MountLifecycleError::Native(NativeMountError::Materialization(error)))?;
             let destination_custody = destination.1;
@@ -1475,7 +1588,7 @@ where
             }
             let (authored, volume_id, root, root_text) =
                 self.prepare_authored_mount_source(
-                    &options, None, callback_guard.as_ref(), native_work, cancellation,
+                    &options, None, callback_guard.as_ref(), native_work, cancellation, native_original,
                 ).await?;
             drop(root);
             let root_allocation = match root_text.1 {
@@ -1760,21 +1873,24 @@ where
             .map_err(|(cause, work)| (MountLifecycleError::Materialization(cause), work))?;
         let result = self.prepare_native_working_set_from_work(
             mount, options, expected_root_identity, capture_budget,
-            &original.native_mount_work(), cancellation, None,
+            &original.native_mount_work(), cancellation, None, None,
         ).await;
         result.map(|value| crate::OperationReceipt { value, work: original.receipt() })
             .map_err(|error| (error, original.receipt()))
     }
 
     /// Prepares the exact native generation on the caller's original resource view.
+    /// `native_original` binds later operations to the issued original resource;
+    /// `None` preserves standalone operation accounting, not namespace authority.
     pub async fn prepare_native_working_set_with_work(
         &self, mount: &MountOptions, options: &crate::MaterializeOptions,
         capture_budget: crate::WorkBudget, work: &super::NativeMountMeterWork,
         cancellation: &crate::CancellationToken,
         callback_guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
+        native_original: Option<&crate::NativeMaterializationWork>,
     ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
         self.prepare_native_working_set_from_work(
-            mount, options, None, capture_budget, work, cancellation, callback_guard,
+            mount, options, None, capture_budget, work, cancellation, callback_guard, native_original,
         ).await
     }
 
@@ -1784,9 +1900,10 @@ where
         expected_root_identity: NativeRootIdentity, capture_budget: crate::WorkBudget,
         work: &super::NativeMountMeterWork, cancellation: &crate::CancellationToken,
         callback_guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
+        native_original: Option<&crate::NativeMaterializationWork>,
     ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
         self.prepare_native_working_set_from_work(
-            mount, options, Some(expected_root_identity), capture_budget, work, cancellation, callback_guard,
+            mount, options, Some(expected_root_identity), capture_budget, work, cancellation, callback_guard, native_original,
         ).await
     }
 
@@ -1796,14 +1913,16 @@ where
         expected_root_identity: Option<NativeRootIdentity>, capture_budget: crate::WorkBudget,
         meter: &super::NativeMountMeterWork, cancellation: &crate::CancellationToken,
         callback_guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
+        native_original: Option<&crate::NativeMaterializationWork>,
     ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
+        let original = meter.native_materialization_work();
+        super::adapter::validate_native_source_io_binding(&original, native_original)?;
         if let Some(guard) = callback_guard.as_ref() {
             let mut authorization = guard.check(meter)?;
             let result = (&mut authorization).await;
             drop(authorization);
             result?;
         }
-        let original = meter.native_materialization_work();
         let mut frame_custody = None;
         let (mut future, _) = crate::heap_future::in_heap_admitted(
             (&original, &mut frame_custody),
@@ -1880,7 +1999,7 @@ where
                     checkout, MountPublication::Manual, meter,
                 )?;
                 let source = CheckoutMountSource::new_at_meter(
-                    shared, config, root.0, root.1, meter,
+                    shared, config, root.0, root.1, meter, native_original,
                 )?;
                 let source = match callback_guard {
                     Some(guard) => source.with_native_callback_guard(guard),
@@ -2002,8 +2121,8 @@ mod tests {
         let options = MountOptions::read_write().subdirectory("/selected")
             .publication(MountPublication::Manual);
         let work = customer_native_work(budget, &cancellation).map_err(|(error, _)| error)?;
-        let (_, volume, _, root) = lazy.prepare_authored_mount_source(
-            &options, None, None, &work.native_mount_work(), &cancellation,
+        let (ordinary_source, volume, _, root) = lazy.prepare_authored_mount_source(
+            &options, None, None, &work.native_mount_work(), &cancellation, None,
         ).await?;
         assert_eq!(volume, lazy.workspace().id().volume_id());
         assert_eq!(root.0, "/selected");
@@ -2021,11 +2140,65 @@ mod tests {
         };
         let denied = customer_native_work(denied_budget, &cancellation).map_err(|(error, _)| error)?;
         assert!(lazy.prepare_authored_mount_source(
-            &options, Some(pinned), None, &denied.native_mount_work(), &cancellation,
+            &options, Some(pinned), None, &denied.native_mount_work(), &cancellation, None,
         ).await.is_err());
         denied.receipt().verify(denied_budget)?;
         assert_eq!(denied.receipt().backend_read_operations, 0);
         assert_eq!(lazy.workspace().head().await?.id(), pinned);
+        let job = customer_native_work(crate::WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        assert!(!job.shares_ledger(&work));
+        let rejected_root = tempfile::tempdir()?;
+        let before_binding = work.receipt();
+        assert!(matches!(
+            lazy.prepare_native_working_set_with_work(
+                "/selected", &crate::MaterializeOptions::native(rejected_root.path()),
+                budget, &work.native_mount_work(), &cancellation,
+                PublicationPermit::Unrestricted, Some(&job),
+            ).await,
+            Err(MountLifecycleError::Source(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            )))
+        ));
+        assert_eq!(work.receipt(), before_binding);
+        assert!(matches!(
+            lazy.mount_with_work(
+                rejected_root.path(), options.clone(), None, &work.native_mount_work(),
+                &cancellation, Some(&job),
+            ).await,
+            Err(MountLifecycleError::Source(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            )))
+        ));
+        assert_eq!(work.receipt(), before_binding);
+        assert_eq!(lazy.workspace().head().await?.id(), pinned);
+        assert_eq!(std::fs::read_dir(rejected_root.path())?.count(), 0);
+        let ordinary_job = job.with_source_io_lease(ordinary_source.native_source_io_lease()?)?;
+        assert!(ordinary_job.shares_ledger(&job));
+        assert!(ordinary_job.shares_resource_allowance(&job));
+        assert!(!ordinary_job.shares_ledger(&work));
+        drop(ordinary_job);
+        ordinary_source.cancel_with_cleanup_wait(&crate::CancellationToken::new())?;
+        let (native_source, _, _, _) = lazy.prepare_authored_mount_source(
+            &options, Some(pinned), None, &work.native_mount_work(), &cancellation, Some(&work),
+        ).await?;
+        let before_foreign_job = job.receipt();
+        assert!(matches!(
+            job.with_source_io_lease(native_source.native_source_io_lease()?),
+            Err(crate::NativeTreeMaterializationError::InvalidLayout)
+        ));
+        assert_eq!(job.receipt(), before_foreign_job);
+        let native_job = work.with_source_io_lease(native_source.native_source_io_lease()?)?;
+        assert!(native_job.shares_ledger(&work));
+        assert!(native_job.shares_resource_allowance(&work));
+        drop(native_job);
+        native_source.cancel_with_cleanup_wait(&crate::CancellationToken::new())?;
+        assert!(ordinary_source.capture_retired());
+        assert!(native_source.capture_retired());
+        work.receipt().verify(budget)?;
+        assert_eq!(work.receipt().source_bytes_read, 0);
+        assert_eq!(work.receipt().source_directory_pages, 0);
+        assert_eq!(work.receipt().materializations, 0);
         Ok(())
     }
 
@@ -2061,7 +2234,7 @@ mod tests {
         let path_work = customer_native_work(path_budget, &cancellation).map_err(|(error, _)| error)?;
         let before_path_copy = path_work.receipt();
         let denied_path = lazy.mount_with_work(
-            destination.path(), options.clone(), None, &path_work.native_mount_work(), &cancellation,
+            destination.path(), options.clone(), None, &path_work.native_mount_work(), &cancellation, None,
         ).await.err().ok_or("unfunded borrowed destination was copied before admission")?;
         assert!(matches!(denied_path, MountLifecycleError::Native(NativeMountError::Materialization(_))));
         assert_eq!(path_work.receipt(), before_path_copy);
@@ -2189,13 +2362,16 @@ mod tests {
             PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &cancellation,
             |_original| std::future::ready(Err::<(), _>(MountLifecycleError::Source(MountSourceError::Stale))),
         ).await.err().ok_or("failed original-owner guard published")?;
+        assert!(!guarded.0.source_acknowledged);
+        assert!(guarded.0.accounting_failure.is_none());
+        assert!(guarded.0.publication.is_none());
         assert!(guarded.1.items_examined > 0);
         assert_eq!(lazy.workspace().head().await?.id(), generation);
         assert!(mount.snapshot_measured(crate::WorkBudget::UNBOUNDED, &cancellation).await.is_err());
         let original = customer_native_work(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
         let callback_original = original.clone();
-        mount.sync_with_permit_work_guarded(
+        let published = mount.sync_with_permit_work_guarded(
             PublicationPermit::Unrestricted, &original.native_mount_work(), &cancellation,
             move |meter: &crate::NativeMaterializationWork| {
                 assert!(meter.shares_ledger(&callback_original));
@@ -2204,6 +2380,10 @@ mod tests {
                 std::future::ready(Ok::<(), MountLifecycleError>(()))
             },
         ).await?;
+        assert!(published.operation().is_some());
+        assert!(published.snapshot().is_lazy());
+        assert_eq!(published.snapshot().workspace_id(), lazy.workspace().id());
+        assert_eq!(published.snapshot().volume_config(), lazy.workspace().volume_config());
         assert!(original.receipt().items_examined > 0);
         assert_eq!(lazy.read_range("/authored.txt", 0, 32).await?.as_ref(), b"native edit");
         std::fs::write(destination.path().join("authored.txt"), b"late source acknowledgement")?;
@@ -2213,19 +2393,32 @@ mod tests {
         let publication_native = publication_work.native_mount_work();
         with_live_session(&mount.session, |session| session.flush_callbacks_with_meter(&publication_native))?;
         let before_publication = |_actual: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), MountSourceError>(()));
-        mount.source.sync_async_with_permit_native_work_guarded(
+        let mut source_ack = None;
+        let qualified_ack = mount.source.sync_async_with_permit_qualified_native_work_guarded_with_ack(
             PublicationPermit::Unrestricted, &publication_native, &publication_cancellation,
-            before_publication,
-        ).await?;
+            &mut source_ack, before_publication,
+        ).await.map_err(|(cause, accounting_failure)| NativeMountPublicationFailure {
+            cause, accounting_failure, source_acknowledged: source_ack.is_some(), publication: source_ack,
+        })?;
+        assert_eq!(source_ack, Some(qualified_ack));
+        assert!(qualified_ack.operation().is_some());
         let acknowledged = mount.source.snapshot_with_native_work(
             &publication_native, &publication_cancellation,
         ).await?;
+        assert_eq!(
+            qualified_ack.snapshot().lazy_snapshot_with_native_work(&publication_work, &publication_cancellation)?,
+            Some(acknowledged),
+        );
         assert_eq!(lazy.read_range("/authored.txt", 0, 32).await?.as_ref(), b"late source acknowledgement");
         let acknowledged_prefix = publication_work.receipt();
         publication_cancellation.cancel();
-        let late_driver = mount.revalidate_acknowledged_publication::<MountLifecycleError>(&publication_native)
+        let late_driver = mount.revalidate_acknowledged_publication::<MountLifecycleError>(
+            &publication_native, qualified_ack,
+        )
             .err().ok_or("cancelled native revalidation erased a real source acknowledgement")?;
         assert!(late_driver.source_acknowledged);
+        assert!(late_driver.accounting_failure.is_none());
+        assert_eq!(late_driver.publication, Some(qualified_ack));
         assert!(matches!(late_driver.cause, MountLifecycleError::Native(_)));
         acknowledged_prefix.verify(publication_work.receipt())?;
         assert!(mount.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some());
@@ -2345,10 +2538,31 @@ mod tests {
             assert!(state.measured_cleanup_failed);
             assert!(!state.cleanup_complete);
         }
-        let cleanup = mount.abandon_measured(crate::WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(error, _)| error)?;
-        assert!(cleanup.work.backend_write_operations > 0);
+        let original_mount_work = mount._destination_custody.work().clone();
+        let denied_wait = mount.retire_with_work(&cancelled)
+            .err().ok_or("cancelled wait minted a physical drain proof")?;
+        assert!(matches!(denied_wait, MountLifecycleError::Native(_)));
+        {
+            let owner = mount.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let state = owner.as_ref().ok_or("cancelled wait lost physical cleanup ownership")?.cleanup_state();
+            assert!(state.driver_retained);
+            assert!(state.destination_fence_retained);
+            assert!(!state.cleanup_complete);
+        }
+        original_mount_work.cancellation().cancel();
+        let before_retire = original_mount_work.receipt();
+        let drained = mount.retire_with_work(&crate::CancellationToken::new())?;
+        assert!(original_mount_work.receipt().backend_write_operations > before_retire.backend_write_operations);
+        assert!(mount.source.physically_retired()?);
         assert!(mount.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none());
+        assert!(mount.native_source_io_lease().is_err());
+        let owners = Arc::strong_count(&mount.source);
+        let before_replay = original_mount_work.receipt();
+        let repeated = mount.retire_with_work(&cancelled)?;
+        assert_eq!(Arc::strong_count(&mount.source), owners + 1);
+        assert_eq!(original_mount_work.receipt(), before_replay);
+        drop(repeated);
+        drop(drained);
         Ok(())
     }
 
@@ -2680,6 +2894,8 @@ mod tests {
             )),
         ).await.err().ok_or("materialized publication ignored its original owner guard")?;
         assert!(!denied.source_acknowledged);
+        assert!(denied.accounting_failure.is_none());
+        assert!(denied.publication.is_none());
         assert!(matches!(denied.cause, MountLifecycleError::NativePolicy(
             "original materialized owner denied publication",
         )));
@@ -2692,7 +2908,7 @@ mod tests {
         let publication = customer_native_work(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
         let guard_original = publication.clone();
-        working_set.sync_with_permit_with_work(
+        let published = working_set.sync_with_permit_with_work(
             PublicationPermit::Unrestricted, &publication.native_mount_work(), &cancellation,
             move |actual: &crate::NativeMaterializationWork| {
                 assert!(actual.shares_ledger(&guard_original));
@@ -2700,6 +2916,11 @@ mod tests {
                 std::future::ready(Ok::<(), MountLifecycleError>(()))
             },
         ).await?;
+        assert!(published.operation().is_some());
+        assert!(!published.snapshot().is_lazy());
+        assert_eq!(published.snapshot().workspace_id(), working_set.workspace.id());
+        assert_eq!(published.snapshot().volume_config(), working_set.workspace.volume_config());
+        assert_eq!(published.snapshot().generation(), working_set.workspace.head().await?.id());
         assert!(publication.receipt().items_examined > 0);
         assert_eq!(
             lazy.workspace().read("/hot/file.txt", 32).await?.as_ref(),
@@ -2807,6 +3028,38 @@ mod tests {
             ready.validate_for_presentation().await,
             Err(MountLifecycleError::Source(MountSourceError::Stale))
         ));
+        let cancelled_wait = crate::CancellationToken::new();
+        cancelled_wait.cancel();
+        assert!(matches!(
+            working_set.retire_with_work(&cancelled_wait),
+            Err(MountLifecycleError::Source(MountSourceError::Cancelled))
+        ));
+        assert!(!working_set.source.capture_retired());
+        let lease_owners = Arc::strong_count(&working_set.source);
+        let source_io = working_set.native_source_io_lease()?;
+        assert_eq!(Arc::strong_count(&working_set.source), lease_owners + 1);
+        let source_io_tail = source_io.clone();
+        assert_eq!(Arc::strong_count(&working_set.source), lease_owners + 1);
+        drop(source_io);
+        assert_eq!(Arc::strong_count(&working_set.source), lease_owners + 1);
+        drop(source_io_tail);
+        assert_eq!(Arc::strong_count(&working_set.source), lease_owners);
+        // Revocation is not a new allowance: cleanup spends the source's
+        // already accepted birth credit, independently of the wait token.
+        working_set.source.cancellation().cancel();
+        let owners = Arc::strong_count(&working_set.source);
+        let drained = working_set.retire_with_work(&crate::CancellationToken::new())?;
+        assert!(working_set.source.capture_retired());
+        assert!(working_set.native_source_io_lease().is_err());
+        assert_eq!(Arc::strong_count(&working_set.source), owners + 1);
+        let repeated = working_set.retire_with_work(&cancelled_wait)?;
+        assert_eq!(Arc::strong_count(&working_set.source), owners + 2);
+        drop(repeated);
+        drop(drained);
+        assert_eq!(Arc::strong_count(&working_set.source), owners);
+        let ready_drained = ready.retire_with_work(&crate::CancellationToken::new())?;
+        assert!(ready.source.capture_retired());
+        drop(ready_drained);
         Ok(())
     }
 }
