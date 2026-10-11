@@ -2577,7 +2577,7 @@ impl NativeMountSourceWatchOwner {
         let watch = self.watch.as_ref().expect("ordinary construction retains its original watch");
         // This ordinary SDK projection performs the provider's physical stop
         // outside every invocation meter, then imports its actual prefix once.
-        let result = watch.stop_measured(budget, &cancellation);
+        let result = watch.stop(budget, &cancellation);
         self.stopped.store(watch.is_stopped(), Ordering::Release);
         match result {
             Ok(receipt) => carrier.with_work(|work|
@@ -6426,7 +6426,7 @@ where
         let Some(watch) = &self.source_watch else { return Ok(()); };
         let cancellation = carrier.cancellation();
         let budget = carrier.with_work(|work| work.remaining()).map_err(mount_demand_error)?;
-        let result = watch.fence_measured(budget, &cancellation);
+        let result = watch.fence(budget, &cancellation);
         carrier.with_work(|work| mount_accept(work, result, mount_demand_error))?;
         if self.authored.cancellation().is_cancelled() { return Err(MountSourceError::Stale); }
         Ok(())
@@ -7391,7 +7391,7 @@ where
 
     fn fence_changes(&self) -> Result<(), MountSourceError> {
         self.source_watch.as_ref().map_or(Ok(()), |watch| {
-            watch.fence().map_err(|error| lazy_error(error.into()))
+            watch.fence(WorkBudget::UNBOUNDED, &CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| lazy_error(failure.error.into()))
         })
     }
 
