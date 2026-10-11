@@ -6,6 +6,14 @@ use crate::storage::ObjectId;
 use std::mem::size_of;
 use thiserror::Error;
 
+/// Actual control backing of pinned bytes 1.12.1's repr(C) Owned<T>:
+/// an AtomicUsize reference count followed by the concrete owner.
+pub(crate) fn bytes_owner_control_bytes<T>() -> Result<u64, WorkError> {
+    let (layout, _) = std::alloc::Layout::new::<std::sync::atomic::AtomicUsize>()
+        .extend(std::alloc::Layout::new::<T>()).map_err(|_| WorkError::Overflow)?;
+    Ok(usize_to_u64(layout.pad_to_align().size()))
+}
+
 /// Logical owned-buffer bytes, excluding allocator headers and stack storage.
 ///
 /// Every claim is admitted before allocation. Callers retain the returned byte
@@ -23,7 +31,23 @@ pub(crate) struct LogicalVecCapacity {
     logical_bytes: u64,
 }
 
+enum LogicalVecAllocationStep {
+    Claim { bytes: u64 },
+    ReserveFailed { bytes: u64, error: std::collections::TryReserveError },
+    Capacity { requested: u64, actual: u64 },
+}
+
 impl LogicalVecCapacity {
+    /// Tracks the actual backing only after its existing original guard has
+    /// transferred into this vector's owner. This grants no allocation bytes.
+    pub(crate) fn record_owned_capacity<T>(&mut self, values: &Vec<T>) -> Result<(), WorkError> {
+        let bytes = values.capacity().checked_mul(std::mem::size_of::<T>())
+            .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(WorkError::Overflow)?;
+        self.elements = values.capacity();
+        self.logical_bytes = bytes;
+        Ok(())
+    }
+
     pub(crate) fn ensure_for_push<T>(
         &mut self,
         values: &mut Vec<T>,
@@ -32,11 +56,73 @@ impl LogicalVecCapacity {
         work: &mut WorkCounters,
         budget: WorkBudget,
     ) -> Result<(), AllocationError> {
+        self.ensure_for_push_using(values, maximum_elements, |error| error, |step| {
+            match step {
+                LogicalVecAllocationStep::Claim { bytes } =>
+                    ledger.claim_bytes(bytes, u64::from(bytes != 0), work, budget),
+                LogicalVecAllocationStep::ReserveFailed { bytes, .. } => {
+                    ledger.release(bytes)?;
+                    Err(AllocationError::AllocationFailed)
+                }
+                LogicalVecAllocationStep::Capacity { requested, actual } => {
+                    ledger.record_owned_bytes(actual - requested, work)?;
+                    work.verify(budget)?;
+                    Ok(())
+                }
+            }
+        })
+    }
+
+    pub(crate) fn ensure_for_push_with_accounting<T>(
+        &mut self,
+        values: &mut Vec<T>,
+        maximum_elements: usize,
+        field_guard: &mut KernelOwnedAllocation,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let original = matches!(&*field_guard, KernelOwnedAllocation::NativeOriginal(_));
+        self.ensure_for_push_using(
+            values,
+            maximum_elements,
+            |error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed),
+            |step| match step {
+                LogicalVecAllocationStep::Claim { bytes } => {
+                    let mut claim = accounting.claim_owned(bytes, u64::from(bytes != 0))?;
+                    if let Err(error) = field_guard.absorb(&mut claim) {
+                        accounting.release_owned(&mut claim, bytes)?;
+                        return Err(error);
+                    }
+                    Ok(())
+                }
+                LogicalVecAllocationStep::ReserveFailed { bytes, error } => {
+                    // This admission never became physical; the old vector is unchanged.
+                    accounting.release_owned(field_guard, bytes)?;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if original {
+                        return Err(crate::NativeTreeMaterializationError::AllocationFailed(error).into());
+                    }
+                    let _ = error;
+                    Err(crate::FsError::PendingMutationAllocationFailed)
+                }
+                LogicalVecAllocationStep::Capacity { requested, actual } =>
+                    accounting.reconcile_owned(field_guard, requested, actual),
+            },
+        )
+    }
+
+    fn ensure_for_push_using<T, E>(
+        &mut self,
+        values: &mut Vec<T>,
+        maximum_elements: usize,
+        map_error: impl Fn(AllocationError) -> E,
+        mut allocation: impl FnMut(LogicalVecAllocationStep) -> Result<(), E>,
+    ) -> Result<(), E> {
         if values.len() < self.elements {
             return Ok(());
         }
         if self.elements >= maximum_elements {
-            return Err(AllocationError::CapacityExceeded);
+            return Err(map_error(AllocationError::CapacityExceeded));
         }
         let next = if self.elements == 0 {
             1
@@ -48,23 +134,24 @@ impl LogicalVecCapacity {
             return Ok(());
         }
         let requested_bytes = next.checked_mul(size_of::<T>())
-            .map(usize_to_u64).ok_or(AllocationError::Overflow)?;
-        let bytes = requested_bytes.checked_sub(self.logical_bytes)
-            .ok_or(AllocationError::Overflow)?;
-        let additional = next.checked_sub(values.len()).ok_or(AllocationError::InvalidCapacity)?;
-        ledger.claim_bytes(bytes, u64::from(bytes != 0), work, budget)?;
-        if values.try_reserve_exact(additional).is_err() {
-            ledger.release(bytes)?;
-            return Err(AllocationError::AllocationFailed);
+            .map(usize_to_u64).ok_or_else(|| map_error(AllocationError::Overflow))?;
+        let old_bytes = self.logical_bytes;
+        let requested = requested_bytes.checked_sub(old_bytes)
+            .ok_or_else(|| map_error(AllocationError::Overflow))?;
+        let additional = next.checked_sub(values.len())
+            .ok_or_else(|| map_error(AllocationError::InvalidCapacity))?;
+        allocation(LogicalVecAllocationStep::Claim { bytes: requested })?;
+        if let Err(error) = values.try_reserve_exact(additional) {
+            return allocation(LogicalVecAllocationStep::ReserveFailed { bytes: requested, error });
         }
-        self.elements = next;
-        self.logical_bytes = requested_bytes;
         let actual_bytes = values.capacity().checked_mul(size_of::<T>())
-            .map(usize_to_u64).ok_or(AllocationError::Overflow)?;
-        ledger.record_owned_bytes(actual_bytes - self.logical_bytes, work)?;
+            .map(usize_to_u64).ok_or_else(|| map_error(AllocationError::Overflow))?;
+        let actual = actual_bytes.checked_sub(old_bytes)
+            .ok_or_else(|| map_error(AllocationError::Overflow))?;
+        // Completed backing and logical growth survive a late quota/cancellation error.
+        self.elements = next;
         self.logical_bytes = actual_bytes;
-        work.verify(budget)?;
-        Ok(())
+        allocation(LogicalVecAllocationStep::Capacity { requested, actual })
     }
 
     pub(crate) const fn logical_bytes(self) -> u64 {
@@ -138,6 +225,22 @@ pub(crate) enum KernelOwnedAllocation {
     NativeOriginal(crate::NativeAllocation),
 }
 
+impl KernelOwnedAllocation {
+    /// Combines actual guards without allocating or changing either on failure.
+    pub(crate) fn absorb(&mut self, other: &mut Self) -> Result<(), crate::FsError> {
+        match (self, other) {
+            (Self::Standalone, Self::Standalone) => Ok(()),
+            #[cfg(not(target_arch = "wasm32"))]
+            (Self::NativeOriginal(owned), Self::NativeOriginal(other)) => {
+                owned.absorb(other).map_err(Into::into)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            _ => Err(AllocationError::ReleaseInvariant
+                .into_work_or(crate::FsError::PendingMutationAllocationFailed)),
+        }
+    }
+}
+
 /// Accounting of the same kernel engine, either standalone or on an original
 /// native invocation. Native references are borrowed only for synchronous leaves.
 pub(crate) enum KernelAccounting<'a> {
@@ -202,54 +305,216 @@ impl<'a> KernelAccounting<'a> {
         }
     }
 
+    /// Executes SDK code outside every original-root mutex. The callback sees
+    /// this opaque facade, never the native ledger or mutable root counters.
     pub(crate) fn with_allocations<T>(
         &mut self,
-        operation: impl FnOnce(
-            &mut AllocationLedger, &mut WorkCounters, WorkBudget, &crate::CancellationToken,
-        ) -> Result<T, crate::FsError>,
+        operation: impl FnOnce(&mut Self) -> Result<T, crate::FsError>,
     ) -> Result<T, crate::FsError> {
         self.check()?;
+        operation(self)
+    }
+
+    /// Executes physical construction outside the original mutex. The producer
+    /// returns its explicit pre-funded guard; data must die before that guard.
+    pub(crate) fn with_owned_allocations<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Self)
+            -> Result<(T, KernelOwnedAllocation), crate::FsError>,
+    ) -> Result<(T, KernelOwnedAllocation), crate::FsError> {
+        self.check()?;
+        operation(self)
+    }
+
+    /// The producer keeps the exact claims of an owned failure payload, rather
+    /// than inferring ownership from a global before/after ledger difference.
+    pub(crate) fn with_retained_allocations<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Self)
+            -> Result<(T, KernelOwnedAllocation), (crate::FsError, Option<KernelOwnedAllocation>)>,
+    ) -> Result<(T, KernelOwnedAllocation), (crate::FsError, Option<KernelOwnedAllocation>)> {
+        self.check().map_err(|error| (error, None))?;
+        operation(self)
+    }
+
+    /// Only the legitimate standalone projection can borrow raw ledger parts.
+    /// A native caller must use this facade's original-operation primitives.
+    pub(crate) fn standalone_parts(
+        &mut self,
+    ) -> Option<(&mut AllocationLedger, &mut WorkCounters, WorkBudget, &crate::CancellationToken)> {
         match self {
             Self::Standalone { allocations, work, budget, cancellation } => {
-                operation(allocations, work, *budget, cancellation)
+                Some((allocations, work, *budget, cancellation))
             }
             Self::BorrowedStandalone { allocations, work, budget, cancellation } => {
-                operation(allocations, work, *budget, cancellation)
+                Some((allocations, work, *budget, cancellation))
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeOriginal { work, .. } => work.with_allocations(operation),
+            Self::NativeOriginal { .. } => None,
         }
     }
 
-    /// The returned data must be dropped before its native guard. Standalone
-    /// callers retain their existing ledger cleanup, without a native claim.
-    pub(crate) fn with_owned_allocations<T>(
-        &mut self,
-        operation: impl FnOnce(
-            &mut AllocationLedger, &mut WorkCounters, WorkBudget, &crate::CancellationToken,
-        ) -> Result<T, crate::FsError>,
-    ) -> Result<(T, KernelOwnedAllocation), crate::FsError> {
+    /// Admits a concrete producer's backing before the allocator is entered.
+    /// The allocator and producer execute outside every original-root loan.
+    pub(crate) fn claim_owned(
+        &mut self, bytes: u64, operations: u64,
+    ) -> Result<KernelOwnedAllocation, crate::FsError> {
         self.check()?;
         match self {
-            Self::Standalone { allocations, work, budget, cancellation } => {
-                operation(allocations, work, *budget, cancellation)
-                    .map(|value| (value, KernelOwnedAllocation::Standalone))
+            Self::Standalone { allocations, work, budget, .. } => {
+                allocations.claim_bytes(bytes, operations, work, *budget)
+                    .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))?;
+                Ok(KernelOwnedAllocation::Standalone)
             }
-            Self::BorrowedStandalone { allocations, work, budget, cancellation } => {
-                operation(allocations, work, *budget, cancellation)
-                    .map(|value| (value, KernelOwnedAllocation::Standalone))
+            Self::BorrowedStandalone { allocations, work, budget, .. } => {
+                allocations.claim_bytes(bytes, operations, work, *budget)
+                    .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))?;
+                Ok(KernelOwnedAllocation::Standalone)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeOriginal { work, .. } => work.with_owned_allocations(operation)
-                .map(|(value, guard)| (value, KernelOwnedAllocation::NativeOriginal(guard))),
+            Self::NativeOriginal { work, .. } => work.claim_allocation(bytes, operations)
+                .map(KernelOwnedAllocation::NativeOriginal).map_err(Into::into),
+        }
+    }
+
+    /// Records already-completed excess backing without another allocation
+    /// operation. A late refusal still returns its actual physical guard.
+    pub(crate) fn record_actual_owned(
+        &mut self, bytes: u64,
+    ) -> Result<(KernelOwnedAllocation, Result<(), crate::FsError>), crate::FsError> {
+        match self {
+            Self::Standalone { allocations, work, budget, cancellation } => {
+                allocations.record_owned_bytes(bytes, work)
+                    .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))?;
+                let verified = work.verify(*budget).map_err(crate::FsError::from);
+                Ok((KernelOwnedAllocation::Standalone,
+                    verified.and_then(|()| cancellation.check().map_err(Into::into))))
+            }
+            Self::BorrowedStandalone { allocations, work, budget, cancellation } => {
+                allocations.record_owned_bytes(bytes, work)
+                    .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))?;
+                let verified = work.verify(*budget).map_err(crate::FsError::from);
+                Ok((KernelOwnedAllocation::Standalone,
+                    verified.and_then(|()| cancellation.check().map_err(Into::into))))
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeOriginal { work, cancellation } => {
+                let (allocation, result) = work.record_completed_allocation(bytes);
+                Ok((KernelOwnedAllocation::NativeOriginal(allocation),
+                    result.map_err(crate::FsError::from)
+                        .and_then(|()| cancellation.check().map_err(Into::into))))
+            }
+        }
+    }
+
+    /// Reconciles a completed buffer's capacity. The guard keeps all actual
+    /// backing even when the completion crosses a budget or cancellation bound.
+    pub(crate) fn reconcile_owned(
+        &mut self, allocation: &mut KernelOwnedAllocation, requested: u64, actual: u64,
+    ) -> Result<(), crate::FsError> {
+        match (self, allocation) {
+            (Self::Standalone { allocations, work, budget, cancellation },
+                KernelOwnedAllocation::Standalone) => {
+                if actual >= requested {
+                    allocations.record_owned_bytes(actual - requested, work)
+                        .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))?;
+                } else {
+                    allocations.release(requested - actual)
+                        .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))?;
+                }
+                work.verify(*budget)?;
+                cancellation.check().map_err(Into::into)
+            }
+            (Self::BorrowedStandalone { allocations, work, budget, cancellation },
+                KernelOwnedAllocation::Standalone) => {
+                if actual >= requested {
+                    allocations.record_owned_bytes(actual - requested, work)
+                        .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))?;
+                } else {
+                    allocations.release(requested - actual)
+                        .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))?;
+                }
+                work.verify(*budget)?;
+                cancellation.check().map_err(Into::into)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            (Self::NativeOriginal { work, cancellation },
+                KernelOwnedAllocation::NativeOriginal(allocation)) => {
+                if !allocation.work().shares_ledger(work) {
+                    return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
+                }
+                let actual_owned = allocation.bytes().checked_sub(requested)
+                    .and_then(|other| other.checked_add(actual)).ok_or(WorkError::Overflow)?;
+                allocation.reconcile_capacity(actual_owned)?;
+                cancellation.check().map_err(Into::into)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            _ => Err(AllocationError::ReleaseInvariant
+                .into_work_or(crate::FsError::PendingMutationAllocationFailed)),
+        }
+    }
+
+    /// Releases only capacity whose physical owner has already destroyed it.
+    pub(crate) fn release_owned(
+        &mut self, allocation: &mut KernelOwnedAllocation, bytes: u64,
+    ) -> Result<(), crate::FsError> {
+        match (self, allocation) {
+            (Self::Standalone { allocations, .. }, KernelOwnedAllocation::Standalone) => {
+                allocations.release(bytes)
+                    .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))
+            }
+            (Self::BorrowedStandalone { allocations, .. }, KernelOwnedAllocation::Standalone) => {
+                allocations.release(bytes)
+                    .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            (Self::NativeOriginal { work, .. }, KernelOwnedAllocation::NativeOriginal(allocation)) => {
+                if !allocation.work().shares_ledger(work) {
+                    return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
+                }
+                allocation.release(bytes).map_err(Into::into)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            _ => Err(AllocationError::ReleaseInvariant
+                .into_work_or(crate::FsError::PendingMutationAllocationFailed)),
+        }
+    }
+
+    /// Commits performed work before checking late budget or cancellation
+    /// changes. A preflight refusal must never erase an already-completed copy.
+    pub(crate) fn record_completed(&mut self, delta: WorkCounters) -> Result<(), crate::FsError> {
+        match self {
+            Self::Standalone { work, budget, cancellation, .. } => {
+                work.try_add_assign(&delta)?;
+                work.verify(*budget)?;
+                cancellation.check().map_err(Into::into)
+            }
+            Self::BorrowedStandalone { work, budget, cancellation, .. } => {
+                work.try_add_assign(&delta)?;
+                work.verify(*budget)?;
+                cancellation.check().map_err(Into::into)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeOriginal { work, cancellation } => {
+                work.record_admitted(delta)?;
+                work.admit(WorkCounters::UNCHARGED)?;
+                cancellation.check().map_err(Into::into)
+            }
         }
     }
 
     pub(crate) fn charge(&mut self, delta: WorkCounters) -> Result<(), crate::FsError> {
-        self.with_allocations(|_, work, budget, _| {
-            work.charge(&delta, &budget)?;
-            Ok(())
-        })
+        self.check()?;
+        match self {
+            Self::Standalone { work, budget, .. } => {
+                work.charge(&delta, budget).map_err(Into::into)
+            }
+            Self::BorrowedStandalone { work, budget, .. } => {
+                work.charge(&delta, budget).map_err(Into::into)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeOriginal { work, .. } => work.charge(delta).map_err(Into::into),
+        }
     }
 
     pub(crate) fn admit(&self, delta: WorkCounters) -> Result<(), crate::FsError> {
@@ -320,163 +585,130 @@ impl VisitedObjectSet {
     const INITIAL_ENTRIES: usize = 8;
 
     pub(crate) fn new(
-        maximum_entries: usize,
-        ledger: &mut AllocationLedger,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
+        maximum_entries: usize, ledger: &mut AllocationLedger,
+        work: &mut WorkCounters, budget: WorkBudget,
     ) -> Result<Self, AllocationError> {
-        if maximum_entries == 0 {
-            return Err(AllocationError::InvalidCapacity);
-        }
-        let slot_count = Self::slot_count(maximum_entries.min(Self::INITIAL_ENTRIES))?;
-        let mut logical_bytes = ledger.claim_elements::<Option<ObjectId>>(slot_count, work, budget)?;
-        let mut slots = Vec::new();
-        if slots.try_reserve_exact(slot_count).is_err() {
-            drop(slots);
-            ledger.release(logical_bytes)?;
-            return Err(AllocationError::AllocationFailed);
-        }
-        let actual_bytes = slots.capacity().checked_mul(size_of::<Option<ObjectId>>())
-            .map(usize_to_u64).ok_or(AllocationError::Overflow)?;
-        ledger.record_owned_bytes(actual_bytes - logical_bytes, work)?;
-        logical_bytes = actual_bytes;
-        if let Err(error) = work.verify(budget) {
-            drop(slots);
-            ledger.release(logical_bytes)?;
-            return Err(error.into());
-        }
-        slots.resize(slot_count, None);
-        Ok(Self {
-            slots,
-            maximum_entries,
-            length: 0,
-            logical_bytes,
-        })
+        if maximum_entries == 0 { return Err(AllocationError::InvalidCapacity); }
+        static CANCELLATION: std::sync::LazyLock<crate::CancellationToken> =
+            std::sync::LazyLock::new(crate::CancellationToken::new);
+        let mut accounting = KernelAccounting::borrowed_standalone(ledger, work, budget, &CANCELLATION);
+        Self::new_with_accounting(maximum_entries, &mut accounting)
+            .map(|owned| owned.value)
+            .map_err(|error| Self::standalone_error(error, false))
     }
 
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "`mask = self.slots.len() - 1` and `index`/`index + 1` are always combined with \
-                  `& mask` before indexing; `Self::slot_count` (called from `new` and `grow`) \
-                  builds `self.slots` via `checked_next_power_of_two`, so `self.slots.len()` is \
-                  always a nonzero power of two and `x & mask` is always `< self.slots.len()`"
-    )]
+    /// Constructs the same fixed-capacity set outside every original AL loan.
+    pub(crate) fn new_with_accounting(
+        maximum_entries: usize, accounting: &mut KernelAccounting<'_>,
+    ) -> Result<super::persistent_point::Owned<Self>, crate::FsError> {
+        use super::persistent_point::Owned;
+        if maximum_entries == 0 { return Err(crate::FsError::PendingMutationAllocationFailed); }
+        let slot_count = Self::slot_count(maximum_entries.min(Self::INITIAL_ENTRIES))
+            .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))?;
+        let mut slots = Owned::<Vec<Option<ObjectId>>>::allocate(slot_count, accounting)?;
+        slots.value.resize(slot_count, None);
+        let Owned { value, allocation, bytes } = slots;
+        Ok(Owned::new(Self { slots: value, maximum_entries, length: 0, logical_bytes: bytes }, allocation, bytes))
+    }
+
     pub(crate) fn insert(
-        &mut self,
-        object: ObjectId,
-        ledger: &mut AllocationLedger,
-        work: &mut WorkCounters,
-        budget: &WorkBudget,
+        &mut self, object: ObjectId, ledger: &mut AllocationLedger,
+        work: &mut WorkCounters, budget: &WorkBudget,
     ) -> Result<VisitedInsert, AllocationError> {
+        static CANCELLATION: std::sync::LazyLock<crate::CancellationToken> =
+            std::sync::LazyLock::new(crate::CancellationToken::new);
+        let mut accounting = KernelAccounting::borrowed_standalone(ledger, work, *budget, &CANCELLATION);
+        self.insert_accounted(object, &mut KernelOwnedAllocation::Standalone, &mut accounting)
+            .map_err(|error| Self::standalone_error(error, self.length == self.maximum_entries))
+    }
+
+    /// Growth moves replacement slots and their physical guard together.
+    pub(crate) fn insert_with_accounting(
+        set: &mut super::persistent_point::Owned<Self>, object: ObjectId,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<VisitedInsert, crate::FsError> {
+        let result = set.value.insert_accounted(object, &mut set.allocation, accounting);
+        set.bytes = set.value.logical_bytes;
+        result
+    }
+
+    fn insert_accounted(
+        &mut self, object: ObjectId, allocation: &mut KernelOwnedAllocation,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<VisitedInsert, crate::FsError> {
         let mut probes = 0_u64;
         loop {
-            let mask = self.slots.len() - 1;
+            let mask = self.slots.len().checked_sub(1).ok_or(WorkError::Overflow)?;
             let mut index = object_hash(object) & mask;
             loop {
-                work.charge_items(1, budget)?;
-                probes = probes.checked_add(1).ok_or(AllocationError::Overflow)?;
-                match self.slots[index] {
-                    Some(existing) if existing == object => {
-                        return Ok(VisitedInsert {
-                            inserted: false,
-                            probes,
-                        });
-                    }
+                accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+                probes = probes.checked_add(1).ok_or(WorkError::Overflow)?;
+                match self.slots.get(index).ok_or(WorkError::Overflow)? {
+                    Some(existing) if *existing == object => return Ok(VisitedInsert { inserted: false, probes }),
                     Some(_) => index = (index + 1) & mask,
-                    None if self.length == self.maximum_entries => {
-                        return Err(AllocationError::CapacityExceeded);
-                    }
+                    None if self.length == self.maximum_entries =>
+                        return Err(crate::FsError::PendingMutationAllocationFailed),
                     None if self.length < self.entry_capacity() => {
-                        self.slots[index] = Some(object);
+                        *self.slots.get_mut(index).ok_or(WorkError::Overflow)? = Some(object);
                         self.length += 1;
-                        return Ok(VisitedInsert {
-                            inserted: true,
-                            probes,
-                        });
+                        return Ok(VisitedInsert { inserted: true, probes });
                     }
                     None => break,
                 }
             }
-            probes = probes
-                .checked_add(self.grow(ledger, work, budget)?)
-                .ok_or(AllocationError::Overflow)?;
+            probes = probes.checked_add(self.grow_with_accounting(accounting, allocation)?)
+                .ok_or(WorkError::Overflow)?;
         }
     }
 
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "`mask = slot_count - 1` and `index`/`index + 1` are always combined with \
-                  `& mask` before indexing; `Self::slot_count` builds `slot_count` via \
-                  `checked_next_power_of_two`, so it is always a nonzero power of two and \
-                  `x & mask` is always `< slots.len()`"
-    )]
-    fn grow(
-        &mut self,
-        ledger: &mut AllocationLedger,
-        work: &mut WorkCounters,
-        budget: &WorkBudget,
-    ) -> Result<u64, AllocationError> {
-        let next_entries = self
-            .entry_capacity()
-            .checked_mul(2)
-            .ok_or(AllocationError::Overflow)?
+    fn grow_with_accounting(
+        &mut self, accounting: &mut KernelAccounting<'_>, allocation: &mut KernelOwnedAllocation,
+    ) -> Result<u64, crate::FsError> {
+        use super::persistent_point::{Owned, retire_allocation};
+        let next_entries = self.entry_capacity().checked_mul(2).ok_or(WorkError::Overflow)?
             .min(self.maximum_entries);
-        let slot_count = Self::slot_count(next_entries)?;
-        let mut new_bytes = ledger.claim_elements::<Option<ObjectId>>(slot_count, work, *budget)?;
-        let mut slots = Vec::new();
-        if slots.try_reserve_exact(slot_count).is_err() {
-            drop(slots);
-            ledger.release(new_bytes)?;
-            return Err(AllocationError::AllocationFailed);
-        }
-        let actual_bytes = slots.capacity().checked_mul(size_of::<Option<ObjectId>>())
-            .map(usize_to_u64).ok_or(AllocationError::Overflow)?;
-        ledger.record_owned_bytes(actual_bytes - new_bytes, work)?;
-        new_bytes = actual_bytes;
-        if let Err(error) = work.verify(*budget) {
-            drop(slots);
-            ledger.release(new_bytes)?;
-            return Err(error.into());
-        }
-        slots.resize(slot_count, None);
+        let slot_count = Self::slot_count(next_entries)
+            .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))?;
+        let mut slots = Owned::<Vec<Option<ObjectId>>>::allocate(slot_count, accounting)?;
+        slots.value.resize(slot_count, None);
         let mask = slot_count - 1;
         let mut probes = 0_u64;
-        for object in self.slots.iter().flatten().copied() {
-            let mut index = object_hash(object) & mask;
-            loop {
-                if let Err(error) = work.charge_items(1, budget) {
-                    drop(slots);
-                    ledger.release(new_bytes)?;
-                    return Err(error.into());
-                }
-                let Some(next_probes) = probes.checked_add(1) else {
-                    drop(slots);
-                    ledger.release(new_bytes)?;
-                    return Err(AllocationError::Overflow);
-                };
-                probes = next_probes;
-                if slots[index].is_none() {
-                    let copied = WorkCounters {
-                        bytes_copied: usize_to_u64(size_of::<ObjectId>()),
-                        ..WorkCounters::UNCHARGED
-                    };
-                    if let Err(error) = work.admit(&copied, budget) {
-                        drop(slots);
-                        ledger.release(new_bytes)?;
-                        return Err(error.into());
+        let rehashed = (|| {
+            for object in self.slots.iter().flatten().copied() {
+                let mut index = object_hash(object) & mask;
+                loop {
+                    accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+                    probes = probes.checked_add(1).ok_or(WorkError::Overflow)?;
+                    if slots.value.get(index).ok_or(WorkError::Overflow)?.is_none() {
+                        let copied = WorkCounters {
+                            bytes_copied: usize_to_u64(size_of::<ObjectId>()), ..WorkCounters::UNCHARGED
+                        };
+                        accounting.admit(copied)?;
+                        *slots.value.get_mut(index).ok_or(WorkError::Overflow)? = Some(object);
+                        accounting.record_completed(copied)?;
+                        break;
                     }
-                    slots[index] = Some(object);
-                    Self::charge_copied(work, budget)?;
-                    break;
+                    index = (index + 1) & mask;
                 }
-                index = (index + 1) & mask;
             }
-        }
-        let old_bytes = self.logical_bytes;
-        self.slots = slots;
-        self.logical_bytes = new_bytes;
-        ledger.release(old_bytes)?;
+            Ok::<(), crate::FsError>(())
+        })();
+        if let Err(error) = rehashed { slots.retire(accounting)?; return Err(error); }
+        let Owned { value, allocation: next_allocation, bytes } = slots;
+        let old_slots = std::mem::replace(&mut self.slots, value);
+        let old_allocation = std::mem::replace(allocation, next_allocation);
+        let old_bytes = std::mem::replace(&mut self.logical_bytes, bytes);
+        drop(old_slots);
+        retire_allocation(old_allocation, old_bytes, accounting)?;
         Ok(probes)
+    }
+
+    fn standalone_error(error: crate::FsError, full: bool) -> AllocationError {
+        match error {
+            crate::FsError::Work(error) => AllocationError::Work(error),
+            crate::FsError::PendingMutationAllocationFailed if full => AllocationError::CapacityExceeded,
+            _ => AllocationError::AllocationFailed,
+        }
     }
 
     fn entry_capacity(&self) -> usize {
@@ -490,22 +722,13 @@ impl VisitedObjectSet {
             .ok_or(AllocationError::Overflow)
     }
 
-    fn charge_copied(work: &mut WorkCounters, budget: &WorkBudget) -> Result<(), AllocationError> {
-        work.charge(
-            &WorkCounters {
-                bytes_copied: usize_to_u64(size_of::<ObjectId>()),
-                ..WorkCounters::UNCHARGED
-            },
-            budget,
-        )?;
-        Ok(())
-    }
 
     pub(crate) fn release(self, ledger: &mut AllocationLedger) -> Result<(), AllocationError> {
         let bytes = self.logical_bytes;
         drop(self);
         ledger.release(bytes)
     }
+
 }
 
 fn object_hash(object: ObjectId) -> usize {
