@@ -4,6 +4,7 @@
 //! retention, and convergence. The engine's volume and authority identities
 //! remain implementation details.
 
+use crate::async_storage::StorageFuture;
 use crate::foundation::{FileId, GenerationId, OperationId, VolumeId};
 use crate::CancellationToken;
 use crate::heap_future::in_heap;
@@ -1470,8 +1471,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         before_publication: F,
     ) -> crate::MeasuredResult<crate::OperationReceipt<TransactionCommit<A, O>>, WorkspaceError>
     where
-        F: FnMut(crate::WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::FsResult<()>> + Send,
+        F: FnMut(crate::WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::FsResult<()>> + StorageFuture,
     {
         self.restore_path_records_measured_guarded(
             source, paths, if_current, idempotency_key, permit, budget, cancellation,
@@ -1525,8 +1526,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         mut before_publication: F,
     ) -> crate::MeasuredResult<crate::OperationReceipt<TransactionCommit<A, O>>, WorkspaceError>
     where
-        F: FnMut(crate::WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::FsResult<()>> + Send,
+        F: FnMut(crate::WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::FsResult<()>> + StorageFuture,
     {
         crate::heap_future::in_heap_measured(move |budget| async move {
             let mut work = crate::WorkCounters::UNCHARGED;
@@ -2001,8 +2002,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         cancellation: &crate::CancellationToken, mut guard: F,
     ) -> crate::MeasuredResult<crate::OperationReceipt<Self>, WorkspaceError>
     where
-        F: FnMut(crate::WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::facade::FsResult<()>> + Send,
+        F: FnMut(crate::WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::facade::FsResult<()>> + StorageFuture,
     {
         crate::heap_future::in_heap_measured(
             |budget| self.fork_measured_inner(destination, options, permit, budget, cancellation, Some(&mut guard)),
@@ -2016,8 +2017,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         cancellation: &crate::CancellationToken, guard: Option<&mut F>,
     ) -> crate::MeasuredResult<crate::OperationReceipt<Self>, WorkspaceError>
     where
-        F: FnMut(crate::WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::facade::FsResult<()>> + Send,
+        F: FnMut(crate::WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::facade::FsResult<()>> + StorageFuture,
     {
         let span = crate::obs::span!(
             INFO,
@@ -4892,8 +4893,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ) -> crate::MeasuredResult<crate::OperationReceipt<TransactionCommit<A, O>>, E>
     where
         E: From<WorkspaceError> + From<FsError> + Send,
-        F: FnMut(crate::WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::MeasuredResult<crate::OperationReceipt<()>, E>> + Send,
+        F: FnMut(crate::WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::MeasuredResult<crate::OperationReceipt<()>, E>> + StorageFuture,
     {
         self.commit_with_optional_context_with_permit_measured_guarded(
             None, None, None, permit, budget, cancellation, before_publication,
@@ -4913,8 +4914,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ) -> crate::MeasuredResult<crate::OperationReceipt<TransactionCommit<A, O>>, E>
     where
         E: From<WorkspaceError> + From<FsError> + Send,
-        F: FnMut(crate::WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::MeasuredResult<crate::OperationReceipt<()>, E>> + Send,
+        F: FnMut(crate::WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::MeasuredResult<crate::OperationReceipt<()>, E>> + StorageFuture,
     {
         self.commit_with_optional_context_with_permit_measured_guarded(
             Some(context), Some(operation_evidence), Some(original_fingerprint_permit),
@@ -4931,8 +4932,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ) -> crate::MeasuredResult<crate::OperationReceipt<TransactionCommit<A, O>>, E>
     where
         E: From<WorkspaceError> + From<FsError> + Send,
-        F: FnMut(crate::WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::MeasuredResult<crate::OperationReceipt<()>, E>> + Send,
+        F: FnMut(crate::WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::MeasuredResult<crate::OperationReceipt<()>, E>> + StorageFuture,
     {
         let span = crate::obs::span!(
             INFO,

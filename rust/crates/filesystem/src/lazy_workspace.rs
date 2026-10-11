@@ -1,5 +1,6 @@
 //! Source-backed sparse workspaces.
 
+use crate::async_storage::StorageFuture;
 use crate::demand::{
     DemandError, DemandSource, SourceCursor, SourceNode, SourceNodeKind,
     SourceReference, SourceVersion,
@@ -8186,8 +8187,8 @@ where
         before_publication: &mut F,
     ) -> Result<OperationReceipt<crate::Generation<A, O>>, LazyWorkspaceError>
     where
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::FsResult<()>> + Send,
+        F: FnMut(WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::FsResult<()>> + StorageFuture,
     {
         let mut guard = |allowance| {
             let outcome = before_publication(allowance);
@@ -10194,8 +10195,8 @@ where
         source_used: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<OperationReceipt<crate::Generation<A, O>>, LazyWorkspaceError>
     where
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::FsResult<()>> + Send,
+        F: FnMut(WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::FsResult<()>> + StorageFuture,
     {
         in_heap_measured(move |budget| async move {
             let mut work = WorkCounters::default();
@@ -14933,7 +14934,7 @@ where
 
     fn check(
         &mut self, budget: WorkBudget,
-    ) -> impl Future<Output = LazyWriteGuardResult<Self::Error>> + Send;
+    ) -> impl Future<Output = LazyWriteGuardResult<Self::Error>> + StorageFuture;
 
     #[allow(clippy::too_many_arguments)]
     fn commit(
@@ -14942,7 +14943,7 @@ where
         basis: LazySnapshotRef, prepared: Option<PendingLazyWrite>,
         operation: crate::OperationId, permit: crate::PublicationPermit, work: &LazyTreapWork<'_>,
         cancellation: &CancellationToken,
-    ) -> impl Future<Output = Result<TransactionCommit<A, O>, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<TransactionCommit<A, O>, Self::Error>> + StorageFuture;
 }
 
 struct BorrowedWriteGuard<'a, F> {
@@ -15164,7 +15165,7 @@ trait SelectedImportGuard<A: AsyncAuthorityStore, O: AsyncObjectStore>: Send {
         permit: crate::PublicationPermit,
         accounting: &LazyTreapWork<'_>,
         cancellation: &CancellationToken,
-    ) -> impl Future<Output = Result<crate::CheckoutCommitOutcome, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<crate::CheckoutCommitOutcome, Self::Error>> + StorageFuture;
 }
 
 struct BorrowedSelectedImportGuard<'a, F> {
@@ -15234,7 +15235,7 @@ where
     }
 }
 
-trait ExactifyPublication<A: AsyncAuthorityStore, O: AsyncObjectStore>: Send {
+trait ExactifyPublication<A: AsyncAuthorityStore, O: AsyncObjectStore>: StorageFuture {
     type Error: From<LazyWorkspaceError> + Send;
 
     fn commit<D: DemandSource + 'static, S: LazyWorkspaceStore>(
@@ -15245,7 +15246,7 @@ trait ExactifyPublication<A: AsyncAuthorityStore, O: AsyncObjectStore>: Send {
         current_source_used: bool,
         accounting: &mut ExactifyCollectorWork<'_>,
         cancellation: &CancellationToken,
-    ) -> impl Future<Output = Result<crate::Generation<A, O>, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<crate::Generation<A, O>, Self::Error>> + StorageFuture;
 }
 
 struct BorrowedExactifyPublication<'a, F> {
@@ -15256,8 +15257,8 @@ impl<A, O, F, Fut> ExactifyPublication<A, O> for BorrowedExactifyPublication<'_,
 where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
-    F: FnMut(WorkBudget) -> Fut + Send,
-    Fut: Future<Output = crate::FsResult<()>> + Send,
+    F: FnMut(WorkBudget) -> Fut + StorageFuture,
+    Fut: Future<Output = crate::FsResult<()>> + StorageFuture,
 {
     type Error = LazyWorkspaceError;
 

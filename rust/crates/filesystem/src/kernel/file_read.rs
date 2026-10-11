@@ -380,13 +380,15 @@ pub(crate) enum ReadDecodeError {
 }
 
 impl ReadDecodeError {
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn into_original_fs_error(self) -> FsError {
         match self {
             Self::Canonical(error) => error.into(),
+            #[cfg(not(target_arch = "wasm32"))]
             Self::AllocationFailed(error) => FsError::NativeKernel(
                 crate::NativeTreeMaterializationError::AllocationFailed(error),
             ),
+            #[cfg(target_arch = "wasm32")]
+            Self::AllocationFailed(_) => super::CanonicalDecodeError::AllocationFailed.into(),
             Self::Accounting(error) => error,
         }
     }
