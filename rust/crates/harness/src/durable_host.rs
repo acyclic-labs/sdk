@@ -2325,6 +2325,26 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         crate::scheduler::require_execution_owner(&operation, fence, settlement)
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) async fn verify_native_command_result(
+        &self,
+        task: TaskId,
+        fence: &crate::scheduler::LeaseFence,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.coordinator.lock().await.journal_condition_with_work(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            OperationId::from_bytes(task.into_bytes()),
+            fence,
+            crate::distributed::JournalWrite::Fresh,
+            &mut Some(&mut io),
+        ).await.map(|_| ())
+    }
+
     /// Binds journal publications to the authenticated task's exact current lease.
     #[cfg(feature = "filesystem")]
     pub async fn journal_owner(

@@ -37,6 +37,7 @@ mod deadline;
 mod reconciliation;
 mod inspection;
 pub use inspection::TaskSourceInspection;
+mod command_input;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
@@ -74,6 +75,14 @@ pub trait TaskCommandHost: acyclic_stream::ProviderPlatform {
 pub enum TaskCommandProgress {
     /// Durable result, safe to deliver to the machine.
     Ready(Value),
+    /// Native result whose existing same-operation custody survives consumption.
+    #[cfg(not(target_arch = "wasm32"))]
+    ReadyWithNativeCustody {
+        /// Owned response, dropped before its custody.
+        value: Value,
+        /// Actual original-ledger custody, not a post-allocation reconstruction.
+        custody: acyclic_fs::NativeAllocation,
+    },
     /// Durable wait with no active uncertain dispatch.
     Pending,
     /// A dispatch may still be active; retain the existing reservation.
@@ -81,7 +90,17 @@ pub enum TaskCommandProgress {
 }
 
 enum CommandDispatch {
-    Ready(Value),
+    Ready {
+        value: Value,
+        #[cfg(not(target_arch = "wasm32"))]
+        array_capacity_claimed: u64,
+        #[cfg(not(target_arch = "wasm32"))]
+        additional_capacity_claimed: u64,
+        #[cfg(not(target_arch = "wasm32"))]
+        additional_custody: Vec<acyclic_fs::NativeAllocation>,
+        #[cfg(not(target_arch = "wasm32"))]
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
     Pending {
         command: OperationId,
         guard_execution: bool,
@@ -1243,7 +1262,7 @@ where
                         .dispatch_commands(task, &context, &fence, &transition.commands, commands)
                         .await?
                     {
-                        CommandDispatch::Ready(value) => command_input = Some(value),
+                        ready @ CommandDispatch::Ready {..} => command_input = Some(ready),
                         CommandDispatch::Pending {
                             command,
                             guard_execution,
@@ -1274,8 +1293,8 @@ where
             }
             let input = if transition.is_none() {
                 Value::Null
-            } else if let Some(value) = command_input {
-                value
+            } else if let Some(CommandDispatch::Ready {value,..}) = command_input.as_mut() {
+                std::mem::take(value)
             } else if let Some((wake_revision, value)) = &wake {
                 if *wake_revision == revision {
                     value.clone()
@@ -1324,7 +1343,7 @@ where
                 "mail receive must checkpoint alone before the next command".into(),
             ));
         }
-        let mut results = Vec::new();
+        let mut results = CommandDispatch::empty_results();
         for command in outbox {
             self.host.verify_dispatch_owner(task, fence.clone()).await?;
             if command.payload.descriptor().byte_length() > self.maximum_payload_bytes {
@@ -1338,18 +1357,28 @@ where
                 .await;
             #[cfg(all(feature = "filesystem",not(target_arch = "wasm32")))]
             let progress = match progress {
-                Err(error @ Error::NativeWork {..}) => return Err(error),
+                Err(error) if error.is_native_failure() => return Err(error),
                 progress => progress,
             };
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Ok(TaskCommandProgress::ReadyWithNativeCustody { custody, .. }) = &progress {
+                self.host.verify_native_command_result(task, fence, custody.work()).await?;
+            } else {
+                self.host.verify_dispatch_owner(task, fence.clone()).await?;
+            }
+            #[cfg(target_arch = "wasm32")]
             self.host.verify_dispatch_owner(task, fence.clone()).await?;
             match progress {
-                Ok(TaskCommandProgress::Ready(value)) => {
-                    results.push(json!({"operation_id":command.operation_id,"value":value}));
-                    // Include the machine-input envelope in the admitted bound.
-                    if crate::contract::canonical_json_bytes(&json!({"commands":&results}))?.len()
-                        as u64
-                        > context.scope().limits().file_bytes
-                    {
+                Ok(progress @ TaskCommandProgress::Ready(_)) => {
+                    results.push_result(command.operation_id, progress)?;
+                    if !results.input_within_limit(context.scope().limits().file_bytes)? {
+                        return Ok(CommandDispatch::Indeterminate);
+                    }
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                Ok(progress @ TaskCommandProgress::ReadyWithNativeCustody { .. }) => {
+                    results.push_result(command.operation_id, progress)?;
+                    if !results.input_within_limit(context.scope().limits().file_bytes)? {
                         return Ok(CommandDispatch::Indeterminate);
                     }
                 }
@@ -1367,7 +1396,8 @@ where
                 }
             }
         }
-        Ok(CommandDispatch::Ready(json!({"commands":results})))
+        results.finish_results()?;
+        Ok(results)
     }
 
     /// Constructs stock execution with mandatory shared accounting, retained

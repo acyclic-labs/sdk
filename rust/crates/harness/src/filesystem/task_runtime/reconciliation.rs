@@ -73,6 +73,8 @@ where
             .map_err(|error| Error::Invalid(format!("invalid command JSON: {error}")))?;
             match commands.reconcile(context.clone(), fence.clone(), command.clone(), payload).await? {
                 TaskCommandProgress::Ready(_) => {}
+                #[cfg(not(target_arch = "wasm32"))]
+                TaskCommandProgress::ReadyWithNativeCustody { .. } => {}
                 TaskCommandProgress::Pending | TaskCommandProgress::Indeterminate => {
                     return Ok(reconciling());
                 }

@@ -239,7 +239,7 @@ async fn native_admission_failure_precedes_post_dispatch_verification_and_deadli
             peak_allocation_bytes:acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
             ..Default::default()
         },&cancellation,
-    ).map_err(|failure| Error::NativeWork {cause:failure.error,custody:None})?;
+    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let commands = NativeAdmissionFailure {clock:fixture.clock.clone(),work,calls:AtomicUsize::new(0)};
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     match runtime.resume_task(lease.clone(),&commands,2).await {

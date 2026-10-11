@@ -45,7 +45,7 @@ where
         // A failed native admission is not evidence of a timed-out effect.
         // Preserve its cause/custody before clocks or cancellation perform IO.
         #[cfg(all(feature = "filesystem",not(target_arch = "wasm32")))]
-        if matches!(&result,Err(Error::NativeWork {..})) { return result; }
+        if result.as_ref().is_err_and(|error| error.is_native_failure()) { return result; }
         if host.now_unix_millis() < deadline {
             return result;
         }
