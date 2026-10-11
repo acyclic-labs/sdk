@@ -692,7 +692,8 @@ impl<'a> Input<'a> {
 )]
 mod tests {
     use super::*;
-    use crate::{AppendRequest, MemoryLimits, ReadRequest, StreamProvider, UnixMillisClock};
+    use crate::{AppendRequest, IdempotencyObservation, MemoryLimits, ReadRequest, StreamProvider, UnixMillisClock};
+    use crate::wire_codec::observation_wire;
     use futures::StreamExt as _;
     use std::sync::atomic::{AtomicU64, Ordering};
 

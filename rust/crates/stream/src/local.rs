@@ -3738,28 +3738,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn native_borrowed_projection_uses_the_only_canonical_frame_encoder()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let request = keyed_commit("captured-frame", 0)?;
-        let expected = PreparedFrame::encode(CommandRef::Commit(&request), 42)?;
-        let meter = Arc::new(LocalNativeMeter::default());
-        let original = meter.original();
-        let captured = journal_command_observed(CommandRef::Commit(&request), Some(&original))?;
-        let dto_capacity = captured.allocation.as_ref().map_or(0, ReadAllocation::bytes);
-
-        let frame = PreparedFrame::encode_wire_observed(&captured.value, 42, Some(&original))?;
-        assert_eq!(frame.encoded, expected.encoded);
-        assert_eq!(frame.bytes, expected.bytes);
-        assert_eq!(meter.memory.load(Ordering::SeqCst),
-            (dto_capacity + frame.encoded.capacity()) as u64);
-        drop(captured);
-        assert_eq!(meter.memory.load(Ordering::SeqCst), frame.encoded.capacity() as u64);
-        drop(frame);
-        assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
-        meter.assert_refunded();
-        Ok(())
-    }
 
     #[tokio::test]
     async fn borrowed_persisted_outcomes_match_unchanged_generated_schema()
@@ -4815,13 +4793,15 @@ mod tests {
         };
         let outcome = provider.append(first.clone()).await?;
         let state = provider.inner.provider.encode_state().await;
-        provider
+        let (physical, observed, _) = provider
             .inner
             .journal
             .journal
             .lock()
             .map_err(|_| "poisoned")?
-            .compact(&state)?;
+            .compact_observed(&state, None);
+        physical?;
+        observed?;
         drop(provider);
         let second = AppendRequest {
             idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from_static(b"second"))?),

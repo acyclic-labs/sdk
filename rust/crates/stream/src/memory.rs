@@ -5137,7 +5137,7 @@ mod tests {
                 .await
                 .ok_or(StreamError::Unavailable)??;
             assert_eq!(record.sequence, expected_tail - 1);
-            assert_eq!(record.value, expected);
+            assert_eq!(record.value.as_ref(), expected);
         }
         Ok(())
     }
