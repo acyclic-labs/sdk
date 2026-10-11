@@ -1761,7 +1761,9 @@ fn receipt_error(error: NativeReceiptError) -> Error {
     match error {
         NativeReceiptError::Owner(error) => error,
         NativeReceiptError::Native(error) => native_error(error),
-        NativeReceiptError::Backend(error) => Error::Storage(error.to_string()),
+        NativeReceiptError::Backend(source) => Error::NativeStream {
+            code: acyclic_harness::wire::ErrorCode::Storage, source, custody: None,
+        },
         NativeReceiptError::Record(message) => Error::Conflict(message.into()),
         NativeReceiptError::Decode { source, custody } => Error::NativeDecode {
             code: acyclic_harness::wire::ErrorCode::Storage, source, custody,
@@ -1775,7 +1777,9 @@ fn preparation_journal_error(error: NativePreparationJournalError) -> Error {
     match error {
         NativePreparationJournalError::Owner(error) => error,
         NativePreparationJournalError::Native(error) => native_error(error),
-        NativePreparationJournalError::Backend(error) => Error::Storage(error.to_string()),
+        NativePreparationJournalError::Backend(source) => Error::NativeStream {
+            code: acyclic_harness::wire::ErrorCode::Storage, source, custody: None,
+        },
         NativePreparationJournalError::Record(message) => Error::Conflict(message.into()),
     }
 }
