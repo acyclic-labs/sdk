@@ -1025,7 +1025,7 @@ mod tests {
         let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            finite_content_budget(), &cancellation).map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+            finite_content_budget(), &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?.peak_allocation_bytes;
         storage.publisher.supports_native_stage(&work)?;
         assert_eq!(work.receipt().backend_write_operations, 0);
@@ -1083,7 +1083,7 @@ mod tests {
         let mut denied = finite_content_budget();
         denied.backend_write_operations = 0;
         let denied_work = acyclic_fs::NativeMaterializationWork::new(
-            denied, &acyclic_fs::CancellationToken::new()).map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+            denied, &acyclic_fs::CancellationToken::new()).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         assert!(matches!(storage.publisher.stage_once_with_native_work(
             OperationId::new(), "denied", b"never", "text/plain", "never", &denied_work,
         ).await, Err(Error::NativeWork {
@@ -1104,7 +1104,7 @@ mod tests {
             &storage.scope, 1024)?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            finite_content_budget(), &cancellation).map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+            finite_content_budget(), &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let operation = OperationId::new();
         let (file, hold) = scheduler.stage_with_native_work(
             operation, "canonical-original-key", br#"{"input":1}"#, &work).await?;
@@ -1122,13 +1122,67 @@ mod tests {
         let mut denied = finite_content_budget();
         denied.bytes_hashed = "canonical-original-key".len() as u64 - 1;
         let denied_work = acyclic_fs::NativeMaterializationWork::new(
-            denied, &cancellation).map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+            denied, &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         assert!(matches!(scheduler.stage_with_native_work(
             OperationId::new(), "canonical-original-key", b"never", &denied_work).await,
             Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::Work(_), custody: None })));
         assert_eq!(denied_work.receipt().bytes_hashed, 0);
         assert_eq!(denied_work.receipt().backend_write_operations, 0);
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn native_host_original_key_recovers_immutable_upload_after_head_edit() -> Result<()> {
+        let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(finite_content_budget(), &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = work.live_allocation_bytes();
+        let key = IdempotencyKey::new("acyclic.pi/input/root-task/original-operation/label")?;
+        let staged = storage.host.put_content_with_native_work(
+            &storage.volume, &storage.write, "inputs/original.json", b"original",
+            "application/json", "original.json", 1024, &key, &work,
+        ).await?;
+        assert_eq!(staged.1.bytes(), staged.0.logical_owned_bytes()?);
+        storage.host.put_content(
+            &storage.volume, &storage.write, "inputs/original.json", b"later",
+            "text/plain", "later.txt", 1024, &IdempotencyKey::new("head-edit")?,
+        ).await?;
+        let recovered = storage.host.content_for_operation_with_native_work(
+            &storage.volume, &storage.write, &key, "inputs/original.json", 1024, &work,
+        ).await?.ok_or_else(|| Error::NotFound("original native operation receipt".into()))?;
+        assert_eq!(recovered.0, staged.0);
+        assert_eq!(recovered.1.bytes(), recovered.0.logical_owned_bytes()?);
+        let content = storage.content_verifier.read_with_native_work(&recovered.0, 1024, &work).await?;
+        assert_eq!(content.0, b"original");
+        drop(content);
+        let writes = work.receipt().backend_write_operations;
+        assert!(storage.host.put_content_with_native_work(
+            &storage.volume, &storage.write, "inputs/original.json", b"original",
+            "text/plain", "changed.txt", 1024, &key, &work,
+        ).await.is_err());
+        assert_eq!(work.receipt().backend_write_operations, writes);
+        assert!(storage.host.content_for_operation_with_native_work(
+            &storage.volume, &storage.write, &key, "inputs/changed.json", 1024, &work,
+        ).await.is_err());
+        assert!(storage.host.content_for_operation_with_native_work(
+            &storage.volume, &storage.write, &IdempotencyKey::new("proven-absent-operation")?,
+            "inputs/original.json", 1024, &work,
+        ).await?.is_none());
+        drop(recovered);
+        drop(staged);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        let cancelled = acyclic_fs::CancellationToken::new();
+        let cancelled_work = acyclic_fs::NativeMaterializationWork::new(finite_content_budget(), &cancelled)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let prefix = cancelled_work.receipt();
+        cancelled.cancel();
+        assert!(matches!(storage.host.content_for_operation_with_native_work(
+            &storage.volume, &storage.write, &key, "inputs/original.json", 1024, &cancelled_work,
+        ).await, Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
+        assert_eq!(cancelled_work.receipt(), prefix);
         Ok(())
     }
 
@@ -1150,7 +1204,7 @@ mod tests {
             if deny_bytes { budget.bytes_encoded = 0; } else { budget.items_examined = 0; }
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-                .map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let io = super::super::PreparationIo::from_native_work(&work)?;
             let before = work.receipt();
             assert!(matches!(io.encode_json(&CountingToken(&calls), 1024, true),
@@ -1175,7 +1229,7 @@ mod tests {
         budget.allocation_operations = 1;
         let work = acyclic_fs::NativeMaterializationWork::new(
             budget, &acyclic_fs::CancellationToken::new())
-            .map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = work.live_allocation_bytes();
         {
             let io = super::super::PreparationIo::from_native_work(&work)?;
@@ -1184,6 +1238,7 @@ mod tests {
                     acyclic_fs::WorkError::BudgetExceeded { counter: "allocation_operations", .. }), .. })));
         }
         assert_eq!(work.receipt().allocation_operations, 1);
+        assert_eq!(work.receipt().bytes_copied, 0);
         assert_eq!(work.live_allocation_bytes(), baseline);
         Ok(())
     }

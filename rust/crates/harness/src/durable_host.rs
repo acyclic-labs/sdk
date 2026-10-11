@@ -5470,7 +5470,7 @@ pub(crate) mod tests {
         };
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-            .map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         assert!(!journal.release_if_quiescent_with_native_work(&work, &workflow).await?);
         workflow.admit(owner.workflow_admission().clone()).await?;
         assert!(!journal.release_if_quiescent_with_native_work(&work, &workflow).await?);
@@ -5511,7 +5511,7 @@ pub(crate) mod tests {
             assert_eq!(work.live_allocation_bytes(), baseline);
             let denied_work = acyclic_fs::NativeMaterializationWork::new(
                 acyclic_fs::WorkBudget { backend_read_operations: 0, ..budget }, &cancellation,
-            ).map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+            ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let denied_live = denied_work.live_allocation_bytes();
             assert!(matches!(workflow.observe_transition_with_native_work(1, &denied_work).await,
                 Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(_), .. })));
@@ -5519,7 +5519,7 @@ pub(crate) mod tests {
             assert_eq!(denied_work.live_allocation_bytes(), denied_live);
             let cancelled = acyclic_fs::CancellationToken::new();
             let cancelled_work = acyclic_fs::NativeMaterializationWork::new(budget, &cancelled)
-                .map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let prefix = cancelled_work.receipt();
             cancelled.cancel();
             assert!(matches!(workflow.admission_with_native_work(&cancelled_work).await,
@@ -5542,7 +5542,7 @@ pub(crate) mod tests {
         // cancellation does not perform any work beyond its constructor prefix.
         let cancelled = acyclic_fs::CancellationToken::new();
         let cancelled_work = acyclic_fs::NativeMaterializationWork::new(budget, &cancelled)
-            .map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let cancelled_prefix = cancelled_work.receipt();
         cancelled.cancel();
         assert!(matches!(
@@ -5554,7 +5554,7 @@ pub(crate) mod tests {
         assert_eq!(cancelled_work.receipt(), cancelled_prefix);
         let quota_work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::WorkBudget { backend_read_operations: 0, ..budget }, &cancellation,
-        ).map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+        ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let quota_live = quota_work.live_allocation_bytes();
         assert!(matches!(
             journal.release_if_quiescent_with_native_work(&quota_work, &workflow).await,

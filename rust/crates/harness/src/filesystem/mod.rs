@@ -2672,6 +2672,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
     }
 
+    /// Publishes under the caller's exact original key on its native ledger.
+    /// Returned metadata custody must remain live through the reference's last use.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::too_many_arguments, reason = "original upload identity and native ledger")]
+    pub async fn put_content_with_native_work(
+        &self, volume: &VolumeRef, grant: &ContentGrant, path: &str, bytes: &[u8],
+        media_type: &str, display_name: &str, maximum_bytes: u64,
+        key: &IdempotencyKey, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(FileRef, acyclic_fs::NativeAllocation)> {
+        let io = PreparationIo::from_native_work(work)?;
+        let file = self.put_content_impl(volume, grant, path, bytes, media_type, display_name,
+            maximum_bytes, key, None, None, Some(&io)).await?;
+        let retained = file.logical_owned_bytes()?;
+        let custody = io.into_native_custody(retained)?;
+        Ok((file, custody))
+    }
+
     /// Recovers only an original immutable upload generation and its metadata.
     #[allow(clippy::too_many_arguments, reason = "original upload reconciliation binds authority, identity and bounds")]
     pub async fn content_for_operation_measured(
@@ -2686,6 +2703,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
             Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
         }
+    }
+
+    /// Recovers the caller's original operation generation, path and metadata;
+    /// absence is authenticated original-operation absence, never mutable head state.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::too_many_arguments, reason = "original retry identity and native ledger")]
+    pub async fn content_for_operation_with_native_work(
+        &self, volume: &VolumeRef, grant: &ContentGrant, key: &IdempotencyKey,
+        path: &str, maximum_bytes: u64, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<(FileRef, acyclic_fs::NativeAllocation)>> {
+        let io = PreparationIo::from_native_work(work)?;
+        let Some(file) = self.content_for_operation_impl(
+            volume, grant, key, Some(path), maximum_bytes, Some(&io)).await? else {
+                return Ok(None);
+            };
+        let retained = file.logical_owned_bytes()?;
+        let custody = io.into_native_custody(retained)?;
+        Ok(Some((file, custody)))
     }
 
     /// Observes the original once-publication without guessing its path or

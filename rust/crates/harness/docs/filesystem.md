@@ -49,6 +49,10 @@ the original operation's immutable generation, upload receipt and metadata.
 `None` proves that operation was absent, never that its path is absent at head.
 Changing path, bytes, media type, display name or expected generation cannot
 adopt an earlier upload identity. Historical refs remain pinned after head edits.
+Native host callers that already have an original key use
+`put_content_with_native_work` and `content_for_operation_with_native_work`.
+They preserve that key exactly rather than substituting the publisher's
+single-file key domain, and keep returned metadata custody through last use.
 
 The upload codec preserves the existing struct-ordered metadata bytes and
 sorted-key canonical receipt bytes. Its allowance covers logical owned
@@ -64,6 +68,9 @@ capacity is not a live-byte delta. Codec bytes/items and logical admission bound
 the other trusted serde/reference construction work. Conservative ownership
 reservations may remain live until this attempt ends; they are not an exact
 measurement of opaque allocator capacity.
+Copy admission is likewise zero-spend: after successful allocation, the copy
+callback charges only the imminent infallible push/extend, so allocation denial
+cannot fabricate copied bytes.
 
 Trusted closed-record decoding acquires a scoped logical quota reservation in
 the same meter before Serde runs, then substitutes actual retained string/key
