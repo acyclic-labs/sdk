@@ -3042,19 +3042,23 @@ impl DemandWork {
         self.cancellation_wait.native_io_failure.take()
     }
 
-    fn native_operation_credit(kind: acyclic_native_runtime::NativeOperationKind) -> crate::materializer::NativeResourceCredit {
+    fn operation_counter(kind: NativeOperationKind)
+        -> (crate::materializer::NativeResourceCredit, fn(&mut WorkCounters) -> &mut u64) {
+        use crate::materializer::NativeResourceCredit as Credit;
         match kind {
-            acyclic_native_runtime::NativeOperationKind::Read => crate::materializer::NativeResourceCredit::ReadOperations,
-            acyclic_native_runtime::NativeOperationKind::Write => crate::materializer::NativeResourceCredit::WriteOperations,
-            acyclic_native_runtime::NativeOperationKind::Durability => crate::materializer::NativeResourceCredit::DurabilityOperations,
+            NativeOperationKind::Read => (Credit::ReadOperations, |work| &mut work.backend_read_operations),
+            NativeOperationKind::Write => (Credit::WriteOperations, |work| &mut work.backend_write_operations),
+            NativeOperationKind::Durability => (Credit::DurabilityOperations, |work| &mut work.durability_operations),
         }
     }
 
-    fn native_byte_credit(kind: acyclic_native_runtime::NativeOperationKind) -> Option<crate::materializer::NativeResourceCredit> {
+    fn byte_counter(kind: NativeOperationKind)
+        -> Option<(crate::materializer::NativeResourceCredit, fn(&mut WorkCounters) -> &mut u64)> {
+        use crate::materializer::NativeResourceCredit as Credit;
         match kind {
-            acyclic_native_runtime::NativeOperationKind::Read => Some(crate::materializer::NativeResourceCredit::ReadBytes),
-            acyclic_native_runtime::NativeOperationKind::Write => Some(crate::materializer::NativeResourceCredit::WriteBytes),
-            acyclic_native_runtime::NativeOperationKind::Durability => None,
+            NativeOperationKind::Read => Some((Credit::ReadBytes, |work| &mut work.source_bytes_read)),
+            NativeOperationKind::Write => Some((Credit::WriteBytes, |work| &mut work.output_bytes)),
+            NativeOperationKind::Durability => None,
         }
     }
 
@@ -3062,33 +3066,20 @@ impl DemandWork {
         &mut self, kind: acyclic_native_runtime::NativeOperationKind, count: u64,
     ) -> std::io::Result<()> {
         if let Some(resource) = self.resource_scope() {
-            let credit = Self::native_operation_credit(kind);
+            let credit = Self::operation_counter(kind).0;
             let result = resource.reserve_credit(credit, count, || self.with_resource_scope(None,
                 |work| work.reserve_native_operations(kind, count).map_err(DemandError::Io)));
             return result.map_err(|error| self.record_native_io_failure(error));
         }
         self.check().map_err(|error| self.record_native_io_failure(error))?;
-        let delta = match kind {
-            acyclic_native_runtime::NativeOperationKind::Read => WorkCounters {
-                backend_read_operations: count, ..WorkCounters::UNCHARGED
-            },
-            acyclic_native_runtime::NativeOperationKind::Write => WorkCounters {
-                backend_write_operations: count, ..WorkCounters::UNCHARGED
-            },
-            acyclic_native_runtime::NativeOperationKind::Durability => WorkCounters {
-                durability_operations: count, ..WorkCounters::UNCHARGED
-            },
-        };
+        let mut delta = WorkCounters::UNCHARGED;
+        *(Self::operation_counter(kind).1)(&mut delta) = count;
         self.work.admit(&delta, &self.budget)
             .map_err(|error| self.record_native_io_failure(error.into()))?;
         if kind == acyclic_native_runtime::NativeOperationKind::Durability {
             self.cancellation_wait.pending_native_durability += count;
         }
-        let allowance = match kind {
-            acyclic_native_runtime::NativeOperationKind::Read => &mut self.budget.backend_read_operations,
-            acyclic_native_runtime::NativeOperationKind::Write => &mut self.budget.backend_write_operations,
-            acyclic_native_runtime::NativeOperationKind::Durability => &mut self.budget.durability_operations,
-        };
+        let allowance = (Self::operation_counter(kind).1)(&mut self.budget);
         *allowance -= count;
         Ok(())
     }
@@ -3098,7 +3089,7 @@ impl DemandWork {
     ) {
         if let Some(resource) = self.resource_scope() {
             self.with_resource_scope(None, |work| work.cancel_reserved_native_operations(kind, count));
-            if let Err(error) = resource.refund_credit(Self::native_operation_credit(kind), count) {
+            if let Err(error) = resource.refund_credit(Self::operation_counter(kind).0, count) {
                 self.record_native_io_failure(error);
             }
             return;
@@ -3107,11 +3098,7 @@ impl DemandWork {
             self.cancellation_wait.pending_native_durability = self.cancellation_wait.pending_native_durability
                 .checked_sub(count).expect("durability completion owns its original reservation");
         }
-        let allowance = match kind {
-            acyclic_native_runtime::NativeOperationKind::Read => &mut self.budget.backend_read_operations,
-            acyclic_native_runtime::NativeOperationKind::Write => &mut self.budget.backend_write_operations,
-            acyclic_native_runtime::NativeOperationKind::Durability => &mut self.budget.durability_operations,
-        };
+        let allowance = (Self::operation_counter(kind).1)(&mut self.budget);
         *allowance = allowance.checked_add(count)
             .expect("unused native reservation restores only its own withheld allowance");
     }
@@ -3121,22 +3108,13 @@ impl DemandWork {
     ) -> std::io::Result<()> {
         if let Some(resource) = self.resource_scope() {
             let recorded = self.with_resource_scope(None, |work| work.record_reserved_native_operation(kind));
-            let resource = resource.complete_credit(Self::native_operation_credit(kind), 1, 1)
+            let resource = resource.complete_credit(Self::operation_counter(kind).0, 1, 1)
                 .map_err(|error| self.record_native_io_failure(error));
             return recorded.and(resource);
         }
         self.cancel_reserved_native_operations(kind, 1);
-        let delta = match kind {
-            acyclic_native_runtime::NativeOperationKind::Read => WorkCounters {
-                backend_read_operations: 1, ..WorkCounters::UNCHARGED
-            },
-            acyclic_native_runtime::NativeOperationKind::Write => WorkCounters {
-                backend_write_operations: 1, ..WorkCounters::UNCHARGED
-            },
-            acyclic_native_runtime::NativeOperationKind::Durability => WorkCounters {
-                durability_operations: 1, ..WorkCounters::UNCHARGED
-            },
-        };
+        let mut delta = WorkCounters::UNCHARGED;
+        *(Self::operation_counter(kind).1)(&mut delta) = 1;
         self.work.try_add_assign(&delta)
             .and_then(|()| self.work.verify(self.budget))
             .map_err(|error| self.record_native_io_failure(error.into()))
@@ -3157,28 +3135,17 @@ impl DemandWork {
         &mut self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64,
     ) -> std::io::Result<()> {
         if let Some(resource) = self.resource_scope() {
-            let credit = Self::native_byte_credit(kind).ok_or(std::io::ErrorKind::Unsupported)?;
+            let credit = Self::byte_counter(kind).map(|(credit, _)| credit).ok_or(std::io::ErrorKind::Unsupported)?;
             let result = resource.reserve_credit(credit, maximum, || self.with_resource_scope(None,
                 |work| work.reserve_native_bytes(kind, maximum).map_err(DemandError::Io)));
             return result.map_err(|error| self.record_native_io_failure(error));
         }
         self.check().map_err(|error| self.record_native_io_failure(error))?;
-        let delta = match kind {
-            acyclic_native_runtime::NativeOperationKind::Read => WorkCounters {
-                source_bytes_read: maximum, ..WorkCounters::UNCHARGED
-            },
-            acyclic_native_runtime::NativeOperationKind::Write => WorkCounters {
-                output_bytes: maximum, ..WorkCounters::UNCHARGED
-            },
-            acyclic_native_runtime::NativeOperationKind::Durability => return Err(std::io::ErrorKind::Unsupported.into()),
-        };
+        let mut delta = WorkCounters::UNCHARGED;
+        *(Self::byte_counter(kind).ok_or(std::io::ErrorKind::Unsupported)?.1)(&mut delta) = maximum;
         self.work.admit(&delta, &self.budget)
             .map_err(|error| self.record_native_io_failure(error.into()))?;
-        let allowance = match kind {
-            acyclic_native_runtime::NativeOperationKind::Read => &mut self.budget.source_bytes_read,
-            acyclic_native_runtime::NativeOperationKind::Write => &mut self.budget.output_bytes,
-            acyclic_native_runtime::NativeOperationKind::Durability => unreachable!("durability does not reserve bytes"),
-        };
+        let allowance = (Self::byte_counter(kind).expect("durability does not reserve bytes").1)(&mut self.budget);
         *allowance -= maximum;
         Ok(())
     }
@@ -3188,16 +3155,12 @@ impl DemandWork {
     ) {
         if let Some(resource) = self.resource_scope() {
             self.with_resource_scope(None, |work| work.cancel_reserved_native_bytes(kind, maximum));
-            if let Some(credit) = Self::native_byte_credit(kind) {
+            if let Some(credit) = Self::byte_counter(kind).map(|(credit, _)| credit) {
                 if let Err(error) = resource.refund_credit(credit, maximum) { self.record_native_io_failure(error); }
             }
             return;
         }
-        let allowance = match kind {
-            acyclic_native_runtime::NativeOperationKind::Read => &mut self.budget.source_bytes_read,
-            acyclic_native_runtime::NativeOperationKind::Write => &mut self.budget.output_bytes,
-            acyclic_native_runtime::NativeOperationKind::Durability => unreachable!("durability does not reserve bytes"),
-        };
+        let allowance = (Self::byte_counter(kind).expect("durability does not reserve bytes").1)(&mut self.budget);
         *allowance = allowance.checked_add(maximum)
             .expect("unused native byte reservation restores only its withheld allowance");
     }
@@ -3206,7 +3169,7 @@ impl DemandWork {
         &mut self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64, actual: u64,
     ) -> std::io::Result<()> {
         if let Some(resource) = self.resource_scope() {
-            let credit = Self::native_byte_credit(kind).ok_or(std::io::ErrorKind::Unsupported)?;
+            let credit = Self::byte_counter(kind).map(|(credit, _)| credit).ok_or(std::io::ErrorKind::Unsupported)?;
             let recorded = self.with_resource_scope(None, |work| work.record_reserved_native_bytes(kind, maximum, actual));
             let resource = resource.complete_credit(credit, maximum, actual)
                 .map_err(|error| self.record_native_io_failure(error));
@@ -3216,15 +3179,8 @@ impl DemandWork {
             return Err(std::io::ErrorKind::Unsupported.into());
         }
         self.cancel_reserved_native_bytes(kind, maximum);
-        let delta = match kind {
-            acyclic_native_runtime::NativeOperationKind::Read => WorkCounters {
-                source_bytes_read: actual, ..WorkCounters::UNCHARGED
-            },
-            acyclic_native_runtime::NativeOperationKind::Write => WorkCounters {
-                output_bytes: actual, ..WorkCounters::UNCHARGED
-            },
-            acyclic_native_runtime::NativeOperationKind::Durability => unreachable!("durability does not reserve bytes"),
-        };
+        let mut delta = WorkCounters::UNCHARGED;
+        *(Self::byte_counter(kind).ok_or(std::io::ErrorKind::Unsupported)?.1)(&mut delta) = actual;
         self.work.try_add_assign(&delta)
             .map_err(|error| self.record_native_io_failure(error.into()))?;
         if actual > maximum {
@@ -5375,55 +5331,6 @@ pub mod native {
             work.finish(result)
         }
 
-        /// Opens and identifies only the root directory off the async executor.
-        pub async fn open(
-            path: impl AsRef<Path>,
-            profile: FilesystemProfile,
-            limits: VolumeLimits,
-        ) -> Result<Self, DemandError> {
-            Self::open_configured(
-                path,
-                profile,
-                limits,
-                SourceReference {
-                    identity: *uuid::Uuid::new_v4().as_bytes(),
-                    epoch: 0,
-                },
-                None,
-            )
-            .await
-        }
-
-        /// Opens a lazy native source whose demanded directories are admitted
-        pub async fn open_with_observer(
-            path: impl AsRef<Path>,
-            profile: FilesystemProfile,
-            limits: VolumeLimits,
-            observer: Arc<dyn DemandDirectoryObserver>,
-        ) -> Result<Self, DemandError> {
-            Self::open_with_reference_and_observer(
-                path,
-                profile,
-                limits,
-                SourceReference {
-                    identity: *uuid::Uuid::new_v4().as_bytes(),
-                    epoch: 0,
-                },
-                observer,
-            )
-            .await
-        }
-
-        /// Reopens only the root directory using a durable provider identity.
-        pub async fn open_with_reference(
-            path: impl AsRef<Path>,
-            profile: FilesystemProfile,
-            limits: VolumeLimits,
-            reference: SourceReference,
-        ) -> Result<Self, DemandError> {
-            Self::open_configured(path, profile, limits, reference, None).await
-        }
-
         /// Opens only the original native root under an admitted finite budget.
         pub async fn open_with_reference_measured(
             path: PathBuf,
@@ -5538,24 +5445,17 @@ pub mod native {
             }
         }
 
-        /// Reopens a durably identified lazy source with demand-driven
-        pub async fn open_with_reference_and_observer(
+        /// Opens the root with an optional durable identity and directory observer.
+        pub async fn open(
             path: impl AsRef<Path>,
             profile: FilesystemProfile,
             limits: VolumeLimits,
-            reference: SourceReference,
-            observer: Arc<dyn DemandDirectoryObserver>,
-        ) -> Result<Self, DemandError> {
-            Self::open_configured(path, profile, limits, reference, Some(observer)).await
-        }
-
-        async fn open_configured(
-            path: impl AsRef<Path>,
-            profile: FilesystemProfile,
-            limits: VolumeLimits,
-            reference: SourceReference,
+            reference: Option<SourceReference>,
             observer: Option<Arc<dyn DemandDirectoryObserver>>,
         ) -> Result<Self, DemandError> {
+            let reference = reference.unwrap_or_else(|| SourceReference {
+                identity: *uuid::Uuid::new_v4().as_bytes(), epoch: 0,
+            });
             acyclic_native_runtime::initialize_native_io_services()?;
             Self::open_with_reference_measured(
                 path.as_ref().to_path_buf(), profile, limits, reference, observer,
@@ -8017,7 +7917,7 @@ mod tests {
         let root = tempfile::tempdir()?;
         std::fs::write(root.path().join("actual"), b"actual")?;
         let source = OrdinaryNativeSource(NativeDemandSource::open(
-            root.path(), FilesystemProfile::Portable, VolumeLimits::default(),
+            root.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None,
         ).await?);
         let requested = path("/actual")?;
         let node = source.lookup(source.reference(), &requested, WorkBudget::UNBOUNDED,
@@ -8081,7 +7981,7 @@ mod tests {
         let temporary = tempfile::tempdir()?;
         std::fs::write(temporary.path().join("present"), b"real source")?;
         let source = NativeDemandSource::open(
-            temporary.path(), FilesystemProfile::Portable, VolumeLimits::default(),
+            temporary.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None,
         ).await?;
         let cancellation = CancellationToken::new();
         let budget = finite_watch_budget()?;
@@ -8137,6 +8037,14 @@ mod tests {
             })();
             work.finish(result)
         }
+    }
+
+    fn finite_watch_budget() -> Result<WorkBudget, Box<dyn Error>> {
+        let mut value = serde_json::to_value(WorkBudget::UNBOUNDED)?;
+        if let serde_json::Value::Object(fields) = &mut value {
+            for allowance in fields.values_mut() { *allowance = serde_json::json!(1_000_000_u64); }
+        }
+        Ok(serde_json::from_value(value)?)
     }
 
     fn path(value: &str) -> Result<NamespacePath, Box<dyn Error>> {
@@ -8237,7 +8145,7 @@ mod tests {
     #[tokio::test]
     async fn native_source_watch_fence_honors_original_pre_cancellation() -> Result<(), Box<dyn Error>> {
         let root = tempfile::tempdir()?;
-        let source = NativeDemandSource::open(root.path(), FilesystemProfile::Portable, VolumeLimits::default()).await?;
+        let source = NativeDemandSource::open(root.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None).await?;
         let subscription_cancellation = CancellationToken::new();
         let recorded = Arc::new(RecordedChanges::default());
         let subscribed = source.watch(recorded, WorkBudget::UNBOUNDED, &subscription_cancellation)?;
@@ -8273,7 +8181,7 @@ mod tests {
         let source = NativeDemandSource::open(
             root.path(),
             FilesystemProfile::Portable,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?;
         let recorded = Arc::new(RecordedChanges::default());
@@ -8334,7 +8242,7 @@ mod tests {
             NativeDemandSource::open(
                 root.path(),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await?,
             vec![path("/.git")?],
@@ -8377,7 +8285,7 @@ mod tests {
         let source = NativeDemandSource::open(
             root.path(),
             FilesystemProfile::Posix,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?;
         let reference = source.reference();
@@ -8430,7 +8338,7 @@ mod tests {
         let source = NativeDemandSource::open(
             root.path(),
             FilesystemProfile::Posix,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?;
         let reference = source.reference();
@@ -8461,11 +8369,10 @@ mod tests {
         std::fs::create_dir(root.path().join("nested"))?;
         std::fs::write(root.path().join("nested/file"), b"content")?;
         let observer = Arc::new(RecordingObserver::default());
-        let source = NativeDemandSource::open_with_observer(
+        let source = NativeDemandSource::open(
             root.path(),
             FilesystemProfile::Portable,
-            VolumeLimits::default(),
-            observer.clone(),
+            VolumeLimits::default(), None, Some(observer.clone()),
         )
         .await?;
         let reference = source.reference();
@@ -8497,7 +8404,7 @@ mod tests {
         let source = NativeDemandSource::open(
             root.path(),
             FilesystemProfile::Portable,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?;
         let provider = &source;
@@ -8556,7 +8463,7 @@ mod tests {
         let source = NativeDemandSource::open(
             root.path(),
             FilesystemProfile::Portable,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?;
         let provider = &source;
@@ -8602,7 +8509,7 @@ mod tests {
         let source = NativeDemandSource::open(
             root.path(),
             FilesystemProfile::Portable,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?;
         let permits = source.occupy_all_requests().await?;
@@ -8653,7 +8560,7 @@ mod tests {
         std::fs::create_dir(&root)?;
         std::fs::write(root.join("file"), contents)?;
         let source =
-            NativeDemandSource::open(&root, FilesystemProfile::Portable, VolumeLimits::default())
+            NativeDemandSource::open(&root, FilesystemProfile::Portable, VolumeLimits::default(), None, None)
                 .await?;
         let reference = source.reference();
         let cancellation = CancellationToken::new();
@@ -8757,7 +8664,7 @@ mod tests {
         let source = NativeDemandSource::open(
             temporary.path(),
             FilesystemProfile::Portable,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?
         .remote();
@@ -8785,7 +8692,7 @@ mod tests {
         let temporary = tempfile::tempdir()?;
         std::fs::write(temporary.path().join("file"), b"remote")?;
         let source = NativeDemandSource::open(
-            temporary.path(), FilesystemProfile::Portable, VolumeLimits::default(),
+            temporary.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None,
         ).await?.remote();
         let reference = source.reference();
         let cancellation = CancellationToken::new();
@@ -8814,8 +8721,8 @@ mod tests {
             }
         }
         assert!(!cancellation.is_cancelled());
-        let reopened = NativeDemandSource::open_with_reference(
-            temporary.path(), FilesystemProfile::Portable, VolumeLimits::default(), reference,
+        let reopened = NativeDemandSource::open(
+            temporary.path(), FilesystemProfile::Portable, VolumeLimits::default(), Some(reference), None,
         ).await?;
         assert_eq!(source.root_identity(), reopened.root_identity());
         let read = reopened.read_range(reference, &requested, node.version, 0, 6, budget, &cancellation).await?;
@@ -8916,7 +8823,7 @@ mod tests {
         let source = NativeDemandSource::open(
             root.path(),
             FilesystemProfile::Portable,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?;
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
@@ -8943,7 +8850,7 @@ mod tests {
         let source = NativeDemandSource::open(
             root.path(),
             FilesystemProfile::Portable,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?;
         let reference = source.reference();
@@ -8984,7 +8891,7 @@ mod tests {
         let source = NativeDemandSource::open(
             root.path(),
             FilesystemProfile::Portable,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?;
         let reference = source.reference();
@@ -9041,7 +8948,7 @@ mod tests {
         let source = NativeDemandSource::open(
             root.path(),
             FilesystemProfile::Portable,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?;
         let reference = source.reference();
@@ -9155,7 +9062,7 @@ mod tests {
         let root = tempfile::tempdir()?;
         std::fs::write(root.path().join(&host_name), b"data")?;
         let source =
-            NativeDemandSource::open(root.path(), FilesystemProfile::Windows, limits).await?;
+            NativeDemandSource::open(root.path(), FilesystemProfile::Windows, limits, None, None).await?;
         let exact = NamespacePath::new(vec![name], limits)?;
         assert!(
             source
@@ -9176,7 +9083,7 @@ mod tests {
         let root = tempfile::tempdir()?;
         std::fs::write(root.path().join(host_name), b"data")?;
         let source =
-            NativeDemandSource::open(root.path(), profile, VolumeLimits::default()).await?;
+            NativeDemandSource::open(root.path(), profile, VolumeLimits::default(), None, None).await?;
         let exact = NamespacePath::new(vec![name], VolumeLimits::default())?;
         let node = source.lookup(source.reference(), &exact, WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await?

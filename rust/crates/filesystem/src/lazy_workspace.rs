@@ -17530,7 +17530,7 @@ mod tests {
         std::fs::write(directory.path().join("hot/gone"), b"source-gone").expect("removed source data");
         std::fs::write(directory.path().join("cold/untouched"), b"outside-native").expect("outside source data");
         let source = Arc::new(crate::demand::native::NativeDemandSource::open(
-            directory.path(), crate::model::FilesystemProfile::Portable, crate::model::VolumeLimits::default(),
+            directory.path(), crate::model::FilesystemProfile::Portable, crate::model::VolumeLimits::default(), None, None,
         ).await.expect("actual native provider"));
         let root = LazyWorkspace::attach(&Fs::memory(), "selected-native-original",
             source, MemoryLazyWorkspaceStore::default()).await.expect("attach");
@@ -17585,7 +17585,7 @@ mod tests {
             std::fs::write(directory.path().join("selected"), b"original-body").expect("source body");
             let source = Arc::new(crate::demand::native::NativeDemandSource::open(
                 directory.path(), crate::model::FilesystemProfile::Portable,
-                crate::model::VolumeLimits::default(),
+                crate::model::VolumeLimits::default(), None, None,
             ).await.expect("native source"));
             let root = LazyWorkspace::attach(&Fs::memory(), "selected-original-denial",
                 Arc::clone(&source), MemoryLazyWorkspaceStore::default()).await.expect("attach");
@@ -17907,7 +17907,7 @@ mod tests {
         let source = Arc::new(CancelAfterNativePage {
             inner: crate::demand::native::NativeDemandSource::open(
                 directory.path(), crate::model::FilesystemProfile::Portable,
-                crate::model::VolumeLimits::default(),
+                crate::model::VolumeLimits::default(), None, None,
             ).await.expect("native provider"),
             cancel: AtomicBool::new(true),
         });
@@ -18500,7 +18500,7 @@ mod tests {
             NativeDemandSource::open(
                 directory.path(),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await
             .expect("source"),
@@ -18997,7 +18997,7 @@ mod tests {
             NativeDemandSource::open(
                 directory.path(),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await
             .expect("source"),
@@ -19120,7 +19120,7 @@ mod tests {
             NativeDemandSource::open(
                 directory.path(),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await
             .expect("source"),
@@ -20164,7 +20164,7 @@ mod tests {
             std::fs::write(directory.path().join(name), name.as_bytes()).expect("source file");
         }
         let source = Arc::new(crate::demand::native::NativeDemandSource::open(
-            directory.path(), crate::model::FilesystemProfile::Portable, crate::model::VolumeLimits::default(),
+            directory.path(), crate::model::FilesystemProfile::Portable, crate::model::VolumeLimits::default(), None, None,
         ).await.expect("native source"));
         let root = LazyWorkspace::attach(
             &Fs::memory(), "frozen-native-cursor-codec", source, MemoryLazyWorkspaceStore::default(),
@@ -20200,7 +20200,7 @@ mod tests {
     async fn frozen_native_absence_query_marks_actual_source_participation() {
         let directory = tempfile::tempdir().expect("empty native source");
         let source = Arc::new(crate::demand::native::NativeDemandSource::open(
-            directory.path(), crate::model::FilesystemProfile::Portable, crate::model::VolumeLimits::default(),
+            directory.path(), crate::model::FilesystemProfile::Portable, crate::model::VolumeLimits::default(), None, None,
         ).await.expect("native source"));
         let root = LazyWorkspace::attach(
             &Fs::memory(), "frozen-native-absence", source, MemoryLazyWorkspaceStore::default(),
@@ -20257,7 +20257,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("native source");
         std::os::unix::fs::symlink("missing-target", directory.path().join("link")).expect("dangling link");
         let source = Arc::new(crate::demand::native::NativeDemandSource::open(
-            directory.path(), crate::model::FilesystemProfile::Portable, crate::model::VolumeLimits::default(),
+            directory.path(), crate::model::FilesystemProfile::Portable, crate::model::VolumeLimits::default(), None, None,
         ).await.expect("native source"));
         let root = LazyWorkspace::attach(
             &Fs::memory(), "frozen-native-link", source, MemoryLazyWorkspaceStore::default(),
@@ -20612,7 +20612,7 @@ mod tests {
             NativeDemandSource::open(
                 directory.path(),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await
             .expect("source"),
@@ -20655,7 +20655,7 @@ mod tests {
             NativeDemandSource::open(
                 directory.path(),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await
             .expect("source"),
@@ -20735,7 +20735,7 @@ mod tests {
             NativeDemandSource::open(
                 directory.path(),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await
             .expect("source"),
@@ -20816,7 +20816,7 @@ mod tests {
             NativeDemandSource::open(
                 directory.path(),
                 FilesystemProfile::Windows,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await
             .expect("Windows source"),
@@ -20858,7 +20858,7 @@ mod tests {
             NativeDemandSource::open(
                 directory.path(),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await
             .expect("source"),
