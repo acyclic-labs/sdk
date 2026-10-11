@@ -364,6 +364,14 @@ admits the known logical preparer header before the SDK Arc allocation; opaque
 standard-library allocator backing is not an RSS claim. Custody membership is
 not authority: the original scope MAC, parent agent, provider and history cut
 are still verified before filesystem work.
+Configured native preparation source callbacks borrow the original
+`Arc<NativeTaskContext>`, not a reconstructed or deeply cloned task context.
+Fresh preparation requires its issued dispatch purpose and creation token;
+`preparation_for_reconciliation_with_native_work` uses the same restoration
+engine but verifies only the original token's settlement authority. Immutable
+checkpoint reads use that shared context's original-owner content verifier.
+The passive callback cannot create, publish or admit a child, and preserves
+the original source operation, history cut and authenticated Project selection.
 
 `TaskAdmissionRecord`, `ResourcePreparationRequest`, `ForkRequest` and
 `ForkReport` provide borrowed `validate_with_native_work` entrypoints to their

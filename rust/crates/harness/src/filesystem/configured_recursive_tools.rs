@@ -1498,12 +1498,21 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     async fn native_preparation_source(
-        &self, context: &TaskContext, token: &TaskResourcePreparation,
+        &self, context: &Arc<crate::NativeTaskContext>, token: &TaskResourcePreparation,
         cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork,
+        reconciliation_only: bool,
     ) -> Result<(RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)> {
         cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
-        context.owned_task_binding_with_native_work(work)?;
-        token.verify_creation_with_native_work(work)?.await?;
+        let task_context = context.context();
+        task_context.owned_task_binding_with_native_work(work)?;
+        if reconciliation_only {
+            token.verify_reconciliation_with_native_work(work)?.await?;
+        } else {
+            task_context.require_original_native_dispatch(work)?;
+            token.verify_creation_with_native_work(work)?.await?;
+        }
+        let owner = self.native_source_owner(task_context, cancellation, work).await?;
+        let resolver = context.content_residency_verifier_with_native_work(owner, work)?;
         let preparation = token.request();
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         {
@@ -1539,7 +1548,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 reason: "native preparation changed its retained sealed Project source" });
         }
         let restored = if let Some(checkpoint) = &preparation.source_checkpoint {
-            let retained = context.read_file_with_native_work(checkpoint, work).await?;
+            let retained = resolver.read_with_native_work(checkpoint, task_context.scope().limits().file_bytes, work)?.await?;
             let capture = io.decode_preparation::<SourceCheckpoint>(retained.as_ref())?.into_retained();
             if capture.request != request || capture.caller != caller_task {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
@@ -1561,8 +1570,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             io.absorb_native_custody(original.1)?;
             original.0.into_reducer()
         };
-        let owner = self.native_source_owner(context, cancellation, work).await?;
-        let resolver = context.content_residency_verifier_with_native_work(owner, work)?;
         let verifier = {
             let mut history = io.history_io();
             caller.owner.issuer().verifier_with_work(&mut Some(&mut history))?
@@ -1577,7 +1584,11 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             &caller.project, &self.config.stream_provider, (copied_request.0, request_guard),
             self.config.history_limits, token.project_source(), resolver, cancellation, work,
         ).await?;
-        token.verify_creation_with_native_work(work)?.await?;
+        if reconciliation_only {
+            token.verify_reconciliation_with_native_work(work)?.await?;
+        } else {
+            token.verify_creation_with_native_work(work)?.await?;
+        }
         cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         Ok(source)
     }
@@ -1643,11 +1654,20 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn preparation_with_native_work<'a>(&'a self, context: &'a TaskContext,
+    fn preparation_with_native_work<'a>(&'a self, context: &'a Arc<crate::NativeTaskContext>,
         token: &'a TaskResourcePreparation, cancellation: &'a CancellationToken,
         work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || self.native_preparation_source(context, token, cancellation, work))
+        crate::NativeFutureBundle::new(work, || self.native_preparation_source(context, token, cancellation, work, false))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn preparation_for_reconciliation_with_native_work<'a>(
+        &'a self, context: &'a Arc<crate::NativeTaskContext>,
+        token: &'a TaskResourcePreparation, cancellation: &'a CancellationToken,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || self.native_preparation_source(context, token, cancellation, work, true))
     }
     fn merge<'a>(&'a self, context: &'a ToolContext, arguments: &'a MergeToolArguments, original: Option<&'a RecursiveMergeToolPlan>,
         cancellation: &'a CancellationToken) -> BoxProviderFuture<'a, Result<MergeBinding<P, A, O>>> {

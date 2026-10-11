@@ -139,12 +139,24 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn preparation_with_native_work<'a>(&'a self, _context: &'a TaskContext,
+    fn preparation_with_native_work<'a>(&'a self, _context: &'a Arc<crate::NativeTaskContext>,
         _preparation: &'a crate::resource_preparation::TaskResourcePreparation,
         _cancellation: &'a CancellationToken, _work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>> {
         Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
             reason: "recursive source has no original native preparation producer" })
+    }
+
+    /// Restores only the retained source for passive reconciliation. This never
+    /// gives a settlement context permission to allocate or publish a child.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn preparation_for_reconciliation_with_native_work<'a>(
+        &'a self, _context: &'a Arc<crate::NativeTaskContext>,
+        _preparation: &'a crate::resource_preparation::TaskResourcePreparation,
+        _cancellation: &'a CancellationToken, _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+            reason: "recursive source has no original native preparation reconciliation producer" })
     }
 }
 
