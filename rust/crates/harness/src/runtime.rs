@@ -995,16 +995,13 @@ fn task_definition_digest_with_io(
 fn clone_child_schema_with_work(
     schema: &Value, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<Value> {
-    let native = work.as_deref().and_then(|io| io.original_native_work())
-        .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "child schema copy requires its original native ledger" })?;
-    let mut custody = native.retain_owned(crate::core::value_clone_owned_bytes(schema)?)
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    crate::core::begin_clone_work(crate::core::value_clone_work(schema)?, work)?;
-    let copied = schema.clone();
-    custody.reconcile_capacity(crate::core::value_owned_bytes(&copied)?)
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    work.as_deref_mut().expect("native child schema observer").absorb_native_custody(custody)?;
+    if work.as_deref().and_then(|io| io.original_native_work()).is_none() {
+        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+            reason: "registered schema copy requires its original native ledger" });
+    }
+    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let copied = crate::core::copy_value(schema, &mut quota)?;
+    quota.transfer();
     Ok(copied)
 }
 
@@ -1631,33 +1628,12 @@ impl TaskRegistry {
                 scope.grants().iter().chain(entry.requirements.iter().map(String::as_str)), &native,
             )?;
             work.as_deref_mut().expect("native admission source").absorb_native_custody(grant_custody)?;
-            let (allocations, copied) = RuntimeScope::native_proof_clone_recipe(scope.resource_proofs(), &native)?;
-            let slots = scope.resource_proofs().len()
-                .checked_mul(std::mem::size_of::<crate::resource_preparation::ResourceCreationProofRef>())
-                .ok_or_else(RuntimeScope::native_metadata_overflow)? as u64;
-            let proof_bytes = slots.checked_add(copied).ok_or_else(RuntimeScope::native_metadata_overflow)?;
-            work.as_deref_mut().expect("native child source").retain_owned(proof_bytes)?;
-            crate::core::begin_clone_work((allocations, copied), work)?;
-            let resource_proofs = scope.resource_proofs().to_vec();
-            let extensions = match scope.extensions() {
-                None => None,
-                Some(extension) => {
-                    let recipe = extension.clone_work_recipe()?;
-                    let slots = extension.selected().len()
-                        .checked_mul(std::mem::size_of::<crate::core::ExtensionDependency>())
-                        .and_then(|bytes| extension.configurations().len()
-                            .checked_mul(std::mem::size_of::<crate::core::ExtensionConfiguration>())
-                            .and_then(|configured| bytes.checked_add(configured)))
-                        .ok_or_else(RuntimeScope::native_metadata_overflow)? as u64;
-                    let owned = slots.checked_add(recipe.1)
-                        .ok_or_else(RuntimeScope::native_metadata_overflow)?;
-                    let io = work.as_deref_mut().expect("native admission source");
-                    io.admit_owned(owned)?;
-                    io.retain_owned(owned)?;
-                    crate::core::begin_clone_work(recipe, work)?;
-                    Some(extension.clone())
-                }
-            };
+            let resource_proofs = RuntimeScope::clone_resource_proofs_with_work(
+                scope.resource_proofs(), work,
+            )?;
+            let extensions = scope.extensions()
+                .map(|extension| extension.clone_with_work(work))
+                .transpose()?;
             let record = TaskAdmissionRecord {
                 operation_id: operation, task, machine, input, input_schema, output_schema,
                 parent, resource_proofs, grants, limits: scope.limits(),

@@ -620,6 +620,9 @@ the exact configured task definition and scope. It uses the ordinary durable
 declaration/configuration/idempotency engine; children still require their
 original parent's fence. Admission results transfer only their actual output
 custody, not the history reader's caches or other retained packets.
+Schema, resource-proof and extension copies are observed at each actual owned
+field allocation through the canonical codec/copy producers; precomputed clone
+recipes followed by unobserved aggregate clones are not admission receipts.
 
 An issued native task context has one immutable root output installation slot.
 Only the SDK's sealed successful creation association, protected root binding,

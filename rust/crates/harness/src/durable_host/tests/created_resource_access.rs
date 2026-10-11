@@ -1335,6 +1335,33 @@ async fn registered_native_root_rejects_foreign_input_and_child_without_fence_be
 }
 
 #[tokio::test]
+async fn registered_native_root_cancellation_precedes_metadata_copy_and_io() -> Result<()> {
+    let fixture = CreationFixture::new().await?;
+    let definition = TaskDefinition::<Value, Value>::resumable(
+        Arc::new(CreatedControlMachine {
+            identity: fixture.machine.clone(), schema: fixture.schema.clone(),
+        }),
+        fixture.schema.clone(), fixture.schema.clone(),
+    )?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        creation_control_budget(), &cancellation,
+    ).map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+    let input = native_registered_root_input(&work)?;
+    cancellation.cancel();
+    let before = work.receipt();
+    assert!(matches!(fixture.harness.registered_root_admission_with_native_work(
+        OperationId::from_bytes([222; 16]), &definition, input, &work,
+    ), Err(Error::NativeWork {
+        cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, ..
+    })));
+    assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
+    assert_eq!(work.receipt().backend_write_operations, before.backend_write_operations);
+    assert_eq!(work.live_allocation_bytes(), 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn original_read_source_cannot_become_native_directory_execution_owner() -> Result<()> {
     let fixture = CreationFixture::new().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
