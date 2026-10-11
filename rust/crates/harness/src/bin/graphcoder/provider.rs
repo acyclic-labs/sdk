@@ -10,6 +10,10 @@ use serde::Serialize;
 use serde_json::json;
 use std::{fs::File, io::{Read as _, Write as _}, path::Path, sync::Mutex};
 use futures::StreamExt as _;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use acyclic_harness::{NativeFutureBundle, model::{NativeModelAttempt, NativeModelStream}};
 
 const MAX_LEDGER_BYTES: u64 = 1024 * 1024;
 const MAX_LEDGER_RECORDS: u64 = 128;
@@ -85,6 +89,56 @@ impl Deterministic {
         ledger.records += 1;
         Ok(())
     }
+
+    fn context_capacity_engine(&self, selection: &Model) -> Result<ModelContextCapacity> {
+        if selection.provider != "graphcoder-deterministic" || selection.name != "request-digest"
+            || selection.revision != "1"
+            || !selection.options.as_object().is_some_and(|options|
+                options.len() == 1 && options.get("dispatch_delay_ms").and_then(serde_json::Value::as_u64) == Some(u64::from(self.delay_ms)))
+        {
+            return Err(Error::Unsupported("native terminal has no adapter for this model selection".into()));
+        }
+        Ok(ModelContextCapacity { context_tokens: 131_072, output_tokens: 4096 })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn observe_invocation_native(
+        &self, phase: &'static str, dispatch: ModelDispatch, work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        // The complete bounded diagnostic record is built on the stack. It is
+        // independent evidence, never a semantic cache or a retry suppression.
+        work.remaining()?;
+        let mut storage = [0u8; 512];
+        let digest = digest_hex(dispatch.request_digest);
+        let digest = std::str::from_utf8(&digest).expect("hex encoder emits ASCII");
+        let mut writer = std::io::Cursor::new(storage.as_mut_slice());
+        writeln!(writer, "{{\"format_version\":1,\"phase\":\"{phase}\",\"operation_id\":\"{}\",\"step\":{},\"request_digest\":\"{digest}\"}}",
+            dispatch.operation_id, dispatch.step)
+            .map_err(|_| Error::Invalid("model invocation record exceeds stack bound".into()))?;
+        let length = writer.position() as usize;
+        let bytes = &storage[..length];
+        let mut ledger = self.ledger.lock().map_err(|_| Error::Storage("model invocation observer lock poisoned".into()))?;
+        let next_bytes = ledger.bytes.checked_add(bytes.len() as u64)
+            .ok_or_else(|| Error::Invalid("model invocation observer byte count overflow".into()))?;
+        if ledger.records >= MAX_LEDGER_RECORDS || next_bytes > MAX_LEDGER_BYTES {
+            return Err(Error::Invalid("model invocation observer finite allowance exhausted".into()));
+        }
+        let mut written = 0;
+        while written < bytes.len() {
+            work.admit(WorkCounters { object_bytes_written: (bytes.len() - written) as u64, ..Default::default() })?;
+            work.charge(WorkCounters { backend_write_operations: 1, ..Default::default() })?;
+            let count = ledger.file.write(&bytes[written..])
+                .map_err(|error| Error::Storage(format!("model invocation observer append: {error}")))?;
+            work.spent(WorkCounters { object_bytes_written: count as u64, ..Default::default() })?;
+            if count == 0 { return Err(Error::Storage("model invocation observer write made no progress".into())); }
+            written += count;
+        }
+        work.charge(WorkCounters { durability_operations: 1, ..Default::default() })?;
+        ledger.file.sync_all().map_err(|error| Error::Storage(format!("model invocation observer append: {error}")))?;
+        ledger.bytes = next_bytes;
+        ledger.records += 1;
+        Ok(())
+    }
 }
 
 pub fn model(delay_ms: u32) -> Model {
@@ -96,6 +150,32 @@ fn events(dispatch: ModelDispatch) -> Vec<ModelEvent> {
     vec![ModelEvent::Content {
         delta: format!("deterministic request={} step={}", hex::encode(dispatch.request_digest), dispatch.step),
     }, ModelEvent::Completed { metadata: json!({"provider":"graphcoder-deterministic","output_tokens":128}) }]
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn digest_hex(digest: [u8; 32]) -> [u8; 64] {
+    let mut encoded = [0; 64];
+    hex::encode_to_slice(digest, &mut encoded).expect("exact digest hex capacity");
+    encoded
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn native_events(
+    dispatch: ModelDispatch, work: &NativeMaterializationWork,
+) -> Result<[(ModelEvent, NativeAllocation); 2]> {
+    work.remaining()?;
+    let digest = digest_hex(dispatch.request_digest);
+    let digest = std::str::from_utf8(&digest).expect("hex encoder emits ASCII");
+    let mut storage = [0u8; 256];
+    let mut writer = std::io::Cursor::new(storage.as_mut_slice());
+    write!(writer, "{{\"kind\":\"content\",\"delta\":\"deterministic request={digest} step={}\"}}", dispatch.step)
+        .map_err(|_| Error::Invalid("deterministic event exceeds stack bound".into()))?;
+    let length = writer.position() as usize;
+    let content = ModelEvent::decode_with_native_work(&storage[..length], work)?;
+    let complete = ModelEvent::decode_with_native_work(
+        br#"{"kind":"completed","metadata":{"provider":"graphcoder-deterministic","output_tokens":128}}"#, work,
+    )?;
+    Ok([content, complete])
 }
 
 #[derive(Default)]
@@ -111,15 +191,81 @@ impl std::io::Write for ByteCount {
 }
 
 impl ModelProvider for Deterministic {
-    fn context_capacity(&self, selection: &Model) -> Result<ModelContextCapacity> {
-        if selection.provider != "graphcoder-deterministic" || selection.name != "request-digest"
-            || selection.revision != "1"
-            || !selection.options.as_object().is_some_and(|options|
-                options.len() == 1 && options.get("dispatch_delay_ms").and_then(serde_json::Value::as_u64) == Some(u64::from(self.delay_ms)))
-        {
-            return Err(Error::Unsupported("native terminal has no adapter for this model selection".into()));
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_model(&self, work: &NativeMaterializationWork) -> Result<bool> {
+        work.remaining()?;
+        Ok(true)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn context_capacity_with_native_work(&self, selection: &Model, work: &NativeMaterializationWork) -> Result<ModelContextCapacity> {
+        let examined = (selection.provider.len() as u64).checked_add(selection.name.len() as u64)
+            .and_then(|items| items.checked_add(selection.revision.len() as u64))
+            .and_then(|items| items.checked_add(4))
+            .ok_or_else(|| Error::Invalid("model selection traversal overflows".into()))?;
+        work.charge(WorkCounters { items_examined: examined, ..Default::default() })?;
+        self.context_capacity_engine(selection)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn count_tokens_with_native_work(&self, request: &PreparedModelRequest, work: &NativeMaterializationWork) -> Result<(ModelTokenCount, NativeAllocation)> {
+        self.context_capacity_with_native_work(&request.request().model, work)?;
+        request.serialized_token_upper_bound_with_native_work(work)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn generate_with_native_work<'a>(
+        &'a self, request: &'a PreparedModelRequest, dispatch: ModelDispatch,
+        work: &'a NativeMaterializationWork,
+    ) -> Result<NativeFutureBundle<'a, NativeModelStream<'a>>> {
+        work.remaining()?;
+        if request.manifest().request_digest != dispatch.request_digest {
+            return Err(Error::Conflict("model dispatch request changed".into()));
         }
-        Ok(ModelContextCapacity { context_tokens: 131_072, output_tokens: 4096 })
+        self.context_capacity_with_native_work(&request.request().model, work)?;
+        NativeFutureBundle::new(work, || async move {
+            self.observe_invocation_native("generate", dispatch, work)?;
+            if self.delay_ms > 0 {
+                let digest = digest_hex(dispatch.request_digest);
+                eprintln!("graphcoder deterministic-dispatch operation={} step={} request={}",
+                    dispatch.operation_id, dispatch.step, std::str::from_utf8(&digest).expect("hex ASCII"));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(u64::from(self.delay_ms))).await;
+            let events = native_events(dispatch, work)?;
+            NativeModelStream::new(work, || futures::stream::iter(events.into_iter().map(Ok)))
+        })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn reconcile_with_native_work<'a>(
+        &'a self, attempt: NativeModelAttempt<'a>, work: &'a NativeMaterializationWork,
+    ) -> Result<NativeFutureBundle<'a, (Option<Vec<ModelEvent>>, NativeAllocation)>> {
+        NativeFutureBundle::new(work, || async move {
+            let dispatch = ModelDispatch {
+                operation_id: attempt.operation_id, step: attempt.step, request_digest: attempt.request_digest,
+            };
+            self.observe_invocation_native("reconcile", dispatch, work)?;
+            let complete = native_events(dispatch, work)?;
+            work.charge(WorkCounters { items_examined: attempt.observed.len() as u64, ..Default::default() })?;
+            if attempt.observed.len() > complete.len()
+                || !attempt.observed.iter().zip(&complete).all(|(observed, item)| observed == &item.0)
+            {
+                return Err(Error::Conflict("deterministic provider retained prefix changed".into()));
+            }
+            let capacity = complete.len() - attempt.observed.len();
+            let bytes = (capacity * std::mem::size_of::<ModelEvent>()) as u64;
+            let mut custody = if bytes == 0 { work.retain_owned(0)? } else { work.claim(bytes)? };
+            let mut suffix = Vec::with_capacity(capacity);
+            for mut item in complete.into_iter().skip(attempt.observed.len()) {
+                custody.absorb(&mut item.1)?;
+                suffix.push(item.0);
+            }
+            Ok((Some(suffix), custody))
+        })
+    }
+
+    fn context_capacity(&self, selection: &Model) -> Result<ModelContextCapacity> {
+        self.context_capacity_engine(selection)
     }
 
     fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
