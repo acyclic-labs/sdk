@@ -148,6 +148,9 @@ impl RouteLifecycle {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct PendingSpawn {
     pub(crate) task_binding: PluginTaskBinding,
+    /// Pi's original user alias is known before admission. Native Codex/Claude
+    /// hosts assign their agent identity only during the startup handshake.
+    pub(crate) agent_id: Option<String>,
     pub(crate) parent_agent_id: String,
     pub(crate) tool_use_id: String,
     pub(crate) active_root_id: Option<[u8; 16]>,
@@ -511,15 +514,23 @@ impl ControlPlane {
             .roots
             .into_iter()
             .map(|(root_id, root)| {
-                (
+                let binding = self.state.roots.get(&root_key(root_id))
+                    .ok_or_else(|| "publication has no original root binding".to_owned())?;
+                let creation = binding.created()?;
+                creation.validate()?;
+                if binding.path != root.source_path {
+                    return Err("publication root differs from original configured root".to_owned());
+                }
+                Ok((
                     root_id,
                     PhysicalRoot {
                         workspace_id: root.workspace_id,
                         path: root.source_path,
+                        source_root_identity: acyclic_fs::NativeRootIdentity::from_bytes(creation.native_root_identity),
                     },
-                )
+                ))
             })
-            .collect();
+            .collect::<Result<BTreeMap<_, _>, String>>()?;
         let mut publisher = MaterializingWorkspaceMultiRootPublisher::new(
             self.distributed.clone(),
             PluginRootMaterializer {
@@ -1427,6 +1438,7 @@ impl ControlPlane {
             let fork_key = IdempotencyKey::new();
             self.state.pending.push_back(PendingSpawn {
                 task_binding: PluginTaskBinding::HostManaged,
+                agent_id: None,
                 parent_agent_id: caller,
                 tool_use_id,
                 active_root_id: input
@@ -1915,6 +1927,7 @@ impl ControlPlane {
                 switched: Mutex::new(None),
             },
             root: &root_binding.path,
+            source_root_identity: acyclic_fs::NativeRootIdentity::from_bytes(root_binding.created()?.native_root_identity),
             store: &self.store,
         };
         let repository = self.distributed.git(repository_id);

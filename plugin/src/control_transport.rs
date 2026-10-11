@@ -2,6 +2,13 @@
 
 use super::*;
 
+pub(crate) type ControlDispatchResponse = (Value, Option<acyclic_fs::NativeAllocation>);
+pub(crate) type ControlEncodedResponse = (
+    Vec<u8>,
+    Option<acyclic_fs::NativeAllocation>,
+    Option<acyclic_harness::Error>,
+);
+
 pub(crate) const MAXIMUM_CONTROL_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const MAXIMUM_CONCURRENT_CONTROL_REQUESTS: usize = 64;
 /// How long a response may take to reach a client that still holds its end.
@@ -366,12 +373,10 @@ pub(crate) fn claim_linux_mailbox_requests(
         };
         let control = Arc::clone(control);
         let ledger = Arc::clone(ledger);
-        requests.spawn(handle_linux_mailbox_request(
-            exchange,
-            control,
-            ledger,
-            shutdown.clone(),
-        ));
+        let request_shutdown = shutdown.clone();
+        requests.spawn(async move {
+            let _ = handle_linux_mailbox_request(exchange, control, ledger, request_shutdown).await;
+        });
     }
     Ok(())
 }
@@ -382,12 +387,21 @@ pub(crate) async fn handle_linux_mailbox_request(
     control: Arc<impl ConcurrentControlRequestDispatcher>,
     ledger: Arc<ControlLedger>,
     shutdown: watch::Receiver<bool>,
-) {
+) -> acyclic_harness::Result<()> {
+    let mut original_native_work = None;
     if let Some(directory) = &exchange.exchange {
-        let mut response = match read_linux_control_file_at(directory, LINUX_EXCHANGE_CLAIMED) {
+        let encoded = match read_linux_control_file_at(directory, LINUX_EXCHANGE_CLAIMED) {
             Ok(request) if request.len() <= MAXIMUM_CONTROL_MESSAGE_BYTES => {
                 match serde_json::from_slice::<ControlEnvelope<ControlRequest>>(&request) {
-                    Ok(envelope) => dispatch_control_envelope(&control, &ledger, envelope).await,
+                    Ok(envelope) => {
+                        dispatch_control_envelope(
+                            &control,
+                            &ledger,
+                            envelope,
+                            &mut original_native_work,
+                        )
+                        .await
+                    }
                     Err(error) => invalid_control_request_response(&request, &error),
                 }
             }
@@ -396,7 +410,17 @@ pub(crate) async fn handle_linux_mailbox_request(
             }
             Err(error) => uncorrelated_control_response(&display(error)),
         };
-        response.push(b'\n');
+        let encoded = match encoded {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                exchange.remove();
+                return Err(error);
+            }
+        };
+        // Declare custody first so cancellation drops response bytes before their guard.
+        let failure = encoded.2;
+        let allocation = encoded.1;
+        let response = encoded.0;
         // A client that gave up holds no reader, so opening fails at once.
         let sender = rustix::fs::openat(
             directory,
@@ -410,11 +434,20 @@ pub(crate) async fn handle_linux_mailbox_request(
         .map_err(errno_to_io)
         .and_then(tokio::net::unix::pipe::Sender::from_owned_fd);
         if let Ok(mut sender) = sender {
-            let write = async { sender.write_all(&response).await.map_err(display) };
+            let write = async {
+                sender.write_all(&response).await.map_err(display)?;
+                sender.write_all(b"\n").await.map_err(display)
+            };
             let _ = deliver_control_response(write, shutdown).await;
         }
+        exchange.remove();
+        drop(response);
+        drop(allocation);
+        drop(failure);
+    } else {
+        exchange.remove();
     }
-    exchange.remove();
+    Ok(())
 }
 
 /// Exchange files are bounded and live in a private runtime directory, so
@@ -729,14 +762,16 @@ pub(crate) fn create_current_user_pipe(
 
 #[cfg(any(test, not(target_os = "linux")))]
 pub(crate) async fn handle_control_connection<S>(
-    mut stream: S,
+    stream: S,
     control: Arc<impl ConcurrentControlRequestDispatcher + 'static>,
     ledger: Arc<ControlLedger>,
     mut shutdown: watch::Receiver<bool>,
-) -> Result<(), String>
+) -> acyclic_harness::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    let mut original_native_work = None;
+    let mut stream = stream;
     let mut request = Vec::new();
     let read = async {
         let reader = BufReader::new(&mut stream);
@@ -748,7 +783,7 @@ where
     };
     tokio::select! {
         read = read => {
-            read?;
+            read.map_err(acyclic_harness::Error::Storage)?;
         }
         changed = shutdown.changed() => {
             let _ = changed;
@@ -763,22 +798,39 @@ where
         } else {
             request.pop();
             match serde_json::from_slice::<ControlEnvelope<ControlRequest>>(&request) {
-                Ok(envelope) => dispatch_control_envelope(&control, &ledger, envelope).await,
+                Ok(envelope) => {
+                    dispatch_control_envelope(
+                        &control,
+                        &ledger,
+                        envelope,
+                        &mut original_native_work,
+                    )
+                    .await
+                }
                 Err(error) => invalid_control_request_response(&request, &error),
             }
         }
     };
     tokio::pin!(dispatch);
     let mut peer_byte = [0_u8; 1];
-    let response = tokio::select! {
+    let encoded = tokio::select! {
         response = &mut dispatch => response,
         peer = stream.read(&mut peer_byte) => {
             match peer {
                 Ok(0) => {
-                    let _ = dispatch.await;
+                    let encoded = dispatch.await?;
+                    let failure = encoded.2;
+                    let allocation = encoded.1;
+                    let response = encoded.0;
+                    drop(stream);
+                    drop(response);
+                    drop(allocation);
+                    drop(failure);
                     return Ok(());
                 }
-                Ok(_) => return Err("Acyclic control request included trailing bytes".to_owned()),
+                Ok(_) => return Err(acyclic_harness::Error::Invalid(
+                    "Acyclic control request included trailing bytes".to_owned(),
+                )),
                 Err(error) if matches!(
                     error.kind(),
                     io::ErrorKind::BrokenPipe
@@ -786,26 +838,43 @@ where
                         | io::ErrorKind::ConnectionReset
                         | io::ErrorKind::UnexpectedEof
                 ) => {
-                    let _ = dispatch.await;
+                    let encoded = dispatch.await?;
+                    let failure = encoded.2;
+                    let allocation = encoded.1;
+                    let response = encoded.0;
+                    drop(stream);
+                    drop(response);
+                    drop(allocation);
+                    drop(failure);
                     return Ok(());
                 }
-                Err(error) => return Err(display(error)),
+                Err(error) => return Err(acyclic_harness::Error::Storage(display(error))),
             }
         }
-    };
+    }?;
+    let failure = encoded.2;
+    let allocation = encoded.1;
+    let response = encoded.0;
+    // Cancellation closes the peer before releasing response bytes or native custody.
+    let mut stream = stream;
     let write = async {
         stream.write_all(&response).await.map_err(display)?;
         stream.write_all(b"\n").await.map_err(display)?;
         stream.flush().await.map_err(display)
     };
-    deliver_control_response(write, shutdown).await
+    let delivered = deliver_control_response(write, shutdown).await;
+    drop(stream);
+    drop(response);
+    drop(allocation);
+    drop(failure);
+    delivered.map_err(acyclic_harness::Error::Storage)
 }
 
 /// Delivers one response while its client still reads it: up to
 /// [`CONTROL_RESPONSE_DELIVERY`], or [`CONTROL_RESPONSE_DRAIN_GRACE`] once
 /// the service stops.
 pub(crate) async fn deliver_control_response(
-    write: impl std::future::Future<Output = Result<(), String>>,
+    write: impl Future<Output = Result<(), String>>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), String> {
     let stopped = async {
@@ -822,11 +891,14 @@ pub(crate) async fn deliver_control_response(
 pub(crate) async fn dispatch_control_request(
     control: &Arc<impl ConcurrentControlRequestDispatcher>,
     request: ControlRequest,
-) -> Result<Value, String> {
+    original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>,
+) -> acyclic_harness::Result<ControlDispatchResponse> {
     if request.version != 1 {
-        return Err("unsupported Acyclic control request".to_owned());
+        return Err(acyclic_harness::Error::Invalid(
+            "unsupported Acyclic control request".to_owned(),
+        ));
     }
-    control.dispatch_request(request).await
+    control.dispatch_request(request, original_native_work).await
 }
 
 #[tracing::instrument(
@@ -840,37 +912,64 @@ pub(crate) async fn dispatch_control_envelope(
     control: &Arc<impl ConcurrentControlRequestDispatcher>,
     ledger: &Arc<ControlLedger>,
     envelope: ControlEnvelope<ControlRequest>,
-) -> Vec<u8> {
+    original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>,
+) -> acyclic_harness::Result<ControlEncodedResponse> {
     let request_id = envelope.request_id.clone();
     if let Err(error) = envelope.validate() {
-        return control_response_for(&request_id, Err(error));
+        return control_response_for(
+            &request_id,
+            Err(acyclic_harness::Error::Invalid(error)),
+            original_native_work.as_ref(),
+        );
     }
     if matches!(
         envelope.request.command,
         ControlCommand::Ping | ControlCommand::Doctor | ControlCommand::Agents
     ) {
+        let result =
+            dispatch_control_request(control, envelope.request, original_native_work).await;
         return control_response_for(
             &request_id,
-            dispatch_control_request(control, envelope.request).await,
+            result,
+            original_native_work.as_ref(),
         );
     }
     // Ledger transitions are single unflushed appends, cheaper than handing
     // them to a blocking worker.
     match ledger.begin(&envelope) {
-        Err(error) => control_response_for(&request_id, Err(error)),
-        Ok(LedgerDecision::Completed(response)) => response,
+        Err(error) => control_response_for(
+            &request_id,
+            Err(acyclic_harness::Error::Storage(error)),
+            original_native_work.as_ref(),
+        ),
+        Ok(LedgerDecision::Completed(response)) => Ok((response, None, None)),
         Ok(LedgerDecision::Execute) => {
-            let result = dispatch_control_request(control, envelope.request.clone()).await;
+            let result = dispatch_control_request(
+                control,
+                envelope.request.clone(),
+                original_native_work,
+            )
+            .await;
             // The ledger records exactly the bounded bytes that are sent.
-            let response = control_response_for(&request_id, result);
+            // Custody survives both journaling and the final asynchronous response write.
+            let encoded = control_response_for(&request_id, result, original_native_work.as_ref())?;
+            let failure = encoded.2;
+            let allocation = encoded.1;
+            let response = encoded.0;
             match ledger.complete(&envelope, &response) {
-                Ok(()) => response,
-                Err(error) => control_response_for(
-                    &request_id,
-                    Err(format!(
-                        "Acyclic completed the operation but could not record its response: {error}"
-                    )),
-                ),
+                Ok(()) => Ok((response, allocation, failure)),
+                Err(error) => {
+                    drop(response);
+                    drop(allocation);
+                    let replacement = control_response_for(
+                        &request_id,
+                        Err(acyclic_harness::Error::Storage(format!(
+                            "Acyclic completed the operation but could not record its response: {error}"
+                        ))),
+                        original_native_work.as_ref(),
+                    )?;
+                    Ok((replacement.0, replacement.1, failure.or(replacement.2)))
+                }
             }
         }
     }
@@ -880,18 +979,24 @@ pub(crate) trait ControlRequestDispatcher: Send {
     fn dispatch_request(
         &mut self,
         request: ControlRequest,
-    ) -> impl std::future::Future<Output = Result<Value, String>> + Send;
+        original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>,
+    ) -> impl Future<Output = acyclic_harness::Result<ControlDispatchResponse>> + Send;
 }
 
 pub(crate) trait ConcurrentControlRequestDispatcher: Send + Sync {
     fn dispatch_request(
         &self,
         request: ControlRequest,
-    ) -> impl std::future::Future<Output = Result<Value, String>> + Send;
+        original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>,
+    ) -> impl Future<Output = acyclic_harness::Result<ControlDispatchResponse>> + Send;
 }
 
 impl<T: ControlRequestDispatcher + Send> ConcurrentControlRequestDispatcher for AsyncMutex<T> {
-    async fn dispatch_request(&self, request: ControlRequest) -> Result<Value, String> {
-        self.lock().await.dispatch_request(request).await
+    async fn dispatch_request(
+        &self,
+        request: ControlRequest,
+        original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>,
+    ) -> acyclic_harness::Result<ControlDispatchResponse> {
+        self.lock().await.dispatch_request(request, original_native_work).await
     }
 }
