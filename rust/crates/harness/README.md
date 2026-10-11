@@ -555,6 +555,72 @@ before that allocation; retry aliases do not copy or re-price the same text.
 Portable context construction preserves one original mailbox/output binding
 pair, and proof walks charge the canonical observer's work events.
 
+Native command callbacks use `NativeFutureBundle` and the same issued shared
+`NativeTaskContext`. Custom hosts without a native observer reject before future
+construction or provider work; ordinary command methods retain their original
+behavior. Stock execution and reconciliation share one optional-observer command
+body; native mail, effects, tools, model turns and child admission use their
+original-ledger producers and bound ready JSON before growth. Native worker
+run, resume, wake, suspension and reconciliation use the original finite engine,
+retain the original lease, and never route a native command through an ordinary
+boxed callback. Native run-task, resume and reconciliation move the genuine
+recovered lease custody into their observer and return it with the original
+attempt, including pre-cancellation or quota denial. They do not create a new
+meter or drop the original lease at an outer error boundary. Native first
+causes return before a subsequent owner/deadline check.
+The public native task-context factory authenticates that same original current
+owner and issues one shared context with its intrinsic metadata custody. Stock
+mail returns the canonical send acknowledgement; inbox selection and wake
+polling remain passive and do not read a private parcel's body before the
+dedicated, checkpoint-bound received-mail read.
+`FilesystemTaskRuntime::from_host` attaches the same already-configured harness
+and host without replacing their state, spawner or policy bindings. It does not
+create task authority; native customers still use the authenticated context
+factory and the original recovered lease and allocation custody.
+`open_with_creation_providers_with_native_work` composes the real native payload
+store, content verifier, coordinator, host and harness configuration producers.
+It borrows the original task, machine, live-tool and resumable-tool registries;
+their observed copies retain configuration custody inside the escaping SDK
+objects. It does not replace the installed resumable registry with an empty
+registry or fund an ordinary startup as a native substitute.
+`readonly_task_context_with_native_work` returns the protected original readonly
+journal owner and its issued READ context without claiming a lease or installing
+a dispatch mailbox. The current-fence context factory remains the separate
+dispatch path. Public native execution-journal and tool-interaction binding
+factories verify the original task, fence, turn, host and work binding; paying
+for their metadata never grants authority.
+Model commands may select `selected_output_volume` only from their original
+sealed created-content WRITE bindings. Native selection uses the observed
+issued-context projection before model dispatch, retaining original actor,
+scope, policy, owner and dispatch/reconciliation purpose. Omission preserves
+the private writer; a service volume or root result slot is not a substitute
+for an admitted project destination. The public readonly native execution and
+workflow journal factories open the same protected original owner for raw
+witnesses, including terminal workflow records. They do not authorize fresh
+writes or dispatch.
+Readonly native contexts and wake queries attach their genuine funded original
+owner mailbox during READ issuance, before metadata origin is stamped. The
+mailbox retains the runtime's original content-volume identity for reader-only
+parcel lookup; that identity is not a grant or a selected-output substitute.
+
+`with_model_with_native_work` borrows the original selected configuration,
+funds its actual metadata copies before construction and retains their original
+custody in the command binding. Share that binding across helper tasks, wake
+and reconciliation calls rather than rebuilding the model configuration.
+Fork preparation uses the current recursive source and its exact retained
+request. The command-scoped cache retains genuine original preparation tokens
+and their logical metadata on the same ledger; opaque B-tree backing is not
+reported as a physical heap measurement.
+Cold fork reconciliation recovers the immutable request and original Started
+owner from the protected generic allocation claim through the genuine issued
+READ query. It never replaces the creation fence or materializes a new fork;
+an absent claim remains indeterminate.
+Native model mailbox steering consumes the original SDK's committed model/receive
+witness and guarded source bytes. Passive receipt lookup uses its exact READ
+target, never the fresh WRITE publisher; missing receipts do not relaunch a
+started model or copy its parcel. Fresh copies use the original issued writer
+before any selected-output projection, and content-part growth is pre-funded.
+
 Measured conversation binding threads one optional SDK-work observer through the
 original coordinator refresh, bounds and conditional append/recovery engine.
 These counters describe actual SDK calls and exposed source/encoded bytes, not

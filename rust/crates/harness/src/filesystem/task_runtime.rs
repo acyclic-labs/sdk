@@ -847,6 +847,167 @@ where
         ))
     }
 
+    /// Constructs the ordinary retained scope/parent context with the exact
+    /// current mailbox owner token. Unbound context constructors cannot send.
+    pub async fn task_context(&self, task: TaskId, fence: LeaseFence) -> Result<TaskContext> {
+        let owner = self.host.journal_owner(task, fence).await?;
+        let context = self.harness.durable_context(
+            task, OperationId::from_bytes(task.into_bytes()),
+        ).await?;
+        context.with_owned_mailbox(task, Arc::new(TaskJournalMailbox {
+            host: Arc::clone(&self.host), owner: TaskMailboxOwner::Ordinary(owner),
+            original_received_copy_read_volume: self.volume.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_custody: None,
+        }))
+    }
+
+    /// Issues the stock runtime's genuine current-owner native task context.
+    /// Funding metadata does not grant capabilities or replace the caller's fence.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn task_context_with_native_work(
+        &self, task: TaskId, fence: &LeaseFence, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Arc<crate::NativeTaskContext>> {
+        self.task_context_for_original_owner_with_native_work(task, fence, false, work).await
+    }
+
+    /// Observes the original readonly reservation and issues its actual READ
+    /// context without claiming a lease or creating a dispatch mailbox.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn readonly_task_context_with_native_work(
+        &self, task: TaskId, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Arc<crate::durable_host::TaskJournalOwner<P>>, Arc<crate::NativeTaskContext>)> {
+        let owner = self.host.readonly_journal_owner_with_native_work(task, work).await?
+            .into_native_shared(work)?;
+        let mailbox = self.task_mailbox_with_native_work(Arc::clone(&owner), work)?;
+        let (context, custody) = self.harness.durable_context_for_read_with_native_work(
+            task, OperationId::from_bytes(task.into_bytes()), mailbox, work,
+        ).await?;
+        let context = context.into_native_shared(custody, work)?;
+        Ok((owner, context))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) async fn readonly_fork_preparation_with_native_work(
+        &self, task: TaskId, query: &Arc<crate::NativeTaskContext>,
+        admitted: &crate::resource_preparation::ResourcePreparationRequest,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<Arc<crate::resource_preparation::TaskResourcePreparation>>> {
+        let witness = self.host.task_preparation_readonly_witness_with_native_work(
+            query, work,
+        )?.await?;
+        if witness.task() != task {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "readonly fork witness belongs to another task" });
+        }
+        let original = witness.original_preparation_request_with_native_work(query, work)?.await?;
+        if &original.0 != admitted {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "readonly fork request differs from its original admission" });
+        }
+        let claim = self.filesystem.observe_original_fork_allocation_claim_with_native_work(
+            &witness, query, &original.0, &self.volume, work,
+        )?.await?;
+        let Some(claim) = claim else { return Ok(None); };
+        let (owner, request) = self.host.readonly_fork_journal_owner_with_native_work(
+            &witness, query, claim, work,
+        )?.await?;
+        let preparation = owner.resource_preparation_reconciliation_with_native_work(
+            query, request, work,
+        )?.await?;
+        Ok(Some(preparation))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn task_mailbox_with_native_work(
+        &self, owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Arc<dyn OwnedTaskMailbox>> {
+        if !owner.original_host_binding_matches(&self.host) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native mailbox owner belongs to another original host" });
+        }
+        let io = super::PreparationIo::from_native_work(work)?;
+        let bytes = std::mem::size_of::<TaskJournalMailbox<P>>() as u64;
+        io.retain_owned(bytes)?;
+        let original_received_copy_read_volume = self.volume.clone_with_io(Some(&io))?;
+        io.allocation_attempt(bytes)?;
+        let custody = io.take_native_custody(io.owned_bytes()?)?;
+        Ok(Arc::new(TaskJournalMailbox {
+            host: Arc::clone(&self.host), owner: TaskMailboxOwner::Native(owner),
+            original_received_copy_read_volume,
+            native_custody: Some(custody),
+        }))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn task_context_for_original_owner_with_native_work(
+        &self, task: TaskId, fence: &LeaseFence, allow_settlement: bool,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Arc<crate::NativeTaskContext>> {
+        let owner = self.host.journal_owner_with_native_work(task, fence, work).await?;
+        owner.verify_with_native_work(allow_settlement, work).await?;
+        let owner = owner.into_native_shared(work)?;
+        let mailbox = self.task_mailbox_with_native_work(owner, work)?;
+        let operation = OperationId::from_bytes(task.into_bytes());
+        let (context, custody) = if allow_settlement {
+            self.harness.durable_context_for_reconciliation_with_native_work(
+                task, operation, fence, mailbox, work,
+            ).await?
+        } else {
+            self.harness.durable_context_for_dispatch_with_native_work(
+                task, operation, fence, mailbox, work,
+            ).await?
+        };
+        context.into_native_shared(custody, work)
+    }
+
+    /// Opens the original owner-fenced journal and returns its exact task/turn
+    /// namespace. Funding does not grant access or replace the current fence.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn execution_journal_with_native_work(
+        &self,
+        task: TaskId,
+        fence: &LeaseFence,
+        turn: OperationId,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Arc<FilesystemExecutionJournal<P, A, O>>, OperationId)> {
+        let io = super::PreparationIo::from_native_work(work)?;
+        let admission = self.admission_observed(task, Some(&io)).await?;
+        let operation = execution_operation_with_native_work(task, turn, work)?;
+        let owner = self.host.journal_owner_with_native_work(task, fence, work).await?;
+        let journal = FilesystemExecutionJournal::for_task_with_native_work(
+            owner, operation, turn, Arc::clone(&self.filesystem), &self.volume,
+            &self.verifier, &self.signed,
+            self.maximum_payload_bytes.min(admission.limits.file_bytes), work,
+        )?;
+        let journal = if admission.grants.contains(crate::contract::capability::INTERACTION_ROUTE) {
+            if let Some(owner) = &self.interaction_owner {
+                journal.with_interaction_owner_with_native_work(
+                    &owner.verifier, &owner.schemas, &owner.scope, &owner.volume, work,
+                )?
+            } else { journal }
+        } else { journal };
+        Ok((journal.into_native_shared(work)?, operation))
+    }
+
+    /// Opens the protected original readonly journal for native witnesses.
+    /// Its owner cannot claim, dispatch or append fresh execution work.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn readonly_execution_journal_with_native_work(
+        &self, task: TaskId, turn: OperationId, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Arc<FilesystemExecutionJournal<P, A, O>>, OperationId)> {
+        let io = super::PreparationIo::from_native_work(work)?;
+        let admission = self.admission_observed(task, Some(&io)).await?;
+        let operation = execution_operation_with_native_work(task, turn, work)?;
+        let owner = self.host.readonly_journal_owner_with_native_work(task, work).await?;
+        let journal = FilesystemExecutionJournal::for_task_with_native_work(
+            owner, operation, turn, Arc::clone(&self.filesystem), &self.volume,
+            &self.verifier, &self.signed,
+            self.maximum_payload_bytes.min(admission.limits.file_bytes), work,
+        )?;
+        Ok((journal.into_native_shared(work)?, operation))
+    }
     async fn open_execution_journal(
         &self,
         task: TaskId,

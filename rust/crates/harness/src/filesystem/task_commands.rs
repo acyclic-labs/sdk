@@ -472,7 +472,374 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    async fn effect_command(
+    #[cfg(not(target_arch = "wasm32"))]
+    fn validate_native_configuration_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        if self.native_custody.as_ref().is_some_and(|custody| !custody.matches_work(work))
+            || self.model.as_ref().and_then(|binding| binding.native_custody.as_ref())
+                .is_some_and(|custody| !custody.matches_work(work))
+        {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native command configuration belongs to another original work" });
+        }
+        let cache = self.native_preparations.lock().map_err(|_| Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Storage, reason: "native preparation cache is poisoned",
+        })?;
+        if cache.custody.as_ref().is_some_and(|custody| !custody.matches_work(work)) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native preparation cache belongs to another original work" });
+        }
+        Ok(())
+    }
+
+    async fn execute_observed(
+        &self, context: CommandContext, fence: LeaseFence, command: WorkflowCommand,
+        payload: Value, reconciliation_only: bool, io: Option<&super::PreparationIo>,
+    ) -> Result<TaskCommandProgress> {
+        use super::task_runtime::observed::{boundary, clone_fence};
+        use crate::wire::ErrorCode;
+        let task = context.context().durable_task_id().ok_or_else(|| {
+            boundary(io, ErrorCode::Unauthorized, "command has no admitted task")
+        })?;
+        let admission = self.runtime.admission_observed(task, io).await?;
+        if context.context().scope().grants() != &admission.grants
+            || context.context().scope().limits() != admission.limits
+            || context.context().scope().run_limits() != admission.run_limits
+        {
+            return Err(boundary(io, ErrorCode::Unauthorized, "command scope differs from retained task"));
+        }
+        if admission.execution.is_some() {
+            return Err(boundary(io, ErrorCode::Unsupported, "stock routed execution provider is not composed"));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let CommandContext::Native(shared) = &context {
+            if !shared.context().original_task_binding_matches(task, &fence) {
+                return Err(boundary(io, ErrorCode::Unauthorized, "command differs from original task binding"));
+            }
+        }
+        self.runtime.owner_observed(task, &fence, reconciliation_only, io).await?;
+        let progress = match command.kind.as_str() {
+            TOOL_TASK_COMMAND_KIND => {
+                match context {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    CommandContext::Native(shared) => {
+                        let io = io.ok_or(Error::NativeBoundary { code: ErrorCode::Unsupported, reason: "native tool requires original observer" })?;
+                        let work = io.original_native_work().ok_or(Error::NativeBoundary { code: ErrorCode::Unsupported, reason: "native tool requires original work" })?;
+                        self.tool_command_with_native_work(task, shared, &fence, command.operation_id, payload, reconciliation_only, io, work).await
+                    }
+                    CommandContext::Ordinary(context) => {
+                        if reconciliation_only {
+                            let operation = super::task_runtime::execution_operation(task, command.operation_id);
+                            let journal = self.runtime.execution_journal(task, fence.clone(), command.operation_id).await?;
+                            let mut replay = crate::executor::ExecutionReplay::new(operation);
+                            let mut dispatched = false;
+                            while let Some(page) = replay.next_page(journal.as_ref()).await? {
+                                dispatched |= page.iter().any(|record| matches!(record.event, crate::executor::ExecutionEvent::ToolStarted { .. }));
+                            }
+                            if !dispatched { return mail::reconciled(io); }
+                        }
+                        self.tool_command(task, context, fence.clone(), command.operation_id, payload).await
+                    }
+                }
+            }
+            MODEL_TASK_COMMAND_KIND => {
+                match context {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    CommandContext::Native(shared) => {
+                        let io = io.ok_or(Error::NativeBoundary { code: ErrorCode::Unsupported, reason: "native model requires original observer" })?;
+                        let work = io.original_native_work().ok_or(Error::NativeBoundary { code: ErrorCode::Unsupported, reason: "native model requires original work" })?;
+                        self.model_command_with_native_work(task, shared, &fence, command.operation_id, payload, reconciliation_only, io, work).await
+                    }
+                    CommandContext::Ordinary(_) => {
+                        Box::pin(self.model_command(task, fence.clone(), command.operation_id, payload, reconciliation_only)).await
+                    }
+                }
+            }
+            EFFECT_TASK_COMMAND_KIND => self.effect_command_with_io(task, &fence, command.operation_id, payload, reconciliation_only, io).await,
+            MAIL_SEND_TASK_COMMAND_KIND if reconciliation_only => self.reconcile_mail_with_io(task, &fence, &command, payload, io).await,
+            MAIL_SEND_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND if !reconciliation_only => self.mail_command_with_io(task, context.context(), &fence, &command, payload, io).await,
+            TASK_ADMIT_COMMAND_KIND | TASK_OBSERVE_COMMAND_KIND => self.task_command_with_io(task, context.context(), &fence, &command, payload, reconciliation_only, io).await,
+            FORK_PREPARE_TASK_COMMAND_KIND if !reconciliation_only || io.is_some() => {
+                self.prepare_fork_command(task, &context, &fence, &command, payload, admission.input, reconciliation_only, io).await
+            }
+            TASK_ADMIT_PREPARED_COMMAND_KIND => {
+                self.admit_prepared_command(task, &fence, &command, payload, reconciliation_only, io).await
+            }
+            TASK_CANCEL_COMMAND_KIND if !reconciliation_only => {
+                self.cancel_child_command(task, &fence, &command, payload, io).await
+            }
+            TIMER_TASK_COMMAND_KIND if !reconciliation_only => {
+                let input: TimerTaskCommand = if io.is_some() {
+                    mail::decode_command(payload, io)?
+                } else {
+                    serde_json::from_value(payload).map_err(|error| {
+                        Error::Invalid(format!("invalid timer command: {error}"))
+                    })?
+                };
+                #[cfg(not(target_arch = "wasm32"))]
+                let ready = if let Some(io) = io {
+                    let work = io.original_native_work().ok_or(Error::NativeBoundary { code: ErrorCode::Unsupported, reason: "native timer requires original work" })?;
+                    self.runtime.task_host().poll_timer_with_native_work(task, clone_fence(&fence, Some(io))?, command.operation_id, input.deadline_unix_ms, work).await?
+                } else {
+                    self.runtime.task_host().poll_timer(task, fence.clone(), command.operation_id, input.deadline_unix_ms).await?
+                };
+                #[cfg(target_arch = "wasm32")]
+                let ready = self.runtime.task_host().poll_timer(task, fence.clone(), command.operation_id, input.deadline_unix_ms).await?;
+                if ready { mail::mail_ready(Outcome::Succeeded(Value::Null), io) }
+                else { Ok(TaskCommandProgress::Pending) }
+            }
+            TIMER_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND | TASK_CANCEL_COMMAND_KIND if reconciliation_only => mail::reconciled(io),
+            _ => Err(if io.is_some() {
+                boundary(io, ErrorCode::Unsupported, "stock command kind is not bound")
+            } else if reconciliation_only {
+                Error::Unsupported(format!("stock command kind {} has no effect reconciliation", command.kind))
+            } else {
+                Error::Unsupported(format!("stock command kind {} is not bound", command.kind))
+            }),
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let progress = match progress {
+            Err(error) if error.is_native_failure() => return Err(error),
+            progress => progress,
+        };
+        self.runtime.owner_observed(task, &fence, reconciliation_only, io).await?;
+        progress
+    }
+
+    async fn prepare_fork_command(
+        &self, task: TaskId, context: &CommandContext, fence: &LeaseFence,
+        command: &WorkflowCommand, payload: Value, retained_input: Value,
+        reconciliation_only: bool, io: Option<&super::PreparationIo>,
+    ) -> Result<TaskCommandProgress> {
+        use super::task_runtime::observed::boundary;
+        use crate::wire::ErrorCode;
+        let request: crate::resource_preparation::ResourcePreparationRequest =
+            mail::decode_command(retained_input, io)?;
+        if request.command.as_ref() != Some(command) || request.payload != payload {
+            return Err(boundary(io, ErrorCode::Unauthorized,
+                "fork command differs from its retained preparation request"));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io {
+            let CommandContext::Native(shared) = context else {
+                return Err(boundary(Some(io), ErrorCode::Unauthorized,
+                    "native fork requires its original shared context"));
+            };
+            let work = io.original_native_work().ok_or_else(|| boundary(
+                Some(io), ErrorCode::Unsupported, "native fork requires original work"))?;
+            let preparation = if let Some(preparation) = self.cached_native_preparation(
+                task, command.operation_id, &request, work,
+            )? {
+                preparation
+            } else if reconciliation_only {
+                let Some(preparation) = self.runtime.readonly_fork_preparation_with_native_work(
+                    task, shared, &request, work,
+                ).await? else { return Ok(TaskCommandProgress::Indeterminate); };
+                self.retain_native_preparation(task, command.operation_id, preparation, io, work)?
+            } else {
+                let request_bytes = (std::mem::size_of::<crate::resource_preparation::ResourcePreparationRequest>() as u64)
+                    .checked_add(request.logical_owned_bytes()?).ok_or_else(|| boundary(
+                        Some(io), ErrorCode::Invalid, "fork preparation request ownership overflows"))?;
+                let request = (request, io.take_native_custody(request_bytes)?);
+                let owner = self.runtime.task_host().journal_owner_with_native_work(task, fence, work).await?
+                    .into_native_shared(work)?;
+                let preparation = owner.resource_preparation_with_native_work(request, work)?.await?;
+                self.retain_native_preparation(task, command.operation_id, preparation, io, work)?
+            };
+            let fork: super::ForkRequest = mail::decode_borrowed_command(&preparation.request().payload, io)?;
+            let source = self.runtime.recursive_source().ok_or_else(|| boundary(
+                Some(io), ErrorCode::Unsupported, "fork preparation source is not configured"))?;
+            let retained = if reconciliation_only {
+                source.preparation_for_reconciliation_with_native_work(
+                    shared, &preparation, &io.cancellation, work,
+                )?.await?
+            } else {
+                source.preparation_with_native_work(
+                    shared, &preparation, &io.cancellation, work,
+                )?.await?
+            };
+            io.absorb_native_custody(retained.1)?;
+            if retained.0.request != fork {
+                return Err(boundary(Some(io), ErrorCode::Unauthorized,
+                    "resolved fork source differs from original request"));
+            }
+            if reconciliation_only {
+                let report = retained.0.preparer.reconcile_for_task_with_native_work(
+                    &preparation, &fork, work,
+                )?.await?;
+                io.absorb_native_custody(report.1)?;
+                return match report.0 {
+                    Some(_) => mail::reconciled(Some(io)),
+                    None => Ok(TaskCommandProgress::Indeterminate),
+                };
+            }
+            let report = retained.0.preparer.prepare_for_task_with_native_work(
+                &preparation, &fork, work,
+            )?.await?;
+            io.absorb_native_custody(report.1)?;
+            return mail::mail_ready(Outcome::Succeeded(report.0), Some(io));
+        }
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let _guard = super::default_tools::InvocationCancellation(cancellation.clone());
+        let owner = self.runtime.task_host().journal_owner(task, fence.clone()).await?
+            .with_invocation_cancellation(&cancellation);
+        let preparation = owner.resource_preparation(request).await?;
+        let fork: super::ForkRequest = serde_json::from_value(preparation.request().payload.clone())
+            .map_err(|cause| Error::Invalid(format!("invalid exact fork request: {cause}")))?;
+        let preparer = if let Some(preparer) = &self.fork_preparer {
+            preparer.clone()
+        } else {
+            let source = self.runtime.recursive_source().ok_or_else(|| Error::Unsupported(
+                "fork preparation source is not configured".into()))?;
+            let retained = source.preparation(context.context(), &preparation, &cancellation).await?;
+            if retained.request != fork {
+                return Err(Error::Unauthorized("resolved fork source differs from original request".into()));
+            }
+            retained.preparer
+        };
+        ready(Outcome::Succeeded(preparer.prepare_for_task(fork, &preparation).await?))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn cached_native_preparation(
+        &self, task: TaskId, operation: OperationId,
+        request: &crate::resource_preparation::ResourcePreparationRequest,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<Arc<crate::resource_preparation::TaskResourcePreparation>>> {
+        let cache = self.native_preparations.lock().map_err(|_| Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Storage, reason: "native preparation cache is poisoned",
+        })?;
+        let Some(retained) = cache.entries.get(&(task, operation)) else { return Ok(None); };
+        if !retained.custody.matches_work(work) {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "retained preparation belongs to another original work",
+            });
+        }
+        if retained.token.request() != request {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Conflict,
+                reason: "retained preparation differs from the original request",
+            });
+        }
+        Ok(Some(Arc::clone(&retained.token)))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn retain_native_preparation(
+        &self, task: TaskId, operation: OperationId,
+        token: Arc<crate::resource_preparation::TaskResourcePreparation>,
+        io: &super::PreparationIo, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Arc<crate::resource_preparation::TaskResourcePreparation>> {
+        let mut cache = self.native_preparations.lock().map_err(|_| Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Storage, reason: "native preparation cache is poisoned",
+        })?;
+        if let Some(retained) = cache.entries.get(&(task, operation)) {
+            if !retained.custody.matches_work(work) || retained.token.request() != token.request() {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
+                    reason: "native preparation cache raced a different original request" });
+            }
+            return Ok(Arc::clone(&retained.token));
+        }
+        if let Some(custody) = &cache.custody {
+            if !custody.matches_work(work) {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "native preparation cache belongs to another original work" });
+            }
+        } else if self.native_custody.is_none() {
+            let bytes = std::mem::size_of::<NativePreparationCache>() as u64;
+            io.retain_owned(bytes)?;
+            cache.custody = Some(io.take_native_custody(bytes)?);
+        }
+        let bytes = std::mem::size_of::<((TaskId, OperationId), CachedNativePreparation)>() as u64;
+        io.retain_owned(bytes)?;
+        let custody = io.take_native_custody(bytes)?;
+        cache.entries.insert((task, operation), CachedNativePreparation { token: Arc::clone(&token), custody });
+        Ok(token)
+    }
+
+    async fn admit_prepared_command(
+        &self, task: TaskId, fence: &LeaseFence, command: &WorkflowCommand,
+        payload: Value, reconciliation_only: bool, io: Option<&super::PreparationIo>,
+    ) -> Result<TaskCommandProgress> {
+        use super::task_runtime::observed::boundary;
+        use crate::wire::ErrorCode;
+        let request: PreparedTaskAdmitCommand = mail::decode_command(payload, io)?;
+        if request.admission.parent != Some(task)
+            || request.admission.operation_id.into_bytes() == task.into_bytes()
+            || request.admission.operation_id == command.operation_id
+        {
+            return Err(boundary(io, ErrorCode::Unauthorized,
+                "prepared child does not belong to this calling task"));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io {
+            let work = io.original_native_work().ok_or_else(|| boundary(
+                Some(io), ErrorCode::Unsupported, "native prepared admission requires original work"))?;
+            if reconciliation_only {
+                let retained = crate::DurableTaskHost::reconcile_admission_with_native_work(
+                    self.runtime.task_host().as_ref(), request.admission.operation_id, work,
+                )?.await?;
+                io.absorb_native_custody(retained.1)?;
+                if let Some((_, record)) = retained.0 && record != request.admission {
+                    return Err(boundary(Some(io), ErrorCode::Conflict, "retained child admission differs"));
+                }
+                return mail::reconciled(Some(io));
+            }
+            let bytes = (std::mem::size_of::<crate::runtime::TaskAdmissionRecord>() as u64)
+                .checked_add(request.admission.logical_owned_bytes()?).ok_or_else(|| boundary(
+                    Some(io), ErrorCode::Invalid, "prepared admission custody overflows"))?;
+            let admission = (request.admission, io.take_native_custody(bytes)?);
+            let fence = super::task_runtime::observed::clone_fence_with_custody(fence, io)?;
+            let result = crate::DurableTaskHost::admit_owned_with_native_work(
+                self.runtime.task_host().as_ref(), admission, fence, work,
+            )?.await?;
+            io.absorb_native_custody(result.1)?;
+            return match result.0 {
+                crate::Admission::Accepted(child) => mail::mail_ready(Outcome::Succeeded(child), Some(io)),
+                crate::Admission::Rejected { reason } => mail::mail_ready(Outcome::<Value>::Failed { message: reason }, Some(io)),
+                crate::Admission::Indeterminate { .. } => Ok(TaskCommandProgress::Indeterminate),
+            };
+        }
+        if reconciliation_only {
+            if let Some((_, retained)) = self.runtime.task_host().reconcile_admission(request.admission.operation_id).await?
+                && retained != request.admission
+            {
+                return Err(Error::Conflict("retained child admission differs".into()));
+            }
+            return mail::reconciled(io);
+        }
+        match self.runtime.task_host().admit_owned(request.admission, fence.clone()).await? {
+            crate::Admission::Accepted(child) => ready(Outcome::Succeeded(child)),
+            crate::Admission::Rejected { reason } => ready(Outcome::<Value>::Failed { message: reason }),
+            crate::Admission::Indeterminate { .. } => Ok(TaskCommandProgress::Indeterminate),
+        }
+    }
+
+    async fn cancel_child_command(
+        &self, task: TaskId, fence: &LeaseFence, command: &WorkflowCommand,
+        payload: Value, io: Option<&super::PreparationIo>,
+    ) -> Result<TaskCommandProgress> {
+        let input: TaskCancelCommand = mail::decode_command(payload, io)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io {
+            let work = io.original_native_work().ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "native child cancellation requires original work",
+            })?;
+            let state = self.runtime.task_host().cancel_child_owned_with_native_work(
+                task, fence, input.child, command.operation_id, work,
+            ).await?;
+            io.absorb_native_custody(state.1)?;
+            return mail::mail_ready(Outcome::Succeeded(state.0), Some(io));
+        }
+        let state = self.runtime.task_host().cancel_child_owned(
+            task, fence.clone(), input.child, command.operation_id,
+        ).await?;
+        ready(Outcome::Succeeded(state))
+    }
+
+
+    async fn effect_command_with_io(
         &self,
         task: TaskId,
         fence: LeaseFence,
