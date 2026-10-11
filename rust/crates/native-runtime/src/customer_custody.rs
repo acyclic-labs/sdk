@@ -3,6 +3,7 @@
 //! one atomic private-key/session pair. Vault access never falls back to files or environment.
 
 use crate::account::{self, AccountHolderError, Clock, IssuedCredential};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 use std::fmt;
@@ -23,6 +24,7 @@ mod lock;
 const MAGIC: &[u8; 8] = b"ACYLEAF1";
 const HEADER_BYTES: usize = 8 + 32 + 32 + 32 + 4;
 const MAX_RECORD_BYTES: usize = 2560;
+const REFERENCE_PREFIX: &str = "acyclic-customer-custody-ref-v1:";
 
 /// Credential-free failures. Never includes secret values or platform error text.
 #[derive(Debug)]
@@ -39,6 +41,8 @@ pub enum CustodyError {
     Platform(i64),
     /// The namespace has invalid or unbounded identifying data.
     InvalidNamespace,
+    /// The nonsecret generation-fencing receipt is not bounded canonical public data.
+    InvalidReference,
     /// The distinct opaque SQL session is empty or contains control characters.
     InvalidSession,
     /// A complete pair exceeds the actual Windows Credential Manager capacity.
@@ -65,6 +69,7 @@ impl fmt::Display for CustodyError {
                 Self::Locked => "customer credential vault locked",
                 Self::Unavailable => "customer credential custody unavailable",
                 Self::InvalidNamespace => "invalid customer credential namespace",
+                Self::InvalidReference => "invalid customer custody reference",
                 Self::InvalidSession => "invalid SQL login session",
                 Self::TooLarge => "customer credential exceeds OS vault capacity",
                 Self::Corrupt => "invalid customer credential vault item",
@@ -121,6 +126,49 @@ impl CustomerCustodyNamespace {
             return Err(CustodyError::Binding);
         }
         Ok(())
+    }
+}
+
+/// Nonsecret public receipt for reopening exactly an acknowledged vault generation.
+/// Contains only namespace digest, generation nonce and own public key, never a seed,
+/// SQL session, authority grant, or authenticated proof about the current OS entry.
+pub struct CustomerCustodyReference {
+    namespace_digest: [u8; 32],
+    generation: [u8; 32],
+    public_key: [u8; 32],
+}
+
+impl CustomerCustodyReference {
+    /// Canonical bounded public persistence format, owned by Rust rather than JS.
+    pub fn encode(&self) -> String {
+        let mut bytes = [0u8; 96];
+        bytes[..32].copy_from_slice(&self.namespace_digest);
+        bytes[32..64].copy_from_slice(&self.generation);
+        bytes[64..].copy_from_slice(&self.public_key);
+        let mut encoded = String::with_capacity(REFERENCE_PREFIX.len() + 128);
+        encoded.push_str(REFERENCE_PREFIX);
+        URL_SAFE_NO_PAD.encode_string(&bytes, &mut encoded);
+        encoded
+    }
+
+    /// Requires the exact version, length and unpadded URL-safe alphabet.
+    pub fn decode(encoded: &str) -> Result<Self, CustodyError> {
+        let payload = encoded.strip_prefix(REFERENCE_PREFIX).ok_or(CustodyError::InvalidReference)?;
+        if payload.len() != 128 {
+            return Err(CustodyError::InvalidReference);
+        }
+        let mut bytes = [0u8; 96];
+        let decoded = URL_SAFE_NO_PAD.decode_slice(payload, &mut bytes).map_err(|_| CustodyError::InvalidReference)?;
+        if decoded != bytes.len() {
+            return Err(CustodyError::InvalidReference);
+        }
+        let mut namespace_digest = [0u8; 32];
+        let mut generation = [0u8; 32];
+        let mut public_key = [0u8; 32];
+        namespace_digest.copy_from_slice(&bytes[..32]);
+        generation.copy_from_slice(&bytes[32..64]);
+        public_key.copy_from_slice(&bytes[64..]);
+        Ok(Self { namespace_digest, generation, public_key })
     }
 }
 
@@ -213,6 +261,30 @@ impl RestoredCustomerLeaf {
         let _lock = lock::NamespaceLock::acquire(&namespace.name)?;
         let record = read_record(&namespace)?;
         Ok(Self { public_key: record.key.verifying_key().to_bytes(), generation: record.generation, namespace })
+    }
+
+    /// Reopens only the saved receipt's namespace, own public key and exact generation.
+    /// A newer entry is Stale, not an opportunity to adopt its generation for cleanup.
+    pub fn open_at(namespace: CustomerCustodyNamespace, reference: &CustomerCustodyReference) -> Result<Self, CustodyError> {
+        if namespace.digest != reference.namespace_digest {
+            return Err(CustodyError::Binding);
+        }
+        let _lock = lock::NamespaceLock::acquire(&namespace.name)?;
+        let record = read_record(&namespace)?;
+        let public_key = record.key.verifying_key().to_bytes();
+        if record.generation != reference.generation || public_key != reference.public_key {
+            return Err(CustodyError::Stale);
+        }
+        Ok(Self { namespace, generation: record.generation, public_key })
+    }
+
+    /// Receipts fence this handle's generation; they never adopt a newer vault entry.
+    pub fn reference(&self) -> CustomerCustodyReference {
+        CustomerCustodyReference {
+            namespace_digest: self.namespace.digest,
+            generation: self.generation,
+            public_key: self.public_key,
+        }
     }
 
     /// Returns only the public key, never a private seed.
