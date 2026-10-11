@@ -397,6 +397,7 @@ pub(crate) async fn observe_declaration_with_work<P: StreamProvider>(
     Ok(Some(spec))
 }
 
+#[cfg(feature = "filesystem")]
 /// Source-bound historical evidence, never current dispatch or write authority.
 /// Construction is private and moves the authenticated declaration and the
 /// unique original Started fence out of their canonical source records.
@@ -409,6 +410,7 @@ pub(crate) struct OriginalReservationProof {
     started_commit: acyclic_stream::CommitId,
 }
 
+#[cfg(feature = "filesystem")]
 impl OriginalReservationProof {
     pub(crate) fn declaration(&self) -> &OperationSpec { &self.declaration }
     pub(crate) fn original_fence(&self) -> &LeaseFence { &self.original_fence }
@@ -423,6 +425,7 @@ impl OriginalReservationProof {
     }
 }
 
+#[cfg(feature = "filesystem")]
 // Source values precede their guard so rejection/cancellation drops their real
 // allocations before releasing the same observer's logical custody.
 struct OriginalReservationSource<'a, 'b> {
@@ -431,6 +434,7 @@ struct OriginalReservationSource<'a, 'b> {
     custody: crate::wire_codec::CodecQuota<'a, 'b>,
 }
 
+#[cfg(feature = "filesystem")]
 fn authenticate_reservation_observation(
     owner: &Authority,
     scope: &Scope,
@@ -445,6 +449,7 @@ fn authenticate_reservation_observation(
     Ok(())
 }
 
+#[cfg(feature = "filesystem")]
 #[allow(clippy::too_many_arguments, reason = "original owner authorization and protected preparation's exact historical selector")]
 pub(crate) async fn original_reservation_proof_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
