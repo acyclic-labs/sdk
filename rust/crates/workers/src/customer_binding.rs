@@ -138,7 +138,8 @@ impl NativeCustomerCredential {
             return Err(error("identity route escaped the configured origin"));
         }
         let method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|_| error("invalid identity HTTP method"))?;
-        if body.as_ref().is_some_and(|bytes| bytes.len() > crate::MAX_MESSAGE_BYTES) {
+        let maximum = usize::try_from(crate::MAX_MESSAGE_BYTES).map_err(|_| error("identity message ceiling unavailable"))?;
+        if body.as_ref().is_some_and(|bytes| bytes.len() > maximum) {
             return Err(error("identity request exceeds message ceiling"));
         }
         let leaf = self.inner.clone();
@@ -157,12 +158,12 @@ impl NativeCustomerCredential {
         let work = async {
             let mut response = request.send().await.map_err(|_| error("customer identity HTTPS request failed"))?;
             let status = u32::from(response.status().as_u16());
-            if response.content_length().is_some_and(|length| length > crate::MAX_MESSAGE_BYTES as u64) {
+            if response.content_length().is_some_and(|length| length > u64::from(crate::MAX_MESSAGE_BYTES)) {
                 return Err(error("identity response exceeds message ceiling"));
             }
             let mut bytes = Vec::new();
             while let Some(chunk) = response.chunk().await.map_err(|_| error("customer identity response interrupted"))? {
-                if bytes.len().saturating_add(chunk.len()) > crate::MAX_MESSAGE_BYTES { return Err(error("identity response exceeds message ceiling")); }
+                if bytes.len().saturating_add(chunk.len()) > maximum { return Err(error("identity response exceeds message ceiling")); }
                 bytes.extend_from_slice(&chunk);
             }
             Ok(NativeIdentityResponse { status, body: bytes.into() })

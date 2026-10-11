@@ -93,6 +93,7 @@ pub enum MaterializationObservation {
 
 /// Durable application phase.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "napi-types", napi_derive::napi(string_enum))]
 pub enum MaterializationPhase {
     /// Every preimage is durable and no edit has been applied.
     Prepared,

@@ -1,4 +1,5 @@
 //! Generated-language native embedding boundary for the canonical Rust engine.
+mod native_directory;
 
 use acyclic_fs::compat_wire;
 use acyclic_fs::kernel::{
