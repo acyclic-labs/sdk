@@ -1,7 +1,8 @@
 //! Authenticated restoration of the reducer projection, without transition replay.
-//! Native captures and deep copies require explicit pre-funded work and own their
-//! reservations after the query ends. Restoration moves the original authenticated
-//! fields into live component custody; the private wire is still parsed only once.
+//! Native captures and deep copies use the original physical field producers;
+//! each allocation/copy is fenced at the operation and its actual produced
+//! custody survives the query. Restoration moves original authenticated fields
+//! into live component custody; the private wire is still parsed only once.
 
 use super::{
     Authority, AuthorityVerifier, EffectState, Event, EventReference, ExtensionConfiguration,
@@ -317,59 +318,44 @@ pub(crate) fn resource_preparation_owned_bytes(
         work, "resource preparation ownership inventory overflows"))
 }
 
-/// Prefunds the original proof Clone; its Vec shell belongs to the caller.
-pub(crate) fn resource_creation_proof_clone_reservation(
+/// Copies the concrete proof fields physically; the caller owns its Vec shell.
+pub(crate) fn resource_creation_proof_clone_with_custody(
     proof: &crate::resource_preparation::ResourceCreationProofRef,
     work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<u64> {
-    if let Some(observer) = work.as_deref_mut() {
-        observer.check_cancellation()?;
-        observer.items(1)?;
+) -> Result<(crate::resource_preparation::ResourceCreationProofRef, u64)> {
+    if work.is_none() { return Ok((proof.clone(), 0)); }
+    fn provider(
+        source: &crate::resources::ProviderRef,
+        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    ) -> Result<crate::resources::ProviderRef> {
+        let namespace = super::native_custody::copy_text(source.namespace(), quota)?;
+        let family = super::native_custody::copy_text(source.family(), quota)?;
+        let version = super::native_custody::copy_text(source.version(), quota)?;
+        crate::resources::ProviderRef::new(namespace, family, version)
     }
-    let mut bytes = 0u64;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    let mut recipe = (0, 0);
-    for provider in [&proof.provider, proof.resource.provider(), proof.evidence.provider()] {
-        for text in [provider.namespace(), provider.family(), provider.version()] {
-            bytes = bytes.checked_add(text.len() as u64).ok_or_else(|| preparation_inventory_error(
-                work, "resource creation proof clone inventory overflows"))?;
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            super::native_custody::clone_work_add(
-                &mut recipe, super::native_custody::clone_work_string(text))?;
-        }
+    fn reference(
+        source: &crate::resources::ResourceRef,
+        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    ) -> Result<crate::resources::ResourceRef> {
+        let provider = provider(source.provider(), quota)?;
+        let key = super::copy_copy_vector(source.key(), quota)?;
+        let version = match source.version() {
+            Some(version) => Some(super::native_custody::copy_text(version, quota)?),
+            None => None,
+        };
+        crate::resources::ResourceRef::new(source.kind(), provider, key, version)
     }
-    for reference in [&proof.resource, &proof.evidence] {
-        bytes = bytes.checked_add(reference.key().len() as u64)
-            .and_then(|bytes| bytes.checked_add(reference.version().map_or(0, |value| value.len() as u64)))
-            .ok_or_else(|| preparation_inventory_error(
-                work, "resource creation proof clone inventory overflows"))?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        {
-            super::native_custody::clone_work_add(&mut recipe,
-                super::native_custody::clone_work_copy_vec::<u8>(reference.key().len())?)?;
-            if let Some(version) = reference.version() {
-                super::native_custody::clone_work_add(
-                    &mut recipe, super::native_custody::clone_work_string(version))?;
-            }
-        }
-    }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    let intrinsic = work.as_deref().is_some_and(|work| work.original_native_work().is_some());
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    let intrinsic = false;
-    if !intrinsic {
-        if let Some(observer) = work.as_deref_mut() { observer.admit_copy(bytes)?; }
-    }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    super::native_custody::admit_clone_work(recipe, work)?;
-    let mut quota = crate::wire_codec::CodecQuota::new(work, bytes)?;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    super::native_custody::begin_clone_work(recipe, quota.work())?;
-    if !intrinsic {
-        if let Some(observer) = quota.work().as_deref_mut() { observer.copy_bytes(bytes)?; }
-    }
+    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    quota.work().as_deref_mut().expect("proof copy observer").check_cancellation()?;
+    let provider = provider(&proof.provider, &mut quota)?;
+    let resource = reference(&proof.resource, &mut quota)?;
+    let evidence = reference(&proof.evidence, &mut quota)?;
+    let copied = crate::resource_preparation::ResourceCreationProofRef {
+        provider, preparation: proof.preparation, resource, evidence,
+    };
+    let retained = quota.retained();
     quota.transfer();
-    Ok(bytes)
+    Ok((copied, retained))
 }
 
 pub(crate) fn event_clone_reservation(event: &Event) -> Result<u64> {
@@ -469,59 +455,103 @@ struct Projection<C = ConversationState> {
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-impl Projection {
-    fn clone_work_recipe(&self) -> Result<(u64, u64)> {
-        use super::native_custody::*;
-        let mut recipe = (0, 0);
-        clone_work_add(&mut recipe, clone_work_container(self.active_extensions.len()))?;
-        for extension in &self.active_extensions {
-            clone_work_add(&mut recipe, clone_work_string(&extension.name))?;
-        }
-        for (name, (reference, record)) in &self.extension_states {
-            clone_work_add(&mut recipe, clone_work_string(name))?;
-            clone_work_add(&mut recipe, clone_work_string(&reference.authority.id))?;
-            clone_work_add(&mut recipe, extension_record_clone_work(record)?)?;
-        }
-        clone_work_add(&mut recipe, clone_work_container(self.configured_extensions.len()))?;
-        for (extension, configuration) in &self.configured_extensions {
-            clone_work_add(&mut recipe, clone_work_string(&extension.name))?;
-            clone_work_add(&mut recipe, extension_configuration_clone_work(configuration)?)?;
-        }
-        clone_work_add(&mut recipe, clone_work_container(self.active_configurations.len()))?;
-        for configuration in &self.active_configurations {
-            clone_work_add(&mut recipe, extension_configuration_clone_work(configuration)?)?;
-        }
-        for effect in self.effects.values() {
-            clone_work_add(&mut recipe, effect_clone_work(effect)?)?;
-        }
-        clone_work_add(&mut recipe, clone_work_copy_vec::<EffectId>(self.indexed_terminal_effects.len())?)?;
-        clone_work_add(&mut recipe, clone_work_container(self.forks.len()))?;
-        for (authority, seed) in &self.forks {
-            clone_work_add(&mut recipe, clone_work_string(&authority.id))?;
-            clone_work_add(&mut recipe, fork_seed_clone_work(seed)?)?;
-        }
-        for (name, operation) in &self.published_merges {
-            clone_work_add(&mut recipe, clone_work_string(name))?;
-            clone_work_add(&mut recipe, clone_work_copy_vec::<u8>(operation.len())?)?;
-        }
-        if let Some(checkpoint) = &self.latest_context_checkpoint {
-            clone_work_add(&mut recipe, checkpoint.clone_work_recipe()?)?;
-        }
-        for (ticket, resolution) in self.interactions.values() {
-            clone_work_add(&mut recipe, interaction_ticket_clone_work(ticket)?)?;
-            if let Some(resolution) = resolution {
-                clone_work_add(&mut recipe, interaction_resolution_clone_work(resolution)?)?;
-            }
-        }
-        clone_work_add(&mut recipe, clone_work_container(self.bindings.len()))?;
-        for (extension, _) in &self.bindings {
-            clone_work_add(&mut recipe, clone_work_string(&extension.name))?;
-        }
-        // Conversation owns its separate original cache/shell/payload clone phase.
-        // UUID keys, inline proofs and opaque BTree nodes are not String copies.
-        Ok(recipe)
-    }
+fn snapshot_map_entry<T>(quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<()> {
+    // Logical entry payload only; opaque BTree nodes remain excluded.
+    let bytes = std::mem::size_of::<T>() as u64;
+    let observer = quota.work().as_deref_mut().expect("snapshot component observer");
+    observer.admit_owned(bytes)?;
+    observer.retain_owned(bytes)?;
+    quota.adopt(bytes)
 }
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn copy_snapshot_states(
+    source: &BTreeMap<String, (EventReference, ExtensionRecord)>,
+    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<BTreeMap<String, (EventReference, ExtensionRecord)>> {
+    let mut output = BTreeMap::new();
+    for (name, (reference, record)) in source {
+        snapshot_map_entry::<(String, (EventReference, ExtensionRecord))>(quota)?;
+        let name = super::native_custody::copy_text(name, quota)?;
+        let reference = super::native_custody::copy_reference(reference, quota)?;
+        let record = super::native_custody::copy_extension_record(record, quota)?;
+        output.insert(name, (reference, record));
+    }
+    Ok(output)
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn copy_snapshot_effects(
+    source: &BTreeMap<EffectId, EffectState>,
+    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<BTreeMap<EffectId, EffectState>> {
+    let mut output = BTreeMap::new();
+    for (id, effect) in source {
+        snapshot_map_entry::<(EffectId, EffectState)>(quota)?;
+        let (effect, retained) = super::native_effect_clone_with_custody(effect, quota.work())?;
+        quota.adopt(retained)?;
+        output.insert(*id, effect);
+    }
+    Ok(output)
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn copy_snapshot_merges(
+    source: &BTreeSet<(String, Vec<u8>)>,
+    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<BTreeSet<(String, Vec<u8>)>> {
+    let mut output = BTreeSet::new();
+    for (name, operation) in source {
+        snapshot_map_entry::<(String, Vec<u8>)>(quota)?;
+        let name = super::native_custody::copy_text(name, quota)?;
+        let operation = super::copy_copy_vector(operation, quota)?;
+        output.insert((name, operation));
+    }
+    Ok(output)
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn copy_snapshot_interactions(
+    source: &BTreeMap<uuid::Uuid, (InteractionTicket, Option<InteractionResolution>)>,
+    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<BTreeMap<uuid::Uuid, (InteractionTicket, Option<InteractionResolution>)>> {
+    let mut output = BTreeMap::new();
+    for (id, (ticket, resolution)) in source {
+        snapshot_map_entry::<(uuid::Uuid, (InteractionTicket, Option<InteractionResolution>))>(quota)?;
+        let (ticket, retained) = super::native_interaction_ticket_clone_with_custody(ticket, quota.work())?;
+        quota.adopt(retained)?;
+        let resolution = match resolution {
+            Some(resolution) => {
+                let (resolution, retained) = super::native_interaction_resolution_clone_with_custody(
+                    resolution, quota.work())?;
+                quota.adopt(retained)?;
+                Some(resolution)
+            }
+            None => None,
+        };
+        output.insert(*id, (ticket, resolution));
+    }
+    Ok(output)
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn copy_snapshot_terminal_effects(
+    source: &VecDeque<EffectId>, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<VecDeque<EffectId>> {
+    let bytes = source.len().checked_mul(std::mem::size_of::<EffectId>())
+        .ok_or_else(|| preparation_inventory_error(quota.work(), "terminal effect copy size overflows"))? as u64;
+    quota.work().as_deref().expect("snapshot terminal copy observer").admit_copy(bytes)?;
+    let mut output = super::reserve_copy_vector::<EffectId>(source.len(), quota)?;
+    for slice in [source.as_slices().0, source.as_slices().1] {
+        if !slice.is_empty() {
+            quota.work().as_deref_mut().expect("snapshot terminal copy observer")
+                .copy_bytes((slice.len() * std::mem::size_of::<EffectId>()) as u64)?;
+            output.extend_from_slice(slice);
+        }
+    }
+    Ok(VecDeque::from(output))
+}
+
 
 /// The original snapshot DTO, deferring only its observed conversation rebuild.
 #[derive(Deserialize)]
@@ -609,48 +639,18 @@ impl Snapshot {
             });
         }
         if let Some(observer) = work.as_deref() { observer.check_cancellation()?; }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if work.as_deref().is_some_and(|work| work.original_native_work().is_some()) {
+            return self.clone_intrinsic_with_work(work);
+        }
         let reservation = if work.is_some() {
-            let payload = source_inventory(self)?;
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.as_deref().is_some_and(|work| work.original_native_work().is_some()) {
-                let conversation = &self.projection.conversation;
-                let archive = conversation.native_archived_prefix_bytes()?;
-                let buffers = (conversation.messages().len() as u64)
-                    .checked_mul(std::mem::size_of::<crate::conversation::ConversationMessage>() as u64)
-                    .and_then(|shell| shell.checked_add(archive))
-                    .ok_or_else(|| Error::Invalid("snapshot conversation clone slots overflow".into()))?;
-                payload.checked_sub(buffers)
-                    .ok_or_else(|| Error::Invalid("snapshot conversation clone exceeds source slots".into()))?
-            } else {
-                payload.checked_add(self.projection.conversation.clone_cache_logical_bytes()?)
-                    .ok_or_else(|| Error::Invalid("snapshot clone reservation overflows".into()))?
-            }
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            {
-                payload.checked_add(self.projection.conversation.clone_cache_logical_bytes()?)
-                    .ok_or_else(|| Error::Invalid("snapshot clone reservation overflows".into()))?
-            }
+            source_inventory(self)?
+                .checked_add(self.projection.conversation.clone_cache_logical_bytes()?)
+                .ok_or_else(|| Error::Invalid("snapshot clone reservation overflows".into()))?
         } else { 0 };
         let mut quota = crate::wire_codec::CodecQuota::new(work, reservation)?;
-        let mut native_custody = SnapshotCustody::default();
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(observer) = quota.work().as_deref_mut()
-            .filter(|observer| observer.original_native_work().is_some())
-        {
-            native_custody.allocation = Some(observer.take_native_custody(reservation)?);
-            quota.transfer();
-        }
+        let native_custody = SnapshotCustody::default();
         let conversation = self.projection.conversation.clone_with_work(quota.work())?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if quota.work().as_deref().is_some_and(|work| work.original_native_work().is_some()) {
-            use super::native_custody::*;
-            let mut recipe = self.projection.clone_work_recipe()?;
-            clone_work_add(&mut recipe, clone_work_string(&self.authority.id))?;
-            clone_work_add(&mut recipe, clone_work_container(self.events.len()))?;
-            for event in &self.events { clone_work_add(&mut recipe, event_clone_work(event)?)?; }
-            admit_clone_work(recipe, quota.work())?;
-            begin_clone_work(recipe, quota.work())?;
-        }
         let copied = Self {
             format_version: self.format_version,
             authority: self.authority.clone(),
@@ -679,6 +679,95 @@ impl Snapshot {
         };
         // Legacy HistoryIo keeps its established caller-owned quota policy.
         quota.transfer();
+        Ok(copied)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn empty_intrinsic(
+        authority_kind: super::AggregateKind, revision: u64, lifecycle: LifecycleState,
+        active_extension_revision: Option<u64>, effects_archived: bool,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Self> {
+        let allocation = work.as_deref_mut().expect("native snapshot observer").take_native_custody(0)?;
+        Ok(Self {
+            format_version: 6,
+            authority: Authority { kind: authority_kind, id: String::new() },
+            revision,
+            events: Vec::new(),
+            projection: Projection {
+                lifecycle, active_extensions: Vec::new(), active_extension_revision,
+                extension_states: BTreeMap::new(), configured_extensions: Vec::new(),
+                active_configurations: Vec::new(), effects: BTreeMap::new(),
+                indexed_terminal_effects: VecDeque::new(), effects_archived,
+                forks: Vec::new(), published_merges: BTreeSet::new(),
+                conversation: ConversationState::default(), latest_context_checkpoint: None,
+                interactions: BTreeMap::new(), bindings: Vec::new(),
+            },
+            state_digest: [0; 32],
+            attestation: [0; 32],
+            native_custody: SnapshotCustody { allocation: Some(allocation) },
+        })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn adopt_intrinsic_output(&mut self, quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<()> {
+        let retained = quota.retained();
+        let mut incoming = quota.work().as_deref_mut().expect("native snapshot observer")
+            .take_native_custody(retained)?;
+        quota.transfer();
+        self.native_custody.allocation.as_mut().expect("installed native snapshot owner")
+            .absorb(&mut incoming).map_err(|cause| Error::NativeWork { cause, custody: Some(incoming) })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn clone_intrinsic_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut copied = Self::empty_intrinsic(self.authority.kind, self.revision, self.projection.lifecycle,
+            self.projection.active_extension_revision, self.projection.effects_archived, quota.work())?;
+        let (conversation, retained) = self.projection.conversation.clone_with_work_and_custody(quota.work())?;
+        copied.projection.conversation = conversation;
+        quota.adopt(retained)?;
+        copied.authority = super::native_custody::copy_authority(&self.authority, &mut quota)?;
+        copied.events = super::copy_iter(self.events.len(), self.events.iter(), &mut quota, |event, quota| {
+            let (event, retained) = super::native_event_clone_with_custody(event, quota.work())?;
+            quota.adopt(retained)?;
+            Ok(event)
+        })?;
+        copied.projection.active_extensions = super::native_custody::copy_vector(
+            &self.projection.active_extensions, &mut quota, super::native_custody::copy_dependency)?;
+        copied.projection.extension_states = copy_snapshot_states(&self.projection.extension_states, &mut quota)?;
+        copied.projection.configured_extensions = super::native_custody::copy_vector(
+            &self.projection.configured_extensions, &mut quota, |(extension, configuration), quota| {
+                let extension = super::native_custody::copy_dependency(extension, quota)?;
+                let configuration = super::native_custody::copy_configuration(configuration, quota)?;
+                Ok((extension, configuration))
+            })?;
+        copied.projection.active_configurations = super::native_custody::copy_vector(
+            &self.projection.active_configurations, &mut quota, super::native_custody::copy_configuration)?;
+        copied.projection.effects = copy_snapshot_effects(&self.projection.effects, &mut quota)?;
+        copied.projection.indexed_terminal_effects = copy_snapshot_terminal_effects(
+            &self.projection.indexed_terminal_effects, &mut quota)?;
+        copied.projection.forks = super::native_custody::copy_vector(
+            &self.projection.forks, &mut quota, |(authority, seed), quota| {
+                let authority = super::native_custody::copy_authority(authority, quota)?;
+                let (seed, retained) = seed.clone_with_work_and_custody(quota.work())?;
+                quota.adopt(retained)?;
+                Ok((authority, seed))
+            })?;
+        copied.projection.published_merges = copy_snapshot_merges(&self.projection.published_merges, &mut quota)?;
+        copied.projection.latest_context_checkpoint = match &self.projection.latest_context_checkpoint {
+            Some(file) => Some(super::native_custody::copy_file(file, &mut quota)?),
+            None => None,
+        };
+        copied.projection.interactions = copy_snapshot_interactions(&self.projection.interactions, &mut quota)?;
+        copied.projection.bindings = super::native_custody::copy_vector(
+            &self.projection.bindings, &mut quota, |(extension, digest), quota| {
+                Ok((super::native_custody::copy_dependency(extension, quota)?, *digest))
+            })?;
+        copied.format_version = self.format_version;
+        copied.state_digest = self.state_digest;
+        copied.attestation = self.attestation;
+        copied.adopt_intrinsic_output(&mut quota)?;
         Ok(copied)
     }
 
@@ -822,59 +911,6 @@ struct ReducerCloneFields<'a> {
 }
 
 impl Reducer {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn snapshot_capture_clone_work(&self, maximum_events: usize) -> Result<(u64, u64)> {
-        use super::native_custody::*;
-        let mut recipe = clone_work_string(&self.authority.id);
-        let retained = self.events.len().min(maximum_events);
-        clone_work_add(&mut recipe, clone_work_container(retained))?;
-        for event in self.events.iter().skip(self.events.len() - retained) {
-            clone_work_add(&mut recipe, event_clone_work(event)?)?;
-        }
-        clone_work_add(&mut recipe, clone_work_container(self.active_extensions.len()))?;
-        for extension in &self.active_extensions {
-            clone_work_add(&mut recipe, clone_work_string(&extension.name))?;
-        }
-        for (name, (reference, record)) in &self.extension_states {
-            clone_work_add(&mut recipe, clone_work_string(name))?;
-            clone_work_add(&mut recipe, clone_work_string(&reference.authority.id))?;
-            clone_work_add(&mut recipe, extension_record_clone_work(record)?)?;
-        }
-        clone_work_add(&mut recipe, clone_work_container(self.configured_extensions.len()))?;
-        for (extension, configuration) in &self.configured_extensions {
-            clone_work_add(&mut recipe, clone_work_string(&extension.name))?;
-            clone_work_add(&mut recipe, extension_configuration_clone_work(configuration)?)?;
-        }
-        clone_work_add(&mut recipe, clone_work_container(self.active_configurations.len()))?;
-        for configuration in &self.active_configurations {
-            clone_work_add(&mut recipe, extension_configuration_clone_work(configuration)?)?;
-        }
-        for effect in self.effects.values() {
-            clone_work_add(&mut recipe, effect_clone_work(effect)?)?;
-        }
-        clone_work_add(&mut recipe, clone_work_copy_vec::<EffectId>(self.indexed_terminal_effects.len())?)?;
-        clone_work_add(&mut recipe, clone_work_container(self.forks.len()))?;
-        for (authority, seed) in &self.forks {
-            clone_work_add(&mut recipe, clone_work_string(&authority.id))?;
-            clone_work_add(&mut recipe, fork_seed_clone_work(seed)?)?;
-        }
-        for (name, operation) in &self.published_merges {
-            clone_work_add(&mut recipe, clone_work_string(name))?;
-            clone_work_add(&mut recipe, clone_work_copy_vec::<u8>(operation.len())?)?;
-        }
-        if let Some(checkpoint) = &self.latest_context_checkpoint {
-            clone_work_add(&mut recipe, checkpoint.clone_work_recipe()?)?;
-        }
-        for (ticket, resolution) in self.interactions.values() {
-            clone_work_add(&mut recipe, interaction_ticket_clone_work(ticket)?)?;
-            if let Some(resolution) = resolution {
-                clone_work_add(&mut recipe, interaction_resolution_clone_work(resolution)?)?;
-            }
-        }
-        // Bindings and conversation have already completed their own guarded,
-        // fallible phases before this original infallible projection clone.
-        Ok(recipe)
-    }
 
     fn clone_reservation(&self) -> Result<u64> {
         // Verifier Strings, canonical events and retry/cache maps are original
@@ -910,14 +946,21 @@ impl Reducer {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(Snapshot, u64)> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let intrinsic = work.as_deref().is_some_and(|work| work.original_native_work().is_some());
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let intrinsic = false;
+        if work.as_deref().is_some_and(|work| work.original_native_work().is_some()) {
+            // The input event is a query DTO, not the preview cache's independent
+            // physical copy. Release its produced quota only after input/result
+            // data and the preview have physically dropped.
+            let mut input_quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let mut preview = self.clone_with_work(input_quota.work())?;
+            let (input, retained) = super::native_event_clone_with_custody(event, input_quota.work())?;
+            input_quota.adopt(retained)?;
+            preview.apply_committed_with_work(input, input_quota.work())?;
+            preview.mark_indexed_terminal_effect_with_work(event, input_quota.work())?;
+            return preview.snapshot_with_event_limit_with_work(maximum_events, input_quota.work());
+        }
         let preview_reservation = if work.is_some() {
-            // The preview's own deep clone has intrinsic native custody.
             // Legacy observed work preserves its original caller-owned claim.
-            let reducer = if intrinsic { 0 } else { self.clone_reservation()? };
-            reducer.checked_add(event_clone_reservation(event)?.checked_mul(3)
+            self.clone_reservation()?.checked_add(event_clone_reservation(event)?.checked_mul(3)
                 .ok_or_else(|| Error::Invalid("publication event clone reservation overflows".into()))?)
                 .ok_or_else(|| Error::Invalid("publication preview reservation overflows".into()))?
         } else { 0 };
@@ -928,12 +971,6 @@ impl Reducer {
         }
         let result = (|| {
             let mut preview = self.clone_with_work(work)?;
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if intrinsic {
-                let recipe = super::native_custody::event_clone_work(event)?;
-                super::native_custody::admit_clone_work(recipe, work)?;
-                super::native_custody::begin_clone_work(recipe, work)?;
-            }
             preview.apply_committed_with_work(event.clone(), work)?;
             preview.mark_indexed_terminal_effect_with_work(event, work)?;
             preview.snapshot_with_event_limit_with_work(maximum_events, work)
@@ -988,47 +1025,25 @@ impl Reducer {
         if maximum_events == 0 && self.revision != 0 {
             return Err(Error::Invalid("snapshot must retain its head event".into()));
         }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if work.as_deref().is_some_and(|work| work.original_native_work().is_some()) {
+            return self.snapshot_intrinsic_with_work(maximum_events, work).map(|snapshot| (snapshot, 0));
+        }
         let reservation = if work.is_some() {
             // The original map.clone().into_iter().collect() briefly owns both
             // map payload and destination vector slots during capture.
             self.clone_reservation()?.checked_mul(2)
                 .ok_or_else(|| Error::Invalid("snapshot clone reservation overflows".into()))?
         } else { 0 };
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let reservation = if work.as_deref().is_some_and(|work| work.original_native_work().is_some()) {
-            let shell = (self.conversation.messages().len() as u64)
-                .checked_mul(std::mem::size_of::<crate::conversation::ConversationMessage>() as u64)
-                .ok_or_else(|| Error::Invalid("snapshot conversation shell slots overflow".into()))?;
-            let archive = self.conversation.native_archived_prefix_bytes()?;
-            let intrinsic_conversation = self.conversation.clone_cache_logical_bytes()?
-                .checked_add(shell)
-                .and_then(|bytes| bytes.checked_add(archive))
-                .and_then(|bytes| bytes.checked_mul(2))
-                .ok_or_else(|| Error::Invalid("snapshot intrinsic conversation reservation overflows".into()))?;
-            reservation.checked_sub(intrinsic_conversation)
-                .ok_or_else(|| Error::Invalid("snapshot intrinsic conversation exceeds source slots".into()))?
-        } else { reservation };
         if let Some(observer) = work.as_deref_mut() {
             observer.check_cancellation()?;
             observer.admit_owned(reservation)?;
             observer.retain_owned(reservation)?;
         }
-        let mut native_custody = SnapshotCustody::default();
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(observer) = work.as_deref_mut()
-            .filter(|observer| observer.original_native_work().is_some())
-        {
-            native_custody.allocation = Some(observer.take_native_custody(reservation)?);
-        }
+        let native_custody = SnapshotCustody::default();
         let result = (|| {
         let conversation = self.checkpointed_conversation(work)?;
         let bindings = registry_bindings_with_work(&self.schemas, work)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if work.as_deref().is_some_and(|work| work.original_native_work().is_some()) {
-            let recipe = self.snapshot_capture_clone_work(maximum_events)?;
-            super::native_custody::admit_clone_work(recipe, work)?;
-            super::native_custody::begin_clone_work(recipe, work)?;
-        }
         let projection = Projection {
             lifecycle: self.lifecycle,
             active_extensions: self.active_extensions.clone(),
@@ -1065,14 +1080,72 @@ impl Reducer {
         snapshot.attestation = self.authority_verifier.attest_snapshot_with_work(&snapshot, work)?;
         Ok(snapshot)
         })();
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let intrinsic = work.as_deref().is_some_and(|work| work.original_native_work().is_some());
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let intrinsic = false;
-        if result.is_err() && !intrinsic {
+        if result.is_err() {
             if let Some(observer) = work.as_deref_mut() { observer.release_owned(reservation)?; }
         }
-        result.map(|snapshot| (snapshot, if intrinsic { 0 } else { reservation }))
+        result.map(|snapshot| (snapshot, reservation))
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn snapshot_intrinsic_with_work(
+        &self, maximum_events: usize, work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Snapshot> {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut snapshot = Snapshot::empty_intrinsic(self.authority.kind, self.revision, self.lifecycle,
+            self.active_extension_revision, self.effects_archived, quota.work())?;
+        let (conversation, retained) = match self.resident_checkpoint_selection() {
+            Some(selection) => self.conversation.checkpointed_suffix_with_work_and_custody(selection, quota.work())?,
+            None => self.conversation.clone_with_work_and_custody(quota.work())?,
+        };
+        snapshot.projection.conversation = conversation;
+        quota.adopt(retained)?;
+        snapshot.authority = super::native_custody::copy_authority(&self.authority, &mut quota)?;
+        let retained_events = self.events.len().min(maximum_events);
+        snapshot.events = super::copy_iter(retained_events,
+            self.events.iter().skip(self.events.len() - retained_events), &mut quota, |event, quota| {
+                let (event, retained) = super::native_event_clone_with_custody(event, quota.work())?;
+                quota.adopt(retained)?;
+                Ok(event)
+            })?;
+        snapshot.projection.active_extensions = super::native_custody::copy_vector(
+            &self.active_extensions, &mut quota, super::native_custody::copy_dependency)?;
+        snapshot.projection.extension_states = copy_snapshot_states(&self.extension_states, &mut quota)?;
+        snapshot.projection.configured_extensions =
+            super::reserve_copy_vector(self.configured_extensions.len(), &mut quota)?;
+        for (extension, configuration) in &self.configured_extensions {
+            let extension = super::native_custody::copy_dependency(extension, &mut quota)?;
+            let configuration = super::native_custody::copy_configuration(configuration, &mut quota)?;
+            snapshot.projection.configured_extensions.push((extension, configuration));
+        }
+        snapshot.projection.active_configurations = super::native_custody::copy_vector(
+            &self.active_configurations, &mut quota, super::native_custody::copy_configuration)?;
+        snapshot.projection.effects = copy_snapshot_effects(&self.effects, &mut quota)?;
+        snapshot.projection.indexed_terminal_effects = copy_snapshot_terminal_effects(
+            &self.indexed_terminal_effects, &mut quota)?;
+        snapshot.projection.forks = super::reserve_copy_vector(self.forks.len(), &mut quota)?;
+        for (authority, seed) in &self.forks {
+            let authority = super::native_custody::copy_authority(authority, &mut quota)?;
+            let (seed, retained) = seed.clone_with_work_and_custody(quota.work())?;
+            quota.adopt(retained)?;
+            snapshot.projection.forks.push((authority, seed));
+        }
+        snapshot.projection.published_merges = copy_snapshot_merges(&self.published_merges, &mut quota)?;
+        snapshot.projection.latest_context_checkpoint = match &self.latest_context_checkpoint {
+            Some(file) => Some(super::native_custody::copy_file(file, &mut quota)?),
+            None => None,
+        };
+        snapshot.projection.interactions = copy_snapshot_interactions(&self.interactions, &mut quota)?;
+        snapshot.projection.bindings = super::reserve_copy_vector(
+            self.schemas.schemas.as_deref().map_or(0, BTreeMap::len), &mut quota)?;
+        for ((name, version), binding) in self.schemas.schemas.as_deref().into_iter().flat_map(BTreeMap::iter) {
+            let digest = canonical_digest_with_work(binding, quota.work())?;
+            let name = super::native_custody::copy_text(name, &mut quota)?;
+            snapshot.projection.bindings.push((ExtensionDependency { name, version: *version }, digest));
+        }
+        snapshot.adopt_intrinsic_output(&mut quota)?;
+        snapshot.state_digest = snapshot.digest_with_work(quota.work())?;
+        snapshot.attestation = self.authority_verifier.attest_snapshot_with_work(&snapshot, quota.work())?;
+        Ok(snapshot)
     }
 
     fn resident_checkpoint_selection(&self) -> Option<&crate::conversation::ModelContextSelection> {
@@ -1112,28 +1185,33 @@ impl Reducer {
         }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if work.as_deref().is_some_and(|work| work.original_native_work().is_some()) {
-            use super::native_custody::{NativeComponentCustody as Holder,
-                NativeComponentKey as Key, NativeComponentRef as Ref, PreparedComponent};
+            use super::native_custody::{NativeComponentKey as Key, PreparedComponent};
             let count = self.conversation.messages().len();
-            let bytes = (count as u64).checked_mul(std::mem::size_of::<(u64, PreparedComponent)>() as u64)
-                .ok_or_else(|| Error::Invalid("conversation retirement slots overflow".into()))?;
-            work.as_deref_mut().expect("native retirement observer").admit_allocation(bytes)?;
-            let mut slots = crate::wire_codec::CodecQuota::new(work, bytes)?;
-            let mut prepared = Vec::new();
-            prepared.try_reserve_exact(count)
-                .map_err(|cause| slots.work().as_deref().expect("native retirement observer")
-                    .allocation_failure(cause))?;
+            let mut slots = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let mut prepared = super::reserve_copy_vector::<(u64, Option<PreparedComponent>)>(
+                count, &mut slots)?;
             for message in self.conversation.messages() {
-                let claim = Holder::prepare(Ref::ConversationMessage(message.sequence),
-                    source_inventory(message)?, slots.work())?;
-                prepared.push((message.sequence, claim));
+                prepared.push((message.sequence, None));
             }
-            let replacement = self.conversation.checkpointed_suffix_with_work(selection, slots.work())?;
-            // The prepared claims cover the genuinely new copied messages;
-            // original claims remain installed until original data is destroyed.
+            let mut next = 0;
+            let (replacement, _) = self.conversation.checkpointed_suffix_with_work_and_message_custody(
+                selection, slots.work(), &mut |sequence, produced, work| {
+                    while next < prepared.len() && prepared[next].0 < sequence { next += 1; }
+                    if next == prepared.len() || prepared[next].0 != sequence {
+                        return Err(preparation_inventory_error(work, "conversation copied component identity is invalid"));
+                    }
+                    let allocation = work.as_deref_mut().expect("native retirement observer")
+                        .take_native_custody(produced)?;
+                    prepared[next].1 = Some(PreparedComponent::preclaimed(
+                        Key::ConversationMessage(sequence), allocation));
+                    next += 1;
+                    Ok(())
+                })?;
+            // Exact produced claims are staged before replacement. The old
+            // component claims remain installed until original data has dropped.
             self.conversation = replacement;
             for (sequence, claim) in prepared {
-                if self.conversation.messages().binary_search_by_key(&sequence, |message| message.sequence).is_ok() {
+                if let Some(claim) = claim {
                     drop(claim.install(&mut self.native_custody, slots.work())?);
                 } else {
                     self.native_custody.remove(&Key::ConversationMessage(sequence));
@@ -1461,30 +1539,12 @@ fn registry_bindings_with_work(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Vec<(ExtensionDependency, [u8; 32])>> {
     let count = schemas.schemas.as_deref().map_or(0, BTreeMap::len);
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work.as_deref().is_some_and(|work| work.original_native_work().is_some()) {
-        let recipe = super::native_custody::clone_work_container(count);
-        super::native_custody::admit_clone_work(recipe, work)?;
-        super::native_custody::begin_clone_work(recipe, work)?;
-    }
     let mut bindings = Vec::with_capacity(count);
     for ((name, version), binding) in schemas.schemas.as_deref().into_iter().flat_map(BTreeMap::iter) {
         let digest = canonical_digest_with_work(binding, work)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let intrinsic = work.as_deref().is_some_and(|work| work.original_native_work().is_some());
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let intrinsic = false;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if intrinsic {
-            let recipe = super::native_custody::clone_work_string(name);
-            super::native_custody::admit_clone_work(recipe, work)?;
-            super::native_custody::begin_clone_work(recipe, work)?;
-        }
-        if !intrinsic {
-            if let Some(observer) = work.as_deref_mut() {
-                observer.check_cancellation()?;
-                observer.copy_bytes(name.len() as u64)?;
-            }
+        if let Some(observer) = work.as_deref_mut() {
+            observer.check_cancellation()?;
+            observer.copy_bytes(name.len() as u64)?;
         }
         bindings.push((ExtensionDependency { name: name.clone(), version: *version }, digest));
     }
@@ -1575,6 +1635,28 @@ mod tests {
             })?;
         }
         Ok((reducer, issuer))
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_captured_snapshot_restores_exact_source_claims_on_independent_metadata_ledger() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        let (reducer, issuer) = populated_fixture()?;
+        let source_token = CancellationToken::new();
+        let source = NativeMaterializationWork::new(native_budget(), &source_token).expect("capture ledger");
+        let snapshot = reducer.snapshot_native(2, &source)?;
+        let source_receipt = source.receipt();
+        source_token.cancel();
+        let metadata_token = CancellationToken::new();
+        let metadata = NativeMaterializationWork::new(native_budget(), &metadata_token).expect("metadata ledger");
+        let restored = Reducer::restore_native(snapshot, issuer.verifier(), SchemaRegistry::new(), &metadata)?;
+        assert_eq!(restored, reducer);
+        assert_eq!(source.receipt(), source_receipt);
+        assert!(metadata.receipt().allocation_operations > 0);
+        drop(restored);
+        metadata.admit_retained(native_budget().peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(())
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

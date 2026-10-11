@@ -2375,19 +2375,83 @@ pub async fn verified_attachment_manifest(
     item_count: u32,
     limits: &Limits,
 ) -> Result<Vec<Attachment>> {
-    limits.validate_file(reference)?;
+    verified_attachment_manifest_with_work(verifier, reference, item_count, limits, &mut None).await
+}
+
+pub(crate) async fn verified_attachment_manifest_with_work(
+    verifier: &dyn ContentResidencyVerifier, reference: &FileRef,
+    item_count: u32, limits: &Limits,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<Vec<Attachment>> {
+    limits.validate_file_with_work(reference, work)?;
     if item_count as usize > limits.attachments {
-        return Err(Error::Invalid(
-            "attachment manifest count exceeds limits".into(),
-        ));
+        return Err(conversation_boundary(work, "attachment manifest count exceeds limits"));
     }
-    let bytes = verified_content_bytes(verifier, reference).await?;
-    let items = decode_attachment_manifest(reference, &bytes, item_count)?;
+    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let items = if let Some(observer) = quota.work().as_deref_mut() {
+        #[cfg(feature = "filesystem")]
+        {
+            let (items, bytes) = load_manifest_for_history(verifier, reference, item_count, observer).await?;
+            quota.adopt(bytes)?;
+            items
+        }
+        #[cfg(not(feature = "filesystem"))]
+        {
+            observer.check_cancellation()?;
+            return Err(Error::Unsupported("finite manifest resolution is unavailable".into()));
+        }
+    } else {
+        let bytes = verified_content_bytes(verifier, reference).await?;
+        decode_attachment_manifest(reference, &bytes, item_count)?
+    };
+    if items.len() != item_count as usize {
+        return Err(conversation_boundary(quota.work(), "attachment manifest count is incomplete"));
+    }
     for item in &items {
-        limits.validate_file(&item.file)?;
-        verified_content_bytes(verifier, &item.file).await?;
+        limits.validate_file_with_work(&item.file, quota.work())?;
+        if let Some(observer) = quota.work().as_deref_mut() {
+            crate::store::history::verify_content_with_work(observer, verifier, &item.file).await?;
+        } else {
+            verified_content_bytes(verifier, &item.file).await?;
+        }
     }
+    quota.transfer();
     Ok(items)
+}
+
+#[cfg(feature = "filesystem")]
+async fn load_manifest_for_history(
+    verifier: &dyn ContentResidencyVerifier, reference: &FileRef, item_count: u32,
+    observer: &mut dyn crate::store::history::HistoryIo,
+) -> Result<(Vec<Attachment>, u64)> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(native) = observer.original_native_work() {
+        let (items, custody) = verifier
+            .load_manifest_with_native_work(reference, item_count, native)?.await?;
+        let bytes = custody.bytes();
+        if let Err(error) = observer.absorb_native_custody(custody) {
+            drop(items);
+            return Err(error);
+        }
+        return Ok((items, bytes));
+    }
+    let result = verifier.load_manifest_measured(
+        reference, item_count, observer.remaining()?, observer.cancellation(),
+    ).await;
+    let receipt = match result {
+        Ok(receipt) => receipt,
+        Err(failure) => {
+            observer.receive_work(failure.work)?;
+            return Err(failure.cause);
+        }
+    };
+    if let Err(error) = observer.receive_work(receipt.work) {
+        drop(receipt.value);
+        return Err(error);
+    }
+    let bytes = manifest_owned_bytes(&receipt.value, receipt.value.capacity())?;
+    observer.retain_owned(bytes)?;
+    Ok((receipt.value, bytes))
 }
 
 /// A complete ordered attachment list, inline or in one version-pinned file.
@@ -2610,21 +2674,6 @@ impl NativeReferenceClone {
         }
         Ok(())
     }
-    fn admit(self, io: &mut dyn crate::store::history::HistoryIo) -> Result<()> {
-        io.admit_copy(self.copied)?;
-        io.original_native_work().expect("native source clone observer")
-            .admit(acyclic_fs::WorkCounters {
-                allocation_operations: self.allocations,
-                ..acyclic_fs::WorkCounters::default()
-            }).map_err(|cause| Error::NativeWork { cause, custody: None })
-    }
-    fn begin(self, io: &mut dyn crate::store::history::HistoryIo) -> Result<()> {
-        io.original_native_work().expect("native source clone observer")
-            .charge(acyclic_fs::WorkCounters {
-                allocation_operations: self.allocations, bytes_copied: self.copied,
-                ..acyclic_fs::WorkCounters::default()
-            }).map_err(|cause| Error::NativeWork { cause, custody: None })
-    }
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -2713,26 +2762,30 @@ impl FileRef {
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
         if work.is_none() { return Ok(self.clone()); }
-        self.validate_with_work(work)?;
-        // Closure locals physically drop before this quota releases claims.
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let file = (|| -> Result<Self> {
-            let volume = self.volume.clone_in_quota(&mut quota)?;
-            let path = clone_owned_file_text(&self.path, &mut quota)?;
-            let version = clone_owned_file_text(&self.version, &mut quota)?;
-            let descriptor = FileDescriptor {
-                sha256: self.descriptor.sha256, byte_length: self.descriptor.byte_length,
-                media_type: clone_owned_file_text(&self.descriptor.media_type, &mut quota)?,
-            };
-            descriptor.validate_with_work(quota.work())?;
-            let file = Self {
-                volume, path, version, descriptor,
-                display_name: clone_owned_file_text(&self.display_name, &mut quota)?,
-            };
-            file.validate_with_work(quota.work())?;
-            Ok(file)
-        })()?;
+        let file = self.clone_in_quota(&mut quota)?;
         quota.transfer();
+        Ok(file)
+    }
+
+    pub(crate) fn clone_in_quota(
+        &self, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    ) -> Result<Self> {
+        if quota.work().is_none() { return Ok(self.clone()); }
+        self.validate_with_work(quota.work())?;
+        let volume = self.volume.clone_in_quota(quota)?;
+        let path = clone_owned_file_text(&self.path, quota)?;
+        let version = clone_owned_file_text(&self.version, quota)?;
+        let descriptor = FileDescriptor {
+            sha256: self.descriptor.sha256, byte_length: self.descriptor.byte_length,
+            media_type: clone_owned_file_text(&self.descriptor.media_type, quota)?,
+        };
+        descriptor.validate_with_work(quota.work())?;
+        let file = Self {
+            volume, path, version, descriptor,
+            display_name: clone_owned_file_text(&self.display_name, quota)?,
+        };
+        file.validate_with_work(quota.work())?;
         Ok(file)
     }
 }
@@ -2745,6 +2798,19 @@ fn clone_owned_file_text(
     Ok(text)
 }
 
+fn copy_preclaimed_conversation_vector<T: Copy>(
+    source: &[T], target: &mut Vec<T>,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<()> {
+    let bytes = conversation_buffer_bytes::<T>(source.len(), work)?;
+    if let Some(io) = work.as_deref_mut() {
+        io.admit_copy(bytes)?;
+        io.copy_bytes(bytes)?;
+    }
+    target.extend_from_slice(source);
+    Ok(())
+}
+
 impl ConversationMessage {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn clone_work_recipe(&self) -> Result<(u64, u64)> {
@@ -2753,68 +2819,73 @@ impl ConversationMessage {
         Ok((recipe.allocations, recipe.copied))
     }
 
-    pub(crate) fn admit_clone_with_work(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
-            let (allocations, copied) = self.clone_work_recipe()?;
-            NativeReferenceClone { allocations, copied }.admit(io)?;
-        }
-        let _ = work;
-        Ok(())
-    }
-    pub(crate) fn observe_clone_with_work(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
-            let (allocations, copied) = self.clone_work_recipe()?;
-            NativeReferenceClone { allocations, copied }.begin(io)?;
-        }
-        let _ = work;
-        Ok(())
-    }
     pub(crate) fn clone_with_work(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
-        self.admit_clone_with_work(work)?;
-        self.observe_clone_with_work(work)?;
-        Ok(self.clone())
+        self.clone_with_work_and_custody(work).map(|(message, _)| message)
+    }
+
+    pub(crate) fn clone_with_work_and_custody(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(Self, u64)> {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let message = self.clone_in_quota(&mut quota)?;
+        let retained = quota.retained();
+        quota.transfer();
+        Ok((message, retained))
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn clone_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let message = self.clone_with_work(&mut Some(&mut io))?;
+        Ok((message, io.into_custody()))
+    }
+
+    pub(crate) fn clone_in_quota(
+        &self, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    ) -> Result<Self> {
+        if quota.work().is_none() { return Ok(self.clone()); }
+        self.validate_with_work(quota.work())?;
+        let content = self.content.clone_in_quota(quota)?;
+        let attachments = match &self.attachments {
+            ReferencedAttachments::Inline { items } => {
+                let items = crate::core::copy_iter(items.len(), items.iter(), quota, |item, quota| {
+                    let file = item.file.clone_in_quota(quota)?;
+                    let label = item.label.as_deref().map(|label|
+                        clone_owned_file_text(label, quota)).transpose()?;
+                    Ok(Attachment { file, label })
+                })?;
+                ReferencedAttachments::Inline { items }
+            }
+            ReferencedAttachments::Manifest { manifest, item_count } =>
+                ReferencedAttachments::Manifest {
+                    manifest: manifest.clone_in_quota(quota)?, item_count: *item_count,
+                },
+        };
+        let tool_call_id = self.tool_call_id.as_deref()
+            .map(|id| clone_owned_file_text(id, quota)).transpose()?;
+        let mut extensions = BTreeMap::new();
+        for (key, file) in &self.extensions {
+            let bytes = std::mem::size_of::<(String, FileRef)>() as u64;
+            let io = quota.work().as_deref_mut().expect("observed message clone");
+            io.admit_owned(bytes)?;
+            io.retain_owned(bytes)?;
+            quota.adopt(bytes)?;
+            let key = clone_owned_file_text(key, quota)?;
+            let file = file.clone_in_quota(quota)?;
+            extensions.insert(key, file);
+        }
+        Ok(Self {
+            id: self.id, sequence: self.sequence, kind: self.kind.clone(), content,
+            attachments, reply_to: self.reply_to, tool_call_id, extensions,
+        })
     }
 }
 
-fn admit_conversation_copy(
-    messages: &[ConversationMessage], checkpoint: Option<&FileRef>, cache_bytes: u64,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<(u64, u64)> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
-        let mut recipe = NativeReferenceClone::default();
-        for message in messages { recipe.message(message)?; }
-        if let Some(checkpoint) = checkpoint { recipe.file(checkpoint)?; }
-        let copied = recipe.copied.checked_add(cache_bytes).ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid, reason: "conversation clone bytes overflow",
-        })?;
-        io.admit_copy(copied)?;
-        recipe.admit(io)?;
-        return Ok((recipe.allocations, copied));
-    }
-    let _ = (messages, checkpoint);
-    if let Some(io) = work.as_deref_mut() { io.admit_copy(cache_bytes)?; }
-    Ok((0, cache_bytes))
-}
-
-fn begin_conversation_copy(
-    recipe: (u64, u64), work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
-        return NativeReferenceClone { allocations: recipe.0, copied: recipe.1 }.begin(io);
-    }
-    if let Some(io) = work.as_deref_mut() { io.copy_bytes(recipe.1)?; }
-    Ok(())
-}
 
 /// Projection of one agent-owned conversation.
 #[derive(Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -2853,13 +2924,6 @@ struct ArchivedConversationPrefix {
     checkpoint: FileRef,
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-#[derive(Serialize)]
-struct ArchivedConversationPrefixRef<'a> {
-    through_sequence: u64,
-    history_digest: [u8; 32],
-    checkpoint: &'a FileRef,
-}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -3456,19 +3520,32 @@ impl ConversationState {
     pub(crate) fn clone_with_work(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
+        self.clone_with_work_and_custody(work).map(|(state, _)| state)
+    }
+
+    pub(crate) fn clone_with_work_and_custody(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(Self, u64)> {
+        self.clone_with_work_engine(work, None)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn clone_with_work_and_message_custody<'work>(
+        &self, work: &mut Option<&'work mut dyn crate::store::history::HistoryIo>,
+        retain: &mut dyn FnMut(u64, u64, &mut Option<&'work mut dyn crate::store::history::HistoryIo>) -> Result<()>,
+    ) -> Result<(Self, u64)> {
+        if !work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "message component custody requires original native work" });
+        }
+        self.clone_with_work_engine(work, Some(retain))
+    }
+
+    fn clone_with_work_engine<'work>(
+        &self, work: &mut Option<&'work mut dyn crate::store::history::HistoryIo>,
+        mut retain: Option<&mut dyn FnMut(u64, u64, &mut Option<&'work mut dyn crate::store::history::HistoryIo>) -> Result<()>>,
+    ) -> Result<(Self, u64)> {
         self.require_native_work(work)?;
-        let cache_copy = {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            {
-                if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
-                    self.native_clone_cache_copy_bytes()?
-                } else { self.clone_cache_logical_bytes()? }
-            }
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            { self.clone_cache_logical_bytes()? }
-        };
-        let copied = admit_conversation_copy(&self.messages,
-            self.archived_prefix.as_ref().map(|prefix| &prefix.checkpoint), cache_copy, work)?;
         let mut cache = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut state = Self {
             agent: self.agent, pending_user: self.pending_user,
@@ -3485,7 +3562,6 @@ impl ConversationState {
             ConversationBuffer::Positions, &mut state.model_positions,
             self.model_positions.len(), cache.work())?;
         cache.adopt(retained)?;
-        state.retain_archived_prefix(self.archived_prefix.as_ref(), cache.work())?;
         for id in self.by_id.keys() {
             let retained = state.native_custody.retain_index(false, *id, cache.work())?;
             cache.adopt(retained)?;
@@ -3494,34 +3570,57 @@ impl ConversationState {
             let retained = state.native_custody.retain_index(true, *id, cache.work())?;
             cache.adopt(retained)?;
         }
-        begin_conversation_copy(copied, cache.work())?;
-        // All positive buffer/index claims and source copy admissions have
-        // succeeded; the remaining original deep clone is infallible.
-        state.messages.extend(self.messages.iter().cloned());
-        state.prefix_digests.extend_from_slice(&self.prefix_digests);
-        state.model_positions.extend_from_slice(&self.model_positions);
-        state.by_id = self.by_id.clone();
-        state.outcomes = self.outcomes.clone();
-        state.archived_prefix = self.archived_prefix.clone();
+        for message in &self.messages {
+            let before = cache.retained();
+            let message = message.clone_in_quota(&mut cache)?;
+            if let Some(retain) = retain.as_mut() {
+                let produced = cache.retained() - before;
+                retain(message.sequence, produced, cache.work())?;
+                cache.transfer();
+            }
+            state.messages.push(message);
+        }
+        copy_preclaimed_conversation_vector(
+            &self.prefix_digests, &mut state.prefix_digests, cache.work())?;
+        copy_preclaimed_conversation_vector(
+            &self.model_positions, &mut state.model_positions, cache.work())?;
+        for (id, position) in &self.by_id { state.by_id.insert(*id, *position); }
+        for (id, position) in &self.outcomes { state.outcomes.insert(*id, *position); }
+        let retained = state.clone_archived_prefix_with_work(self.archived_prefix.as_ref(), cache.work())?;
+        cache.adopt(retained)?;
+        let retained = cache.retained();
         cache.transfer();
-        Ok(state)
+        Ok((state, retained))
     }
 
-    fn retain_archived_prefix(
+    fn clone_archived_prefix_with_work(
         &mut self, prefix: Option<&ArchivedConversationPrefix>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
+    ) -> Result<u64> {
+        let Some(prefix) = prefix else { return Ok(0); };
+        self.clone_archive_checkpoint_with_work(
+            prefix.through_sequence, prefix.history_digest, &prefix.checkpoint, work)
+    }
+
+    fn clone_archive_checkpoint_with_work(
+        &mut self, through_sequence: u64, history_digest: [u8; 32], checkpoint: &FileRef,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<u64> {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let checkpoint = checkpoint.clone_in_quota(&mut quota)?;
+        let bytes = quota.retained();
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let (Some(prefix), Some(io)) = (prefix,
-            work.as_deref_mut().filter(|io| io.original_native_work().is_some()))
-        {
-            let bytes = crate::core::source_inventory(prefix)?;
-            io.admit_owned(bytes)?;
-            io.retain_owned(bytes)?;
+        let retained = if let Some(io) = quota.work().as_deref_mut().filter(|io| io.original_native_work().is_some()) {
             self.native_custody.archive = Some(io.take_native_custody(bytes)?);
-        }
-        let _ = (prefix, work);
-        Ok(())
+            0
+        } else { bytes };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let retained = bytes;
+        quota.transfer();
+        self.archived_prefix = Some(ArchivedConversationPrefix {
+            through_sequence, history_digest, checkpoint,
+        });
+        Ok(retained)
     }
 
     /// Logical payload cloned from caches omitted by the wire projection.
@@ -3628,14 +3727,43 @@ impl ConversationState {
         &self, selection: &ModelContextSelection,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
+        self.checkpointed_suffix_with_work_and_custody(selection, work).map(|(state, _)| state)
+    }
+
+    pub(crate) fn checkpointed_suffix_with_work_and_custody(
+        &self, selection: &ModelContextSelection,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(Self, u64)> {
+        self.checkpointed_suffix_with_work_engine(selection, work, None)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn checkpointed_suffix_with_work_and_message_custody<'work>(
+        &self, selection: &ModelContextSelection,
+        work: &mut Option<&'work mut dyn crate::store::history::HistoryIo>,
+        retain: &mut dyn FnMut(u64, u64, &mut Option<&'work mut dyn crate::store::history::HistoryIo>) -> Result<()>,
+    ) -> Result<(Self, u64)> {
+        if !work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "message component custody requires original native work" });
+        }
+        self.checkpointed_suffix_with_work_engine(selection, work, Some(retain))
+    }
+
+    fn checkpointed_suffix_with_work_engine<'work>(
+        &self, selection: &ModelContextSelection,
+        work: &mut Option<&'work mut dyn crate::store::history::HistoryIo>,
+        mut retain: Option<&mut dyn FnMut(u64, u64, &mut Option<&'work mut dyn crate::store::history::HistoryIo>) -> Result<()>>,
+    ) -> Result<(Self, u64)> {
         self.require_native_work(work)?;
         let reference = selection.checkpoint.as_ref()
             .ok_or_else(|| conversation_boundary(work, "history retirement requires a checkpoint pin"))?;
         let cut = selection.conversation_revision;
         if cut <= self.archived_through() || self.pending_user.is_some() {
-            return self.clone_with_work(work);
+            return self.clone_with_work_engine(work, retain);
         }
-        crate::projection::validate_model_context_selection_at_revision(self, selection, cut)?;
+        crate::projection::validate_model_context_selection_at_revision_with_work(
+            self, selection, cut, work)?;
         let mut temporary = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut calls = BTreeSet::new();
         for message in self.messages.iter().take_while(|message| message.sequence <= cut) {
@@ -3655,9 +3783,7 @@ impl ConversationState {
                     }
                 }
                 MessageKind::ToolResult => {
-                    if let Some(parent) = message.reply_to
-                        && calls.remove(&parent)
-                    {
+                    if let Some(parent) = message.reply_to && calls.remove(&parent) {
                         temporary.relinquish(std::mem::size_of::<Uuid>() as u64)?;
                     }
                 }
@@ -3667,39 +3793,34 @@ impl ConversationState {
         if !calls.is_empty() {
             drop(calls);
             drop(temporary);
-            return self.clone_with_work(work);
+            return self.clone_with_work_engine(work, retain);
         }
         drop(calls);
         drop(temporary);
-        let digest = self.history_prefix_digest(cut)?;
+        let digest = self.history_prefix_digest_with_work(cut, work)?;
         let start = self.messages.partition_point(|message| message.sequence <= cut);
         let suffix = self.messages.get(start..)
             .ok_or_else(|| conversation_boundary(work, "history retirement cut is invalid"))?;
-        let copied = admit_conversation_copy(suffix, Some(reference), 0, work)?;
         let mut cache = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut carrier = Self::default();
         let retained = carrier.native_custody.reserve(
             ConversationBuffer::Messages, &mut carrier.messages, suffix.len(), cache.work())?;
         cache.adopt(retained)?;
-        // Borrow the existing checkpoint before its independent deep copy.
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(io) = cache.work().as_deref_mut().filter(|io| io.original_native_work().is_some()) {
-            let bytes = crate::core::source_inventory(&ArchivedConversationPrefixRef {
-                through_sequence: cut, history_digest: digest, checkpoint: reference,
-            })?;
-            io.admit_owned(bytes)?;
-            io.retain_owned(bytes)?;
-            carrier.native_custody.archive = Some(io.take_native_custody(bytes)?);
+        for message in suffix {
+            let before = cache.retained();
+            let message = message.clone_in_quota(&mut cache)?;
+            if let Some(retain) = retain.as_mut() {
+                let produced = cache.retained() - before;
+                retain(message.sequence, produced, cache.work())?;
+                cache.transfer();
+            }
+            carrier.messages.push(message);
         }
-        begin_conversation_copy(copied, cache.work())?;
-        carrier.messages.extend(suffix.iter().cloned());
+        let retained = carrier.clone_archive_checkpoint_with_work(cut, digest, reference, cache.work())?;
+        cache.adopt(retained)?;
         let wire = ConversationStateWire {
-            agent: self.agent,
-            messages: std::mem::take(&mut carrier.messages),
-            archived_prefix: Some(ArchivedConversationPrefix {
-                through_sequence: cut, history_digest: digest,
-                checkpoint: reference.clone(),
-            }),
+            agent: self.agent, messages: std::mem::take(&mut carrier.messages),
+            archived_prefix: carrier.archived_prefix.take(),
         };
         let (state, retained) = Self::from_wire_with_work(
             wire, acyclic_stream::MAX_RECORD_BYTES as u64, cache.work())?;
@@ -3711,8 +3832,9 @@ impl ConversationState {
             state.native_custody.archive = carrier.native_custody.archive.take();
             state
         };
+        let retained = cache.retained();
         cache.transfer();
-        Ok(state)
+        Ok((state, retained))
     }
 
     #[cfg(feature = "filesystem")]
@@ -4420,6 +4542,128 @@ mod tests {
         new.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         drop(values);
         drop(owner);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_message_partial_field_copy_retires_actual_content_and_attachment_buffer() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        use crate::store::history::HistoryIo;
+        let content = file(AgentId::from_bytes([32; 16]), "native-partial-message.txt")?;
+        let mut source = native_message(&content, 1);
+        source.attachments = ReferencedAttachments::Inline {
+            items: vec![Attachment { file: content.clone(), label: None }],
+        };
+        let content_bytes = content.clone_work_recipe()?.1;
+        let token = CancellationToken::new();
+        let mut budget = native_conversation_budget();
+        budget.bytes_copied = 4 + content_bytes;
+        let native = NativeMaterializationWork::new(budget, &token).expect("partial message ledger");
+        let mut io = crate::store::history::native_work_io(&native).expect("partial message observer");
+        let held = io.clone_text("held")?;
+        assert!(matches!(source.clone_with_work(&mut Some(&mut io)), Err(Error::NativeWork { .. })));
+        assert_eq!(native.receipt().bytes_copied, 4 + content_bytes);
+        let guard = io.into_custody();
+        assert_eq!(guard.bytes(), held.capacity() as u64, "failed message releases only its new fields and Vec backing");
+        drop(held);
+        drop(guard);
+        native.admit_retained(budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_message_field_clone_returns_actual_deep_payload_custody() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        let content = file(AgentId::from_bytes([30; 16]), "native-message-copy.txt")?;
+        let mut source = native_message(&content, 1);
+        source.attachments = ReferencedAttachments::Inline { items: vec![Attachment {
+            file: content.clone(), label: Some("actual label".into()),
+        }] };
+        source.extensions.insert("example.owned".into(), content);
+        let cancellation = CancellationToken::new();
+        let budget = native_conversation_budget();
+        let native = NativeMaterializationWork::new(budget, &cancellation).expect("message copy ledger");
+        let before = native.receipt();
+        let recipe = source.clone_work_recipe()?;
+        let (copied, guard) = source.clone_with_native_work(&native)?;
+        assert_eq!(copied, source);
+        let ReferencedAttachments::Inline { items } = &copied.attachments else { unreachable!() };
+        let mut actual = copied.content.logical_owned_bytes()?
+            + (items.capacity() * std::mem::size_of::<Attachment>()) as u64;
+        for item in items {
+            actual += item.file.logical_owned_bytes()?
+                + item.label.as_ref().map_or(0, |label| label.capacity() as u64);
+        }
+        for (key, file) in &copied.extensions {
+            actual += std::mem::size_of::<(String, FileRef)>() as u64
+                + key.capacity() as u64 + file.logical_owned_bytes()?;
+        }
+        assert_eq!(guard.bytes(), actual, "message Self and outer messageVec slots are not claimed");
+        assert_eq!(native.receipt().allocation_operations - before.allocation_operations, recipe.0);
+        assert_eq!(native.receipt().bytes_copied - before.bytes_copied, recipe.1);
+        assert_eq!(native.receipt().bytes_encoded + native.receipt().bytes_hashed, 0);
+        drop(copied);
+        drop(guard);
+        native.admit_retained(budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_state_clone_and_suffix_transfer_only_actual_message_components() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        use crate::store::history::HistoryIo;
+        let agent = AgentId::from_bytes([31; 16]);
+        let content = file(agent, "native-component-copy.txt")?;
+        let mut source = ConversationState::default();
+        source.bind(agent)?;
+        for sequence in 1..=4 { source.append(native_message(&content, sequence))?; }
+        let first_token = CancellationToken::new();
+        let budget = native_conversation_budget();
+        let first = NativeMaterializationWork::new(budget, &first_token).expect("snapshot copy ledger");
+        let mut io = crate::store::history::native_work_io(&first).expect("snapshot copy observer");
+        let recipe = source.native_clone_copy_recipe()?;
+        let before = first.receipt().bytes_copied;
+        let (held, produced) = source.clone_with_work_and_custody(&mut Some(&mut io))?;
+        assert_eq!(held, source);
+        assert_eq!(first.receipt().bytes_copied - before, recipe.1);
+        let deep = io.into_custody();
+        assert_eq!(deep.bytes(), produced, "only observer-owned deep payload is reported");
+        let original_receipt = first.receipt();
+        first_token.cancel();
+        let selection = ModelContextSelection {
+            conversation_revision: 2, message_ids: vec![Uuid::from_u128(1), Uuid::from_u128(2)],
+            checkpoint: Some(file(agent, "native-component-checkpoint.json")?),
+        };
+        let second_token = CancellationToken::new();
+        let second = NativeMaterializationWork::new(budget, &second_token).expect("independent suffix ledger");
+        let mut io = crate::store::history::native_work_io(&second).expect("suffix observer");
+        let mut components = Vec::with_capacity(2);
+        let mut retain = |sequence, bytes, work: &mut Option<&mut dyn HistoryIo>| -> Result<()> {
+            assert!(components.len() < components.capacity());
+            let guard = work.as_deref_mut().expect("same suffix observer").take_native_custody(bytes)?;
+            components.push((sequence, guard));
+            Ok(())
+        };
+        let (suffix, produced) = held.checkpointed_suffix_with_work_and_message_custody(
+            &selection, &mut Some(&mut io), &mut retain)?;
+        drop(retain);
+        assert_eq!(produced, 0);
+        assert_eq!(io.into_custody().bytes(), 0);
+        assert_eq!(components.iter().map(|(sequence, _)| *sequence).collect::<Vec<_>>(), [3, 4]);
+        assert!(components.iter().all(|(_, guard)| guard.work().shares_ledger(&second)));
+        assert_eq!(first.receipt(), original_receipt, "cancelled source ledger is neither rebound nor absorbed");
+        assert_eq!(suffix.history_digest, source.history_digest);
+        drop(suffix);
+        drop(components);
+        second.admit_retained(budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        drop(held);
+        drop(deep);
         Ok(())
     }
 

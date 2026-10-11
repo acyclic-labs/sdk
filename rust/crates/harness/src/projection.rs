@@ -682,6 +682,31 @@ pub fn validate_model_context_selection_at_revision(
     )
 }
 
+/// Reuses the canonical validation engine for an already admitted history
+/// observer; the native facade borrows its original ledger and creates no budget.
+pub(crate) fn validate_model_context_selection_at_revision_with_work(
+    conversation: &ConversationState,
+    selection: &ModelContextSelection,
+    conversation_revision: u64,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(native) = work.as_deref()
+        .and_then(crate::store::history::HistoryIo::original_native_work)
+    {
+        let io = crate::executor::PreparationIo::from_native_work(native)?;
+        return validate_model_context_selection_at_revision_with_io(
+            conversation, selection, conversation_revision, Some(&io),
+        );
+    }
+    if let Some(io) = work.as_deref_mut() {
+        io.check_cancellation()?;
+    }
+    validate_model_context_selection_at_revision_with_io(
+        conversation, selection, conversation_revision, None,
+    )
+}
+
 fn validate_model_context_selection_at_revision_with_io(
     conversation: &ConversationState,
     selection: &ModelContextSelection,

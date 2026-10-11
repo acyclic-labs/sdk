@@ -183,11 +183,26 @@ impl PreparedForkHistory {
 
     #[cfg(feature = "filesystem")]
     pub(crate) fn verify(&self, verifier: &crate::core::AuthorityVerifier) -> Result<()> {
-        verifier.verify_audience(&self.parent)?;
-        let digest = self.conversation.history_prefix_digest(self.through_sequence())?;
-        if self.attestation != verifier.fork_history_selection_proof(
-            self.parent_revision, self.through_sequence(), self.conversation.agent, digest,
+        self.verify_with_work(verifier, &mut None)
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn verify_with_work(
+        &self, verifier: &crate::core::AuthorityVerifier,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        verifier.verify_audience_with_work(&self.parent, work)?;
+        let digest = self.conversation.history_prefix_digest_with_work(self.through_sequence(), work)?;
+        if self.attestation != verifier.fork_history_selection_proof_with_work(
+            self.parent_revision, self.through_sequence(), self.conversation.agent, digest, work,
         )? {
+            #[cfg(not(target_arch = "wasm32"))]
+            if work.as_ref().is_some_and(|work| work.original_native_work().is_some()) {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "fork archive belongs to another issuer",
+                });
+            }
             return Err(Error::Unauthorized("fork archive belongs to another issuer".into()));
         }
         Ok(())
@@ -208,6 +223,12 @@ pub trait ForkSeedVerifier: acyclic_stream::ProviderPlatform {
     }
     /// Checks every selected revision owned by this provider.
     fn verify<'a>(&'a self, seed: &'a ForkSeed) -> BoxFuture<'a, Result<()>>;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn verify_with_native_work<'a>(
+        &'a self, _seed: &'a ForkSeed, work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        unsupported_native_fork(work, "native fork provider verification is unavailable")
+    }
     /// Executes the same provider proof with a finite SDK allowance.
     #[cfg(feature = "filesystem")]
     fn verify_measured<'a>(
@@ -228,6 +249,13 @@ pub trait ForkSeedVerifier: acyclic_stream::ProviderPlatform {
             ))
         })
     }
+    /// The concrete returned fence owns its native metadata custody until drop.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn acquire_private_fence_with_native_work<'a>(
+        &'a self, _seed: &'a ForkSeed, work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, Box<dyn ForkPublicationGuard>>> {
+        unsupported_native_fork(work, "native fork private publication fence is unavailable")
+    }
     /// Acquires the original durable fence with its actual SDK receipt.
     #[cfg(feature = "filesystem")]
     fn acquire_private_fence_measured<'a>(
@@ -247,6 +275,12 @@ pub trait ForkSeedVerifier: acyclic_stream::ProviderPlatform {
             ))
         })
     }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn read_manifest_with_native_work<'a>(
+        &'a self, _manifest: &'a FileRef, work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+        unsupported_native_fork(work, "native fork attachment manifest reader is unavailable")
+    }
     /// Reads the original pinned manifest with its actual SDK receipt.
     #[cfg(feature = "filesystem")]
     fn read_manifest_measured<'a>(
@@ -260,6 +294,12 @@ pub trait ForkSeedVerifier: acyclic_stream::ProviderPlatform {
     /// Proves one immutable member is resident at its owning provider.
     fn verify_file<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
         Box::pin(async { Err(Error::Unsupported("fork file verifier is not bound".into())) })
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn verify_file_with_native_work<'a>(
+        &'a self, _file: &'a FileRef, work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        unsupported_native_fork(work, "native fork file verifier is unavailable")
     }
     /// Verifies the original immutable member with its actual SDK receipt.
     #[cfg(feature = "filesystem")]
@@ -279,6 +319,12 @@ pub trait ForkSeedVerifier: acyclic_stream::ProviderPlatform {
             ))
         })
     }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn verify_boundary_with_native_work<'a>(
+        &'a self, _boundary: &'a AttestedBoundary, work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        unsupported_native_fork(work, "native fork boundary verifier is unavailable")
+    }
     /// Verifies the original provider-issued claim with its actual SDK receipt.
     #[cfg(feature = "filesystem")]
     fn verify_boundary_measured<'a>(
@@ -297,6 +343,12 @@ pub trait ForkSeedVerifier: acyclic_stream::ProviderPlatform {
 pub trait ForkPublicationGuard: acyclic_stream::ProviderPlatform {
     /// Idempotently releases the exact fence after a terminal publication result.
     fn release<'a>(&'a self) -> BoxFuture<'a, Result<()>>;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn release_with_native_work<'a>(
+        &'a self, work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        unsupported_native_fork(work, "native fork private publication fence release is unavailable")
+    }
     /// Releases that same gate only when the concrete provider supports receipts.
     #[cfg(feature = "filesystem")]
     fn release_measured<'a>(
@@ -305,6 +357,30 @@ pub trait ForkPublicationGuard: acyclic_stream::ProviderPlatform {
         _cancellation: &'a acyclic_fs::CancellationToken,
     ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>> {
         unsupported_fork_measurement("fork private publication fence release is not measured")
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn unsupported_native_fork<'a, T: 'a>(
+    work: &'a acyclic_fs::NativeMaterializationWork,
+    reason: &'static str,
+) -> Result<crate::NativeFutureBundle<'a, T>> {
+    work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason })
+}
+
+fn fork_provider_boundary(
+    work: &Option<&mut dyn crate::store::history::HistoryIo>,
+    code: crate::wire::ErrorCode, reason: &'static str,
+) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work.as_ref().is_some_and(|work| work.original_native_work().is_some()) {
+        return Error::NativeBoundary { code, reason };
+    }
+    let _ = work;
+    match code {
+        crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
+        _ => Error::Unsupported(reason.into()),
     }
 }
 
@@ -346,6 +422,10 @@ pub(crate) async fn release_fork_guard_with_work(
     let Some(observer) = work.as_deref_mut() else {
         return guard.release().await;
     };
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(native) = observer.original_native_work() {
+        return guard.release_with_native_work(native)?.await;
+    }
     #[cfg(feature = "filesystem")]
     {
         let receipt = guard.release_measured(observer.remaining()?, observer.cancellation()).await;
@@ -359,7 +439,7 @@ pub(crate) async fn release_fork_guard_with_work(
 }
 
 macro_rules! fork_provider_dispatcher {
-    ($name:ident, $ordinary:ident, $measured:ident, $input:ident : $input_type:ty, $output:ty) => {
+    ($name:ident, $ordinary:ident, $measured:ident, $native:ident, $input:ident : $input_type:ty, $output:ty) => {
         async fn $name(
             verifier: &dyn ForkSeedVerifier,
             $input: &$input_type,
@@ -368,6 +448,10 @@ macro_rules! fork_provider_dispatcher {
             let Some(observer) = work.as_deref_mut() else {
                 return verifier.$ordinary($input).await;
             };
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if let Some(native) = observer.original_native_work() {
+                return verifier.$native($input, native)?.await;
+            }
             #[cfg(feature = "filesystem")]
             {
                 let receipt = verifier.$measured(
@@ -385,15 +469,41 @@ macro_rules! fork_provider_dispatcher {
 }
 
 fork_provider_dispatcher!(acquire_fork_fence_with_work, acquire_private_fence,
-    acquire_private_fence_measured, seed: ForkSeed, Box<dyn ForkPublicationGuard>);
+    acquire_private_fence_measured, acquire_private_fence_with_native_work, seed: ForkSeed, Box<dyn ForkPublicationGuard>);
 fork_provider_dispatcher!(verify_fork_provider_with_work, verify,
-    verify_measured, seed: ForkSeed, ());
-fork_provider_dispatcher!(read_fork_manifest_with_work, read_manifest,
-    read_manifest_measured, manifest: FileRef, Vec<u8>);
+    verify_measured, verify_with_native_work, seed: ForkSeed, ());
 fork_provider_dispatcher!(verify_fork_file_with_work, verify_file,
-    verify_file_measured, file: FileRef, ());
+    verify_file_measured, verify_file_with_native_work, file: FileRef, ());
 fork_provider_dispatcher!(verify_fork_boundary_with_work, verify_boundary,
-    verify_boundary_measured, boundary: AttestedBoundary, ());
+    verify_boundary_measured, verify_boundary_with_native_work, boundary: AttestedBoundary, ());
+
+async fn read_fork_manifest_with_work(
+    verifier: &dyn ForkSeedVerifier,
+    manifest: &FileRef,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<Vec<u8>> {
+    let Some(observer) = work.as_deref_mut() else {
+        return verifier.read_manifest(manifest).await;
+    };
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(native) = observer.original_native_work() {
+        let (bytes, custody) = verifier.read_manifest_with_native_work(manifest, native)?.await?;
+        observer.absorb_native_custody(custody)?;
+        return Ok(bytes);
+    }
+    #[cfg(feature = "filesystem")]
+    {
+        let receipt = verifier.read_manifest_measured(
+            manifest, observer.remaining()?, observer.cancellation(),
+        ).await;
+        receive_fork_work(receipt, observer)
+    }
+    #[cfg(not(feature = "filesystem"))]
+    {
+        let _ = observer;
+        Err(Error::Unsupported("measured fork publication requires Filesystem".into()))
+    }
+}
 
 /// Exhaustive provider dispatcher. A seed cannot be admitted when any exact
 /// provider identity is unbound, even when its envelope is syntactically valid.
@@ -433,9 +543,14 @@ impl CompositeForkVerifier {
         let private = self.provider_with_work(seed.child_private_volume.provider(), work)?;
         let guard = acquire_fork_fence_with_work(private.as_ref(), seed, work).await?;
         if let Err(error) = self.verify_with_work(seed, work).await {
-            release_fork_guard_with_work(guard.as_ref(), work)
-                .await
-                .map_err(|_| Error::Indeterminate(seed.operation_id))?;
+            let released = release_fork_guard_with_work(guard.as_ref(), work).await;
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            let preserve_primary = work.as_ref().is_some_and(|work| work.original_native_work().is_some());
+            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            let preserve_primary = false;
+            if released.is_err() && !preserve_primary {
+                return Err(Error::Indeterminate(seed.operation_id));
+            }
             return Err(error);
         }
         Ok(guard)
@@ -459,7 +574,7 @@ impl CompositeForkVerifier {
             // A different operation can acquire the gate after this fork's
             // terminal release. In that case this operation cannot still own
             // the fence, and a positive Stream observation is sufficient.
-            Err(Error::Conflict(_)) => Ok(()),
+            Err(error) if error.code() == crate::wire::ErrorCode::Conflict => Ok(()),
             Err(error) => Err(error),
         }
     }
@@ -1067,9 +1182,8 @@ impl ContentForkVerifier {
                     || capture.revision.provider() == &self.provider
             })
         {
-            return Err(Error::Unsupported(
-                "content-only provider cannot attest mutable fork resources".into(),
-            ));
+            return Err(fork_provider_boundary(work, crate::wire::ErrorCode::Unsupported,
+                "content-only provider cannot attest mutable fork resources"));
         }
         let mut owned = ForkValidationWork::new(work)?;
         let mut checked = BTreeSet::new();
@@ -1100,7 +1214,8 @@ impl ContentForkVerifier {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Vec<u8>> {
         if manifest.volume().provider() != &self.provider {
-            return Err(Error::Unauthorized("fork manifest belongs to another provider".into()));
+            return Err(fork_provider_boundary(work, crate::wire::ErrorCode::Unauthorized,
+                "fork manifest belongs to another provider"));
         }
         match work.as_deref_mut() {
             Some(observer) => crate::store::history::read_content_with_work(
@@ -1115,7 +1230,8 @@ impl ContentForkVerifier {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if file.volume().provider() != &self.provider {
-            return Err(Error::Unauthorized("fork file belongs to another provider".into()));
+            return Err(fork_provider_boundary(work, crate::wire::ErrorCode::Unauthorized,
+                "fork file belongs to another provider"));
         }
         match work.as_deref_mut() {
             Some(observer) => crate::store::history::verify_content_with_work(
@@ -1132,6 +1248,40 @@ impl ForkSeedVerifier for ContentForkVerifier {
 
     fn verify<'a>(&'a self, seed: &'a ForkSeed) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move { self.verify_with_work(seed, &mut None).await })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn verify_with_native_work<'a>(
+        &'a self, seed: &'a ForkSeed, native: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        crate::NativeFutureBundle::new(native, || async move {
+            let mut io = crate::store::history::native_work_io(native)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            self.verify_with_work(seed, &mut Some(&mut io)).await
+        })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn read_manifest_with_native_work<'a>(
+        &'a self, manifest: &'a FileRef, native: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(native, || async move {
+            let mut io = crate::store::history::native_work_io(native)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            let bytes = self.read_manifest_with_work(manifest, &mut Some(&mut io)).await?;
+            Ok((bytes, io.into_custody()))
+        })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn verify_file_with_native_work<'a>(
+        &'a self, file: &'a FileRef, native: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        crate::NativeFutureBundle::new(native, || async move {
+            let mut io = crate::store::history::native_work_io(native)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            self.verify_file_with_work(file, &mut Some(&mut io)).await
+        })
     }
 
     #[cfg(feature = "filesystem")]
@@ -1226,9 +1376,8 @@ impl StreamHistoryForkVerifier {
                 if revision.provider() == &self.provider
                     && !matches!(revision, ResourceRevision::History(_))
                 {
-                    return Err(Error::Unsupported(
-                        "Stream history verifier cannot prove this resource".into(),
-                    ));
+                    return Err(fork_provider_boundary(work, crate::wire::ErrorCode::Unsupported,
+                        "Stream history verifier cannot prove this resource"));
                 }
             }
         }
@@ -1243,6 +1392,17 @@ impl ForkSeedVerifier for StreamHistoryForkVerifier {
 
     fn verify<'a>(&'a self, seed: &'a ForkSeed) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move { self.verify_with_work(seed, &mut None).await })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn verify_with_native_work<'a>(
+        &'a self, seed: &'a ForkSeed, native: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        crate::NativeFutureBundle::new(native, || async move {
+            let mut io = crate::store::history::native_work_io(native)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            self.verify_with_work(seed, &mut Some(&mut io)).await
+        })
     }
 
     #[cfg(feature = "filesystem")]
@@ -1772,24 +1932,49 @@ impl ForkRequest {
     /// The returned request is the immutable retry/admission input. This method
     /// never reads providers or rewrites a previously admitted request.
     pub fn with_history_policy(
-        mut self,
+        self,
         parent: &crate::core::Reducer,
         policy: ForkHistoryPolicy,
     ) -> Result<Self> {
+        self.with_history_policy_with_work(parent, policy, &mut None)
+    }
+
+    pub(crate) fn with_history_policy_with_work(
+        mut self,
+        parent: &crate::core::Reducer,
+        policy: ForkHistoryPolicy,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        if let Some(observer) = work.as_deref_mut() {
+            observer.check_cancellation()?;
+        }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let native = work.as_deref().is_some_and(|observer| observer.original_native_work().is_some());
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let native = false;
+        let policy_error = |code, reason: &'static str| {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if native { return Error::NativeBoundary { code, reason }; }
+            let _ = native;
+            match code {
+                crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
+                _ => Error::Invalid(reason.into()),
+            }
+        };
         if &self.parent != parent.authority() || self.parent_revision != parent.revision() {
-            return Err(Error::Conflict(
-                "fork context policy requires the exact requested parent revision".into(),
-            ));
+            return Err(policy_error(crate::wire::ErrorCode::Conflict,
+                "fork context policy requires the exact requested parent revision"));
         }
-        let conversation = parent.conversation().ok_or_else(|| {
-            Error::Invalid("fork context policy requires a parent conversation".into())
-        })?;
+        let conversation = parent.conversation().ok_or_else(|| policy_error(
+            crate::wire::ErrorCode::Invalid, "fork context policy requires a parent conversation"))?;
         if conversation.agent.is_none() {
-            return Err(Error::Invalid(
-                "fork context policy requires a bound parent agent".into(),
-            ));
+            return Err(policy_error(crate::wire::ErrorCode::Invalid,
+                "fork context policy requires a bound parent agent"));
         }
-        let full_cut = conversation.messages().last().map_or(0, |m| m.sequence);
+        if let Some(observer) = work.as_deref_mut() {
+            observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+        }
+        let full_cut = conversation.logical_revision();
         let (through_sequence, summary) = match policy {
             ForkHistoryPolicy::Fork => (full_cut, None),
             ForkHistoryPolicy::Fresh => (0, None),
@@ -1797,7 +1982,7 @@ impl ForkRequest {
         };
         self.preparation.inherited_through_sequence = through_sequence;
         self.preparation.summary = summary;
-        self.validate()?;
+        self.validate_with_work(work)?;
         Ok(self)
     }
 
@@ -2803,6 +2988,389 @@ impl ForkSeed {
     }
 }
 
+// Physical copies of the closed fork DTO fields share the original observer.
+// Only opaque std BTree node overhead is excluded from logical ownership.
+mod physical_clones {
+    use super::*;
+    use crate::store::history::HistoryIo;
+    use crate::wire_codec::CodecQuota;
+
+    fn item(quota: &mut CodecQuota<'_, '_>) -> Result<()> {
+        quota.work().as_deref_mut().expect("observed fork clone")
+            .codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })
+    }
+
+    fn text(source: &str, quota: &mut CodecQuota<'_, '_>) -> Result<String> {
+        let value = quota.work().as_deref_mut().expect("observed fork clone").clone_text(source)?;
+        quota.adopt(value.capacity() as u64)?;
+        Ok(value)
+    }
+
+    fn slots<T>(length: usize, quota: &mut CodecQuota<'_, '_>) -> Result<Vec<T>> {
+        let mut value = Vec::new();
+        let bytes = (length as u64).checked_mul(std::mem::size_of::<T>() as u64)
+            .ok_or_else(|| Error::Storage("fork clone slot count overflows".into()))?;
+        if bytes != 0 {
+            let observer = quota.work().as_deref_mut().expect("observed fork clone");
+            observer.admit_owned(bytes)?;
+            observer.retain_owned(bytes)?;
+            quota.adopt(bytes)?;
+            quota.work().as_deref_mut().expect("observed fork clone").admit_allocation(bytes)?;
+            value.try_reserve_exact(length).map_err(|error|
+                quota.work().as_deref_mut().expect("observed fork clone").allocation_failure(error))?;
+            let actual = value.capacity() as u64 * std::mem::size_of::<T>() as u64;
+            if actual > bytes {
+                quota.work().as_deref_mut().expect("observed fork clone").retain_owned(actual - bytes)?;
+                quota.adopt(actual - bytes)?;
+            }
+        }
+        Ok(value)
+    }
+
+    fn bytes(source: &[u8], quota: &mut CodecQuota<'_, '_>) -> Result<Vec<u8>> {
+        let mut value = slots::<u8>(source.len(), quota)?;
+        quota.work().as_deref_mut().expect("observed fork clone").copy_bytes(source.len() as u64)?;
+        value.extend_from_slice(source);
+        Ok(value)
+    }
+
+    fn agents(source: &[AgentId], quota: &mut CodecQuota<'_, '_>) -> Result<Vec<AgentId>> {
+        let mut value = slots::<AgentId>(source.len(), quota)?;
+        quota.work().as_deref_mut().expect("observed fork clone").copy_bytes(
+            source.len() as u64 * std::mem::size_of::<AgentId>() as u64)?;
+        for agent in source {
+            item(quota)?;
+            value.push(*agent);
+        }
+        Ok(value)
+    }
+
+    fn authority(source: &Authority, quota: &mut CodecQuota<'_, '_>) -> Result<Authority> {
+        let value = quota.work().as_deref_mut().expect("observed fork clone").clone_authority(source)?;
+        quota.adopt(value.id.capacity() as u64)?;
+        Ok(value)
+    }
+
+    fn provider(source: &ProviderRef, quota: &mut CodecQuota<'_, '_>) -> Result<ProviderRef> {
+        ProviderRef::new_with_work(
+            text(source.namespace(), quota)?,
+            text(source.family(), quota)?,
+            text(source.version(), quota)?,
+            quota.work(),
+        )
+    }
+
+    fn volume(source: &VolumeRef, quota: &mut CodecQuota<'_, '_>) -> Result<VolumeRef> {
+        source.clone_in_quota(quota)
+    }
+
+    fn resource(source: &ResourceRef, quota: &mut CodecQuota<'_, '_>) -> Result<ResourceRef> {
+        ResourceRef::new_with_work(
+            source.kind(),
+            provider(source.provider(), quota)?,
+            bytes(source.key(), quota)?,
+            source.version().map(|value| text(value, quota)).transpose()?,
+            quota.work(),
+        )
+    }
+
+    fn file(source: &FileRef, quota: &mut CodecQuota<'_, '_>) -> Result<FileRef> {
+        let value = source.clone_with_work(quota.work())?;
+        quota.adopt(value.logical_owned_bytes()?)?;
+        Ok(value)
+    }
+
+    fn files(source: &[FileRef], quota: &mut CodecQuota<'_, '_>) -> Result<Vec<FileRef>> {
+        let mut value = slots::<FileRef>(source.len(), quota)?;
+        for entry in source {
+            item(quota)?;
+            value.push(file(entry, quota)?);
+        }
+        Ok(value)
+    }
+
+    fn revision(source: &ResourceRevision, quota: &mut CodecQuota<'_, '_>) -> Result<ResourceRevision> {
+        Ok(match source {
+            ResourceRevision::History(value) => ResourceRevision::History(
+                StreamRef::from_resource_with_work(resource(value.as_resource(), quota)?, quota.work())?),
+            ResourceRevision::Project { volume: source_volume, generation } => ResourceRevision::Project {
+                volume: volume(source_volume, quota)?,
+                generation: GenerationRef::from_resource_with_work(resource(generation.as_resource(), quota)?, quota.work())?,
+            },
+            ResourceRevision::PrivateVolume { volume: source_volume, generation, paths } => {
+                let volume = volume(source_volume, quota)?;
+                let generation = GenerationRef::from_resource_with_work(
+                    resource(generation.as_resource(), quota)?, quota.work())?;
+                let mut copied_paths = slots::<String>(paths.len(), quota)?;
+                for path in paths {
+                    item(quota)?;
+                    copied_paths.push(text(path, quota)?);
+                }
+                ResourceRevision::PrivateVolume { volume, generation, paths: copied_paths }
+            },
+            ResourceRevision::Context(value) => ResourceRevision::Context(
+                ContextRef::from_resource_with_work(resource(value.as_resource(), quota)?, quota.work())?),
+            ResourceRevision::Process(value) => ResourceRevision::Process(
+                CheckpointRef::from_resource_with_work(resource(value.as_resource(), quota)?, quota.work())?),
+            ResourceRevision::Artifact(value) => ResourceRevision::Artifact(
+                ArtifactRef::from_resource_with_work(resource(value.as_resource(), quota)?, quota.work())?),
+            ResourceRevision::SharedVolume(value) => ResourceRevision::SharedVolume(volume(value, quota)?),
+            ResourceRevision::Extension { name, version, implementation_digest, reference } =>
+                ResourceRevision::Extension {
+                    name: text(name, quota)?,
+                    version: *version,
+                    implementation_digest: *implementation_digest,
+                    reference: resource(reference, quota)?,
+                },
+        })
+    }
+
+    fn captured(source: &CapturedResource, quota: &mut CodecQuota<'_, '_>) -> Result<CapturedResource> {
+        Ok(CapturedResource {
+            source: revision(&source.source, quota)?,
+            revision: revision(&source.revision, quota)?,
+        })
+    }
+
+    fn capture(source: &Capture, quota: &mut CodecQuota<'_, '_>) -> Result<Capture> {
+        Ok(match source {
+            Capture::Captured(value) => Capture::Captured(captured(value, quota)?),
+            Capture::Unsupported(value) => Capture::Unsupported(text(value, quota)?),
+            Capture::InFlight(value) => Capture::InFlight(*value),
+            Capture::Indeterminate(value) => Capture::Indeterminate(*value),
+        })
+    }
+
+    fn selection(source: &ForkSelection, quota: &mut CodecQuota<'_, '_>) -> Result<ForkSelection> {
+        Ok(ForkSelection { required: source.required, revision: revision(&source.revision, quota)? })
+    }
+
+    fn boundary(source: &AttestedBoundary, quota: &mut CodecQuota<'_, '_>) -> Result<AttestedBoundary> {
+        Ok(AttestedBoundary {
+            provider: provider(&source.provider, quota)?,
+            evidence: bytes(&source.evidence, quota)?,
+        })
+    }
+
+    fn summary_selection(source: &SummaryForkSelection, quota: &mut CodecQuota<'_, '_>) -> Result<SummaryForkSelection> {
+        Ok(SummaryForkSelection {
+            checkpoint: file(&source.checkpoint, quota)?,
+            limits: source.limits,
+            history_limits: source.history_limits,
+        })
+    }
+
+    fn summary_capture(source: &SummaryForkCapture, quota: &mut CodecQuota<'_, '_>) -> Result<SummaryForkCapture> {
+        Ok(SummaryForkCapture {
+            selection: summary_selection(&source.selection, quota)?,
+            context: file(&source.context, quota)?,
+            payloads: files(&source.payloads, quota)?,
+            references: files(&source.references, quota)?,
+        })
+    }
+
+    fn preparation(source: &ForkPreparation, quota: &mut CodecQuota<'_, '_>) -> Result<ForkPreparation> {
+        Ok(ForkPreparation {
+            child_project_volume: volume(&source.child_project_volume, quota)?,
+            child_private_volume: volume(&source.child_private_volume, quota)?,
+            inherited_through_sequence: source.inherited_through_sequence,
+            maximum_inherited_messages: source.maximum_inherited_messages,
+            maximum_inherited_bytes: source.maximum_inherited_bytes,
+            maximum_inherited_references: source.maximum_inherited_references,
+            summary: source.summary.as_ref().map(|value| summary_selection(value, quota)).transpose()?,
+        })
+    }
+
+    fn shared(source: &[SharedGrant], quota: &mut CodecQuota<'_, '_>) -> Result<Vec<SharedGrant>> {
+        let mut value = slots::<SharedGrant>(source.len(), quota)?;
+        for grant in source {
+            item(quota)?;
+            let volume = volume(&grant.volume, quota)?;
+            let mut operations = BTreeSet::new();
+            // Entry payload is explicit; opaque std node/control allocation is not observed.
+            let payload = grant.operations.len() as u64 * std::mem::size_of::<VolumeOperation>() as u64;
+            quota.work().as_deref_mut().expect("observed fork clone").admit_owned(payload)?;
+            quota.work().as_deref_mut().expect("observed fork clone").retain_owned(payload)?;
+            quota.adopt(payload)?;
+            for operation in &grant.operations {
+                item(quota)?;
+                operations.insert(*operation);
+            }
+            value.push(SharedGrant { volume, child_agent: grant.child_agent, operations });
+        }
+        Ok(value)
+    }
+
+    fn references(source: &[ReferenceGrant], quota: &mut CodecQuota<'_, '_>) -> Result<Vec<ReferenceGrant>> {
+        let mut value = slots::<ReferenceGrant>(source.len(), quota)?;
+        for grant in source {
+            item(quota)?;
+            value.push(ReferenceGrant {
+                file: file(&grant.file, quota)?,
+                reader: grant.reader,
+                attachment_manifest: grant.attachment_manifest.as_ref().map(|entry| file(entry, quota)).transpose()?,
+            });
+        }
+        Ok(value)
+    }
+
+    fn request(source: &ForkRequest, quota: &mut CodecQuota<'_, '_>) -> Result<ForkRequest> {
+        let parent = authority(&source.parent, quota)?;
+        let child = authority(&source.child, quota)?;
+        let attached_agents = agents(&source.attached_agents, quota)?;
+        let preparation = preparation(&source.preparation, quota)?;
+        let mut selections = slots::<ForkSelection>(source.selections.len(), quota)?;
+        for entry in &source.selections {
+            item(quota)?;
+            selections.push(selection(entry, quota)?);
+        }
+        Ok(ForkRequest {
+            operation_id: source.operation_id,
+            parent,
+            parent_revision: source.parent_revision,
+            child,
+            child_agent: source.child_agent,
+            attached_agents,
+            preparation,
+            selections,
+            boundary: source.boundary.as_ref().map(|value| boundary(value, quota)).transpose()?,
+        })
+    }
+
+    fn report(source: &ForkReport, quota: &mut CodecQuota<'_, '_>) -> Result<ForkReport> {
+        let request = request(&source.request, quota)?;
+        let mut captures = slots::<Capture>(source.captures.len(), quota)?;
+        for entry in &source.captures {
+            item(quota)?;
+            captures.push(capture(entry, quota)?);
+        }
+        Ok(ForkReport {
+            request,
+            captures,
+            child_private_volume: volume(&source.child_private_volume, quota)?,
+            child_private_generation: GenerationRef::from_resource_with_work(
+                resource(source.child_private_generation.as_resource(), quota)?, quota.work())?,
+            inherited_context: files(&source.inherited_context, quota)?,
+            summary: source.summary.as_ref().map(|value| summary_capture(value, quota)).transpose()?,
+            inherited_through_sequence: source.inherited_through_sequence,
+            shared_grants: shared(&source.shared_grants, quota)?,
+            reference_grants: references(&source.reference_grants, quota)?,
+            history_witness: source.history_witness,
+            attachment_manifests: files(&source.attachment_manifests, quota)?,
+        })
+    }
+
+    fn seed(source: &ForkSeed, quota: &mut CodecQuota<'_, '_>) -> Result<ForkSeed> {
+        let parent = authority(&source.parent, quota)?;
+        let child = authority(&source.child, quota)?;
+        let attached_agents = agents(&source.attached_agents, quota)?;
+        let mut resources = slots::<CapturedResource>(source.resources.len(), quota)?;
+        for entry in &source.resources {
+            item(quota)?;
+            resources.push(captured(entry, quota)?);
+        }
+        let mut omissions = slots::<ForkOmission>(source.omissions.len(), quota)?;
+        for entry in &source.omissions {
+            item(quota)?;
+            omissions.push(ForkOmission {
+                selection: selection(&entry.selection, quota)?,
+                outcome: capture(&entry.outcome, quota)?,
+            });
+        }
+        Ok(ForkSeed {
+            operation_id: source.operation_id,
+            parent,
+            parent_revision: source.parent_revision,
+            child,
+            child_agent: source.child_agent,
+            attached_agents,
+            resources,
+            omissions,
+            child_private_volume: volume(&source.child_private_volume, quota)?,
+            child_private_generation: GenerationRef::from_resource_with_work(
+                resource(source.child_private_generation.as_resource(), quota)?, quota.work())?,
+            inherited_context: files(&source.inherited_context, quota)?,
+            summary: source.summary.as_ref().map(|value| summary_capture(value, quota)).transpose()?,
+            inherited_through_sequence: source.inherited_through_sequence,
+            shared_grants: shared(&source.shared_grants, quota)?,
+            reference_grants: references(&source.reference_grants, quota)?,
+            history_witness: source.history_witness,
+            attachment_manifests: files(&source.attachment_manifests, quota)?,
+            boundary: source.boundary.as_ref().map(|value| boundary(value, quota)).transpose()?,
+        })
+    }
+
+    impl ForkReport {
+        pub(crate) fn clone_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
+            self.clone_with_work_and_custody(work).map(|(value, _)| value)
+        }
+        pub(crate) fn clone_with_work_and_custody(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
+            if work.is_none() { return Ok((self.clone(), 0)); }
+            let mut quota = CodecQuota::new(work, 0)?;
+            let value = report(self, &mut quota)?;
+            let held = quota.retained();
+            quota.transfer();
+            Ok((value, held))
+        }
+    }
+
+    impl ForkRequest {
+        pub(crate) fn clone_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
+            self.clone_with_work_and_custody(work).map(|(value, _)| value)
+        }
+        pub(crate) fn clone_with_work_and_custody(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
+            if work.is_none() { return Ok((self.clone(), 0)); }
+            let mut quota = CodecQuota::new(work, 0)?;
+            let value = request(self, &mut quota)?;
+            let held = quota.retained();
+            quota.transfer();
+            Ok((value, held))
+        }
+    }
+
+    impl ForkSeed {
+        pub(crate) fn clone_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
+            self.clone_with_work_and_custody(work).map(|(value, _)| value)
+        }
+        pub(crate) fn clone_with_work_and_custody(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
+            if work.is_none() { return Ok((self.clone(), 0)); }
+            let mut quota = CodecQuota::new(work, 0)?;
+            let value = seed(self, &mut quota)?;
+            let held = quota.retained();
+            quota.transfer();
+            Ok((value, held))
+        }
+    }
+
+    impl ResourceRevision {
+        pub(crate) fn clone_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
+            self.clone_with_work_and_custody(work).map(|(value, _)| value)
+        }
+        pub(crate) fn clone_with_work_and_custody(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
+            if work.is_none() { return Ok((self.clone(), 0)); }
+            let mut quota = CodecQuota::new(work, 0)?;
+            let value = revision(self, &mut quota)?;
+            let held = quota.retained();
+            quota.transfer();
+            Ok((value, held))
+        }
+    }
+
+    impl Capture {
+        pub(crate) fn clone_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
+            self.clone_with_work_and_custody(work).map(|(value, _)| value)
+        }
+        pub(crate) fn clone_with_work_and_custody(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
+            if work.is_none() { return Ok((self.clone(), 0)); }
+            let mut quota = CodecQuota::new(work, 0)?;
+            let value = capture(self, &mut quota)?;
+            let held = quota.retained();
+            quota.transfer();
+            Ok((value, held))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2911,6 +3479,104 @@ mod tests {
         let encoded =
             serde_json::to_string(&seed).map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(encoded, fixture);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn physical_fork_clone_budget() -> acyclic_fs::WorkBudget {
+        acyclic_fs::WorkBudget {
+            allocation_operations: 100_000,
+            peak_allocation_bytes: 16_777_216,
+            bytes_copied: 16_777_216,
+            bytes_encoded: 16_777_216,
+            bytes_hashed: 16_777_216,
+            items_examined: 100_000,
+            ..acyclic_fs::WorkBudget::default()
+        }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn physical_fork_dto_clones_transfer_exact_produced_fields_without_encoding() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        let request: ForkRequest = serde_json::from_str(include_str!("../fixtures/v2/fork-request.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let seed: ForkSeed = serde_json::from_str(include_str!("../fixtures/v2/fork-seed.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let report = ForkReport {
+            request: request.clone(),
+            captures: seed.resources.iter().cloned().map(Capture::Captured).collect(),
+            child_private_volume: seed.child_private_volume.clone(),
+            child_private_generation: seed.child_private_generation.clone(),
+            inherited_context: seed.inherited_context.clone(),
+            summary: seed.summary.clone(),
+            inherited_through_sequence: seed.inherited_through_sequence,
+            shared_grants: seed.shared_grants.clone(),
+            reference_grants: seed.reference_grants.clone(),
+            history_witness: seed.history_witness,
+            attachment_manifests: seed.attachment_manifests.clone(),
+        };
+        assert_eq!(report.clone_with_work(&mut None)?, report);
+        let cancellation = CancellationToken::new();
+        let native = NativeMaterializationWork::new(physical_fork_clone_budget(), &cancellation)
+            .expect("original fork field-copy ledger");
+        let mut io = crate::store::history::native_work_io(&native).expect("original fork observer");
+        let before = native.receipt();
+        let (copied_request, request_bytes) = request.clone_with_work_and_custody(&mut Some(&mut io))?;
+        let (copied_seed, seed_bytes) = seed.clone_with_work_and_custody(&mut Some(&mut io))?;
+        let (copied_report, report_bytes) = report.clone_with_work_and_custody(&mut Some(&mut io))?;
+        assert_eq!(copied_request, request);
+        assert_eq!(copied_seed, seed);
+        assert_eq!(copied_report, report);
+        let guard = io.into_custody();
+        assert_eq!(guard.bytes(), request_bytes + seed_bytes + report_bytes);
+        assert!(guard.work().shares_ledger(&native));
+        assert!(native.receipt().allocation_operations > before.allocation_operations);
+        assert!(native.receipt().bytes_copied > before.bytes_copied);
+        assert_eq!(native.receipt().bytes_encoded - before.bytes_encoded, 0);
+        assert_eq!(native.receipt().bytes_hashed - before.bytes_hashed, 0);
+        drop((copied_request, copied_seed, copied_report));
+        drop(guard);
+        let available = physical_fork_clone_budget().peak_allocation_bytes
+            - NativeMaterializationWork::accounting_state_bytes();
+        native.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn physical_fork_clone_partial_denial_releases_only_new_fields_and_cancels_before_copy() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
+        use crate::store::history::HistoryIo as _;
+        let request: ForkRequest = serde_json::from_str(include_str!("../fixtures/v2/fork-request.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let cancellation = CancellationToken::new();
+        let mut budget = physical_fork_clone_budget();
+        budget.bytes_copied = 4 + request.parent.id.len() as u64;
+        let native = NativeMaterializationWork::new(budget, &cancellation).expect("partial fork-copy ledger");
+        let mut io = crate::store::history::native_work_io(&native).expect("partial fork-copy observer");
+        let held = io.clone_text("held")?;
+        let before = native.receipt();
+        assert!(matches!(request.clone_with_work(&mut Some(&mut io)),
+            Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
+                WorkError::BudgetExceeded { counter: "bytes_copied", .. }), .. })));
+        assert_eq!(native.receipt().bytes_copied - before.bytes_copied, request.parent.id.len() as u64);
+        let guard = io.into_custody();
+        assert_eq!(guard.bytes(), held.capacity() as u64);
+        drop(held);
+        drop(guard);
+        let available = budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
+        native.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let cancelled_token = CancellationToken::new();
+        let cancelled = NativeMaterializationWork::new(physical_fork_clone_budget(), &cancelled_token)
+            .expect("original fork ledger before cancellation");
+        let mut cancelled_io = crate::store::history::native_work_io(&cancelled).expect("cancelled fork observer");
+        let before = cancelled.receipt();
+        cancelled_token.cancel();
+        assert!(request.clone_with_work(&mut Some(&mut cancelled_io)).is_err());
+        assert_eq!(cancelled.receipt().allocation_operations, before.allocation_operations);
+        assert_eq!(cancelled.receipt().bytes_copied, before.bytes_copied);
+        assert_eq!(cancelled_io.into_custody().bytes(), 0);
         Ok(())
     }
 

@@ -1553,15 +1553,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         recursive: bool,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(CoordinatorApply, OperationState)> {
-        self.refresh_with_work(work).await?;
-        self.authorize_operation_with_work(
-            owner,
-            scope,
-            verifier,
-            operation_id,
-            capability::OPERATION_CANCEL,
-            work,
+        Self::authorize_operation_scope_with_work(
+            owner, scope, verifier, capability::OPERATION_CANCEL, work,
         )?;
+        self.refresh_with_work(work).await?;
+        self.authorize_operation_owner_with_work(owner, verifier, operation_id, work)?;
         let applied = self
             .apply_with_work(
                 operation_id,
@@ -1604,6 +1600,17 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         capability: &str,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<&'a OperationState> {
+        Self::authorize_operation_scope_with_work(owner, scope, verifier, capability, work)?;
+        self.authorize_operation_owner_with_work(owner, verifier, operation_id, work)
+    }
+
+    fn authorize_operation_scope_with_work(
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        capability: &str,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
         verifier.verify_audience_with_work(owner, work)?;
         verifier.verify_scope_for_with_work(owner, scope, work)?;
         if !scope.capabilities().contains(capability) {
@@ -1612,6 +1619,16 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     "scope {} lacks capability {capability}", scope.id(),
                 ))));
         }
+        Ok(())
+    }
+
+    fn authorize_operation_owner_with_work<'a>(
+        &'a self,
+        owner: &Authority,
+        verifier: &AuthorityVerifier,
+        operation_id: OperationId,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<&'a OperationState> {
         let operation = self
             .scheduler
             .operation(operation_id)
@@ -4012,11 +4029,25 @@ pub(crate) async fn commit_keyed<P: StreamProvider>(
 
 pub(crate) async fn commit_prepared_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
-    mut prepared: PreparedCommitRequest<'_, '_>,
+    prepared: PreparedCommitRequest<'_, '_>,
     operation: OperationId,
 ) -> Result<acyclic_stream::CommitOutcome> {
+    commit_prepared_with_work_and_phase(client, prepared, operation, None).await
+}
+
+pub(crate) async fn commit_prepared_with_work_and_phase<P: StreamProvider>(
+    client: &StreamClient<P>,
+    mut prepared: PreparedCommitRequest<'_, '_>,
+    operation: OperationId,
+    mut phase: Option<&mut CommitPhase>,
+) -> Result<acyclic_stream::CommitOutcome> {
+    if let Some(phase) = phase.as_deref_mut() { *phase = prepared.commit_phase(); }
     let key = prepared.request.idempotency_key.clone();
-    let committed = prepared.commit_once_with_work(client).await?;
+    let committed = prepared.commit_once_with_work(client).await;
+    // Observe actual SDK disposition even when a subsequent quota/receiver
+    // callback fails. The original typed cause remains untouched.
+    if let Some(phase) = phase.as_deref_mut() { *phase = prepared.commit_phase(); }
+    let committed = committed?;
     let mut received = crate::wire_codec::CodecQuota::from_retained(prepared.work(), 0);
     let outcome = match committed {
         Ok((outcome, retained)) => {
@@ -4026,6 +4057,13 @@ pub(crate) async fn commit_prepared_with_work<P: StreamProvider>(
         Err(StreamError::Unavailable) => {
             match inspect_idempotency_once_with_work(client, key, 0, received.work()).await? {
                 Ok(Some((observation, retained))) => {
+                    if let (Some(phase), IdempotencyOutcome::Commit(outcome)) =
+                        (phase.as_deref_mut(), &observation.outcome) {
+                        *phase = match outcome {
+                            acyclic_stream::CommitOutcome::Committed(_) => CommitPhase::Committed,
+                            acyclic_stream::CommitOutcome::Conflict(_) => CommitPhase::Conflict,
+                        };
+                    }
                     received.adopt(retained)?;
                     let metadata = if received.work().is_some() {
                         observation.idempotency_key.as_bytes().len() as u64

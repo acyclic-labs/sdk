@@ -1095,7 +1095,7 @@ pub(crate) async fn find_operation_bounded_with_work<P: StreamProvider>(
     return_event: bool,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<(Option<Event>, u64)> {
-    verifier.verify_audience(authority)?;
+    verifier.verify_audience_with_work(authority, work)?;
     if maximum_bytes == 0 {
         return Err(Error::Invalid(
             "operation lookup byte bound must be positive".into(),

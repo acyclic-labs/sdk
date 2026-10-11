@@ -229,7 +229,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         work: Option<&mut dyn HistoryIo>,
     ) -> Result<Self> {
         let mut work = work;
-        verifier.verify_audience(authority)?;
+        verifier.verify_audience_with_work(authority, &mut work)?;
         let verifier = verifier.clone_with_work(&mut work)?;
         Self::new_owned(client, authority, verifier, &mut work)
     }
@@ -261,36 +261,35 @@ impl<P: StreamProvider> HistoryReader<P> {
         verifier: AuthorityVerifier,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Self> {
-        verifier.verify_audience(authority)?;
+        verifier.verify_audience_with_work(authority, work)?;
         let path = authority.stream_path_with_work(work)?;
         let temporary_bytes = path.capacity() as u64;
-        let stream: Result<_> = (|| {
-            if let Some(work) = work.as_deref_mut() {
-                // StreamPath::new validates this text and copies it into Arc<str>.
-                // Charge its known character payload, not an allocator/Arc header.
-                work.admit_allocation(path.len() as u64)?;
-                work.copy_bytes(path.len() as u64)?;
-            }
-            Ok(client.stream(&path)?)
-        })();
+        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, temporary_bytes);
         let path_bytes = path.len() as u64;
-        drop(path);
-        if let Some(work) = work.as_deref_mut() {
-            let released = work.release_owned(temporary_bytes);
-            match stream {
-                Ok(stream) => {
-                    released?;
-                    work.retain_owned(path_bytes)?;
-                    Ok(Self { client: client.clone(), stream, verifier })
-                }
-                Err(error) => {
-                    let _ = released;
-                    Err(error)
-                }
+        let stream: Result<_> = (|| {
+            if let Some(work) = quota.work().as_deref_mut() {
+                // StreamPath owns this UTF-8 payload, not an inferred Arc header.
+                work.admit_owned(path_bytes)?;
+                work.retain_owned(path_bytes)?;
+                quota.adopt(path_bytes)?;
+                let work = quota.work().as_deref_mut().expect("path observer");
+                work.admit_allocation(path_bytes)?;
+                work.copy_bytes(path_bytes)?;
             }
-        } else {
-            Ok(Self { client: client.clone(), stream: stream?, verifier })
+            client.stream(&path).map_err(|error|
+                crate::store::operations::stream_error_with_work(error, quota.work()))
+        })();
+        drop(path);
+        let stream = match stream {
+            Ok(stream) => stream,
+            Err(error) => return Err(error),
+        };
+        if let Err(error) = quota.relinquish(temporary_bytes) {
+            drop(stream);
+            return Err(error);
         }
+        quota.transfer();
+        Ok(Self { client: client.clone(), stream, verifier })
     }
 
     /// Explicitly hydrates one finite logical prefix for fork grant capture.
@@ -1064,6 +1063,25 @@ pub(crate) fn verify_history_record_with_work(
     Ok(event)
 }
 
+/// Original identity bytes for an already admitted resident SDK Value.
+/// This preserves legacy identity depth; it is not a wire-admission or stack proof.
+pub(crate) fn canonical_identity_bytes_with_work(
+    value: &serde_json::Value,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<Vec<u8>> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(observer) = work.as_deref_mut()
+        && observer.original_native_work().is_some()
+    {
+        let bytes = crate::contract::canonical_json_bytes_identity_native_trusted(
+            value, crate::wire::ErrorCode::Invalid,
+            &mut |charge| observer.codec_charge(charge),
+        )?;
+        return retain_encoded_capacity(bytes, observer);
+    }
+    canonical_bytes_for_bounds_with_work(value, crate::contract::JsonBounds::IDENTITY, work)
+}
+
 /// The original canonical codec, admitting logical storage before growth.
 /// Opaque allocator/map-node overhead is outside this codec contract.
 pub(crate) fn canonical_bytes_with_work<T: Serialize + ?Sized>(
@@ -1071,21 +1089,50 @@ pub(crate) fn canonical_bytes_with_work<T: Serialize + ?Sized>(
     maximum_bytes: u64,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Vec<u8>> {
+    if work.is_none() { return crate::contract::canonical_json_bytes(value); }
+    if maximum_bytes == 0 || maximum_bytes == u64::MAX {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if work.as_ref().is_some_and(|work| work.original_native_work().is_some()) {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "canonical encoder allowance must be finite and positive",
+            });
+        }
+        return Err(Error::Invalid("canonical encoder allowance must be finite and positive".into()));
+    }
+    canonical_bytes_for_bounds_with_work(value, crate::contract::JsonBounds {
+        maximum_bytes, maximum_items: maximum_bytes.saturating_add(1), maximum_depth: 256,
+    }, work)
+}
+
+fn canonical_bytes_for_bounds_with_work<T: Serialize + ?Sized>(
+    value: &T,
+    bounds: crate::contract::JsonBounds,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<Vec<u8>> {
     let Some(work) = work.as_deref_mut() else {
         return crate::contract::canonical_json_bytes(value);
     };
-    if maximum_bytes == 0 || maximum_bytes == u64::MAX {
-        return Err(Error::Invalid("canonical encoder allowance must be finite and positive".into()));
-    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let bytes = if work.original_native_work().is_some() {
+        crate::contract::canonical_json_bytes_bounded_native_trusted(
+            value, bounds, crate::wire::ErrorCode::Invalid,
+            &mut |charge| work.codec_charge(charge),
+        )?
+    } else {
+        crate::contract::canonical_json_bytes_bounded(value, bounds, &mut |charge| work.codec_charge(charge))?
+    };
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let bytes = crate::contract::canonical_json_bytes_bounded(
-        value,
-        crate::contract::JsonBounds {
-            maximum_bytes,
-            maximum_items: maximum_bytes.saturating_add(1),
-            maximum_depth: 256,
-        },
-        &mut |charge| work.codec_charge(charge),
+        value, bounds, &mut |charge| work.codec_charge(charge),
     )?;
+    retain_encoded_capacity(bytes, work)
+}
+
+fn retain_encoded_capacity(
+    bytes: Vec<u8>,
+    work: &mut dyn HistoryIo,
+) -> Result<Vec<u8>> {
     if let Err(error) = work.retain_owned((bytes.capacity() - bytes.len()) as u64) {
         let size = bytes.len() as u64;
         drop(bytes);
