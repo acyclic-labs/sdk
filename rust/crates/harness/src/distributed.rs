@@ -5536,22 +5536,55 @@ mod tests {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[tokio::test]
-    async fn ordinary_owned_observer_keeps_original_native_unsupported_sdk_source() {
+    async fn ordinary_owned_observer_cold_replays_real_admission_without_native_capability() -> Result<()> {
         use std::sync::atomic::Ordering;
         let provider = Arc::new(crate::test_stream::NoNative::default());
         let client = StreamClient::new(provider.clone());
+        let operation = OperationId::from_bytes([94; 16]);
+        let declaration = spec(operation, 0)?;
+        let mut original = DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        assert_eq!(
+            declare(&mut original, declaration, "ordinary-owned-real-admission").await?,
+            CoordinatorApply::Applied,
+        );
+        let expected_revision = original.revision();
+        let expected_scheduler = original.scheduler().clone();
+        let expected_binding = original.binding.clone();
+        assert!(expected_revision > 0);
+        assert!(expected_binding.is_some(), "original admission must configure its protected owner");
+        assert!(expected_scheduler.operation(operation).is_some());
+        drop(original);
+        let source_tail = client.bounds(COORDINATOR_PATH).await?.tail;
+        let before = provider.ordinary_calls.load(Ordering::SeqCst);
         let cancellation = acyclic_fs::CancellationToken::new();
         let mut budget = keyed_append_native_budget();
         budget.items_returned = 8;
+        budget.authority_bytes_read = 32_768;
         let mut work = crate::store::history::HistoryWork::new(budget, &cancellation);
         work.preflight().expect("ordinary owned budget");
         let result = DistributedCoordinator::open_with_work(
             &client, Arc::new(TestContentVerifier), &mut Some(&mut work),
         ).await;
-        let receipt = work.finish(result).expect("ordinary SDK engine remains available");
-        assert_eq!(receipt.value.revision(), 0);
+        let receipt = work.finish(result).expect("ordinary SDK must replay the real protected admission");
+        assert_eq!(receipt.value.revision(), expected_revision);
+        assert_eq!(receipt.value.scheduler(), &expected_scheduler);
+        assert_eq!(receipt.value.binding, expected_binding);
+        assert!(receipt.value.intents.contains_key("ordinary-owned-real-admission"));
+        assert!(receipt.work.authority_records_read > 0);
+        assert!(receipt.work.authority_bytes_read > 0);
         assert!(receipt.work.backend_read_operations > 0);
-        assert!(provider.ordinary_calls.load(Ordering::SeqCst) > 0);
+        assert!(provider.ordinary_calls.load(Ordering::SeqCst) > before);
+        assert_eq!(client.bounds(COORDINATOR_PATH).await?.tail, source_tail, "cold observation must not republish");
+        drop(receipt);
+
+        cancellation.cancel();
+        let mut cancelled = crate::store::history::HistoryWork::new(budget, &cancellation);
+        let before = provider.ordinary_calls.load(Ordering::SeqCst);
+        assert!(DistributedCoordinator::open_with_work(
+            &client, Arc::new(TestContentVerifier), &mut Some(&mut cancelled),
+        ).await.is_err());
+        assert_eq!(provider.ordinary_calls.load(Ordering::SeqCst), before, "cancelled real cold read cannot enter the SDK");
+        Ok(())
     }
     struct TestReducer {
         entrypoint: EntrypointRef,
