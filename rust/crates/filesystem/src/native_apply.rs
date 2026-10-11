@@ -220,3 +220,153 @@ fn receipt(journal: MaterializationJournal) -> Result<NativeDirectoryApplyReceip
         changed_paths: u32::try_from(journal.plan.edits.len()).map_err(|_| NativeDirectoryApplyError::PathCountOverflow)?,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::native_archive::{capture_native_directory_archive, restore_native_directory_capture};
+    use crate::native_capture::{CaptureOptions, CapturePolicy};
+    use crate::native_host::HostRoot;
+    use crate::{CheckoutMode, GenerationSelector, IdempotencyKey, LocalAuthorityBackend, LocalObjectBackend, LocalOptions, PublicationPermit, TransactionCommit};
+    use std::path::PathBuf;
+
+    struct Fixture {
+        directory: tempfile::TempDir,
+        source: PathBuf,
+        state: LocalCoreStateStore,
+        capture: NativeDirectoryCapture,
+        from: Generation<LocalAuthorityBackend, LocalObjectBackend>,
+        to: Generation<LocalAuthorityBackend, LocalObjectBackend>,
+    }
+
+    impl Fixture {
+        async fn new(nested: bool) -> Result<Self, Box<dyn std::error::Error>> {
+            let directory = tempfile::tempdir()?;
+            let source = directory.path().join("customer-working-tree");
+            std::fs::create_dir(&source)?;
+            std::fs::write(source.join("keep.txt"), b"original unrelated bytes")?;
+            let relative = if nested {
+                std::fs::create_dir(source.join("directory"))?;
+                "directory/file.txt"
+            } else { "file.txt" };
+            std::fs::write(source.join(relative), b"original captured bytes")?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(source.join(relative), std::fs::Permissions::from_mode(0o750))?;
+                std::os::unix::fs::symlink(relative, source.join("retained-link"))?;
+            }
+            let fs = crate::Fs::local(LocalOptions::new(directory.path().join("sdk-storage"))).await?;
+            let workspace = fs.create_workspace("actual-native-apply").await?;
+            let mut checkout = workspace.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction()).await?;
+            let root = Arc::new(HostRoot::open(&source)?);
+            let options = CaptureOptions { source_root: source.clone(), expected_root_identity: root.identity(), maximum_paths: 16, maximum_extent_spans: 16 };
+            let state = LocalCoreStateStore::new(directory.path().join("native-state"));
+            let cancellation = CancellationToken::new();
+            let captured = capture_native_directory_archive(&mut checkout, root, &options, &CapturePolicy::allow_all(), OperationId::new(), PublicationPermit::Unrestricted, &state, WorkBudget::UNBOUNDED, &cancellation).await?;
+            let from = workspace.generation(captured.capture.original_generation()).await?;
+            let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+            transaction.write_text(&format!("/{relative}"), "actual desired bytes").await?;
+            let to = match transaction.commit_with_permit(PublicationPermit::Unrestricted).await? {
+                TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
+                _ => return Err("actual desired SDK generation did not commit".into()),
+            };
+            Ok(Self { directory, source, state, capture: captured.capture, from, to })
+        }
+
+        fn options(&self) -> MaterializeOptions {
+            MaterializeOptions { destination: self.directory.path().join("unused-caller-destination"), maximum_directory_entries: 16, maximum_extent_spans: 16, transfer_bytes: 64 * 1024 }
+        }
+
+        async fn apply(&self, operation: OperationId) -> Result<NativeDirectoryApplyReceipt, NativeDirectoryApplyError> {
+            apply_native_directory_generation(&self.capture, &self.from, &self.to, &self.state, &self.directory.path().join("apply"), operation, &self.options(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await
+        }
+    }
+
+    #[tokio::test]
+    async fn actual_local_generation_apply_preserves_unrelated_later_writer_modes_and_links() -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = Fixture::new(false).await?;
+        std::fs::write(fixture.source.join("keep.txt"), b"user wrote unrelated bytes after capture")?;
+        let preview = preview_native_directory_apply(&fixture.capture, &fixture.from, &fixture.to, 16, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
+        assert_eq!(preview.value.changes.iter().map(|change| change.path.as_str()).collect::<Vec<_>>(), ["file.txt"]);
+        let result = fixture.apply(OperationId::new()).await?;
+        assert_eq!(result.phase, MaterializationPhase::Applied);
+        assert_eq!(std::fs::read(fixture.source.join("file.txt"))?, b"actual desired bytes");
+        assert_eq!(std::fs::read(fixture.source.join("keep.txt"))?, b"user wrote unrelated bytes after capture");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(std::fs::metadata(fixture.source.join("file.txt"))?.permissions().mode() & 0o777, 0o750);
+            assert_eq!(std::fs::read_link(fixture.source.join("retained-link"))?, PathBuf::from("file.txt"));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn touched_later_writer_is_refused_without_adopting_current_preimages() -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = Fixture::new(false).await?;
+        std::fs::write(fixture.source.join("file.txt"), b"actual later writer owns this content")?;
+        let operation = OperationId::new();
+        assert!(fixture.apply(operation).await.is_err());
+        assert_eq!(std::fs::read(fixture.source.join("file.txt"))?, b"actual later writer owns this content");
+        assert_eq!(std::fs::read(fixture.source.join("keep.txt"))?, b"original unrelated bytes");
+        assert!(MaterializationJournalStore::load(&fixture.state, operation).await?.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn moved_original_root_never_mutates_a_foreign_replacement() -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = Fixture::new(false).await?;
+        let moved = fixture.directory.path().join("moved-original");
+        std::fs::rename(&fixture.source, &moved)?;
+        std::fs::create_dir(&fixture.source)?;
+        std::fs::write(fixture.source.join("file.txt"), b"foreign replacement working tree")?;
+        assert!(fixture.apply(OperationId::new()).await.is_err());
+        assert_eq!(std::fs::read(moved.join("file.txt"))?, b"original captured bytes");
+        assert_eq!(std::fs::read(fixture.source.join("file.txt"))?, b"foreign replacement working tree");
+        assert!(restore_native_directory_capture(&LocalCoreStateStore::new(fixture.state.root()), fixture.capture.operation_id()).await.is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn replaced_parent_symlink_cannot_escape_the_original_working_tree() -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = Fixture::new(true).await?;
+        let outside = fixture.directory.path().join("foreign-directory");
+        let original = fixture.directory.path().join("retained-original-directory");
+        std::fs::create_dir(&outside)?;
+        std::fs::write(outside.join("file.txt"), b"foreign file must remain unchanged")?;
+        std::fs::rename(fixture.source.join("directory"), &original)?;
+        std::os::unix::fs::symlink(&outside, fixture.source.join("directory"))?;
+        assert!(fixture.apply(OperationId::new()).await.is_err());
+        assert_eq!(std::fs::read(outside.join("file.txt"))?, b"foreign file must remain unchanged");
+        assert_eq!(std::fs::read(original.join("file.txt"))?, b"original captured bytes");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lost_acknowledgement_cold_recovery_keeps_the_original_operation_and_postimage_identity() -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = Fixture::new(false).await?;
+        let operation = OperationId::new();
+        let capture_operation = fixture.capture.operation_id();
+        let state_path = fixture.state.root().to_path_buf();
+        let operation_directory = fixture.directory.path().join("apply");
+        // Complete the real mutation, but discard its acknowledgement before reopening.
+        fixture.apply(operation).await?;
+        let before = crate::NativeRootIdentity::from_file(&std::fs::File::open(fixture.source.join("file.txt"))?)?;
+        let revision = MaterializationJournalStore::load(&fixture.state, operation).await?.ok_or("missing actual journal")?.revision;
+        drop(fixture.capture);
+        drop(fixture.state);
+        let cold_state = LocalCoreStateStore::new(state_path);
+        let restored = restore_native_directory_capture(&cold_state, capture_operation).await?;
+        let recovered = recover_native_directory_apply(&restored, &cold_state, &operation_directory, operation, MaterializationRecovery::Complete).await?.ok_or("original journal was not recovered")?;
+        assert_eq!(recovered.operation_id, operation);
+        assert_eq!(recovered.from, fixture.from.id());
+        assert_eq!(recovered.to, fixture.to.id());
+        assert_eq!(recovered.phase, MaterializationPhase::Applied);
+        assert_eq!(crate::NativeRootIdentity::from_file(&std::fs::File::open(fixture.source.join("file.txt"))?)?, before);
+        assert_eq!(MaterializationJournalStore::load(&cold_state, operation).await?.ok_or("cold journal disappeared")?.revision, revision);
+        assert_eq!(std::fs::read(fixture.source.join("file.txt"))?, b"actual desired bytes");
+        Ok(())
+    }
+}

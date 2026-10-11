@@ -45,6 +45,12 @@ impl<'a> Entry<'a> {
         }
     }
 
+    pub(super) fn repin(&self) -> io::Result<Self> {
+        let parent = self.parent.try_clone()?;
+        let pinned = pin_entry(&parent, self.name)?;
+        Ok(Self { parent, name: self.name, pinned })
+    }
+
     pub(super) fn rename_to(&self, destination: &Self) -> io::Result<()> {
         rename_no_replace(self, destination)?;
         sync_directory(&destination.parent)?;
