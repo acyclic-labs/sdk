@@ -184,7 +184,8 @@ impl<'a> PiSelectedHost<'a> {
     }
     pub(crate) async fn selected(&self, context: &TaskContext, native_context: Option<&Arc<NativeTaskContext>>, owner: &Arc<TaskJournalOwner<LocalStream>>,
         task: TaskId, requested: Option<&str>, pinned: Option<LazySnapshotRef>, operation: OperationId, cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork) -> Result<(String, VolumeRef, Arc<crate::LocalLazyWorkspace>, LazySnapshotRef,
-        TaskSourceInspection<LocalStream, crate::LocalAuthorityBackend, crate::LocalObjectBackend>, acyclic_fs::NativeAllocation)> { authorize_selected_source(&self.runtime.runtime, self.protected.policy().root_task,
+        TaskSourceInspection<LocalStream, crate::LocalAuthorityBackend, crate::LocalObjectBackend>,
+        (acyclic_fs::NativeAllocation, Option<acyclic_fs::NativeAllocation>))> { authorize_selected_source(&self.runtime.runtime, self.protected.policy().root_task,
         context, owner, task, self.protected.policy().session_limits.depth, work).await?;
     let decoded = self.admission_input(task, work).await?;
     let input = &decoded.0;
@@ -194,22 +195,21 @@ impl<'a> PiSelectedHost<'a> {
         self.roots.get(&key.0).ok_or_else(|| denied("selected Root lost its actual lazy allocation"))?
             .workspace.clone().into_arc_with_native_work(work).map_err(crate::pi_lazy_capture::native_lazy_error)?
     } else { self.native.live_workspace(task).ok_or_else(|| denied("selected child lost its actual creator workspace"))? };
-    let frozen = if let Some(pinned) = pinned { pinned } else if task == self.protected.policy().root_task {
+    let frozen_custody = if let Some(pinned) = pinned { (pinned, None) } else if task == self.protected.policy().root_task {
         let actual = self.roots.get(&key.0).ok_or_else(|| denied("selected Root allocation unavailable"))?;
         if owner.task_id() == task {
             let shared = native_context.ok_or_else(|| denied("Root capture requires its actual native command context"))?;
             let (snapshot, custody) = crate::pi_fork_host::freeze_created_root_source(
                 Arc::clone(&self.protected), self.resources, Arc::clone(&self.filesystem),
                 self.stream.clone(), shared, owner, input, &key.0, actual, work).await?;
-            drop(custody);
-            snapshot
-        } else { *self.root_source_cut.and_then(|cut| cut.snapshots.get(&key.0))
-            .ok_or_else(|| denied("foreign Root source needs its original observe-source ACK"))? }
+            (snapshot, Some(custody))
+        } else { (*self.root_source_cut.and_then(|cut| cut.snapshots.get(&key.0))
+            .ok_or_else(|| denied("foreign Root source needs its original observe-source ACK"))?, None) }
     } else {
         let (snapshot, custody) = self.native.selection_snapshot(task, work).await?;
-        drop(custody);
-        snapshot
+        (snapshot, Some(custody))
     };
+    let frozen = frozen_custody.0;
     let handle = self.coordinator()?.authorize_selected_project_with_native_work(context, owner, task,
         Arc::clone(&workspace), frozen, operation, work.remaining().map_err(native_error)?.items_examined,
         self.protected.policy().limits.file_bytes, work).await?;
@@ -245,7 +245,7 @@ impl<'a> PiSelectedHost<'a> {
     drop(selection.0.generation);
     drop(selection.0.native_snapshot);
     selection.1.absorb(&mut key.1).map_err(native_error)?;
-    Ok((key.0, volume, workspace, frozen, inspection, selection.1)) }
+    Ok((key.0, volume, workspace, frozen, inspection, (selection.1, frozen_custody.1))) }
     async fn run(&self, context: TaskContext, fence: LeaseFence, command: WorkflowCommand,
         payload: Value, reconcile: bool) -> Result<TaskCommandProgress> {
         let current = context.durable_task_id().ok_or_else(|| denied("selected control lacks its actual caller context"))?;
@@ -540,11 +540,15 @@ impl PiSelectedHost<'_> {
     if destination != input.caller && destination == self.protected.policy().root_task {
         return Err(denied("delegated Root mutation requires its original mediated Root workflow command"));
     }
-    let destination_live = if destination != input.caller {
+    let destination_live = if destination != self.protected.policy().root_task {
         Some(self.native.live_source(destination, work).await?.ok_or_else(|| denied("explicit destination has no ORIGINAL live owner"))?)
     } else { None };
-    let destination_context = destination_live.as_ref().map_or(context, |live| live.context.context());
-    let destination_owner = destination_live.as_ref().map_or(owner, |live| &live.owner);
+    let destination_context = if destination == input.caller { context } else {
+        destination_live.as_ref().ok_or_else(|| denied("explicit destination lost its original native context"))?.context.context()
+    };
+    let destination_owner = if destination == input.caller { owner } else {
+        &destination_live.as_ref().ok_or_else(|| denied("explicit destination lost its original native owner"))?.owner
+    };
     let child_workspace = if destination == self.protected.policy().root_task { None } else {
         Some(self.native.live_workspace(destination).ok_or_else(|| denied("destination child lost actual creator workspace"))?)
     };
@@ -565,39 +569,39 @@ impl PiSelectedHost<'_> {
     let import_operation = if writeback { derived(operation, "writeback-import") } else { operation };
     let prior = self.read_import_intent(context, import_operation, cancellation, work).await?;
     let resuming_import = prior.is_some();
-    let intent = if let Some((intent, _custody)) = &prior {
+    let intent_custody = if let Some((intent, _custody)) = &prior {
         if intent.caller != input.caller || intent.source != input.source || intent.root != key
             || &intent.destination != volume || intent.paths != input.paths || intent.operation != import_operation
             || intent.writeback != writeback {
             return Err(denied("original selected import retry changed its sealed request"));
         }
-        SelectedImportIntentRef::from(intent)
+        (SelectedImportIntentRef::from(intent), None)
     } else {
         if reconcile { return Ok(TaskCommandProgress::Pending); }
-        let destination_snapshot = if destination == self.protected.policy().root_task {
+        let destination_cut = if destination == self.protected.policy().root_task {
             let root = self.roots.get(key).ok_or_else(|| denied("actual original Root unavailable"))?;
             let shared = native_context.ok_or_else(|| denied("Root import capture requires its actual native command context"))?;
             let root_input = self.admission_input(input.caller, work).await?;
             let (snapshot, custody) = crate::pi_fork_host::freeze_created_root_source(
                 Arc::clone(&self.protected), self.resources, Arc::clone(&self.filesystem),
                 self.stream.clone(), shared, owner, &root_input.0, key, root, work).await?;
-            drop(custody);
-            snapshot
+            (snapshot, custody)
         } else {
-            let view = self.native.live_view(destination).ok_or_else(|| denied("destination original native view unavailable"))?;
+            let live = destination_live.as_ref().ok_or_else(|| denied("destination original native view unavailable"))?;
             let (snapshot, custody) = crate::pi_lazy_capture::freeze_child_source(
-                destination_context, destination_owner, &view, &workspace, work).await?;
-            drop(custody);
-            snapshot
+                live.context.context(), &live.owner, &live.view, &workspace, &live.original_work).await?;
+            owner.verify_with_native_work(false, work).await?;
+            (snapshot, custody)
         };
         let intent = SelectedImportIntentRef { caller: input.caller, source: input.source, root: key,
-            destination: volume, source_snapshot: selected.snapshot(), destination_snapshot,
+            destination: volume, source_snapshot: selected.snapshot(), destination_snapshot: destination_cut.0,
             paths: &input.paths, operation: import_operation, writeback };
         let staged = crate::pi_root_provider::stage_pi_input_with_native_work(&self.protected,
             &self.filesystem, import_operation, "selected-import-intent", &intent, work).await?;
         drop(staged);
-        intent
+        (intent, Some(destination_cut))
     };
+    let intent = intent_custody.0;
     if selected.snapshot() != intent.source_snapshot {
         return Err(denied("selected import changed its original pinned source snapshot"));
     }

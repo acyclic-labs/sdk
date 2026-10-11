@@ -48,6 +48,7 @@ pub(crate) struct PiNativeLiveSource {
     pub(crate) owner: Arc<TaskJournalOwner<LocalStream>>,
     pub(crate) context: Arc<NativeTaskContext>,
     pub(crate) binding: PiTaskBinding,
+    pub(crate) original_work: NativeMaterializationWork,
     // The original prepared binding's guarded DTO copy outlives every field.
     _binding_custody: NativeAllocation,
 }
@@ -500,17 +501,22 @@ impl PiNativeCommandHost {
     /// the recursive fork engine still independently authorizes a selected source.
     pub(crate) async fn live_source(&self, task: TaskId, work: &NativeMaterializationWork) -> Result<Option<PiNativeLiveSource>> {
         let Some(entry) = self.find_entry(task) else { return Ok(None); };
-        let effect = entry.handles.lock().await.effect.clone();
-        let Some(effect) = effect else { return Ok(None); };
+        let (effect, original_work) = {
+            let handles = entry.handles.lock().await;
+            let Some(effect) = handles.effect.as_ref() else { return Ok(None); };
+            let original_work = handles.preparation_work.as_ref()
+                .ok_or(Error::Indeterminate(effect.command))?.clone();
+            (Arc::clone(effect), original_work)
+        };
         let Some(view) = self.live_view(task) else { return Ok(None); };
         let Some(prepared) = self.prepared(task) else { return Ok(None); };
-        effect.owner.verify_with_native_work(false, work).await?;
+        effect.owner.verify_with_native_work(false, &original_work).await?;
         if effect.owner.task_id() != task || effect.context().durable_task_id() != Some(task) {
             return Err(unauthorized("Pi live source differs from its original owner/context"));
         }
         let (binding, binding_custody) = self.copy_binding_with_work(&prepared, work)?;
         Ok(Some(PiNativeLiveSource { view, workspace: prepared.workspace.clone(), owner: effect.owner.clone(),
-            context: effect.context.clone(), binding, _binding_custody: binding_custody }))
+            context: effect.context.clone(), binding, original_work, _binding_custody: binding_custody }))
     }
 
     /// The parent's immutable writeback baseline, never a recaptured head.
@@ -557,9 +563,12 @@ impl PiNativeCommandHost {
                 .ok_or_else(|| unauthorized("Pi selected child has not entered its original native operation"))?;
             let outcome = effect.owner.outcome_with_native_work(&meter).await?;
             if outcome.0.is_none() {
+                let original_work = entry.handles.lock().await.preparation_work.as_ref()
+                    .ok_or(Error::Indeterminate(effect.command))?.clone();
+                effect.owner.verify_with_native_work(false, &original_work).await?;
                 let view = self.live_view(task).ok_or_else(|| Error::Indeterminate(effect.command))?;
-                let snapshots = view.checkpoint_projects_with_work(
-                    &effect.owner, effect.context(), meter).await?;
+                let snapshots = view.checkpoint_projects_with_native_work(
+                    effect.owner.native_view_owner(), &original_work)?.await?;
                 if snapshots.0.len() != 1 {
                     return Err(unauthorized("Pi selected child has no unique authenticated project checkpoint"));
                 }

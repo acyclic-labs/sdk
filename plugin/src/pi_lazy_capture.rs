@@ -188,6 +188,9 @@ pub(crate) fn native_lazy_error(source: acyclic_fs::LazyWorkspaceError) -> Error
 
 /// Only an active source's ORIGINAL native view owner may checkpoint its dirty
 /// mounts. A selected caller's authority can never replace this source owner.
+/// `work` is that view's retained original source-operation work, not a
+/// selecting caller's query. Its returned custody remains separate from the
+/// caller's later sealed-read/preparation work.
 pub(crate) async fn freeze_child_source<P: acyclic_stream::StreamProvider>(
     context: &acyclic_harness::runtime::TaskContext,
     owner: &acyclic_harness::durable_host::TaskJournalOwner<P>,
