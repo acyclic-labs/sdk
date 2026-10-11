@@ -749,6 +749,27 @@ impl ToolRegistry {
         self.versions.get(&(name.to_owned(), revision.to_owned()))
     }
 
+    /// Resolves the same selected or explicitly qualified tool with original
+    /// work and paid pinned-lookup keys, without an ordinary allocating lookup.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn get_with_native_work(
+        &self,
+        name: &str,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<&Tool>> {
+        work.charge(acyclic_fs::WorkCounters {
+            items_examined: name.len() as u64,
+            ..Default::default()
+        })?;
+        if let Some((logical, revision)) = name.rsplit_once('@') {
+            return self.get_version_with_native_work(logical, revision, work);
+        }
+        let Some(ModelSelection::Revision(revision)) = self.selected.get(name) else {
+            return Ok(None);
+        };
+        self.get_version_with_native_work(name, revision, work)
+    }
+
     /// Uses the same logarithmic pinned registry lookup with funded temporary
     /// key strings; no second registry or linear native lookup is introduced.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

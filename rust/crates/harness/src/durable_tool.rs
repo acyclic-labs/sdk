@@ -316,7 +316,7 @@ impl NativeResumableToolSession<'_> {
         input_custody: acyclic_fs::NativeAllocation,
         work: &'b acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'b, (MachineTransition, acyclic_fs::NativeAllocation)>> {
-        let input = ToolPayload::native(input, input_custody);
+        let input = ToolPayload::native((idempotency_key, input), input_custody);
         if !self.metadata_custody.work().shares_ledger(work)
             || !self.registry_custody.work().shares_ledger(work)
             || !input.custody.as_ref().is_some_and(|guard| guard.work().shares_ledger(work))
@@ -324,8 +324,8 @@ impl NativeResumableToolSession<'_> {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native resumable input belongs to another work" });
         }
-        let required = crate::tool::value_owned_bytes(&input.value)?
-            .checked_add(idempotency_key.0.capacity() as u64).ok_or(
+        let required = crate::tool::value_owned_bytes(&input.value.1)?
+            .checked_add(input.value.0.0.capacity() as u64).ok_or(
                 Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                     reason: "native resumable input ownership overflow" })?;
         if !input.custody.as_ref().is_some_and(|guard| guard.bytes() >= required) {
@@ -333,10 +333,11 @@ impl NativeResumableToolSession<'_> {
                 reason: "native resumable input or retry key has no paid custody" });
         }
         crate::NativeFutureBundle::new(work, || async move {
+            let input = input;
             let io = crate::executor::PreparationIo::from_native_work(work)?;
             let output_schema = &self.definition.output_schema;
             let result = self.host.step_checked_with_native_work(
-                operation_id, idempotency_key, input.value, work, |transition| {
+                operation_id, input.value.0, input.value.1, work, |transition| {
                     if let MachineStatus::Completed { value } = &transition.status {
                         tool_validate_value(output_schema, value, "tool output", Some(&io))?;
                     }
