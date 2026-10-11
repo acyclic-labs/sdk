@@ -8,7 +8,7 @@ fn guarded_publication_error(error: Error, operation: OperationId) -> Error {
     Error::Indeterminate(operation)
 }
 
-enum GuardedBoundary {
+pub(super) enum GuardedBoundary {
     Invalid,
     Unauthorized,
     Conflict,
@@ -16,7 +16,7 @@ enum GuardedBoundary {
     Storage,
 }
 
-fn guarded_boundary(
+pub(super) fn guarded_boundary(
     work: &Option<&mut dyn history::HistoryIo>, kind: GuardedBoundary,
     reason: &'static str,
 ) -> Error {

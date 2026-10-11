@@ -1,5 +1,5 @@
 use super::{ContentResidencyVerifier, InteractionRouter, IssuedContextPurpose, Limits, RuntimeScope, TaskContext, ToolContext, ToolTaskContext};
-use crate::{Error, FileRef, NativeFutureBundle, Result, durable_host::TaskJournalOwner};
+use crate::{Error, NativeFutureBundle, Result, conversation::FileRef, durable_host::TaskJournalOwner};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use std::sync::Arc;
 
@@ -13,8 +13,6 @@ pub(super) struct NativeMetadataSource {
 pub(super) struct NativeToolAcceptance {
     task: crate::TaskId,
     operation: crate::OperationId,
-    producer_limits: Limits,
-    request_digest: [u8; 32],
 }
 
 fn boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
@@ -357,46 +355,6 @@ impl NativeTaskContext {
 
 impl ToolContext {
     /// Records protected ToolStarted acceptance.
-    pub(crate) fn record_native_tool_acceptance(
-        &self, task: crate::TaskId, operation: crate::OperationId, call_id: &str,
-        producer_limits: Limits, request_digest: [u8; 32], work: &NativeMaterializationWork,
-    ) -> Result<()> {
-        self.verify_native_tool_acceptance_identity(task, operation, call_id, work)?;
-        let accepted = NativeToolAcceptance { task, operation, producer_limits, request_digest };
-        match self.accepted_native_tool.set(accepted) {
-            Ok(()) => Ok(()),
-            Err(replayed) if self.accepted_native_tool.get() == Some(&replayed) => Ok(()),
-            Err(_) => Err(boundary(crate::wire::ErrorCode::Unauthorized,
-                "tool context already accepted a different protected invocation")),
-        }
-    }
-
-    /// Original accepted FULL eight-dimensional limits, never execution rights.
-    pub(crate) fn native_tool_acceptance_limits(
-        &self, task: crate::TaskId, operation: crate::OperationId, call_id: &str,
-        work: &NativeMaterializationWork,
-    ) -> Result<Option<Limits>> {
-        self.verify_native_tool_acceptance_identity(task, operation, call_id, work)?;
-        Ok(self.accepted_native_tool.get().map(|accepted| accepted.producer_limits))
-    }
-
-    fn verify_native_tool_acceptance_identity(
-        &self, task: crate::TaskId, operation: crate::OperationId, call_id: &str,
-        work: &NativeMaterializationWork,
-    ) -> Result<()> {
-        let context = self.validate_native_bound_context(work)?;
-        if context.durable_task != Some(task) || self.operation_id != operation
-            || self.call_id != call_id
-        {
-            return Err(boundary(crate::wire::ErrorCode::Unauthorized,
-                "accepted tool invocation differs from its issued context"));
-        }
-        work.charge(WorkCounters { bytes_examined: call_id.len() as u64,
-            items_examined: 1, ..WorkCounters::default() })
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(())
-    }
-
     fn accepted_native_context(&self, work: &NativeMaterializationWork) -> Result<&TaskContext> {
         let context = self.validate_native_bound_context(work)?;
         if !context.native_metadata_source.as_ref()
