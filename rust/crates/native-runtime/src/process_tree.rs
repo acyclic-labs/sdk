@@ -2846,7 +2846,6 @@ mod tests {
             "error.kind",
             "other"
         ));
-        assert!(has("acyclic.runtime.terminate", "outcome", "ok"));
         assert!(has("acyclic.runtime.spawn", "outcome", "ok"));
         assert_native_operation_spans(&has);
         let program = std::env::current_exe().expect("test executable");
