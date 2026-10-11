@@ -172,6 +172,40 @@ fn real_os_restored_holder_and_canonical_server_conformance() {
         .expect("preserved original still signs a usable local conformance bearer");
     server.verify(&still_issued, &account, &public, &key_id, jti, false, false, true);
 
+    let renewed_key_id = format!("renewed-leaf-{hex}");
+    let renewed_namespace = CustomerCustodyNamespace::new("https://custody-conformance.invalid", "staging", &account, &renewed_key_id).expect("renewed namespace");
+    let _renewed_cleanup = Cleanup(renewed_namespace.clone());
+    let renewed_fixture = server.issue(&account, &public, &renewed_key_id, jti, 30);
+    for changed_scope in [
+        CustomerCustodyNamespace::new("https://other-conformance.invalid", "staging", &account, &renewed_key_id),
+        CustomerCustodyNamespace::new("https://custody-conformance.invalid", "production", &account, &renewed_key_id),
+        CustomerCustodyNamespace::new("https://custody-conformance.invalid", "staging", &format!("{account}-other"), &renewed_key_id),
+    ] {
+        assert!(matches!(restored.recertify(changed_scope.expect("changed namespace"),
+            &renewed_fixture.birth, &renewed_fixture.certificate), Err(CustodyError::Binding)));
+    }
+    assert!(matches!(restored.recertify(renewed_namespace.clone(), &foreign_fixture.birth,
+        &foreign_fixture.certificate), Err(CustodyError::Holder(AccountHolderError::Scope))));
+    let renewed = restored.recertify(renewed_namespace.clone(), &renewed_fixture.birth,
+        &renewed_fixture.certificate).expect("same private leaf and SQL pair under actual renewed certificate key ID");
+    assert!(renewed.public_key() == restored.public_key());
+    renewed.with_sql_session(|session| assert!(session == "explicit-local-conformance-sql-session"))
+        .expect("renewal never exposes or loses the original SQL session");
+    restored.with_sql_session(|_| ()).expect("original namespace remains until explicit deletion");
+    let renewed_bearer = renewed.mint(&renewed_fixture.birth, &renewed_fixture.certificate, jti, &ActualClock, 60)
+        .expect("actual bearer after key-ID renewal");
+    server.verify(&renewed_bearer, &account, &public, &renewed_key_id, jti, false, false, true);
+    let current_renewed = renewed.recertify(renewed_namespace.clone(), &renewed_fixture.birth,
+        &renewed_fixture.certificate).expect("same-namespace renewal does not deadlock");
+    assert!(matches!(renewed.with_sql_session(|_| ()), Err(CustodyError::Stale)));
+    assert!(matches!(renewed.delete(), Err(CustodyError::Stale)));
+    restored.delete().expect("explicit original deletion after new tuple is available");
+    assert!(matches!(restored.with_sql_session(|_| ()), Err(CustodyError::NotFound)));
+    assert!(matches!(restored.recertify(renewed_namespace.clone(), &renewed_fixture.birth,
+        &renewed_fixture.certificate), Err(CustodyError::NotFound)));
+    current_renewed.with_sql_session(|session| assert!(session == "explicit-local-conformance-sql-session"))
+        .expect("failed stale source renewal preserves the current new pair");
+
     let short = PendingCustomerLeaf::generate().expect("short-window own test leaf");
     let short_public = URL_SAFE_NO_PAD.encode(short.public_key());
     let short_key_id = format!("short-leaf-{hex}");
@@ -193,7 +227,8 @@ fn real_os_restored_holder_and_canonical_server_conformance() {
         Err(CustodyError::Holder(AccountHolderError::Expired))));
     server.verify(&short_bearer, &account, &short_public, &short_key_id, jti, false, false, false);
     expired.delete().expect("delete expired own custody");
-    restored.delete().expect("delete locally verified own custody");
+    current_renewed.delete().expect("delete locally verified renewed own custody");
     assert!(matches!(RestoredCustomerLeaf::open(namespace), Err(CustodyError::NotFound)));
+    assert!(matches!(RestoredCustomerLeaf::open(renewed_namespace), Err(CustodyError::NotFound)));
     assert!(matches!(RestoredCustomerLeaf::open(short_namespace), Err(CustodyError::NotFound)));
 }

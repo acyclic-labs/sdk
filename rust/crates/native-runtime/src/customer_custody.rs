@@ -86,6 +86,7 @@ impl std::error::Error for CustodyError {}
 pub struct CustomerCustodyNamespace {
     name: String,
     digest: [u8; 32],
+    origin: String,
     environment: String,
     account_id: String,
     credential_id: String,
@@ -110,7 +111,7 @@ impl CustomerCustodyNamespace {
         for byte in digest {
             write!(name, "{byte:02x}").map_err(|_| CustodyError::Unavailable)?;
         }
-        Ok(Self { name, digest, environment: environment.into(), account_id: account_id.into(), credential_id: credential_id.into() })
+        Ok(Self { name, digest, origin: origin.into(), environment: environment.into(), account_id: account_id.into(), credential_id: credential_id.into() })
     }
 
     fn bind(&self, key: &VerifyingKey, birth: &str, certificate: &str) -> Result<(), CustodyError> {
@@ -235,6 +236,34 @@ impl RestoredCustomerLeaf {
         account::mint(&record.key, birth, certificate, credential_id, clock, lifetime_secs).map_err(CustodyError::Holder)
     }
 
+    /// Stores a newly certified identifier for the same private leaf and SQL session.
+    /// Origin, environment, account and public key cannot change. The old pair is not
+    /// deleted implicitly: persist the new public tuple, then explicitly delete the old
+    /// handle when the namespaces differ. Failed new writes preserve the original pair.
+    pub fn recertify(&self, new_namespace: CustomerCustodyNamespace, birth: &str, certificate: &str) -> Result<Self, CustodyError> {
+        if new_namespace.origin != self.namespace.origin
+            || new_namespace.environment != self.namespace.environment
+            || new_namespace.account_id != self.namespace.account_id {
+            return Err(CustodyError::Binding);
+        }
+        let (first, second) = if self.namespace.name <= new_namespace.name {
+            (&self.namespace.name, &new_namespace.name)
+        } else {
+            (&new_namespace.name, &self.namespace.name)
+        };
+        let _first = lock::NamespaceLock::acquire(first)?;
+        let _second = if first != second { Some(lock::NamespaceLock::acquire(second)?) } else { None };
+        let mut record = self.current()?;
+        new_namespace.bind(&record.key.verifying_key(), birth, certificate)?;
+        let mut generation = [0u8; 32];
+        getrandom::fill(&mut generation).map_err(|_| CustodyError::Unavailable)?;
+        // Reuse the zeroizing record buffer; the private seed/session never leave Rust.
+        record.bytes[8..40].copy_from_slice(&new_namespace.digest);
+        record.bytes[40..72].copy_from_slice(&generation);
+        platform::write(&new_namespace.name, &record.bytes)?;
+        Ok(Self { namespace: new_namespace, generation, public_key: self.public_key })
+    }
+
     /// Rust transport-only access to the distinct opaque SQL login session. Do not expose
     /// this callback through generated JS bindings or reinterpret it as a leaf bearer.
     pub fn with_sql_session<R>(&self, transport: impl FnOnce(&str) -> R) -> Result<R, CustodyError> {
@@ -249,7 +278,7 @@ impl RestoredCustomerLeaf {
 
     /// Explicit local custody deletion. Server revocation is a separate authenticated
     /// operation; a failed or stale deletion never removes a newer login's credential.
-    pub fn delete(self) -> Result<(), CustodyError> {
+    pub fn delete(&self) -> Result<(), CustodyError> {
         let _lock = lock::NamespaceLock::acquire(&self.namespace.name)?;
         let _record = self.current()?;
         platform::delete(&self.namespace.name)
