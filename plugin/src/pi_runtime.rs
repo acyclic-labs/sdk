@@ -233,6 +233,11 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<Self> {
         use acyclic_fs::WorkCounters;
+        // Pi's original stock setup has no ordinary or resumable tools. Empty
+        // configured registries have no heap backing; the SDK native constructor
+        // still receives and retains the actual configured resumable registry.
+        let tools = ToolRegistry::default();
+        let resumable_tools = acyclic_harness::durable_tool::ResumableToolRegistry::default();
         work.admit(WorkCounters::UNCHARGED)
             .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
         // Source authority data precedes its original decoder/constructor AL.
@@ -281,7 +286,7 @@ where
         let clock = Arc::new(acyclic_stream::SystemUnixMillisClock);
         let runtime = FilesystemTaskRuntime::open_with_creation_providers_with_native_work(
             stream, filesystem, journal, &authority.0.verifier, &authority.0.signed,
-            &authority.0.scope, &tasks, &machines.0, &ToolRegistry::default(),
+            &authority.0.scope, &tasks, &machines.0, &tools, &resumable_tools,
             authority.0.session_limits, authority.0.concurrency, authority.0.maximum_payload_bytes,
             clock, None, &creation_providers, work,
         ).await?;
