@@ -16,6 +16,21 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+// Explicit ordinary fixture infrastructure, not a production task-input source.
+fn fixture_content(owner: &PiOwnerConfig,
+    filesystem: Arc<FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
+    deny_inputs: bool)
+    -> Arc<dyn ContentResidencyVerifier> {
+    let authority = owner.authority().unwrap();
+    let signed = if deny_inputs {
+        authority.issuer.root_for_agent(owner.policy.agent, "denied-root-inputs",
+            Capabilities::new(std::iter::empty::<String>()))
+    } else { authority.signed };
+    Arc::new(acyclic_harness::filesystem::FilesystemContentVerifier::new(
+        filesystem, authority.verifier, signed, owner.policy.maximum_payload_bytes,
+    ).unwrap())
+}
+
 fn fixture_allocation(
     binding: &crate::PiTaskBinding,
 ) -> crate::pi_root_allocation::PiRootAllocation {
@@ -123,13 +138,14 @@ async fn pi_root_stock_worker_reopens_original_effect_without_redispatch() {
         "success",
         "scratch_only",
         "lost_ack",
+        "denied_content",
         "missing_root",
         "foreign_provider",
         "zero_workspace",
         "extra_field",
     ] {
         let lose_acknowledgement = case == "lost_ack";
-        let valid_result = matches!(case, "success" | "scratch_only" | "lost_ack");
+        let valid_result = matches!(case, "success" | "scratch_only" | "lost_ack" | "denied_content");
         let session = tempfile::tempdir().unwrap();
         let (owner, filesystem, mut request, _raw) = root_input_fixture(session.path(), |policy| {
             policy.grants = Capabilities::new(policy.grants.iter().map(str::to_owned).chain([
@@ -196,9 +212,8 @@ async fn pi_root_stock_worker_reopens_original_effect_without_redispatch() {
             )
             .await
             .unwrap();
-        let command = stage_root_command(&owner, &filesystem, &request)
-            .await
-            .unwrap();
+        let work = startup_work();
+        let staged = stage_root_command(&owner, &filesystem, &request, &work).await.unwrap();
         let filesystem = Arc::new(filesystem);
         let stream = StreamClient::new(Arc::new(
             LocalStream::open(session.path().join("stream"), LocalStreamLimits::default())
@@ -213,23 +228,23 @@ async fn pi_root_stock_worker_reopens_original_effect_without_redispatch() {
             reconciliations: AtomicUsize::new(0),
             observation: Mutex::new(None),
         });
-        let runtime = crate::pi_runtime::PiTaskRuntime::open(
-            stream.clone(),
-            filesystem.clone(),
-            owner.policy.journal.clone(),
-            owner.authority().unwrap(),
+        let runtime = crate::pi_runtime::PiTaskRuntime::open_with_native_work(
+            stream.clone(), filesystem.clone(), &owner.policy.journal,
+            owner.authority_with_native_work(&work).unwrap(), &work,
         )
         .await
         .unwrap();
-        runtime
-            .admit_root(request.binding.clone(), request.root.clone(), command)
-            .await
-            .unwrap();
-        let effects = Arc::new(
-            owner
-                .root_effects(stream.clone(), filesystem.clone(), provider.clone())
-                .unwrap(),
-        );
+        let admission = runtime.admit_root_with_native_work(
+            request.binding.clone(), request.root.clone(), staged.0, &work,
+        ).await.unwrap();
+        drop(admission.0);
+        drop(admission.1);
+        let authorization = owner.effect_authority_with_native_work(&work).unwrap();
+        let effects = crate::pi_owner::root_effects_with_native_work(
+            stream.clone(), authorization.0, authorization.1,
+            fixture_content(&owner, filesystem.clone(), case == "denied_content"),
+            provider.clone(), &work,
+        ).unwrap();
         let worker = Worker {
             id: "pi-root-worker".to_owned(),
             available: ResourceSnapshot::default(),
@@ -255,23 +270,29 @@ async fn pi_root_stock_worker_reopens_original_effect_without_redispatch() {
         drop(effects);
         drop(runtime);
         drop(owner);
-        let owner = PiOwnerConfig::load(session.path()).unwrap();
-        let runtime = crate::pi_runtime::PiTaskRuntime::open(
-            stream.clone(),
-            filesystem.clone(),
-            owner.policy.journal.clone(),
-            owner.authority().unwrap(),
+        let owner = PiOwnerConfig::load_with_native_work(session.path(), &work).unwrap();
+        let runtime = crate::pi_runtime::PiTaskRuntime::open_with_native_work(
+            stream.clone(), filesystem.clone(), &owner.policy.journal,
+            owner.authority_with_native_work(&work).unwrap(), &work,
         )
         .await
         .unwrap();
-        let effects = Arc::new(
-            owner
-                .root_effects(stream, filesystem, provider.clone())
-                .unwrap(),
-        );
+        let authorization = owner.effect_authority_with_native_work(&work).unwrap();
+        let effects = crate::pi_owner::root_effects_with_native_work(
+            stream, authorization.0, authorization.1,
+            fixture_content(&owner, filesystem, case == "denied_content"),
+            provider.clone(), &work,
+        ).unwrap();
         let commands = runtime.runtime.commands().with_effects(effects);
         let original_lease = lease.clone();
         let attempt = runtime.runtime.resume_task(lease, &commands, 1).await;
+        if case == "denied_content" {
+            assert!(matches!(attempt, TaskWorkerAttempt::Unresolved { error: Error::Unauthorized(_), .. }));
+            assert_eq!(provider.dispatches.load(Ordering::SeqCst), 0);
+            assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 0);
+            assert!(!session.path().join("unopened-selected-root").exists());
+            continue;
+        }
         if !valid_result {
             let TaskWorkerAttempt::Progress(TaskWorkerOutcome::Reconciling { lease }) = attempt
             else {

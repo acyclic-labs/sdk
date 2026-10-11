@@ -13,102 +13,184 @@ use pi_owner::{PiOwnerConfig, PiOwnerPolicy};
 use pi_root::PiRootIntent;
 use pi_root_inputs::{PiRootRequest, ROOT_ALLOCATION_PROVIDER, ROOT_INPUT_DIRECTORY};
 
-fn identity(domain: &str, session: &str) -> [u8; 16] {
-    let digest = blake3::hash(format!("acyclic.pi/{domain}/v1/{session}").as_bytes());
+fn identity(
+    domain: &str, session: &str, work: &acyclic_fs::NativeMaterializationWork,
+) -> acyclic_harness::Result<[u8; 16]> {
+    let bytes = (b"acyclic.pi/".len() as u64).checked_add(domain.len() as u64)
+        .and_then(|bytes| bytes.checked_add(b"/v1/".len() as u64))
+        .and_then(|bytes| bytes.checked_add(session.len() as u64))
+        .ok_or(acyclic_harness::Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow),
+            custody: None,
+        })?;
+    work.charge(acyclic_fs::WorkCounters { bytes_hashed: bytes, ..acyclic_fs::WorkCounters::UNCHARGED })
+        .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+    // Identical original BLAKE3 input, streamed without an owned format buffer.
+    let mut hasher = blake3::Hasher::new();
+    for part in [b"acyclic.pi/".as_slice(), domain.as_bytes(), b"/v1/".as_slice(), session.as_bytes()] {
+        hasher.update(part);
+    }
     let mut id = [0; 16];
-    id.copy_from_slice(&digest.as_bytes()[..16]);
-    id
+    id.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
+    Ok(id)
 }
 
 /// The catalog holds its existing opening reservation for this entire operation.
 /// Interrupted registration reloads the original owner and exact deterministic
 /// request; it never creates another task, key, budget or selected allocation.
+/// Native producers borrow the admitted service query's original ledger; root
+/// artifacts preserve their original filenames, upload keys and media types.
 pub(crate) async fn register(
     resources: &ServiceResources,
     session: &str,
     path: PathBuf,
-) -> Result<SessionController, String> {
+    native_runtime: Option<super::pi_native::PiNativeHostRuntime>,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> acyclic_harness::Result<SessionController> {
+    work.admit(acyclic_fs::WorkCounters::UNCHARGED)
+        .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
     let directory = resources.session_directory(session);
-    fs::create_dir_all(&directory).map_err(display)?;
-    let (previous, _) = load_state(&directory)?;
+    fs::create_dir_all(&directory).map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
+    let (previous, _) = load_state(&directory).map_err(acyclic_harness::Error::Invalid)?;
     if !previous.root_session_id.is_empty() {
         if previous.root_session_id != session || !matches!(previous.task_binding, PluginTaskBinding::Pi(_)) {
-            return Err("Pi original session selection differs".to_owned());
+            return Err(acyclic_harness::Error::Invalid("Pi original session selection differs".to_owned()));
         }
-        return SessionController::open(directory, resources).await;
+        return SessionController::open(directory, resources, work).await;
     }
-    let path = path.canonicalize().map_err(display)?;
-    let provider = ProviderRef::new("acyclic.pi", "filesystem", "1").map_err(display)?;
-    let task = TaskId::from_bytes(identity("task", session));
-    let agent = AgentId::from_bytes(identity("agent", session));
-    let root_id = identity("root", session);
-    let context_id = identity("context", session);
-    let journal = VolumeRef::new(provider.clone(), "journal", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).map_err(display)?;
-    let scratch = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).map_err(display)?;
-    let project = VolumeRef::new(provider.clone(), "project", VolumeClass::Project, VolumeOwner::Project(hex::encode(root_id))).map_err(display)?;
+    let path = path.canonicalize().map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
+    // Closed application headers and logical map/boxed-binding slots only.
+    // Each dynamic String, SDK volume and capability has its own producer AL;
+    // opaque BTree node and allocator backing is not invented as SDK work.
+    let path_text = path.to_str().ok_or_else(||
+        acyclic_harness::Error::Invalid("Pi root path is not UTF-8".to_owned()))?;
+    let owned = (std::mem::size_of::<PiRootRequest>() + std::mem::size_of::<AdapterState>()
+        + std::mem::size_of::<PiTaskBinding>() + std::mem::size_of::<(String, VolumeRef)>()
+        + std::mem::size_of::<(String, String)>() + std::mem::size_of::<(String, RootBinding)>()) as u64;
+    let startup_custody = work.retain_owned(owned)
+        .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+    let provider = ProviderRef::new("acyclic.pi", "filesystem", "1")?;
+    let task = TaskId::from_bytes(identity("task", session, work)?);
+    let agent = AgentId::from_bytes(identity("agent", session, work)?);
+    let root_id = identity("root", session, work)?;
+    let context_id = identity("context", session, work)?;
+    let native_error = |cause| acyclic_harness::Error::NativeWork { cause, custody: None };
+    let root_label = work.display(&format_args!("{:032x}", u128::from_be_bytes(root_id))).map_err(native_error)?;
+    let owner_label = work.display(&root_label.0).map_err(native_error)?;
+    let journal = VolumeRef::new(provider.clone(), "journal", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
+    let scratch = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
+    let project = VolumeRef::new(provider.clone(), "project", VolumeClass::Project, VolumeOwner::Project(owner_label.0))?;
+    let binding_session = work.display(session).map_err(native_error)?;
+    let project_key = work.display(&root_label.0).map_err(native_error)?;
+    let project_copy = project.clone_with_native_work(work)?;
+    let scratch_copy = scratch.clone_with_native_work(work)?;
+    let path_key = work.display(&root_label.0).map_err(native_error)?;
+    let root_path = work.display(path_text).map_err(native_error)?;
     let binding = PiTaskBinding {
-        native_session_id: session.to_owned(), task_id: task, agent_id: agent,
-        project_volumes: BTreeMap::from([(hex::encode(root_id), project.clone())]),
-        scratch: PiScratchBinding { volume: scratch.clone(), allocation: PiScratchAllocation::Preparing },
+        native_session_id: binding_session.0, task_id: task, agent_id: agent,
+        project_volumes: BTreeMap::from([(project_key.0, project_copy.0)]),
+        scratch: PiScratchBinding { volume: scratch_copy.0, allocation: PiScratchAllocation::Preparing },
+        results: None,
     };
     let root = PiRootIntent::Project {
         context_id, root_id,
-        paths: BTreeMap::from([(hex::encode(root_id), path.to_str().ok_or_else(|| "Pi root path is not UTF-8".to_owned())?.to_owned())]),
+        paths: BTreeMap::from([(path_key.0, root_path.0)]),
     };
-    root.validate(&binding)?;
-    let mut grants = vec![
-        "operation:declare".to_owned(), "operation:observe".to_owned(), "operation:cancel".to_owned(),
-        "task:spawn:acyclic.pi@1".to_owned(), "effect:plan".to_owned(), "effect:run".to_owned(),
-        "fork:publish".to_owned(),
-        format!("effect:provider:{ROOT_ALLOCATION_PROVIDER}"),
-        journal.directory_read_capability(ROOT_INPUT_DIRECTORY).map_err(display)?,
+    root.validate(&binding).map_err(acyclic_harness::Error::Invalid)?;
+    const GRANTS: &[&str] = &[
+        "operation:declare", "operation:observe", "operation:cancel", "operation:wake",
+        "task:spawn:acyclic.pi@1", "effect:plan", "effect:run", "fork:publish", "conversation:bind",
+        "interaction:route", "interaction:open", "interaction:observe", "pi:source:select",
+        "mail:send", "mail:read", "task:spawn:acyclic.fork_preparation@1",
     ];
-    for volume in [&scratch, &project] {
-        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            grants.push(volume.capability(operation).map_err(display)?);
-        }
-    }
-    let policy = PiOwnerPolicy {
-        root_task: task, agent, journal: journal.clone(), grants: Capabilities::new(grants),
-        limits: Limits::default(), run_limits: TaskRunLimits::default(),
-        session_limits: SessionLimits { active_tasks: 16, total_tasks: 256, depth: 16, model_steps: 4096 },
-        concurrency: 16, maximum_payload_bytes: 1024 * 1024,
-    };
+    let native_error = |cause| acyclic_harness::Error::NativeWork { cause, custody: None };
+    let grants = [
+        work.display(&format_args!("effect:provider:{ROOT_ALLOCATION_PROVIDER}")).map_err(native_error)?,
+        work.display(&format_args!("effect:provider:{}", super::pi_native::PI_NATIVE_PROVIDER)).map_err(native_error)?,
+        journal.directory_read_capability_with_native_work(ROOT_INPUT_DIRECTORY, work)?,
+        journal.directory_read_capability_with_native_work(super::pi_root_provider::OPERATOR_INPUT_DIRECTORY, work)?,
+        scratch.capability_with_native_work(VolumeOperation::Read, work)?,
+        scratch.capability_with_native_work(VolumeOperation::Write, work)?,
+        project.capability_with_native_work(VolumeOperation::Read, work)?,
+        project.capability_with_native_work(VolumeOperation::Write, work)?,
+    ];
+    let capabilities = Capabilities::new_with_native_work(
+        GRANTS.iter().copied().chain(grants.iter().map(|grant| grant.0.as_str())), work,
+    )?;
+    let policy_journal = journal.clone_with_native_work(work)?;
+    let policy = (
+        PiOwnerPolicy {
+            root_task: task, agent, journal: policy_journal.0, grants: capabilities.0,
+            limits: Limits::default(), run_limits: TaskRunLimits::default(),
+            session_limits: SessionLimits { active_tasks: 16, total_tasks: 256, depth: 16, model_steps: 4096 },
+            concurrency: 16, maximum_payload_bytes: 1024 * 1024,
+        },
+        policy_journal.1, capabilities.1,
+    );
+    drop(scratch);
+    drop(project);
     let owner = if directory.join("pi-owner.v1").exists() {
-        let original = PiOwnerConfig::load(&directory)?;
-        if original.policy() != &policy { return Err("Pi original root policy differs".to_owned()); }
+        let original = PiOwnerConfig::load_with_native_work(&directory, work)?;
+        if original.policy() != &policy.0 { return Err(acyclic_harness::Error::Unauthorized("Pi original root policy differs".to_owned())); }
+        drop(policy);
+        drop(native_runtime);
         original
     } else {
         if directory.join("stream").exists() {
-            return Err("Pi original task storage exists but its owner credential is missing".to_owned());
+            return Err(acyclic_harness::Error::Invalid("Pi original task storage exists but its owner credential is missing".to_owned()));
         }
-        let owner = PiOwnerConfig::new(policy)?;
-        owner.save_new(&directory)?;
+        let owner = PiOwnerConfig::new_with_native_runtime_with_native_work(
+            &policy.0, native_runtime.as_ref(), work,
+        )?;
+        owner.save_new_with_native_work(&directory, work)?;
         owner
     };
-    let filesystem = Arc::new(acyclic_harness::filesystem::FilesystemHost::new(resources.fs.clone(), provider).map_err(display)?);
+    let filesystem = Arc::new(acyclic_harness::filesystem::FilesystemHost::new(resources.fs.clone(), provider)?);
     // Journal storage is owner infrastructure, not a selected task allocation.
     // Its creation operation is fixed, and its grant is not exposed to Pi.
-    let cancellation = CancellationToken::new();
-    resources.fs.create_workspace_with_operation_measured(
-        journal.storage_name().map_err(display)?, VolumeConfig::portable(Lifecycle::Durable),
-        OperationId::from_bytes(identity("journal", session)), native_root_source::budget(), &cancellation,
-    ).await.map_err(|failure| format!("{}; work={:?}", failure.error, failure.work))?;
-    let stream = StreamClient::new(Arc::new(LocalStream::open(directory.join("stream"), LocalStreamLimits::default()).await.map_err(display)?));
-    let runtime = pi_runtime::PiTaskRuntime::open(stream, filesystem.clone(), journal, owner.authority()?).await.map_err(display)?;
+    let journal_name = journal.storage_name_with_native_work(work)?;
+    let journal_generation = resources.fs.create_workspace_with_operation_with_native_work(
+        &journal_name.0, VolumeConfig::portable(Lifecycle::Durable),
+        OperationId::from_bytes(identity("journal", session, work)?), work, work.cancellation(),
+    ).await.map_err(|(source, custody)| acyclic_harness::Error::NativeWorkspace { source, custody })?;
+    drop(journal_generation);
+    drop(journal_name);
+    let stream = StreamClient::new(Arc::new(LocalStream::open(directory.join("stream"), LocalStreamLimits::default()).await?));
+    let runtime = pi_runtime::PiTaskRuntime::open_with_native_work(
+        stream, filesystem.clone(), &journal, owner.authority_with_native_work(work)?, work,
+    ).await?;
     let request = PiRootRequest { binding, root };
-    let command = pi_root_inputs::stage_root_command(&owner, &filesystem, &request).await.map_err(display)?;
-    runtime.admit_root(request.binding.clone(), request.root.clone(), command).await.map_err(display)?;
+    let command = pi_root_inputs::stage_root_command(&owner, &filesystem, &request, work).await?;
+    let admitted_input = request.clone_with_native_work(work)?;
+    let admission = runtime.admit_root_with_native_work(
+        admitted_input.0.binding, admitted_input.0.root, command.0, work,
+    ).await?;
+    drop(admission.0);
+    drop(admission.1);
+    drop(admitted_input.1);
+    drop(command.1);
+    let state_session = work.display(session).map_err(native_error)?;
+    let state_agent = work.display(session).map_err(native_error)?;
+    let state_key = work.display(&root_label.0).map_err(native_error)?;
+    work.charge(acyclic_fs::WorkCounters { allocation_operations: 1, ..acyclic_fs::WorkCounters::UNCHARGED })
+        .map_err(native_error)?;
     let state = AdapterState {
         version: ADAPTER_STATE_VERSION, active: true,
-        root_session_id: session.to_owned(), root_agent_id: session.to_owned(),
+        root_session_id: state_session.0, root_agent_id: state_agent.0,
         root_context_id: context_id, root_id, pending_root_registration: true,
         task_binding: PluginTaskBinding::Pi(Box::new(request.binding)),
-        roots: BTreeMap::from([(hex::encode(root_id), RootBinding { root_id, path, allocation: RootAllocation::Preparing })]),
+        roots: BTreeMap::from([(state_key.0, RootBinding { root_id, path, allocation: RootAllocation::Preparing })]),
         ..AdapterState::default()
     };
     // A catalog entry is published only after authenticated durable admission.
-    save_state(&directory, &state, Survives::PowerLoss)?;
-    SessionController::open(directory, resources).await
+    StateSlots::read(&directory).map_err(acyclic_harness::Error::Invalid)?.0
+        .save(&directory, &state, Survives::PowerLoss).map_err(acyclic_harness::Error::Storage)?;
+    drop(state);
+    drop(request.root);
+    drop(runtime);
+    drop(filesystem);
+    drop(owner);
+    let controller = SessionController::open(directory, resources, work).await?;
+    controller.retain_original_input(startup_custody)
 }
 

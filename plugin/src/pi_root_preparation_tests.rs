@@ -20,19 +20,20 @@ struct Fixture {
     request: PiRootRequest,
     command: WorkflowCommand,
     session: tempfile::TempDir,
+    work: acyclic_fs::NativeMaterializationWork,
+    _command_custody: acyclic_fs::NativeAllocation,
 }
 
-async fn open_runtime(session: &Path, owner: &PiOwnerConfig, filesystem: Arc<Host>) -> Runtime {
+async fn open_runtime(session: &Path, owner: &PiOwnerConfig, filesystem: Arc<Host>,
+    work: &acyclic_fs::NativeMaterializationWork) -> Runtime {
     let stream = StreamClient::new(Arc::new(
         LocalStream::open(session.join("stream"), LocalStreamLimits::default())
             .await
             .unwrap(),
     ));
-    PiTaskRuntime::open(
-        stream,
-        filesystem,
-        owner.policy.journal.clone(),
-        owner.authority().unwrap(),
+    PiTaskRuntime::open_with_native_work(
+        stream, filesystem, &owner.policy.journal,
+        owner.authority_with_native_work(work).unwrap(), work,
     )
     .await
     .unwrap()
@@ -175,23 +176,17 @@ impl Fixture {
     async fn new(case: &str) -> Self {
         let session = tempfile::tempdir().unwrap();
         let (owner, filesystem, request, raw) = root_input_fixture(session.path(), |_| {}).await;
-        let command = stage_root_command(&owner, &filesystem, &request)
-            .await
-            .unwrap();
-        let command = alter_command(case, &owner, &filesystem, &request, command).await;
+        let work = startup_work();
+        let staged = stage_root_command(&owner, &filesystem, &request, &work).await.unwrap();
+        let command = alter_command(case, &owner, &filesystem, &request, staged.0).await;
         let filesystem = Arc::new(filesystem);
-        let runtime = open_runtime(session.path(), &owner, filesystem.clone()).await;
-        assert!(matches!(
-            runtime
-                .admit_root(
-                    request.binding.clone(),
-                    request.root.clone(),
-                    command.clone()
-                )
-                .await
-                .unwrap(),
-            acyclic_harness::Admission::Accepted(_)
-        ));
+        let runtime = open_runtime(session.path(), &owner, filesystem.clone(), &work).await;
+        let admission = runtime.admit_root_with_native_work(
+            request.binding.clone(), request.root.clone(), command.clone(), &work,
+        ).await.unwrap();
+        assert!(matches!(admission.0, acyclic_harness::Admission::Accepted(_)));
+        drop(admission.0);
+        drop(admission.1);
         Self {
             runtime,
             filesystem,
@@ -200,6 +195,8 @@ impl Fixture {
             request,
             command,
             session,
+            work,
+            _command_custody: staged.1,
         }
     }
 
@@ -214,12 +211,13 @@ impl Fixture {
             .id()
     }
 
-    async fn load(&self) -> Result<PiRootPreparation, String> {
+    async fn load(&self) -> Result<PiRootPreparation> {
         PiRootPreparation::load(
             self.session.path(),
             &self.runtime,
             &self.filesystem,
             &self.request,
+            &self.work,
         )
         .await
     }
@@ -246,6 +244,8 @@ impl Fixture {
             request,
             command,
             session,
+            work,
+            _command_custody,
         } = self;
         drop(runtime);
         drop(filesystem);
@@ -258,7 +258,7 @@ impl Fixture {
         let filesystem = Arc::new(
             FilesystemHost::new(raw.clone(), owner.policy.journal.provider().clone()).unwrap(),
         );
-        let runtime = open_runtime(session.path(), &owner, filesystem.clone()).await;
+        let runtime = open_runtime(session.path(), &owner, filesystem.clone(), &work).await;
         Self {
             runtime,
             filesystem,
@@ -267,6 +267,8 @@ impl Fixture {
             request,
             command,
             session,
+            work,
+            _command_custody,
         }
     }
 }
@@ -295,17 +297,23 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
     host.start_task(&lease).await.unwrap();
     let fence = LeaseFence::from(&lease.reservation);
     let head = fixture.head().await;
+    let context = fixture.runtime.runtime.task_context_with_native_work(
+        fixture.request.binding.task_id, &fence, &fixture.work,
+    ).await.unwrap();
     let (preparation, owner) = PiRootPreparation::load_for_dispatch(
         fixture.session.path(),
         &fixture.runtime,
         &fixture.filesystem,
         &fixture.request,
-        fence.clone(),
+        &fence,
+        context.clone(),
+        &fixture.work,
     )
     .await
     .unwrap();
     assert_eq!(preparation.request(), &fixture.request);
     assert_eq!(preparation.command(), &fixture.command);
+    assert!(Arc::ptr_eq(preparation.native_context(), &context));
     owner.verify_dispatch().await.unwrap();
 
     let mut stale = fence.clone();
@@ -316,7 +324,9 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
             &fixture.runtime,
             &fixture.filesystem,
             &fixture.request,
-            stale,
+            &stale,
+            context.clone(),
+            &fixture.work,
         )
         .await
         .is_err()
@@ -329,7 +339,9 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
             &fixture.runtime,
             &fixture.filesystem,
             &fixture.request,
-            fence,
+            &fence,
+            context,
+            &fixture.work,
         )
         .await
         .is_err()
@@ -402,7 +414,7 @@ async fn pi_preparation_rejects_other_original_keys_and_any_policy_drift() {
     let head = fixture.head().await;
     for case in ["key", "bytes", "concurrency", "depth"] {
         let other = tempfile::tempdir().unwrap();
-        let mut owner = fixture.owner.clone();
+        let mut owner = PiOwnerConfig::load(fixture.session.path()).unwrap();
         match case {
             "key" => owner = PiOwnerConfig::new(owner.policy.clone()).unwrap(),
             "bytes" => owner.policy.maximum_payload_bytes /= 2,
@@ -416,13 +428,11 @@ async fn pi_preparation_rejects_other_original_keys_and_any_policy_drift() {
             &fixture.runtime,
             &fixture.filesystem,
             &fixture.request,
+            &fixture.work,
         )
         .await;
         assert!(
-            result
-                .err()
-                .unwrap()
-                .contains("original runtime credentials or policy"),
+            matches!(result, Err(Error::Unauthorized(_))),
             "accepted {case}"
         );
         assert_eq!(fixture.head().await, head);
@@ -451,4 +461,61 @@ async fn pi_preparation_rejects_admitted_command_artifact_substitution_before_al
         assert_eq!(fixture.head().await, head, "mutated storage for {case}");
         fixture.assert_idle().await;
     }
+}
+
+#[tokio::test]
+async fn pi_preparation_native_state_retains_original_root_and_shared_context() {
+    let fixture = Fixture::new("").await;
+    let PiRootIntent::Project { context_id, root_id, paths } = &fixture.request.root else {
+        panic!("ordinary fixture has no selected project");
+    };
+    // Ordinary fixture configuration, not a native metadata producer.
+    let mut state = AdapterState {
+        version: ADAPTER_STATE_VERSION,
+        task_binding: PluginTaskBinding::Pi(Box::new(fixture.request.binding.clone())),
+        root_context_id: *context_id,
+        root_id: *root_id,
+        roots: paths.iter().map(|(key, path)| (key.clone(), RootBinding {
+            root_id: *root_id, path: PathBuf::from(path), allocation: RootAllocation::Preparing,
+        })).collect(),
+        ..AdapterState::default()
+    };
+    let head = fixture.head().await;
+    let original = PiRootPreparation::load_native_from_state(
+        fixture.session.path(), &fixture.runtime, &fixture.filesystem, &state, None, &fixture.work,
+    ).await.unwrap();
+    assert_eq!(original.request(), &fixture.request);
+    assert_eq!(original.command(), &fixture.command);
+    let context = original.native_context().clone();
+    let supplied = PiRootPreparation::load_native_from_state(
+        fixture.session.path(), &fixture.runtime, &fixture.filesystem, &state,
+        Some(context.clone()), &fixture.work,
+    ).await.unwrap();
+    assert!(Arc::ptr_eq(supplied.native_context(), &context));
+    assert_eq!(supplied.request(), &fixture.request);
+    state.roots.values_mut().next().unwrap().path.push("not-original");
+    assert!(PiRootPreparation::load_native_from_state(
+        fixture.session.path(), &fixture.runtime, &fixture.filesystem, &state,
+        Some(context), &fixture.work,
+    ).await.is_err());
+    assert_eq!(fixture.head().await, head);
+}
+
+#[test]
+fn native_preparation_operation_preserves_original_digest_and_admits_before_hashing() {
+    use crate::pi_root_inputs::{preparation_operation, preparation_operation_with_native_work};
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+    let task = acyclic_harness::TaskId::from_bytes([93; 16]);
+    let work = startup_work();
+    let before = work.receipt();
+    let operation = preparation_operation_with_native_work(task, &work).unwrap();
+    assert_eq!(operation, preparation_operation(task));
+    assert_eq!(work.receipt().bytes_hashed - before.bytes_hashed,
+        b"acyclic.pi/root-preparation/v1".len() as u64 + 16);
+    let limited = NativeMaterializationWork::new(WorkBudget {
+        bytes_hashed: 0, ..crate::pi_root_provider::allocation_budget()
+    }, &CancellationToken::new()).unwrap();
+    let before = limited.receipt();
+    assert!(preparation_operation_with_native_work(task, &limited).is_err());
+    assert_eq!(limited.receipt(), before);
 }

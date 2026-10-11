@@ -21,6 +21,11 @@ mod root_preparation;
 #[path = "pi_service_tests.rs"]
 mod service;
 
+fn startup_work() -> acyclic_fs::NativeMaterializationWork {
+    acyclic_fs::NativeMaterializationWork::new(
+        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new(),
+    ).unwrap()
+}
 fn policy() -> PiOwnerPolicy {
     let agent = AgentId::from_bytes([81; 16]);
     let provider = ProviderRef::new("pi-owner-test", "filesystem", "1").unwrap();
@@ -126,6 +131,7 @@ async fn root_input_fixture_on_fs(
             task_id: policy.root_task,
             agent_id: policy.agent,
             project_volumes: std::collections::BTreeMap::from([(hex::encode(root_id), project)]),
+            results: None,
             scratch: crate::PiScratchBinding {
                 volume: VolumeRef::new(
                     policy.journal.provider().clone(),
@@ -165,13 +171,13 @@ async fn root_input_fixture_on_fs(
 async fn pi_root_input_staging_reuses_original_upload_and_narrow_read_authority() {
     let session = tempfile::tempdir().unwrap();
     let (owner, filesystem, request, raw) = root_input_fixture(session.path(), |_| {}).await;
-    let reference = stage_root_request(&owner, &filesystem, &request)
-        .await
-        .unwrap();
+    let work = startup_work();
+    let _reference_custody;
+    let reference;
+    (reference, _reference_custody) = stage_root_request(&owner, &filesystem, &request, &work).await.unwrap();
+    let repeated = stage_root_request(&owner, &filesystem, &request, &work).await.unwrap();
     assert_eq!(
-        stage_root_request(&owner, &filesystem, &request)
-            .await
-            .unwrap(),
+        repeated.0,
         reference
     );
     let authority = owner.authority().unwrap();
@@ -226,7 +232,7 @@ async fn pi_root_input_staging_reuses_original_upload_and_narrow_read_authority(
         .unwrap()
         .to_owned();
     assert!(
-        stage_root_request(&owner, &filesystem, &changed)
+        stage_root_request(&owner, &filesystem, &changed, &work)
             .await
             .is_err()
     );
@@ -250,10 +256,9 @@ async fn pi_root_input_staging_reuses_original_upload_and_narrow_read_authority(
         owner.policy.journal.provider().clone(),
     )
     .unwrap();
+    let reopened = stage_root_request(&owner, &filesystem, &request, &work).await.unwrap();
     assert_eq!(
-        stage_root_request(&owner, &filesystem, &request)
-            .await
-            .unwrap(),
+        reopened.0,
         reference
     );
     assert!(!session.path().join("unopened-selected-root").exists());
@@ -267,14 +272,14 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
     use std::sync::Arc;
     let session = tempfile::tempdir().unwrap();
     let (owner, filesystem, request, raw) = root_input_fixture(session.path(), |_| {}).await;
+    let work = startup_work();
     let authority = owner.authority().unwrap();
-    let command = stage_root_command(&owner, &filesystem, &request)
-        .await
-        .unwrap();
+    let _command_custody;
+    let command;
+    (command, _command_custody) = stage_root_command(&owner, &filesystem, &request, &work).await.unwrap();
+    let repeated = stage_root_command(&owner, &filesystem, &request, &work).await.unwrap();
     assert_eq!(
-        stage_root_command(&owner, &filesystem, &request)
-            .await
-            .unwrap(),
+        repeated.0,
         command
     );
     let read = ContentGrant::verify_directory_read(
@@ -320,11 +325,10 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
         schema,
         crate::pi_root_allocation::PiRootAllocation::schema(&request.binding).unwrap()
     );
+    let original_request = stage_root_request(&owner, &filesystem, &request, &work).await.unwrap();
     assert_eq!(
         plan.request,
-        stage_root_request(&owner, &filesystem, &request)
-            .await
-            .unwrap()
+        original_request.0
     );
     let retained: PiRootRequest = serde_json::from_slice(
         &filesystem
@@ -393,10 +397,9 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
         owner.policy.journal.provider().clone(),
     )
     .unwrap();
+    let reopened = stage_root_command(&owner, &filesystem, &request, &work).await.unwrap();
     assert_eq!(
-        stage_root_command(&owner, &filesystem, &request)
-            .await
-            .unwrap(),
+        reopened.0,
         command
     );
     assert!(!session.path().join("unopened-selected-root").exists());
@@ -405,6 +408,7 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
 #[tokio::test]
 async fn pi_root_input_staging_requires_original_owner_explicit_read_and_finite_bytes() {
     for failure in ["owner", "grant", "bytes", "path", "foreign"] {
+        let work = startup_work();
         let session = tempfile::tempdir().unwrap();
         let (owner, filesystem, mut request, raw) = root_input_fixture(session.path(), |policy| {
             if failure == "grant" {
@@ -442,8 +446,8 @@ async fn pi_root_input_staging_requires_original_owner_explicit_read_and_finite_
             request.binding.task_id = TaskId::from_bytes([85; 16]);
         }
         let result = match PiOwnerConfig::load(session.path()) {
-            Ok(original_owner) => stage_root_request(&original_owner, &filesystem, &request).await,
-            Err(error) => Err(acyclic_harness::Error::Invalid(error)),
+            Ok(original_owner) => stage_root_request(&original_owner, &filesystem, &request, &work).await,
+            Err(error) => Err(error),
         };
         assert!(result.is_err(), "accepted {failure}");
         assert!(!session.path().join("unopened-selected-root").exists());
@@ -713,4 +717,143 @@ fn pi_owner_unix_rejects_public_permissions_links_and_nonregular_files() {
     fs::remove_file(path).unwrap();
     fs::create_dir(directory.path().join(OWNER_FILE)).unwrap();
     assert!(PiOwnerConfig::load(directory.path()).is_err());
+}
+
+#[tokio::test]
+async fn pi_root_startup_constructor_denial_and_cancel_do_not_publish_inputs() {
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError,
+        WorkBudget, WorkCounters};
+    let session = tempfile::tempdir().unwrap();
+    let (owner, filesystem, request, raw) = root_input_fixture(session.path(), |_| {}).await;
+    let workspace = raw.open_workspace(owner.policy.journal.storage_name().unwrap()).await.unwrap();
+    let original = workspace.head().await.unwrap().id();
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let failure = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancelled)
+        .err().unwrap();
+    assert!(matches!(failure.0, NativeTreeMaterializationError::Cancelled));
+    assert_eq!(failure.1, WorkCounters::UNCHARGED);
+    let failure = NativeMaterializationWork::new(WorkBudget {
+        peak_allocation_bytes: 0, ..crate::pi_root_provider::allocation_budget()
+    }, &CancellationToken::new()).err().unwrap();
+    assert!(matches!(failure.0, NativeTreeMaterializationError::Work(_)));
+    assert_eq!(failure.1, WorkCounters::UNCHARGED);
+    let limited = NativeMaterializationWork::new(WorkBudget {
+        peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 1,
+        ..crate::pi_root_provider::allocation_budget()
+    }, &CancellationToken::new()).unwrap();
+    let baseline = limited.live_allocation_bytes();
+    assert!(matches!(stage_root_command(&owner, &filesystem, &request, &limited).await,
+        Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(_), .. })));
+    assert_eq!(limited.live_allocation_bytes(), baseline);
+    assert_eq!(workspace.head().await.unwrap().id(), original);
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
+    let before = work.receipt();
+    cancellation.cancel();
+    assert!(matches!(stage_root_command(&owner, &filesystem, &request, &work).await,
+        Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
+    assert_eq!(work.receipt(), before);
+    assert_eq!(workspace.head().await.unwrap().id(), original);
+    assert!(!session.path().join("unopened-selected-root").exists());
+}
+
+#[tokio::test]
+async fn pi_root_decoded_request_drops_data_before_original_guard() {
+    struct Data {
+        request: PiRootRequest,
+        work: acyclic_fs::NativeMaterializationWork,
+        baseline: u64,
+    }
+    impl Drop for Data {
+        fn drop(&mut self) {
+            assert!(self.work.live_allocation_bytes() > self.baseline);
+            assert_ne!(self.request.binding.task_id.into_bytes(), [0; 16]);
+        }
+    }
+    struct Owned {
+        data: Data,
+        _custody: acyclic_fs::NativeAllocation,
+    }
+    let session = tempfile::tempdir().unwrap();
+    let (_, _, request, _) = root_input_fixture(session.path(), |_| {}).await;
+    let work = startup_work();
+    let baseline = work.live_allocation_bytes();
+    let bytes = crate::pi_root_provider::guarded_pi_bytes(&request, 65_536, &work).unwrap();
+    let decoded = crate::pi_root_provider::guarded_pi_decode::<PiRootRequest>(
+        &bytes.0, 65_536, std::mem::size_of::<PiRootRequest>() as u64,
+        acyclic_harness::contract::JsonValueSchema::None,
+        crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES, &work).unwrap();
+    drop(bytes.0);
+    drop(bytes.1);
+    let owned = Owned { data: Data { request: decoded.0, work: work.clone(), baseline },
+        _custody: decoded.1 };
+    assert_eq!(owned.data.request, request);
+    drop(owned);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+}
+
+#[tokio::test]
+async fn native_owner_authority_preserves_original_grants_and_scope_names() {
+    let session = tempfile::tempdir().unwrap();
+    let (owner, _, _, _) = root_input_fixture(session.path(), |_| {}).await;
+    let work = startup_work();
+    let baseline = work.live_allocation_bytes();
+    let ordinary = owner.authority().unwrap();
+    let native = owner.authority_with_native_work(&work).unwrap();
+    assert!(native.0.signed == ordinary.signed);
+    assert_eq!(native.0.scope.grants(), ordinary.scope.grants());
+    native.0.validate_with_native_work(&owner.policy.journal, &work).unwrap();
+    drop(native.0);
+    drop(native.1);
+    let ordinary_conversation = owner.conversation_authority(
+        owner.policy.root_task, owner.policy.agent, owner.policy.grants.clone(),
+    ).unwrap();
+    let conversation = owner.conversation_authority_with_native_work(
+        owner.policy.root_task, owner.policy.agent, &owner.policy.grants, &work,
+    ).unwrap();
+    assert!(conversation.0.0 == ordinary_conversation.0);
+    assert!(conversation.0.2 == ordinary_conversation.2);
+    drop(conversation.0);
+    drop(conversation.1);
+    let ordinary_issuer = owner.effect_issuer();
+    let ordinary_effect_scope = ordinary_issuer.root_for_agent(
+        owner.policy.agent, owner.policy.root_task.to_string(), owner.policy.grants.clone(),
+    );
+    let effect = owner.effect_authority_with_native_work(&work).unwrap();
+    assert!(effect.0.2 == ordinary_effect_scope);
+    let verifier = owner.effect_verifier_with_native_work(&work).unwrap();
+    verifier.0.verify_with_native_work(&effect.0.2, &work).unwrap();
+    drop(verifier.0);
+    drop(verifier.1);
+    drop(effect.0);
+    drop(effect.1);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+}
+
+#[tokio::test]
+async fn native_owner_authority_denial_does_not_write_original_storage() {
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkBudget};
+    let session = tempfile::tempdir().unwrap();
+    let (owner, _, _, raw) = root_input_fixture(session.path(), |_| {}).await;
+    let original = raw.open_workspace(owner.policy.journal.storage_name().unwrap())
+        .await.unwrap().head().await.unwrap().id();
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(
+        crate::pi_root_provider::allocation_budget(), &cancellation,
+    ).unwrap();
+    let before = work.receipt();
+    cancellation.cancel();
+    assert!(matches!(owner.authority_with_native_work(&work),
+        Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
+    assert_eq!(work.receipt(), before);
+    let limited = NativeMaterializationWork::new(WorkBudget {
+        peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 1,
+        ..crate::pi_root_provider::allocation_budget()
+    }, &CancellationToken::new()).unwrap();
+    let baseline = limited.live_allocation_bytes();
+    assert!(owner.authority_with_native_work(&limited).is_err());
+    assert_eq!(limited.live_allocation_bytes(), baseline);
+    assert_eq!(raw.open_workspace(owner.policy.journal.storage_name().unwrap())
+        .await.unwrap().head().await.unwrap().id(), original);
 }
