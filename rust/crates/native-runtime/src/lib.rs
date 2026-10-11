@@ -5395,14 +5395,14 @@ mod tests {
         let weak = Arc::downgrade(&native.file);
         let (started, start) = mpsc::sync_channel(1);
         let (release, released) = mpsc::sync_channel(1);
-        let mut operation = native.control_bounded_async(meter, move |file, meter| {
+        let mut operation = native.control_bounded_async(move |file, meter| {
             started.send(()).map_err(io::Error::other)?;
             released.recv().map_err(io::Error::other)?;
             let mut byte = [0_u8; 1];
             assert_eq!(read_declared_source_bytes(file, 0, &mut byte, meter)?, 1);
             assert_eq!(byte, *b"x");
             Ok(())
-        })?;
+        }, meter)?;
         let waker = completion_waker();
         assert!(Pin::new(&mut operation).poll(&mut Context::from_waker(&waker)).is_pending());
         start.recv_timeout(Duration::from_secs(10)).map_err(io::Error::other)?;
