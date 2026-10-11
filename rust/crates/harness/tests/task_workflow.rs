@@ -192,7 +192,6 @@ impl ModelProvider for InterruptedModel {
         &self,
         request: &PreparedModelRequest,
     ) -> Result<acyclic_harness::context::ModelTokenCount> {
-        // This fixture counts serialized UTF-8 bytes and referenced bytes as token units.
         let message_tokens = request
             .request()
             .messages
@@ -721,9 +720,6 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
     Box::pin(worker_restart_with_options(command, true, false)).await
 }
 
-// Construct one phase in a short frame that returns before it is polled.
-// Otherwise this large scenario's unoptimized poll frame reserves temporaries
-// for every phase on top of the production call chain's default-thread stack.
 #[inline(never)]
 fn boxed_restart_phase<F: std::future::Future>(
     create: impl FnOnce() -> F,
@@ -1345,7 +1341,6 @@ async fn worker_restart_with_options(
                     .task_host()
                     .resume_workflow(task, 1, input.clone(), IdempotencyKey::new("wake-seven")?)
                     .await?;
-                // Exact publication retries do not deliver another wake.
                 runtime
                     .task_host()
                     .resume_workflow(task, 1, input, IdempotencyKey::new("wake-seven")?)
@@ -1565,8 +1560,6 @@ async fn worker_restart_with_options(
                             .and_then(|state| state.reservation.as_ref()),
                         Some(&lease.reservation)
                     );
-                    // Simulate process loss after committed send, before the
-                    // machine consumes its result. All handles drop on continue.
                     old_lease = Some(lease.clone());
                     return Ok(None);
                 }
@@ -1929,7 +1922,6 @@ async fn worker_restart_with_options(
                 );
             }
         }
-        // All provider, runtime and coordinator handles are dropped here.
     }
     if with_policy && with_tool {
         if declined {
@@ -2096,7 +2088,6 @@ async fn stock_restart_with_publication_fault(
         depth: 1,
         model_steps: if cancel_after_failure { 2 } else { 1 },
     };
-    // Each iteration drops all provider, coordinator, harness, and workflow handles.
     for reopened in [false, true] {
         let filesystem = Arc::new(FilesystemHost::new(
             Fs::local(fs_options.clone())
@@ -2185,8 +2176,6 @@ async fn stock_restart_with_publication_fault(
         let input_file = payloads
             .stage(operation, "owner-readable-input", b"\"secret\"")
             .await?;
-        // The composition owner can read this actual committed file, but the
-        // task deliberately lacks that owner's private-volume read grant.
         reader.verify(&input_file).await?;
         assert!(matches!(
             harness
@@ -2221,9 +2210,6 @@ async fn stock_restart_with_publication_fault(
             old.clone()
         } else {
             if let Some(old) = &previous_lease {
-                // This fixture's finite in-process model stream is quiescent after
-                // dropping it. Replacement is explicit, never inferred from a
-                // failed publication or an unknown external provider state.
                 coordinator
                     .release_lease(old, IdempotencyKey::new("release-crashed")?)
                     .await?;
@@ -2372,8 +2358,6 @@ async fn stock_restart_with_publication_fault(
                 })
                 .await;
             if cancel_after_failure {
-                // This session still has a model step available: cancellation,
-                // rather than an exhausted caller budget, rejects fresh work.
                 assert!(matches!(rejected, Err(Error::Conflict(message))
                     if message == "cancelled task cannot publish new execution work"));
                 coordinator.refresh().await?;
@@ -2385,13 +2369,9 @@ async fn stock_restart_with_publication_fault(
             assert_eq!(model.reconciled.load(Ordering::SeqCst), 1);
         } else {
             if let Some(mode) = fault {
-                // Started, ContextPrepared and ModelStarted precede the first
-                // observed event. Keep the fault on event publication.
                 stream_provider.arm_execution(3, mode);
             }
             let interrupted = if direct_executor {
-                // Admit through the direct stock executor and recover through
-                // the runtime with the same pinned policy and fenced disk journal.
                 let admitted_context = harness.durable_context(task, operation).await?;
                 let previous = StockExecutor::new(
                     Model::new("test", "interrupted", "1", Value::Null)?,
@@ -2457,8 +2437,6 @@ async fn stock_restart_with_publication_fault(
                         .and_then(|state| state.reservation.as_ref()),
                     Some(&old.reservation)
                 );
-                // Reconciliation observed the finite provider's completion. Only
-                // this explicit fenced acknowledgement may now release ownership.
                 let mut stale = old.clone();
                 stale.reservation.id = "stale".into();
                 assert!(
@@ -2512,7 +2490,6 @@ async fn stock_restart_with_publication_fault(
             );
         } else {
             assert!(session.latest_transition().await?.is_none());
-            // Direct journal calls must also enforce the admitted output schema.
             let invalid_input = json!("bad");
             let prior = session.checkpoint().clone();
             let (next, transition) = machines.step(&prior, &invalid_input)?;

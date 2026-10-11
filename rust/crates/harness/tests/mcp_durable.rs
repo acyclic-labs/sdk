@@ -132,8 +132,6 @@ impl ExecutionJournal for FaultJournal {
     }
 }
 
-// The fixture supplies an already admitted task scope. The production runner,
-// journal authority, filesystem and HTTP adapter remain real implementations.
 struct AdmittedTask(RuntimeScope);
 impl TaskStateProvider for AdmittedTask {
     fn policy_identity(&self) -> Option<acyclic_harness::registry::ComponentIdentity> {
@@ -163,8 +161,6 @@ impl ToolProjection for Projection {
     }
 }
 
-// Require the actual durable runner's context at both transport boundaries.
-// The underlying HTTP adapter still owns all network I/O and reconciliation.
 struct ScopedHttp(HttpMcpTransport);
 
 fn verify_transport_context(context: &ToolContext) -> Result<()> {
@@ -531,9 +527,6 @@ async fn disk_reopen_never_reposts_a_claimed_mcp_call() -> Result<()> {
             fault == Fault::None,
             "{fault:?}"
         );
-        // Each phase returns and drops every client/provider/journal/runtime
-        // handle. The second phase reconstructs them from disk and the same
-        // exact catalog/session binding, with no fault wrapper or cached result.
         let second = Box::pin(phase(directory.path(), &endpoint, fault, true)).await?;
         let succeeds = matches!(
             fault,

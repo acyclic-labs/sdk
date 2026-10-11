@@ -8,11 +8,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 /// An admitted native future whose allocation custody outlives its physical box.
-///
-/// Construction checks the original cancellation and finite allowance before
-/// building or boxing the future. Captured payloads retain their own existing
-/// custody; this guard covers only the concrete future's actual box capacity.
-/// The boxed future is dropped and deallocated before its allocation guard.
 #[must_use = "native futures must be awaited or dropped"]
 pub struct NativeFutureBundle<'a, T> {
     future: BoxProviderFuture<'a, Result<T>>,
@@ -21,17 +16,12 @@ pub struct NativeFutureBundle<'a, T> {
 
 impl<'a, T> NativeFutureBundle<'a, T> {
     /// Borrows this future's original ledger without a clone or a new allowance.
-    /// Ledger identity and counters convey no task or resource authority.
     #[must_use]
     pub const fn work(&self) -> &NativeMaterializationWork {
         self._custody.work()
     }
 
     /// Admits the concrete future's real allocation before invoking its builder.
-    ///
-    /// Positive-size boxes charge one actual SDK allocator attempt. A zero-size
-    /// future needs neither heap bytes nor an allocator operation. No separate
-    /// meter, erased-frame estimate or second boxed wrapper is created.
     pub fn new<F, B>(work: &NativeMaterializationWork, build: B) -> Result<Self>
     where
         F: Future<Output = Result<T>> + Send + 'a,

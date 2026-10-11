@@ -1,6 +1,4 @@
 //! Real task admission and portable file-result replay under attenuated authority.
-//! Reopens composition over retained memory providers; process restart, task-owned
-//! lease journal, cancellation and native/browser execution are separate gates.
 #![cfg(feature = "filesystem")]
 
 use acyclic_fs::Fs;
@@ -65,7 +63,6 @@ impl ResumableMachine for AdmissionMachine {
     }
 }
 
-// Instrument the actual factory executor; this wrapper supplies no file behavior.
 struct FileExecutorSpy {
     inner: Arc<dyn ToolExecutor>,
     executions: AtomicUsize,
@@ -341,8 +338,6 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
     let arguments = json!({"file":source});
 
     for reopened in [false, true] {
-        // This reopens the real task host and reconstructs scope from its retained
-        // admission. There is no test TaskStateProvider or fabricated resumed scope.
         let runtime = FilesystemTaskRuntime::open(
             stream.clone(),
             filesystem.clone(),
@@ -373,8 +368,6 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             ));
         }
         let context = runtime.harness().durable_context(task, admission).await?;
-        // Explicit low-level composition reuses the real admitted task host and
-        // original owner-bound writer. This is not the default lease-owned writer.
         let writable = AgentHarness::with_policy(
             tasks.clone(),
             tools.clone(),
@@ -396,8 +389,6 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         )?
         .durable_context(task, admission)
         .await?;
-        // This runner regression uses an explicit real FS journal, not the
-        // runtime's lease-owned default execution entry point.
         let journal = Arc::new(JournalSpy {
             inner: Arc::new(FilesystemExecutionJournal::new(
                 stream.clone(),
@@ -442,7 +433,6 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             let original = ToolContext::new(context.clone(), operation, operation.to_string())?;
             let reads = journal.reads.load(Ordering::SeqCst);
             let writes = journal.writes.load(Ordering::SeqCst);
-            // A valid retained scope cannot replace the originally admitted call context.
             assert!(matches!(
                 tool.executor.authorize(Some(context.scope()), &invocation),
                 Err(Error::Unauthorized(_))
@@ -534,8 +524,6 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             &volume.storage_name()?,
         )?;
         let before_rejected_head = filesystem.resolve(&workspace).await?.generation;
-        // This admitted runtime intentionally has a reader and no original writer.
-        // A scope's write capability cannot supply that missing provider binding.
         for (tool, arguments) in &mutations {
             let operation = OperationId::new();
             assert!(matches!(
@@ -557,8 +545,6 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             scope.limits(),
         )?;
         for (index, (tool, arguments)) in mutations.iter().enumerate() {
-            // The write case replays an already completed operation. Edit/patch
-            // are fresh controls with valid original read grant and input schema.
             let operation = if index == 0 {
                 write_call
             } else {

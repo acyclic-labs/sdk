@@ -1,9 +1,4 @@
 //! Native, linked extension implementations and their admission leases.
-//!
-//! The event-sourced extension records in [`crate::core`] deliberately contain
-//! no executable code.  This module is the process-local companion: it links
-//! a registered implementation to a composition, keeps versions alive while
-//! work is admitted, and makes replacement/disposal explicit.
 
 use crate::{
     Error, Result,
@@ -75,21 +70,17 @@ pub trait NativeExtension: Send + Sync {
     /// Returns the immutable executable identity.
     fn identity(&self) -> ExtensionIdentity;
 
-    /// Returns exact installed dependencies.  Dependencies are linked before
-    /// this implementation and are retained under the same admission lease.
+    /// Returns exact installed dependencies.
     fn dependencies(&self) -> Vec<ExtensionDependency> {
         Vec::new()
     }
 
-    /// Adds native tasks/tools to a composition.  Implementations must only
-    /// register exact, versioned definitions; the linker does not synthesize
-    /// or replace registrations.
+    /// Adds native tasks/tools to a composition.
     fn link(&self, _linker: &mut ExtensionLinker<'_>) -> Result<()> {
         Ok(())
     }
 
-    /// Called once after an implementation has been removed and no admission
-    /// lease can still observe it.  Cleanup must not resurrect the extension.
+    /// Called once after an implementation has been removed and no admission lease can still observe it.
     fn dispose(&self) {}
 }
 
@@ -99,8 +90,7 @@ pub struct ExtensionLinker<'a> {
 }
 
 impl ExtensionLinker<'_> {
-    /// Returns the composition's task registry. Registration remains exact and
-    /// rejects a duplicate identity rather than replacing it.
+    /// Returns the composition's task registry.
     pub fn tasks(&mut self) -> &mut TaskRegistry {
         &mut self.bindings.tasks
     }
@@ -268,10 +258,7 @@ impl ExtensionRegistry {
             ));
         }
         state.version_digests.insert(key, identity.digest);
-        // The current pointer controls fresh activation.  Keep the previous
-        // exact version accepting in the registry until an owner explicitly
-        // disables/removes it: another agent may still be committed to that
-        // version and must retain it during a rolling upgrade or rollback.
+        // The current pointer controls fresh activation.
         state
             .current
             .insert(identity.name.clone(), identity.clone());
@@ -293,8 +280,7 @@ impl ExtensionRegistry {
         self.install(implementation)
     }
 
-    /// Disables all new admissions for a logical extension name. Existing
-    /// leases remain valid and are released normally.
+    /// Disables all new admissions for a logical extension name.
     pub fn disable(&self, name: &str) -> Result<()> {
         validate_extension_name(name)?;
         let mut state = self.lock()?;
@@ -335,8 +321,7 @@ impl ExtensionRegistry {
         })
     }
 
-    /// Pins a specific installed version and digest.  This is the only path
-    /// used to retain a version selected by an already admitted operation.
+    /// Pins a specific installed version and digest.
     pub fn pin_exact(&self, identity: &ExtensionIdentity) -> Result<ExtensionLease> {
         self.pin_exact_checked(identity, false)
     }
@@ -373,8 +358,6 @@ impl ExtensionRegistry {
     }
 
     /// Prevents removal of a current or actively retained implementation.
-    /// Disposal occurs synchronously after the final registry reference is
-    /// removed, outside the registry lock.
     pub fn remove(&self, identity: &ExtensionIdentity) -> Result<()> {
         identity.validate()?;
         let mut state = self.lock()?;
@@ -415,8 +398,7 @@ impl ExtensionRegistry {
         Ok(self.lock()?.current.get(name).cloned())
     }
 
-    /// Returns the resident identity for an exact logical version, including
-    /// a draining version retained by an older admitted composition.
+    /// Returns the resident identity for an exact logical version, including a draining version retained by an older admitted composition.
     pub fn exact(&self, name: &str, version: u32) -> Result<Option<ExtensionIdentity>> {
         Ok(self
             .lock()?
@@ -535,9 +517,7 @@ impl ExtensionRegistry {
     }
 }
 
-/// A retained native implementation lease. Dropping the lease releases one
-/// active admission; disabled/replaced versions remain removable registry
-/// entries until an owner explicitly calls `remove`.
+/// A retained native implementation lease.
 pub struct ExtensionLease {
     registry: ExtensionRegistry,
     identity: ExtensionIdentity,
@@ -601,10 +581,6 @@ impl ExtensionRuntime {
         roots: impl IntoIterator<Item = ExtensionIdentity>,
     ) -> Result<Arc<Self>> {
         let roots = roots.into_iter().collect::<Vec<_>>();
-        // Exact roots are an explicit activation choice. They may point at a
-        // retained prior version during rollback even when a newer version is
-        // the registry's current default, but a disabled version cannot be
-        // activated for new work.
         let selected = registry.resolve(&roots, true)?;
         let retained = selected
             .iter()
@@ -627,8 +603,7 @@ impl ExtensionRuntime {
         Self::from_admission_with_digests(registry, admission, |_, _| Ok(None))
     }
 
-    /// Activates a committed agent selection and checks every native digest
-    /// against the reducer's exact schema binding.
+    /// Activates a committed agent selection and checks every native digest against the reducer's exact schema binding.
     pub fn from_reducer(registry: ExtensionRegistry, reducer: &Reducer) -> Result<Arc<Self>> {
         let admission = reducer
             .extension_admission()?
@@ -640,8 +615,7 @@ impl ExtensionRuntime {
         })
     }
 
-    /// Activates an admission while independently checking each exact linked
-    /// digest against the owner's registered implementation digest.
+    /// Activates an admission while independently checking each exact linked digest against the owner's registered implementation digest.
     pub fn from_admission_with_digests<F>(
         registry: ExtensionRegistry,
         admission: &ExtensionAdmission,
@@ -682,16 +656,12 @@ impl ExtensionRuntime {
         }))
     }
 
-    /// Disables this composition and its logical extensions for new task
-    /// admissions. Existing task leases and reconciliation remain valid.
+    /// Disables this composition and its logical extensions for new task admissions.
     pub fn disable(&self) -> Result<()> {
         let _gate = self
             .admission_gate
             .lock()
             .map_err(|_| Error::Storage("extension admission gate poisoned".into()))?;
-        // Admission state is composition-local. A different agent may be
-        // running another exact version (or the same version) in parallel;
-        // only an explicit registry disable may affect that agent.
         self.accepting.store(false, Ordering::Release);
         Ok(())
     }
@@ -709,7 +679,6 @@ impl ExtensionRuntime {
     }
 
     /// Links each selected implementation into one native task/tool registry.
-    /// This narrow form is retained for callers that already own both registries.
     pub fn link_into(&self, tasks: &mut TaskRegistry, tools: &mut ToolRegistry) -> Result<()> {
         let mut bindings = Bindings {
             tasks: std::mem::take(tasks),
@@ -729,9 +698,7 @@ impl ExtensionRuntime {
         Ok(())
     }
 
-    /// Links each selected implementation into the complete composition. All
-    /// existing provider slots remain authoritative; extension bindings may
-    /// only fill an absent slot through the explicit linker methods.
+    /// Links each selected implementation into the complete composition.
     pub fn link_into_bindings(&self, bindings: &mut Bindings) -> Result<()> {
         let mut linker = ExtensionLinker { bindings };
         for extension in &self.retained {
@@ -748,9 +715,7 @@ impl ExtensionRuntime {
         self.retain(requirements, false)
     }
 
-    /// Retains versions for an operation already committed by an owner. This
-    /// remains available after admission is disabled so reconciliation and
-    /// observation cannot be mistaken for a new dispatch.
+    /// Retains versions for an operation already committed by an owner.
     pub fn retain_for_existing(
         &self,
         requirements: impl IntoIterator<Item = String>,
@@ -859,8 +824,7 @@ impl ExtensionRuntime {
     }
 }
 
-/// Builder-friendly owned link bundle. It keeps executable implementations
-/// alive while the resulting harness and its admitted tasks are alive.
+/// Builder-friendly owned link bundle.
 pub struct NativeExtensionBundle(Arc<ExtensionRuntime>);
 
 impl NativeExtensionBundle {

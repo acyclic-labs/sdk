@@ -373,9 +373,6 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         .conversation()
         .ok_or_else(|| Error::Invalid("missing conversation".into()))?;
     assert_eq!(conversation.messages().len(), 2);
-    // Reopen a reader directly over the canonical Stream, without relying on
-    // the restored reducer's resident message cache. Merge notices occupy the
-    // same sequence space and must carry the same atomic lookup indexes.
     let history = HistoryReader::new(&stream, &parent, issuer.verifier())?;
     let cut = HistoryCursor {
         authority: parent.clone(),

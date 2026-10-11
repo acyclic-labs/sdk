@@ -49,9 +49,6 @@ fn stock_turn_runtime_requires_original_model_grant_before_work() -> Result<()> 
     available.scope = RuntimeScope::new(Capabilities::new(["model:generate"]), Limits::default())?;
     let runtime = available.build()?;
     runtime.task::<WorkflowCommand, TurnOutput>("acyclic.stock_turn@1")?;
-    // Construction validates authority without admitting a task, opening an
-    // execution journal or invoking provider callbacks. The embedding host
-    // must still explicitly compose those services before durable execution.
     Ok(())
 }
 
@@ -59,7 +56,6 @@ fn stock_turn_runtime_requires_original_model_grant_before_work() -> Result<()> 
 async fn stock_turn_outbox_survives_reopen_and_rejects_foreign_or_uncertain_results() -> Result<()>
 {
     let machine = Arc::new(StockTurnMachine::new());
-    // Pin the actual typed task and machine through the production registries.
     let mut tasks = crate::runtime::TaskRegistry::default();
     tasks.register(machine.definition()?)?;
     tasks.get::<WorkflowCommand, TurnOutput>("acyclic.stock_turn@1")?;
@@ -96,8 +92,6 @@ async fn stock_turn_outbox_survives_reopen_and_rejects_foreign_or_uncertain_resu
     let mut host =
         DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await?;
     assert_eq!(host.latest_transition().await?, Some(emitted.clone()));
-    // Replaying the original trigger returns the committed outbox, without
-    // publishing another transition or changing the model command identity.
     assert_eq!(
         host.step(
             OperationId::from_bytes([2; 16]),

@@ -41,7 +41,6 @@ struct FundedRootPayload<T> {
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl RootBootstrapContentRequest {
     /// Dynamic payload capacities only; the request's inline slot is separate.
-    /// Native callers inspect the resident snapshot before this layout audit.
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         let mut bytes = created_access_add(self.volume.logical_owned_bytes()?,
             self.evidence.logical_owned_bytes()?)?;
@@ -53,8 +52,7 @@ impl RootBootstrapContentRequest {
         Ok(bytes)
     }
 
-    /// Copies concrete reference fields and the resident snapshot on the
-    /// original native ledger, admitting each real copy before allocation.
+    /// Copies concrete reference fields and the resident snapshot on the original native ledger, admitting each real copy before allocation.
     pub fn clone_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
@@ -156,7 +154,6 @@ impl<'a> RootBootstrapContentContext<'a> {
     /// Canonical RootBind agent.
     pub const fn agent(&self) -> AgentId { self.agent }
     /// Canonical original admission digest used by the SDK content seal.
-    /// This is distinct from the protected workflow/RootBind admission digest.
     pub const fn original_admission_digest(&self) -> [u8; 32] { self.admission_digest }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -344,8 +341,7 @@ impl CreatedResourceAccess {
         if received.custody.bytes() < source_owned {
             return Err(root_denial("ROOT bootstrap receipt lacks actual payload custody"));
         }
-        // This observer is created before all copied payloads, so unwinding
-        // drops those payloads before their original-ledger allocation guards.
+        // This observer is created before all copied payloads, so unwinding drops those payloads before their original-ledger allocation guards.
         let mut observer = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut io: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
@@ -383,8 +379,7 @@ impl CreatedResourceAccess {
             native_custody: None,
         };
         drop(received);
-        // Source custody has physically retired; only actual final copied
-        // payload custody survives, with no provider-claim-to-query substitution.
+        // Source custody has physically retired; only actual final copied payload custody survives, with no provider-claim-to-query substitution.
         if let Err(error) = io.as_deref_mut().expect("native observer").absorb_native_custody(funded_grants.custody) {
             drop(access);
             return Err(error);
@@ -509,8 +504,6 @@ mod tests {
         })
     }
 
-    // These controls exercise the private post-authentication consumer seam.
-    // They do not mint a public context or mock a provider/FS authentication.
     fn context<'a>(admission: &'a TaskAdmissionRecord, owner: &'a Authority, audience: &'a Authority,
         agent: AgentId) -> RootBootstrapContentContext<'a>
     {

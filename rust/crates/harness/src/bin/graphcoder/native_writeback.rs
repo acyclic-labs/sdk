@@ -1,6 +1,4 @@
 //! Exact caller-owned approval for the SDK's original measured host publication.
-//! UI requests select a trusted operation; neither paths nor rendered text grant
-//! authority. The SDK journal, not terminal state, owns planning and recovery.
 #![allow(missing_docs, reason = "private native binary domain composition")]
 
 use acyclic_fs::{GenerationId, MaterializationJournal, WorkBudget, WorkCounters};
@@ -208,16 +206,14 @@ impl NativeSession {
         }
     }
 
-    /// Reconciliation observes original progress. Only an exact retained approval
-    /// permits recovery, and an Applied receipt never dispatches host work again.
+    /// Reconciliation observes original progress.
     pub async fn publication_reconcile(&self, request: &NativePublicationRequest) -> Result<NativePublicationResult> {
         let observed = self.publication_observe(request).await?;
         if observed.publication.as_ref().is_some_and(|receipt|
             matches!(receipt.journal.phase, MaterializationPhase::Preparing | MaterializationPhase::Prepared))
             && observed.interaction.is_none()
         {
-            // The SDK resumes its original captured preparation; it must never
-            // plan a second operation just because the approval open was lost.
+            // The SDK resumes its original captured preparation; it must never plan a second operation just because the approval open was lost.
             return self.publication_open(request).await;
         }
         if matches!(observed.status, NativePublicationStatus::Approved | NativePublicationStatus::Recovering)
@@ -385,10 +381,8 @@ impl NativeSession {
         Ok(result)
     }
 
-
     async fn publication_decision_frame(&self, binding: &NativePublicationConfig, ticket: &InteractionTicket, approved: bool) -> Result<String> {
-        // The trusted configured issuer issues only this ticket's responder
-        // grant. The terminal must explicitly submit this frame through /approve.
+        // The trusted configured issuer issues only this ticket's responder grant.
         self.runtime.task_host().verify_dispatch_owner(binding.caller, LeaseFence::from(&binding.caller_lease.reservation)).await?;
         let issuer = AuthorityIssuer::new(&binding.owner.issuer, binding.owner.key, binding.owner.authority.clone());
         let capabilities = Capabilities::new(["interaction:resolve".to_owned(), ticket.responder_grant()]);
@@ -420,7 +414,6 @@ impl NativeSession {
     }
 }
 
-
 fn publication_digest(binding: &NativePublicationConfig, journal: &MaterializationJournal) -> Result<[u8; 32]> {
     if journal.plan.operation_id != fs_operation(binding.operation_id)
         || journal.plan.intent != (acyclic_fs::MaterializationIntent::GenerationTransition { from: binding.from, to: binding.to })
@@ -430,8 +423,6 @@ fn publication_digest(binding: &NativePublicationConfig, journal: &Materializati
     {
         return Err(Error::Conflict("original publication journal differs from configured source, target or real root identity".into()));
     }
-    // Phase, revision, counters and application progress change during recovery;
-    // the complete immutable plan, physical preimages and allocations do not.
     Ok(*blake3::hash(&canonical_bytes(&("graphcoder/native-publication/v1", binding,
         &journal.plan, journal.root_identity, journal.preparation_identity, &journal.preimages))?).as_bytes())
 }
@@ -510,8 +501,6 @@ fn account_guard<T>(
     }
 }
 fn publication_failure(binding: &NativePublicationConfig, message: String, work: WorkCounters) -> Result<NativePublicationResult> {
-    // No uncertain root effect is retried here. Observe/reconcile explicitly
-    // reads its original SDK journal; failures retain their actual spent work.
     let mut result = empty_result(binding)?;
     result.status = NativePublicationStatus::Failed;
     result.failure = Some(NativePublicationFailure { message, work });

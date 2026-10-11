@@ -1,5 +1,4 @@
-//! Shared portable defaults. File tools use the original TaskContext providers;
-//! recursive tools retain their plan and every command in a ResumableTool journal.
+//! Shared portable defaults.
 
 use super::{
     FilesystemHost, FilesystemTaskRuntime, ForkPreparationLimits, ForkToolArguments,
@@ -36,8 +35,7 @@ const MERGE_APPLY: &str = "acyclic.recursive.merge.apply.v1";
 const MERGE_PUBLISH: &str = "acyclic.recursive.merge.publish.v1";
 const REVISION: &str = "portable-recursive-1";
 
-/// Both registries are installed together; neither substitutes a live fallback
-/// for a missing pinned durable implementation.
+/// Both registries are installed together; neither substitutes a live fallback for a missing pinned durable implementation.
 pub struct RecursiveDefaultToolset {
     /// StockExecutor and DurableToolRunner registrations.
     pub tools: ToolRegistry,
@@ -54,33 +52,21 @@ pub struct RecursiveToolOwner<P, A, O> {
     /// The same actual original caller owner used by the workflow journal.
     pub journal_owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
     /// Actual invoking operation token, cancelled when its live future is dropped.
-    /// This does not claim durable task cancellation or completed backend stop.
     pub cancellation: CancellationToken,
-    /// Original tool-effect journal. Its provider must retain admissions and
-    /// atomically fence publication against this caller's execution reservation.
+    /// Original tool-effect journal.
     pub workflow: Arc<dyn WorkflowJournal>,
 }
 
 /// Real provider configuration for one exact caller and retained source cut.
-/// Implementations authenticate snapshots and restore the original plan on
-/// retry; supplying references never confers source, history or write authority.
-/// Ordinary producer methods are required. Native support is separately
-/// advertised only by sources implementing every original-ledger producer.
 pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform {
     /// Binds the actual caller/effect to its owner-controlled workflow journal.
-    /// Forwards the actual borrowed invocation token to recursive_tool_owner;
-    /// providers must not substitute a fresh independent cancellation token.
     fn owner<'a>(&'a self, context: &'a ToolContext, tool: &'a ResumableTool,
         invocation: &'a ToolInvocation, cancellation: &'a CancellationToken)
         -> BoxProviderFuture<'a, Result<RecursiveToolOwner<P, A, O>>>;
-    /// Selects and authenticates bounded immutable source/allocation identities
-    /// without staging a checkpoint, launching a child or allocating resources.
+    /// Selects and authenticates bounded immutable source/allocation identities without staging a checkpoint, launching a child or allocating resources.
     fn select<'a>(&'a self, context: &'a ToolContext, arguments: &'a ForkToolArguments, cancellation: &'a CancellationToken)
         -> BoxProviderFuture<'a, Result<RecursiveForkSourceIntent>>;
-    /// Uses recursive_fork_source for a new plan, or
-    /// restore_recursive_fork_source for the original authenticated parent cut.
-    /// The preparation worker must install this exact preparer through
-    /// FilesystemTaskCommands::with_fork_preparer.
+    /// Uses recursive_fork_source for a new plan, or restore_recursive_fork_source for the original authenticated parent cut.
     fn fork<'a>(&'a self, context: &'a ToolContext, arguments: &'a ForkToolArguments,
         intent: &'a RecursiveForkSourceIntent, original: Option<&'a RecursiveForkToolPlan>, cancellation: &'a CancellationToken)
         -> BoxProviderFuture<'a, Result<RecursiveForkToolBinding<P, A, O>>>;
@@ -89,15 +75,12 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
         original: Option<&'a RecursiveMergeToolPlan>, cancellation: &'a CancellationToken)
         -> BoxProviderFuture<'a, Result<RecursiveMergeToolBinding<P, A, O>>>;
     /// Restores the exact retained source for an ordinary preparation worker.
-    /// The actual caller is request.child.parent, not this helper task's identity.
     fn preparation<'a>(&'a self, context: &'a TaskContext,
         preparation: &'a crate::resource_preparation::TaskResourcePreparation,
         cancellation: &'a CancellationToken)
         -> BoxProviderFuture<'a, Result<RetainedSourceBinding<A, O>>>;
 
-    /// True only when every recursive producer preserves the original native
-    /// ledger. Ordinary custom sources remain usable without advertising native
-    /// fork or merge support.
+    /// True only when every recursive producer preserves the original native ledger.
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_source(&self) -> bool { false }
 
@@ -147,8 +130,7 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
             reason: "recursive source has no original native preparation producer" })
     }
 
-    /// Restores only the retained source for passive reconciliation. This never
-    /// gives a settlement context permission to allocate or publish a child.
+    /// Restores only the retained source for passive reconciliation.
     #[cfg(not(target_arch = "wasm32"))]
     fn preparation_for_reconciliation_with_native_work<'a>(
         &'a self, _context: &'a Arc<crate::NativeTaskContext>,
@@ -184,14 +166,11 @@ pub struct RecursiveForkToolBinding<P, A, O> {
     pub source: RetainedSourceBinding<A, O>,
     /// Requested ordinary child admission. Its parent is the current caller.
     pub child: TaskAdmissionRecord,
-    /// Actual authenticated original caller checkpoint; only a bounded immutable
-    /// reference is retained, never a whole reducer clone in a preparation token.
+    /// Actual authenticated original caller checkpoint; only a bounded immutable reference is retained, never a whole reducer clone in a preparation token.
     pub source_checkpoint: FileRef,
-    /// JSON pointer into child.input containing the exact msg, or its model
-    /// WorkflowCommand payload FileRef. Referenced payloads are checked below.
+    /// JSON pointer into child.input containing the exact msg, or its model WorkflowCommand payload FileRef.
     pub child_message_pointer: String,
-    /// Explicit pointer inside immutable producer input bytes. None uses the
-    /// actual ModelTaskCommand Text contract for referenced model input.
+    /// Explicit pointer inside immutable producer input bytes.
     pub child_message_file_pointer: Option<String>,
     /// Explicit actual typed producer/launch inputs, never a raw reference scan.
     pub input_files: Vec<FileRef>,
@@ -251,8 +230,7 @@ pub struct RecursiveMergeToolBinding<P, A, O> {
     pub source_project: VolumeRef,
     /// Exact source generation selected before any effect.
     pub source_generation: GenerationRef,
-    /// Private-constructor operation seal for an explicitly approved Project
-    /// import; its public policy label grants no transcript or volume authority.
+    /// Private-constructor operation seal for an explicitly approved Project import; its public policy label grants no transcript or volume authority.
     pub source_read: Option<crate::source_authorization::ProjectSourceReadHandle>,
     /// Ref-only canonical merge notice.
     pub notice: ConversationMessage,
@@ -309,7 +287,6 @@ pub struct RecursiveMergeToolPlan {
 }
 
 /// Installs the same real portable tools for native and browser consumers.
-/// No Bash, native mount, process-global registry or success-shaped fallback.
 pub fn recursive_default_tools<P, A, O>(
     source: Arc<dyn RecursiveDefaultToolSource<P, A, O>>, maximum_request_bytes: u64,
 ) -> Result<RecursiveDefaultToolset>
@@ -437,7 +414,7 @@ impl ResumableMachine for RecursiveToolMachine {
     fn identity_with_native_work<'a>(&'a self, work: &acyclic_fs::NativeMaterializationWork) -> Result<&'a MachineIdentity> {
         work.charge(acyclic_fs::WorkCounters {
             items_examined: 1, ..Default::default()
-        }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        }).map_err(Error::from)?;
         Ok(&self.identity)
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -451,8 +428,6 @@ impl ResumableMachine for RecursiveToolMachine {
     #[cfg(not(target_arch = "wasm32"))]
     fn transition_with_native_work(&self, state: &Value, input: Value, work: &acyclic_fs::NativeMaterializationWork)
         -> Result<(MachineTransition, acyclic_fs::NativeAllocation)> {
-        // The caller retains input's original allocation through this callback.
-        // This adapter owns only the new decoded DTOs and returned transition.
         let io = super::PreparationIo::from_native_work(work)?;
         let transition = self.transition_engine(state, &input, Some(&io))?;
         drop(input);
@@ -758,9 +733,6 @@ fn validate_merge_receipt_engine(plan: &RecursiveMergeToolPlan, receipt: &Projec
     Ok(())
 }
 
-// The closed recursive graph has two additional tagged machine envelopes.
-// Its largest typed fork/preparation/capture slots are included explicitly;
-// these are logical DTO allowances, not opaque allocation/RSS measurements.
 pub(super) fn recursive_decode_slot_bytes<T>() -> u64 {
     let typed = [
         std::mem::size_of::<State>(), std::mem::size_of::<Plan>(),
@@ -836,8 +808,6 @@ fn recursive_byte_bound(value: &Value, maximum: u64, io: Option<&super::Preparat
 fn recursive_validate_decode<T: super::PreparationRecord>(value: &Value, io: Option<&super::PreparationIo>) -> Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(io) = io {
-        // The value and its allowance drop together before initialization
-        // creates the next graph; no decoded argument copy escapes this scope.
         let _decoded = io.value_decode_preparation::<T>(value, crate::wire::ErrorCode::Invalid)?;
         return Ok(());
     }
@@ -920,8 +890,7 @@ fn recursive_derived(effect: OperationId, label: &str, io: Option<&super::Prepar
     Ok(derived(effect, label))
 }
 
-/// Borrows an original retained Value. The caller keeps its input guard alive;
-/// returned custody covers the new closed DTO until that DTO's physical drop.
+/// Borrows an original retained Value.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn recursive_decode_with_native_work<T: super::PreparationRecord>(
     value: &Value, work: &acyclic_fs::NativeMaterializationWork,
@@ -963,15 +932,8 @@ pub(super) fn check_source_command_with_native_work(command: &WorkflowCommand, i
     let io = super::PreparationIo::from_native_work(work)?;
     check_source_command_engine(command, intent, Some(&io))
 }
-#[cfg(not(target_arch = "wasm32"))]
-pub(super) fn validate_merge_receipt_with_native_work(plan: &RecursiveMergeToolPlan, receipt: &ProjectMergeReceipt,
-    work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-    let io = super::PreparationIo::from_native_work(work)?;
-    validate_merge_receipt_engine(plan, receipt, Some(&io))
-}
 
-/// The caller combines this small retry-key custody with the owned input
-/// allocation before passing both values to the native session step.
+/// The caller combines this small retry-key custody with the owned input allocation before passing both values to the native session step.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn recursive_transition_identity_with_native_work(
     effect: OperationId, revision: u64, work: &acyclic_fs::NativeMaterializationWork,
@@ -1008,8 +970,6 @@ pub(super) fn recursive_transition_identity_with_native_work(
     io.codec_charge(crate::contract::JsonCodecCharge::Copy { bytes: key_bytes as u64 }, false)?;
     write!(&mut key, "recursive-tool:{effect}:{revision}").map_err(|_| recursive_reject(
         Some(&io), crate::wire::ErrorCode::Invalid, "recursive retry key formatting failed"))?;
-    // This is the original fixed producer spelling: a static nonempty ASCII
-    // prefix, canonical UUID and decimal revision, with no control characters.
     let key = IdempotencyKey(key);
     let custody = io.take_native_custody(io.owned_bytes()?)?;
     Ok((operation, key, custody))
@@ -1064,8 +1024,6 @@ pub(super) fn recursive_value_owned_bytes(value: &Value, io: Option<&super::Prep
 }
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn recursive_transition_owned_bytes(transition: &MachineTransition, io: &super::PreparationIo) -> Result<u64> {
-    // The pure engine has returned, so every intermediate DTO has physically
-    // dropped. Only the actual returned graph, outbox and status remain live.
     let mut bytes = recursive_owned_add(std::mem::size_of::<MachineTransition>() as u64,
         crate::contract::json_value_logical_owned_bytes(&transition.state)?, Some(io))?;
     let slots = (transition.commands.capacity() as u64)
@@ -1110,9 +1068,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         &self, context: &ToolContext, invocation: &ToolInvocation,
         original_work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Option<ToolResult>, acyclic_fs::NativeAllocation)> {
-        // A local invocation stop is not the durable task's cancellation token.
-        // Returned payload custody retains the original meter, so normal local
-        // drop cannot turn a successful reply into a cancelled consumer input.
         let mut result_custody = original_work.retain_owned(0)?;
         let (work, cancellation) = original_work.invocation_view()?;
         let _stop_on_drop = InvocationCancellation(cancellation.clone());
@@ -1145,8 +1100,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             caller, &owner.0.fence, work)?.await?;
         let mut session = self.durable.open_with_native_context(
             context, invocation, Arc::clone(&owner.0.workflow), work)?.await?;
-        // The same seven retained boundaries as the ordinary driver. An
-        // uncertain preparation or accepted command returns pending, not a poll.
         for _ in 0..8 {
             owner.0.runtime.task_host().verify_dispatch_owner_with_native_work(
                 caller, &owner.0.fence, work)?.await?;
@@ -1284,8 +1237,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         owner.runtime.task_host().verify_dispatch_owner(caller, owner.fence.clone()).await?;
         let mut session = self.durable.open(context.clone(), invocation.clone(), owner.workflow.clone()).await?;
-        // At most seven committed boundaries, including the immutable source
-        // selection before any source staging. Pending workers never get polled.
         for _ in 0..8 {
             cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
             owner.runtime.task_host().verify_dispatch_owner(caller, owner.fence.clone()).await?;
@@ -1295,7 +1246,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 State::Ready { arguments } if matches!(self.kind, Kind::Fork) => {
                     let original_arguments: ForkToolArguments = decode(&arguments)?;
                     original_arguments.source_task(caller, context.scope().limits())?;
-                    // This payload is independent of the selected source cut.
                     let payload = stage(&context, derived(invocation.operation_id, "source-arguments"),
                         "source-arguments", &arguments, self.maximum_request_bytes, cancellation).await?;
                     let intent = self.source.select(&context, &original_arguments, cancellation).await?;
@@ -1609,8 +1559,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                         reason: "merge conflict selected twice" });
                 }
-                // Bound SDK-defined retained key/value records and constructor
-                // attempts; opaque BTree allocator-node layout is not claimed.
                 let bytes = std::mem::size_of::<(acyclic_fs::MergeConflict, ConflictSide)>() as u64;
                 io.retain_owned(bytes)?;
                 io.allocation_attempt(bytes)?;
@@ -1845,7 +1793,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let receipt_copy = recursive_box(receipt_copy, Some(&io))?;
         let key = recursive_text_with_native_io(&io, "recursive-merge-publication:".len() + 36,
             |key| write!(key, "recursive-merge-publication:{}", context.operation_id()))?;
-        // Fixed producer spelling is canonical nonempty ASCII without controls.
         let key = IdempotencyKey(key);
         let command = Command {
             operation_id: context.operation_id(), idempotency_key: key,
@@ -1863,7 +1810,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let value = recursive_encode_with_native_work(receipt, work)?;
         Ok((Some(value.0), value.1))
     }
-
 
     async fn dispatch(&self, context: &ToolContext, owner: &RecursiveToolOwner<P, A, O>, plan: &Plan,
         stage: Stage, command: WorkflowCommand, payload: Value,
@@ -2095,7 +2041,7 @@ impl ToolProjection for RecursiveProjection {
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_projection(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         work.admit(acyclic_fs::WorkCounters::UNCHARGED)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })
+            .map_err(Error::from)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2170,7 +2116,6 @@ async fn stage_with_native_work(
     let result = context.stage_file_once_with_native_work(
         operation, &path, &bytes, "application/json", &display, work,
     ).await?;
-    // These intermediate buffers drop before their original IO custodian.
     drop((bytes, path, display));
     Ok(result)
 }
@@ -2329,7 +2274,7 @@ where P: StreamProvider, A: AsyncAuthorityStore, O: AsyncObjectStore {
 
 fn recursive_read_granted(grants: &Capabilities, file: &FileRef, io: Option<&super::PreparationIo>) -> Result<bool> {
     match io {
-        Some(io) => crate::runtime::read_granted_measured(grants, file, io),
+        Some(io) => crate::runtime::read_granted_with_work(grants, file, &mut Some(&mut (io).history_io())),
         None => crate::runtime::read_granted(grants, file),
     }
 }
@@ -2347,7 +2292,6 @@ fn recursive_decode_bytes<T: super::PreparationRecord>(bytes: &[u8], io: Option<
     let _ = io;
     crate::contract::json_from_slice(bytes).map_err(|error| Error::Invalid(error.to_string()))
 }
-
 
 async fn recursive_read_bytes(context: &ToolContext, file: &FileRef, limits: ForkPreparationLimits,
     cancellation: &CancellationToken, io: Option<&super::PreparationIo>,
@@ -2452,8 +2396,6 @@ fn recursive_effective_scope<'a>(
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A, O> {
     /// Restores the exact originally inspected plan after a lost acknowledgement.
-    /// This does not select a newer target. Filesystem's CAS and idempotency
-    /// receipt remain authoritative even when the workspace head has advanced.
     pub async fn prepare_project_import_at(&self, source: &VolumeRef, source_generation: &GenerationRef,
         target_generation: &GenerationRef) -> Result<ParentMergePlan<A, O>> {
         self.prepare_project_import_checked(source, source_generation, Some(target_generation), false,
