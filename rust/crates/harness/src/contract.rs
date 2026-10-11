@@ -784,6 +784,28 @@ pub enum Error {
         /// Existing SDK payload custody, not opaque provider allocator metadata.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
+    /// A possibly dispatched native MCP HTTP operation with its original cause.
+    #[cfg(all(feature = "filesystem", feature = "mcp-http", not(target_arch = "wasm32")))]
+    #[error("MCP operation {operation} is indeterminate: {source}")]
+    NativeMcpHttp {
+        /// The original admitted operation; a transport failure never authorizes resending it.
+        operation: OperationId,
+        /// Opaque provider-owned HTTP failure, moved without diagnostic allocation.
+        #[source]
+        source: reqwest::Error,
+    },
+    /// An incomplete native MCP response after possible dispatch.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("MCP operation {operation} is indeterminate: {source}")]
+    NativeMcpIncomplete {
+        /// The original admitted operation whose outcome requires reconciliation.
+        operation: OperationId,
+        /// The original EOF decoder failure, not a fabricated success or invalid request.
+        #[source]
+        source: serde_json::Error,
+        /// Existing SDK diagnostic custody, released after the original source.
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
     /// An actual native supervisor failure.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
@@ -881,6 +903,10 @@ impl Error {
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
             Self::Storage(_) | Self::Allocation(_) => ErrorCode::Storage,
             Self::Indeterminate(_) => ErrorCode::Indeterminate,
+            #[cfg(all(feature = "filesystem", feature = "mcp-http", not(target_arch = "wasm32")))]
+            Self::NativeMcpHttp { .. } => ErrorCode::Indeterminate,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeMcpIncomplete { .. } => ErrorCode::Indeterminate,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeBoundary { code, .. } | Self::NativeDiagnostic { code, .. }
             | Self::NativeDecode { code, .. } | Self::NativeEncode { code, .. }
@@ -944,9 +970,12 @@ impl Error {
             | Self::NativeDecode { .. }
             | Self::NativeEncode { .. }
             | Self::NativeStream { .. }
+            | Self::NativeMcpIncomplete { .. }
             | Self::NativeSupervisor { .. }
             | Self::NativeSource { .. }
             | Self::NativeWorkspace { .. } => true,
+            #[cfg(feature = "mcp-http")]
+            Self::NativeMcpHttp { .. } => true,
             #[cfg(feature = "native-execution")]
             Self::NativeView { .. } | Self::NativePublication { .. }
             | Self::NativeWorkspacePublication { .. }
