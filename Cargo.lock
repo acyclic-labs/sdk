@@ -535,6 +535,7 @@ dependencies = [
  "indexed_db_futures",
  "js-sys",
  "libc",
+ "parking_lot",
  "pin-project-lite",
  "proptest",
  "prost",
