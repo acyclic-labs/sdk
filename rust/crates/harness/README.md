@@ -80,6 +80,15 @@ Scoped tool installation asks a `ToolApprovalVerifier` to read a resolved journa
 
 Durable scheduler declarations pin initial process state by `FileRef`, not inline JSON. Opening the Stream-backed coordinator requires an authority-scoped content verifier; it checks declared state and successful result bytes on replay and before new publication. New operations must enter through `declare_operation` with a signed, matching owner scope and `operation:declare`; generic event submission cannot publish a declaration or an orchestration decision. Successful worker outcomes are JSON `FileRef`s. Joins, quorums, and reducers stage their result through an owner-bound `SchedulerPayloadStore` before publishing a ref-only event. Malformed or missing bytes leave no new event and prevent reopening an affected history, while an exact in-process retry reconciles by idempotency key. Placement is bounded exact-match worker label metadata, enforced when leasing, and durable inbox items carry `FileRef` payloads.
 
+The coordinator task host's `*_with_native_work` lifecycle methods use the
+caller's original finite ledger for authenticated admission, pull/recovery,
+start, passive suspension/wake, retained workflow input, outcome and settlement.
+Returned DTOs carry `NativeAllocation` custody through their last consumer;
+drop the DTO before its guard. Native failures propagate before deadline clocks
+or cancellation/retry work. Metrics cover visible SDK calls and original record
+bytes, not opaque provider allocations or physical I/O. Quiescent suspension
+uses the existing execution, scheduler and pending-publication tail CAS.
+
 ```sh
 cargo add acyclic-harness
 ```
