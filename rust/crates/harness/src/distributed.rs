@@ -4055,7 +4055,7 @@ pub(crate) struct PreparedMaterializationCommit {
 impl PreparedMaterializationCommit {
     pub(crate) fn new(
         mut template: crate::filesystem::NativePreparationCompletionTemplate,
-        proof: crate::durable_host::AcceptedMaterializationOwnerProof,
+        proof: crate::durable_host::AcceptedMaterializationOwnerProof<'_>,
         reservation: acyclic_fs::NativeWorkReservation,
         original: &acyclic_fs::NativeMaterializationWork,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
