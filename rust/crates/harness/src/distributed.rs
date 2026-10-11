@@ -351,17 +351,35 @@ pub async fn observe_declaration<P: StreamProvider>(
     operation_id: OperationId,
     declaration_key: &IdempotencyKey,
 ) -> Result<Option<OperationSpec>> {
+    observe_declaration_with_work(client, owner, scope, verifier, operation_id,
+        declaration_key, &mut None).await
+}
+
+pub(crate) async fn observe_declaration_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    owner: &Authority,
+    scope: &Scope,
+    verifier: &AuthorityVerifier,
+    operation_id: OperationId,
+    declaration_key: &IdempotencyKey,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<Option<OperationSpec>> {
     verifier.verify_audience(owner)?;
-    verifier.verify(scope)?;
+    verifier.verify_scope_for_with_work(owner, scope, work)?;
     if !scope.capabilities().contains(capability::OPERATION_OBSERVE) {
         return Err(Error::Unauthorized(
             "declaration observation requires operation:observe".into(),
         ));
     }
-    let Some((_, event, ..)) = read_indexed_intent(client, declaration_key.as_str(), None).await?
+    let authorization = work.is_some().then_some((owner, scope, verifier));
+    let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let Some((_, event, ..)) = read_indexed_intent_with_work(
+        client, declaration_key.as_str(), None, authorization, custody.work(),
+    ).await?
     else {
         return Ok(None);
     };
+    if custody.work().is_some() { custody.adopt(event.logical_owned_bytes()?)?; }
     let SchedulerEvent::Declared { spec } = event else {
         return Err(Error::Conflict(
             "declaration key does not identify a declaration".into(),
@@ -372,8 +390,207 @@ pub async fn observe_declaration<P: StreamProvider>(
             "declaration operation identity differs".into(),
         ));
     }
-    spec.verify_owner(owner, verifier)?;
-    Ok(Some(*spec))
+    spec.verify_owner_with_work(owner, verifier, custody.work())?;
+    let spec = *spec;
+    if custody.work().is_some() { custody.relinquish(std::mem::size_of::<OperationSpec>() as u64)?; }
+    custody.transfer();
+    Ok(Some(spec))
+}
+
+/// Source-bound historical evidence, never current dispatch or write authority.
+/// Construction is private and moves the authenticated declaration and the
+/// unique original Started fence out of their canonical source records.
+pub(crate) struct OriginalReservationProof {
+    declaration: OperationSpec,
+    original_fence: LeaseFence,
+    declaration_revision: u64,
+    declaration_commit: acyclic_stream::CommitId,
+    started_revision: u64,
+    started_commit: acyclic_stream::CommitId,
+}
+
+impl OriginalReservationProof {
+    pub(crate) fn declaration(&self) -> &OperationSpec { &self.declaration }
+    pub(crate) fn original_fence(&self) -> &LeaseFence { &self.original_fence }
+    pub(crate) fn source_positions(
+        &self,
+    ) -> ((u64, &acyclic_stream::CommitId), (u64, &acyclic_stream::CommitId)) {
+        ((self.declaration_revision, &self.declaration_commit),
+            (self.started_revision, &self.started_commit))
+    }
+    pub(crate) fn into_parts(self) -> (OperationSpec, LeaseFence) {
+        (self.declaration, self.original_fence)
+    }
+}
+
+// Source values precede their guard so rejection/cancellation drops their real
+// allocations before releasing the same observer's logical custody.
+struct OriginalReservationSource<'a, 'b> {
+    declaration: Box<OperationSpec>,
+    started: Option<(LeaseFence, u64, acyclic_stream::CommitId)>,
+    custody: crate::wire_codec::CodecQuota<'a, 'b>,
+}
+
+fn authenticate_reservation_observation(
+    owner: &Authority,
+    scope: &Scope,
+    verifier: &AuthorityVerifier,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<()> {
+    verifier.verify_audience(owner)?;
+    verifier.verify_scope_for_with_work(owner, scope, work)?;
+    if !scope.capabilities().contains(capability::OPERATION_OBSERVE) {
+        return Err(Error::Unauthorized("historical reservation requires operation:observe".into()));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments, reason = "original owner authorization and protected preparation's exact historical selector")]
+pub(crate) async fn original_reservation_proof_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    owner: &Authority,
+    scope: &Scope,
+    verifier: &AuthorityVerifier,
+    operation: OperationId,
+    candidate: &LeaseFence,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<OriginalReservationProof> {
+    if work.is_none() {
+        return Err(Error::Unsupported("historical reservation needs a finite original observer".into()));
+    }
+    authenticate_reservation_observation(owner, scope, verifier, work)?;
+    let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let key = formatted_text_with_work(
+        "task-admission:".len() + 36, format_args!("task-admission:{operation}"), custody.work(),
+    )?;
+    custody.adopt(key.capacity() as u64)?;
+    let declaration = read_indexed_intent_with_work(
+        client, &key, None, Some((owner, scope, verifier)), custody.work(),
+    ).await;
+    let key_capacity = key.capacity() as u64;
+    drop(key);
+    custody.relinquish(key_capacity)?;
+    let (_, event, declaration_revision, declaration_commit) = declaration?
+        .ok_or_else(|| Error::NotFound("original task declaration source".into()))?;
+    custody.adopt(event.logical_owned_bytes()?)?;
+    let SchedulerEvent::Declared { spec } = event else {
+        return Err(Error::Conflict("task admission does not identify a declaration".into()));
+    };
+    let mut source = OriginalReservationSource { declaration: spec, started: None, custody };
+    if source.declaration.operation_id != operation {
+        return Err(Error::Conflict("historical declaration identifies another operation".into()));
+    }
+    source.declaration.verify_owner_with_work(owner, verifier, source.custody.work())?;
+    authenticate_reservation_observation(owner, scope, verifier, source.custody.work())?;
+    if let Some(work) = source.custody.work().as_deref_mut() { work.begin_call()?; }
+    let tail = client.tail(COORDINATOR_PATH).await?;
+    if tail < declaration_revision {
+        return Err(Error::Storage("declaration lies beyond coordinator source".into()));
+    }
+    let stream = coordinator_source_stream_with_work(client, source.custody.work())?;
+    source.custody.adopt(stream.path().as_str().len() as u64)?;
+    let mut next = declaration_revision;
+    let mut admitted = None;
+    let mut last_time = None;
+    while next < tail {
+        authenticate_reservation_observation(owner, scope, verifier, source.custody.work())?;
+        source.declaration.verify_owner_with_work(owner, verifier, source.custody.work())?;
+        let maximum = (tail - next).min(u64::from(READ_PAGE_SIZE)) as u32;
+        let records = read_records_with_work(&stream, next, maximum, source.custody.work()).await?
+            .ok_or_else(|| Error::Storage("historical coordinator prefix is absent".into()))?;
+        if records.is_empty() {
+            return Err(Error::Storage("historical coordinator prefix is incomplete".into()));
+        }
+        let capacity = records.capacity();
+        let mut expected = next;
+        for record in &records {
+            if record.sequence != expected {
+                return Err(Error::Storage("historical coordinator prefix has a cursor gap".into()));
+            }
+            expected = expected.checked_add(1).ok_or(StreamError::LimitExceeded)?;
+        }
+        for record in records {
+            let raw_bytes = record.value.len() as u64;
+            let mut event_custody = crate::wire_codec::CodecQuota::new(source.custody.work(), 0)?;
+            let (revision, identity, key, _, time, event) = decode_with_work(&record.value, event_custody.work())?;
+            let owned = event.logical_owned_bytes()?;
+            event_custody.adopt(owned)?;
+            event_custody.adopt(key.capacity() as u64)?;
+            if revision != next_revision(record.sequence)? || identity != event.operation_id()
+                || last_time.is_some_and(|previous| time <= previous)
+            {
+                return Err(Error::Storage("historical coordinator source identity differs".into()));
+            }
+            last_time = Some(time);
+            let key_capacity = key.capacity() as u64;
+            drop(key);
+            event_custody.relinquish(key_capacity)?;
+            match event {
+                SchedulerEvent::Admitted { operation_id, reservation }
+                    if operation_id == operation && reservation.id == candidate.reservation_id
+                        && reservation.placement == candidate.placement =>
+                {
+                    if admitted.is_some() {
+                        return Err(Error::Conflict("historical reservation has distinct admission origins".into()));
+                    }
+                    admitted = Some(revision);
+                    drop(reservation);
+                    drop(event_custody);
+                }
+                SchedulerEvent::Started { operation_id, fence }
+                    if operation_id == operation && &fence == candidate =>
+                {
+                    if admitted.is_none_or(|admission| admission >= revision) || source.started.is_some() {
+                        return Err(Error::Conflict("historical reservation has no unique admitted start".into()));
+                    }
+                    event_custody.transfer();
+                    drop(event_custody);
+                    source.custody.adopt(owned)?;
+                    source.started = Some((fence, revision, record.commit_id));
+                }
+                event => {
+                    drop(event);
+                    drop(event_custody);
+                }
+            }
+            next = revision;
+            drop(record);
+            if let Some(work) = source.custody.work().as_deref_mut() { work.release_record(raw_bytes)?; }
+        }
+        if let Some(work) = source.custody.work().as_deref_mut() {
+            work.release_owned((capacity * std::mem::size_of::<acyclic_stream::Record>()) as u64)?;
+        }
+    }
+    drop(stream);
+    source.custody.relinquish(COORDINATOR_PATH.len() as u64)?;
+    let (original_fence, started_revision, started_commit) = source.started.take()
+        .ok_or_else(|| Error::NotFound("selected original reservation start".into()))?;
+    let declaration = *source.declaration;
+    source.custody.relinquish(std::mem::size_of::<OperationSpec>() as u64)?;
+    source.custody.transfer();
+    Ok(OriginalReservationProof {
+        declaration, original_fence, declaration_revision, declaration_commit,
+        started_revision, started_commit,
+    })
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[allow(clippy::too_many_arguments, reason = "same original historical proof with its native ledger's custody handoff")]
+pub(crate) async fn original_reservation_proof_with_native_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    owner: &Authority,
+    scope: &Scope,
+    verifier: &AuthorityVerifier,
+    operation: OperationId,
+    candidate: &LeaseFence,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(OriginalReservationProof, acyclic_fs::NativeAllocation)> {
+    let mut io = crate::store::history::native_work_io(work)
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    let proof = original_reservation_proof_with_work(
+        client, owner, scope, verifier, operation, candidate, &mut Some(&mut io),
+    ).await?;
+    Ok((proof, io.into_custody()))
 }
 
 // Shared by ordinary and observed coordinator replay. Collecting the original
@@ -442,6 +659,57 @@ async fn read_intent_location<P: StreamProvider>(
     read_intent_location_with_work(client, key, &mut None).await
 }
 
+fn decode_intent_location_with_work(
+    input: &[u8],
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<IntentLocation> {
+    if work.is_none() {
+        return crate::contract::json_from_slice(input)
+            .map_err(|error| Error::Storage(error.to_string()));
+    }
+    crate::contract::admit_json(input, crate::contract::JsonBounds {
+        maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
+        maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64 + 1,
+        maximum_depth: 256,
+    }, &mut |charge| work.as_deref_mut().expect("checked observer").codec_charge(charge))?;
+    // This closed ordinary struct has one String, two fixed [u8;32] arrays,
+    // and one u64: no Content/Value/Box/typed Vec carrier. The key and the
+    // original serde_json string scratch each fit the byte-buffer growth bound.
+    let diagnostic = crate::contract::audited_serde_diagnostic_bytes(input.len() as u64,
+        concat!("IntentLocation key revision event_digest commit_id unknown field duplicate field ",
+            "missing field invalid type invalid value invalid length expected u8 u64 string array ").len() as u64)?;
+    let maximum = (input.len() as u64).checked_mul(4).and_then(|bytes| bytes.checked_add(16))
+        .and_then(|bytes| bytes.checked_add(diagnostic))
+        .ok_or_else(|| Error::Storage("intent location admission overflows".into()))?;
+    let mut custody = crate::wire_codec::CodecQuota::new(work, maximum)?;
+    let mut decoder = serde_json::Deserializer::from_slice(input);
+    decoder.disable_recursion_limit();
+    let location = IntentLocation::deserialize(&mut decoder)
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    decoder.end().map_err(|error| Error::Storage(error.to_string()))?;
+    drop(decoder);
+    if let Some(work) = custody.work().as_deref_mut() { work.check_cancellation()?; }
+    let retained = location.key.capacity() as u64;
+    let slack = maximum.checked_sub(retained)
+        .ok_or_else(|| Error::Storage("intent location exceeds its closed admission".into()))?;
+    custody.relinquish(slack)?;
+    custody.transfer();
+    Ok(location)
+}
+
+fn coordinator_source_stream_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<Stream<P>> {
+    if let Some(work) = work.as_deref_mut() {
+        work.admit_allocation(COORDINATOR_PATH.len() as u64)?;
+        work.copy_bytes(COORDINATOR_PATH.len() as u64)?;
+    }
+    let stream = client.stream(COORDINATOR_PATH)?;
+    if let Some(work) = work.as_deref_mut() { work.retain_owned(stream.path().as_str().len() as u64)?; }
+    Ok(stream)
+}
+
 async fn read_intent_location_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
     key: &str,
@@ -463,11 +731,7 @@ async fn read_intent_location_with_work<P: StreamProvider>(
             "intent location must contain one immutable record".into(),
         ));
     };
-    let location: IntentLocation = crate::contract::json_from_slice(&record.value)
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    if let Some(work) = work.as_deref_mut() {
-        work.retain_owned(location.key.capacity() as u64)?;
-    }
+    let location = decode_intent_location_with_work(&record.value, work)?;
     let canonical = crate::store::history::canonical_bytes_with_work(
         &location, acyclic_stream::MAX_RECORD_BYTES as u64, work,
     )?;
@@ -489,20 +753,17 @@ async fn read_intent_location_with_work<P: StreamProvider>(
     result
 }
 
-async fn read_indexed_intent<P: StreamProvider>(
-    client: &StreamClient<P>,
-    key: &str,
-    maximum_revision: Option<u64>,
-) -> Result<Option<RetainedIntent>> {
-    read_indexed_intent_with_work(client, key, maximum_revision, &mut None).await
-}
 
 async fn read_indexed_intent_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
     key: &str,
     maximum_revision: Option<u64>,
+    authorization: Option<(&Authority, &Scope, &AuthorityVerifier)>,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<Option<RetainedIntent>> {
+    if let Some((owner, scope, verifier)) = authorization {
+        authenticate_reservation_observation(owner, scope, verifier, work)?;
+    }
     let Some(location) = read_intent_location_with_work(client, key, work).await? else {
         return Ok(None);
     };
@@ -514,14 +775,19 @@ async fn read_indexed_intent_with_work<P: StreamProvider>(
         }
         return Ok(None);
     }
-    let source = client.stream(COORDINATOR_PATH)?;
-    let Some(records) = read_records_with_work(&source, location.revision - 1, 1, work).await? else {
+    let mut source_custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let source = coordinator_source_stream_with_work(client, source_custody.work())?;
+    source_custody.adopt(source.path().as_str().len() as u64)?;
+    if let Some((owner, scope, verifier)) = authorization {
+        authenticate_reservation_observation(owner, scope, verifier, source_custody.work())?;
+    }
+    let Some(records) = read_records_with_work(&source, location.revision - 1, 1, source_custody.work()).await? else {
         return Err(StreamError::NotFound.into());
     };
     let [record] = records.as_slice() else {
         return Err(Error::Storage("intent source record is absent".into()));
     };
-    let (revision, operation, source_key, digest, _, event) = decode_with_work(&record.value, work)?;
+    let (revision, operation, source_key, digest, _, event) = decode_with_work(&record.value, source_custody.work())?;
     if record.sequence != location.revision - 1
         || revision != location.revision
         || record.commit_id.as_bytes() != &location.commit_id
@@ -534,11 +800,13 @@ async fn read_indexed_intent_with_work<P: StreamProvider>(
         ));
     }
     let intent = (digest, event, revision, record.commit_id);
-    if let Some(work) = work.as_deref_mut() {
+    if let Some(work) = source_custody.work().as_deref_mut() {
         work.release_owned(source_key.capacity() as u64)?;
         work.release_owned(location.key.capacity() as u64)?;
     }
-    release_records(&records, records.capacity(), work)?;
+    release_records(&records, records.capacity(), source_custody.work())?;
+    drop(source);
+    source_custody.relinquish(COORDINATOR_PATH.len() as u64)?;
     Ok(Some(intent))
 }
 
@@ -847,7 +1115,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             return Ok(self.intents.get(key).map(std::borrow::Cow::Borrowed));
         }
         let Some(intent) = read_indexed_intent_with_work(
-            &self.client, key, Some(self.revision), work,
+            &self.client, key, Some(self.revision), None, work,
         ).await? else { return Ok(None) };
         // An older cold hit would be immediately evicted by the original
         // bounded cache. Keep that one received value without cloning it.

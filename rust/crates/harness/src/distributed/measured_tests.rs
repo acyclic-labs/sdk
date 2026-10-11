@@ -1074,3 +1074,247 @@ async fn prepared_commit_cancellation_uses_the_original_ledger_before_sdk_public
     assert_eq!(provider.io_snapshot().inspections, 0);
     Ok(())
 }
+
+async fn historical_source(
+    client: &StreamClient<FaultStream>, operation: OperationId,
+) -> Result<(Authority, crate::core::AuthorityIssuer, Scope, LeaseFence, u64)> {
+    let declaration = spec(operation, 0)?;
+    let owner = declaration.owner.authority().clone();
+    let issuer = crate::core::AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
+    let declaration_scope = declaration.owner_scope.clone();
+    let mut coordinator = DistributedCoordinator::open(client, Arc::new(UnmeasuredContent::default())).await?;
+    coordinator.declare_operation(&owner, &declaration_scope, &issuer.verifier(), declaration,
+        IdempotencyKey::new(format!("task-admission:{operation}"))?).await?;
+    let time = coordinator.last_committed_at_ms;
+    let fence = LeaseFence { reservation_id: "original-provider-lease".into(), placement: "original-worker".into() };
+    append_source(client, 2, "original-admitted", SchedulerEvent::Admitted {
+        operation_id: operation,
+        reservation: Reservation { id: fence.reservation_id.clone(), placement: fence.placement.clone(),
+            admitted: crate::scheduler::ResourceRequest::default() },
+    }, time + 1).await?;
+    append_source(client, 3, "original-started", SchedulerEvent::Started {
+        operation_id: operation, fence: fence.clone(),
+    }, time + 2).await?;
+    let scope = issuer.root("original-readonly-proof", crate::Capabilities::new(["operation:observe"]));
+    Ok((owner, issuer, scope, fence, time))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn original_reservation_proof_keeps_the_selected_old_origin_without_current_write_authority() -> Result<()> {
+    let provider = Arc::new(FaultStream::default());
+    let client = StreamClient::new(provider.clone());
+    let operation = OperationId::from_bytes([128; 16]);
+    let (owner, issuer, scope, original, time) = historical_source(&client, operation).await?;
+    append_source(&client, 4, "original-released", SchedulerEvent::LeaseReleased {
+        operation_id: operation, fence: original.clone(),
+    }, time + 3).await?;
+    let current = LeaseFence { reservation_id: "current-provider-lease".into(), placement: "current-worker".into() };
+    append_source(&client, 5, "current-admitted", SchedulerEvent::Admitted {
+        operation_id: operation, reservation: Reservation { id: current.reservation_id.clone(),
+            placement: current.placement.clone(), admitted: crate::scheduler::ResourceRequest::default() },
+    }, time + 4).await?;
+    append_source(&client, 6, "current-started", SchedulerEvent::Started {
+        operation_id: operation, fence: current,
+    }, time + 5).await?;
+    provider.reset_io();
+    provider.forbid_writes.store(true, Ordering::SeqCst);
+    let cancellation = CancellationToken::new();
+    let native = acyclic_fs::NativeMaterializationWork::new(budget(), &cancellation)
+        .expect("original native ledger control");
+    let (proof, custody) = original_reservation_proof_with_native_work(
+        &client, &owner, &scope, &issuer.verifier(), operation, &original, &native,
+    ).await?;
+    assert_eq!(proof.original_fence(), &original);
+    assert_eq!(proof.declaration().operation_id, operation);
+    let (declaration_source, started_source) = proof.source_positions();
+    assert_eq!(declaration_source.0, 1);
+    assert_eq!(started_source.0, 3);
+    assert_ne!(declaration_source.1, started_source.1);
+    assert!(custody.bytes() > 0);
+    let declaration_pointer = proof.declaration().owner.authority().id.as_ptr();
+    let fence_pointer = proof.original_fence().reservation_id.as_ptr();
+    let (declaration, fence) = proof.into_parts();
+    assert_eq!(declaration.owner.authority().id.as_ptr(), declaration_pointer);
+    assert_eq!(fence.reservation_id.as_ptr(), fence_pointer);
+    assert_eq!(native.receipt().backend_read_operations,
+        provider.io_snapshot().reads + provider.io_snapshot().tails as u64);
+    assert_eq!(native.receipt().authority_bytes_read, provider.io_snapshot().read_bytes);
+    assert_eq!(native.receipt().backend_write_operations, 0);
+    assert_eq!(native.receipt().object_bytes_read, 0);
+    assert_eq!(provider.io_snapshot().writes, 0);
+    drop((declaration, fence, custody));
+    Ok(())
+}
+
+#[tokio::test]
+async fn historical_proof_rejects_ambiguous_started_origins_and_foreign_selectors_without_writes() -> Result<()> {
+    for duplicate in [false, true] {
+        let provider = Arc::new(FaultStream::default());
+        let client = StreamClient::new(provider.clone());
+        let operation = OperationId::from_bytes([129; 16]);
+        let (owner, issuer, scope, mut candidate, time) = historical_source(&client, operation).await?;
+        if duplicate {
+            append_source(&client, 4, "another-distinct-start-origin", SchedulerEvent::Started {
+                operation_id: operation, fence: candidate.clone(),
+            }, time + 3).await?;
+        } else {
+            candidate.reservation_id.push_str("-foreign");
+        }
+        provider.reset_io();
+        provider.forbid_writes.store(true, Ordering::SeqCst);
+        let cancellation = CancellationToken::new();
+        let mut work = HistoryWork::new(budget(), &cancellation);
+        let result = original_reservation_proof_with_work(
+            &client, &owner, &scope, &issuer.verifier(), operation, &candidate, &mut Some(&mut work),
+        ).await;
+        assert!(if duplicate { matches!(result, Err(Error::Conflict(_))) }
+            else { matches!(result, Err(Error::NotFound(_))) });
+        assert_eq!(provider.io_snapshot().writes, 0);
+        assert_eq!(work.receipt().backend_write_operations, 0);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn historical_proof_authenticates_before_io_and_preserves_raw_failure_and_cancellation_prefixes() -> Result<()> {
+    for mode in 0..7 {
+        let provider = Arc::new(FaultStream::default());
+        let client = StreamClient::new(provider.clone());
+        let operation = OperationId::from_bytes([130; 16]);
+        let (owner, issuer, valid, candidate, _) = historical_source(&client, operation).await?;
+        let scope = if mode == 0 {
+            issuer.root("not-an-observation-grant", crate::Capabilities::new(["operation:declare"]))
+        } else { valid };
+        provider.reset_io();
+        provider.forbid_writes.store(true, Ordering::SeqCst);
+        let cancellation = CancellationToken::new();
+        if mode == 1 { cancellation.cancel(); }
+        if mode == 2 { *provider.history_cancel_after_tail.lock().expect("control") = Some(cancellation.clone()); }
+        if mode >= 4 { provider.history_read_fault.store(match mode { 4 => 4, 5 => 5, _ => 6 }, Ordering::SeqCst); }
+        let mut allowance = budget();
+        if mode == 3 { allowance.backend_read_operations = 0; }
+        let mut work = HistoryWork::new(allowance, &cancellation);
+        let result = original_reservation_proof_with_work(
+            &client, &owner, &scope, &issuer.verifier(), operation, &candidate, &mut Some(&mut work),
+        ).await;
+        assert!(result.is_err());
+        let counters = work.receipt();
+        if mode <= 1 || mode == 3 {
+            assert_eq!(provider.io_snapshot().reads, 0);
+        } else if mode >= 4 {
+            assert_eq!(provider.io_snapshot().reads, 1);
+            assert_eq!(counters.authority_records_read, 1);
+            if mode == 4 { assert_eq!(counters.authority_bytes_read, 7); }
+            if mode == 5 { assert_eq!(counters.authority_bytes_read, acyclic_stream::MAX_RECORD_BYTES as u64 + 1); }
+        } else {
+            assert_eq!(provider.io_snapshot().reads, 2);
+            assert_eq!(provider.io_snapshot().tails, 1);
+        }
+        assert_eq!(provider.io_snapshot().writes, 0);
+        assert_eq!(counters.backend_write_operations, 0);
+        assert_eq!(counters.authority_records_appended, 0);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn immutable_locator_closed_admission_guards_key_allocation_and_preserves_original_serde_error() -> Result<()> {
+    let input = br#"{"key":"first","key":"duplicate","revision":1,"event_digest":[0],"commit_id":[0]}"#;
+    let cancellation = CancellationToken::new();
+    let mut allowance = budget();
+    allowance.peak_allocation_bytes = 0;
+    let mut denied = HistoryWork::new(allowance, &cancellation);
+    assert!(matches!(decode_intent_location_with_work(input, &mut Some(&mut denied)), Err(Error::Invalid(_))));
+    assert_eq!(denied.receipt().peak_allocation_bytes, 0);
+    let original = decode_intent_location_with_work(input, &mut None).expect_err("original duplicate field");
+    let mut work = HistoryWork::new(budget(), &cancellation);
+    let observed = decode_intent_location_with_work(input, &mut Some(&mut work)).expect_err("same duplicate field");
+    assert_eq!(original.to_string(), observed.to_string());
+    assert_eq!(work.receipt().backend_read_operations, 0);
+    assert_eq!(work.receipt().backend_write_operations, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn observed_declaration_uses_the_same_immutable_source_without_readonly_bootstrap() -> Result<()> {
+    let provider = Arc::new(FaultStream::default());
+    let client = StreamClient::new(provider.clone());
+    let operation = OperationId::from_bytes([131; 16]);
+    let (owner, issuer, scope, _, _) = historical_source(&client, operation).await?;
+    let key = IdempotencyKey::new(format!("task-admission:{operation}"))?;
+    let ordinary = observe_declaration(&client, &owner, &scope, &issuer.verifier(), operation, &key)
+        .await?.expect("original declaration");
+    provider.reset_io();
+    provider.forbid_writes.store(true, Ordering::SeqCst);
+    let cancellation = CancellationToken::new();
+    let mut work = HistoryWork::new(budget(), &cancellation);
+    let observed = observe_declaration_with_work(
+        &client, &owner, &scope, &issuer.verifier(), operation, &key, &mut Some(&mut work),
+    ).await?.expect("same immutable indexed declaration");
+    assert_eq!(observed, ordinary);
+    assert_eq!(provider.io_snapshot().reads, 2);
+    assert_eq!(work.receipt().authority_records_read, 2);
+    assert_eq!(work.receipt().authority_bytes_read, provider.io_snapshot().read_bytes);
+    assert_eq!(provider.io_snapshot().writes, 0);
+    let missing = IdempotencyKey::new(format!("missing-task-admission:{operation}"))?;
+    assert!(observe_declaration_with_work(&client, &owner, &scope, &issuer.verifier(),
+        operation, &missing, &mut Some(&mut work)).await?.is_none());
+    assert_eq!(provider.io_snapshot().writes, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn historical_proof_rejects_an_original_declaration_signed_by_another_key_before_tail_io() -> Result<()> {
+    let provider = Arc::new(FaultStream::default());
+    let client = StreamClient::new(provider.clone());
+    let operation = OperationId::from_bytes([132; 16]);
+    let mut declaration = spec(operation, 0)?;
+    let owner = declaration.owner.authority().clone();
+    let issuer = crate::core::AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
+    let foreign = crate::core::AuthorityIssuer::new("test-runtime", [8; 32], owner.clone());
+    declaration.owner_scope = foreign.root("foreign-original-declaration",
+        crate::Capabilities::new(["operation:declare"]));
+    let key = format!("task-admission:{operation}");
+    let coordinator = DistributedCoordinator::open(&client, Arc::new(UnmeasuredContent::default())).await?;
+    append_source(&client, 1, &key, SchedulerEvent::Declared { spec: Box::new(declaration) }, 1).await?;
+    let record = client.stream(COORDINATOR_PATH)?.read(0, 1).await?.try_next().await?
+        .expect("actual canonical source record");
+    let (_, _, _, event_digest, _, _) = decode(&record.value)?;
+    let location = IntentLocation { key, revision: 1, event_digest, commit_id: *record.commit_id.as_bytes() };
+    coordinator.ensure_intent_location_with_work(&location, &mut None).await?;
+    provider.reset_io();
+    provider.forbid_writes.store(true, Ordering::SeqCst);
+    let scope = issuer.root("observe", crate::Capabilities::new(["operation:observe"]));
+    let candidate = LeaseFence { reservation_id: "not-used".into(), placement: "not-used".into() };
+    let cancellation = CancellationToken::new();
+    let mut work = HistoryWork::new(budget(), &cancellation);
+    let result = original_reservation_proof_with_work(
+        &client, &owner, &scope, &issuer.verifier(), operation, &candidate, &mut Some(&mut work),
+    ).await;
+    assert!(matches!(result, Err(Error::Unauthorized(_))));
+    assert_eq!(provider.io_snapshot().reads, 2);
+    assert_eq!(provider.io_snapshot().tails, 0);
+    assert_eq!(provider.io_snapshot().writes, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn historical_proof_never_uses_an_unobserved_cold_prefix_as_a_finite_facade() -> Result<()> {
+    let provider = Arc::new(FaultStream::default());
+    let client = StreamClient::new(provider.clone());
+    let operation = OperationId::from_bytes([133; 16]);
+    let declaration = spec(operation, 0)?;
+    let owner = declaration.owner.authority();
+    let issuer = crate::core::AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
+    let scope = issuer.root("observe", crate::Capabilities::new(["operation:observe"]));
+    let candidate = LeaseFence { reservation_id: "selector".into(), placement: "placement".into() };
+    let result = original_reservation_proof_with_work(
+        &client, owner, &scope, &issuer.verifier(), operation, &candidate, &mut None,
+    ).await;
+    assert!(matches!(result, Err(Error::Unsupported(_))));
+    assert_eq!(provider.io_snapshot().reads, 0);
+    assert_eq!(provider.io_snapshot().tails, 0);
+    assert_eq!(provider.io_snapshot().writes, 0);
+    Ok(())
+}
