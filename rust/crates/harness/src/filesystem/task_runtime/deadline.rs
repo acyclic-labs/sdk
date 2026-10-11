@@ -14,20 +14,6 @@ pub(super) async fn run<P, T>(
     deadline: Option<u64>,
     operation: OperationId,
     future: impl Future<Output = Result<T>>,
-) -> Result<T>
-where
-    P: StreamProvider + 'static,
-{
-    run_observed(host, task, fence, deadline, operation, future, None, |_| false).await
-}
-
-pub(super) async fn run_observed<P, T>(
-    host: &CoordinatorTaskHost<P>,
-    task: TaskId,
-    fence: Option<&LeaseFence>,
-    deadline: Option<u64>,
-    operation: OperationId,
-    future: impl Future<Output = Result<T>>,
     io: Option<&crate::filesystem::PreparationIo>,
     has_native_failure: impl Fn(&T) -> bool,
 ) -> Result<T>
@@ -37,7 +23,7 @@ where
     if let Some(io) = io { io.check_cancellation()?; }
     let Some(deadline) = deadline else { return future.await; };
     if host.now_unix_millis() >= deadline {
-        expire_observed(host, task, fence, io).await?;
+        expire(host, task, fence, io).await?;
         return Err(Error::Indeterminate(operation));
     }
     let result = {
@@ -54,11 +40,11 @@ where
         if result.as_ref().is_ok_and(&has_native_failure) { return result; }
         if host.now_unix_millis() < deadline { return result; }
     }
-    expire_observed(host, task, fence, io).await?;
+    expire(host, task, fence, io).await?;
     Err(Error::Indeterminate(operation))
 }
 
-async fn expire_observed<P: StreamProvider + 'static>(
+async fn expire<P: StreamProvider + 'static>(
     host: &CoordinatorTaskHost<P>, task: TaskId, fence: Option<&LeaseFence>,
     io: Option<&crate::filesystem::PreparationIo>,
 ) -> Result<()> {

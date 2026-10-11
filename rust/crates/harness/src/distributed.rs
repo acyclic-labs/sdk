@@ -856,7 +856,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let operation = self.observe_operation_ref_with_work(
             owner, scope, verifier, operation_id, work,
         )?;
-        crate::scheduler::require_execution_owner_with_work(operation, fence, write.settlement(), work)?;
+        crate::scheduler::require_execution_owner(operation, fence, write.settlement(), work)?;
         if let JournalWrite::Model {
             attempt_id,
             step,
@@ -1119,7 +1119,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let (value, value_bytes) = self.load_json_with_work(reference, custody.work()).await?;
         custody.adopt(value_bytes)?;
         if let SchedulerEvent::Orchestrated { operation_id, reducer: None, .. } = event {
-            let decision = self.scheduler.orchestration_with_work(*operation_id, custody.work())?;
+            let decision = self.scheduler.orchestration(*operation_id, custody.work())?;
             let decision_bytes = if custody.work().is_some() { decision.logical_owned_bytes()? } else { 0 };
             custody.adopt(decision_bytes)?;
             if let OrchestrationDecision::Assemble { assembly, values, .. } = &decision {
@@ -1376,7 +1376,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "cancellation requires an authorized direct child"));
         }
         let parent_state = self.authorize_operation_owner_with_work(owner, verifier, parent, work)?;
-        crate::scheduler::require_execution_owner_with_work(parent_state, fence, false, work)?;
+        crate::scheduler::require_execution_owner(parent_state, fence, false, work)?;
         let verified_revision = self.revision;
         self.apply_internal(
             operation_id, idempotency_key,
@@ -1837,7 +1837,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 .scheduler
                 .operation(*operation_id)
                 .ok_or_else(|| coordinator_boundary(work, wire::ErrorCode::NotFound, "model task"))?;
-            crate::scheduler::require_execution_owner_with_work(operation, fence, false, work)?;
+            crate::scheduler::require_execution_owner(operation, fence, false, work)?;
         }
         Ok(CoordinatorApply::Replayed)
     }
@@ -1995,7 +1995,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         };
         let operation = self.scheduler.operation(parent)
             .ok_or_else(|| coordinator_boundary(work, wire::ErrorCode::NotFound, "admitting parent"))?;
-        crate::scheduler::require_execution_owner_with_work(operation, fence, false, work)
+        crate::scheduler::require_execution_owner(operation, fence, false, work)
     }
 
     async fn finish_append_with_work(
@@ -2120,7 +2120,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 .scheduler
                 .operation_blocked_by_dependencies(target, owner)
                 .then_some(target),
-            None => self.scheduler.next_blocked_by_dependencies(owner),
+            None => self.scheduler.blocked_by_dependencies(owner).next(),
         };
         if let Some(operation_id) = blocked {
             self.verify_pull_owner_with_work(authorization, operation_id, work)?;
@@ -2140,9 +2140,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             return Ok(WorkPull::Idle);
         }
         let mut custody = CodecQuota::new(work, 0)?;
-        let available = self.scheduler.available_for_with_work(
-            &worker.id, &worker.available, custody.work(),
-        )?;
+        let available = self.scheduler.available_for(&worker.id, &worker.available, custody.work())?;
         let available_bytes = if custody.work().is_some() { available.logical_owned_bytes()? } else { 0 };
         custody.adopt(available_bytes)?;
         let selected = match target {
@@ -2152,7 +2150,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 .then_some(target),
             None => self
                 .scheduler
-                .next_ready_for(&available, &worker.labels, owner),
+                .ready(&available, &worker.labels, owner).next(),
         };
         drop(available);
         custody.relinquish(available_bytes)?;
@@ -2203,8 +2201,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 format_args!("pull:{}:{operation_id}:{revision}", worker.id), attempt.work(),
             )?;
             if attempt.work().is_some() { attempt.adopt(key.capacity() as u64)?; }
+            validate_idempotency_key(&key, attempt.work())?;
             self.apply_with_work(
-                operation_id, checked_idempotency_key(key, attempt.work())?,
+                operation_id, IdempotencyKey(key),
                 SchedulerEvent::Admitted { operation_id, reservation }, attempt.work(),
             ).await
         };
@@ -2266,7 +2265,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .operation(parent)
             .ok_or_else(|| Error::NotFound(format!("operation {parent}")))?
             .revision;
-        let (outcome, cancel, reduction_digest) = match self.scheduler.orchestration(parent) {
+        let (outcome, cancel, reduction_digest) = match self.scheduler.orchestration(parent, &mut None)? {
             OrchestrationDecision::Complete { outcome, cancel } => (outcome, cancel, None),
             OrchestrationDecision::Assemble {
                 assembly,
@@ -2321,7 +2320,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .ok_or_else(|| Error::NotFound(format!("operation {parent}")))?;
         let expected_revision = state.revision;
         let OrchestrationDecision::Reduce { reducer, values } =
-            self.scheduler.orchestration(parent)
+            self.scheduler.orchestration(parent, &mut None)?
         else {
             return Err(Error::Conflict("no reducer invocation is ready".into()));
         };
@@ -3094,7 +3093,8 @@ pub(crate) struct PreparedMaterializationCommit {
 
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 impl PreparedMaterializationCommit {
-    pub(crate) fn new(
+    pub(crate) async fn prepare<P: StreamProvider>(
+        client: &StreamClient<P>,
         mut template: crate::filesystem::NativePreparationCompletionTemplate,
         proof: crate::durable_host::AcceptedMaterializationOwnerProof<'_>,
         reservation: acyclic_fs::NativeWorkReservation,
@@ -3199,38 +3199,24 @@ impl PreparedMaterializationCommit {
                 error => { drop(custody); error }
             });
         }
-        Ok(Self {
+        let mut completion = Self {
             template: Some(template), journal: None, request, vectors, operation,
             sdk: None, sdk_recovery: None, sdk_custody: None, template_custody: None, observer,
-        })
-    }
-
-    /// Polls the genuine SDK preparation before the physical action.
-    pub(crate) async fn prepare_sdk<P: StreamProvider>(
-        mut self,
-        client: &StreamClient<P>,
-    ) -> Result<Self> {
-        use HistoryIo;
-        if self.sdk.is_some() {
-            return Err(self.into_error(Error::NativeBoundary {
-                code: wire::ErrorCode::Invalid,
-                reason: "native completion SDK ingress was already prepared",
-            }));
-        }
-        let original = self.observer.original_native_work()
+        };
+        let original = completion.observer.original_native_work()
             .expect("closed original completion observer").clone();
-        let maximum = self.template.as_mut().expect("closed original completion template")
+        let maximum = completion.template.as_mut().expect("closed original completion template")
             .codec_parts().2 as usize;
         let header = (|| -> Result<_> {
             let mut io = crate::store::history::native_work_io(&original)?;
             let mut optional = Some(&mut io as &mut dyn HistoryIo);
             let mut header = PreparedCommitRequest::new(
-                self.request.idempotency_key.clone(), 0, &mut optional,
+                completion.request.idempotency_key.clone(), 0, &mut optional,
             );
-            for condition in &self.request.conditions {
+            for condition in &completion.request.conditions {
                 header.push_condition(condition.clone())?;
             }
-            let acyclic_stream::CommitMutation::Append { path, .. } = &self.request.mutations[0] else {
+            let acyclic_stream::CommitMutation::Append { path, .. } = &completion.request.mutations[0] else {
                 unreachable!("the closed producer constructs only one append")
             };
             header.append(path.clone(), acyclic_stream::OwnedBytes::new())?;
@@ -3242,41 +3228,41 @@ impl PreparedMaterializationCommit {
         })();
         let (request, custody) = match header {
             Ok(header) => header,
-            Err(error) => return Err(self.into_error(error)),
+            Err(error) => return Err(completion.into_error(error)),
         };
-        self.sdk_custody = Some(custody);
+        completion.sdk_custody = Some(custody);
         let prepared = match native_call_result(
             &original,
             client.native_prepare_commit(request, maximum, original.runtime_meter_owner()).await,
         ) {
             Ok(Ok(prepared)) => prepared,
-            Ok(Err(error)) => return Err(self.into_error(error.into_error(&None))),
-            Err(error) => return Err(self.into_error(error)),
+            Ok(Err(error)) => return Err(completion.into_error(error.into_error(&None))),
+            Err(error) => return Err(completion.into_error(error)),
         };
         let (prepared, incoming) = prepared.into_parts();
-        self.sdk = Some(prepared);
+        completion.sdk = Some(prepared);
         let mut incoming = match acyclic_fs::NativeAllocation::from_runtime_allocation(&original, incoming) {
             Ok(incoming) => incoming,
             Err((cause, incoming)) => {
-                drop(self.sdk.take());
+                drop(completion.sdk.take());
                 drop(incoming);
-                return Err(self.into_error(Error::NativeWork { cause, custody: None }));
+                return Err(completion.into_error(Error::NativeWork { cause, custody: None }));
             }
         };
-        if let Err(cause) = self.sdk_custody.as_mut().expect("original SDK header custody")
+        if let Err(cause) = completion.sdk_custody.as_mut().expect("original SDK header custody")
             .absorb(&mut incoming)
         {
-            drop(self.sdk.take());
-            return Err(self.into_error(Error::NativeWork { cause, custody: Some(incoming) }));
+            drop(completion.sdk.take());
+            return Err(completion.into_error(Error::NativeWork { cause, custody: Some(incoming) }));
         }
-        self.sdk_recovery = self.sdk.as_mut().expect("original SDK ingress").take_recovery_future();
-        if self.sdk_recovery.is_none() {
-            return Err(self.into_error(Error::NativeBoundary {
+        completion.sdk_recovery = completion.sdk.as_mut().expect("original SDK ingress").take_recovery_future();
+        if completion.sdk_recovery.is_none() {
+            return Err(completion.into_error(Error::NativeBoundary {
                 code: wire::ErrorCode::Invalid,
                 reason: "native completion lacks its pre-action same-key recovery",
             }));
         }
-        Ok(self)
+        Ok(completion)
     }
 
     /// Returns the funded completion work.
@@ -3290,14 +3276,7 @@ impl PreparedMaterializationCommit {
         counters: acyclic_fs::WorkCounters,
         mut phase: Option<&mut CommitPhase>,
     ) -> Result<(acyclic_fs::OwnedMaterializationJournal, acyclic_fs::NativeAllocation)> {
-        use HistoryIo;
         if let Some(phase) = phase.as_deref_mut() { *phase = CommitPhase::NotCalled; }
-        if self.sdk.is_none() || self.sdk_recovery.is_none() {
-            return Err(self.into_error(Error::NativeBoundary {
-                code: wire::ErrorCode::Invalid,
-                reason: "native completion SDK ingress was not prepared before its action",
-            }));
-        }
         let encoded = {
             let template = self.template.as_mut().expect("closed original completion template");
             template.set_completed_work(counters).and_then(|()| {
@@ -3621,12 +3600,7 @@ impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
     pub(crate) fn new_with_digest(
         digest: [u8; 32], work: &'a mut Option<&'b mut dyn HistoryIo>,
     ) -> Result<Self> {
-        let (bytes, retained) = digest_bytes_with_work(&digest, work)?;
-        let mut custody = CodecQuota::from_retained(work, retained);
-        let key = StreamIdempotencyKey::new(bytes)
-            .map_err(|source| operations::stream_error_with_work(source, custody.work()))?;
-        custody.transfer();
-        drop(custody);
+        let (key, retained) = digest_key(&digest, work)?;
         Ok(Self::new(key, retained, work))
     }
 
@@ -3965,21 +3939,12 @@ fn stream_key_with_work(
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"acyclic-harness-coordinator-v3");
     hasher.update(key.as_bytes());
-    let (bytes, retained) = digest_bytes_with_work(hasher.finalize().as_bytes(), work)?;
-    let mut custody = CodecQuota::from_retained(work, retained);
-    let key = StreamIdempotencyKey::new(bytes)
-        .map_err(|source| {
-            if custody.work().as_deref().is_some_and(operations::original_native_decode_mode) {
-                operations::stream_error_with_work(source, custody.work())
-            } else { Error::Invalid(source.to_string()) }
-        })?;
-    custody.transfer();
-    Ok((key, retained))
+    digest_key(hasher.finalize().as_bytes(), work)
 }
 
-fn digest_bytes_with_work(
+fn digest_key(
     digest: &[u8; 32], work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<(OwnedBytes, u64)> {
+) -> Result<(StreamIdempotencyKey, u64)> {
     let mut custody = CodecQuota::new(work, 0)?;
     let mut bytes = Vec::new();
     if let Some(observer) = custody.work().as_deref_mut() {
@@ -3991,7 +3956,8 @@ fn digest_bytes_with_work(
     }
     bytes.extend_from_slice(digest);
     custody.transfer();
-    operations::owned_bytes_from_retained_vec(bytes, custody.work())
+    let (bytes, retained) = operations::owned_bytes_from_retained_vec(bytes, custody.work())?;
+    Ok((StreamIdempotencyKey::new(bytes).expect("32-byte digest is a bounded SDK key"), retained))
 }
 
 #[cfg(test)]
@@ -6482,11 +6448,7 @@ mod tests {
             if fault == 2 {
                 assert!(retained.reservation.is_none());
                 assert!(
-                    crate::scheduler::require_execution_owner(
-                        retained,
-                        &LeaseFence::from(&lease.reservation),
-                        false
-                    )
+                    crate::scheduler::require_execution_owner(retained, &LeaseFence::from(&lease.reservation), false, &mut None)
                     .is_err()
                 );
                 let WorkPull::Claimed(retried) = reopened
@@ -6722,7 +6684,7 @@ mod tests {
             drop(coordinator);
             let mut recovered =
                 DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
-            assert_eq!(recovered.scheduler().session_limits(root)?, limits);
+            assert_eq!(recovered.scheduler().session_limits(root, &mut None)?, limits);
             assert_eq!(
                 recovered
                     .declare_session(
@@ -6800,7 +6762,7 @@ mod tests {
         ));
         let coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
-        assert_eq!(coordinator.scheduler().session_limits(root)?, limits);
+        assert_eq!(coordinator.scheduler().session_limits(root, &mut None)?, limits);
         assert_eq!(
             coordinator
                 .scheduler()
@@ -6888,7 +6850,7 @@ mod tests {
         );
         let mut recovered =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
-        assert_eq!(recovered.scheduler().session_limits(root)?, limits);
+        assert_eq!(recovered.scheduler().session_limits(root, &mut None)?, limits);
         let lease = recovered
             .pull(&Worker {
                 id: "atomic-worker".into(),

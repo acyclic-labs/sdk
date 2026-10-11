@@ -337,7 +337,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         assembly,
         values,
         cancel,
-    } = coordinator.scheduler().orchestration(parent)
+    } = coordinator.scheduler().orchestration(parent, &mut None)?
     else {
         return Err(acyclic_harness::Error::Invalid("join not ready".into()));
     };

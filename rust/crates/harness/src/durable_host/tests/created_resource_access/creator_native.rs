@@ -139,7 +139,7 @@ async fn created_seal_keeps_exact_sdk_custody_after_original_observer_and_scope_
             + proof.evidence.logical_owned_bytes()?;
     }
     assert_eq!(logical, expected, "only known SDK layout and actual capacities are included");
-    assert_eq!(access.current_content()?.expect("original child's scratch role").volume, created.private);
+    assert_eq!(access.current_content(&mut None)?.expect("original child's scratch role").volume, created.private);
     let (scope, scope_held) = fixture.root_scope.with_created_access_with_work(
         &created.request.child, Some(access), &mut Some(&mut observer),
     )?;
@@ -219,7 +219,7 @@ async fn same_created_seal_engine_rejects_exact_file_ambiguity_and_inherited_def
     }
     let inherited = CreatedResourceAccess::consume(&created.request.child, receipts, None)?;
     assert!(inherited.content.iter().all(|binding| !binding.default_writer && !binding.artifact_writer));
-    assert!(inherited.current_content()?.is_none(), "inherited allocation is not the current scratch origin");
+    assert!(inherited.current_content(&mut None)?.is_none(), "inherited allocation is not the current scratch origin");
     let private_resource = workspace_ref(
         fixture.filesystem_provider.clone(), &created.private.storage_name()?,
     )?;

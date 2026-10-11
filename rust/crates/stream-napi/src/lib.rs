@@ -442,16 +442,19 @@ impl NativeStreamFollow {
     }
 }
 
-/// Native Stream client backed directly by `StreamClient<grpc::Client>`.
+/// Native Stream client and its authenticated gRPC transport.
 #[napi]
 pub struct NativeStreamClient {
     inner: Arc<StreamClient<grpc::Client>>,
+    provider: Arc<grpc::Client>,
 }
 
 impl NativeStreamClient {
-    fn from_client(inner: StreamClient<grpc::Client>) -> Self {
+    fn from_client(provider: grpc::Client) -> Self {
+        let provider = Arc::new(provider);
         Self {
-            inner: Arc::new(inner),
+            inner: Arc::new(StreamClient::new(Arc::clone(&provider))),
+            provider,
         }
     }
 }
@@ -461,19 +464,19 @@ async fn connect_native(
     token: String,
     ca_certificate_pem: Option<Vec<u8>>,
     cancellation: Option<CancellationToken>,
-) -> std::result::Result<StreamClient<grpc::Client>, NativeStreamErrorMetadata> {
+) -> std::result::Result<grpc::Client, NativeStreamErrorMetadata> {
     run_with_cancellation(
         async move {
             match ca_certificate_pem {
                 Some(ca_certificate_pem) => {
-                    StreamClient::<grpc::Client>::connect_eager_with_ca_certificate(
+                    grpc::Client::connect_eager_with_ca_certificate(
                         &endpoint,
                         &token,
                         &ca_certificate_pem,
                     )
                     .await
                 }
-                None => StreamClient::<grpc::Client>::connect_eager(&endpoint, &token).await,
+                None => grpc::Client::connect_eager(&endpoint, &token).await,
             }
             .map_err(|error| connect_error(&error))
         },
@@ -487,7 +490,7 @@ impl NativeStreamClient {
     /// Returns a translating client that does not automatically report receipts.
     #[napi(js_name = "withoutDeliveryAcknowledgements")]
     pub fn without_delivery_acknowledgements(&self) -> Self {
-        Self::from_client(self.inner.as_ref().clone().without_delivery_acknowledgements())
+        Self::from_client(self.provider.as_ref().clone().without_delivery_acknowledgements())
     }
 
     /// Reports one hosted receipt to this client's sole issuing endpoint.
@@ -501,7 +504,7 @@ impl NativeStreamClient {
             let request = decode::<wire::AcknowledgeDeliveryRequest>(&request, "acknowledge_delivery")?;
             run_with_cancellation(
                 async {
-                    self.inner.acknowledge_delivery(0, request.delivery_token)
+                    self.provider.acknowledge_delivery(0, request.delivery_token)
                         .await.map_err(|error| stream_error(&error))
                 },
                 cancellation_state(cancellation),
