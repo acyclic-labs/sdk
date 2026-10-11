@@ -30,12 +30,6 @@ pub struct ProviderRef {
 }
 
 impl ProviderRef {
-    /// Owned byte-buffer capacities only; opaque allocator metadata is excluded.
-    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        [self.namespace.capacity(), self.family.capacity(), self.version.capacity()]
-            .into_iter().try_fold(0_u64, |bytes, capacity| bytes.checked_add(capacity as u64)
-                .ok_or_else(|| Error::Invalid("provider identity ownership overflow".into())))
-    }
 
     #[cfg(feature = "filesystem")]
     pub(crate) fn clone_with_io(&self, io: &crate::filesystem::PreparationIo) -> Result<Self> {
@@ -352,18 +346,6 @@ impl ResourceRef {
         }
         Ok(())
     }
-    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        self.provider.logical_owned_bytes()?.checked_add(self.key.capacity() as u64)
-            .and_then(|bytes| bytes.checked_add(self.version.as_ref().map_or(0, String::capacity) as u64))
-            .ok_or_else(|| Error::Invalid("resource identity ownership overflow".into()))
-    }
-
-
-    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        self.provider.logical_owned_bytes()?.checked_add(self.key.capacity() as u64)
-            .and_then(|bytes| bytes.checked_add(self.version.as_ref().map_or(0, String::capacity) as u64))
-            .ok_or_else(|| Error::Invalid("resource identity ownership overflow".into()))
-    }
 
     /// Returns the semantic reference kind.
     #[must_use]
@@ -647,37 +629,6 @@ typed_reference!(
 );
 typed_reference!(RunRef, Run, "Reference to a recoverable model run.");
 
-impl CheckpointRef {
-    pub(crate) fn clone_with_work(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
-        let Some(io) = work.as_deref_mut() else { return Ok(self.clone()); };
-        io.check_cancellation()?;
-        let reference = self.as_resource();
-        let provider = reference.provider();
-        let bytes = [provider.namespace(), provider.family(), provider.version(), reference.version().unwrap_or("")]
-            .into_iter().try_fold(reference.key().len() as u64, |sum, text| {
-                sum.checked_add(text.len() as u64).ok_or_else(|| {
-                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                    if io.original_native_work().is_some() {
-                        return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                            reason: "checkpoint clone ownership overflows" };
-                    }
-                    Error::Invalid("checkpoint clone ownership overflows".into())
-                })
-            })?;
-        io.admit_owned(bytes)?;
-        io.admit_copy(bytes)?;
-        for text in [provider.namespace(), provider.family(), provider.version(), reference.version().unwrap_or("")] {
-            io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-            if !text.is_empty() { io.admit_allocation(text.len() as u64)?; }
-        }
-        if !reference.key().is_empty() { io.admit_allocation(reference.key().len() as u64)?; }
-        io.copy_bytes(bytes)?;
-        io.retain_owned(bytes)?;
-        Ok(self.clone())
-    }
-}
 
 #[cfg(test)]
 mod tests {

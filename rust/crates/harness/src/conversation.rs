@@ -1329,13 +1329,6 @@ impl<'de> Deserialize<'de> for FileRef {
 }
 
 impl FileRef {
-    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        [self.path.capacity(), self.version.capacity(), self.display_name.capacity()]
-            .into_iter().try_fold(self.volume.logical_owned_bytes()?, |bytes, capacity|
-                bytes.checked_add(capacity as u64).ok_or_else(|| Error::Invalid("file identity ownership overflow".into())))?
-            .checked_add(self.descriptor.logical_owned_bytes())
-            .ok_or_else(|| Error::Invalid("file descriptor ownership overflow".into()))
-    }
 
     /// Copies the audited identity graph directly, without a serialization clone.
     /// The returned metadata is deep-only; its enclosing DTO owns its root slot.
@@ -1348,20 +1341,6 @@ impl FileRef {
         self.clone_with_work(&mut work)
     }
 
-    /// Variable byte content copied by the canonical closed-DTO clone.
-    /// Retained custody still uses `logical_owned_bytes` after cloning.
-    pub(crate) fn logical_clone_owned_bytes(&self) -> Result<u64> {
-        let owner = match &self.volume.owner {
-            VolumeOwner::Project(owner) | VolumeOwner::Session(owner) => owner.len() as u64,
-            VolumeOwner::Agent(_) => 0,
-        };
-        let provider = &self.volume.provider;
-        [provider.namespace().len(), provider.family().len(), provider.version().len(),
-            self.volume.id.len(), self.path.len(), self.version.len(), self.display_name.len(),
-            self.descriptor.media_type.len()]
-            .into_iter().try_fold(owner, |bytes, length| bytes.checked_add(length as u64)
-                .ok_or_else(|| Error::Invalid("file clone ownership overflow".into())))
-    }
 
     /// Creates a reference after checking paths, version and descriptor.
     pub fn new(

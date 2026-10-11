@@ -1,5 +1,6 @@
 //! Original-work admission and custody for the shared stock execution engine.
 use super::*;
+use crate::projection::ModelContextSelection;
 use std::fmt::{Arguments, Write as _};
 
 pub(super) struct StockExecution<'a> {

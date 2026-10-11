@@ -419,7 +419,6 @@ impl AuthorityIssuer {
         self.issue_with_work(id, capabilities, None, work)
     }
 
-    pub(crate) fn id(&self) -> &str { &self.id }
 
     fn issue_with_work(
         &self, id: &str, capabilities: &Capabilities, agent: Option<AgentId>,
