@@ -198,7 +198,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<TaskSourceInspection<P, A, O>> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        handle.require_selection(operation, source, &snapshot.project, &snapshot.generation, snapshot.native_snapshot.as_ref())?;
+        handle.require_selection_with_native_work(
+            operation, source, &snapshot.project, &snapshot.generation,
+            snapshot.native_snapshot.as_ref(), work,
+        )?;
         io.remaining()?.verify(crate::filesystem::finite_budget(
             handle.authorization().maximum_work, handle.authorization().maximum_bytes,
         )).map_err(|_| Error::NativeBoundary {

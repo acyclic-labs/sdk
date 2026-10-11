@@ -372,6 +372,9 @@ after cancellation or allocator exhaustion; `.system`, inherited transcripts,
 traversal, cross-volume paths and the original caller's path ceiling remain
 denied before source IO. Native checks never turn the public opaque attestation
 into a generic volume-read capability.
+The constructor's selected operation/task/project/generation comparison also
+shares the ordinary borrowed predicate and rejects a changed selection with a
+fixed native carrier before metadata IO, even with no allocator attempts left.
 The opaque source descriptor's observed label uses the same canonical fields
 and hash as ordinary authorization. The original observer funds its fixed
 prefix/hash text before construction; the label is not a volume-read scope.

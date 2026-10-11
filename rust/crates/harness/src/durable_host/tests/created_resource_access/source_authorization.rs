@@ -116,6 +116,17 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         budget.allocation_operations = 1;
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .expect("admitted original ledger with no remaining allocator attempt");
+        handle.require_selection_with_native_work(operation, child, &project, &generation, None, &work)?;
+        for (selected_operation, selected_task, selected_project, selected_generation) in [
+            (OperationId::from_bytes([154;16]), child, &project, &generation),
+            (operation, fixture.root, &project, &generation),
+            (operation, child, &policy.bootstrap.project, &generation),
+            (operation, child, &project, &initial_generation),
+        ] {
+            assert!(matches!(handle.require_selection_with_native_work(
+                selected_operation, selected_task, selected_project, selected_generation, None, &work,
+            ), Err(Error::NativeBoundary { code:crate::wire::ErrorCode::Unauthorized, .. })));
+        }
         handle.grant().require_directory_path_with_native_work(&project, "", &work)?;
         for path in [".system", ".system/hidden", ".system/inherited-conversation/transcript"] {
             assert!(matches!(handle.grant().require_directory_path_with_native_work(
