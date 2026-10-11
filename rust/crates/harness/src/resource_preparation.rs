@@ -13,6 +13,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
+mod root_bootstrap;
+pub use root_bootstrap::{
+    RootBootstrapContentReceipt, RootBootstrapContentRequest, RootBootstrapContentRole,
+};
+#[cfg(feature = "filesystem")]
+pub use root_bootstrap::RootBootstrapContentContext;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) use root_bootstrap::preflight_root_bootstrap_with_native_work;
+
 /// Exact provider evidence to authenticate before deriving child resource access.
 /// These references are canonical admission data, never bearer authority.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -638,6 +647,31 @@ pub trait ResourceCreationProvider: acyclic_stream::ProviderPlatform {
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "provider has no original native-ledger creator verifier",
+        })
+    }
+
+    /// Borrows the configured original ROOT sources and their opaque canonical
+    /// witnesses. Lookup does not allocate, perform IO or grant resource access.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn root_bootstrap_sources(
+        &self,
+        _operation: OperationId,
+    ) -> [Option<(&RootBootstrapContentRequest, &crate::durable_host::RootBootstrapBindingWitness)>; 2] {
+        [None, None]
+    }
+
+    /// Authenticates protected original ROOT content on the original native
+    /// ledger. Unsupported implementations fail before boxing or provider IO.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn verify_root_bootstrap_with_native_work<'a>(
+        &'a self,
+        _context: RootBootstrapContentContext<'a>,
+        _request: &'a RootBootstrapContentRequest,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (RootBootstrapContentReceipt, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "provider has no original native-ledger ROOT bootstrap verifier",
         })
     }
 }
