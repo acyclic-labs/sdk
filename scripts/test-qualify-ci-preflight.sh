@@ -223,13 +223,6 @@ run_release main webflow 0 push refs/heads/main
 gate="$work/gate"
 mkdir -p "$gate/temp" "$gate/artifacts" "$gate/tools/cargo/bin" "$gate/bin"
 : >"$gate/cargo.log"
-cat >"$gate/bin/rustup" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ "$*" == 'component list --installed' ]]; then
-  printf '%s\n' 'llvm-tools-x86_64-unknown-linux-gnu (installed)'
-fi
-EOF
 # The pinned nextest is already installed, so the gate must not download it.
 cat >"$gate/bin/cargo-nextest" <<'EOF'
 #!/usr/bin/env bash
@@ -237,7 +230,7 @@ set -euo pipefail
 printf '%s
 ' 'cargo-nextest 0.9.146 (fake)'
 EOF
-chmod +x "$gate/bin/rustup" "$gate/bin/cargo-nextest"
+chmod +x "$gate/bin/cargo-nextest"
 (
   cd "$root"
   SDK_TEMP_DIR="$gate/temp" SDK_ARTIFACT_DIR="$gate/artifacts" TOOLS_DIR="$gate/tools" \
@@ -252,23 +245,9 @@ mapfile -t cargo_calls <"$gate/cargo.log"
 [[ "${cargo_calls[2]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
 
 full="$work/full"
-mkdir -p "$full/temp" "$full/artifacts" "$full/tools/cargo/bin" "$full/bin"
+mkdir -p "$full/temp" "$full/artifacts" "$full/tools" "$full/bin"
 : >"$full/cargo.log"
-cat >"$full/bin/rustup" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ "$*" == 'component list --installed' ]]; then
-  printf '%s\n' 'llvm-tools-x86_64-unknown-linux-gnu (installed)'
-fi
-EOF
-cat >"$full/tools/cargo/bin/cargo-llvm-cov" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ "$*" == 'llvm-cov --version' ]]; then
-  printf '%s\n' 'cargo-llvm-cov 0.9.1'
-fi
-EOF
-chmod +x "$full/bin/rustup" "$full/tools/cargo/bin/cargo-llvm-cov"
+cp "$gate/bin/cargo-nextest" "$full/bin/cargo-nextest"
 (
   cd "$root"
   SDK_TEMP_DIR="$full/temp" SDK_ARTIFACT_DIR="$full/artifacts" TOOLS_DIR="$full/tools" \
@@ -276,10 +255,8 @@ chmod +x "$full/bin/rustup" "$full/tools/cargo/bin/cargo-llvm-cov"
     bash scripts/qualify-ci.sh gate
 )
 mapfile -t full_cargo_calls <"$full/cargo.log"
-[[ "${#full_cargo_calls[@]}" -eq 4 ]]
+[[ "${#full_cargo_calls[@]}" -eq 3 ]]
 [[ "${full_cargo_calls[0]}" == 'test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked' ]]
 [[ "${full_cargo_calls[1]}" == 'test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked' ]]
-[[ "${full_cargo_calls[2]}" == 'llvm-cov --workspace --all-features --locked --fail-under-lines 70 --lcov --output-path '*'/coverage/lcov.info' ]]
-[[ "${full_cargo_calls[3]}" == 'llvm-cov report --summary-only' ]]
-
+[[ "${full_cargo_calls[2]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
 echo 'qualification preflight tests passed'

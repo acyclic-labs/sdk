@@ -28,7 +28,7 @@ jobs:
     name: Build ${{ matrix.target }}
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 8
       matrix:
         include:
           - target: linux-x64-gnu
@@ -162,7 +162,7 @@ jobs:
     needs: build
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 8
       matrix:
         include:
           - backend: linux-fuse
@@ -238,7 +238,6 @@ jobs:
 
   sdk-qualification:
     name: Full SDK qualification
-    needs: build
     uses: ./.github/workflows/qualification.yml
     permissions:
       contents: read
@@ -251,7 +250,6 @@ jobs:
 
   agent-host-qualification:
     name: Agent host qualification
-    needs: build
     uses: ./.github/workflows/agent-host-qualification.yml
     with:
       source_ref: ${{ inputs.source_sha }}

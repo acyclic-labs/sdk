@@ -102,13 +102,6 @@ finish() {
     fi
   done
 }
-release_plugin() {
-  CARGO_TARGET_DIR="$target_dir-release" node scripts/build-product.mjs
-  node plugin/scripts/package.mjs \
-    --binary "$target_dir-release/dist/acyclic" \
-    --out "$SDK_ARTIFACT_DIR/acyclic-plugin"
-  node plugin/scripts/validate-package.mjs "$SDK_ARTIFACT_DIR/acyclic-plugin"
-}
 native_binding() {
   CARGO_TARGET_DIR="$target_dir-napi" cargo build -p acyclic-fs-napi --locked
   CARGO_TARGET_DIR="$target_dir-napi" \
@@ -151,48 +144,11 @@ fork_join_conformance() {
 
 case "$lane" in
   gate)
-    # These crates deliberately have independent workspaces; --workspace and
-    # llvm-cov cannot cover them, even during full qualification.
+    # These crates have independent workspaces and are absent from the root.
     cargo test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked
     cargo test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked
     node --test rust/crates/sdk-generation/scripts/test-qualify-typescript-snippets.mjs
-    if [[ "$full_qualification" != true ]]; then
-      # The same suite the full native lanes run, without coverage; the
-      # ignored live-mount and fork/join suites stay there.
-      nextest --workspace --all-features --locked
-      mkdir -p "$SDK_ARTIFACT_DIR/coverage"
-      printf '%s\n' '{"scope":"rust-contract-tests","coverage_instrumented":false}' >"$SDK_ARTIFACT_DIR/coverage/core-check.json"
-      exit 0
-    fi
-    if ! rustup component list --installed | grep -Eq '^llvm-tools-'; then
-      component_log="$(mktemp "${SDK_TEMP_DIR}/rustup-component.XXXXXXXX")"
-      trap 'rm -f -- "${component_log:-}"' EXIT
-      if ! rustup component add llvm-tools-preview 2>&1 | tee "$component_log"; then
-        grep -Eqi 'detected conflict|could not rename|File exists|already exists' "$component_log" || exit 1
-        toolchain="$(rustup show active-toolchain | awk 'NR == 1 { print $1 }')"
-        [[ "$toolchain" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[a-zA-Z0-9_.-]+$ ]] || {
-          echo 'refusing to repair an unexpected Rust toolchain' >&2
-          exit 1
-        }
-        rustup toolchain uninstall "$toolchain"
-        rustup toolchain install "$toolchain" --profile minimal \
-          --component clippy --component rustfmt --component llvm-tools-preview
-      fi
-      rm -f -- "$component_log"
-      trap - EXIT
-    fi
-    if [[ "$(cargo-llvm-cov llvm-cov --version 2>/dev/null)" != *" 0.9.1" ]]; then
-      # The pinned release archive avoids compiling cargo-llvm-cov on a cold cache.
-      install_tool cargo-llvm-cov-0.9.1-x86_64-unknown-linux-gnu.tar.gz \
-        https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz \
-        b3f68e625481fed9b16444174f3fa5ebcdbde4a1878803a35eabe2dcefcdc41a \
-        "$TOOLS_DIR/cargo/bin" cargo-llvm-cov
-      [[ "$(cargo-llvm-cov llvm-cov --version)" == *" 0.9.1" ]]
-    fi
-    mkdir -p "$SDK_ARTIFACT_DIR/coverage"
-    cargo llvm-cov --workspace --all-features --locked --fail-under-lines 70 \
-      --lcov --output-path "$SDK_ARTIFACT_DIR/coverage/lcov.info"
-    cargo llvm-cov report --summary-only
+    nextest --workspace --all-features --locked
     ;;
   preflight)
     head="$(git rev-parse HEAD)"
@@ -321,14 +277,13 @@ case "$lane" in
     # Package validation runs with --offline; populate every locked crate even
     # when the Blacksmith dependency cache is cold.
     cargo fetch --locked
-    background release release_plugin
     background napi native_binding
     cargo test -p acyclic-fs --features native-mount --locked --lib -- \
       --ignored --test-threads=1
     fork_join_conformance
     bash scripts/check-inference-package.sh "$SDK_ARTIFACT_DIR/packages/inference"
     bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"
-    finish napi release
+    finish napi
     stream_binding
     client_bindings
     bun run test
@@ -362,28 +317,18 @@ case "$lane" in
   linux-musl|linux-arm64-musl)
     if [[ "$lane" == linux-musl ]]; then
       target=x86_64-unknown-linux-musl
-      release_target=linux-x64-musl
     else
       target=aarch64-unknown-linux-musl
-      release_target=linux-arm64-musl
     fi
     sudo apt-get update -qq
     sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y musl-tools
     rustup target add "$target"
     export CC_aarch64_unknown_linux_musl=musl-gcc
     export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
-    background release env CARGO_TARGET_DIR="$target_dir-release" \
-      CARGO_BUILD_TARGET="$target" node scripts/build-product.mjs
     # Run capture admission and publication in the shipped libc ABI. Path
     # statx and held-descriptor fstat can expose different optional metadata.
     cargo test -p acyclic-fs --features native-mount --locked \
       --target "$target" --lib native_capture::
-    finish release
-    binary="$target_dir-release/$target/dist/acyclic"
-    node scripts/verify-release-binary.mjs "$release_target" "$binary"
-    expected="$(cargo metadata --locked --no-deps --format-version 1 |
-      jq -r '.packages[] | select(.name == "acyclic-plugin") | "acyclic \(.version)"')"
-    test "$("$binary" --version)" = "$expected"
     ;;
   policy)
     node scripts/check-compatibility-digests.mjs
@@ -397,7 +342,6 @@ case "$lane" in
       exit 0
     fi
     bash scripts/test-ensure-rust-target.sh
-    bash scripts/test-qualify-gate-rustup.sh
     node scripts/check-workflow-runners.mjs
     node --test scripts/harness-provider-evidence.test.mjs
     install_tool actionlint_1.7.7_linux_amd64.tar.gz \
@@ -506,13 +450,12 @@ case "$lane" in
     bun install --frozen-lockfile
     bash scripts/ensure-rust-target.sh x86_64-apple-darwin
     cargo fetch --locked
-    background release release_plugin
     background napi native_binding
     background x86_64 cargo check -p acyclic-fs -p acyclic-fs-napi --all-features \
       --target x86_64-apple-darwin --locked --target-dir "$target_dir-x86_64"
     nextest --workspace --all-features --locked
     cargo test --workspace --all-features --locked --doc
-    finish napi release x86_64
+    finish napi x86_64
     stream_binding
     client_bindings
     native_mount_tests

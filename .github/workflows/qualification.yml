@@ -175,7 +175,7 @@ jobs:
     if: needs.plan.outputs.matrix != '[]'
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 10
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
@@ -249,15 +249,6 @@ jobs:
           done < <(jq -r 'to_entries[] | select(.value.artifact != "") | [.value.run_id, .value.artifact] | @tsv' <<<"$REUSED")
           for pid in "${pids[@]}"; do wait "$pid"; done
 
-      - name: Forward coverage
-        if: hashFiles('forward/coverage/**') != ''
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: coverage-${{ github.run_id }}-${{ github.run_attempt }}
-          path: forward/coverage
-          compression-level: 0
-          if-no-files-found: error
-          retention-days: 90
       - name: Forward packages-linux
         if: hashFiles('forward/packages-linux/**') != ''
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

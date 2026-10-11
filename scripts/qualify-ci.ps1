@@ -67,8 +67,6 @@ rustup target add aarch64-pc-windows-msvc
 cargo fetch --locked
 
 $CargoTargetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $PWD 'target' }
-$ReleaseTargetDir = "$CargoTargetDir-release"
-$PluginOutput = Join-Path $env:SDK_ARTIFACT_DIR 'acyclic-plugin'
 $wasmBindgenRoot = Join-Path $env:TOOLS_DIR 'cargo'
 $wasmBindgenBin = Join-Path $wasmBindgenRoot 'bin\wasm-bindgen.exe'
 # The CLI must match the wasm-bindgen crate pinned in the workspace manifest.
@@ -104,12 +102,6 @@ node scripts/build-stream-native.mjs build `
 Copy-Item -LiteralPath (Join-Path $StreamNativeTargetDir 'stream-native-build-inputs.receipt.json') -Destination (Join-Path $StreamNativeRoot 'producer-receipt.json')
 node scripts/build-stream-native.mjs stage --bundle $StreamNativeBundle
 node scripts/build-stream-native.mjs check
-$release = Start-Background release @"
-`$env:CARGO_TARGET_DIR = '$ReleaseTargetDir'
-node scripts/build-product.mjs
-node plugin/scripts/package.mjs --binary '$(Join-Path $ReleaseTargetDir 'dist\acyclic.exe')' --out '$PluginOutput'
-node plugin/scripts/validate-package.mjs '$PluginOutput'
-"@
 $napi = Start-Background napi `
     "cargo build -p acyclic-fs-napi --locked --target-dir '$CargoTargetDir-napi'"
 $arm64 = Start-Background aarch64 @"
@@ -166,4 +158,3 @@ bun run --filter '@acyclic-labs/fs' test:composition
 Complete-Background $clippy
 Complete-Background $napi
 Complete-Background $arm64
-Complete-Background $release

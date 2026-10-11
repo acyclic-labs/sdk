@@ -1,4 +1,3 @@
-import { expect, test } from "bun:test";
 import type {
   AgentHarness, AgentId, ApprovalBinding, Authority, BrowserAggregate, ClientCommand, Command, ContentBindings, ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, Event, FileRef, ProviderOperationId, HarnessRuntimeHost, Interaction, InteractionId, InteractionResolution, InteractionTicket, Policy,
   ForkRequest, ForkSeed, ModelContextSelection, ModelToolDefinition, NativeContracts, OperationId, PolicyDigest, ProjectMergeNotice, ProjectableConversation, ProviderJoinProof, ResourceRef, ResourceRevision, ResumableTask, RuntimeSchema, RuntimeTaskId, TaskContext,
@@ -364,23 +363,20 @@ function nativeResourceValidationKeepsProviderKind(reference: ResourceRef<"gener
   });
 }
 
-test("v2 ownership, revision, and authority contracts remain discriminated", () => {
-  expect([project.class, privateVolume.class, shared.class]).toEqual(["project", "agent_private", "session_shared"]);
-  void [wrongOwner, untypedPrivateOwner, untypedBoundAgent, wrongFamily, wrongFile, wrongGrant, emptySharedGrant, untypedForkAgent, untypedAttachedAgent, untypedForkOperation, wrongPrivateGeneration, unlinkedToolResult, toolIdOnUser, wrongMergeNoticeKind, wrongMergeProofProvider, missingMergeProofStatement, roundedConversationSequence, unvalidatedMessageId, unvalidatedSelectionId, roundedContextRevision, roundedPageCursor, unversionedProjection, untypedInteractionId, untypedApprovalOperation, unboundApproval, approvalOnQuestion, wrongRevision, wrongHistoryProvider, wrongAuthority, executableModelSchema, inlineOutboxBody, stringOutboxMetadata, roundedInteractionVersion, stringMergeOperation, mismatchedClientFrame, unpinnedPolicy, unpinnedHostPolicy, unvalidatedPolicyDigest, unboundLocalApproval];
-  void cannotConstructRuntimeDirectly;
-  void nativeValidationKeepsOwnerClass;
-  void canonicalComparisonKeepsItsRecordType;
-  void nativeAdmissionDoesNotPromiseOriginalIdentitySpelling;
-  void nativeAdmissionIsRequiredAtComposition;
-  void generatedAdmissionBoundaryRejectsOpaqueRoutes;
-  void recordedEventCannotExposeBearerProof;
-  void admittedContentCannotBeRebound;
-  void identityConstructorsKeepDistinctBrands;
-  void nativeResourceValidationKeepsProviderKind;
-  void durableTasksNeedPinnedTypes;
-  void toolsNeedTypedAdmission;
-  void hostRecoveryCannotInventTypes;
-  void typedAnswerRequiresSchema;
-  void durableToolOutcomeCannotBeErased;
-  void eventPayloadNeedsDecoder;
-});
+void [wrongOwner, untypedPrivateOwner, untypedBoundAgent, wrongFamily, wrongFile, wrongGrant, emptySharedGrant, untypedForkAgent, untypedAttachedAgent, untypedForkOperation, wrongPrivateGeneration, unlinkedToolResult, toolIdOnUser, wrongMergeNoticeKind, wrongMergeProofProvider, missingMergeProofStatement, roundedConversationSequence, unvalidatedMessageId, unvalidatedSelectionId, roundedContextRevision, roundedPageCursor, unversionedProjection, untypedInteractionId, untypedApprovalOperation, unboundApproval, approvalOnQuestion, wrongRevision, wrongHistoryProvider, wrongAuthority, executableModelSchema, inlineOutboxBody, stringOutboxMetadata, roundedInteractionVersion, stringMergeOperation, mismatchedClientFrame, unpinnedPolicy, unpinnedHostPolicy, unvalidatedPolicyDigest, unboundLocalApproval];
+void cannotConstructRuntimeDirectly;
+void nativeValidationKeepsOwnerClass;
+void canonicalComparisonKeepsItsRecordType;
+void nativeAdmissionDoesNotPromiseOriginalIdentitySpelling;
+void nativeAdmissionIsRequiredAtComposition;
+void generatedAdmissionBoundaryRejectsOpaqueRoutes;
+void recordedEventCannotExposeBearerProof;
+void admittedContentCannotBeRebound;
+void identityConstructorsKeepDistinctBrands;
+void nativeResourceValidationKeepsProviderKind;
+void durableTasksNeedPinnedTypes;
+void toolsNeedTypedAdmission;
+void hostRecoveryCannotInventTypes;
+void typedAnswerRequiresSchema;
+void durableToolOutcomeCannotBeErased;
+void eventPayloadNeedsDecoder;

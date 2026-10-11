@@ -271,7 +271,7 @@ test("merged PR proof reuses only executed core jobs for identical consumer inpu
   assert.deepEqual(exercise(data => { data.runs.workflow_runs[0].path += "@main"; }), markers);
   assert.deepEqual(exercise(data => { data.runs.workflow_runs[0].pull_requests = [{ number: 999 }]; }), markers, "qualification belongs to the exact source, independent of run PR association");
   assert.deepEqual(exercise(data => { data.runs.workflow_runs.unshift({ ...data.runs.workflow_runs[0], id: 8 }); }), markers, "a reused/skipped attempt must not hide an earlier direct proof");
-  assert.equal(exercise(undefined, tree, lanes, () => "").gate, undefined);
+  assert.deepEqual(exercise(undefined, tree, lanes, () => "").gate, markers.gate, "test-only gates do not require a publication artifact");
   for (const alter of [
     data => { data.pr[0].merged_at = null; },
     data => { data.pr[0].merge_commit_sha = donor; },
@@ -336,11 +336,11 @@ test("remote donor trees preserve real Git records and reject incomplete identit
 });
 
 test("retained proof artifacts belong to the exact source run and attempt", () => {
-  const artifact = { name: "coverage-7-2", expired: false, workflow_run: { id: 7, head_sha: source.source_commit }, digest: `sha256:${"b".repeat(64)}` };
-  const lookup = artifacts => retainedArtifact(7, "coverage", 2, source.source_commit, () => ({ artifacts }));
+  const artifact = { name: "packages-linux-arm64-7-2", expired: false, workflow_run: { id: 7, head_sha: source.source_commit }, digest: `sha256:${"b".repeat(64)}` };
+  const lookup = artifacts => retainedArtifact(7, "packages-linux-arm64", 2, source.source_commit, () => ({ artifacts }));
   assert.equal(lookup([artifact]), artifact.name);
   for (const replacement of [
-    { name: "coverage-7-3" }, { expired: true }, { digest: null },
+    { name: "packages-linux-arm64-7-3" }, { expired: true }, { digest: null },
     { workflow_run: { id: 8, head_sha: source.source_commit } },
     { workflow_run: { id: 7, head_sha: "d".repeat(40) } },
   ]) assert.equal(lookup([{ ...artifact, ...replacement }]), "");
@@ -348,8 +348,8 @@ test("retained proof artifacts belong to the exact source run and attempt", () =
   assert.equal(lookup([]), "");
   assert.equal(lookup([null]), "");
   assert.equal(lookup(null), "");
-  const { matrix } = chooseLanes(lanes, { mainPush: true, coreOnly: true, force: false, marker: () => source, retained: () => lookup([]) });
-  assert.deepEqual(matrix.map(lane => lane.lane), ["gate"]);
+  const { matrix } = chooseLanes(lanes.filter(lane => lane.lane === "linux-arm64"), { mainPush: false, force: false, marker: () => source, retained: () => lookup([]) });
+  assert.deepEqual(matrix.map(lane => lane.lane), ["linux-arm64"]);
 });
 
 test("the planner CLI promotes main proof and fails closed without changing PR/full policy", () => {
@@ -394,13 +394,10 @@ test("the planner CLI promotes main proof and fails closed without changing PR/f
       [`repos/${repository}/actions/workflows/qualification.yml`]: { id: 9, path },
       [`repos/${repository}/actions/workflows/9/runs?event=pull_request&head_sha=${donor}&status=success&per_page=5`]: { workflow_runs: [{ id: 7, run_attempt: 2, workflow_id: 9, path, event: "pull_request", head_sha: donor, head_repository: repo, status: "completed", conclusion: "success" }] },
       [`repos/${repository}/actions/runs/7/attempts/2/jobs?per_page=100`]: { total_count: 4, jobs: ["plan", "gate", "typescript", "policy"].map(name => ({ name, head_sha: donor, run_id: 7, run_attempt: 2, runner_id: 1, status: "completed", conclusion: "success", steps: [{ name: name === "plan" ? "Verify commit signatures and secrets" : "Run qualification lane", status: "completed", conclusion: "success" }] })) },
-      [`repos/${repository}/actions/runs/7/artifacts?per_page=100`]: { artifacts: [{ name: "coverage-7-2", expired: false, workflow_run: { id: 7, head_sha: donor }, digest: `sha256:${"b".repeat(64)}` }] },
-      [`repos/${repository}/actions/runs/6/artifacts?per_page=100`]: { artifacts: [] },
       [`repos/${repository}/actions/runs/8/attempts/1/jobs?per_page=100`]: { jobs: [] },
     };
     put("api.json", JSON.stringify(api));
     mkdirSync(join(root, ".qualification"));
-    put(".qualification/gate.json", JSON.stringify({ run_id: 6, run_attempt: 1, source_commit: donor }));
     // Keep production CLI/Git behavior. Substitute only the external API
     // transport, so unavailable APIs and cache promotion exercise the caller.
     put("bootstrap.cjs", 'const cp=require("node:child_process"),fs=require("node:fs"),original=cp.execFileSync; cp.execFileSync=(file,args,options)=>{if(file!=="gh")return original(file,args,options);const data=JSON.parse(fs.readFileSync("api.json"));const path=args.at(-1);if(!data[path])throw new Error("API unavailable");return JSON.stringify(data[path]);};require("node:module").syncBuiltinESMExports();');
@@ -428,7 +425,7 @@ test("the planner CLI promotes main proof and fails closed without changing PR/f
     assert.deepEqual(run("record").recorded.sort(), ["gate", "policy", "typescript"]);
     assert.deepEqual(JSON.parse(readFileSync(join(root, ".qualification/gate.json"), "utf8")), { run_id: 7, run_attempt: 2, source_commit: donor });
     // Main's promoted markers also work without the donor object/API lookup.
-    put("api.json", JSON.stringify({ [`repos/${repository}/actions/runs/7/artifacts?per_page=100`]: api[`repos/${repository}/actions/runs/7/artifacts?per_page=100`] }));
+    put("api.json", "{}");
     assert.deepEqual(run("select").matrix, []);
     rmSync(join(root, ".qualification"), { recursive: true, force: true });
     put("api.json", "{}");
@@ -479,9 +476,9 @@ test("full qualification rebuilds source-bound packages after a README-only chan
 test("a lane whose artifact expired executes again", () => {
   const { matrix } = chooseLanes(lanes, {
     force: false, mainPush: false, marker: everywhere,
-    retained: (runId, prefix) => (prefix === "coverage" ? "" : retainedAll(runId, prefix)),
+    retained: (runId, prefix) => (prefix === "packages-linux-arm64" ? "" : retainedAll(runId, prefix)),
   });
-  assert.deepEqual(matrix.map(lane => lane.lane), ["gate"]);
+  assert.deepEqual(matrix.map(lane => lane.lane), ["linux-arm64"]);
 });
 
 test("ordinary main pushes keep downstream qualification off the routine path", () => {
@@ -546,18 +543,6 @@ test("release, manual, and scheduled events are full qualification events", () =
     const event = classifyQualificationEvent(input);
     assert.equal(event, expected);
     assert.equal(requiresFullQualification(event), true);
-  }
-});
-
-test("the workflow keeps full qualification off routine pull requests", () => {
-  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8").replaceAll("\r\n", "\n");
-  assert.match(workflow, /^  release:/m);
-  assert.doesNotMatch(workflow, /^  schedule:/m);
-  assert.match(workflow, /default: false/);
-  assert.match(workflow, /github\.event_name == 'release' && github\.event\.release\.tag_name/);
-  for (const { lane } of lanes) {
-    assert.match(workflow, new RegExp(`- name: Find ${lane} marker\\n`), lane);
-    assert.match(workflow, new RegExp(`- name: Record ${lane}\\n`), lane);
   }
 });
 

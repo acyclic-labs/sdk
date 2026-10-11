@@ -22,7 +22,7 @@ runs:
         "CARGO_INCREMENTAL=0" >> $env:GITHUB_ENV
         .\scripts\windows-rust-setup.ps1 -Phase start
 
-    # Core and full runs compile different invocations (coverage, packaging,
+    # Core and full runs compile different invocations (tests, packaging,
     # release builds), so each keeps its own compiler cache, sized to one
     # run's working set. Windows restores at ~70 MB/s rather than from
     # co-located storage, so its full cache stays smaller.

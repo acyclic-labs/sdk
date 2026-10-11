@@ -126,7 +126,7 @@ export const ignored = {
 // `entries` are `git ls-tree -r` records: "<mode> <type> <object>\t<path>".
 // Core and full qualification must have separate cache identities. A full run
 // otherwise could restore a marker written by a cheap pull-request run and
-// skip its coverage and downstream checks.
+// skip its Rust tests and downstream checks.
 export function laneKeys(lanes, entries, scope = "core") {
   if (scope !== "core" && scope !== "full") throw new Error(`unknown qualification scope ${scope}`);
   const keys = {};
