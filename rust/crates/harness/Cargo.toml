@@ -48,7 +48,7 @@ terminal = ["dep:hex"]
 wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 # Provider adapters. Each pulls only its own SDK family.
-filesystem = ["dep:acyclic-fs", "acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
+filesystem = ["dep:acyclic-fs", "acyclic-fs/memory", "dep:acyclic-native-runtime", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local", "dep:acyclic-native-runtime"]
 # Explicit native host composition; portable defaults never select it.
 native-execution = ["filesystem", "acyclic-fs/native-mount", "dep:acyclic-native-runtime"]
