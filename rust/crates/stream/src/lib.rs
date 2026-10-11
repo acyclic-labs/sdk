@@ -42,6 +42,11 @@ mod wasm;
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
 pub mod wire_codec;
 
+mod owned_bytes;
+pub use owned_bytes::OwnedBytes;
+#[cfg(not(target_arch = "wasm32"))]
+pub use owned_bytes::{PreparedOwnedBytes, PreparedOwnedBytesError, PreparedOwnedBytesFailure};
+
 /// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
 /// Acyclic platform's maximum bearer (12 KiB), so every platform-issued credential fits.
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
@@ -773,16 +778,28 @@ impl<'a, T> NativeProviderFuture<'a, T> {
     where
         F: Future<Output = NativeStreamResult<T>> + Send + 'a,
     {
+        match Self::try_new(meter, future) {
+            Ok(future) => future,
+            Err(error) => Self::Ready(Some(Err(error))),
+        }
+    }
+
+    /// Builds the same funded frame, reporting admission failure before a
+    /// prepared ingress can be issued to its caller.
+    pub(crate) fn try_new<F>(
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        future: F,
+    ) -> std::io::Result<Self>
+    where
+        F: Future<Output = NativeStreamResult<T>> + Send + 'a,
+    {
         let bytes = std::mem::size_of::<F>();
         let allocation = if bytes == 0 {
             acyclic_native_runtime::ReadAllocation::empty(meter)
         } else {
-            match acyclic_native_runtime::ReadAllocation::new(meter, bytes) {
-                Ok(allocation) => allocation,
-                Err(error) => return Self::Ready(Some(Err(error))),
-            }
+            acyclic_native_runtime::ReadAllocation::new(meter, bytes)?
         };
-        Self::Funded { future: Box::pin(future), allocation }
+        Ok(Self::Funded { future: Box::pin(future), allocation })
     }
 
     /// Returns a result without allocating a provider future.
@@ -989,6 +1006,7 @@ impl CommitInput {
         Ok(Self { request: captured.value, _allocation: captured.allocation })
     }
 }
+
 /// Heap-allocated provider future with the platform's executor bound.
 #[cfg(not(target_arch = "wasm32"))]
 pub type BoxProviderFuture<'a, T> = futures::future::BoxFuture<'a, T>;
@@ -1148,6 +1166,22 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, CommitOutcome> {
         let _ = request;
+        NativeProviderFuture::ready(Ok(Err(NativeStreamFailure::new(
+            StreamError::Unsupported, acyclic_native_runtime::ReadAllocation::empty(&meter),
+        ))))
+    }
+
+    /// Funds the canonical two-tail/one-append/one-record Commit ingress before
+    /// physical action. The immutable retry key and request family do not change.
+    /// Unsupported custom providers fail inline before any I/O.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_prepare_commit(
+        &self,
+        request: CommitRequest,
+        maximum_record_bytes: usize,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, PreparedNativeCommit> {
+        let _ = (request, maximum_record_bytes);
         NativeProviderFuture::ready(Ok(Err(NativeStreamFailure::new(
             StreamError::Unsupported, acyclic_native_runtime::ReadAllocation::empty(&meter),
         ))))
@@ -1334,6 +1368,17 @@ impl<P: StreamProvider> StreamClient<P> {
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, CommitOutcome> {
         self.provider.native_commit(request, meter)
+    }
+
+    /// Prepares the real provider's canonical Commit before physical action.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn native_prepare_commit(
+        &self,
+        request: CommitRequest,
+        maximum_record_bytes: usize,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, PreparedNativeCommit> {
+        self.provider.native_prepare_commit(request, maximum_record_bytes, meter)
     }
 
     /// Forwards the original commit and trusted deadline without stripping it.

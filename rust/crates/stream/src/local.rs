@@ -46,7 +46,7 @@ use crate::obs;
 use crate::wire_codec::ObservedWire;
 use crate::{
     AppendOutcome, AppendRequest, ChildStream, ChildrenPage, ChildrenPageRequest, ChildrenRequest,
-    CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
+    CommitInput, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
     IdempotencyObservation, MAX_COMMAND_BYTES, MemoryLimits, MemoryStream, ReadRequest,
     NativeProviderFuture, NativeRecordStream, NativeStreamFailure, NativeStreamOutput, NativeStreamResult, RecordStream,
     StreamBounds, StreamError, StreamPath, StreamProvider, SystemUnixMillisClock, UnixMillisClock,
@@ -156,7 +156,9 @@ impl<F> FundedLocalTask<F> {
         Ok(Self { operation, _allocation: allocation })
     }
 
-    fn run<T>(self) -> T where F: FnOnce() -> T { (self.operation)() }
+    fn run<T>(self) -> T where F: FnOnce() -> T { self.run_with(|operation| operation()) }
+
+    fn run_with<T>(self, execute: impl FnOnce(F) -> T) -> T { execute(self.operation) }
 }
 
 impl<F: Future> Future for FundedLocalTask<F> {
@@ -467,59 +469,6 @@ struct AppendCompletion<T> {
     input: Option<AppendInput>,
 }
 
-/// Caller-owned request controls never escape into an accepted detached task.
-/// Only fresh descriptor vectors are captured; paths and Bytes retain their
-/// existing intrinsic owners without adopting or copying opaque payload.
-struct CommitInput {
-    request: CommitRequest,
-    _allocation: Option<ReadAllocation>,
-}
-
-impl CommitInput {
-    fn ordinary(request: CommitRequest) -> Self {
-        Self { request, _allocation: None }
-    }
-
-    fn capture(
-        source: &CommitRequest,
-        meter: &Arc<dyn NativeReadMeter>,
-    ) -> std::io::Result<Self> {
-        let mut funding = crate::wire_codec::WireFunding::new(Some(meter));
-        let mut conditions = funding.vector(source.conditions.len())?;
-        for condition in &source.conditions {
-            funding.examine(1)?;
-            funding.copy_admission(std::mem::size_of::<crate::CommitCondition>())?;
-            conditions.push(condition.clone());
-            funding.copy_completed(std::mem::size_of::<crate::CommitCondition>())?;
-        }
-        let mut mutations = funding.vector(source.mutations.len())?;
-        for mutation in &source.mutations {
-            funding.examine(1)?;
-            let mutation = match mutation {
-                crate::CommitMutation::Append { path, records } => crate::CommitMutation::Append {
-                    path: path.clone(),
-                    records: funding.records(records)?,
-                },
-                crate::CommitMutation::Fork { source, destination, at_tail, records } =>
-                    crate::CommitMutation::Fork {
-                        source: source.clone(),
-                        destination: destination.clone(),
-                        at_tail: *at_tail,
-                        records: funding.records(records)?,
-                    },
-            };
-            funding.copy_admission(std::mem::size_of::<crate::CommitMutation>())?;
-            mutations.push(mutation);
-            funding.copy_completed(std::mem::size_of::<crate::CommitMutation>())?;
-        }
-        let captured = funding.finish(CommitRequest {
-            conditions,
-            mutations,
-            idempotency_key: source.idempotency_key.clone(),
-        });
-        Ok(Self { request: captured.value, _allocation: captured.allocation })
-    }
-}
 
 #[derive(Clone)]
 struct OwnedJournal {
@@ -527,6 +476,28 @@ struct OwnedJournal {
     // the shared local-root lifecycle. A blocking task therefore cannot outlive root ownership.
     journal: Arc<Mutex<Journal>>,
     _ownership_anchor: Option<OwnershipAnchor>,
+}
+
+/// The actual journal job packet exists before submission. Its mutable frame
+/// can be filled without allocating another capture or changing the IO engine.
+/// Raw storage retires before allowance/control custody and the root anchor.
+struct JournalPersistWork {
+    frame: PreparedFrame,
+    required: bool,
+    admission: Option<AdmittedFrameWrite>,
+    journal: OwnedJournal,
+}
+
+impl JournalPersistWork {
+    fn run(mut self) -> (Result<(), LocalStreamError>, std::io::Result<()>) {
+        let result = match self.journal.journal.lock() {
+            Ok(mut journal) => journal.append_observed(
+                &self.frame, self.required, self.admission.as_mut(),
+            ),
+            Err(_) => (Err(LocalStreamError::Corrupt), Ok(())),
+        };
+        result
+    }
 }
 
 impl OwnedJournal {
@@ -836,30 +807,26 @@ impl LocalStream {
     fn plan_persist(
         &self,
         frame: PreparedFrame,
-        mut admission: Option<AdmittedFrameWrite>,
+        admission: Option<AdmittedFrameWrite>,
         meter: Option<&Arc<dyn NativeReadMeter>>,
-    ) -> std::io::Result<FundedLocalTask<impl FnOnce() -> (
-        Result<(), LocalStreamError>, std::io::Result<()>,
-    ) + Send + 'static>> {
-        let required = !deferred();
-        let journal = self.inner.journal.clone();
-        FundedLocalTask::new(move || {
-            match journal.journal.lock() {
-                Ok(mut journal) => journal.append_observed(&frame, required, admission.as_mut()),
-                Err(_) => (Err(LocalStreamError::Corrupt), Ok(())),
-            }
+    ) -> std::io::Result<FundedLocalTask<JournalPersistWork>> {
+        FundedLocalTask::new(JournalPersistWork {
+            frame,
+            required: !deferred(),
+            admission,
+            journal: self.inner.journal.clone(),
         }, meter)
     }
 
-    async fn persist_planned<F>(
+    async fn persist_planned(
         &self,
-        plan: FundedLocalTask<F>,
+        plan: FundedLocalTask<JournalPersistWork>,
         meter: Option<&Arc<dyn NativeReadMeter>>,
     ) -> LocalCompletion<()>
-    where
-        F: FnOnce() -> (Result<(), LocalStreamError>, std::io::Result<()>) + Send + 'static,
     {
-        let (physical, observed) = tokio::task::spawn_blocking(move || plan.run()).await
+        let (physical, observed) = tokio::task::spawn_blocking(
+            move || plan.run_with(JournalPersistWork::run),
+        ).await
             .map_err(|_| LocalCompletionError::Stream(self.inner.poison()))?;
         if let Err(error) = physical {
             self.inner.poison();
@@ -1711,8 +1678,19 @@ impl PreparedFrame {
             .checked_add(command_length_usize)
             .and_then(|value| value.checked_add(FRAME_CHECKSUM_BYTES))
             .ok_or(LocalStreamError::InvalidLimits)?;
+        let mut frame = Self::allocate_buffer(capacity, meter)?;
+        frame.write_wire_observed(journal, committed_at_millis, encoded_length, length, capacity, meter)?;
+        Ok(frame)
+    }
+
+    /// Actual raw storage can be allocated independently of late scalar/body
+    /// fill. Every ordinary/native encoder uses this same capacity owner.
+    fn allocate_buffer(
+        capacity: usize,
+        meter: Option<&Arc<dyn NativeReadMeter>>,
+    ) -> Result<Self, LocalStreamError> {
         let mut allocation = meter.map(|meter| ReadAllocation::new(meter, capacity)).transpose()?;
-        let mut encoded = frame_buffer(capacity, meter)?;
+        let encoded = frame_buffer(capacity, meter)?;
         if let Some(allocation) = &mut allocation {
             allocation.reconcile_capacity(encoded.capacity())?;
         }
@@ -1735,27 +1713,24 @@ impl PreparedFrame {
         if let Some(meter) = meter {
             meter.admit_codec(encoded_length as u64, capacity as u64, 0)?;
         }
-        encoded.extend_from_slice(&length);
-        encoded.extend_from_slice(&committed_at_millis.to_le_bytes());
+        self.encoded.extend_from_slice(&length);
+        self.encoded.extend_from_slice(&committed_at_millis.to_le_bytes());
         journal
-            .encode(&mut encoded)
+            .encode(&mut self.encoded)
             .map_err(|_| LocalStreamError::InvalidLimits)?;
         if let Some(meter) = meter {
             meter.record_codec(encoded_length as u64, (capacity - FRAME_CHECKSUM_BYTES) as u64, 0)?;
             meter.check()?;
         }
-        let command_bytes = encoded.get(4..).ok_or(LocalStreamError::InvalidLimits)?;
+        let command_bytes = self.encoded.get(4..).ok_or(LocalStreamError::InvalidLimits)?;
         let checksum = frame_checksum_observed(&length, command_bytes, meter)?;
-        encoded.extend_from_slice(&checksum);
+        self.encoded.extend_from_slice(&checksum);
         if let Some(meter) = meter {
             meter.record_codec(0, FRAME_CHECKSUM_BYTES as u64, 0)?;
             meter.check()?;
         }
-        Ok(Self {
-            encoded,
-            bytes: u64::try_from(capacity).map_err(|_| LocalStreamError::InvalidLimits)?,
-            _allocation: allocation,
-        })
+        self.bytes = u64::try_from(capacity).map_err(|_| LocalStreamError::InvalidLimits)?;
+        Ok(())
     }
 }
 

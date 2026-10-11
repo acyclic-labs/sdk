@@ -278,6 +278,18 @@ impl AsRef<[u8]> for WireOwnedBytes {
     fn as_ref(&self) -> &[u8] { &self.bytes }
 }
 
+/// Generated prost DTOs see only an immutable ready alias. Empty aliases also
+/// retain the entire canonical backing, and metadata retires after that owner.
+struct WireReadyBytes {
+    value: crate::OwnedBytes,
+    #[cfg(not(target_arch = "wasm32"))]
+    _allocation: Option<ReadAllocation>,
+}
+
+impl AsRef<[u8]> for WireReadyBytes {
+    fn as_ref(&self) -> &[u8] { self.value.as_ref() }
+}
+
 use crate::{
     AppendOutcome, AppendReceipt, CommitCondition, CommitConflict, CommitId, CommitMutation,
     CommitOutcome, CommittedAppend, CommittedEnvelope, CommittedFork, CommittedMutation,
