@@ -1,6 +1,6 @@
 //! Thin embedded `Fs`/`Volume`/`Checkout` composition over the two durable stores.
 
-use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore};
+use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore, StorageFuture};
 use crate::cancellation::{CancellationError, CancellationToken};
 use crate::foundation::{
     AuthorityId, Digest, DurableCommit, Epoch, FileId, GenerationId, Head, OperationId, ProposedCommit,
@@ -4635,8 +4635,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         guard: &mut F,
     ) -> MeasuredResult<OperationReceipt<crate::Workspace<A, O>>, crate::workspace::WorkspaceError>
     where
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = FsResult<()>> + Send,
+        F: FnMut(WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = FsResult<()>> + StorageFuture,
     {
         self.fork_workspace_measured_inner(destination, source, idempotency_key, paths,
             permit, budget, cancellation, Some(guard)).await
@@ -4649,8 +4649,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         guard: Option<&mut F>,
     ) -> MeasuredResult<OperationReceipt<crate::Workspace<A, O>>, crate::workspace::WorkspaceError>
     where
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = FsResult<()>> + Send,
+        F: FnMut(WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = FsResult<()>> + StorageFuture,
     {
         let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(budget, cancellation);
         let name_allocation = accounting.record_actual_owned(destination.retained_bytes());
@@ -10756,7 +10756,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         operation: &'a Mutation,
         accounting: &'a mut crate::kernel::allocation::KernelAccounting<'accounting>,
         cancellation: &CancellationToken,
-    ) -> impl std::future::Future<Output = Result<(Option<FileRecord>, Option<FileRecord>), FsError>> + Send + 'a + use<'a, 'accounting, A, O> {
+    ) -> impl std::future::Future<Output = Result<(Option<FileRecord>, Option<FileRecord>), FsError>> + StorageFuture + 'a + use<'a, 'accounting, A, O> {
         let cancellation = cancellation.clone();
         async move {
             let (first_id, second_id) = match operation {
@@ -11549,7 +11549,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         allowed: &'a [FileId],
         accounting: &'a mut crate::kernel::allocation::KernelAccounting<'accounting>,
         cancellation: &'a CancellationToken,
-    ) -> impl std::future::Future<Output = Result<(), FsError>> + Send + 'a {
+    ) -> impl std::future::Future<Output = Result<(), FsError>> + StorageFuture + 'a {
         async move {
             let parent_pending = match path.split_last() {
                 Some((parent, _)) => pending_binding_path(parent, pending,
@@ -13133,7 +13133,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting: &'a mut crate::kernel::allocation::KernelAccounting<'accounting>,
         cancellation: &'a CancellationToken,
         allowed_file_ids: &'a [FileId],
-    ) -> impl std::future::Future<Output = Result<Option<(LogicalName, crate::kernel::allocation::KernelOwnedAllocation)>, FsError>> + Send + 'a {
+    ) -> impl std::future::Future<Output = Result<Option<(LogicalName, crate::kernel::allocation::KernelOwnedAllocation)>, FsError>> + StorageFuture + 'a {
         async move {
             let mut frame_custody = None;
             let (future, frame_bytes) = crate::heap_future::in_heap_admitted(
@@ -13199,7 +13199,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     Ok(found)
                 },
             )?;
-            let mut future: std::pin::Pin<Box<dyn std::future::Future<Output = _> + Send + '_>> = future;
+            let mut future: crate::async_storage::BoxStorageFuture<'_, _> = future;
             let result = future.as_mut().await;
             drop(future);
             let mut frame_custody = frame_custody.ok_or(FsError::PendingMutationAllocationFailed)?;
@@ -14800,7 +14800,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         expected_file_id: Option<FileId>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> impl std::future::Future<Output = FsResult<()>> + Send + 'a + use<'a, A, O> {
+    ) -> impl std::future::Future<Output = FsResult<()>> + StorageFuture + 'a + use<'a, A, O> {
         let cancellation = cancellation.clone();
         async move {
             self.mutate(
@@ -15136,8 +15136,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> crate::MeasuredResult<FsReceipt<CheckoutCommitOutcome>, E>
     where
         E: From<FsError> + Send,
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + Send,
+        F: FnMut(WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + StorageFuture,
     {
         self.commit_with_optional_context_with_permit_guarded(
             operation_id, None, None, None, permit, budget, cancellation, before_publication,
@@ -15153,8 +15153,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> crate::MeasuredResult<FsReceipt<CheckoutCommitOutcome>, E>
     where
         E: From<FsError> + Send,
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + Send,
+        F: FnMut(WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + StorageFuture,
     {
         let span = crate::obs::span!(
             INFO,
@@ -15217,8 +15217,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> crate::MeasuredResult<FsReceipt<CheckoutCommitOutcome>, E>
     where
         E: From<FsError> + Send,
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + Send,
+        F: FnMut(WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + StorageFuture,
     {
         crate::heap_future::in_heap_measured_with_error(move |budget| async move {
             if self.mode.access != AccessMode::ReadWrite
@@ -15307,8 +15307,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> crate::MeasuredResult<FsReceipt<CheckoutCommitOutcome>, E>
     where
         E: From<FsError> + Send,
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + Send,
+        F: FnMut(WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + StorageFuture,
     {
         if !self.has_pending_mutations() && permit == PublicationPermit::Unrestricted
             && operation_context.is_none() && operation_evidence.is_none()
@@ -15369,8 +15369,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> crate::MeasuredResult<FsReceipt<CheckoutCommitOutcome>, E>
     where
         E: From<FsError> + Send,
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + Send,
+        F: FnMut(WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + StorageFuture,
     {
         cancellation
             .check()
@@ -15841,8 +15841,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> crate::MeasuredResult<FsReceipt<Option<CheckoutCommitOutcome>>, E>
     where
         E: From<FsError> + Send,
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + Send,
+        F: FnMut(WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + StorageFuture,
     {
         crate::heap_future::in_heap_measured_with_error(move |budget| async move {
             cancellation
@@ -19308,7 +19308,7 @@ where
     }
 }
 
-trait ForkPublication<A: AsyncAuthorityStore>: Send {
+trait ForkPublication<A: AsyncAuthorityStore>: StorageFuture {
     type Error: From<FsError> + From<crate::workspace::WorkspaceError> + Send;
 
     fn commit(
@@ -19329,8 +19329,8 @@ struct MeasuredForkPublication<'a, F> {
 impl<A, F, Fut> ForkPublication<A> for MeasuredForkPublication<'_, F>
 where
     A: AsyncAuthorityStore,
-    F: FnMut(WorkBudget) -> Fut + Send,
-    Fut: Future<Output = FsResult<()>> + Send,
+    F: FnMut(WorkBudget) -> Fut + StorageFuture,
+    Fut: Future<Output = FsResult<()>> + StorageFuture,
 {
     type Error = crate::workspace::WorkspaceError;
 
