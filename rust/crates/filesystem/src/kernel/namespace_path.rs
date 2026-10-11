@@ -148,6 +148,24 @@ impl NamespacePath {
         })
     }
 
+    /// Checks the same borrowed Unicode spelling on the original scope,
+    /// without allocating a path merely to validate or recognize the root.
+    pub(crate) fn validate_in_profile_with_accounting(
+        path: &str,
+        profile: FilesystemProfile,
+        limits: VolumeLimits,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), crate::FsError> {
+        accounting.check()?;
+        Self::validate_in_profile_with_steps(path, profile, limits, cancellation, || {
+            accounting.charge(WorkCounters {
+                source_path_components: 1, items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })
+        }).map(|_| ())
+    }
+
     fn validate_in_profile_with_steps<E: From<NamespacePathError>>(
         path: &str,
         profile: FilesystemProfile,
@@ -379,6 +397,23 @@ impl NamespacePath {
         let names = self.components.get(..depth).ok_or(NamespacePathError::TooDeep)?;
         let encoded_bytes = namespace_encoded_bytes(names.iter(), limits)?;
         Self::copy_names_with_ledger(names, None, encoded_bytes, ledger, work, budget, cancellation)
+    }
+
+    pub(crate) fn prefix_with_accounting(
+        &self,
+        depth: usize,
+        limits: VolumeLimits,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(Self, KernelOwnedAllocation), crate::FsError> {
+        let mut owned = NamespacePathAccounting::new(accounting)?;
+        cancellation.check()?;
+        let names = self.components.get(..depth).ok_or(NamespacePathError::TooDeep)?;
+        let encoded_bytes = namespace_encoded_bytes(names.iter(), limits)?;
+        let result = Self::copy_names_with_steps(
+            names, None, encoded_bytes, cancellation, &mut |step| owned.observe(step),
+        );
+        owned.finish(result)
     }
 
     /// Copies a borrowed validated-name sequence through the same bounded

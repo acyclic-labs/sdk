@@ -62,6 +62,84 @@ mod original_namespace_controls {
     }
 
     #[test]
+    fn original_fork_path_preflight_does_not_construct_owned_root_or_names()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let limits = VolumeLimits::default();
+        let before = original.receipt();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        NamespacePath::validate_in_profile_with_accounting(
+            "/", FilesystemProfile::Windows, limits, &mut accounting, &cancellation,
+        )?;
+        assert_eq!(original.receipt(), before);
+        NamespacePath::validate_in_profile_with_accounting(
+            "/é/𝄞", FilesystemProfile::Windows, limits, &mut accounting, &cancellation,
+        )?;
+        let after = original.receipt();
+        assert_eq!(after.allocation_operations, before.allocation_operations);
+        assert_eq!(after.bytes_copied, before.bytes_copied);
+        assert_eq!(after.bytes_encoded, before.bytes_encoded);
+        assert_eq!(after.source_path_components - before.source_path_components, 2);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        NamespacePath::validate_in_profile_with_accounting(
+            "/a", FilesystemProfile::Portable,
+            VolumeLimits { maximum_component_bytes: 1, ..limits },
+            &mut accounting, &cancellation,
+        )?;
+        let error = NamespacePath::validate_in_profile_with_accounting(
+            "/a", FilesystemProfile::Windows,
+            VolumeLimits { maximum_component_bytes: 1, ..limits },
+            &mut accounting, &cancellation,
+        ).err().ok_or("UTF16 bound was validated as UTF8")?;
+        assert!(matches!(error, crate::FsError::Path(crate::kernel::PathLookupError::NamespacePath(
+            NamespacePathError::Name(TreePageError::NameTooLarge),
+        ))));
+        assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        Ok(())
+    }
+
+    #[test]
+    fn original_fork_prefix_copies_only_retained_selected_components()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = CancellationToken::new();
+        let limits = VolumeLimits::default();
+        let source = NamespacePath::new(vec![
+            LogicalName::new(NameEncoding::WindowsUtf16Le, vec![0x00, 0xd8], 256)?,
+            LogicalName::new(NameEncoding::WindowsUtf16Le, vec![b'z', 0], 256)?,
+        ], limits)?;
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let before = original.receipt();
+        let (root, root_guard) = source.prefix_with_accounting(0, limits, &mut accounting, &cancellation)?;
+        assert!(root.is_root());
+        assert_eq!(original.receipt(), before);
+        drop(root);
+        drop(root_guard);
+        let (prefix, guard) = source.prefix_with_accounting(1, limits, &mut accounting, &cancellation)?;
+        assert_eq!(prefix.components(), &source.components()[..1]);
+        assert_eq!(original.receipt().bytes_copied - before.bytes_copied, 2);
+        assert_eq!(original.receipt().source_path_components - before.source_path_components, 1);
+        let KernelOwnedAllocation::NativeOriginal(guard) = guard
+        else { return Err("selected prefix lost original claim".into()); };
+        assert_eq!(guard.bytes(), prefix.retained_bytes());
+        assert_eq!(original.live_allocation_bytes(), baseline + guard.bytes());
+        drop(prefix);
+        drop(guard);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        let before = original.receipt();
+        assert!(source.prefix_with_accounting(3, limits, &mut accounting, &cancellation).is_err());
+        assert_eq!(original.receipt(), before);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        Ok(())
+    }
+
+    #[test]
     fn original_cursor_codec_uses_funded_encoder_and_retained_input_overlap()
     -> Result<(), Box<dyn std::error::Error>> {
         let cancellation = CancellationToken::new();
