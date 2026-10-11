@@ -4357,21 +4357,6 @@ pub(crate) fn receive_preparation<T>(
     Ok(value)
 }
 
-pub(crate) fn clone_preparation<T: Clone + Serialize>(
-    value: &T, io: Option<&PreparationIo>,
-) -> Result<T> {
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let hold = reserve_preparation_workspace(value, io)?;
-        let cloned = value.clone();
-        hold.into_retained();
-        return Ok(cloned);
-    }
-    Ok(value.clone())
-}
-
 #[cfg(feature = "filesystem")]
 pub(crate) fn reserve_preparation_workspace<'a, T: Serialize>(
     value: &T, io: &'a PreparationIo,
