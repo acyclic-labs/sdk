@@ -293,6 +293,11 @@ write grant and exact protected created-resource binding before using that targe
 signed scope and shared whole-volume verifier, returning the owned grant before
 its native allocation guard. The grant must be dropped before the guard.
 An opaque project-source policy attestation cannot mint a generic volume grant.
+Selected-source authorization copies preserve the original operation, current
+owner/fence, source task, volume, immutable generation, native snapshot and
+authentic signed purpose. The native copy constructs actual owned fields and
+snapshot values on the original observer; it neither signs a replacement scope
+nor obtains a new source or transcript grant.
 Internal mailbox task bindings now borrow the original owner fence. Native
 validation does not copy a retry key or reconstruct a lease merely to inspect it;
 the public `owned_task_fence` still explicitly returns a copy of that exact fence.

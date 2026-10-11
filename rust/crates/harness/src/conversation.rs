@@ -656,6 +656,19 @@ impl ContentGrant {
         }
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn from_verified_project_source_with_work(
+        proof: &crate::source_authorization::VerifiedProjectSourceRead<'_>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        Ok(Self {
+            volume: proof.project().clone_with_work(work)?,
+            operation: VolumeOperation::Read,
+            exact_file: None,
+            directory_prefix: Some(String::new()),
+        })
+    }
+
     /// Resolves a pinned read from an authenticated whole-volume, exact-file,
     /// or segment-bounded private-directory grant. A reference itself carries
     /// no authority; the owning provider verifies this scope before reading.
