@@ -6546,7 +6546,7 @@ mod bindings {
         let authority =
             IndexedDbAuthorityStore::open(&options.database_name, options.maximum_object_bytes)
                 .await
-                .map_err(js_error)?;
+                .map_err(JsValue::from)?;
         let object_cache = browser_object_cache_options(&options.object_cache);
         let (engine, immutable_objects) = match options.object_acceleration {
             Acceleration::Indexeddb => {
@@ -6555,7 +6555,7 @@ mod bindings {
                     options.maximum_object_bytes,
                 )
                 .await
-                .map_err(js_error)?;
+                .map_err(JsValue::from)?;
                 (
                     BrowserEngine::IndexedDb(Fs::new(
                         authority,
