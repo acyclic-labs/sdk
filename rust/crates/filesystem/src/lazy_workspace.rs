@@ -1848,6 +1848,20 @@ struct AuthenticatedLazyWrite {
     generation: crate::GenerationId,
 }
 
+macro_rules! selected_checkout_query {
+    ($checkout:expr, $path:expr, $accounting:expr, $cancellation:expr, $ordinary:ident, $native:ident) => {
+        match &$accounting.meter {
+            LazyTreapMeter::Standalone { .. } => $accounting.accept(
+                $checkout.$ordinary($path, $accounting.remaining()?, $cancellation).await
+                    .map_err(|failure| lazy_operation_failure(failure, |error| workspace_error(error.into()))),
+            ),
+            #[cfg(not(target_arch = "wasm32"))]
+            LazyTreapMeter::NativeOriginal { original, .. } =>
+                $checkout.$native($path, original, $cancellation).await.map_err(native_filesystem_error),
+        }
+    };
+}
+
 struct LazyTreapWork<'a> {
     meter: LazyTreapMeter,
     cancellation: &'a CancellationToken,
@@ -1943,6 +1957,8 @@ impl<'a> LazyTreapWork<'a> {
         ) -> Result<(T, crate::kernel::allocation::KernelOwnedAllocation), LazyWorkspaceError>,
     ) -> Result<T, LazyWorkspaceError> {
         let (value, allocation) = self.with_kernel(operation)?;
+        #[cfg(target_arch = "wasm32")]
+        drop(allocation);
         #[cfg(not(target_arch = "wasm32"))]
         if let LazyTreapMeter::NativeOriginal { scratch, .. } = &self.meter {
             let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(mut allocation) = allocation else {
@@ -2333,6 +2349,62 @@ fn hash_lazy_value_with_native_work<T: Serialize>(
     })
 }
 
+macro_rules! lazy_treap_io {
+    ($id:ident, $load:ident, $measured_load:ident, $native_load:ident,
+        $put:ident, $measured_put:ident, $native_put:ident, $missing:literal,
+        |$value:ident, $allocation:ident| $decode:expr, |$node:ident| $encode:expr) => {
+        async fn load(&self, id: Self::Id)
+            -> Result<Option<ImmutableTreapNode<Self::Key, Self::Value, Self::Id>>, LazyWorkspaceError> {
+            let decode = |$value, #[cfg(not(target_arch = "wasm32"))] $allocation| $decode;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = self.1
+                && let LazyTreapMeter::NativeOriginal { original, .. } = &work.meter {
+                let owned = self.0.$native_load(id, original).await?.ok_or(LazyWorkspaceError::StaleSource)?;
+                let (value, allocation) = owned.into_parts();
+                return decode(value, Some(allocation));
+            }
+            let value = if let Some(work) = self.1 {
+                work.accept(self.0.$measured_load(id, work.remaining()?, work.cancellation).await)?
+            } else { self.0.$load(id).await.map_err(store_error)? };
+            if let (Some(work), Some(value)) = (self.1, value.as_ref()) {
+                work.adopt(value.logical_owned_bytes())?;
+            }
+            let value = value.ok_or_else(|| LazyWorkspaceError::Store($missing.to_owned()))?;
+            decode(value, #[cfg(not(target_arch = "wasm32"))] None)
+        }
+
+        async fn store(&self, $node: ImmutableTreapNode<Self::Key, Self::Value, Self::Id>)
+            -> Result<Self::Id, LazyWorkspaceError> {
+            #[cfg(not(target_arch = "wasm32"))]
+            let allocation = $node.allocation;
+            let value = $encode;
+            let owned_bytes = value.logical_owned_bytes();
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = self.1
+                && let LazyTreapMeter::NativeOriginal { original, .. } = &work.meter {
+                let value = NativeOwnedCoreState::from_parts(
+                    value, allocation.ok_or(LazyWorkspaceError::NativeLedgerMismatch)?,
+                );
+                let id = $id(hash_lazy_value(value.as_state(), self.1)?);
+                self.0.$native_put(id, value, original).await?;
+                return Ok(id);
+            }
+            let mut transferred = false;
+            let result = async {
+                let id = $id(hash_lazy_value(&value, self.1)?);
+                if let Some(work) = self.1 {
+                    work.release(owned_bytes)?;
+                    transferred = true;
+                    work.accept(self.0.$measured_put(id, value, work.remaining()?, work.cancellation).await)?;
+                } else { self.0.$put(id, value).await.map_err(store_error)?; }
+                Ok(id)
+            }.await;
+            if !transferred && let Some(work) = self.1 { work.release(owned_bytes)?; }
+            result
+        }
+    };
+}
+
 struct OverlayTreap<'a, S>(&'a S, Option<&'a LazyTreapWork<'a>>);
 
 impl<S: LazyWorkspaceStore> ImmutableTreap for OverlayTreap<'_, S> {
@@ -2340,107 +2412,21 @@ impl<S: LazyWorkspaceStore> ImmutableTreap for OverlayTreap<'_, S> {
     type Key = String;
     type Value = LazyOverlayChange;
 
-    async fn load(
-        &self,
-        id: Self::Id,
-    ) -> Result<Option<ImmutableTreapNode<Self::Key, Self::Value, Self::Id>>, LazyWorkspaceError>
-    {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = self.1
-            && let LazyTreapMeter::NativeOriginal { original, .. } = &work.meter
-        {
-            let owned = self.0.load_lazy_overlay_with_native_work(
-                id, original,
-            ).await?.ok_or(LazyWorkspaceError::StaleSource)?;
-            let (value, allocation) = owned.into_parts();
-            return match value {
-                LazyOverlay::Empty => { drop(allocation); Ok(None) },
-                LazyOverlay::Node { path, priority, change, left, right } => Ok(Some(
-                    ImmutableTreapNode {
-                        key: path, priority, value: change, left, right,
-                        allocation: Some(allocation),
-                    },
-                )),
-            };
-        }
-        let value = if let Some(work) = self.1 {
-            work.accept(self.0.load_lazy_overlay_measured(
-                id, work.remaining()?, work.cancellation,
-            ).await)?
-        } else {
-            self.0.load_lazy_overlay(id).await.map_err(store_error)?
-        };
-        if let (Some(work), Some(value)) = (self.1, value.as_ref()) {
-            work.adopt(value.logical_owned_bytes())?;
-        }
-        match value {
-            Some(LazyOverlay::Empty) => Ok(None),
-            Some(LazyOverlay::Node {
-                path,
-                priority,
-                change,
-                left,
-                right,
-            }) => Ok(Some(ImmutableTreapNode {
-                key: path,
-                priority,
-                value: change,
-                left,
-                right,
+    lazy_treap_io!(LazyOverlayId, load_lazy_overlay, load_lazy_overlay_measured, load_lazy_overlay_with_native_work,
+        put_lazy_overlay, put_lazy_overlay_measured, put_lazy_overlay_with_native_work, "lazy overlay is absent",
+        |value, allocation| match value {
+            LazyOverlay::Empty => {
                 #[cfg(not(target_arch = "wasm32"))]
-                allocation: None,
+                drop(allocation);
+                Ok(None)
+            },
+            LazyOverlay::Node { path, priority, change, left, right } => Ok(Some(ImmutableTreapNode {
+                key: path, priority, value: change, left, right,
+                #[cfg(not(target_arch = "wasm32"))]
+                allocation,
             })),
-            None => Err(LazyWorkspaceError::Store(
-                "lazy overlay is absent".to_owned(),
-            )),
-        }
-    }
-
-    async fn store(
-        &self,
-        node: ImmutableTreapNode<Self::Key, Self::Value, Self::Id>,
-    ) -> Result<Self::Id, LazyWorkspaceError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let allocation = node.allocation;
-        let overlay = LazyOverlay::Node {
-            path: node.key,
-            priority: node.priority,
-            change: node.value,
-            left: node.left,
-            right: node.right,
-        };
-        let owned_bytes = overlay.logical_owned_bytes();
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = self.1
-            && let LazyTreapMeter::NativeOriginal { original, .. } = &work.meter
-        {
-            let allocation = allocation.ok_or(LazyWorkspaceError::NativeLedgerMismatch)?;
-            let value = NativeOwnedCoreState::from_parts(overlay, allocation);
-            let id = LazyOverlayId(hash_lazy_value(value.as_state(), self.1)?);
-            self.0.put_lazy_overlay_with_native_work(
-                id, value, original,
-            ).await?;
-            return Ok(id);
-        }
-        let mut transferred = false;
-        let result = async {
-            let id = LazyOverlayId(hash_lazy_value(&overlay, self.1)?);
-            if let Some(work) = self.1 {
-                work.release(owned_bytes)?;
-                transferred = true;
-                work.accept(self.0.put_lazy_overlay_measured(
-                    id, overlay, work.remaining()?, work.cancellation,
-                ).await)?;
-            } else {
-                self.0.put_lazy_overlay(id, overlay).await.map_err(store_error)?;
-            }
-            Ok(id)
-        }.await;
-        if !transferred && let Some(work) = self.1 {
-            work.release(owned_bytes)?;
-        }
-        result
-    }
+        },
+        |node| LazyOverlay::Node { path: node.key, priority: node.priority, change: node.value, left: node.left, right: node.right });
 
     fn priority(key: &Self::Key) -> u64 {
         path_priority(key)
@@ -2468,114 +2454,26 @@ impl<S: LazyWorkspaceStore> ImmutableTreap for ShadowTreap<'_, S> {
     type Key = FileId;
     type Value = ShadowValue;
 
-    async fn load(
-        &self,
-        id: Self::Id,
-    ) -> Result<Option<ImmutableTreapNode<Self::Key, Self::Value, Self::Id>>, LazyWorkspaceError>
-    {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = self.1
-            && let LazyTreapMeter::NativeOriginal { original, .. } = &work.meter
-        {
-            let owned = self.0.load_lazy_shadow_with_native_work(
-                id, original,
-            ).await?.ok_or(LazyWorkspaceError::StaleSource)?;
-            let (value, allocation) = owned.into_parts();
-            return match value {
-                LazyShadow::Empty => { drop(allocation); Ok(None) },
-                LazyShadow::Node { file_id, priority, record, metadata, left, right } => Ok(Some(
-                    ImmutableTreapNode {
-                        key: file_id, priority,
-                        value: ShadowValue { record, metadata, allocation: None },
-                        left, right, allocation: Some(allocation),
-                    },
-                )),
-            };
-        }
-        let value = if let Some(work) = self.1 {
-            work.accept(self.0.load_lazy_shadow_measured(
-                id, work.remaining()?, work.cancellation,
-            ).await)?
-        } else {
-            self.0.load_lazy_shadow(id).await.map_err(store_error)?
-        };
-        if let (Some(work), Some(value)) = (self.1, value.as_ref()) {
-            work.adopt(value.logical_owned_bytes())?;
-        }
-        match value {
-            Some(LazyShadow::Empty) => Ok(None),
-            Some(LazyShadow::Node {
-                file_id,
-                priority,
-                record,
-                metadata,
-                left,
-                right,
-            }) => Ok(Some(ImmutableTreapNode {
-                key: file_id,
-                priority,
-                value: ShadowValue {
-                    record, metadata,
+    lazy_treap_io!(LazyShadowId, load_lazy_shadow, load_lazy_shadow_measured, load_lazy_shadow_with_native_work,
+        put_lazy_shadow, put_lazy_shadow_measured, put_lazy_shadow_with_native_work, "lazy identity shadow is absent",
+        |value, allocation| match value {
+            LazyShadow::Empty => {
+                #[cfg(not(target_arch = "wasm32"))]
+                drop(allocation);
+                Ok(None)
+            },
+            LazyShadow::Node { file_id, priority, record, metadata, left, right } => Ok(Some(ImmutableTreapNode {
+                key: file_id, priority,
+                value: ShadowValue { record, metadata,
                     #[cfg(not(target_arch = "wasm32"))]
                     allocation: None,
-                },
-                left,
-                right,
+                }, left, right,
                 #[cfg(not(target_arch = "wasm32"))]
-                allocation: None,
+                allocation,
             })),
-            None => Err(LazyWorkspaceError::Store(
-                "lazy identity shadow is absent".to_owned(),
-            )),
-        }
-    }
-
-    async fn store(
-        &self,
-        node: ImmutableTreapNode<Self::Key, Self::Value, Self::Id>,
-    ) -> Result<Self::Id, LazyWorkspaceError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let allocation = node.allocation;
-        let shadow = LazyShadow::Node {
-            file_id: node.key,
-            priority: node.priority,
-            record: node.value.record,
-            metadata: node.value.metadata,
-            left: node.left,
-            right: node.right,
-        };
-        let owned_bytes = shadow.logical_owned_bytes();
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = self.1
-            && let LazyTreapMeter::NativeOriginal { original, .. } = &work.meter
-        {
-            let allocation = allocation.ok_or(LazyWorkspaceError::NativeLedgerMismatch)?;
-            let value = NativeOwnedCoreState::from_parts(shadow, allocation);
-            let id = LazyShadowId(hash_lazy_value(value.as_state(), self.1)?);
-            self.0.put_lazy_shadow_with_native_work(
-                id, value, original,
-            ).await?;
-            return Ok(id);
-        }
-        let mut transferred = false;
-        let result = async {
-            let id = LazyShadowId(hash_lazy_value(&shadow, self.1)?);
-            if let Some(work) = self.1 {
-                work.release(owned_bytes)?;
-                transferred = true;
-                work.accept(self.0.put_lazy_shadow_measured(
-                    id, shadow, work.remaining()?, work.cancellation,
-                ).await)?;
-            } else {
-                self.0.put_lazy_shadow(id, shadow).await.map_err(store_error)?;
-            }
-            Ok(id)
-        }.await;
-        if !transferred && let Some(work) = self.1 {
-            work.release(owned_bytes)?;
-        }
-        result
-    }
+        },
+        |node| LazyShadow::Node { file_id: node.key, priority: node.priority, record: node.value.record,
+            metadata: node.value.metadata, left: node.left, right: node.right });
 
     fn priority(key: &Self::Key) -> u64 {
         shadow_priority(*key)
@@ -3606,8 +3504,6 @@ impl LazyDirectoryCursor {
         }
     }
 
-
-
     /// Decodes on the original ledger using the workspace's actual profile and limits.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn decode_with_native_work(
@@ -4150,25 +4046,13 @@ impl LazyWorkspaceError {
     }
 }
 
-#[derive(Clone, Copy)]
-struct ExactificationSource(SourceReference);
-
 impl LazySnapshotRef {
-    fn exactification_source(
-        self,
-        live_source: SourceReference,
-    ) -> Result<ExactificationSource, LazyWorkspaceError> {
-        if self.source.identity != live_source.identity {
-            return Err(LazyWorkspaceError::StaleSource);
-        }
-        Ok(ExactificationSource(live_source))
-    }
 
     fn exactification_state(
         self,
         workspace_id: WorkspaceId,
         parent_workspace_id: WorkspaceId,
-        source: ExactificationSource,
+        source: SourceReference,
     ) -> LazyWorkspaceState {
         LazyWorkspaceState {
             schema_version: LAZY_STATE_SCHEMA,
@@ -4180,7 +4064,7 @@ impl LazySnapshotRef {
             pending_write: None,
             completed_write: None,
             // Observed overlay records retain their pinned source epochs. This
-            source: source.0,
+            source,
             overlay: self.overlay,
             shadows: self.shadows,
             pending_remove: None,
@@ -4514,8 +4398,6 @@ where
         Ok(lazy)
     }
 
-
-
     /// Authored SDK workspace used by merge, lineage, and publication primitives.
     #[must_use]
     pub const fn workspace(&self) -> &Workspace<A, O> {
@@ -4826,7 +4708,7 @@ where
                 LazyTreapMeter::NativeOriginal { .. } => native_workspace_error(WorkspaceError::ForeignGeneration),
             });
         }
-        let state = self.load_fork_state_at(created_child.id(), meter).await?
+        let state = self.load_binding_at(created_child.id(), meter, meter.cancellation).await?
             .ok_or(LazyWorkspaceError::Concurrent)?;
         let origin = self.validate_fork_origin(
             state.as_state(), created_child.id(), original_operation_id, Some(frozen), meter,
@@ -4865,14 +4747,14 @@ where
         }, child_snapshot))
     }
 
-    async fn load_fork_state_at(
-        &self, destination: WorkspaceId, meter: &LazyTreapWork<'_>,
+    async fn load_binding_at(
+        &self, destination: WorkspaceId, meter: &LazyTreapWork<'_>, cancellation: &CancellationToken,
     ) -> Result<Option<LazyReadonlyNode<LazyWorkspaceState>>, LazyWorkspaceError> {
-        meter.cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
+        cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
         match &meter.meter {
             LazyTreapMeter::Standalone { .. } =>
                 meter.accept(self.store.load_lazy_workspace_measured(
-                    destination, meter.remaining()?, meter.cancellation,
+                    destination, meter.remaining()?, cancellation,
                 ).await).map(|state| state.map(LazyReadonlyNode::Portable)),
             #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } =>
@@ -4881,15 +4763,15 @@ where
         }
     }
 
-    async fn swap_fork_state_at(
+    async fn swap_binding_at(
         &self, destination: WorkspaceId, revision: u64, state: LazyWorkspaceState,
-        meter: &LazyTreapWork<'_>,
+        meter: &LazyTreapWork<'_>, cancellation: &CancellationToken,
     ) -> Result<bool, LazyWorkspaceError> {
-        meter.cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
+        cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
         match &meter.meter {
             LazyTreapMeter::Standalone { .. } =>
                 meter.accept(self.store.compare_and_swap_lazy_workspace_measured(
-                    destination, revision, state, meter.remaining()?, meter.cancellation,
+                    destination, revision, state, meter.remaining()?, cancellation,
                 ).await),
             #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } =>
@@ -4940,29 +4822,14 @@ where
         if destination == self.workspace.id() { return Err(LazyWorkspaceError::Concurrent); }
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             meter.cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
-            let loaded = self.load_fork_state_at(destination, meter).await?;
+            let loaded = self.load_binding_at(destination, meter, meter.cancellation).await?;
             if let Some(state) = loaded {
                 return self.validate_fork_origin(state.as_state(), destination, operation_id, qualified, meter);
             }
             let snapshot = if let Some(snapshot) = qualified { snapshot } else {
-                match &meter.meter {
-                    LazyTreapMeter::Standalone { .. } =>
-                        meter.accept(self.snapshot_measured(meter.remaining()?, meter.cancellation).await
-                            .map_err(|failure| lazy_operation_failure(failure, |error| error)))?,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    LazyTreapMeter::NativeOriginal { original, .. } =>
-                        self.snapshot_with_native_work(original).await?,
-                }
+                self.snapshot_with_accounting(meter, meter.cancellation).await?
             };
-            match &meter.meter {
-                LazyTreapMeter::Standalone { .. } => {
-                    meter.accept(self.validate_snapshot_measured(snapshot, meter.remaining()?, meter.cancellation).await
-                        .map_err(|failure| lazy_operation_failure(failure, |error| error)))?;
-                }
-                #[cfg(not(target_arch = "wasm32"))]
-                LazyTreapMeter::NativeOriginal { original, .. } =>
-                    self.validate_native_snapshot_with_accounting(snapshot, original, meter.cancellation).await?,
-            }
+            self.validate_snapshot_with_accounting(snapshot, meter, meter.cancellation).await?;
             let origin = LazyForkOrigin {
                 operation_id, snapshot, config: self.workspace.volume.config, phase: LazyForkPhase::Prepared,
             };
@@ -4985,12 +4852,12 @@ where
                         &self.workspace.volume, snapshot.authored_generation, original, meter.cancellation,
                     ).await.map_err(native_workspace_error_pair)?,
             };
-            let swapped = self.swap_fork_state_at(destination, 0, state, meter).await?;
+            let swapped = self.swap_binding_at(destination, 0, state, meter, meter.cancellation).await?;
             drop(hold);
             if swapped { return Ok(origin); }
             // A qualified capture never substitutes a refreshed parent. A canonical
             if qualified.is_some() {
-                let state = self.load_fork_state_at(destination, meter).await?
+                let state = self.load_binding_at(destination, meter, meter.cancellation).await?
                     .ok_or(LazyWorkspaceError::Concurrent)?;
                 return self.validate_fork_origin(state.as_state(), destination, operation_id, qualified, meter);
             }
@@ -5007,7 +4874,7 @@ where
             // Native decoded data must retire before its actual allocation guard.
             #[cfg(not(target_arch = "wasm32"))]
             let mut state_allocation = None;
-            let state = match self.load_fork_state_at(workspace.id(), meter).await?
+            let state = match self.load_binding_at(workspace.id(), meter, meter.cancellation).await?
                 .ok_or(LazyWorkspaceError::Concurrent)? {
                 LazyReadonlyNode::Portable(state) => state,
                 #[cfg(not(target_arch = "wasm32"))]
@@ -5032,7 +4899,7 @@ where
             let committed = LazyWorkspaceState {
                 revision, fork_origin: Some(LazyForkOrigin { phase: LazyForkPhase::Committed, ..origin }), ..state
             };
-            let swapped = self.swap_fork_state_at(workspace.id(), revision - 1, committed, meter).await?;
+            let swapped = self.swap_binding_at(workspace.id(), revision - 1, committed, meter, meter.cancellation).await?;
             #[cfg(not(target_arch = "wasm32"))]
             drop(state_allocation);
             if swapped {
@@ -5062,7 +4929,8 @@ where
         if snapshot.workspace_id != self.workspace.id() {
             return Err(LazyWorkspaceError::StaleSource);
         }
-        let exactification_source = snapshot.exactification_source(self.source.reference())?;
+        let exactification_source = self.source.reference();
+        if snapshot.source.identity != exactification_source.identity { return Err(LazyWorkspaceError::StaleSource); }
         let overlay = self
             .store
             .load_lazy_overlay_measured(snapshot.overlay, budget, cancellation)
@@ -5338,7 +5206,7 @@ where
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
         let work = LazyTreapWork::native_with_work(original, cancellation)?;
-        in_heap_lazy_with_error(&work, || async {
+        in_heap_lazy(&work, || async {
             self.validate_snapshot_with_accounting(frozen, &work, cancellation).await?;
             if !self.workspace.volume.fs.same_deployment(&imported.workspace.volume.fs) {
                 return Err(E::from(native_workspace_error(WorkspaceError::ForeignGeneration)));
@@ -5539,7 +5407,7 @@ where
         let source = self.source.reference();
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-            let mut phase = self.load_state_with_accounting(work, cancellation).await?
+            let mut phase = self.load_binding_at(self.workspace.id(), work, cancellation).await?
                 .ok_or(LazyWorkspaceError::StaleSource)?;
             let state = phase.as_state();
             state.require_ready_fork()?;
@@ -5560,9 +5428,7 @@ where
                 source,
                 ..state.clone()
             };
-            if self.compare_state_with_accounting(
-                state.revision, replacement, work, cancellation,
-            ).await? {
+            if self.swap_binding_at(self.workspace.id(), state.revision, replacement, work, cancellation).await? {
                 let state = phase.as_state_mut();
                 state.revision = state.revision.saturating_add(1);
                 state.source = source;
@@ -5575,23 +5441,9 @@ where
     /// Observes one path without reading file content.
     pub async fn stat(&self, path: &str) -> Result<LazyStat, LazyWorkspaceError> {
         let cancellation = CancellationToken::new();
-        self.stat_measured(path, WorkBudget::UNBOUNDED, &cancellation)
+        self.lookup_measured(path, WorkBudget::UNBOUNDED, &cancellation)
             .await
-            .map(|receipt| receipt.value)
-    }
-
-    async fn stat_measured(
-        &self,
-        path: &str,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<LazyStat>, LazyWorkspaceError> {
-        let receipt = self.lookup_measured(path, budget, cancellation).await?;
-        let value = receipt.value.lookup.stat();
-        Ok(OperationReceipt {
-            value,
-            work: receipt.work,
-        })
+            .map(|receipt| receipt.value.lookup.stat())
     }
 
     /// Returns complete demanded facts without reading regular-file content.
@@ -5647,7 +5499,7 @@ where
         cancellation: &CancellationToken,
     ) -> Result<NativeFrozenLookup<A, O>, LazyWorkspaceError> {
         let frame = LazyTreapWork::native_with_work(original, cancellation)?;
-        in_heap_lazy_with_work(&frame, move || async move {
+        in_heap_lazy::<_, LazyWorkspaceError, _>(&frame, move || async move {
                 let head = self.workspace.head_with_native_work(
                     &original, cancellation,
                 ).await.map_err(native_workspace_error_pair)?;
@@ -5731,8 +5583,8 @@ where
         };
         let authored = match accounting {
             LazyReadonlyAccounting::Portable { work, budget, cancellation } => {
-                let receipt = self.authored_alias_measured(
-                    &node, remaining_work(*work, *budget, 0)?, cancellation,
+                let receipt = self.authored_alias_at_measured(
+                    &node, None, None, remaining_work(*work, *budget, 0)?, cancellation,
                 ).await?;
                 *work = account_work(*work, receipt.work, *budget)?;
                 receipt.value
@@ -5770,46 +5622,9 @@ where
     /// Returns current facts without extending the immutable observation index.
     pub async fn inspect(&self, path: &str) -> Result<LazyLookup, LazyWorkspaceError> {
         let cancellation = CancellationToken::new();
-        self.inspect_measured(path, WorkBudget::UNBOUNDED, &cancellation)
+        self.inspect_with(path, InspectBasis::default(), WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map(|receipt| receipt.value.lookup)
-    }
-
-    async fn inspect_measured(
-        &self,
-        path: &str,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<ResolvedLazyLookup>, LazyWorkspaceError> {
-        self.inspect_with(path, InspectBasis::default(), budget, cancellation)
-            .await
-    }
-
-    async fn inspect_snapshot_measured(
-        &self,
-        path: &str,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<ResolvedLazyLookup>, LazyWorkspaceError> {
-        let basis = InspectBasis {
-            retain_pinned_observation: true,
-            ..InspectBasis::default()
-        };
-        self.inspect_with(path, basis, budget, cancellation).await
-    }
-
-    async fn inspect_snapshot_after_authored_absence(
-        &self,
-        path: &str,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<ResolvedLazyLookup>, LazyWorkspaceError> {
-        let basis = InspectBasis {
-            retain_pinned_observation: true,
-            authored_absent: true,
-            ..InspectBasis::default()
-        };
-        self.inspect_with(path, basis, budget, cancellation).await
     }
 
     /// Resolves `path` for a mount whose own checkout already lacks it.
@@ -5870,7 +5685,7 @@ where
         original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> Result<((LazyLookup, Option<SourceReference>), crate::NativeAllocation), LazyWorkspaceError> {
         let frame = LazyTreapWork::native_with_work(original, cancellation)?;
-        in_heap_lazy_with_work(&frame, move || async move {
+        in_heap_lazy::<_, LazyWorkspaceError, _>(&frame, move || async move {
             original.admit(WorkCounters::UNCHARGED)?;
             cancellation.check().map_err(|_| LazyWorkspaceError::NativeWork(
                 crate::NativeTreeMaterializationError::Cancelled))?;
@@ -6508,15 +6323,6 @@ where
         }
     }
 
-    async fn authored_alias_measured(
-        &self,
-        node: &SourceNode,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<Option<LazyLookup>>, LazyWorkspaceError> {
-        self.authored_alias_at_measured(node, None, None, budget, cancellation).await
-    }
-
     async fn authored_alias_at_measured(
         &self,
         node: &SourceNode,
@@ -6722,7 +6528,7 @@ where
     {
         let frame = LazyTreapWork::native_with_work(original, cancellation)
             .map_err(|error| (error, None))?;
-        in_heap_lazy_with_work(&frame, || async {
+        in_heap_lazy::<_, LazyWorkspaceError, _>(&frame, || async {
             Ok(async {
         let state = self.readonly_snapshot_state_with_work(snapshot, false, original, cancellation)
             .map_err(|error| (error, None))?;
@@ -6808,7 +6614,7 @@ where
         cancellation: &CancellationToken,
     ) -> Result<(), LazyWorkspaceError> {
         let frame = LazyTreapWork::native_with_work(original, cancellation)?;
-        in_heap_lazy_with_work(&frame, || async {
+        in_heap_lazy::<_, LazyWorkspaceError, _>(&frame, || async {
         self.readonly_snapshot_state_with_work(frozen, false, original, cancellation)?;
         let reader = self.workspace.readonly_pinned_reader_with_native_work(
             frozen.authored_generation, original, cancellation,
@@ -6963,7 +6769,7 @@ where
         (LazyWorkspaceError, Option<crate::NativeAllocation>)> {
         let frame = LazyTreapWork::native_with_work(original, cancellation)
             .map_err(|error| (error, None))?;
-        in_heap_lazy_with_work(&frame, || async {
+        in_heap_lazy::<_, LazyWorkspaceError, _>(&frame, || async {
             Ok(async {
         let source_used = std::sync::atomic::AtomicBool::new(false);
         let frozen = self.inspect_at_snapshot_with_work(
@@ -7188,8 +6994,6 @@ where
             .map_err(|error| crate::OperationFailure::new(error, work))
     }
 
-
-
     #[cfg(not(target_arch = "wasm32"))]
     async fn read_resolved_with_work(
         &self, lookup: &LazyLookup, source: Option<SourceReference>, reader: Option<&crate::PinnedReader<A, O>>,
@@ -7268,8 +7072,6 @@ where
             .await.map_err(|error| (error, None))?;
         self.read_resolved_with_work(lookup, source, reader.as_ref(), None, path, None, maximum_bytes, original, cancellation).await
     }
-
-
 
     #[cfg(feature = "native-mount")]
     pub(crate) async fn read_unauthored_range_owned_measured(
@@ -7402,10 +7204,6 @@ where
             .map_err(|error| crate::OperationFailure::new(error, work))
     }
 
-
-
-
-
     #[cfg(feature = "native-mount")]
     pub(crate) async fn read_unauthored_link_owned_measured(
         &self, lookup: &LazyLookup, source: Option<SourceReference>, path: &str,
@@ -7506,7 +7304,7 @@ where
         cancellation: &CancellationToken,
         source_used: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<(), LazyWorkspaceError> {
-        in_heap_lazy_with_work(work, move || async move {
+        in_heap_lazy::<_, LazyWorkspaceError, _>(work, move || async move {
                 let node = &pinned.node;
                 match node.kind {
                     SourceNodeKind::Directory => self.promotion_mutation_with_accounting(
@@ -7562,7 +7360,7 @@ where
         cancellation: &CancellationToken,
         source_used: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<(), LazyWorkspaceError> {
-        in_heap_lazy_with_work(work, move || async move {
+        in_heap_lazy::<_, LazyWorkspaceError, _>(work, move || async move {
                 let length = pinned.node.logical_bytes.ok_or(LazyWorkspaceError::NotRegularFile)?;
                 if length > maximum_bytes { return Err(LazyWorkspaceError::TooLarge); }
                 self.promotion_mutation_with_accounting(
@@ -7593,7 +7391,7 @@ where
     async fn promotion_transaction_with_accounting(
         &self, key: IdempotencyKey, work: &LazyTreapWork<'_>, cancellation: &CancellationToken,
     ) -> Result<crate::Transaction<A, O>, LazyWorkspaceError> {
-        in_heap_lazy_with_work(work, move || async move {
+        in_heap_lazy::<_, LazyWorkspaceError, _>(work, move || async move {
             match &work.meter {
                 LazyTreapMeter::Standalone { .. } => work.accept(
                     self.workspace.begin_transaction_measured(key, work.remaining()?, cancellation)
@@ -7613,7 +7411,7 @@ where
         &self, transaction: &mut crate::Transaction<A, O>, path: &str,
         operation: LazyPromotionMutation<'_>, work: &LazyTreapWork<'_>, cancellation: &CancellationToken,
     ) -> Result<(), LazyWorkspaceError> {
-        in_heap_lazy_with_work(work, move || async move {
+        in_heap_lazy::<_, LazyWorkspaceError, _>(work, move || async move {
             // Resolve the ordinary allowance before consuming mutation inputs.
             let budget = if matches!(work.meter, LazyTreapMeter::Standalone { .. }) {
                 Some(work.remaining()?)
@@ -7660,7 +7458,7 @@ where
         &self, transaction: &mut crate::Transaction<A, O>, permit: crate::PublicationPermit,
         work: &LazyTreapWork<'_>, cancellation: &CancellationToken,
     ) -> Result<TransactionCommit<A, O>, LazyWorkspaceError> {
-        in_heap_lazy_with_work(work, move || async move {
+        in_heap_lazy::<_, LazyWorkspaceError, _>(work, move || async move {
             match &work.meter {
                 LazyTreapMeter::Standalone { .. } => work.accept(
                     transaction.commit_with_permit_measured(permit, work.remaining()?, cancellation)
@@ -7697,7 +7495,7 @@ where
         &self, requested: &str, pinned: &PinnedSourceNode, offset: Option<u64>, maximum_bytes: u64,
         work: &LazyTreapWork<'_>, cancellation: &CancellationToken,
     ) -> Result<crate::kernel::OwnedSourceChunk, LazyWorkspaceError> {
-        in_heap_lazy_with_work(work, move || async move {
+        in_heap_lazy::<_, LazyWorkspaceError, _>(work, move || async move {
             match &work.meter {
                 LazyTreapMeter::Standalone { .. } => work.accept(self.source_request_measured(
                     requested, work.remaining()?, cancellation, |path, budget| async move {
@@ -7874,7 +7672,7 @@ where
         source_used: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<crate::StagedContent, LazyWorkspaceError> {
         let work = LazyTreapWork::native_with_work(original, cancellation)?;
-        in_heap_lazy_with_work(&work, || async {
+        in_heap_lazy::<_, LazyWorkspaceError, _>(&work, || async {
             let length = pinned.node.logical_bytes.ok_or(LazyWorkspaceError::NotRegularFile)?;
             let scope = TreapAllocationScope::new(&work);
             let path = work.namespace_owned(requested, self.workspace.profile(), self.workspace.limits())?;
@@ -7960,7 +7758,7 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = original {
             let frame = LazyTreapWork::native_with_work(original, cancellation)?;
-            in_heap_lazy_with_work(&frame, || async {
+            in_heap_lazy::<_, LazyWorkspaceError, _>(&frame, || async {
                 let allocation = pending_allocation.ok_or(LazyWorkspaceError::NativeLedgerMismatch)?;
                 let paid = allocation.split_off(allocation.bytes())?;
                 let operations = std::mem::take(pending);
@@ -8077,7 +7875,7 @@ where
         idempotency_key: IdempotencyKey, permit: crate::PublicationPermit,
         work: &LazyTreapWork<'_>, cancellation: &CancellationToken,
     ) -> Result<TransactionCommit<A, O>, LazyWorkspaceError> {
-        in_heap_lazy_with_work(work, move || async move {
+        in_heap_lazy::<_, LazyWorkspaceError, _>(work, move || async move {
             self.validate_promotion_source_with_accounting(None, lookup.source, work, cancellation).await?;
             let mut transaction = self.promotion_transaction_with_accounting(idempotency_key, work, cancellation).await?;
             if let Some(directory) = parent_path(requested) {
@@ -8166,7 +7964,7 @@ where
         work: &LazyTreapWork<'_>, cancellation: &CancellationToken,
         source_used: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<bool, LazyWorkspaceError> {
-        in_heap_lazy_with_work(work, move || async move {
+        in_heap_lazy::<_, LazyWorkspaceError, _>(work, move || async move {
             let ResolvedLazyLookup { lookup, source } = lookup;
             let pinned = match lookup {
                 LazyLookup::Source(node) => PinnedSourceNode {
@@ -8243,6 +8041,7 @@ where
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    /// Promotes the resolved source identity on the caller's native ledger.
     pub async fn promote_exact_with_native_work(
         &self, path: &str, expected_source: FileId, maximum_bytes: u64,
         idempotency_key: IdempotencyKey, original: &crate::materializer::NativeMaterializationWork,
@@ -8258,7 +8057,7 @@ where
         &self, path: &str, expected_source: FileId, maximum_bytes: u64,
         idempotency_key: IdempotencyKey, work: &LazyTreapWork<'_>, cancellation: &CancellationToken,
     ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
-        in_heap_lazy_with_work(work, move || async move {
+        in_heap_lazy::<_, LazyWorkspaceError, _>(work, move || async move {
             let scope = TreapAllocationScope::new(work);
             let requested = work.canonical_path_owned(path, self.workspace.limits())?;
             let lookup = self.promotion_lookup_with_accounting(&requested, work, cancellation).await?;
@@ -8421,7 +8220,7 @@ where
         path: &str, expected_source: FileId, maximum_bytes: u64,
         work: &LazyTreapWork<'_>, cancellation: &CancellationToken,
     ) -> Result<bool, LazyWorkspaceError> {
-        in_heap_lazy_with_work(work, move || async move {
+        in_heap_lazy::<_, LazyWorkspaceError, _>(work, move || async move {
             let source_used = std::sync::atomic::AtomicBool::new(false);
                 let requested = work.canonical_path_owned(path, self.workspace.limits())?;
                 #[cfg(not(target_arch = "wasm32"))]
@@ -8492,9 +8291,7 @@ where
                 let candidate_path = work.namespace_owned(
                     &requested, self.workspace.profile(), self.workspace.limits(),
                 )?;
-                let candidate = self.selected_checkout_lookup_with_accounting(
-                    checkout, &candidate_path, work, cancellation,
-                ).await?;
+                let candidate = selected_checkout_query!(checkout, &candidate_path, work, cancellation, lookup_no_follow, lookup_no_follow_with_native_work)?;
                 let candidate_path_bytes = candidate_path.retained_bytes();
                 drop(candidate_path);
                 work.release(candidate_path_bytes)?;
@@ -9540,7 +9337,7 @@ where
     where D: 'static,
     {
         let work = LazyTreapWork::native_with_work(original, cancellation)?;
-        let result = in_heap_lazy_with_work(&work, || async {
+        let result = in_heap_lazy::<_, LazyWorkspaceError, _>(&work, || async {
             original.admit(WorkCounters::UNCHARGED)?;
             cancellation.check().map_err(|_| LazyWorkspaceError::NativeWork(
                 crate::NativeTreeMaterializationError::Cancelled))?;
@@ -9617,7 +9414,7 @@ where
         cancellation: &CancellationToken,
     ) -> Result<(Vec<String>, bool, crate::materializer::NativeAllocation), LazyWorkspaceError> {
         let work = LazyTreapWork::native_with_work(original, cancellation)?;
-        in_heap_lazy_with_work(&work, || async {
+        in_heap_lazy::<_, LazyWorkspaceError, _>(&work, || async {
             let mut accounting = ExactifyCollectorWork::Native { work: &work, original };
             let (paths, used) = self.collect_selected_paths_with_accounting(
                 roots, Some(snapshot), None, &mut accounting, cancellation,
@@ -10316,17 +10113,17 @@ where
                         state: Some(state), authored_generation: Some(snapshot.authored_generation),
                         retain_pinned_observation: true, source_used, ..InspectBasis::default()
                     }, accounting.remaining()?, cancellation).await
-                } else if authored_absent {
-                    self.inspect_snapshot_after_authored_absence(path, accounting.remaining()?, cancellation).await
                 } else {
-                    self.inspect_snapshot_measured(path, accounting.remaining()?, cancellation).await
+                    self.inspect_with(path, InspectBasis {
+                        retain_pinned_observation: true, authored_absent, ..InspectBasis::default()
+                    }, accounting.remaining()?, cancellation).await
                 }.map_err(|error| accounting.nested_error(error))?;
                 Ok(LazyReadonlyNode::Portable(accounting.accept(Ok(response))?))
             }
             #[cfg(not(target_arch = "wasm32"))]
             ExactifyCollectorWork::Native { work, original } => {
                 let original = *original;
-                in_heap_lazy_with_work(work, || async {
+                in_heap_lazy::<_, LazyWorkspaceError, _>(work, || async {
                     if let Some((origin, snapshot)) = read_view {
                         let frozen = origin.inspect_at_snapshot_with_work(
                             snapshot, path, original, cancellation,
@@ -10712,7 +10509,7 @@ where
         F: LazyWriteGuard<A, O, D, S, Error = E>,
         I: Iterator<Item = LazyWriteMutation<'path>> + Send,
     {
-        in_heap_lazy_with_error(work, || async {
+        in_heap_lazy(work, || async {
             let Some(original) = self.write_original_record_with_accounting(
                 key, work, cancellation, before_mutation,
             ).await? else { return Ok(None); };
@@ -10776,7 +10573,7 @@ where
     {
         loop {
             self.write_owner_with_accounting(prepared.basis, work, cancellation, before_mutation).await?;
-            let state = self.load_state_with_accounting(work, cancellation).await?
+            let state = self.load_binding_at(self.workspace.id(), work, cancellation).await?
                 .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
             if let Some(pending) = state.as_state().pending_write {
                 if pending == prepared { return Ok(()); }
@@ -10795,7 +10592,7 @@ where
             drop(state);
             // This is the actual companion mutation boundary, not a preflight.
             self.write_owner_with_accounting(prepared.basis, work, cancellation, before_mutation).await?;
-            if self.compare_state_with_accounting(revision, replacement, work, cancellation).await? {
+            if self.swap_binding_at(self.workspace.id(), revision, replacement, work, cancellation).await? {
                 return Ok(());
             }
         }
@@ -10806,7 +10603,7 @@ where
         cancellation: &CancellationToken,
     ) -> Result<(), LazyWorkspaceError> {
         self.write_basis_with_accounting(prepared.basis, work, cancellation).await?;
-        let state = self.load_state_with_accounting(work, cancellation).await?
+        let state = self.load_binding_at(self.workspace.id(), work, cancellation).await?
             .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
         if state.as_state().pending_write != Some(prepared) {
             return Err(LazyWorkspaceError::WriteIndeterminate { operation: prepared.operation });
@@ -10906,7 +10703,7 @@ where
         );
         self.validate_snapshot_with_accounting(snapshot, work, cancellation).await?;
         loop {
-            let state = self.load_state_with_accounting(work, cancellation).await?
+            let state = self.load_binding_at(self.workspace.id(), work, cancellation).await?
                 .ok_or(LazyWorkspaceError::WriteIndeterminate { operation: prepared.operation })?;
             if state.as_state().schema_version != LAZY_STATE_SCHEMA
                 || state.as_state().workspace_id != prepared.basis.workspace_id
@@ -10937,7 +10734,7 @@ where
             drop(state);
             // Preserve all concurrent current roots; this CAS only settles the
             self.write_companion_owner_with_accounting(work, before_mutation).await?;
-            if self.compare_state_with_accounting(revision, replacement, work, cancellation).await? {
+            if self.swap_binding_at(self.workspace.id(), revision, replacement, work, cancellation).await? {
                 return Ok(snapshot);
             }
         }
@@ -10954,7 +10751,7 @@ where
         // Only a definitive canonical nonpublication decision reaches here.
         loop {
             self.write_companion_owner_with_accounting(work, before_mutation).await?;
-            let state = self.load_state_with_accounting(work, cancellation).await?
+            let state = self.load_binding_at(self.workspace.id(), work, cancellation).await?
                 .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
             if state.as_state().pending_write != Some(prepared) { return Ok(()); }
             let revision = state.as_state().revision;
@@ -10967,7 +10764,7 @@ where
             replacement.pending_write = None;
             drop(state);
             self.write_companion_owner_with_accounting(work, before_mutation).await?;
-            if self.compare_state_with_accounting(revision, replacement, work, cancellation).await? {
+            if self.swap_binding_at(self.workspace.id(), revision, replacement, work, cancellation).await? {
                 return Ok(());
             }
         }
@@ -10978,7 +10775,7 @@ where
         cancellation: &CancellationToken,
     ) -> Result<(), LazyWorkspaceError> {
         self.validate_snapshot_with_accounting(basis, work, cancellation).await?;
-        let phase = self.load_state_with_accounting(work, cancellation).await?
+        let phase = self.load_binding_at(self.workspace.id(), work, cancellation).await?
             .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
         let state = phase.as_state();
         if state.schema_version != LAZY_STATE_SCHEMA
@@ -11020,7 +10817,7 @@ where
         F: LazyWriteGuard<A, O, D, S, Error = E>,
         I: Iterator<Item = LazyWriteMutation<'path>> + Send,
     {
-        in_heap_lazy_with_error(work, || async {
+        in_heap_lazy(work, || async {
             let frozen_basis = basis.is_some();
             if let Some(basis) = basis
                 && let Some(original) = self.write_original_record_with_accounting(
@@ -11290,8 +11087,8 @@ where
     ) -> Result<LazyPublicationCut, LazyWorkspaceError> {
         cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
         let work = LazyTreapWork::native_with_work(original, cancellation)?;
-        in_heap_lazy_with_work(&work, || async {
-            let phase = self.load_state_with_accounting(&work, cancellation).await?
+        in_heap_lazy::<_, LazyWorkspaceError, _>(&work, || async {
+            let phase = self.load_binding_at(self.workspace.id(), &work, cancellation).await?
                 .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
             let state = phase.as_state();
             state.require_ready_fork()?;
@@ -11343,7 +11140,7 @@ where
     ) -> Result<(), LazyWorkspaceError> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-            let phase = self.load_state_with_accounting(work, cancellation).await?
+            let phase = self.load_binding_at(self.workspace.id(), work, cancellation).await?
                 .ok_or(LazyWorkspaceError::StaleIdentity)?;
             let state = phase.as_state();
             if state.schema_version != LAZY_STATE_SCHEMA
@@ -11496,9 +11293,7 @@ where
                 }),
                 ..state.clone()
             };
-            if self.compare_state_with_accounting(
-                state.revision, prepared, work, cancellation,
-            ).await? {
+            if self.swap_binding_at(self.workspace.id(), state.revision, prepared, work, cancellation).await? {
                 return Ok(());
             }
         }
@@ -11539,7 +11334,7 @@ where
     async fn mount_removal_publication_with_accounting(
         &self, work: &LazyTreapWork<'_>, cancellation: &CancellationToken,
     ) -> Result<Option<bool>, LazyWorkspaceError> {
-        let phase = self.load_state_with_accounting(work, cancellation).await?
+        let phase = self.load_binding_at(self.workspace.id(), work, cancellation).await?
             .ok_or(LazyWorkspaceError::StaleSource)?;
         let Some(PendingLazyRemove {
             kind: PendingLazyRemoveKind::Mounted { idempotency_key }, ..
@@ -11950,7 +11745,7 @@ where
         &self, work: &LazyTreapWork<'_>, cancellation: &CancellationToken,
     ) -> Result<(), LazyWorkspaceError> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let phase = self.load_state_with_accounting(work, cancellation).await?
+            let phase = self.load_binding_at(self.workspace.id(), work, cancellation).await?
                 .ok_or(LazyWorkspaceError::StaleSource)?;
             let state = phase.as_state();
             if state.schema_version != LAZY_STATE_SCHEMA
@@ -11984,9 +11779,7 @@ where
                 pending_remove: None,
                 ..state.clone()
             };
-            if self.compare_state_with_accounting(
-                state.revision, replacement, work, cancellation,
-            ).await? {
+            if self.swap_binding_at(self.workspace.id(), state.revision, replacement, work, cancellation).await? {
                 return Ok(());
             }
         }
@@ -12190,9 +11983,7 @@ where
                     return Err(LazyWorkspaceError::StaleSource);
                 }
             }
-            if self.compare_state_with_accounting(
-                state.revision, replacement, work, cancellation,
-            ).await? {
+            if self.swap_binding_at(self.workspace.id(), state.revision, replacement, work, cancellation).await? {
                 return Ok(());
             }
         }
@@ -12488,7 +12279,7 @@ where
     {
         let frame = LazyTreapWork::native_with_work(original, cancellation)
             .map_err(|error| (error, None))?;
-        in_heap_lazy_with_work(&frame, || async {
+        in_heap_lazy::<_, LazyWorkspaceError, _>(&frame, || async {
             Ok(async {
         original.admit(WorkCounters::UNCHARGED)
             .map_err(|error| (LazyWorkspaceError::NativeWork(error), None))?;
@@ -12610,27 +12401,6 @@ where
         Ok(value)
     }
 
-    async fn load_state_with_accounting(
-        &self, accounting: &LazyTreapWork<'_>, cancellation: &CancellationToken,
-    ) -> Result<Option<LazyReadonlyNode<LazyWorkspaceState>>, LazyWorkspaceError> {
-        cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
-        match &accounting.meter {
-            LazyTreapMeter::Standalone { .. } => {
-                let state = accounting.accept(self.store.load_lazy_workspace_measured(
-                    self.workspace.id(), accounting.remaining()?, cancellation,
-                ).await)?;
-                Ok(state.map(LazyReadonlyNode::Portable))
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            LazyTreapMeter::NativeOriginal { original, .. } => {
-                let state = self.store.load_lazy_workspace_with_native_work(
-                    self.workspace.id(), original,
-                ).await?;
-                Ok(state.map(LazyReadonlyNode::Native))
-            }
-        }
-    }
-
     async fn selected_lookup_with_accounting(
         &self, snapshot: LazySnapshotRef, path: &str,
         accounting: &LazyTreapWork<'_>, cancellation: &CancellationToken,
@@ -12651,28 +12421,6 @@ where
                     Ok(frozen) => Ok(SelectedLookupPhase::Native(frozen)),
                     Err((error, allocation)) => Err(error.restore_native_failure_custody(allocation)),
                 }
-            }
-        }
-    }
-
-    async fn compare_state_with_accounting(
-        &self, expected_revision: u64, replacement: LazyWorkspaceState,
-        accounting: &LazyTreapWork<'_>, cancellation: &CancellationToken,
-    ) -> Result<bool, LazyWorkspaceError> {
-        cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
-        match &accounting.meter {
-            LazyTreapMeter::Standalone { .. } => accounting.accept(
-                self.store.compare_and_swap_lazy_workspace_measured(
-                    self.workspace.id(), expected_revision, replacement,
-                    accounting.remaining()?, cancellation,
-                ).await,
-            ),
-            #[cfg(not(target_arch = "wasm32"))]
-            LazyTreapMeter::NativeOriginal { original, .. } => {
-                self.store.compare_and_swap_lazy_workspace_with_native_work(
-                    self.workspace.id(), expected_revision, replacement,
-                    original,
-                ).await
             }
         }
     }
@@ -12796,44 +12544,6 @@ where
         }
     }
 
-    async fn selected_checkout_lookup_with_accounting(
-        &self, checkout: &mut crate::Checkout<A, O>, path: &NamespacePath,
-        accounting: &LazyTreapWork<'_>, cancellation: &CancellationToken,
-    ) -> Result<crate::kernel::PathLookup, LazyWorkspaceError> {
-        match &accounting.meter {
-            LazyTreapMeter::Standalone { .. } => accounting.accept(
-                checkout.lookup_no_follow(path, accounting.remaining()?, cancellation).await
-                    .map_err(|failure| lazy_operation_failure(
-                        failure, |error| workspace_error(error.into()),
-                    )),
-            ),
-            #[cfg(not(target_arch = "wasm32"))]
-            LazyTreapMeter::NativeOriginal { original, .. } => {
-                checkout.lookup_no_follow_with_native_work(
-                    path, original, cancellation,
-                ).await.map_err(native_filesystem_error)
-            }
-        }
-    }
-
-    async fn selected_checkout_metadata_with_accounting(
-        &self, checkout: &mut crate::Checkout<A, O>, path: &NamespacePath,
-        accounting: &LazyTreapWork<'_>, cancellation: &CancellationToken,
-    ) -> Result<Option<crate::PathMetadataLookup>, LazyWorkspaceError> {
-        match &accounting.meter {
-            LazyTreapMeter::Standalone { .. } => accounting.accept(
-                checkout.lookup_no_follow_with_metadata(path, accounting.remaining()?, cancellation).await
-                    .map_err(|failure| lazy_operation_failure(
-                        failure, |error| workspace_error(error.into()),
-                    )),
-            ),
-            #[cfg(not(target_arch = "wasm32"))]
-            LazyTreapMeter::NativeOriginal { original, .. } =>
-                checkout.lookup_no_follow_with_metadata_with_native_work(path, original, cancellation)
-                    .await.map_err(native_filesystem_error),
-        }
-    }
-
     async fn selected_paths_with_accounting(
         &self, snapshot: LazySnapshotRef, roots: &[String],
         accounting: &LazyTreapWork<'_>, cancellation: &CancellationToken,
@@ -12860,317 +12570,292 @@ where
         }
     }
 
-    async fn selected_stage_with_accounting(
-        &self, checkout: &mut crate::Checkout<A, O>, snapshot: LazySnapshotRef,
-        path: &str, expected: FileId, maximum_bytes: u64,
-        accounting: &LazyTreapWork<'_>, cancellation: &CancellationToken,
-    ) -> Result<bool, LazyWorkspaceError> {
-        match &accounting.meter {
-            LazyTreapMeter::Standalone { .. } => accounting.accept(
-                self.stage_at_snapshot_into_checkout_measured(
-                    checkout, snapshot, path, expected, maximum_bytes, accounting.remaining()?, cancellation,
-                ).await.map_err(|failure| LazyWorkspaceError::SpentWork(Box::new(failure))),
-            ),
-            #[cfg(not(target_arch = "wasm32"))]
-            LazyTreapMeter::NativeOriginal { original, .. } =>
-                self.stage_at_snapshot_into_checkout_with_native_work(
-                    checkout, snapshot, path, expected, maximum_bytes, original, cancellation,
-                ).await,
-        }
-    }
 
-    async fn stage_selected_lookup(
-        &self, checkout: &mut crate::Checkout<A, O>, snapshot: LazySnapshotRef,
-        path: &str, reject_authored: bool, accounting: &LazyTreapWork<'_>, cancellation: &CancellationToken,
-    ) -> Result<(), LazyWorkspaceError> {
-        let lookup = self.selected_lookup_with_accounting(snapshot, path, accounting, cancellation).await?;
-        let bytes = lookup.portable_owned_bytes();
-        accounting.adopt(bytes)?;
-        if reject_authored && matches!(lookup.lookup(), LazyLookup::Authored { path: actual, .. } if actual == path) {
-            return Err(LazyWorkspaceError::StaleIdentity);
-        }
-        let expected = self.selected_lookup_identity(lookup.lookup(), accounting)?;
-        self.selected_stage_with_accounting(checkout, snapshot, path, expected, u64::MAX, accounting, cancellation).await?;
-        drop(lookup);
-        accounting.release(bytes)
-    }
 
     async fn prepare_selected_import_into_checkout_with_accounting(
         &self, destination: LazySnapshotRef, plan: &SelectedImportPlan,
         checkout: &mut crate::Checkout<A, O>, operation: crate::OperationId,
         accounting: &LazyTreapWork<'_>, cancellation: &CancellationToken,
     ) -> Result<SelectedImportEffects, LazyWorkspaceError> {
-                if plan.source_used && self.source.reference() != plan.source.source {
-                    return Err(LazyWorkspaceError::StaleSource);
+        let result = async {
+            macro_rules! stage_selected_lookup {
+                ($checkout:expr, $snapshot:expr, $path:expr, $reject_authored:expr) => {{
+                    let lookup = self.selected_lookup_with_accounting($snapshot, $path, accounting, cancellation).await?;
+                    let bytes = lookup.portable_owned_bytes();
+                    accounting.adopt(bytes)?;
+                    if $reject_authored && matches!(lookup.lookup(), LazyLookup::Authored { path: actual, .. } if actual == $path) {
+                        return Err(LazyWorkspaceError::StaleIdentity);
+                    }
+                    let expected = self.selected_lookup_identity(lookup.lookup(), accounting)?;
+                    match &accounting.meter {
+                        LazyTreapMeter::Standalone { .. } => accounting.accept(
+                            self.stage_at_snapshot_into_checkout_measured(
+                                $checkout, $snapshot, $path, expected, u64::MAX, accounting.remaining()?, cancellation,
+                            ).await.map_err(|failure| LazyWorkspaceError::SpentWork(Box::new(failure))),
+                        ),
+                        #[cfg(not(target_arch = "wasm32"))]
+                        LazyTreapMeter::NativeOriginal { original, .. } =>
+                            self.stage_at_snapshot_into_checkout_with_native_work(
+                                $checkout, $snapshot, $path, expected, u64::MAX, original, cancellation,
+                            ).await,
+                    }?;
+                    drop(lookup);
+                    accounting.release(bytes)?;
+                }};
+            }
+            if plan.source_used && self.source.reference() != plan.source.source {
+                return Err(LazyWorkspaceError::StaleSource);
+            }
+            let current_snapshot = self.snapshot_with_accounting(accounting, cancellation).await?;
+            let (paths, _) = self.selected_paths_with_accounting(
+                destination, &plan.roots, accounting, cancellation,
+            ).await?;
+            let mut baseline = self.checkout_with_accounting(
+                crate::model::GenerationSelector::Exact(destination.authored_generation),
+                crate::model::CheckoutMode {
+                    access: crate::model::AccessMode::ReadWrite,
+                    consistency: crate::model::ConsistencyMode::Pinned,
+                    mutations: crate::model::MutationMode::PrivateOverlay,
+                }, accounting, cancellation,
+            ).await?;
+            let baseline_bytes = accounting.retain_fresh_checkout(&baseline)?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let LazyTreapMeter::NativeOriginal { .. } = &accounting.meter {
+                baseline.bind_authored_operation(operation);
+                checkout.bind_authored_operation(operation);
+            }
+            for path in &paths {
+                stage_selected_lookup!(&mut baseline, destination, path, false);
+                let namespace = accounting.namespace_owned(
+                    path, self.workspace.profile(), self.workspace.limits(),
+                )?;
+                let namespace_bytes = namespace.retained_bytes();
+                let current = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow, lookup_no_follow_with_native_work)?;
+                drop(namespace);
+                accounting.release(namespace_bytes)?;
+                if current.record.is_none() {
+                    stage_selected_lookup!(checkout, current_snapshot, path, true);
                 }
-                let current_snapshot = self.snapshot_with_accounting(accounting, cancellation).await?;
-                let (paths, _) = self.selected_paths_with_accounting(
-                    destination, &plan.roots, accounting, cancellation,
-                ).await?;
-                let mut path_bytes = (paths.capacity() as u64)
-                    .checked_mul(std::mem::size_of::<String>() as u64)
-                    .ok_or_else(counter_overflow)?;
-                for path in &paths {
-                    path_bytes = path_bytes.checked_add(path.capacity() as u64)
-                        .ok_or_else(counter_overflow)?;
+            }
+            let mut records: Vec<(FileRecord, FileMetadata)> = Vec::new();
+            for path in &paths {
+                let namespace = accounting.namespace_owned(
+                    path, self.workspace.profile(), self.workspace.limits(),
+                )?;
+                let namespace_bytes = namespace.retained_bytes();
+                let before = selected_checkout_query!(&mut baseline, &namespace, accounting, cancellation, lookup_no_follow_with_metadata, lookup_no_follow_with_metadata_with_native_work)?
+                    .ok_or(LazyWorkspaceError::StaleIdentity)?;
+                let actual = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow_with_metadata, lookup_no_follow_with_metadata_with_native_work)?
+                    .ok_or(LazyWorkspaceError::StaleIdentity)?;
+                let mut comparable = actual.record;
+                // A new alias outside the selected namespace changes only
+                comparable.link_count = before.record.link_count;
+                accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+                if comparable != before.record || actual.metadata != before.metadata {
+                    return Err(LazyWorkspaceError::StaleIdentity);
                 }
-                let mut baseline = self.checkout_with_accounting(
-                    crate::model::GenerationSelector::Exact(destination.authored_generation),
-                    crate::model::CheckoutMode {
-                        access: crate::model::AccessMode::ReadWrite,
-                        consistency: crate::model::ConsistencyMode::Pinned,
-                        mutations: crate::model::MutationMode::PrivateOverlay,
-                    }, accounting, cancellation,
-                ).await?;
-                let baseline_bytes = accounting.retain_fresh_checkout(&baseline)?;
-                #[cfg(not(target_arch = "wasm32"))]
-                if let LazyTreapMeter::NativeOriginal { .. } = &accounting.meter {
-                    baseline.bind_authored_operation(operation);
-                    checkout.bind_authored_operation(operation);
-                }
-                for path in &paths {
-                    self.stage_selected_lookup(&mut baseline, destination, path, false, accounting, cancellation).await?;
-                    let namespace = accounting.namespace_owned(
-                        path, self.workspace.profile(), self.workspace.limits(),
-                    )?;
-                    let namespace_bytes = namespace.retained_bytes();
-                    let current = self.selected_checkout_lookup_with_accounting(
-                        checkout, &namespace, accounting, cancellation,
-                    ).await?;
-                    drop(namespace);
-                    accounting.release(namespace_bytes)?;
-                    if current.record.is_none() {
-                        self.stage_selected_lookup(checkout, current_snapshot, path, true, accounting, cancellation).await?;
+                drop(namespace);
+                accounting.release(namespace_bytes)?;
+                let mut retained_identity = false;
+                for (record, _) in &records {
+                    accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+                    if record.file_id == actual.record.file_id {
+                        retained_identity = true;
+                        break;
                     }
                 }
-                let mut records: Vec<(FileRecord, FileMetadata)> = Vec::new();
+                if !retained_identity {
+                    accounting.ensure_vec_push(&mut records)?;
+                    accounting.charge(WorkCounters {
+                        bytes_copied: std::mem::size_of::<(FileRecord, FileMetadata)>() as u64,
+                        ..WorkCounters::UNCHARGED
+                    })?;
+                    records.push((actual.record, actual.metadata));
+                }
+            }
+            for entry in &plan.entries {
+                let mut previously_present = false;
                 for path in &paths {
+                    accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+                    if *path == entry.path { previously_present = true; break; }
+                }
+                if !previously_present {
                     let namespace = accounting.namespace_owned(
-                        path, self.workspace.profile(), self.workspace.limits(),
+                        &entry.path, self.workspace.profile(), self.workspace.limits(),
                     )?;
                     let namespace_bytes = namespace.retained_bytes();
-                    let before = self.selected_checkout_metadata_with_accounting(
-                        &mut baseline, &namespace, accounting, cancellation,
-                    ).await?
-                        .ok_or(LazyWorkspaceError::StaleIdentity)?;
-                    let actual = self.selected_checkout_metadata_with_accounting(
-                        checkout, &namespace, accounting, cancellation,
-                    ).await?
-                        .ok_or(LazyWorkspaceError::StaleIdentity)?;
-                    let mut comparable = actual.record;
-                    // A new alias outside the selected namespace changes only
-                    comparable.link_count = before.record.link_count;
-                    accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-                    if comparable != before.record || actual.metadata != before.metadata {
+                    let actual = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow, lookup_no_follow_with_native_work)?;
+                    if actual.record.is_some() {
                         return Err(LazyWorkspaceError::StaleIdentity);
                     }
                     drop(namespace);
                     accounting.release(namespace_bytes)?;
-                    let mut retained_identity = false;
-                    for (record, _) in &records {
+                }
+            }
+            drop(baseline);
+            accounting.release(baseline_bytes)?;
+            for entry in &plan.entries {
+                if entry.record.is_none() { continue; }
+                for (end, _) in entry.path.match_indices('/').skip(1) {
+                    let parent = &entry.path[..end];
+                    let mut selected_parent = false;
+                    for selected in &plan.entries {
                         accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-                        if record.file_id == actual.record.file_id {
-                            retained_identity = true;
+                        if selected.path == parent
+                            && matches!(selected.record, Some((FileRecord {
+                                kind: FileKind::Directory, ..
+                            }, _)))
+                        {
+                            selected_parent = true;
                             break;
                         }
                     }
-                    if !retained_identity {
-                        accounting.ensure_vec_push(&mut records)?;
-                        accounting.charge(WorkCounters {
-                            bytes_copied: std::mem::size_of::<(FileRecord, FileMetadata)>() as u64,
-                            ..WorkCounters::UNCHARGED
-                        })?;
-                        records.push((actual.record, actual.metadata));
-                    }
-                }
-                for entry in &plan.entries {
-                    let mut previously_present = false;
-                    for path in &paths {
-                        accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-                        if *path == entry.path { previously_present = true; break; }
-                    }
-                    if !previously_present {
-                        let namespace = accounting.namespace_owned(
-                            &entry.path, self.workspace.profile(), self.workspace.limits(),
-                        )?;
-                        let namespace_bytes = namespace.retained_bytes();
-                        let actual = self.selected_checkout_lookup_with_accounting(
-                            checkout, &namespace, accounting, cancellation,
-                        ).await?;
-                        if actual.record.is_some() {
-                            return Err(LazyWorkspaceError::StaleIdentity);
-                        }
-                        drop(namespace);
-                        accounting.release(namespace_bytes)?;
-                    }
-                }
-                drop(baseline);
-                accounting.release(baseline_bytes)?;
-                for entry in &plan.entries {
-                    if entry.record.is_none() { continue; }
-                    for (end, _) in entry.path.match_indices('/').skip(1) {
-                        let parent = &entry.path[..end];
-                        let mut selected_parent = false;
-                        for selected in &plan.entries {
-                            accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-                            if selected.path == parent
-                                && matches!(selected.record, Some((FileRecord {
-                                    kind: FileKind::Directory, ..
-                                }, _)))
-                            {
-                                selected_parent = true;
-                                break;
-                            }
-                        }
-                        if selected_parent { continue; }
-                        let namespace = accounting.namespace_owned(
-                            parent, self.workspace.profile(), self.workspace.limits(),
-                        )?;
-                        let namespace_bytes = namespace.retained_bytes();
-                        let existing = self.selected_checkout_lookup_with_accounting(
-                            checkout, &namespace, accounting, cancellation,
-                        ).await?;
-                        if let Some(record) = existing.record {
-                            if record.kind != FileKind::Directory {
-                                return Err(LazyWorkspaceError::NotDirectory);
-                            }
-                        } else {
-                            self.stage_selected_lookup(checkout, current_snapshot, parent, false, accounting, cancellation).await?;
-                            let staged = self.selected_checkout_lookup_with_accounting(
-                                checkout, &namespace, accounting, cancellation,
-                            ).await?;
-                            if !matches!(staged.record, Some(FileRecord { kind: FileKind::Directory, .. })) {
-                                return Err(LazyWorkspaceError::NotDirectory);
-                            }
-                        }
-                        drop(namespace);
-                        accounting.release(namespace_bytes)?;
-                    }
-                }
-                if let LazyTreapMeter::Standalone { .. } = &accounting.meter {
-                    checkout.bind_authored_operation(operation);
-                }
-                let mut operations = Vec::new();
-                let mut changes = Vec::new();
-                for path in paths.iter().rev() {
-                    if path == "/" { continue; }
-                    accounting.ensure_vec_push(&mut operations)?;
-                    accounting.ensure_vec_push(&mut changes)?;
+                    if selected_parent { continue; }
                     let namespace = accounting.namespace_owned(
-                        path, self.workspace.profile(), self.workspace.limits(),
+                        parent, self.workspace.profile(), self.workspace.limits(),
                     )?;
-                    let changed = accounting.namespace_owned(
-                        path, self.workspace.profile(), self.workspace.limits(),
-                    )?;
-                    operations.push(crate::kernel::Mutation::Remove {
-                        path: namespace, expected_file_id: crate::kernel::MetadataField::Unavailable,
-                    });
-                    changes.push(changed);
-                    accounting.charge(WorkCounters {
-                        bytes_copied: (std::mem::size_of::<crate::kernel::Mutation>()
-                            + std::mem::size_of::<NamespacePath>()) as u64,
-                        ..WorkCounters::UNCHARGED
-                    })?;
-                }
-                let mut identities: Vec<(FileId, &str)> = Vec::new();
-                for entry in &plan.entries {
-                    let Some((record, _)) = entry.record else { continue; };
-                    accounting.ensure_vec_push(&mut operations)?;
-                    accounting.ensure_vec_push(&mut changes)?;
-                    let mut existing = None;
-                    if record.kind != FileKind::Directory {
-                        for (identity, path) in &identities {
-                            accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-                            if *identity == record.file_id { existing = Some(*path); break; }
-                        }
-                    }
-                    let namespace = accounting.namespace_owned(
-                        &entry.path, self.workspace.profile(), self.workspace.limits(),
-                    )?;
-                    let mutation = if let Some(existing) = existing {
-                        let source = accounting.namespace_owned(
-                            existing, self.workspace.profile(), self.workspace.limits(),
-                        )?;
-                        crate::kernel::Mutation::Link { source, destination: namespace }
-                    } else {
-                        let compiled = self.compile_selected_record_with_accounting(
-                            checkout, namespace, record, accounting, cancellation,
-                        ).await?;
+                    let namespace_bytes = namespace.retained_bytes();
+                    let existing = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow, lookup_no_follow_with_native_work)?;
+                    if let Some(record) = existing.record {
                         if record.kind != FileKind::Directory {
-                            accounting.ensure_vec_push(&mut identities)?;
-                            identities.push((record.file_id, entry.path.as_str()));
+                            return Err(LazyWorkspaceError::NotDirectory);
                         }
-                        compiled.0
-                    };
-                    let changed = accounting.namespace_owned(
-                        &entry.path, self.workspace.profile(), self.workspace.limits(),
-                    )?;
-                    accounting.charge(WorkCounters {
-                        bytes_copied: (std::mem::size_of::<crate::kernel::Mutation>()
-                            + std::mem::size_of::<NamespacePath>()) as u64,
-                        ..WorkCounters::UNCHARGED
-                    })?;
-                    operations.push(mutation);
-                    changes.push(changed);
+                    } else {
+                        stage_selected_lookup!(checkout, current_snapshot, parent, false);
+                        let staged = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow, lookup_no_follow_with_native_work)?;
+                        if !matches!(staged.record, Some(FileRecord { kind: FileKind::Directory, .. })) {
+                            return Err(LazyWorkspaceError::NotDirectory);
+                        }
+                    }
+                    drop(namespace);
+                    accounting.release(namespace_bytes)?;
                 }
-                let identity_bytes = crate::foundation::usize_to_u64(identities.capacity())
-                    .checked_mul(std::mem::size_of::<(FileId, &str)>() as u64)
-                    .ok_or_else(counter_overflow)?;
-                drop(identities);
-                accounting.release(identity_bytes)?;
-                let mut transferred_bytes = crate::foundation::usize_to_u64(operations.capacity())
-                    .checked_mul(std::mem::size_of::<crate::kernel::Mutation>() as u64)
-                    .ok_or_else(counter_overflow)?;
-                for operation in &operations {
-                    transferred_bytes = transferred_bytes.checked_add(match operation {
-                        crate::kernel::Mutation::Remove { path, .. }
-                        | crate::kernel::Mutation::Create { path, .. } => path.retained_bytes(),
-                        crate::kernel::Mutation::Link { source, destination } =>
-                            source.retained_bytes().checked_add(destination.retained_bytes())
-                                .ok_or_else(counter_overflow)?,
-                        crate::kernel::Mutation::File { .. } => 0,
-                        _ => unreachable!("selected compiler emits only canonical replacement mutations"),
-                    }).ok_or_else(counter_overflow)?;
-                }
-                let mut paths = paths;
-                for root in &plan.roots {
-                    let mut present = false;
-                    for path in &paths {
+            }
+            if let LazyTreapMeter::Standalone { .. } = &accounting.meter {
+                checkout.bind_authored_operation(operation);
+            }
+            let mut operations = Vec::new();
+            let mut changes = Vec::new();
+            for path in paths.iter().rev() {
+                if path == "/" { continue; }
+                accounting.ensure_vec_push(&mut operations)?;
+                accounting.ensure_vec_push(&mut changes)?;
+                let namespace = accounting.namespace_owned(
+                    path, self.workspace.profile(), self.workspace.limits(),
+                )?;
+                let changed = accounting.namespace_owned(
+                    path, self.workspace.profile(), self.workspace.limits(),
+                )?;
+                operations.push(crate::kernel::Mutation::Remove {
+                    path: namespace, expected_file_id: crate::kernel::MetadataField::Unavailable,
+                });
+                changes.push(changed);
+                accounting.charge(WorkCounters {
+                    bytes_copied: (std::mem::size_of::<crate::kernel::Mutation>()
+                        + std::mem::size_of::<NamespacePath>()) as u64,
+                    ..WorkCounters::UNCHARGED
+                })?;
+            }
+            let mut identities: Vec<(FileId, &str)> = Vec::new();
+            for entry in &plan.entries {
+                let Some((record, _)) = entry.record else { continue; };
+                accounting.ensure_vec_push(&mut operations)?;
+                accounting.ensure_vec_push(&mut changes)?;
+                let mut existing = None;
+                if record.kind != FileKind::Directory {
+                    for (identity, path) in &identities {
                         accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-                        if path == root { present = true; break; }
-                    }
-                    if !present {
-                        accounting.ensure_vec_push(&mut paths)?;
-                        paths.push(accounting.canonical_path_owned(root, self.workspace.limits())?);
+                        if *identity == record.file_id { existing = Some(*path); break; }
                     }
                 }
-                let input = plan.input_digest(destination, &accounting)?;
-                self.mutate_selected_with_accounting(
-                    checkout, operations, transferred_bytes, accounting, cancellation,
-                ).await?;
-                let mut logical_owned_bytes = (paths.capacity() as u64)
-                    .checked_mul(std::mem::size_of::<String>() as u64)
-                    .and_then(|bytes| bytes.checked_add((records.capacity() as u64)
-                        .checked_mul(std::mem::size_of::<(FileRecord, FileMetadata)>() as u64)?))
-                    .and_then(|bytes| bytes.checked_add((changes.capacity() as u64)
-                        .checked_mul(std::mem::size_of::<NamespacePath>() as u64)?))
-                    .ok_or(crate::WorkError::Overflow)?;
+                let namespace = accounting.namespace_owned(
+                    &entry.path, self.workspace.profile(), self.workspace.limits(),
+                )?;
+                let mutation = if let Some(existing) = existing {
+                    let source = accounting.namespace_owned(
+                        existing, self.workspace.profile(), self.workspace.limits(),
+                    )?;
+                    crate::kernel::Mutation::Link { source, destination: namespace }
+                } else {
+                    let compiled = self.compile_selected_record_with_accounting(
+                        checkout, namespace, record, accounting, cancellation,
+                    ).await?;
+                    if record.kind != FileKind::Directory {
+                        accounting.ensure_vec_push(&mut identities)?;
+                        identities.push((record.file_id, entry.path.as_str()));
+                    }
+                    compiled.0
+                };
+                let changed = accounting.namespace_owned(
+                    &entry.path, self.workspace.profile(), self.workspace.limits(),
+                )?;
+                accounting.charge(WorkCounters {
+                    bytes_copied: (std::mem::size_of::<crate::kernel::Mutation>()
+                        + std::mem::size_of::<NamespacePath>()) as u64,
+                    ..WorkCounters::UNCHARGED
+                })?;
+                operations.push(mutation);
+                changes.push(changed);
+            }
+            let identity_bytes = crate::foundation::usize_to_u64(identities.capacity())
+                .checked_mul(std::mem::size_of::<(FileId, &str)>() as u64)
+                .ok_or_else(counter_overflow)?;
+            drop(identities);
+            accounting.release(identity_bytes)?;
+            let mut transferred_bytes = crate::foundation::usize_to_u64(operations.capacity())
+                .checked_mul(std::mem::size_of::<crate::kernel::Mutation>() as u64)
+                .ok_or_else(counter_overflow)?;
+            for operation in &operations {
+                transferred_bytes = transferred_bytes.checked_add(match operation {
+                    crate::kernel::Mutation::Remove { path, .. }
+                    | crate::kernel::Mutation::Create { path, .. } => path.retained_bytes(),
+                    crate::kernel::Mutation::Link { source, destination } =>
+                        source.retained_bytes().checked_add(destination.retained_bytes())
+                            .ok_or_else(counter_overflow)?,
+                    crate::kernel::Mutation::File { .. } => 0,
+                    _ => unreachable!("selected compiler emits only canonical replacement mutations"),
+                }).ok_or_else(counter_overflow)?;
+            }
+            let mut paths = paths;
+            for root in &plan.roots {
+                let mut present = false;
                 for path in &paths {
-                    logical_owned_bytes = logical_owned_bytes.checked_add(path.capacity() as u64)
-                        .ok_or(crate::WorkError::Overflow)?;
+                    accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+                    if path == root { present = true; break; }
                 }
-                for path in &changes {
-                    logical_owned_bytes = logical_owned_bytes.checked_add(path.retained_bytes())
-                        .ok_or(crate::WorkError::Overflow)?;
+                if !present {
+                    accounting.ensure_vec_push(&mut paths)?;
+                    paths.push(accounting.canonical_path_owned(root, self.workspace.limits())?);
                 }
-                Ok(SelectedImportEffects {
-                    paths, records, changes,
-                    input,
-                    logical_owned_bytes,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    allocation: None,
-                })
-
+            }
+            let input = plan.input_digest(destination, &accounting)?;
+            self.mutate_selected_with_accounting(
+                checkout, operations, transferred_bytes, accounting, cancellation,
+            ).await?;
+            let mut logical_owned_bytes = (paths.capacity() as u64)
+                .checked_mul(std::mem::size_of::<String>() as u64)
+                .and_then(|bytes| bytes.checked_add((records.capacity() as u64)
+                    .checked_mul(std::mem::size_of::<(FileRecord, FileMetadata)>() as u64)?))
+                .and_then(|bytes| bytes.checked_add((changes.capacity() as u64)
+                    .checked_mul(std::mem::size_of::<NamespacePath>() as u64)?))
+                .ok_or(crate::WorkError::Overflow)?;
+            for path in &paths {
+                logical_owned_bytes = logical_owned_bytes.checked_add(path.capacity() as u64)
+                    .ok_or(crate::WorkError::Overflow)?;
+            }
+            for path in &changes {
+                logical_owned_bytes = logical_owned_bytes.checked_add(path.retained_bytes())
+                    .ok_or(crate::WorkError::Overflow)?;
+            }
+            Ok(SelectedImportEffects {
+                paths, records, changes,
+                input,
+                logical_owned_bytes,
+                #[cfg(not(target_arch = "wasm32"))]
+                allocation: None,
+            })
+        }.await;
+        result
     }
 
     fn selected_lookup_identity(
@@ -13254,7 +12939,7 @@ where
             return Err(E::from(LazyWorkspaceError::NativeLedgerMismatch));
         }
         let accounting = LazyTreapWork::native_with_work(original, cancellation)?;
-        in_heap_lazy_with_error(&accounting, || async {
+        in_heap_lazy(&accounting, || async {
             let mut publication = OwnedNativeImportGuard { callback: &mut before_publication, original };
             self.import_selected_with_accounting_guarded(
                 destination, incoming, operation, permit, &accounting, cancellation,
@@ -13345,7 +13030,7 @@ where
             drop(incoming);
             if incoming_bytes != 0 { accounting.release(incoming_bytes)?; }
         } else {
-            let phase = self.load_state_with_accounting(accounting, cancellation).await?
+            let phase = self.load_binding_at(self.workspace.id(), accounting, cancellation).await?
                 .ok_or(LazyWorkspaceError::StaleIdentity)?;
             if phase.as_state().pending_remove.is_some() {
                 return Err(LazyWorkspaceError::Concurrent.into());
@@ -13473,7 +13158,7 @@ where
                 return Err(LazyWorkspaceError::StaleIdentity);
             }
             for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-                let phase = self.load_state_with_accounting(accounting, cancellation).await?
+                let phase = self.load_binding_at(self.workspace.id(), accounting, cancellation).await?
                     .ok_or(LazyWorkspaceError::StaleIdentity)?;
                 let state = phase.as_state();
                 if let Some(completed) = state.completed_selected_import
@@ -13519,9 +13204,7 @@ where
                     }),
                     ..state.clone()
                 };
-                if self.compare_state_with_accounting(
-                    state.revision, replacement, accounting, cancellation,
-                ).await? {
+                if self.swap_binding_at(self.workspace.id(), state.revision, replacement, accounting, cancellation).await? {
                     let finalized = self.finish_mount_removals_with_accounting(
                         accounting, cancellation,
                     ).await?;
@@ -13561,7 +13244,7 @@ where
         let original = original.native_materialization_work();
         async move {
             let accounting = LazyTreapWork::native_with_work(&original, cancellation)?;
-            let phase = self.load_state_with_accounting(&accounting, cancellation).await?
+            let phase = self.load_binding_at(self.workspace.id(), &accounting, cancellation).await?
                 .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
             let state = phase.as_state();
             let saved = state.completed_selected_import
@@ -13602,7 +13285,7 @@ where
         cancellation: &CancellationToken,
     ) -> Result<Option<LazySnapshotRef>, LazyWorkspaceError> {
         let accounting = LazyTreapWork::native_with_work(original, cancellation)?;
-        in_heap_lazy_with_work(&accounting, || async {
+        in_heap_lazy::<_, LazyWorkspaceError, _>(&accounting, || async {
             self.selected_import_snapshot_with_accounting(operation, &accounting, cancellation).await
         }).await.map_err(|error| match error {
             LazyWorkspaceError::OriginalSnapshotUnavailable =>
@@ -13638,7 +13321,7 @@ where
         let Some(generation) = self.operation_generation_with_accounting(
             IdempotencyKey::from_bytes(operation.into_bytes()), accounting, cancellation,
         ).await? else { return Ok(None); };
-        let phase = self.load_state_with_accounting(accounting, cancellation).await?
+        let phase = self.load_binding_at(self.workspace.id(), accounting, cancellation).await?
             .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
         let saved = phase.as_state().completed_selected_import
             .filter(|saved| saved.operation == operation);
@@ -13700,6 +13383,7 @@ where
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    /// Collects frozen selected records on the caller's native ledger.
     pub async fn prepare_selected_import_with_native_work(
         &self, snapshot: LazySnapshotRef, requested: &[NamespacePath],
         original: &crate::materializer::NativeMaterializationWork,
@@ -13709,7 +13393,7 @@ where
         let accounting = LazyTreapWork::native_with_work(original, cancellation)
             .map_err(LazyWorkspaceError::into_native_failure)?;
         let scratch = TreapAllocationScope::new(&accounting);
-        let result = in_heap_lazy_with_work(&accounting, || async {
+        let result = in_heap_lazy::<_, LazyWorkspaceError, _>(&accounting, || async {
             let plan = self.prepare_selected_import_with_accounting(
                 snapshot, requested, &accounting, cancellation,
             ).await?;
@@ -14042,16 +13726,7 @@ impl Drop for LazyHeapFrame<'_, '_> {
     }
 }
 
-async fn in_heap_lazy_with_work<T, F>(
-    work: &LazyTreapWork<'_>, create: impl FnOnce() -> F,
-) -> Result<T, LazyWorkspaceError>
-where
-    F: Future<Output = Result<T, LazyWorkspaceError>>,
-{
-    in_heap_lazy_with_error(work, create).await
-}
-
-async fn in_heap_lazy_with_error<T, E, F>(
+async fn in_heap_lazy<T, E, F>(
     work: &LazyTreapWork<'_>, create: impl FnOnce() -> F,
 ) -> Result<T, E>
 where
@@ -14746,7 +14421,7 @@ where
                 let result: Result<(), E> = async {
                     let (owner, lazy, original, cancellation) = state.map_err(LazyWorkspaceError::from)?;
                     let seal = LazyTreapWork::native_with_work(&original, &cancellation)?;
-                    in_heap_lazy_with_error(&seal, || async {
+                    in_heap_lazy(&seal, || async {
                         if let Some(prepared) = prepared {
                             lazy.write_prepared_basis_with_accounting(prepared, &seal, &cancellation).await?;
                         } else {
@@ -14979,7 +14654,7 @@ where
         cancellation: &CancellationToken,
     ) -> Result<crate::Generation<A, O>, Self::Error> {
         let frame = LazyTreapWork::native_with_work(self.original, cancellation)?;
-        in_heap_lazy_with_error(&frame, || async {
+        in_heap_lazy(&frame, || async {
             let mut guard = (self.builder)(current_source_used);
             let value = transaction.commit_with_permit_guarded_with_native_work(
                 permit, self.original, cancellation, &mut guard,
