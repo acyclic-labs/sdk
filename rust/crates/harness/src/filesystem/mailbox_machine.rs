@@ -5,9 +5,7 @@ use crate::{Error, Outcome, Result, scheduler::InboxItem, workflow::{MachineIden
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-/// Reusable receive/checkpoint/model machine. Input contains pinned `receive`
-/// and `model` WorkflowCommands. The model payload's `mailbox_operation` must
-/// name the receive command. No future or mutable model admission is retained.
+/// Reusable receive/checkpoint/model machine.
 pub struct MailboxModelMachine {
     identity: MachineIdentity,
     schema: Value,
@@ -94,7 +92,6 @@ impl ResumableMachine for MailboxModelMachine {
                     return Err(Error::Invalid("mailbox receive must succeed before model admission".into()));
                 };
                 if item.sequence == 0 { return Err(Error::Invalid("mailbox sequence must be positive".into())); }
-                // This exact item/cursor and the model outbox commit together.
                 state.mail = Some(item);
                 state.stage = Stage::Model;
                 (vec![state.model.clone()], MachineStatus::Suspended)

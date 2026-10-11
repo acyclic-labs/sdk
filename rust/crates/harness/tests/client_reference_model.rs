@@ -1,12 +1,4 @@
 //! Independent finite refinement oracle for the public production Client API.
-//!
-//! Bound: all 12^3 words (1,728 leaves; 1,884 nonempty prefixes), plus eight
-//! deterministic 48-step traces. There is NO state/order pruning. Fingerprints
-//! include the entire reference state, publication history, immutable snapshots,
-//! logical time and identity watermark, not just the current rendered number.
-//! Assumptions: the existing Numbers adapter authenticates authority/generation,
-//! exact content identity and contiguous revisions; ample configured resources.
-//! This is kernel evidence, NOT evidence of browser IndexedDB durability.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -56,8 +48,6 @@ enum Action {
     BeginOriginalOperation,
 }
 
-// Arithmetic is authored here rather than inferred from Client/Numbers receipts.
-// Each local claim is an increment over an exact original authoritative number.
 struct GoldenNumbers;
 impl GoldenNumbers {
     fn increment(original: u64, delta: u64) -> u64 {
@@ -93,8 +83,6 @@ struct Publication {
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 struct GoldenState {
-    // Fixed configuration is part of the fingerprint; changing bounds/adapter
-    // or namespace cannot incorrectly merge otherwise equal rendered states.
     namespace: u128,
     adapter: u128,
     configuration: (usize, usize, usize, usize, usize, u64, usize),
@@ -156,7 +144,6 @@ impl GoldenState {
         }
     }
     fn descendants(&self, roots: &BTreeSet<BranchId>) -> BTreeSet<BranchId> {
-        // Relational fixed point, independent of the production reverse index.
         let mut closure = roots.clone();
         loop {
             let previous = closure.len();
@@ -200,8 +187,6 @@ impl GoldenState {
     }
     fn observe(&mut self, event: &Evidence) -> Result<Reply, Error> {
         let old = self.facts.iter().find(|(key, _, _)| *key == event.key).unwrap();
-        // Adapter assumption is expressed independently as an exact identity and
-        // successor relation, including same-identity/different-bytes rejection.
         if event.publish && (event.basis.content != event.value || event.basis.authority != old.1.authority ||
             event.basis.generation != old.1.generation || event.basis.revision < old.1.revision ||
             event.basis.revision.saturating_sub(old.1.revision) > 1 ||
@@ -328,8 +313,6 @@ fn replay(actions: &[Action]) -> Result<GoldenState, Counterexample> {
         let mut mismatch = None;
         if actual != expected { mismatch = Some(format!("reply expected {expected:?}; actual {actual:?}")); }
         if client.sequence() != golden.sequence { mismatch = Some(format!("sequence expected {}; actual {}", golden.sequence, client.sequence())); }
-        // Include absent identities: disappearance or accidental resurrection is
-        // observable even if the currently selected canonical number is right.
         for sequence in 1..=golden.sequence.max(3) + 1 {
             let expected = golden.branches.iter().find(|b| b.id == id(sequence)).cloned();
             let actual = client.hypothesis(id(sequence)).map(actual_branch);
@@ -359,8 +342,6 @@ fn checked(actions: &[Action]) -> GoldenState {
     match replay(actions) {
         Ok(state) => state,
         Err(mut failure) => {
-            // Greedy deletion reaches a deterministic 1-minimal failing trace.
-            // Replay starts fresh each attempt, including original operation IDs.
             let mut index = 0;
             while index < failure.actions.len() {
                 let mut candidate = failure.actions.clone();
@@ -433,11 +414,9 @@ fn checkpoint_original_identity_and_content_are_not_operation_evidence() {
     recovered.restore(branch.clone()).unwrap();
     assert_eq!(actual_branch(recovered.hypothesis(id(1)).unwrap()), GoldenState::initial().branches[0]);
     assert_eq!(recovered.restore(branch), Err(Error::Conflict));
-    // A lost reply is uncertainty, not permission to mint a replacement identity.
     assert_eq!(recovered.begin(request(1, 0, 10, 12, Some(9), vec![])), Err(Error::Conflict));
     recovered.observe(1, &status(1, 9, OperationOutcome::Indeterminate)).unwrap();
     assert_eq!(recovered.hypothesis(id(1)).unwrap().outcome, OperationOutcome::Indeterminate);
-    // Original identity is completed only by the actual trusted receipt.
     recovered.observe(1, &evidence(1, 1, GoldenNumbers::increment(10, 1), Some((9, OperationOutcome::Completed)))).unwrap();
     let claim = recovered.hypothesis(id(1)).unwrap();
     assert_eq!((claim.id, claim.operation, claim.prediction, claim.outcome), (id(1), Some(9), PredictionOutcome::Confirmed, OperationOutcome::Completed));

@@ -87,7 +87,7 @@ async fn native_data_is_already_original_standing_but_retires_with_its_actual_na
     name.extend_from_slice(b"abc");
     let bytes = name.capacity() as u64;
     cancellation.cancel();
-    let name = (name, allocation.transfer_checkout_data(&owner, &witness)?);
+    let name = (name, allocation.transfer_checkout_data_bytes(allocation.bytes(), &owner, &witness)?);
     drop(allocation);
     drop(witness);
     let original_weak = Arc::downgrade(&original);

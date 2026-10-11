@@ -1,5 +1,4 @@
 //! Physical scheduler field copies share the original component-copy quota.
-//! Capacity inventories describe live DTO fields, never authorize a clone.
 use super::*;
 use crate::store::history::HistoryIo;
 use crate::wire_codec::CodecQuota;
@@ -148,8 +147,6 @@ fn clone_dto<T: Clone>(
     copy: impl FnOnce(&T, &mut CodecQuota<'_, '_>) -> Result<T>,
 ) -> Result<(T, u64)> {
     if work.is_none() { return Ok((value.clone(), 0)); }
-    // The quota outlives every temporary field and partial DTO. Only completed
-    // physical copies transfer their actual retained ownership to the caller.
     let mut quota = CodecQuota::new(work, 0)?;
     let output = copy(value, &mut quota)?;
     let owned = quota.retained();
@@ -371,7 +368,7 @@ impl OrchestrationDecision {
     }
 }
 
-pub(super) fn json_value_owned_bytes(value: &Value) -> Result<u64> {
+pub(crate) fn json_value_owned_bytes(value: &Value) -> Result<u64> {
     inventory(value, Inventory::value)
 }
 
@@ -411,15 +408,9 @@ impl SchedulerEvent {
 }
 
 impl OperationState {
-    /// Returns the actual physical field-copy claim, excluding the inline Self.
-    pub(crate) fn clone_owned_with_work(
-        &self, work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<(Self, u64)> {
-        clone_dto(self, work, copy_state)
-    }
 
     pub(crate) fn clone_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
-        self.clone_owned_with_work(work).map(|(state, _)| state)
+        clone_dto(self, work, copy_state).map(|(state, _)| state)
     }
 
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {

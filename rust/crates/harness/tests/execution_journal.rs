@@ -98,8 +98,7 @@ impl ToolExecutor for CountingNoopTool {
     }
 }
 
-/// Simulates a terminal race: the committed winner is observable, but this
-/// caller receives the losing CAS outcome and must replay without redispatch.
+/// Simulates a terminal race: the committed winner is observable, but this caller receives the losing CAS outcome and must replay without redispatch.
 struct TerminalCasLoser {
     inner: Arc<dyn ExecutionJournal>,
     losses: AtomicUsize,
@@ -184,8 +183,7 @@ enum OversizedArtifact {
     Projection,
 }
 
-/// Injects one oversized custody descriptor without changing the request digest,
-/// journal order, invocation values or original completed-body identities.
+/// Injects one oversized custody descriptor without changing the request digest, journal order, invocation values or original completed-body identities.
 struct CompletedDescriptorSpy {
     inner: Arc<dyn ExecutionJournal>,
     completed: Vec<FileRef>,

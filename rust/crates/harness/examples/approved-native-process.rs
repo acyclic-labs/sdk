@@ -549,8 +549,6 @@ where
         .await?;
     }
     let status = if mcp == Some(McpStdioMethod::CallTool) && receipt_fault.is_some() {
-        // The tool journal owns the dispatch. Its interrupted first observation
-        // was checked above; retain that cut until the storage providers reopen.
         None
     } else {
         let first = effects.run_task_effect(&owner, command, plan).await;
@@ -1115,7 +1113,6 @@ fn mcp_native_child(lost_response: bool) -> std::result::Result<(), Box<dyn std:
     if !lost_response {
         write(json!({"jsonrpc":"2.0","id":operation,"result":result}))?;
     }
-    // The ordinary owner closes stdin and terminates containment on completion.
     let mut byte = [0];
     let _ = input.read(&mut byte)?;
     Ok(())
@@ -1123,8 +1120,6 @@ fn mcp_native_child(lost_response: bool) -> std::result::Result<(), Box<dyn std:
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    // This example uses its own main so the same executable can be the stdio
-    // peer. Nextest discovery must list the batch without running its effects.
     if cfg!(test) && std::env::args().any(|arg| arg == "--list") {
         if !std::env::args().any(|arg| arg == "--ignored") {
             println!("approved_native_process: test");

@@ -6,13 +6,11 @@ use acyclic_stream::BoxProviderFuture;
 use futures::StreamExt as _;
 use std::time::Duration;
 
-/// Native network capability with explicit host credentials. Construction does
-/// no I/O; the normal Harness tool journal owns admission and result retention.
+/// Native network capability with explicit host credentials.
 pub struct NativeMcpHttpProvider(reqwest::Client);
 
 impl NativeMcpHttpProvider {
-    /// Creates a provider with redirects and request retries disabled. A host
-    /// may provide credential headers; they are absent from portable bindings.
+    /// Creates a provider with redirects and request retries disabled.
     pub fn new(headers: reqwest::header::HeaderMap) -> Result<Self> {
         let client = reqwest::Client::builder()
             .default_headers(headers)

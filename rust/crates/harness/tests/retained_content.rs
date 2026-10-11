@@ -77,8 +77,6 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             &IdempotencyKey::new("unpublished-content")?,
         )
         .await?;
-    // Sharing an exact ref or bounded subtree does not require a fork, a copied
-    // volume, or parent/child lineage; neither grants the reader a write.
     let attached = AgentId::from_bytes([33; 16]);
     let attached_scope = issuer.root_for_agent(
         attached,

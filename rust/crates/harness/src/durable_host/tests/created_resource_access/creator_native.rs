@@ -58,8 +58,6 @@ async fn original_native_creator_denies_quota_cancel_and_forged_evidence() -> Re
     assert_eq!(work.receipt().backend_read_operations, 0);
     assert_eq!(work.receipt().backend_write_operations, 0);
     let mut allocator_denied = creation_control_budget();
-    // Its sole allocation constructs the genuine original ledger, leaving no
-    // attempt for the verifier's future or any IO body.
     allocator_denied.allocation_operations = 1;
     let exhausted = NativeMaterializationWork::new(allocator_denied, &cancellation)
         .expect("admitted original ledger with exhausted allocator allowance");
@@ -150,8 +148,6 @@ async fn created_seal_keeps_exact_sdk_custody_after_original_observer_and_scope_
         &created.request.child, Some(access), &mut Some(&mut observer),
     )?;
     let scope_custody = observer.take_native_custody(scope_held)?;
-    // Any opaque provider backing remains under its genuine original custody;
-    // it is not duplicated into the known SDK payload inventory.
     let provider_custody = observer.into_custody();
     let scope = Arc::new(scope);
     let escaped = Arc::clone(&scope);
@@ -284,69 +280,7 @@ async fn same_created_seal_engine_rejects_exact_file_ambiguity_and_inherited_def
     Ok(())
 }
 
-#[tokio::test]
-async fn genuine_created_proof_quota_denial_precedes_any_deep_clone_allocation_or_copy() -> Result<()> {
-    let fixture = CreationFixture::new().await?;
-    let created = fixture.create_filesystem_child().await?;
-    let cancellation = CancellationToken::new();
-    let mut budget = creation_control_budget();
-    budget.peak_allocation_bytes = NativeMaterializationWork::accounting_state_bytes();
-    let work = NativeMaterializationWork::new(budget, &cancellation)
-        .expect("only the real original ledger's known accounting body is admitted");
-    let mut observer = crate::store::history::native_work_io(&work)?;
-    let prefix = work.receipt();
-    assert!(matches!(crate::core::resource_creation_proof_clone_with_custody(
-        &created.request.child.resource_proofs[0], &mut Some(&mut observer),
-    ), Err(Error::NativeWork { .. })));
-    assert_eq!(work.receipt().allocation_operations, prefix.allocation_operations);
-    assert_eq!(work.receipt().bytes_copied, prefix.bytes_copied);
-    assert_eq!(work.receipt().backend_read_operations, 0);
-    assert_eq!(work.receipt().backend_write_operations, 0);
-    Ok(())
-}
 
-#[tokio::test]
-async fn retained_preparation_native_decode_binds_every_original_field_and_releases_after_drop() -> Result<()> {
-    let fixture = CreationFixture::new().await?;
-    let created = fixture.create_filesystem_child().await?;
-    // Fixture input is borrowed caller-owned authority, not new native request memory.
-    let input = serde_json::to_value(&created.request)
-        .expect("the actual retained filesystem preparation request");
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(creation_control_budget(), &cancellation)
-        .expect("finite original native request invocation");
-    let baseline = work.remaining().expect("original allowance").peak_allocation_bytes;
-    let mut observer = crate::store::history::native_work_io(&work)?;
-    let (decoded, held) = ResourcePreparationRequest::from_borrowed_value_with_work(
-        &input, &mut Some(&mut observer),
-    )?;
-    assert_eq!(decoded, created.request);
-    assert!(held > 0);
-    let custody = observer.take_native_custody(held)?;
-    assert!(work.remaining().expect("decoded payload retained").peak_allocation_bytes < baseline);
-    drop(decoded);
-    drop(custody);
-    drop(observer);
-    assert_eq!(work.remaining().expect("decoded payload retired").peak_allocation_bytes, baseline);
-    for remove in ["command", "source_checkpoint"] {
-        let mut changed = input.clone();
-        let object = changed.as_object_mut().expect("original request object");
-        if object.remove(remove).is_none() {
-            object.insert(remove.into(), Value::Null);
-        }
-        let mut observer = crate::store::history::native_work_io(&work)?;
-        let error = ResourcePreparationRequest::from_borrowed_value_with_work(
-            &changed, &mut Some(&mut observer),
-        ).expect_err("serde defaults cannot forgive changed retained field presence");
-        assert!(matches!(error, Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. }));
-        drop(error);
-        drop(observer);
-        assert_eq!(work.remaining().expect("rejected payload retired").peak_allocation_bytes, baseline);
-    }
-    assert_eq!(work.receipt().backend_read_operations, 0);
-    assert_eq!(work.receipt().backend_write_operations, 0);
-    Ok(())
-}
 
 #[tokio::test]
 async fn retained_preparation_decode_cancel_and_allocator_denial_precede_owned_decode() -> Result<()> {

@@ -1,5 +1,4 @@
 //! Browser bindings over the existing Stream aggregate and archival reader.
-//! This module forwards admission and publication to the native owner classes.
 
 use super::{from_js, js_error, key_bytes, schema_registry, to_js};
 use crate::{
@@ -141,7 +140,6 @@ pub struct WasmBrowserAggregate {
 #[wasm_bindgen]
 impl WasmBrowserAggregate {
     /// Opens canonical history, optionally from an authenticated checkpoint.
-    /// Content/fork/merge adapters remain explicit; unsupported effects fail closed.
     #[wasm_bindgen(js_name = openBrowser)]
     pub async fn open_browser(
         options: JsValue,
