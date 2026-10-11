@@ -17,6 +17,22 @@ console.log(machines.assurance); // "process-local-simulation"
 
 Use `HttpMachinesProvider` for an authenticated HTTPS service. Qualify an immutable image before creating a machine, retain idempotency keys for recovery, and inspect operations whose outcome is indeterminate. The simulator runs the canonical Rust state machine through WebAssembly. Its request and result boundary uses generated Machines protobuf; TypeScript projects those messages into the ergonomic public API and validates identities and observations. String identity aliases are normalized by Rust. The simulator is for contract tests: it does **not** execute an OS, isolate workloads, provide durability, or offer service availability. A hosted provider must document its own guarantees.
 
+The Cloud product API uses gRPC. In Node or Bun, import `createMachinesGrpcClient` from `@acyclic-labs/machines/grpc` and request types from `@acyclic-labs/machines/proto`. Its `machines` client accepts protobuf request fields and returns admissions with machine and operation identities. Inspect the retained operation to observe completion. Call `close()` to release the connection; RPC options accept an `AbortSignal` and per-call timeout.
+
+```ts
+import { createMachinesGrpcClient } from "@acyclic-labs/machines/grpc";
+
+const client = createMachinesGrpcClient({ endpoint, token });
+try {
+  const admission = await client.machines.create(request);
+  for await (const state of client.machines.watchOperation({
+    protocol: { major: 1, minor: 1 }, operation: admission.operation,
+  })) console.log(state);
+} finally {
+  client.close();
+}
+```
+
 `forkMachine` forks a running machine directly when its contract declares `live-fork` (memory and disk) or `disk-fork` (disk only). The returned fidelity is explicit; open network connections are never inherited. Children have fresh identities and must be destroyed before their source. Providers without either capability require a checkpoint fork or restart instead. The Rust-backed simulator lets callers test both fidelity paths with `SimulatedMachines({ capabilities: [...] })`.
 
 [API source](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages/machines/src) · [Protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/machines)

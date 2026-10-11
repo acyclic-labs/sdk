@@ -9,7 +9,8 @@
   "type": "module",
   "exports": {
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./proto": { "types": "./generated/proto/machines/v1/machines_pb.d.ts", "default": "./generated/proto/machines/v1/machines_pb.js" }
+    "./proto": { "types": "./generated/proto/machines/v1/machines_pb.d.ts", "default": "./generated/proto/machines/v1/machines_pb.js" },
+    "./grpc": { "types": "./dist/grpc.d.ts", "default": "./dist/grpc.js" }
   },
   "types": "./dist/index.d.ts",
   "files": ["dist", "generated", "CHANGELOG.md"],
@@ -19,6 +20,6 @@
     "test": "bun run build && bun test test",
     "pack:dry": "bun pm pack --dry-run"
   },
-  "dependencies": { "@bufbuild/protobuf": "2.15.0" },
+  "dependencies": { "@bufbuild/protobuf": "2.15.0", "@connectrpc/connect": "2.1.1", "@connectrpc/connect-node": "2.1.1" },
   "devDependencies": { "typescript": "7.0.2", "@types/node": "26.4.1" }
 }
