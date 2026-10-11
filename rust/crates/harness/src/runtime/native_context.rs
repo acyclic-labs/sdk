@@ -418,7 +418,7 @@ impl ToolContext {
     /// callback. The exact selected volume is checked against effective tool
     /// attenuation; holding this resource never grants ambient path authority.
     #[cfg(feature = "native-execution")]
-    pub async fn native_working_view_with_native_work<'a>(
+    pub(crate) async fn native_working_view_with_native_work<'a>(
         &'a self, relative: &'a std::path::Path,
         operation: crate::conversation::VolumeOperation,
         work: &'a NativeMaterializationWork,
@@ -448,6 +448,33 @@ impl ToolContext {
         context.verify_original_execution_owner_with_native_work(work)?.await?;
         view.verify_with_native_work(work)?.await?;
         Ok(view.as_ref())
+    }
+
+    /// Reads the exact held mount selection under this accepted invocation's
+    /// effective READ scope; no broader namespace resource escapes the check.
+    #[cfg(feature = "native-execution")]
+    pub async fn read_working_file_with_native_work(
+        &self, relative: &std::path::Path, maximum: usize,
+        work: &NativeMaterializationWork,
+    ) -> Result<(Vec<u8>, NativeAllocation)> {
+        let view = self.native_working_view_with_native_work(
+            relative, crate::conversation::VolumeOperation::Read, work,
+        ).await?;
+        view.read_builtin_file(self.operation_id, relative, maximum, work)?.await
+    }
+
+    /// Mutates only the same selected held path after effective WRITE checks.
+    #[cfg(feature = "native-execution")]
+    pub async fn write_working_file_with_native_work(
+        &self, relative: &std::path::Path, content: &str, create_parents: bool,
+        expected_sha256: Option<[u8; 32]>, work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        let view = self.native_working_view_with_native_work(
+            relative, crate::conversation::VolumeOperation::Write, work,
+        ).await?;
+        view.write_builtin_file(
+            self.operation_id, relative, content, create_parents, expected_sha256, work,
+        )?.await
     }
     /// Binds native tool metadata to the same SDK-issued shared task context.
     /// Allocation membership does not authenticate an invocation; the admitted
