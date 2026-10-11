@@ -1614,62 +1614,217 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self: &Arc<Self>,
         request: crate::resource_preparation::ResourcePreparationRequest,
     ) -> Result<crate::resource_preparation::TaskResourcePreparation> {
-        crate::contract::validate_json_byte_bound(&request, self.maximum_payload_bytes)?;
-        request.validate()?;
-        if let Some(checkpoint) = &request.source_checkpoint {
-            self.validate_input_file(checkpoint)?;
+        self.resource_preparation_with_work(request, &mut None).await
+    }
+
+    /// Consumes the genuine paid request on this original SDK-shared owner.
+    /// The token retains its complete owned metadata before its intrinsic guard.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn resource_preparation_with_native_work<'a>(
+        self: &'a Arc<Self>,
+        request: (
+            crate::resource_preparation::ResourcePreparationRequest,
+            acyclic_fs::NativeAllocation,
+        ),
+        native: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, crate::resource_preparation::TaskResourcePreparation>> {
+        if !self.native_shared_work_matches(native) || !request.1.matches_work(native) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "preparation request differs from its original native owner or custody" });
         }
-        self.verify(false).await?;
-        // Allocation must consume an explicitly configured retained session,
-        // independently of per-model or per-worker invocation limits.
-        self.host
-            .coordinator
-            .lock()
-            .await
-            .scheduler()
-            .session_limits(self.operation_id())?
-            .validate()?;
-        let admission = self.host.admission(self.operation_id()).await?;
-        let input =
-            serde_json::to_value(&request).map_err(|error| Error::Invalid(error.to_string()))?;
-        let parent_task = admission.parent.ok_or_else(|| {
-            Error::Unauthorized("resource preparation requires an admitted parent".into())
-        })?;
-        if admission.input != input
-            || request.child.parent != Some(parent_task)
-            || request.child.operation_id == admission.operation_id
-            || request.child.resource_proofs.iter().any(|proof| {
-                request.resources.contains(&proof.resource) && proof.preparation != self.task_id
-            })
-            || !self.input_grants.contains(&request.creation_grant)
+        let required = (std::mem::size_of::<crate::resource_preparation::ResourcePreparationRequest>() as u64)
+            .checked_add(request.0.logical_owned_bytes()?)
+            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "preparation request ownership overflows" })?;
+        if request.1.bytes() < required
         {
-            return Err(Error::Unauthorized(
-                "resource request differs from its admitted input, parent or creation authority"
-                    .into(),
-            ));
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "preparation request differs from its original native owner or custody" });
         }
-        // Source authority becomes newly retained provenance here. Count the
-        // borrowed original grants with the request before owning their copy.
-        crate::contract::validate_json_byte_bound(
-            &(&request, &self.input_grants), request.maximum_bytes,
-        )?;
+        let mut pending = Some(request);
+        let future = crate::NativeFutureBundle::new(native, || {
+            let (request, mut custody) = pending.take().expect("funded preparation builder runs once");
+            async move {
+                let mut io = match crate::store::history::native_work_io(native) {
+                    Ok(io) => io,
+                    Err(error) => {
+                        drop(request);
+                        return match error {
+                            Error::NativeWork { cause, custody: None } =>
+                                Err(Error::NativeWork { cause, custody: Some(custody) }),
+                            error => { drop(custody); Err(error) }
+                        };
+                    }
+                };
+                let token = self.resource_preparation_with_work(request, &mut Some(&mut io)).await;
+                let mut metadata = io.into_custody();
+                match token {
+                    Ok(mut token) => {
+                        if let Err(cause) = custody.absorb(&mut metadata) {
+                            drop(token);
+                            return Err(Error::NativeWork { cause, custody: Some(custody) });
+                        }
+                        token.native_custody = Some(custody);
+                        Ok(token)
+                    }
+                    Err(Error::NativeWork { cause, custody: None }) => {
+                        // The failed producer has dropped its owned request and
+                        // transient payloads. Preserve its first cause and the
+                        // original paid input guard, never a replacement meter.
+                        drop(metadata);
+                        Err(Error::NativeWork { cause, custody: Some(custody) })
+                    }
+                    Err(error) => {
+                        drop(metadata);
+                        drop(custody);
+                        Err(error)
+                    }
+                }
+            }
+        });
+        match future {
+            Ok(future) => Ok(future),
+            Err(error) => {
+                let (request, custody) = pending.take().expect("denied builder retains its input");
+                drop(request);
+                match error {
+                    Error::NativeWork { cause, custody: None } =>
+                        Err(Error::NativeWork { cause, custody: Some(custody) }),
+                    error => { drop(custody); Err(error) }
+                }
+            }
+        }
+    }
+
+    async fn resource_preparation_with_work(
+        self: &Arc<Self>,
+        request: crate::resource_preparation::ResourcePreparationRequest,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<crate::resource_preparation::TaskResourcePreparation> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = work.as_deref().and_then(|observer| observer.original_native_work()).cloned();
+        #[cfg(not(target_arch = "wasm32"))]
+        if work.is_some() && native.is_none() {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                reason: "preparation producer requires its original native observer" });
+        }
+        if let Some(observer) = work.as_deref_mut() {
+            observer.retain_owned((std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>()
+                - std::mem::size_of::<crate::resource_preparation::ResourcePreparationRequest>()) as u64)?;
+        }
+        let (parent_task, request_digest) = {
+            // All canonical bytes and admission DTOs remain funded until after
+            // their payloads are dropped. This is the same None/Some engine.
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let input = crate::store::history::canonical_bytes_with_work(
+                &request, self.maximum_payload_bytes, quota.work())?;
+            quota.adopt(input.capacity() as u64)?;
+            request.validate_with_work(quota.work())?;
+            if let Some(checkpoint) = &request.source_checkpoint {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(native) = native.as_ref() {
+                    self.validate_input_file_with_native_work(checkpoint, native)?;
+                } else {
+                    self.validate_input_file(checkpoint)?;
+                }
+                #[cfg(target_arch = "wasm32")]
+                self.validate_input_file(checkpoint)?;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(native) = native.as_ref() {
+                self.verify_with_native_work(false, native).await?;
+            } else {
+                self.verify(false).await?;
+            }
+            #[cfg(target_arch = "wasm32")]
+            self.verify(false).await?;
+            self.host.coordinator.lock().await.scheduler()
+                .session_limits(self.operation_id())?.validate_with_work(quota.work())?;
+            let admission = self.host.admission_with_work(self.operation_id(), quota.work()).await?;
+            if quota.work().is_some() {
+                let extent = (std::mem::size_of::<crate::runtime::TaskAdmissionRecord>() as u64)
+                    .checked_add(admission.logical_owned_bytes()?)
+                    .ok_or_else(|| Self::grant_denied(quota.work(), "preparation admission ownership overflows"))?;
+                quota.adopt(extent)?;
+            }
+            let retained = crate::store::history::canonical_bytes_with_work(
+                &admission.input, self.maximum_payload_bytes, quota.work())?;
+            quota.adopt(retained.capacity() as u64)?;
+            let parent = admission.parent.ok_or_else(|| Self::grant_denied(
+                quota.work(), "resource preparation requires an admitted parent"))?;
+            if let Some(observer) = quota.work().as_deref_mut() {
+                let comparisons = (request.resources.len() as u64)
+                    .checked_mul(request.child.resource_proofs.len() as u64)
+                    .and_then(|comparisons| comparisons.checked_add(1))
+                    .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                        reason: "preparation identity comparison work overflows" })?;
+                observer.codec_charge(crate::contract::JsonCodecCharge::Work {
+                    bytes: input.len() as u64, items: comparisons,
+                })?;
+            }
+            if retained != input
+                || request.child.parent != Some(parent)
+                || request.child.operation_id == admission.operation_id
+                || request.child.resource_proofs.iter().any(|proof|
+                    request.resources.contains(&proof.resource) && proof.preparation != self.task_id)
+                || !self.input_grants.contains(&request.creation_grant)
+            {
+                return Err(Self::grant_denied(quota.work(),
+                    "resource request differs from its admitted input, parent or creation authority"));
+            }
+            let source_bound = crate::store::history::canonical_bytes_with_work(
+                &(&request, &self.input_grants), request.maximum_bytes, quota.work())?;
+            quota.adopt(source_bound.capacity() as u64)?;
+            if let Some(observer) = quota.work().as_deref_mut() {
+                observer.hashed_bytes(input.len() as u64)?;
+            }
+            (parent, *blake3::hash(&input).as_bytes())
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let project_source = if let Some(native) = native.as_ref() {
+            let (source, custody) = self.host.seal_prepared_project_source_with_native_work(
+                &request, parent_task, native,
+            ).await?;
+            if !custody.matches_work(native)
+                || source.is_some() && custody.bytes() < std::mem::size_of::<crate::source_authorization::ProjectSourceReadHandle>() as u64
+            {
+                drop(source);
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "prepared source returned foreign or unowned native metadata" });
+            }
+            let observer = work.as_deref_mut().expect("native preparation observer");
+            observer.absorb_native_custody(custody)?;
+            if source.is_some() {
+                // Source Self is already embedded in the prepaid token header;
+                // its output guard accounts that same Self, not another value.
+                observer.release_owned(std::mem::size_of::<crate::source_authorization::ProjectSourceReadHandle>() as u64)?;
+            }
+            source
+        } else {
+            self.host.seal_prepared_project_source(&request, parent_task).await?
+        };
+        #[cfg(target_arch = "wasm32")]
         let project_source = self.host.seal_prepared_project_source(&request, parent_task).await?;
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let owner = crate::core::copy_authority(&self.host.owner, &mut quota)?;
+        let creation_fence = crate::scheduler::LeaseFence {
+            reservation_id: crate::core::copy_text(&self.fence.reservation_id, &mut quota)?,
+            placement: crate::core::copy_text(&self.fence.placement, &mut quota)?,
+        };
+        let source_grants = crate::core::copy_capabilities(&self.input_grants, &mut quota)?;
         let origin = crate::resource_preparation::ResourceCreationOrigin {
-            owner: self.host.owner.clone(),
-            parent_task,
-            preparation_task: self.task_id,
+            owner, parent_task, preparation_task: self.task_id,
             intended_child: request.child.operation_id,
             admission_digest: self.original_admission_digest,
-            request_digest: crate::contract::canonical_json_digest(&request)?,
-            creation_fence: self.fence.clone(),
-            source_grants: self.input_grants.clone(),
+            request_digest, creation_fence, source_grants,
         };
-        Ok(crate::resource_preparation::TaskResourcePreparation {
-            owner: self.clone(),
-            request,
-            origin,
-            project_source,
-        })
+        let token = crate::resource_preparation::TaskResourcePreparation {
+            owner: Arc::clone(self), request, origin, project_source,
+            #[cfg(not(target_arch = "wasm32"))]
+            native_custody: None,
+        };
+        quota.transfer();
+        Ok(token)
     }
 
     pub(crate) async fn verify(&self, settlement: bool) -> Result<()> {

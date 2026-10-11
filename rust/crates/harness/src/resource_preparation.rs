@@ -110,6 +110,41 @@ impl crate::filesystem::PreparationRecord for ResourcePreparationRequest {
 }
 
 impl ResourcePreparationRequest {
+    /// Every actually owned variable-capacity field, excluding the inline Self.
+    /// This logical inventory follows the admission/record deep-only convention.
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        let overflow = || {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            { Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "resource preparation ownership overflows" } }
+            #[cfg(any(not(feature = "filesystem"), target_arch = "wasm32"))]
+            { Error::Invalid("resource preparation ownership overflows".into()) }
+        };
+        let mut bytes = 0_u64;
+        let mut add = |owned: u64| -> Result<()> {
+            bytes = bytes.checked_add(owned).ok_or_else(overflow)?;
+            Ok(())
+        };
+        add(self.provider.logical_owned_bytes()?)?;
+        add(self.child.logical_owned_bytes()?)?;
+        add(self.creation_grant.capacity() as u64)?;
+        add(crate::contract::json_value_logical_owned_bytes(&self.payload)?)?;
+        add((self.resources.capacity() as u64)
+            .checked_mul(std::mem::size_of::<ResourceRef>() as u64).ok_or_else(overflow)?)?;
+        for resource in &self.resources { add(resource.logical_owned_bytes()?)?; }
+        if let Some(command) = &self.command {
+            add(command.kind.capacity() as u64)?;
+            add(command.payload.logical_owned_bytes()?)?;
+        }
+        if let Some(checkpoint) = &self.source_checkpoint { add(checkpoint.logical_owned_bytes()?)?; }
+        add((self.input_files.capacity() as u64)
+            .checked_mul(std::mem::size_of::<crate::conversation::FileRef>() as u64)
+            .ok_or_else(overflow)?)?;
+        for file in &self.input_files { add(file.logical_owned_bytes()?)?; }
+        if let Some(authorization) = &self.read_authorization { add(authorization.logical_owned_bytes()?)?; }
+        Ok(bytes)
+    }
+
     fn invalid(reason: &'static str, work: &Option<&mut dyn crate::store::history::HistoryIo>) -> Error {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if work.as_deref().and_then(|observer| observer.original_native_work()).is_some() {
@@ -411,13 +446,16 @@ pub struct ResourceCreationOrigin {
 }
 
 /// Sealed, process-local binding to an authenticated preparation task lease.
-/// Only `TaskJournalOwner::resource_preparation` constructs this value.
+/// Only the authenticated `TaskJournalOwner` preparation producers construct it.
 #[cfg(feature = "filesystem")]
 pub struct TaskResourcePreparation {
     pub(crate) owner: std::sync::Arc<dyn ResourcePreparationLease>,
     pub(crate) request: ResourcePreparationRequest,
     pub(crate) origin: ResourceCreationOrigin,
     pub(crate) project_source: Option<crate::source_authorization::ProjectSourceReadHandle>,
+    // Actual native producer's intrinsic custody follows every owned payload.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) native_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 #[cfg(feature = "filesystem")]
@@ -460,10 +498,37 @@ impl TaskResourcePreparation {
         self.owner.verify_lease(false).await
     }
 
+    /// Verifies original native creation authority before allocating a future.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn verify_creation_with_native_work<'a>(
+        &'a self, work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        self.require_native_custody(work)?;
+        self.owner.verify_lease_with_native_work(false, work)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn require_native_custody(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        if !self.native_custody.as_ref().is_some_and(|custody| custody.matches_work(work)) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "preparation token has no original native metadata custody" });
+        }
+        Ok(())
+    }
+
     /// Permits observing an existing uncertain allocation under a retained lease.
     /// This does not authorize another creation or grant child access.
     pub async fn verify_reconciliation(&self) -> Result<()> {
         self.owner.verify_lease(true).await
+    }
+
+    /// Observes the same retained native lease; it authorizes no new creation.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn verify_reconciliation_with_native_work<'a>(
+        &'a self, work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        self.require_native_custody(work)?;
+        self.owner.verify_lease_with_native_work(true, work)
     }
 }
 
@@ -474,6 +539,14 @@ pub(crate) trait ResourcePreparationLease: acyclic_stream::ProviderPlatform {
     fn verify_lease(&self, settlement: bool) -> acyclic_stream::BoxProviderFuture<'_, Result<()>>;
     fn grants(&self) -> &crate::Capabilities;
     fn cancellation(&self) -> Option<&acyclic_fs::CancellationToken>;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn verify_lease_with_native_work<'a>(
+        &'a self, _settlement: bool, _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+            reason: "preparation lease has no original-ledger verifier" })
+    }
 }
 
 #[cfg(feature = "filesystem")]
@@ -490,6 +563,19 @@ impl<P: acyclic_stream::StreamProvider> ResourcePreparationLease
 
     fn verify_lease(&self, settlement: bool) -> acyclic_stream::BoxProviderFuture<'_, Result<()>> {
         Box::pin(async move { self.verify(settlement).await })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn verify_lease_with_native_work<'a>(
+        &'a self, settlement: bool, work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        if !self.native_shared_work_matches(work) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "preparation lease has no original shared native owner custody" });
+        }
+        crate::NativeFutureBundle::new(work, || async move {
+            self.verify_with_native_work(settlement, work).await
+        })
     }
 }
 

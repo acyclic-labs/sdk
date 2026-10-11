@@ -224,6 +224,14 @@ volume owner labels or the ordering of private allocations.
 and publisher; `open_with_creation_providers` composes it into the same filesystem
 task runtime. Child writes and new child admission require their current retained
 publication lease, while inherited access preserves the original proof identity.
+`TaskJournalOwner::resource_preparation_with_native_work` consumes the complete
+paid request on its genuine SDK-shared owner and original ledger. The ordinary
+and native producers share one request/admission/session/fence engine; selected
+Project provenance uses the original native source sealing engine. The resulting
+token retains its owned request, original origin and source before intrinsic
+metadata custody. Native creation verification rejects ordinary or foreign
+tokens before funding its future; native reconciliation checks only the original
+retained settlement lease and cannot authorize another creation.
 Workflow command and model inputs resolve through those same owner-authenticated
 bindings. Protected workflow and execution records remain in their original
 owner-controlled storage; ordinary content refs cannot substitute for them.
