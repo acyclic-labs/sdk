@@ -10,7 +10,7 @@ use crate::native_capture::{capture_baseline_from_root, ensure_current_host_node
 use crate::native_host::HostRoot;
 use crate::path::PortablePath;
 use crate::record_store::Revisioned;
-use crate::{AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, CancellationToken, Checkout, CheckoutCommitOutcome, GenerationId, LocalCoreStateStore, NativeRootIdentity, OperationId, OperationReceipt, PinnedReader, PublicationPermit, ResolvedFile, VolumeConfig, VolumeId, WorkBudget, WorkCounters};
+use crate::{AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, CancellationToken, Checkout, CheckoutCommitOutcome, FileId, GenerationId, LocalCoreStateStore, NativeRootIdentity, OperationId, OperationReceipt, PinnedReader, PublicationPermit, ResolvedFile, StagedContent, VolumeConfig, VolumeId, WorkBudget, WorkCounters};
 use bytes::{Bytes, BytesMut};
 use flate2::{bufread::GzDecoder, Compression, GzBuilder};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeSeq};
@@ -43,6 +43,7 @@ pub struct NativeArchiveDescription {
 pub struct NativeDirectoryArchive {
     description: NativeArchiveDescription,
     chunks: Vec<Bytes>,
+    regular_digests: Arc<BTreeMap<FileId, [u8; 32]>>,
 }
 
 impl NativeDirectoryArchive {
@@ -74,7 +75,7 @@ impl NativeDirectoryArchive {
         if total != expected.total_bytes || hex::encode(digest.finalize()) != expected.sha256 {
             return Err(NativeArchiveError::InvalidArchive);
         }
-        Ok(Self { description: expected, chunks })
+        Ok(Self { description: expected, chunks, regular_digests: Arc::new(BTreeMap::new()) })
     }
 
     /// Reads at most one upload body; aligned upload reads share immutable bytes.
@@ -248,6 +249,8 @@ struct NativeCaptureRecord {
     policy: Arc<CapturePolicy>,
     #[serde(serialize_with = "serialize_preimages", deserialize_with = "deserialize_preimages")]
     preimages: Arc<BTreeMap<NamespacePath, MaterializationPreimage>>,
+    #[serde(serialize_with = "serialize_regular_digests", deserialize_with = "deserialize_regular_digests")]
+    regular_digests: Arc<BTreeMap<FileId, [u8; 32]>>,
     capture_counts: [u64; 3],
     capture_work: WorkCounters,
     archive: NativeArchiveDescription,
@@ -295,6 +298,21 @@ fn deserialize_preimages<'de, D: Deserializer<'de>>(deserializer: D) -> Result<A
     let mut result = BTreeMap::new();
     for (path, image) in entries {
         if result.insert(restore_namespace::<D::Error>(path)?, image).is_some() { return Err(serde::de::Error::custom("duplicate native capture preimage")); }
+    }
+    Ok(Arc::new(result))
+}
+
+fn serialize_regular_digests<S: Serializer>(digests: &Arc<BTreeMap<FileId, [u8; 32]>>, serializer: S) -> Result<S::Ok, S::Error> {
+    let mut sequence = serializer.serialize_seq(Some(digests.len()))?;
+    for entry in digests.iter() { sequence.serialize_element(&entry)?; }
+    sequence.end()
+}
+
+fn deserialize_regular_digests<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Arc<BTreeMap<FileId, [u8; 32]>>, D::Error> {
+    let entries = Vec::<(FileId, [u8; 32])>::deserialize(deserializer)?;
+    let mut result = BTreeMap::new();
+    for (file_id, digest) in entries {
+        if result.insert(file_id, digest).is_some() { return Err(serde::de::Error::custom("duplicate native capture content digest")); }
     }
     Ok(Arc::new(result))
 }
@@ -419,7 +437,7 @@ pub async fn capture_native_directory_archive<A: AsyncAuthorityStore, O: AsyncOb
     let captured = capture_baseline_from_root(&mut candidate, &root, options, policy, budget, cancellation).await.map_err(|failure| NativeArchiveError::Engine(failure.to_string()))?;
     verify_source(&root, &observed, config, options, policy, cancellation)?;
     verify_root_binding(&root, &options.source_root)?;
-    let archive = export_native_directory_archive(&candidate.snapshot_reader(), config, options.maximum_paths, budget, cancellation).await?;
+    let archive = export_archive(&candidate.snapshot_reader(), config, options.maximum_paths, true, budget, cancellation).await?;
     let retained_root = Arc::clone(&root);
     let final_preimages = acyclic_native_runtime::run_blocking_io(move || capture_native_preimages(&retained_root, &paths)).await?.map_err(|error| NativeArchiveError::Engine(error.to_string()))?;
     if preimages.as_ref() != &final_preimages { return Err(NativeArchiveError::SourceChanged); }
@@ -438,6 +456,7 @@ pub async fn capture_native_directory_archive<A: AsyncAuthorityStore, O: AsyncOb
     let record = NativeCaptureRecord {
         version: 1, revision: 1, operation_id, source_root: options.source_root.clone(), root_identity: root.identity().to_bytes(), volume_id: candidate.volume_id(), volume_config: config,
         original_generation: candidate.generation_id(), policy: Arc::new(policy.clone()), preimages,
+        regular_digests: Arc::clone(&archive.regular_digests),
         capture_counts: [receipt.examined_paths, receipt.changed_paths, receipt.staged_file_bytes], capture_work: receipt.work, archive: archive.description.clone(),
     };
     if !store.compare_and_swap_record(CAPTURE_FAMILY, operation_id.into_bytes(), 0, record.clone()).await.map_err(|error| NativeArchiveError::Engine(error.to_string()))? { return Err(NativeArchiveError::InvalidReceipt); }
@@ -497,7 +516,7 @@ impl ChunkSink {
     fn new() -> Self { Self { complete: Vec::new(), current: BytesMut::new(), bytes: 0, digest: Sha256::new() } }
     fn finish(mut self) -> NativeDirectoryArchive {
         if !self.current.is_empty() { self.complete.push(self.current.freeze()); }
-        NativeDirectoryArchive { description: NativeArchiveDescription { total_bytes: self.bytes, sha256: hex::encode(self.digest.finalize()) }, chunks: self.complete }
+        NativeDirectoryArchive { description: NativeArchiveDescription { total_bytes: self.bytes, sha256: hex::encode(self.digest.finalize()) }, chunks: self.complete, regular_digests: Arc::new(BTreeMap::new()) }
     }
 }
 impl Write for ChunkSink {
@@ -604,11 +623,16 @@ fn native_link_bytes(target: String) -> Bytes {
 /// Rejects unsupported names, modes, kinds and links, exceeded transport or
 /// expanded bounds, and canonical immutable-object read failures.
 pub async fn export_native_directory_archive<A: AsyncAuthorityStore, O: AsyncObjectStore>(reader: &PinnedReader<A, O>, config: VolumeConfig, maximum_paths: u32, budget: WorkBudget, cancellation: &CancellationToken) -> Result<NativeDirectoryArchive, NativeArchiveError> {
+    export_archive(reader, config, maximum_paths, false, budget, cancellation).await
+}
+
+async fn export_archive<A: AsyncAuthorityStore, O: AsyncObjectStore>(reader: &PinnedReader<A, O>, config: VolumeConfig, maximum_paths: u32, retain_regular_digests: bool, budget: WorkBudget, cancellation: &CancellationToken) -> Result<NativeDirectoryArchive, NativeArchiveError> {
     if maximum_paths == 0 || maximum_paths > config.limits.maximum_paths_per_batch { return Err(NativeArchiveError::InvalidBounds); }
     let entries = snapshot_entries(reader, config, maximum_paths, budget, cancellation).await?;
     let gzip = GzBuilder::new().mtime(0).operating_system(255).write(ChunkSink::new(), Compression::new(6));
     let mut writer = ExpandedWriter { inner: gzip, bytes: 0 };
     let mut regular = HashMap::<crate::FileId, String>::new();
+    let mut regular_digests = BTreeMap::new();
     for (path, file) in entries {
         if cancellation.is_cancelled() { return Err(NativeArchiveError::Engine("native archive export cancelled".to_owned())); }
         let description = file.description();
@@ -620,13 +644,16 @@ pub async fn export_native_directory_archive<A: AsyncAuthorityStore, O: AsyncObj
                 regular.insert(file.file_id(), path.clone());
                 write_header(&mut writer, &path, None, EntryType::Regular, description.logical_bytes, mode)?;
                 let mut offset = 0_u64;
+                let mut digest = retain_regular_digests.then(Sha256::new);
                 while offset < description.logical_bytes {
                     let wanted = u64::from(NATIVE_ARCHIVE_CHUNK_BYTES).min(config.limits.maximum_read_bytes).min(description.logical_bytes - offset);
                     if wanted == 0 { return Err(NativeArchiveError::InvalidBounds); }
                     let read = file.read_range(ByteRange { offset, length: wanted }, budget, cancellation).await.map_err(|failure| NativeArchiveError::Engine(failure.to_string()))?.value;
                     if read.bytes.len() as u64 != wanted { return Err(NativeArchiveError::InvalidArchive); }
+                    if let Some(digest) = &mut digest { digest.update(&read.bytes); }
                     writer.write_all(&read.bytes)?; offset += wanted;
                 }
+                if let Some(digest) = digest { regular_digests.insert(file.file_id(), digest.finalize().into()); }
                 write_padding(&mut writer, description.logical_bytes)?;
             },
             FileKind::SymbolicLink => {
@@ -638,7 +665,9 @@ pub async fn export_native_directory_archive<A: AsyncAuthorityStore, O: AsyncObj
         }
     }
     writer.write_all(&[0; 1024])?;
-    Ok(writer.inner.finish()?.finish())
+    let mut archive = writer.inner.finish()?.finish();
+    archive.regular_digests = Arc::new(regular_digests);
+    Ok(archive)
 }
 
 struct LimitedReader<R> { inner: R, bytes: u64 }
@@ -657,7 +686,7 @@ impl<R: Read> Read for LimitedReader<R> {
     }
 }
 
-struct EntrySource<'a, R> { reader: &'a mut R, remaining: u64 }
+struct EntrySource<'a, R> { reader: &'a mut R, remaining: u64, digest: Option<Sha256> }
 impl<R: Read + Send> AsyncBlobSource for EntrySource<'_, R> {
     async fn read<'a>(&'a mut self, destination: &'a mut [u8], cancellation: &'a CancellationToken) -> io::Result<usize> {
         if cancellation.is_cancelled() { return Err(io::Error::new(io::ErrorKind::Interrupted, "native archive import cancelled")); }
@@ -666,9 +695,17 @@ impl<R: Read + Send> AsyncBlobSource for EntrySource<'_, R> {
         let count = self.reader.read(&mut destination[..maximum])?;
         if count == 0 { return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "native archive entry is truncated")); }
         self.remaining -= count as u64;
+        if let Some(digest) = &mut self.digest { digest.update(&destination[..count]); }
         Ok(count)
     }
 }
+
+struct ImportedRegular {
+    content: StagedContent,
+    digest: [u8; 32],
+}
+
+type ImportedRegulars = BTreeMap<NamespacePath, Arc<ImportedRegular>>;
 
 fn read_padding<R: Read>(reader: &mut R, length: u64) -> Result<(), NativeArchiveError> {
     let padding = ((BLOCK_BYTES - length % BLOCK_BYTES) % BLOCK_BYTES) as usize;
@@ -705,13 +742,14 @@ fn imported_path(path: &str, config: VolumeConfig) -> Result<NamespacePath, Nati
 /// checkout remains unchanged unless the entire stream validates.
 pub async fn import_native_directory_archive<A: AsyncAuthorityStore, O: AsyncObjectStore, R: Read + Send>(checkout: &mut Checkout<A, O>, source: R, budget: WorkBudget, cancellation: &CancellationToken) -> Result<OperationReceipt<NativeArchiveImport>, NativeArchiveError> {
     require_empty_checkout(checkout, budget, cancellation).await?;
-    import_archive_into_empty_candidate(checkout, source, None, budget, cancellation).await
+    import_archive_into_empty_candidate(checkout, source, None, None, budget, cancellation).await
 }
 
 /// Imports a complete desired tree as a child of the retained original volume.
 ///
 /// The caller must supply the exact clean captured generation. Original root
-/// metadata is retained; excluded paths cannot be introduced by the archive.
+/// metadata and unchanged file identities are retained; excluded paths cannot
+/// be introduced. Unavailable archive metadata never clears original facts.
 /// Publication remains the caller's canonical operation and permit decision.
 ///
 /// # Errors
@@ -725,23 +763,174 @@ pub async fn replace_captured_native_directory_archive<A: AsyncAuthorityStore, O
     }
     capture.verify_current_binding()?;
     let config = checkout.volume_config();
-    let entries = snapshot_entries(&checkout.snapshot_reader(), config, config.limits.maximum_paths_per_batch, budget, cancellation).await?;
-    let mut candidate = checkout.private_candidate();
+    let original = snapshot_entries(&checkout.snapshot_reader(), config, config.limits.maximum_paths_per_batch, budget, cancellation).await?.into_iter().collect::<BTreeMap<_, _>>();
+    let mut parsed = checkout.private_candidate();
     let mut work = WorkCounters::default();
-    for (name, file) in entries.into_iter().rev() {
+    for (name, file) in original.iter().rev() {
         let remaining = work.remaining(budget).map_err(|_| NativeArchiveError::InvalidBounds)?;
-        let removed = candidate.remove(imported_path(&name, config)?, Some(file.file_id()), remaining, cancellation).await.map_err(|failure| NativeArchiveError::Engine(failure.to_string()))?;
+        let removed = parsed.remove(imported_path(name, config)?, Some(file.file_id()), remaining, cancellation).await.map_err(|failure| NativeArchiveError::Engine(failure.to_string()))?;
         work = work.checked_add(removed.work).map_err(|_| NativeArchiveError::InvalidBounds)?;
     }
+    let mut retained = ImportedRegulars::new();
     let remaining = work.remaining(budget).map_err(|_| NativeArchiveError::InvalidBounds)?;
-    let imported = import_archive_into_empty_candidate(&mut candidate, source, Some(capture.capture_policy()), remaining, cancellation).await?;
+    let imported = import_archive_into_empty_candidate(&mut parsed, source, Some(capture.capture_policy()), Some(&mut retained), remaining, cancellation).await?;
     work = work.checked_add(imported.work).map_err(|_| NativeArchiveError::InvalidBounds)?;
+    let desired = snapshot_entries(&parsed.snapshot_reader(), config, config.limits.maximum_paths_per_batch, budget, cancellation).await?.into_iter().collect::<BTreeMap<_, _>>();
+    let groups = desired_alias_groups(&original, &desired, &retained, capture, config, budget, cancellation).await?;
+    let mut candidate = checkout.private_candidate();
+    reconcile_desired_tree(&mut candidate, &original, &desired, &groups, &retained, capture, &mut work, budget, cancellation).await?;
     work.verify(budget).map_err(|_| NativeArchiveError::InvalidBounds)?;
     *checkout = candidate;
     Ok(OperationReceipt { value: imported.value, work })
 }
 
-async fn import_archive_into_empty_candidate<A: AsyncAuthorityStore, O: AsyncObjectStore, R: Read + Send>(checkout: &mut Checkout<A, O>, source: R, policy: Option<&CapturePolicy>, budget: WorkBudget, cancellation: &CancellationToken) -> Result<OperationReceipt<NativeArchiveImport>, NativeArchiveError> {
+struct DesiredAliasGroup {
+    paths: Vec<String>,
+    file_id: FileId,
+    metadata: FileMetadata,
+    content_matches: bool,
+    target: Option<Bytes>,
+    candidates: Vec<(FileId, usize, bool)>,
+}
+
+fn overlay_archive_mode(original: FileMetadata, desired: FileMetadata) -> FileMetadata {
+    let mut merged = original;
+    if let (MetadataField::Value(old), MetadataField::Value(new)) = (original.posix_mode, desired.posix_mode) {
+        merged.posix_mode = MetadataField::Value((old & !0o777) | (new & 0o777));
+    }
+    merged
+}
+
+#[allow(clippy::too_many_arguments, reason = "all inputs are retained original authority or parser-authenticated desired facts")]
+async fn desired_alias_groups<A: AsyncAuthorityStore, O: AsyncObjectStore>(original: &BTreeMap<String, ResolvedFile<A, O>>, desired: &BTreeMap<String, ResolvedFile<A, O>>, retained: &ImportedRegulars, capture: &NativeDirectoryCapture, config: VolumeConfig, budget: WorkBudget, cancellation: &CancellationToken) -> Result<Vec<DesiredAliasGroup>, NativeArchiveError> {
+    let mut aliases = BTreeMap::<FileId, Vec<String>>::new();
+    for (name, file) in desired {
+        if file.description().kind != FileKind::Directory { aliases.entry(file.file_id()).or_default().push(name.clone()); }
+    }
+    let mut groups = Vec::with_capacity(aliases.len());
+    for (file_id, paths) in aliases {
+        let first = paths.first().ok_or(NativeArchiveError::InvalidArchive)?;
+        let file = desired.get(first).ok_or(NativeArchiveError::InvalidArchive)?;
+        let target = if file.description().kind == FileKind::SymbolicLink {
+            Some(file.read_symbolic_link(budget, cancellation).await.map_err(|failure| NativeArchiveError::Engine(failure.to_string()))?.value)
+        } else { None };
+        let digest = if file.description().kind == FileKind::Regular {
+            Some(retained.get(&imported_path(first, config)?).ok_or(NativeArchiveError::InvalidArchive)?.digest)
+        } else { None };
+        let mut candidates = BTreeMap::<FileId, (usize, bool)>::new();
+        for name in &paths {
+            let Some(before) = original.get(name).filter(|before| before.description().kind == file.description().kind) else { continue; };
+            let matches = if let Some(digest) = digest {
+                capture.record.regular_digests.get(&before.file_id()).ok_or(NativeArchiveError::InvalidReceipt)? == &digest
+            } else {
+                let before_target = before.read_symbolic_link(budget, cancellation).await.map_err(|failure| NativeArchiveError::Engine(failure.to_string()))?.value;
+                target.as_ref() == Some(&before_target)
+            };
+            let entry = candidates.entry(before.file_id()).or_insert((0, matches));
+            entry.0 += 1;
+        }
+        groups.push(DesiredAliasGroup { paths, file_id, metadata: file.description().metadata, content_matches: false, target, candidates: candidates.into_iter().map(|(id, (count, matches))| (id, count, matches)).collect() });
+    }
+    groups.sort_unstable_by(|left, right| {
+        (!left.candidates.iter().any(|entry| entry.2)).cmp(&(!right.candidates.iter().any(|entry| entry.2)))
+            .then_with(|| compare_archive_paths(&left.paths[0], &right.paths[0]))
+    });
+    let mut inherited = BTreeSet::new();
+    for group in &mut groups {
+        let kind = desired.get(group.paths.first().ok_or(NativeArchiveError::InvalidArchive)?).ok_or(NativeArchiveError::InvalidArchive)?.description().kind;
+        group.candidates.sort_unstable_by_key(|(id, count, matches)| (!*matches, std::cmp::Reverse(*count), *id));
+        if let Some((id, _, matches)) = group.candidates.iter().find(|(id, _, _)| !inherited.contains(id)).copied() {
+            inherited.insert(id);
+            group.file_id = id;
+            group.content_matches = matches;
+            let before = group.paths.iter().filter_map(|name| original.get(name)).find(|file| file.file_id() == id).ok_or(NativeArchiveError::InvalidReceipt)?;
+            group.metadata = overlay_archive_mode(before.description().metadata, group.metadata);
+        }
+        else if let Some(before) = group.paths.iter().filter_map(|name| original.get(name)).find(|file| file.description().kind == kind) {
+            group.metadata = overlay_archive_mode(before.description().metadata, group.metadata);
+        }
+    }
+    Ok(groups)
+}
+
+#[allow(clippy::too_many_arguments, reason = "reconciliation retains original scope, parsed proofs and one measured work accumulator")]
+async fn reconcile_desired_tree<A: AsyncAuthorityStore, O: AsyncObjectStore>(candidate: &mut Checkout<A, O>, original: &BTreeMap<String, ResolvedFile<A, O>>, desired: &BTreeMap<String, ResolvedFile<A, O>>, groups: &[DesiredAliasGroup], retained: &ImportedRegulars, capture: &NativeDirectoryCapture, work: &mut WorkCounters, budget: WorkBudget, cancellation: &CancellationToken) -> Result<(), NativeArchiveError> {
+    let config = candidate.volume_config();
+    let mut desired_groups = BTreeMap::new();
+    for (index, group) in groups.iter().enumerate() {
+        for path in &group.paths { desired_groups.insert(path.as_str(), index); }
+    }
+    let mut mutations = Vec::new();
+    let mut kept = BTreeSet::new();
+    for (name, before) in original.iter().rev() {
+        let preserve = match desired.get(name) {
+            Some(after) if before.description().kind == FileKind::Directory && after.description().kind == FileKind::Directory => true,
+            Some(after) if before.description().kind == after.description().kind => {
+                let group = &groups[*desired_groups.get(name.as_str()).ok_or(NativeArchiveError::InvalidArchive)?];
+                group.file_id == before.file_id() && (before.description().kind == FileKind::Regular || group.content_matches)
+            },
+            _ => false,
+        };
+        if preserve { kept.insert(name.as_str()); }
+        else { mutations.push(AuthoredMutation::Remove { path: imported_path(name, config)?, expected_file_id: Some(before.file_id()) }); }
+    }
+    apply_reconciliation_mutations(candidate, mutations, work, budget, cancellation).await?;
+    for (name, after) in desired {
+        if after.description().kind != FileKind::Directory { continue; }
+        let path = imported_path(name, config)?;
+        let mutation = if kept.contains(name.as_str()) {
+            let before = original.get(name).ok_or(NativeArchiveError::InvalidReceipt)?;
+            let metadata = overlay_archive_mode(before.description().metadata, after.description().metadata);
+            (metadata != before.description().metadata).then_some(AuthoredMutation::SetMetadata { path, metadata })
+        } else { Some(AuthoredMutation::CreateDirectory { path, metadata: after.description().metadata }) };
+        if let Some(mutation) = mutation { apply_reconciliation_mutations(candidate, vec![mutation], work, budget, cancellation).await?; }
+    }
+    for group in groups {
+        let anchor = group.paths.iter().find(|name| kept.contains(name.as_str())).unwrap_or(&group.paths[0]);
+        let path = imported_path(anchor, config)?;
+        let after = desired.get(anchor).ok_or(NativeArchiveError::InvalidArchive)?;
+        let mut mutations = Vec::new();
+        if after.description().kind == FileKind::Regular {
+            let content = retained.get(&path).ok_or(NativeArchiveError::InvalidArchive)?;
+            if kept.contains(anchor.as_str()) {
+                if !group.content_matches {
+                    mutations.push(AuthoredMutation::Resize { path: path.clone(), logical_bytes: 0 });
+                    mutations.push(AuthoredMutation::WriteFromContent { path: path.clone(), offset: 0, content: content.content.clone() });
+                }
+                let before = original.get(anchor).ok_or(NativeArchiveError::InvalidReceipt)?;
+                if !group.content_matches || before.description().metadata != group.metadata { mutations.push(AuthoredMutation::SetMetadata { path: path.clone(), metadata: group.metadata }); }
+            } else {
+                mutations.push(AuthoredMutation::CreateFileFromContent { path: path.clone(), content: content.content.clone(), metadata: group.metadata, file_id: Some(group.file_id) });
+            }
+        } else {
+            if !kept.contains(anchor.as_str()) {
+                mutations.push(AuthoredMutation::CreateSymbolicLink { path: path.clone(), target: group.target.clone().ok_or(NativeArchiveError::InvalidArchive)?, metadata: group.metadata });
+                mutations.push(AuthoredMutation::Reidentify { path: path.clone(), file_id: group.file_id });
+            } else {
+                let before = original.get(anchor).ok_or(NativeArchiveError::InvalidReceipt)?;
+                if before.description().metadata != group.metadata { mutations.push(AuthoredMutation::SetMetadata { path: path.clone(), metadata: group.metadata }); }
+            }
+        }
+        for name in &group.paths {
+            if name != anchor && !kept.contains(name.as_str()) {
+                mutations.push(AuthoredMutation::HardLink { source: path.clone(), destination: imported_path(name, config)? });
+            }
+        }
+        apply_reconciliation_mutations(candidate, mutations, work, budget, cancellation).await?;
+    }
+    capture.verify_current_binding()?;
+    Ok(())
+}
+
+async fn apply_reconciliation_mutations<A: AsyncAuthorityStore, O: AsyncObjectStore>(candidate: &mut Checkout<A, O>, mutations: Vec<AuthoredMutation>, work: &mut WorkCounters, budget: WorkBudget, cancellation: &CancellationToken) -> Result<(), NativeArchiveError> {
+    if mutations.is_empty() { return Ok(()); }
+    let remaining = work.remaining(budget).map_err(|_| NativeArchiveError::InvalidBounds)?;
+    let applied = candidate.apply_authored_bulk_transaction(mutations, remaining, cancellation).await.map_err(|failure| NativeArchiveError::Engine(failure.to_string()))?;
+    *work = work.checked_add(applied.work).map_err(|_| NativeArchiveError::InvalidBounds)?;
+    Ok(())
+}
+
+async fn import_archive_into_empty_candidate<A: AsyncAuthorityStore, O: AsyncObjectStore, R: Read + Send>(checkout: &mut Checkout<A, O>, source: R, policy: Option<&CapturePolicy>, mut retained_content: Option<&mut ImportedRegulars>, budget: WorkBudget, cancellation: &CancellationToken) -> Result<OperationReceipt<NativeArchiveImport>, NativeArchiveError> {
     let mut compressed = LimitedReader { inner: source, bytes: 0 };
     let mut first = [0; 10]; compressed.read_exact(&mut first)?;
     if first != GZIP_HEADER { return Err(NativeArchiveError::InvalidArchive); }
@@ -800,13 +989,16 @@ async fn import_archive_into_empty_candidate<A: AsyncAuthorityStore, O: AsyncObj
             EntryType::Regular => {
                 if link.is_some() || size > MAXIMUM_NATIVE_ARCHIVE_BYTES { return Err(NativeArchiveError::InvalidArchive); }
                 imported.regular_file_bytes = imported.regular_file_bytes.checked_add(size).ok_or(NativeArchiveError::InvalidBounds)?;
-                if size == 0 {
+                if size == 0 && retained_content.is_none() {
                     mutations.push(AuthoredMutation::CreateFile { path: path.clone(), bytes: Bytes::new(), metadata });
                 } else {
-                    let mut source = EntrySource { reader: &mut expanded, remaining: size };
-                    let staged = candidate.content_stager().stage(&mut source, size, budget, cancellation).await.map_err(|failure| NativeArchiveError::Engine(failure.to_string()))?;
+                    let mut source = EntrySource { reader: &mut expanded, remaining: size, digest: retained_content.is_some().then(Sha256::new) };
+                    let staged = candidate.content_stager().stage(&mut source, size.max(1), budget, cancellation).await.map_err(|failure| NativeArchiveError::Engine(failure.to_string()))?;
                     if staged.value.logical_bytes() != size || source.remaining != 0 { return Err(NativeArchiveError::InvalidArchive); }
                     work = work.checked_add(staged.work).map_err(|_| NativeArchiveError::InvalidBounds)?;
+                    if let (Some(retained), Some(digest)) = (retained_content.as_deref_mut(), source.digest) {
+                        retained.insert(path.clone(), Arc::new(ImportedRegular { content: staged.value.clone(), digest: digest.finalize().into() }));
+                    }
                     mutations.push(AuthoredMutation::CreateFileFromContent { path: path.clone(), content: staged.value, metadata, file_id: None });
                 }
                 semantic_kind = FileKind::Regular;
@@ -826,6 +1018,10 @@ async fn import_archive_into_empty_candidate<A: AsyncAuthorityStore, O: AsyncObj
                 if size != 0 { return Err(NativeArchiveError::InvalidArchive); }
                 let source = imported_path(&link.ok_or(NativeArchiveError::InvalidArchive)?, config)?;
                 if paths.get(&source) != Some(&(FileKind::Regular, mode)) { return Err(NativeArchiveError::InvalidPath); }
+                if let Some(retained) = retained_content.as_deref_mut() {
+                    let original = Arc::clone(retained.get(&source).ok_or(NativeArchiveError::InvalidArchive)?);
+                    retained.insert(path.clone(), original);
+                }
                 mutations.push(AuthoredMutation::HardLink { source, destination: path.clone() });
                 semantic_kind = FileKind::Regular;
             },
@@ -1007,6 +1203,77 @@ mod tests {
         assert_ne!(checkout.generation_id(), original_generation);
         assert_eq!(captured.capture.original_generation(), original_generation);
         assert!(matches!(replace_captured_native_directory_archive(&mut checkout, &captured.capture, Cursor::new(desired), WorkBudget::UNBOUNDED, &cancellation).await, Err(NativeArchiveError::InvalidCheckout)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unchanged_desired_archive_retains_ids_metadata_and_unrelated_physical_writer() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let source = directory.path().join("source");
+        std::fs::create_dir(&source)?;
+        std::fs::create_dir(source.join("pkg"))?;
+        std::fs::write(source.join("pkg/shared"), b"immutable original bytes")?;
+        std::fs::hard_link(source.join("pkg/shared"), source.join("pkg/alias"))?;
+        std::fs::write(source.join("unrelated"), b"captured before later writer")?;
+        symlink("shared", source.join("pkg/link"))?;
+        let workspace = crate::Fs::memory().create_workspace("archive-retains-original").await?;
+        let mut checkout = workspace.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction()).await?;
+        let root = Arc::new(HostRoot::open(&source)?);
+        let options = CaptureOptions { source_root: source.clone(), expected_root_identity: root.identity(), maximum_paths: 16, maximum_extent_spans: 16 };
+        let policy = CapturePolicy::allow_all();
+        let store = LocalCoreStateStore::new(directory.path().join("native-state"));
+        let cancellation = CancellationToken::new();
+        let captured = capture_native_directory_archive(&mut checkout, root, &options, &policy, OperationId::new(), PublicationPermit::Unrestricted, &store, WorkBudget::UNBOUNDED, &cancellation).await?;
+        let config = checkout.volume_config();
+        let before = snapshot_entries(&checkout.snapshot_reader(), config, 16, WorkBudget::UNBOUNDED, &cancellation).await?.into_iter().map(|(path, file)| (path, (file.file_id(), file.description().metadata))).collect::<BTreeMap<_, _>>();
+        std::fs::write(source.join("unrelated"), b"actual unrelated later writer")?;
+        let restored = restore_native_directory_capture(&store, captured.capture.operation_id()).await?;
+        replace_captured_native_directory_archive(&mut checkout, &restored, captured.archive.reader(), WorkBudget::UNBOUNDED, &cancellation).await?;
+        let after = snapshot_entries(&checkout.snapshot_reader(), config, 16, WorkBudget::UNBOUNDED, &cancellation).await?.into_iter().map(|(path, file)| (path, (file.file_id(), file.description().metadata))).collect::<BTreeMap<_, _>>();
+        assert_eq!(before, after);
+        assert!(!checkout.has_pending_mutations());
+        assert_eq!(checkout.generation_id(), restored.original_generation());
+        assert_eq!(std::fs::read(source.join("unrelated"))?, b"actual unrelated later writer");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn split_original_hardlink_keeps_unchanged_alias_identity_and_complete_metadata() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let source = directory.path().join("source");
+        std::fs::create_dir(&source)?;
+        std::fs::write(source.join("x"), b"base")?;
+        std::fs::set_permissions(source.join("x"), std::fs::Permissions::from_mode(0o644))?;
+        std::fs::hard_link(source.join("x"), source.join("y"))?;
+        let workspace = crate::Fs::memory().create_workspace("archive-split-original-alias").await?;
+        let mut checkout = workspace.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction()).await?;
+        let root = Arc::new(HostRoot::open(&source)?);
+        let options = CaptureOptions { source_root: source.clone(), expected_root_identity: root.identity(), maximum_paths: 8, maximum_extent_spans: 8 };
+        let policy = CapturePolicy::allow_all();
+        let store = LocalCoreStateStore::new(directory.path().join("native-state"));
+        let cancellation = CancellationToken::new();
+        let captured = capture_native_directory_archive(&mut checkout, root, &options, &policy, OperationId::new(), PublicationPermit::Unrestricted, &store, WorkBudget::UNBOUNDED, &cancellation).await?;
+        let config = checkout.volume_config();
+        let before = checkout.snapshot_reader().resolve_directory_page(&NamespacePath::new(Vec::new(), config.limits)?, None, 8, WorkBudget::UNBOUNDED, &cancellation).await?.value;
+        let original = before.entries.first().ok_or("missing original aliases")?;
+        let original_id = original.file.file_id();
+        let original_metadata = original.file.description().metadata;
+        let desired = archive_fixture(&[
+            ArchiveFixtureEntry { name: b"x", kind: EntryType::Regular, link: None, mode: 0o644, declared_size: 7, body: b"changed" },
+            ArchiveFixtureEntry { name: b"y", kind: EntryType::Regular, link: None, mode: 0o644, declared_size: 4, body: b"base" },
+        ])?;
+        replace_captured_native_directory_archive(&mut checkout, &captured.capture, Cursor::new(desired), WorkBudget::UNBOUNDED, &cancellation).await?;
+        let after = checkout.snapshot_reader().resolve_directory_page(&NamespacePath::new(Vec::new(), config.limits)?, None, 8, WorkBudget::UNBOUNDED, &cancellation).await?.value;
+        let x = after.entries.iter().find(|entry| entry.name.unicode_text().as_deref() == Some("x")).ok_or("missing changed split alias")?;
+        let y = after.entries.iter().find(|entry| entry.name.unicode_text().as_deref() == Some("y")).ok_or("missing unchanged split alias")?;
+        assert_eq!(y.file.file_id(), original_id);
+        assert_ne!(x.file.file_id(), original_id);
+        assert_eq!(x.file.description().metadata, original_metadata);
+        assert_eq!(y.file.description().metadata, original_metadata);
+        let unchanged = y.file.read_range(ByteRange { offset: 0, length: 4 }, WorkBudget::UNBOUNDED, &cancellation).await?.value;
+        assert_eq!(unchanged.bytes.as_ref(), b"base");
+        assert_eq!(std::fs::read(source.join("x"))?, b"base");
+        assert_eq!(std::fs::read(source.join("y"))?, b"base");
         Ok(())
     }
 
