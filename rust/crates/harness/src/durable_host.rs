@@ -2005,14 +2005,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             io.check_cancellation()?;
         }
         let operation_id = OperationId::from_bytes(task_id.into_bytes());
-        let admission = self.admission_with_work(operation_id, work).await?;
+        let admission = self.read_retained_admission_with_work(operation_id, work).await?;
+        let (scope, _) = self.authenticated_scope_with_work(&admission, work).await?;
         if !admission.grants.contains("model:generate") {
             return Err(Self::admission_boundary(
                 work, crate::wire::ErrorCode::Unauthorized,
                 "task scope lacks model:generate",
             ));
         }
-        let (scope, _) = self.authenticated_scope_with_work(&admission, work).await?;
         self.validate_parent_scope_with_work(admission.parent, &scope, work).await?;
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh_with_work(work).await?;
