@@ -15,16 +15,42 @@ use crate::{Error, Result};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-#[derive(Clone)]
 struct StoredFile {
     reference: FileRef,
     bytes: Arc<[u8]>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    custody: Option<acyclic_fs::NativeAllocation>,
 }
 
-#[derive(Clone)]
 struct PathRevision {
     generation: u64,
     file: FileRef,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    custody: Option<acyclic_fs::NativeAllocation>,
+}
+
+struct StoredBlob {
+    bytes: Arc<[u8]>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    custody: Option<acyclic_fs::NativeAllocation>,
+}
+
+#[derive(Default)]
+struct PathHistory {
+    revisions: Vec<PathRevision>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    capacity_custody: Option<acyclic_fs::NativeAllocation>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    key_custody: Option<acyclic_fs::NativeAllocation>,
+}
+
+impl std::ops::Deref for PathHistory {
+    type Target = Vec<PathRevision>;
+    fn deref(&self) -> &Self::Target { &self.revisions }
+}
+
+impl std::ops::DerefMut for PathHistory {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.revisions }
 }
 
 /// One entry in a bounded directory page.
@@ -58,8 +84,8 @@ pub(crate) struct MemoryStore {
     resident_bytes: u64,
     generation: u64,
     files: HashMap<String, StoredFile>,
-    blobs: HashMap<String, Arc<[u8]>>,
-    paths: BTreeMap<String, Vec<PathRevision>>,
+    blobs: HashMap<String, StoredBlob>,
+    paths: BTreeMap<String, PathHistory>,
 }
 
 impl MemoryStore {
@@ -137,11 +163,50 @@ impl MemoryStore {
         bytes: &[u8],
         update_path: bool,
     ) -> Result<FileRef> {
+        self.retain_reference(reference, bytes, update_path)?;
+        Ok(reference.clone())
+    }
+
+    pub(crate) fn retain_reference(
+        &mut self, reference: &FileRef, bytes: &[u8], update_path: bool,
+    ) -> Result<()> {
+        #[cfg(feature = "filesystem")]
+        { self.retain_reference_inner(reference, bytes, update_path, None) }
+        #[cfg(not(feature = "filesystem"))]
+        { self.retain_reference_inner(reference, bytes, update_path) }
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn retain_reference_with_io(
+        &mut self, reference: &FileRef, bytes: &[u8], update_path: bool,
+        io: &crate::filesystem::PreparationIo,
+    ) -> Result<()> {
+        self.retain_reference_inner(reference, bytes, update_path, Some(io))
+    }
+
+    fn retain_reference_inner(
+        &mut self, reference: &FileRef, bytes: &[u8], update_path: bool,
+        #[cfg(feature = "filesystem")] io: Option<&crate::filesystem::PreparationIo>,
+    ) -> Result<()> {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io { io.remaining()?; }
         reference.validate()?;
         if reference.volume() != &self.volume {
             return Err(Error::Unauthorized("file belongs to another volume".into()));
         }
-        reference.descriptor().verify(bytes)?;
+        if bytes.len() as u64 != reference.descriptor().byte_length() {
+            reference.descriptor().verify(bytes)?;
+        }
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            io.preflight(acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() })?;
+        }
+        let verified = reference.descriptor().verify(bytes);
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            io.charge(acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() })?;
+        }
+        verified?;
         let path = reference.path();
         if bytes.len() as u64 > self.maximum_file_bytes {
             return Err(Error::Invalid("staged file exceeds harness limits".into()));
@@ -152,15 +217,45 @@ impl MemoryStore {
         if path.len() as u64 > self.maximum_path_bytes {
             return Err(Error::Invalid("staged file exceeds harness limits".into()));
         }
+        #[cfg(feature = "filesystem")]
+        let file_key = match io {
+            Some(io) => String::from_utf8(io.encode_json(
+                &(reference.volume(), reference.path(), reference.version()), io.remaining()?.bytes_encoded, true,
+            )?).map_err(|error| Error::Invalid(format!("file reference is not UTF-8: {error}")))?,
+            None => Self::file_key(reference)?,
+        };
+        #[cfg(not(feature = "filesystem"))]
         let file_key = Self::file_key(reference)?;
-        if let Some(prior) = self.files.get(&file_key)
-            && (prior.reference != *reference || prior.bytes.as_ref() != bytes)
-        {
-            return Err(Error::Invalid(
-                "immutable file version was reused for another file contract".into(),
-            ));
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            let examine = acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() };
+            io.preflight(examine)?;
+            io.charge(examine)?;
         }
-        if self.path_conflicts(path) {
+        if let Some(prior) = self.files.get(&file_key) {
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io {
+                let compare = acyclic_fs::WorkCounters { source_bytes_read: bytes.len() as u64, ..Default::default() };
+                io.preflight(compare)?;
+                io.charge(compare)?;
+            }
+            if prior.reference != *reference || prior.bytes.as_ref() != bytes {
+                return Err(Error::Invalid("immutable file version was reused for another file contract".into()));
+            }
+        }
+        let mut conflict = false;
+        for existing in self.paths.keys() {
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io {
+                let examine = acyclic_fs::WorkCounters {
+                    items_examined: 1, source_bytes_read: (existing.len() + path.len()) as u64, ..Default::default()
+                };
+                io.preflight(examine)?;
+                io.charge(examine)?;
+            }
+            if paths_conflict(existing, path) { conflict = true; break; }
+        }
+        if conflict {
             return Err(Error::Invalid(
                 "file path conflicts with an existing directory".into(),
             ));
@@ -171,14 +266,35 @@ impl MemoryStore {
                     "memory content retention limit exceeded".into(),
                 ));
             }
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io {
+                let key_bytes = decimal_digits(reference.descriptor().byte_length()) + 1 + 64;
+                io.claim(key_bytes)?;
+                let rehash = if self.files.len() == self.files.capacity() { self.files.len() } else { 0 };
+                let slots = acyclic_fs::WorkCounters { items_examined: rehash as u64 + 1, ..Default::default() };
+                io.preflight(slots)?;
+                io.charge(slots)?;
+                io.allocation_attempt(key_bytes)?;
+                io.preflight(acyclic_fs::WorkCounters { bytes_encoded: key_bytes, bytes_copied: key_bytes, ..Default::default() })?;
+            }
             let blob_key = Self::blob_key(reference);
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io {
+                io.charge(acyclic_fs::WorkCounters { bytes_encoded: blob_key.len() as u64, bytes_copied: blob_key.len() as u64, ..Default::default() })?;
+            }
             let resident = if let Some(existing) = self.blobs.get(&blob_key) {
-                if existing.as_ref() != bytes {
+                #[cfg(feature = "filesystem")]
+                if let Some(io) = io {
+                    let compare = acyclic_fs::WorkCounters { source_bytes_read: bytes.len() as u64, items_examined: 1, ..Default::default() };
+                    io.preflight(compare)?;
+                    io.charge(compare)?;
+                }
+                if existing.bytes.as_ref() != bytes {
                     return Err(Error::Invalid(
                         "content digest was reused for different bytes".into(),
                     ));
                 }
-                existing.clone()
+                existing.bytes.clone()
             } else {
                 let length = bytes.len() as u64;
                 if length
@@ -190,16 +306,51 @@ impl MemoryStore {
                         "memory content retention limit exceeded".into(),
                     ));
                 }
-                self.resident_bytes = self.resident_bytes.saturating_add(length);
+                #[cfg(feature = "filesystem")]
+                if let Some(io) = io {
+                    io.claim(length)?;
+                    let copy = acyclic_fs::WorkCounters { bytes_copied: length, items_examined: 1, ..Default::default() };
+                    io.preflight(copy)?;
+                    let rehash = if self.blobs.len() == self.blobs.capacity() { self.blobs.len() } else { 0 };
+                    let slots = acyclic_fs::WorkCounters { items_examined: rehash as u64, ..Default::default() };
+                    io.preflight(slots)?;
+                    io.charge(slots)?;
+                }
+                #[cfg(feature = "filesystem")]
+                if let Some(io) = io {
+                    // This is the actual nonempty payload buffer attempt,
+                    // immediately followed by Arc::from; opaque header excluded.
+                    io.allocation_attempt(length)?;
+                }
                 let resident: Arc<[u8]> = Arc::from(bytes);
-                self.blobs.insert(blob_key, resident.clone());
+                #[cfg(feature = "filesystem")]
+                if let Some(io) = io {
+                    io.charge(acyclic_fs::WorkCounters { bytes_copied: length, items_examined: 1, ..Default::default() })?;
+                }
+                self.resident_bytes = self.resident_bytes.saturating_add(length);
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                let custody = native_cache_custody(io, length + blob_key.len() as u64)?;
+                self.blobs.insert(blob_key, StoredBlob {
+                    bytes: resident.clone(),
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    custody,
+                });
                 resident
             };
+            #[cfg(feature = "filesystem")]
+            let retained_reference = clone_reference_with_io(reference, io)?;
+            #[cfg(not(feature = "filesystem"))]
+            let retained_reference = reference.clone();
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            let custody = native_cache_custody(io,
+                file_key.len() as u64 + crate::filesystem::UploadRecord::logical_owned_bytes(&retained_reference)?)?;
             self.files.insert(
                 file_key,
                 StoredFile {
-                    reference: reference.clone(),
+                    reference: retained_reference,
                     bytes: resident,
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    custody,
                 },
             );
         }
@@ -210,20 +361,79 @@ impl MemoryStore {
                 .and_then(|history| history.last())
                 .is_none_or(|prior| prior.file != *reference);
             if changed {
-                self.generation = self
-                    .generation
-                    .checked_add(1)
+                let generation = self.generation.checked_add(1)
                     .ok_or_else(|| Error::Invalid("content generation overflow".into()))?;
-                self.paths
-                    .entry(path.to_owned())
-                    .or_default()
-                    .push(PathRevision {
-                        generation: self.generation,
-                        file: reference.clone(),
+                let growth = match self.paths.get(path) {
+                    None => Some(4),
+                    Some(history) if history.capacity() == history.len() => Some(
+                        history.capacity().checked_mul(2)
+                            .ok_or_else(|| Error::Invalid("path history capacity overflow".into()))?.max(4),
+                    ),
+                    _ => None,
+                };
+                #[cfg(feature = "filesystem")]
+                if let Some(io) = io {
+                    let history = self.paths.get(path);
+                    if let Some(slots) = growth {
+                        let bytes = slots.checked_mul(std::mem::size_of::<PathRevision>())
+                            .ok_or_else(|| Error::Invalid("path history ownership overflow".into()))? as u64;
+                        io.claim(bytes)?;
+                        io.allocation_attempt(bytes)?;
+                    }
+                    if history.is_none() {
+                        io.claim(path.len() as u64)?;
+                        io.allocation_attempt(path.len() as u64)?;
+                        io.preflight(acyclic_fs::WorkCounters { bytes_copied: path.len() as u64, ..Default::default() })?;
+                    }
+                }
+                #[cfg(feature = "filesystem")]
+                let retained_reference = clone_reference_with_io(reference, io)?;
+                #[cfg(not(feature = "filesystem"))]
+                let retained_reference = reference.clone();
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                let custody = native_cache_custody(io,
+                    crate::filesystem::UploadRecord::logical_owned_bytes(&retained_reference)?)?;
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                let key_custody = if !self.paths.contains_key(path) {
+                    native_cache_custody(io, path.len() as u64)?
+                } else { None };
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                let capacity_custody = match growth {
+                    Some(slots) => native_cache_custody(io, (slots * std::mem::size_of::<PathRevision>()) as u64)?,
+                    None => None,
+                };
+                self.generation = generation;
+                if !self.paths.contains_key(path) {
+                    self.paths.insert(path.to_owned(), PathHistory {
+                        revisions: Vec::new(),
+                        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                        capacity_custody: None,
+                        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                        key_custody,
                     });
+                    #[cfg(feature = "filesystem")]
+                    if let Some(io) = io {
+                        io.charge(acyclic_fs::WorkCounters { bytes_copied: path.len() as u64, ..Default::default() })?;
+                    }
+                }
+                let history = self.paths.get_mut(path)
+                    .ok_or_else(|| Error::Storage("retained path history is missing".into()))?;
+                if let Some(slots) = growth {
+                    let additional = slots - history.len();
+                    history.reserve_exact(additional);
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    { history.capacity_custody = capacity_custody; }
+                }
+                history.push(PathRevision {
+                    generation, file: retained_reference,
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    custody,
+                });
             }
         }
-        Ok(reference.clone())
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io { io.remaining()?; }
+        Ok(())
     }
 
     pub(crate) fn read(&self, file: &FileRef) -> Result<Vec<u8>> {
@@ -256,9 +466,7 @@ impl MemoryStore {
 
     pub(crate) fn path_conflicts(&self, path: &str) -> bool {
         self.paths.keys().any(|existing| {
-            existing != path
-                && (existing.starts_with(&format!("{path}/"))
-                    || path.starts_with(&format!("{existing}/")))
+            paths_conflict(existing, path)
         })
     }
 
@@ -373,18 +581,33 @@ impl MemoryStore {
     }
 
     fn blob_key(file: &FileRef) -> String {
-        format!(
-            "{}:{}",
-            file.descriptor().byte_length(),
-            hex_bytes(file.descriptor().sha256())
-        )
+        let mut output = String::with_capacity(decimal_digits(file.descriptor().byte_length()) as usize + 1 + 64);
+        use std::fmt::Write as _;
+        write!(&mut output, "{}:", file.descriptor().byte_length()).expect("String formatting cannot fail");
+        output.push_str(&blake3::Hash::from_bytes(*file.descriptor().sha256()).to_hex());
+        output
     }
 }
 
+fn paths_conflict(existing: &str, path: &str) -> bool {
+    existing != path
+        && (existing.strip_prefix(path).is_some_and(|suffix| suffix.starts_with('/'))
+            || path.strip_prefix(existing).is_some_and(|suffix| suffix.starts_with('/')))
+}
+
+fn decimal_digits(mut number: u64) -> u64 {
+    let mut digits = 1;
+    while number >= 10 { number /= 10; digits += 1; }
+    digits
+}
+
+#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 fn hex_bytes(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        output.push_str(&format!("{byte:02x}"));
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 15) as usize] as char);
     }
     output
 }
@@ -473,4 +696,33 @@ mod tests {
         );
         Ok(())
     }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn native_cache_custody(
+    io: Option<&crate::filesystem::PreparationIo>, bytes: u64,
+) -> Result<Option<acyclic_fs::NativeAllocation>> {
+    match io {
+        Some(io) if io.original_native_work().is_some() => io.take_native_custody(bytes).map(Some),
+        _ => Ok(None),
+    }
+}
+
+#[cfg(feature = "filesystem")]
+fn clone_reference_with_io(
+    reference: &FileRef, io: Option<&crate::filesystem::PreparationIo>,
+) -> Result<FileRef> {
+    let Some(io) = io else { return Ok(reference.clone()); };
+    let volume = reference.volume().clone_with_io(io)?;
+    let values = [reference.path(), reference.version(), reference.descriptor().media_type(), reference.display_name()];
+    let copied = values.iter().map(|value| value.len() as u64).sum();
+    let counters = acyclic_fs::WorkCounters { bytes_copied: copied, ..Default::default() };
+    io.preflight(counters)?;
+    for value in values { io.claim(value.len() as u64)?; io.allocation_attempt(value.len() as u64)?; }
+    let descriptor = crate::conversation::FileDescriptor::new(
+        *reference.descriptor().sha256(), reference.descriptor().byte_length(), reference.descriptor().media_type(),
+    )?;
+    let result = FileRef::new(volume, reference.path(), reference.version(), descriptor, reference.display_name())?;
+    io.charge(counters)?;
+    Ok(result)
 }

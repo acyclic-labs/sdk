@@ -210,6 +210,25 @@ backing and allocator-node/RSS footprint are not claimed. Native fresh workflow
 admission uses the same staged admission identity, append and retry engine as
 ordinary admission, with the original cancellation and owner tail fences.
 
+Native JSON graph production does not encode and parse a temporary byte buffer.
+Borrowed DTO conversions preserve `Deserialize`'s borrowed-Value visitor;
+consuming conversions preserve `serde_json::from_value` and move the original
+strings while their original allocation remains live. Closed SDK DTOs reserve
+audited logical slots, pinned Serde Content temporaries, and parser diagnostics
+before decoding, then substitute actual retained capacities. These reservations
+are reported as logical live/peak ownership, not allocator calls, heap/RSS, or
+opaque allocator-node footprint. Direct Value production counts its declared
+root object slot separately from deep tree storage; wire-size checks build no
+tree or byte buffer and do not claim encoded-byte output.
+
+Native manifest loading uses the same canonical pinned-byte decoder and member
+limit as measured loading. The bounded seed checks the limit before another
+member is decoded or its vector grows. Every returned manifest retains its
+actual vector, labels, and pinned-file metadata through last use. Native
+execution quiescence and latest-outbox observation reuse authenticated journal
+replay, original task ownership, and execution/turn association; they do not
+infer quiescence from a scheduler phase or populate an unfunded history cache.
+
 Pass a task-bound workflow journal to `AgentHarness::open_task(task_id, &definition, fence, journal).await` to recover a registered resumable task. The same path is available through `TaskContext::open_resumable_task` and `TaskDefinition::open`. It verifies the registered definition and the retained input, schemas and scope before opening the existing workflow host. `ResumableTaskSession::step` validates completed values against the admitted output schema and checks uncancelled ownership even for cached exact retries. `latest_transition` reads the latest committed status and outbox without retaining historical bodies; opening an existing checkpoint after cancellation is permitted for recovery, but advancing it is rejected. This session does not dispatch commands or settle scheduler outcomes, and live futures have no durable checkpoint.
 
 `TaskJournalOwner::authenticated_binding_agent` selects the executing agent from current sealed creation provenance; a declaring parent's scope cannot substitute for a child. A proofless root retains its canonical verified `BindConversation` result on that same owner handle. An uncertain binding choice only rejects conflicting operation, intent or audience retries and grants no publication authority. Native fence and volume checks borrow the caller's original `NativeMaterializationWork` ledger and cancellation token. `outcome_with_native_work` reads an authenticated terminal outcome without granting a settlement lease; nonterminal/uncertain work returns no result. Native result consumers must still verify their actual publication receipt and frozen-view snapshot.

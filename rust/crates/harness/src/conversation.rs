@@ -258,6 +258,33 @@ impl VolumeRef {
             .ok_or_else(|| Error::Invalid("volume identity ownership overflow".into()))
     }
 
+    /// Copies only this closed identity's audited String fields. Borrowed
+    /// source capacity is an admission ceiling, not bytes actually copied.
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn clone_with_io(
+        &self, io: &crate::filesystem::PreparationIo,
+    ) -> Result<Self> {
+        let allowance = self.logical_owned_bytes()?;
+        io.retain_owned(allowance)?;
+        let held = io.guard_owned(allowance)?;
+        let value = Self {
+            provider: self.provider.copy_fields_with_io(io)?,
+            id: crate::resources::copy_metadata_string(&self.id, io)?,
+            class: self.class,
+            owner: match &self.owner {
+                VolumeOwner::Project(id) => VolumeOwner::Project(crate::resources::copy_metadata_string(id, io)?),
+                VolumeOwner::Session(id) => VolumeOwner::Session(crate::resources::copy_metadata_string(id, io)?),
+                VolumeOwner::Agent(id) => VolumeOwner::Agent(*id),
+            },
+        };
+        let actual = value.logical_owned_bytes()?;
+        let unused = allowance.checked_sub(actual)
+            .ok_or_else(|| io.invalid("volume clone exceeded its source capacity"))?;
+        io.release(unused)?;
+        held.into_retained();
+        Ok(value)
+    }
+
     /// Validates independent consumer role and owner identities.
     pub fn new(
         provider: ProviderRef,
@@ -288,6 +315,21 @@ impl VolumeRef {
         Ok(())
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn validate_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        inspect_native_metadata(work, 0)?;
+        self.provider.validate_with_native_work(work)?;
+        inspect_native_metadata(work, self.id.len())?;
+        validate_label_native(&self.id, MAX_LABEL_BYTES)?;
+        if let VolumeOwner::Project(id) | VolumeOwner::Session(id) = &self.owner {
+            inspect_native_metadata(work, id.len())?;
+            validate_label_native(id, MAX_LABEL_BYTES)?;
+        }
+        Ok(())
+    }
+
     /// Storage implementation identity.
     #[must_use]
     pub const fn provider(&self) -> &ProviderRef {
@@ -314,9 +356,22 @@ impl VolumeRef {
 
     /// Enforces owner-only agent mutations independently of the consumer role.
     pub(crate) fn require_writer(&self, agent: Option<AgentId>) -> Result<()> {
+        self.require_writer_inner(agent, false)
+    }
+
+    fn require_writer_inner(&self, agent: Option<AgentId>, native: bool) -> Result<()> {
         if let VolumeOwner::Agent(owner) = self.owner()
             && agent != Some(*owner)
         {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if native {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "only the owning agent may write this volume",
+                });
+            }
+            #[cfg(any(not(feature = "filesystem"), target_arch = "wasm32"))]
+            let _ = native;
             return Err(Error::Unauthorized(
                 "only the owning agent may write this volume".into(),
             ));
@@ -530,6 +585,33 @@ impl ContentGrant {
         })
     }
 
+    /// The same whole-volume grant, with its sole owned identity copy funded
+    /// by the original preparation ledger before construction.
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn verify_with_io(
+        verifier: &AuthorityVerifier, scope: &Scope, volume: &VolumeRef,
+        operation: VolumeOperation, io: &crate::filesystem::PreparationIo,
+    ) -> Result<Self> {
+        Self::verify_original_volume_with_io(verifier, scope, volume, operation, io)?;
+        Ok(Self {
+            volume: volume.clone_with_io(io)?,
+            operation,
+            exact_file: None,
+            directory_prefix: None,
+        })
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        let mut bytes = self.volume.logical_owned_bytes()?;
+        if let Some(file) = &self.exact_file {
+            bytes = bytes.checked_add(file.logical_owned_bytes()?)
+                .ok_or_else(|| Error::Invalid("grant field ownership overflow".into()))?;
+        }
+        bytes.checked_add(self.directory_prefix.as_ref().map_or(0, |prefix| prefix.capacity() as u64))
+            .ok_or_else(|| Error::Invalid("grant prefix ownership overflow".into()))
+    }
+
     /// Checks the original signed whole-volume authority without cloning a
     /// grant or minting any new proof. The caller retains its original scope.
     #[cfg(feature = "filesystem")]
@@ -554,9 +636,23 @@ impl ContentGrant {
     ) -> Result<()> {
         let mut borrowed = io.history_io();
         verifier.verify_with_work(scope, &mut Some(&mut borrowed))?;
-        if operation == VolumeOperation::Write { volume.require_writer(scope.agent())?; }
+        let native;
+        #[cfg(not(target_arch = "wasm32"))]
+        { native = io.original_native_work().is_some(); }
+        #[cfg(target_arch = "wasm32")]
+        { native = false; }
+        if operation == VolumeOperation::Write {
+            volume.require_writer_inner(scope.agent(), native)?;
+        }
         let prefix = match operation { VolumeOperation::Read => "volume:read:", VolumeOperation::Write => "volume:write:" };
         if !io.contains_capability(scope.capabilities(), volume, prefix)? {
+            #[cfg(not(target_arch = "wasm32"))]
+            if native {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "volume operation is not granted",
+                });
+            }
             return Err(Error::Unauthorized("volume operation is not granted".into()));
         }
         Ok(())
@@ -601,6 +697,42 @@ impl ContentGrant {
         })
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn verify_directory_read_with_native_work(
+        verifier: &AuthorityVerifier, scope: &Scope, volume: &VolumeRef,
+        prefix: &str, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let mut borrowed = io.history_io();
+        verifier.verify_with_work(scope, &mut Some(&mut borrowed))?;
+        if !prefix.is_empty() { validate_content_path_with_native_work(prefix, work)?; }
+        if is_internal_path(prefix) {
+            return Err(io.invalid("internal storage paths cannot be delegated"));
+        }
+        let directory = io.contains_capability(
+            scope.capabilities(), &(volume, prefix), "directory:read:",
+        )?;
+        let entire_volume = io.contains_capability(
+            scope.capabilities(), volume, "volume:read:",
+        )?;
+        if scope.agent().is_none() || (!directory && !entire_volume) {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "private directory read is not granted",
+            });
+        }
+        let volume = volume.clone_with_io(&io)?;
+        io.retain_owned(prefix.len() as u64)?;
+        let directory_prefix = crate::resources::copy_metadata_string(prefix, &io)?;
+        let grant = Self {
+            volume, operation: VolumeOperation::Read,
+            exact_file: None, directory_prefix: Some(directory_prefix),
+        };
+        let retained = io.owned_bytes()?;
+        let custody = io.into_native_custody(retained)?;
+        Ok((grant, custody))
+    }
+
     /// Authorizes only one pinned file version, including across an owner
     /// boundary. The owner must explicitly issue this exact capability.
     pub fn verify_file_read(
@@ -628,11 +760,35 @@ impl ContentGrant {
 
     /// Rejects a confused-deputy attempt to use the grant on a different volume.
     pub fn require(&self, volume: &VolumeRef, operation: VolumeOperation) -> Result<()> {
+        #[cfg(feature = "filesystem")]
+        { self.require_with_io(volume, operation, None) }
+        #[cfg(not(feature = "filesystem"))]
+        { self.require_native(volume, operation, false) }
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn require_with_io(
+        &self, volume: &VolumeRef, operation: VolumeOperation,
+        io: Option<&crate::filesystem::PreparationIo>,
+    ) -> Result<()> {
+        if let Some(io) = io { io.check_cancellation()?; }
+        self.require_native(volume, operation, io.is_some_and(crate::filesystem::PreparationIo::uses_native_work))
+    }
+
+    fn require_native(&self, volume: &VolumeRef, operation: VolumeOperation, native: bool) -> Result<()> {
+        let _ = native;
         if self.volume != *volume
             || self.operation != operation
             || self.exact_file.is_some()
             || self.directory_prefix.is_some()
         {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if native {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "content grant does not match the volume",
+                });
+            }
             return Err(Error::Unauthorized(
                 "content grant does not match the volume".into(),
             ));
@@ -642,6 +798,22 @@ impl ContentGrant {
 
     /// Checks a read against either a whole-volume or exact-version grant.
     pub fn require_file_read(&self, file: &FileRef) -> Result<()> {
+        #[cfg(feature = "filesystem")]
+        { self.require_file_read_with_io(file, None) }
+        #[cfg(not(feature = "filesystem"))]
+        { self.require_file_read_native(file, false) }
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn require_file_read_with_io(
+        &self, file: &FileRef, io: Option<&crate::filesystem::PreparationIo>,
+    ) -> Result<()> {
+        if let Some(io) = io { io.check_cancellation()?; }
+        self.require_file_read_native(file, io.is_some_and(crate::filesystem::PreparationIo::uses_native_work))
+    }
+
+    fn require_file_read_native(&self, file: &FileRef, native: bool) -> Result<()> {
+        let _ = native;
         if self.volume != *file.volume()
             || self.operation != VolumeOperation::Read
             || self.exact_file.as_ref().is_some_and(|exact| exact != file)
@@ -649,6 +821,13 @@ impl ContentGrant {
                 is_internal_path(file.path()) || !path_below(file.path(), prefix)
             })
         {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if native {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "content grant does not match the file",
+                });
+            }
             return Err(Error::Unauthorized(
                 "content grant does not match the file".into(),
             ));
@@ -822,13 +1001,25 @@ impl FileDescriptor {
 
     /// Checks metadata without fetching bytes.
     pub fn validate(&self) -> Result<()> {
+        self.validation_reason().map_or(Ok(()), |reason| Err(Error::Invalid(reason.into())))
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn validate_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        inspect_native_metadata(work, self.media_type.len())?;
+        self.validation_reason().map_or(Ok(()), |reason| Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid, reason,
+        }))
+    }
+
+    fn validation_reason(&self) -> Option<&'static str> {
         if self.byte_length > MAX_EXACT_JS_INTEGER {
-            return Err(Error::Invalid(
-                "file byte length exceeds cross-language precision".into(),
-            ));
+            return Some("file byte length exceeds cross-language precision");
         }
         let Some((kind, subtype)) = self.media_type.split_once('/') else {
-            return Err(Error::Invalid("media type is invalid".into()));
+            return Some("media type is invalid");
         };
         if kind.is_empty()
             || subtype.is_empty()
@@ -837,9 +1028,9 @@ impl FileDescriptor {
                     && !matches!(character, '/' | '-' | '+' | '.' | '_')
             })
         {
-            return Err(Error::Invalid("media type is invalid".into()));
+            return Some("media type is invalid");
         }
-        Ok(())
+        None
     }
 
     /// SHA-256 digest of the exact bytes.
@@ -859,6 +1050,18 @@ impl FileDescriptor {
     pub fn media_type(&self) -> &str {
         &self.media_type
     }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn inspect_native_metadata(
+    work: &acyclic_fs::NativeMaterializationWork, bytes: usize,
+) -> Result<()> {
+    let items_examined = (bytes as u64).checked_add(1).ok_or(Error::NativeBoundary {
+        code: crate::wire::ErrorCode::Invalid, reason: "metadata inspection count overflow",
+    })?;
+    let next = acyclic_fs::WorkCounters { items_examined, ..Default::default() };
+    work.admit(next).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    work.charge(next).map_err(|cause| Error::NativeWork { cause, custody: None })
 }
 
 /// An immutable version of a file within a scoped volume.
@@ -905,6 +1108,17 @@ impl FileRef {
             .ok_or_else(|| Error::Invalid("file descriptor ownership overflow".into()))
     }
 
+    /// Copies the audited identity graph directly, without a serialization clone.
+    /// The returned metadata is deep-only; its enclosing DTO owns its root slot.
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn clone_with_io(
+        &self, io: &crate::filesystem::PreparationIo,
+    ) -> Result<Self> {
+        let mut observer = io.history_io();
+        let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
+        self.clone_with_work(&mut work)
+    }
+
     /// Variable byte content copied by the canonical closed-DTO clone.
     /// Retained custody still uses `logical_owned_bytes` after cloning.
     pub(crate) fn logical_clone_owned_bytes(&self) -> Result<u64> {
@@ -946,6 +1160,22 @@ impl FileRef {
         validate_label(&self.version, MAX_LABEL_BYTES)?;
         validate_label(&self.display_name, MAX_LABEL_BYTES)?;
         self.descriptor.validate()
+    }
+
+    /// Checks the same immutable metadata using the caller's original ledger.
+    /// Validation does not grant authority to read the referenced bytes.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn validate_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        inspect_native_metadata(work, 0)?;
+        self.volume.validate_with_native_work(work)?;
+        validate_content_path_with_native_work(&self.path, work)?;
+        for label in [&self.version, &self.display_name] {
+            inspect_native_metadata(work, label.len())?;
+            validate_label_native(label, MAX_LABEL_BYTES)?;
+        }
+        self.descriptor.validate_with_native_work(work)
     }
 
     /// Owning volume.
@@ -1186,6 +1416,34 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
             reason: "original native-ledger content verification is unavailable" })
     }
 
+    /// Resolves the complete canonical pinned manifest on the original ledger.
+    /// Custom readers without that capability reject before constructing a
+    /// future or invoking their ordinary provider implementation.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn load_manifest_with_native_work<'a>(
+        &'a self, reference: &'a FileRef, item_count: u32,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> crate::Result<crate::NativeFutureBundle<'a, (Vec<Attachment>, acyclic_fs::NativeAllocation)>> {
+        if !self.supports_native_read(reference.volume(), work)? {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                reason: "original native-ledger manifest reader is unavailable" });
+        }
+        crate::NativeFutureBundle::new(work, || async move {
+            let input = self.read_with_native_work(
+                reference, reference.descriptor().byte_length(), work,
+            )?.await?;
+            let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+            let items = decode_manifest_bounded(reference, &input.0, item_count as usize, &io)?;
+            let retained = io.owned_bytes()?;
+            let output = (items, io.into_native_custody(retained)?);
+            if output.0.len() != item_count as usize {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "attachment manifest count is incomplete" });
+            }
+            Ok(output)
+        })
+    }
+
     /// Verifies bytes through the provider's actual finite read capability.
     #[cfg(feature = "filesystem")]
     fn verify_measured<'a>(
@@ -1416,6 +1674,26 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
             reason: "original native-ledger once-publication is unavailable" })
     }
 
+    /// Replaces only the original source generation on the caller's native ledger.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn stage_at_with_native_work<'a>(
+        &'a self, _operation_id: OperationId, _source: &'a FileRef,
+        _bytes: &'a [u8], _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> crate::Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+            reason: "original native-ledger replacement is unavailable" })
+    }
+
+    /// Observes the original publication without substituting a mutable head.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn observe_staged_once_with_native_work<'a>(
+        &'a self, _operation_id: OperationId, _maximum_bytes: u64,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> crate::Result<crate::NativeFutureBundle<'a, (Option<FileRef>, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+            reason: "original native-ledger publication observation is unavailable" })
+    }
+
     /// Resolves the original operation, metadata and generation without head.
     #[cfg(feature = "filesystem")]
     fn observe_staged_once_measured<'a>(
@@ -1616,6 +1894,16 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         reader.verify_with_native_work(reference, maximum_bytes, work)
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn load_manifest_with_native_work<'a>(
+        &'a self, reference: &'a FileRef, item_count: u32,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> crate::Result<crate::NativeFutureBundle<'a, (Vec<Attachment>, acyclic_fs::NativeAllocation)>> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        self.finite_bound_reader(reference.volume(), &io)?
+            .load_manifest_with_native_work(reference, item_count, work)
+    }
+
     fn read_private_prefix<'a>(
         &'a self,
         volume: &'a VolumeRef,
@@ -1724,6 +2012,18 @@ impl Attachment {
         }
         Ok(())
     }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn validate_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        self.file.validate_with_native_work(work)?;
+        if let Some(label) = &self.label {
+            inspect_native_metadata(work, label.len())?;
+            validate_label_native(label, MAX_LABEL_BYTES)?;
+        }
+        Ok(())
+    }
 }
 
 /// Encodes a validated, ordered attachment list in its single durable wire form.
@@ -1784,7 +2084,7 @@ pub(crate) fn manifest_owned_bytes(items: &[Attachment], capacity: usize) -> Res
         .ok_or_else(|| Error::Invalid("manifest vector ownership overflow".into()))? as u64;
     for item in items {
         bytes = bytes.checked_add(crate::filesystem::UploadRecord::logical_owned_bytes(&item.file)?)
-            .and_then(|bytes| bytes.checked_add(item.label.as_ref().map_or(0, |label| label.len() as u64)))
+            .and_then(|bytes| bytes.checked_add(item.label.as_ref().map_or(0, |label| label.capacity() as u64)))
             .ok_or_else(|| Error::Invalid("manifest field ownership overflow".into()))?;
     }
     Ok(bytes)
@@ -1795,24 +2095,19 @@ pub(crate) fn decode_manifest_bounded(
     reference: &FileRef, bytes: &[u8], maximum_members: usize,
     io: &crate::filesystem::PreparationIo,
 ) -> Result<Vec<Attachment>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(work) = io.original_native_work() {
+        reference.validate_with_native_work(work)?;
+    } else {
+        reference.validate()?;
+    }
+    #[cfg(target_arch = "wasm32")]
     reference.validate()?;
     if reference.descriptor().media_type() != "application/vnd.acyclic.harness.attachments+json"
         || maximum_members > MAX_LIMIT_ATTACHMENTS {
-        return Err(Error::Invalid("attachment manifest metadata or allowance is invalid".into()));
+        return Err(io.invalid("attachment manifest metadata or allowance is invalid"));
     }
     reference.descriptor().verify_with_io(bytes, Some(io))?;
-    let bounds = crate::contract::JsonBounds {
-        maximum_bytes: bytes.len() as u64,
-        maximum_items: io.remaining()?.items_examined,
-        maximum_depth: 256,
-    };
-    crate::contract::admit_json(bytes, bounds, &mut |charge| io.codec_charge(charge, false))?;
-    let slots = maximum_members.checked_mul(std::mem::size_of::<Attachment>())
-        .ok_or_else(|| Error::Invalid("manifest slot ownership overflow".into()))? as u64;
-    let witness = (bytes.len() as u64).max(8).checked_mul(4)
-        .and_then(|bytes| bytes.checked_add(slots))
-        .ok_or_else(|| Error::Invalid("manifest schema ownership overflow".into()))?;
-    let mut reservation = io.reserve_decode(witness)?;
     fn guard<T, E: serde::de::Error>(result: Result<T>, failure: &mut Option<Error>) -> std::result::Result<T, E> {
         result.map_err(|error| {
             *failure = Some(error);
@@ -1834,37 +2129,72 @@ pub(crate) fn decode_manifest_bounded(
             formatter.write_str("a bounded complete attachment array")
         }
         fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut sequence: S) -> std::result::Result<Self::Value, S::Error> {
-            guard::<_, S::Error>(self.io.allocation_attempt((self.maximum * std::mem::size_of::<Attachment>()) as u64), self.failure)?;
-            let mut items = Vec::with_capacity(self.maximum);
+            let mut items: Vec<Attachment> = Vec::new();
             loop {
                 guard::<_, S::Error>(self.io.remaining(), self.failure)?;
                 if items.len() == self.maximum {
                     if sequence.next_element::<serde::de::IgnoredAny>()?.is_some() {
-                        return Err(serde::de::Error::custom("attachment manifest exceeds member allowance"));
+                        return guard::<_, S::Error>(
+                            Err(self.io.invalid("attachment manifest exceeds member allowance")), self.failure,
+                        );
                     }
                     break;
                 }
                 let Some(item) = sequence.next_element::<Attachment>()? else { break; };
-                item.validate().map_err(serde::de::Error::custom)?;
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(work) = self.io.original_native_work() {
+                    guard::<_, S::Error>(item.validate_with_native_work(work), self.failure)?;
+                } else {
+                    guard::<_, S::Error>(item.validate(), self.failure)?;
+                }
+                #[cfg(target_arch = "wasm32")]
+                guard::<_, S::Error>(item.validate(), self.failure)?;
+                if items.len() == items.capacity() {
+                    let capacity = items.capacity().saturating_mul(2).max(4).min(self.maximum);
+                    let bytes = guard::<_, S::Error>(capacity.checked_mul(std::mem::size_of::<Attachment>())
+                        .map(|bytes| bytes as u64)
+                        .ok_or_else(|| self.io.invalid("manifest vector capacity overflow")), self.failure)?;
+                    // The audited pre-Serde reservation already covers these
+                    // known slots. Charge the actual SDK grow, not twice-owned
+                    // buffers or inferred opaque Serde allocator operations.
+                    guard::<_, S::Error>(self.io.allocation_attempt(bytes), self.failure)?;
+                    items.reserve_exact(capacity - items.len());
+                }
                 items.push(item);
             }
             Ok(items)
         }
     }
-    io.codec_charge(crate::contract::JsonCodecCharge::Read { bytes: bytes.len() as u64 }, false)?;
     let mut failure = None;
-    let mut decoder = serde_json::Deserializer::from_slice(bytes);
-    decoder.disable_recursion_limit();
-    use serde::de::DeserializeSeed as _;
-    let items = ManifestSeed { maximum: maximum_members, io, failure: &mut failure }.deserialize(&mut decoder)
-        .map_err(|error| failure.take().unwrap_or_else(|| Error::Invalid(error.to_string())))?;
-    decoder.end().map_err(|error| Error::Invalid(error.to_string()))?;
-    reservation.substitute(manifest_owned_bytes(&items, items.capacity())?)?;
-    let encoded = io.encode_json(&items, io.remaining()?.bytes_encoded, false)?;
+    let result = io.decode_preparation_seed_with_code(
+        ManifestSeed { maximum: maximum_members, io, failure: &mut failure },
+        bytes, crate::wire::ErrorCode::Invalid,
+    );
+    let mut decoded = match result {
+        Ok(decoded) => decoded,
+        Err(transport) => {
+            if let Some(primary) = failure.take() {
+                // Retire the foreign static Serde marker and its real paid
+                // diagnostic custody before returning the original gate cause.
+                drop(transport);
+                return Err(primary);
+            }
+            return Err(transport);
+        }
+    };
+    let actual = (std::mem::size_of::<Vec<Attachment>>() as u64)
+        .checked_add(manifest_owned_bytes(&decoded, decoded.capacity())?)
+        .ok_or_else(|| io.invalid("manifest ownership overflow"))?;
+    decoded.substitute_owned(actual)?;
+    let encoded_hold;
+    let encoded = io.encode_json(&decoded.value, io.remaining()?.bytes_encoded, false)?;
+    encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
     if encoded != bytes {
-        return Err(Error::Invalid("attachment manifest is not canonical or complete".into()));
+        return Err(io.invalid("attachment manifest is not canonical or complete"));
     }
-    Ok(items)
+    drop(encoded);
+    drop(encoded_hold);
+    Ok(decoded.into_retained())
 }
 
 /// The core admission boundary checks actual owner-resolved bytes, rather
@@ -2685,15 +3015,28 @@ fn advance_history_digest_with_work(
 }
 
 fn validate_label(value: &str, limit: usize) -> Result<()> {
-    if value.is_empty()
+    if label_is_invalid(value, limit) {
+        return Err(Error::Invalid("file or volume label is invalid".into()));
+    }
+    Ok(())
+}
+
+fn label_is_invalid(value: &str, limit: usize) -> bool {
+    value.is_empty()
         || value.len() > limit
         || value.chars().any(char::is_control)
         || value.contains('/')
         || value.contains('\\')
         || value == "."
         || value == ".."
-    {
-        return Err(Error::Invalid("file or volume label is invalid".into()));
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn validate_label_native(value: &str, limit: usize) -> Result<()> {
+    if label_is_invalid(value, limit) {
+        return Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid, reason: "file or volume label is invalid",
+        });
     }
     Ok(())
 }

@@ -2774,7 +2774,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &self, volume: &VolumeRef, grant: &ContentGrant, key: &IdempotencyKey,
         expected_path: Option<&str>, maximum_bytes: u64, io: Option<&PreparationIo>,
     ) -> Result<Option<FileRef>> {
-        grant.require(volume, VolumeOperation::Write)?;
+        grant.require_with_io(volume, VolumeOperation::Write, io)?;
         volume.validate()?;
         self.validate_provider(volume.provider())?;
         if let Some(path) = expected_path {
@@ -2926,6 +2926,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         .await
     }
 
+    /// Internal staging keeps the same original whole-volume authority and
+    /// publisher engine; only its assigned private path class is different.
+    #[allow(clippy::too_many_arguments, reason = "complete original internal publication identity")]
+    pub(super) async fn put_internal_content_original_with_io(
+        &self, volume: &VolumeRef, verifier: &AuthorityVerifier, scope: &Scope,
+        path: &str, bytes: &[u8], media_type: &str, display_name: &str,
+        maximum_bytes: u64, idempotency_key: &IdempotencyKey,
+        class: InternalContentClass, io: &PreparationIo,
+    ) -> Result<FileRef> {
+        let grant_hold;
+        let grant = ContentGrant::verify_with_io(
+            verifier, scope, volume, VolumeOperation::Write, io,
+        )?;
+        grant_hold = io.guard_owned(grant.logical_owned_bytes()?)?;
+        let result = self.put_content_impl(
+            volume, &grant, path, bytes, media_type, display_name,
+            maximum_bytes, idempotency_key, Some(class), None, Some(io),
+        ).await;
+        drop(grant);
+        drop(grant_hold);
+        result
+    }
+
     #[allow(
         clippy::too_many_arguments,
         clippy::too_many_lines,
@@ -2945,7 +2968,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         expected_generation: Option<&GenerationRef>,
         io: Option<&fork_preparer_io::PreparationIo>,
     ) -> Result<FileRef> {
-        grant.require(volume, VolumeOperation::Write)?;
+        grant.require_with_io(volume, VolumeOperation::Write, io)?;
         if volume.provider() != &self.provider || bytes.len() as u64 > maximum_bytes {
             return Err(fork_preparer_io::invalid(io, "content provider or size limit mismatch"));
         }
@@ -3206,8 +3229,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let io = fork_preparer_io::PreparationIo::from_budget(budget, cancellation)
             .map_err(acyclic_fs::OperationFailure::before_work)?;
         let result = async {
+            grant.require_file_read_with_io(reference, Some(&io))?;
             reference.validate()?;
-            grant.require_file_read(reference)?;
             self.read_pinned_owned_io(reference, maximum_bytes, &io).await
         }.await;
         match result {
@@ -3405,11 +3428,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             ));
         }
         if let Some(io) = io {
-            io.claim((reference.version().len() / 2) as u64)?;
-            fork_preparer_io::strings(io, &[self.provider.namespace(), self.provider.family(), self.provider.version()])?;
             io.claim((reference.path().len() + 1) as u64)?;
         }
-        let generation = self.file_generation(reference)?;
+        let generation = self.file_generation_with_io(reference, io)?;
+        let generation_hold = io.map(|io| io.guard_owned(generation.logical_owned_bytes()?)).transpose()?;
         let workspace = fork_preparer_io::content_workspace(&self.provider, reference.volume(), io)?;
         let path = format!("/{}", reference.path());
         let bytes = match io {
@@ -3424,10 +3446,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             None => self.read(&workspace, Some(&generation), &path, maximum_bytes).await?,
         };
         reference.descriptor().verify_with_io(&bytes, io)?;
+        drop(generation);
+        drop(generation_hold);
         Ok(bytes)
     }
 
     fn file_generation(&self, reference: &FileRef) -> Result<GenerationRef> {
+        self.file_generation_with_io(reference, None)
+    }
+
+    pub(crate) fn file_generation_with_io(
+        &self, reference: &FileRef, io: Option<&PreparationIo>,
+    ) -> Result<GenerationRef> {
+        if let Some(io) = io {
+            return GenerationRef::from_hex_with_io(&self.provider, reference.version(), io);
+        }
         let raw = hex::decode(reference.version())
             .map_err(|_| Error::Invalid("file version is not a Filesystem generation".into()))?;
         GenerationRef::new(self.provider.clone(), raw, None)

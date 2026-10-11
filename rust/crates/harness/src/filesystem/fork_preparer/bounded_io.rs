@@ -27,13 +27,15 @@ pub(crate) struct DecodeReservation<'a> {
 }
 
 impl DecodeReservation<'_> {
+    pub(crate) const fn bytes(&self) -> u64 { self.bytes }
+
     pub(crate) fn substitute(&mut self, retained: u64) -> Result<()> {
         self.io.check_cancellation()?;
         if retained > self.bytes {
-            return Err(Error::Invalid("audited decoded ownership exceeds reservation".into()));
+            return Err(self.io.invalid("audited decoded ownership exceeds reservation"));
         }
         self.io.release(self.bytes - retained)?;
-        self.bytes = 0;
+        self.bytes = retained;
         Ok(())
     }
     /// Transfers an already admitted allowance to returned SDK-owned custody.
@@ -92,8 +94,19 @@ impl<'a> TrustedDecodeReservation<'a> {
             self.scoped = Some(DecodeReservation { io: self.io, bytes });
         }
         let _reservation = self.scoped.take()
-            .ok_or_else(|| Error::Invalid("trusted decode omitted admission".into()))?;
+            .ok_or_else(|| self.io.invalid("trusted decode omitted admission"))?;
         Ok(ReservedDecoded { value, _reservation })
+    }
+
+    /// Known SDK serialization diagnostics use the existing audited logical
+    /// allowance, not a measurement of Serde's private Message/ErrorImpl heap.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn finish_serialization<T>(mut self, result: Result<T>) -> Result<T> {
+        match result {
+            Err(Error::NativeEncode { code, source, custody: None }) =>
+                Err(Error::NativeEncode { code, source, custody: self.native.take() }),
+            other => other,
+        }
     }
 }
 
@@ -101,14 +114,22 @@ impl<'a> TrustedDecodeReservation<'a> {
 /// containers. This is not an arbitrary DeserializeOwned heap sandbox.
 pub(crate) trait PreparationRecord: serde::de::DeserializeOwned + Serialize {
     fn maximum_slot_bytes() -> u64;
+    /// Value-free private DTOs use None; Value-bearing records must override it.
+    fn json_value_schema() -> crate::contract::JsonValueSchema {
+        crate::contract::JsonValueSchema::None
+    }
 }
 
 pub(crate) fn preparation_slot_bytes<T>() -> u64 {
-    [
+    let typed = [
         std::mem::size_of::<T>(),
         std::mem::size_of::<crate::model::ModelMessage>(),
         std::mem::size_of::<crate::model::ModelContentPart>(),
         std::mem::size_of::<crate::model::NativeConfigurationBinding>(),
+        std::mem::size_of::<crate::model::ModelDataPart>(),
+        std::mem::size_of::<crate::model::FileProjectionPolicy>(),
+        std::mem::size_of::<crate::model::NativeMediaIntent>(),
+        std::mem::size_of::<crate::model::NativeMediaPolicy>(),
         std::mem::size_of::<crate::tool::ToolDefinition>(),
         std::mem::size_of::<crate::conversation::Attachment>(),
         std::mem::size_of::<FileRef>(),
@@ -119,33 +140,50 @@ pub(crate) fn preparation_slot_bytes<T>() -> u64 {
         std::mem::size_of::<crate::workflow::WorkflowRecord>(),
         std::mem::size_of::<crate::workflow::MachineCheckpoint>(),
         std::mem::size_of::<crate::workflow::MachineTransition>(),
-    ].into_iter().max().unwrap_or(0) as u64
+    ].into_iter().max().unwrap_or(0) as u64;
+    // Pinned Serde 229 Content storage is distinct from the eventual DTO.
+    // The closed model graph has at most five simultaneous Content envelopes:
+    // ModelContent -> ModelContentPart -> ToolResultContent -> ModelDataPart ->
+    // NativeMediaIntent (or VolumeOwner). ModelDataPart is nonrecursive.
+    // Each envelope permits the actual Content/pair vector's geometric
+    // capacity. The decoder's 8*N multiplier covers these audited containers;
+    // arbitrary DeserializeOwned implementations are not admitted by this API.
+    let content = std::mem::size_of::<serde::__private229::de::Content<'static>>()
+        .max(std::mem::size_of::<(
+            serde::__private229::de::Content<'static>,
+            serde::__private229::de::Content<'static>,
+        )>()) as u64;
+    typed + 2 * 5 * content
 }
 
 macro_rules! audited_preparation_records {
-    ($($record:ty),+ $(,)?) => {$(
+    ($($record:ty => $schema:ident),+ $(,)?) => {$(
         impl PreparationRecord for $record {
             fn maximum_slot_bytes() -> u64 { preparation_slot_bytes::<Self>() }
+            fn json_value_schema() -> crate::contract::JsonValueSchema {
+                crate::contract::JsonValueSchema::$schema
+            }
         }
     )+};
 }
 
 audited_preparation_records!(
-    crate::context::Context,
-    crate::context::CanonicalContextCheckpoint,
-    crate::context::CompactionReference,
-    crate::executor::ResponseProjection,
-    crate::model::ModelEvent,
-    crate::model::ModelRequest,
-    crate::model::ModelContent,
-    crate::model::ModelContentPart,
-    crate::fork::InheritedConversationPrefix,
-    serde_json::Value,
-    crate::core::ExtensionConfiguration,
-    FileRef,
-    crate::workflow::WorkflowRecord,
-    crate::workflow::WorkflowAdmission,
-    crate::workflow::MachineCheckpoint,
+    crate::context::Context => Context,
+    crate::context::CanonicalContextCheckpoint => None,
+    crate::context::CompactionReference => None,
+    crate::executor::ResponseProjection => ResponseProjection,
+    crate::model::ModelEvent => ModelEvent,
+    crate::model::ModelRequest => ModelRequest,
+    crate::model::ModelContent => ModelContent,
+    crate::model::ModelContentPart => ModelContentPart,
+    crate::fork::InheritedConversationPrefix => None,
+    serde_json::Value => Root,
+    crate::core::ExtensionConfiguration => None,
+    FileRef => None,
+    Vec<crate::conversation::Attachment> => None,
+    crate::workflow::WorkflowRecord => WorkflowRecord,
+    crate::workflow::WorkflowAdmission => WorkflowAdmission,
+    crate::workflow::MachineCheckpoint => MachineCheckpoint,
 );
 
 pub(crate) struct ReservedDecoded<'a, T> {
@@ -162,11 +200,21 @@ impl<T> std::ops::DerefMut for ReservedDecoded<'_, T> {
     fn deref_mut(&mut self) -> &mut T { &mut self.value }
 }
 
-impl<T> ReservedDecoded<'_, T> {
-    pub(crate) fn into_inner(self) -> T {
-        let Self { value, _reservation } = self;
-        drop(_reservation);
-        value
+impl<'a, T> ReservedDecoded<'a, T> {
+
+    pub(crate) fn into_parts(self) -> (T, DecodeReservation<'a>) {
+        (self.value, self._reservation)
+    }
+
+    pub(crate) fn substitute_owned(&mut self, bytes: u64) -> Result<()> {
+        self._reservation.substitute(bytes)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn into_native_parts(mut self) -> Result<(T, acyclic_fs::NativeAllocation)> {
+        let custody = self._reservation.io.take_native_custody(self._reservation.bytes)?;
+        self._reservation.bytes = 0;
+        Ok((self.value, custody))
     }
 
     pub(crate) fn into_retained(mut self) -> T {
@@ -220,6 +268,19 @@ impl PreparationIo {
         })
     }
 
+    /// Moves genuine existing custody without consulting cancellation or quota.
+    /// Recovery must observe those conditions while it still owns the lease.
+    /// This does not admit growth, allocate a guard, or create another ledger.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn from_native_custody(custody: acyclic_fs::NativeAllocation) -> Self {
+        let work = custody.work().clone();
+        let cancellation = work.cancellation().clone();
+        Self {
+            ledger: PreparationLedger::Native { work, custody: Mutex::new(custody) },
+            cancellation,
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn into_native_custody(self, retained: u64) -> Result<acyclic_fs::NativeAllocation> {
         match self.ledger {
@@ -231,6 +292,14 @@ impl PreparationIo {
                 Ok(guard)
             }
             PreparationLedger::Owned { .. } => Err(Error::Invalid("native custody requires the original native ledger".into())),
+        }
+    }
+
+    pub(crate) fn uses_native_work(&self) -> bool {
+        match &self.ledger {
+            PreparationLedger::Owned { .. } => false,
+            #[cfg(not(target_arch = "wasm32"))]
+            PreparationLedger::Native { .. } => true,
         }
     }
 
@@ -377,6 +446,10 @@ impl PreparationIo {
         Ok(DecodeReservation { io: self, bytes })
     }
 
+    pub(crate) fn invalid(&self, reason: &'static str) -> Error {
+        invalid(Some(self), reason)
+    }
+
     pub(crate) fn remaining(&self) -> Result<WorkBudget> {
         self.check_cancellation()?;
         match &self.ledger {
@@ -462,23 +535,46 @@ impl PreparationIo {
     pub(crate) fn encode_json<T: Serialize>(&self, value: &T, maximum_bytes: u64, canonical: bool) -> Result<Vec<u8>> {
         let bounds = self.encoding_bounds(maximum_bytes)?;
         let mut charge = |next| self.codec_charge(next, true);
+        self.encode_at_bounds(value, bounds, canonical, &mut charge)
+    }
+
+    fn encode_at_bounds<T: Serialize, F: FnMut(crate::contract::JsonCodecCharge) -> Result<()>>(
+        &self, value: &T, bounds: crate::contract::JsonBounds, canonical: bool, charge: &mut F,
+    ) -> Result<Vec<u8>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.original_native_work().is_some() {
+            // Only closed SDK serializers are called by this producer. User
+            // serializer work and arbitrary custom messages are not sandboxed.
+            let mut diagnostics = TrustedDecodeReservation::new(self);
+            diagnostics.reserve(crate::contract::sdk_json_diagnostic_bytes())?;
+            let result = if canonical {
+                crate::contract::canonical_json_bytes_bounded_native_trusted(
+                    value, bounds, crate::wire::ErrorCode::Invalid, charge,
+                )
+            } else {
+                crate::contract::json_bytes_bounded_native_trusted(
+                    value, bounds, crate::wire::ErrorCode::Invalid, charge,
+                )
+            };
+            return diagnostics.finish_serialization(result);
+        }
         if canonical {
-            crate::contract::canonical_json_bytes_bounded(value, bounds, &mut charge)
+            crate::contract::canonical_json_bytes_bounded(value, bounds, charge)
         } else {
-            crate::contract::json_bytes_bounded_trusted(value, bounds, &mut charge)
+            crate::contract::json_bytes_bounded_trusted(value, bounds, charge)
         }
     }
 
     pub(crate) fn encode_for_clone<T: Serialize>(&self, value: &T, maximum_bytes: u64) -> Result<Vec<u8>> {
         let bounds = self.encoding_bounds(maximum_bytes)?;
         let mut transferred = DecodeReservation { io: self, bytes: 0 };
-        let encoded = crate::contract::canonical_json_bytes_bounded(value, bounds, &mut |next| {
+        let encoded = self.encode_at_bounds(value, bounds, true, &mut |next| {
             match next {
                 crate::contract::JsonCodecCharge::Release { .. } => Ok(()),
                 crate::contract::JsonCodecCharge::Retain { bytes } => {
                     self.codec_charge(next, true)?;
                     transferred.bytes = transferred.bytes.checked_add(bytes)
-                        .ok_or_else(|| Error::Invalid("clone admission overflow".into()))?;
+                        .ok_or_else(|| self.invalid("clone admission overflow"))?;
                     Ok(())
                 }
                 next => self.codec_charge(next, true),
@@ -493,18 +589,22 @@ impl PreparationIo {
     pub(crate) fn capability<T: Serialize>(&self, value: &T, prefix: &str) -> Result<String> {
         let _encoded_hold;
         let encoded = self.encode_json(value, self.remaining()?.bytes_encoded, true)?;
-        _encoded_hold = self.guard_owned(encoded.len() as u64)?;
+        _encoded_hold = self.guard_owned(encoded.capacity() as u64)?;
         let hash = WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() };
         self.preflight(hash)?;
         let digest = blake3::hash(&encoded);
         self.charge(hash)?;
         let length = prefix.len().checked_add(64)
-            .ok_or_else(|| Error::Invalid("capability length overflow".into()))?;
+            .ok_or_else(|| self.invalid("capability length overflow"))?;
         self.claim(length as u64)?;
+        let copying = WorkCounters { bytes_copied: length as u64, ..Default::default() };
+        self.preflight(copying)?;
         self.allocation_attempt(length as u64)?;
         let mut key = String::with_capacity(length);
         key.push_str(prefix);
         key.push_str(&digest.to_hex());
+        self.charge(copying)?;
+        if key.capacity() > length { self.claim((key.capacity() - length) as u64)?; }
         Ok(key)
     }
 
@@ -551,27 +651,39 @@ impl PreparationIo {
         };
         let mut reservation = TrustedDecodeReservation::new(self);
         let result: Result<T> = self.decode_trusted(bytes, bounds, owned,
-            crate::wire::ErrorCode::Storage, &mut |next| match next {
-                crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes } =>
-                    reservation.reserve(maximum_owned_bytes),
+            crate::wire::ErrorCode::Storage, T::json_value_schema(), &mut |next| match next {
+                crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes, value_shape } => {
+                    let owned = match T::json_value_schema() {
+                        crate::contract::JsonValueSchema::None => maximum_owned_bytes,
+                        _ => {
+                            let scratch = maximum_owned_bytes.checked_sub(owned)
+                                .ok_or_else(|| Error::Invalid("upload decode scratch bound underflow".into()))?;
+                            owned.checked_add(scratch.max(
+                                crate::contract::json_value_decode_owned_bytes(value_shape)?,
+                            )).ok_or_else(|| Error::Invalid("upload decode ownership overflow".into()))?
+                        }
+                    };
+                    reservation.reserve(owned)
+                }
                 next => self.codec_charge(next, false),
             });
         let mut decoded = reservation.finish(result)?;
         decoded._reservation.substitute(decoded.value.logical_owned_bytes()?)?;
-        Ok(decoded.into_inner())
+        Ok(decoded.into_retained())
     }
 
     fn decode_trusted<T: serde::de::DeserializeOwned, F: FnMut(crate::contract::JsonCodecCharge) -> Result<()>>(
         &self, bytes: &[u8], bounds: crate::contract::JsonBounds, maximum_owned_bytes: u64,
-        code: crate::wire::ErrorCode, charge: &mut F,
+        code: crate::wire::ErrorCode, value_schema: crate::contract::JsonValueSchema,
+        charge: &mut F,
     ) -> Result<T> {
         #[cfg(not(target_arch = "wasm32"))]
         if self.original_native_work().is_some() {
             return crate::contract::json_from_slice_bounded_native_trusted(
-                bytes, bounds, maximum_owned_bytes, code, charge,
+                bytes, bounds, maximum_owned_bytes, code, value_schema, charge,
             );
         }
-        let _ = code;
+        let _ = (code, value_schema);
         crate::contract::json_from_slice_bounded_trusted(bytes, bounds, maximum_owned_bytes, charge)
     }
 
@@ -584,38 +696,234 @@ impl PreparationIo {
     pub(crate) fn decode_preparation_with_code<T: PreparationRecord>(
         &self, bytes: &[u8], code: crate::wire::ErrorCode,
     ) -> Result<ReservedDecoded<'_, T>> {
+        self.decode_preparation_seed_with_code(
+            std::marker::PhantomData::<T>, bytes, code,
+        )
+    }
+
+    pub(crate) fn decode_preparation_seed_with_code<'a, 'de, T, S>(
+        &'a self, seed: S, bytes: &'de [u8], code: crate::wire::ErrorCode,
+    ) -> Result<ReservedDecoded<'a, T>>
+    where T: PreparationRecord, S: serde::de::DeserializeSeed<'de, Value = T>,
+    {
         let bounds = crate::contract::JsonBounds {
             maximum_bytes: bytes.len() as u64,
             maximum_items: self.remaining()?.items_examined,
             maximum_depth: 128,
         };
-        let mut items = 0_u64;
         let mut reservation = TrustedDecodeReservation::new(self);
-        let result = self.decode_trusted(bytes, bounds, 0, code, &mut |next| {
+        let value_schema = T::json_value_schema();
+        let mut charge = |next| {
             match next {
-                crate::contract::JsonCodecCharge::Work { items: count, .. } => {
-                    items = items.checked_add(count)
-                        .ok_or_else(|| Error::Invalid("preparation DTO item count overflow".into()))?;
-                    self.codec_charge(next, false)
-                }
-                crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes } => {
-                    // Concrete slots cover initial/geometric Vec slack and the
-                    // internally-tagged serde temporary representation. Strings
-                    // and scratch are separate; allocator nodes/RSS excluded.
-                    let owned = items.checked_mul(T::maximum_slot_bytes())
-                        .and_then(|slots| slots.checked_mul(8))
-                        .and_then(|slots| (bytes.len() as u64).checked_mul(4)
-                            .and_then(|strings| slots.checked_add(strings)))
-                        .and_then(|owned| owned.checked_add(maximum_owned_bytes))
+                crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes, value_shape } => {
+                    // Tagged Content/Vec temporaries are distinct from returned
+                    // Value payloads. Root Value has no typed Content envelope.
+                    // The Value bound already includes parser scratch, so share
+                    // that allowance with the generic codec baseline via max.
+                    let value_owned = match value_schema {
+                        crate::contract::JsonValueSchema::None => maximum_owned_bytes,
+                        _ => maximum_owned_bytes.max(
+                            crate::contract::json_value_decode_owned_bytes(value_shape)?,
+                        ),
+                    };
+                    let items = value_shape.lexical_items().checked_add(value_shape.virtual_items())
+                        .ok_or_else(|| self.invalid("preparation DTO item count overflow"))?;
+                    let typed_owned = match value_schema {
+                        crate::contract::JsonValueSchema::Root => Some(0),
+                        _ => items.checked_mul(T::maximum_slot_bytes())
+                            .and_then(|slots| slots.checked_mul(8))
+                            .and_then(|slots| (bytes.len() as u64).checked_mul(4)
+                                .and_then(|strings| slots.checked_add(strings))),
+                    };
+                    let owned = typed_owned
+                        .and_then(|owned| owned.checked_add(value_owned))
                         .and_then(|owned| owned.checked_add(std::mem::size_of::<T>() as u64))
-                        .ok_or_else(|| Error::Invalid("preparation DTO ownership overflow".into()))?;
+                        .ok_or_else(|| self.invalid("preparation DTO ownership overflow"))?;
                     reservation.reserve(owned)?;
                     Ok(())
                 }
                 next => self.codec_charge(next, false),
             }
-        });
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.original_native_work().is_some() {
+            let result = crate::contract::json_from_slice_seed_bounded_native_trusted(
+                seed, bytes, bounds, 0, code, value_schema, &mut charge,
+            );
+            return reservation.finish(result);
+        }
+        let _ = code;
+        let result = crate::contract::json_from_slice_seed_bounded_trusted(
+            seed, bytes, bounds, 0, value_schema, &mut charge,
+        );
         reservation.finish(result)
+    }
+
+    /// Builds the original serde JSON graph directly. Wire-size admission is
+    /// distinct from bytes actually encoded: this path creates no wire buffer.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn value_json<T: Serialize>(
+        &self, source: &T, maximum_bytes: u64,
+    ) -> Result<serde_json::Value> {
+        if self.original_native_work().is_none() {
+            return Err(self.invalid("native JSON graph conversion requires original work"));
+        }
+        let bounds = crate::contract::JsonBounds {
+            maximum_bytes,
+            maximum_items: self.remaining()?.items_examined,
+            maximum_depth: 256,
+        };
+        let root = std::mem::size_of::<serde_json::Value>() as u64;
+        self.retain_owned(root)?;
+        let root_hold = self.guard_owned(root)?;
+        let mut diagnostics = TrustedDecodeReservation::new(self);
+        diagnostics.reserve(crate::contract::sdk_json_diagnostic_bytes())?;
+        let result = crate::contract::json_value_bounded_native_trusted(
+            source, bounds, crate::wire::ErrorCode::Invalid,
+            &mut |next| self.codec_charge(next, false),
+        );
+        let value = diagnostics.finish_serialization(result)?;
+        root_hold.into_retained();
+        Ok(value)
+    }
+
+    /// Checks the original JSON wire-size policy without building a graph or
+    /// buffer. Resident strings are inspected before the serde sizing scan.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn check_json_byte_bound(
+        &self, source: &serde_json::Value, maximum_bytes: u64,
+    ) -> Result<()> {
+        if self.original_native_work().is_none() {
+            return Err(self.invalid("native JSON sizing requires original work"));
+        }
+        let bounds = crate::contract::JsonBounds {
+            maximum_bytes,
+            maximum_items: self.remaining()?.items_examined,
+            maximum_depth: 256,
+        };
+        crate::contract::json_owned_value_shape_bounded(
+            source, bounds, crate::contract::JsonValueSchema::None,
+            &mut |next| self.codec_charge(next, false),
+        )?;
+        crate::contract::validate_json_byte_bound_native_trusted(
+            source, bounds, crate::wire::ErrorCode::Invalid,
+            &mut |next| self.codec_charge(next, false),
+        )
+    }
+
+    /// The original borrowed Value visitor, restricted to audited SDK DTOs.
+    /// No whole-Value clone, byte encoding, or parser round trip is performed.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn value_decode<T: UploadRecord>(
+        &self, source: &serde_json::Value, code: crate::wire::ErrorCode,
+    ) -> Result<T> {
+        let mut decoded = self.value_decode_with_schema::<T>(
+            source, code, T::json_value_schema(), preparation_slot_bytes::<T>(),
+        )?;
+        let actual = (std::mem::size_of::<T>() as u64)
+            .checked_add(decoded.value.logical_owned_bytes()?)
+            .ok_or_else(|| self.invalid("typed Value ownership overflow"))?;
+        decoded.substitute_owned(actual)?;
+        Ok(decoded.into_retained())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn value_decode_preparation<T: PreparationRecord>(
+        &self, source: &serde_json::Value, code: crate::wire::ErrorCode,
+    ) -> Result<ReservedDecoded<'_, T>> {
+        self.value_decode_with_schema(
+            source, code, T::json_value_schema(), T::maximum_slot_bytes(),
+        )
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn value_decode_with_schema<T: serde::de::DeserializeOwned>(
+        &self, source: &serde_json::Value, code: crate::wire::ErrorCode,
+        schema: crate::contract::JsonValueSchema, slot_bytes: u64,
+    ) -> Result<ReservedDecoded<'_, T>> {
+        if self.original_native_work().is_none() {
+            return Err(self.invalid("native Value decoding requires original work"));
+        }
+        let bounds = crate::contract::JsonBounds {
+            maximum_bytes: u64::MAX,
+            maximum_items: self.remaining()?.items_examined,
+            maximum_depth: 128,
+        };
+        let mut reservation = TrustedDecodeReservation::new(self);
+        let result = crate::contract::json_from_value_bounded_native_trusted(
+            source, bounds, 0, code, schema, &mut |next| match next {
+                crate::contract::JsonCodecCharge::Admission { value_shape, .. } => {
+                    let allowance = crate::contract::json_typed_value_decode_owned_bytes(
+                        value_shape, slot_bytes,
+                    )?.checked_add(std::mem::size_of::<T>() as u64)
+                        .ok_or_else(|| self.invalid("typed Value reservation overflow"))?;
+                    reservation.reserve(allowance)
+                }
+                next => self.codec_charge(next, false),
+            },
+        );
+        reservation.finish(result)
+    }
+
+    /// Preserves the consuming `serde_json::from_value` protocol. The old
+    /// strings are moved, not cloned; their existing allocation stays live
+    /// across the visitor and is combined with the preadmitted new temporaries.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn value_decode_owned<T: UploadRecord>(
+        &self, value: serde_json::Value, allocation: acyclic_fs::NativeAllocation,
+        code: crate::wire::ErrorCode,
+    ) -> Result<(T, acyclic_fs::NativeAllocation)> {
+        // Field order matters on every early error: Value physically drops
+        // before its original guard, including cancellation before inspection.
+        let mut input = (value, allocation);
+        let work = self.original_native_work()
+            .ok_or_else(|| self.invalid("owned Value decoding requires original work"))?;
+        if !work.shares_ledger(input.1.work()) {
+            return Err(self.invalid("owned Value belongs to a different work ledger"));
+        }
+        let bounds = crate::contract::JsonBounds {
+            maximum_bytes: u64::MAX,
+            maximum_items: self.remaining()?.items_examined,
+            maximum_depth: 128,
+        };
+        let shape = crate::contract::json_owned_value_shape_bounded(
+            &input.0, bounds, T::json_value_schema(),
+            &mut |next| self.codec_charge(next, false),
+        )?;
+        let nodes = shape.lexical_items().checked_add(shape.virtual_items())
+            .ok_or_else(|| self.invalid("owned Value item count overflow"))?;
+        let additional = crate::contract::json_owned_value_conversion_additional_bytes(shape)?;
+        // Only ModelContent's reachable untagged visitor clones ContentRef
+        // strings. Tagged descendants consume those strings by visit_string.
+        // This funds NEW temporary copies, not the existing moved input.
+        let content_copy_bytes = match T::json_value_schema() {
+            crate::contract::JsonValueSchema::ModelContent
+            | crate::contract::JsonValueSchema::Context
+            | crate::contract::JsonValueSchema::ResponseProjection
+            | crate::contract::JsonValueSchema::ModelRequest => shape.input_bytes().checked_mul(2)
+                .ok_or_else(|| self.invalid("owned Content string reservation overflow"))?,
+            _ => 0,
+        };
+        let allowance = nodes.checked_mul(preparation_slot_bytes::<T>())
+            .and_then(|bytes| bytes.checked_mul(8))
+            .and_then(|bytes| bytes.checked_add(additional))
+            .and_then(|bytes| bytes.checked_add(content_copy_bytes))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<T>() as u64))
+            .ok_or_else(|| self.invalid("owned Value reservation overflow"))?;
+        let mut reservation = TrustedDecodeReservation::new(self);
+        reservation.reserve(allowance)?;
+        let result = serde_json::from_value(input.0)
+            .map_err(|source| Error::NativeDecode { code, source, custody: None });
+        let mut output = reservation.finish(result)?.into_native_parts()?;
+        if let Err(cause) = output.1.absorb(&mut input.1) {
+            return Err(Error::NativeWork { cause, custody: Some(input.1) });
+        }
+        let actual = (std::mem::size_of::<T>() as u64)
+            .checked_add(output.0.logical_owned_bytes()?)
+            .ok_or_else(|| self.invalid("owned typed Value ownership overflow"))?;
+        output.1.substitute(actual)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(output)
     }
 
     pub(crate) fn codec_charge(&self, next: crate::contract::JsonCodecCharge, encode: bool) -> Result<()> {
@@ -630,8 +938,8 @@ impl PreparationIo {
                 self.preflight(WorkCounters { bytes_copied: bytes, ..Default::default() }),
             crate::contract::JsonCodecCharge::AllocationOperation { bytes } =>
                 self.allocation_attempt(bytes),
-            crate::contract::JsonCodecCharge::Admission { .. } => Err(Error::Invalid(
-                "trusted decode admission requires a scoped reservation".into())),
+            crate::contract::JsonCodecCharge::Admission { .. } => Err(self.invalid(
+                "trusted decode admission requires a scoped reservation")),
             crate::contract::JsonCodecCharge::Copy { bytes } => {
                 let work = WorkCounters { bytes_copied: bytes, ..Default::default() };
                 self.preflight(work)?;
@@ -639,6 +947,11 @@ impl PreparationIo {
             }
             crate::contract::JsonCodecCharge::Read { bytes } => {
                 let work = WorkCounters { source_bytes_read: bytes, ..Default::default() };
+                self.preflight(work)?;
+                self.charge(work)
+            }
+            crate::contract::JsonCodecCharge::Inspect { items } => {
+                let work = WorkCounters { items_examined: items, ..Default::default() };
                 self.preflight(work)?;
                 self.charge(work)
             }
@@ -656,7 +969,12 @@ impl PreparationIo {
 }
 
 pub(crate) trait UploadRecord: serde::de::DeserializeOwned {
+    /// Deep owned capacities only. Direct Value conversion separately owns
+    /// sizeof(Self); existing upload/staging DTO contracts remain deep-only.
     fn logical_owned_bytes(&self) -> Result<u64>;
+    fn json_value_schema() -> crate::contract::JsonValueSchema {
+        crate::contract::JsonValueSchema::None
+    }
 }
 
 impl UploadRecord for FileRef {
@@ -1076,9 +1394,12 @@ impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
         self.charged(WorkCounters { backend_write_operations: 1, ..Default::default() })
     }
     fn receive_record(&mut self, bytes: u64) -> Result<()> {
-        // Preserve actual received work even if cancellation/quota now rejects it.
-        self.io.charge(WorkCounters { authority_records_read: 1, bytes_read: bytes,
-            items_examined: 1, ..Default::default() })?;
+        // Observe arrival before cancellation/quota. A rejected receipt owns
+        // no new record claim and callers must not release one.
+        self.io.spent(WorkCounters { authority_records_read: 1,
+            authority_bytes_read: bytes, items_examined: 1,
+            peak_allocation_bytes: bytes, ..Default::default() })?;
+        self.io.remaining()?;
         self.io.retain_owned(bytes)
     }
     fn release_record(&mut self, bytes: u64) -> Result<()> { self.io.release(bytes) }
@@ -1146,7 +1467,9 @@ impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
     }
     fn codec_charge(&mut self, charge: crate::contract::JsonCodecCharge) -> Result<()> {
         match charge {
-            crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes } => self.io.claim(maximum_owned_bytes),
+            crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes, value_shape } =>
+                self.io.claim(maximum_owned_bytes.max(
+                    crate::contract::json_value_decode_owned_bytes(value_shape)?)),
             _ => self.io.codec_charge(charge, true),
         }
     }

@@ -5625,6 +5625,13 @@ pub(crate) mod tests {
         fn identity(&self) -> &MachineIdentity {
             &self.identity
         }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        fn identity_with_native_work<'a>(
+            &'a self, work: &acyclic_fs::NativeMaterializationWork,
+        ) -> Result<&'a MachineIdentity> {
+            work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            Ok(&self.identity)
+        }
         fn state_schema(&self) -> &Value {
             &self.schema
         }
@@ -6188,7 +6195,7 @@ pub(crate) mod tests {
             issuer.verifier(), content_scope.clone(), 65_536,
         )?);
         let journal = FilesystemExecutionJournal::for_task(
-            owner.clone(), attempt, filesystem.clone(), volume.clone(),
+            owner.clone(), attempt, attempt, filesystem.clone(), volume.clone(),
             issuer.verifier(), content_scope.clone(), 65_536,
         )?;
         let units = 100_000;
@@ -6432,6 +6439,7 @@ pub(crate) mod tests {
         assert_eq!(work.receipt(), denied_prefix);
         let replacement_journal = FilesystemExecutionJournal::for_task(
             replacement_owner.clone(), OperationId::from_bytes([55; 16]),
+            OperationId::from_bytes([55; 16]),
             filesystem.clone(), volume.clone(), issuer.verifier(), content_scope.clone(), 65_536,
         )?;
         let other_volume = VolumeRef::new(

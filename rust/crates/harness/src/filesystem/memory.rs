@@ -396,10 +396,7 @@ impl ContentPublisher for MemoryContentPublisher {
             let result = async {
                 let persisted = self.files.stage_once_with_io(
                     operation_id, path, bytes, media_type, display_name, &io).await?;
-                self.memory_store.lock()
-                    .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
-                    .retain_reference_with_io(&persisted, bytes, true, &io)?;
-                io.remaining()?;
+                self.retain_with_io(&persisted, bytes, &io)?;
                 Ok(persisted)
             }.await;
             match result {
@@ -424,16 +421,35 @@ impl ContentPublisher for MemoryContentPublisher {
             let result = async {
                 let persisted = self.files.stage_once_with_io(
                     operation_id, path, bytes, media_type, display_name, &io).await?;
-                self.memory_store.lock()
-                    .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
-                    .retain_reference_with_io(&persisted, bytes, true, &io)?;
-                io.remaining()?;
+                self.retain_with_io(&persisted, bytes, &io)?;
                 Ok(persisted)
             }.await;
             let persisted = result?;
             let custody = io.into_native_custody(super::UploadRecord::logical_owned_bytes(&persisted)?)?;
             Ok((persisted, custody))
         })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stage_at_with_native_work<'a>(
+        &'a self, operation_id: OperationId, source: &'a FileRef, bytes: &'a [u8],
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            let io = super::PreparationIo::from_native_work(work)?;
+            let persisted = self.files.stage_at_with_io(operation_id, source, bytes, Some(&io)).await?;
+            self.retain_with_io(&persisted, bytes, &io)?;
+            let custody = io.into_native_custody(super::UploadRecord::logical_owned_bytes(&persisted)?)?;
+            Ok((persisted, custody))
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn observe_staged_once_with_native_work<'a>(
+        &'a self, operation_id: OperationId, maximum_bytes: u64,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Option<FileRef>, acyclic_fs::NativeAllocation)>> {
+        self.files.observe_staged_once_with_native_work(operation_id, maximum_bytes, work)
     }
 
     fn stage_at<'a>(
@@ -467,6 +483,16 @@ impl ContentPublisher for MemoryContentPublisher {
 }
 
 impl MemoryContentPublisher {
+    fn retain_with_io(
+        &self, persisted: &FileRef, bytes: &[u8], io: &super::PreparationIo,
+    ) -> Result<()> {
+        self.memory_store.lock()
+            .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
+            .retain_reference_with_io(persisted, bytes, true, io)?;
+        io.remaining()?;
+        Ok(())
+    }
+
     fn retain(&self, persisted: FileRef, bytes: &[u8]) -> Result<FileRef> {
         self.memory_store.lock()
             .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?

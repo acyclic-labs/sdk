@@ -85,9 +85,7 @@ where
         &'a self, operation_id: OperationId, maximum_bytes: u64,
     ) -> BoxProviderFuture<'a, Result<Option<FileRef>>> {
         Box::pin(async move {
-            let retry = once_key(operation_id, None)?;
-            self.host.observe_content_publication(&self.volume, &self.grant, &retry,
-                maximum_bytes.min(self.maximum_bytes)).await
+            self.observe_once_with_io(operation_id, maximum_bytes, None).await
         })
     }
 
@@ -131,6 +129,33 @@ where
         })
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stage_at_with_native_work<'a>(
+        &'a self, operation_id: OperationId, source: &'a FileRef, bytes: &'a [u8],
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            let io = PreparationIo::from_native_work(work)?;
+            let file = self.stage_at_with_io(operation_id, source, bytes, Some(&io)).await?;
+            let custody = io.into_native_custody(file.logical_owned_bytes()?)?;
+            Ok((file, custody))
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn observe_staged_once_with_native_work<'a>(
+        &'a self, operation_id: OperationId, maximum_bytes: u64,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Option<FileRef>, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            let io = PreparationIo::from_native_work(work)?;
+            let file = self.observe_once_with_io(operation_id, maximum_bytes, Some(&io)).await?;
+            let retained = file.as_ref().map(UploadRecord::logical_owned_bytes).transpose()?.unwrap_or(0);
+            let custody = io.into_native_custody(retained)?;
+            Ok((file, custody))
+        })
+    }
+
     fn observe_staged_once_measured<'a>(
         &'a self, operation_id: OperationId, maximum_bytes: u64,
         budget: acyclic_fs::WorkBudget, cancellation: &'a acyclic_fs::CancellationToken,
@@ -138,14 +163,7 @@ where
         Box::pin(async move {
             let io = PreparationIo::from_budget(budget, cancellation)
                 .map_err(acyclic_fs::OperationFailure::before_work)?;
-            let result = async {
-                let retry = once_key(operation_id, Some(&io))?;
-                let file = io.receive_content(self.host.original_content_for_operation_measured(
-                    &self.volume, &self.grant, &retry, maximum_bytes.min(self.maximum_bytes),
-                    io.remaining()?, cancellation).await)?;
-                if let Some(file) = &file { io.retain_owned(file.logical_owned_bytes()?)?; }
-                Ok(file)
-            }.await;
+            let result = self.observe_once_with_io(operation_id, maximum_bytes, Some(&io)).await;
             match result {
                 Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
                 Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
@@ -160,30 +178,7 @@ where
         bytes: &'a [u8],
     ) -> BoxProviderFuture<'a, Result<FileRef>> {
         Box::pin(async move {
-            source.validate()?;
-            if source.volume() != &self.volume {
-                return Err(Error::Unauthorized(
-                    "source belongs to another writer volume".into(),
-                ));
-            }
-            let generation = self.host.file_generation(source)?;
-            let retry = IdempotencyKey::new(format!(
-                "filesystem-replacement:{operation_id}:{}",
-                blake3::hash(source.path().as_bytes()).to_hex()
-            ))?;
-            self.host
-                .put_content_at(
-                    &self.volume,
-                    &self.grant,
-                    source.path(),
-                    bytes,
-                    source.descriptor().media_type(),
-                    source.display_name(),
-                    self.maximum_bytes,
-                    &retry,
-                    &generation,
-                )
-                .await
+            self.stage_at_with_io(operation_id, source, bytes, None).await
         })
     }
     fn stage<'a>(
@@ -208,11 +203,61 @@ where
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     FilesystemContentPublisher<A, O>
 {
+    pub(super) async fn observe_once_with_io(
+        &self, operation_id: OperationId, maximum_bytes: u64, io: Option<&PreparationIo>,
+    ) -> Result<Option<FileRef>> {
+        let retry = once_key(operation_id, io)?;
+        let retry_hold = io.map(|io| io.guard_owned(retry.as_str().len() as u64)).transpose()?;
+        let file = self.host.content_for_operation_impl(
+            &self.volume, &self.grant, &retry, None, maximum_bytes.min(self.maximum_bytes), io,
+        ).await?;
+        drop(retry);
+        drop(retry_hold);
+        Ok(file)
+    }
+
+    pub(super) async fn stage_at_with_io(
+        &self, operation_id: OperationId, source: &FileRef, bytes: &[u8],
+        io: Option<&PreparationIo>,
+    ) -> Result<FileRef> {
+        validate_publication(source.path(), bytes, source.descriptor().media_type(), source.display_name(), self.maximum_bytes, io)?;
+        if source.volume() != &self.volume {
+            #[cfg(not(target_arch = "wasm32"))]
+            if io.and_then(PreparationIo::original_native_work).is_some() {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "source belongs to another writer volume" });
+            }
+            return Err(Error::Unauthorized("source belongs to another writer volume".into()));
+        }
+        let version = source.version();
+        if version.len() != 64 || !version.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(super::fork_preparer_io::invalid(io, "file version is not a Filesystem generation"));
+        }
+        if source.descriptor().byte_length() > 9_007_199_254_740_991 {
+            return Err(super::fork_preparer_io::invalid(io, "file byte length exceeds cross-language precision"));
+        }
+        source.validate()?;
+        let generation = self.host.file_generation_with_io(source, io)?;
+        let generation_hold = io.map(|io| io.guard_owned(generation.logical_owned_bytes()?)).transpose()?;
+        let retry = replacement_key(operation_id, source.path(), io)?;
+        let retry_hold = io.map(|io| io.guard_owned(retry.as_str().len() as u64)).transpose()?;
+        let file = self.host.put_content_impl(
+            &self.volume, &self.grant, source.path(), bytes, source.descriptor().media_type(),
+            source.display_name(), self.maximum_bytes, &retry, None, Some(&generation), io,
+        ).await?;
+        drop(retry);
+        drop(retry_hold);
+        drop(generation);
+        drop(generation_hold);
+        Ok(file)
+    }
+
     #[allow(clippy::too_many_arguments, reason = "one canonical complete publication identity")]
     pub(super) async fn stage_once_with_io(
         &self, operation_id: OperationId, path: &str, bytes: &[u8],
         media_type: &str, display_name: &str, io: &PreparationIo,
     ) -> Result<FileRef> {
+        validate_publication(path, bytes, media_type, display_name, self.maximum_bytes, Some(io))?;
         let retry_hold;
         let retry = once_key(operation_id, Some(io))?;
         retry_hold = io.guard_owned(retry.as_str().len() as u64)?;
@@ -257,9 +302,56 @@ fn once_key(operation: OperationId, io: Option<&PreparationIo>) -> Result<Idempo
     use std::fmt::Write as _;
     let mut key = String::with_capacity(length);
     write!(&mut key, "filesystem-single-file:{operation}")
-        .map_err(|_| Error::Invalid("original publication identity encoding failed".into()))?;
+        .map_err(|_| super::fork_preparer_io::invalid(io, "original publication identity encoding failed"))?;
     if let Some(io) = io {
         io.charge(acyclic_fs::WorkCounters { bytes_encoded: key.len() as u64, bytes_copied: key.len() as u64, items_examined: 1, ..Default::default() })?;
     }
     IdempotencyKey::new(key)
+}
+
+fn replacement_key(operation: OperationId, path: &str, io: Option<&PreparationIo>) -> Result<IdempotencyKey> {
+    let length = "filesystem-replacement:".len() + 36 + 1 + 64;
+    if let Some(io) = io {
+        io.claim(length as u64)?;
+        io.preflight(acyclic_fs::WorkCounters {
+            bytes_hashed: path.len() as u64, bytes_encoded: length as u64,
+            bytes_copied: length as u64, items_examined: 1, ..Default::default()
+        })?;
+        io.allocation_attempt(length as u64)?;
+    }
+    use std::fmt::Write as _;
+    let mut key = String::with_capacity(length);
+    write!(&mut key, "filesystem-replacement:{operation}:{}", blake3::hash(path.as_bytes()).to_hex())
+        .map_err(|_| super::fork_preparer_io::invalid(io, "original replacement identity encoding failed"))?;
+    if let Some(io) = io {
+        io.charge(acyclic_fs::WorkCounters {
+            bytes_hashed: path.len() as u64, bytes_encoded: length as u64,
+            bytes_copied: length as u64, items_examined: 1, ..Default::default()
+        })?;
+    }
+    IdempotencyKey::new(key)
+}
+
+fn validate_publication(
+    path: &str, bytes: &[u8], media_type: &str, display_name: &str,
+    maximum_bytes: u64, io: Option<&PreparationIo>,
+) -> Result<()> {
+    super::fork_preparer_io::validate_content_path(path, io)?;
+    if bytes.len() as u64 > maximum_bytes || bytes.len() as u64 > 9_007_199_254_740_991 {
+        return Err(super::fork_preparer_io::invalid(io, "content size limit mismatch"));
+    }
+    if path == ".system" || path.starts_with(".system/")
+        || path == "turns/.canonical" || path.starts_with("turns/.canonical/") {
+        return Err(super::fork_preparer_io::invalid(io, "internal storage paths are reserved"));
+    }
+    if display_name.is_empty() || display_name.len() > crate::conversation::MAX_LABEL_BYTES
+        || display_name.chars().any(char::is_control) {
+        return Err(super::fork_preparer_io::invalid(io, "file display name is invalid"));
+    }
+    if !media_type.split_once('/').is_some_and(|(kind, subtype)| !kind.is_empty() && !subtype.is_empty())
+        || media_type.chars().any(|character| !character.is_ascii_alphanumeric()
+            && !matches!(character, '/' | '-' | '+' | '.' | '_')) {
+        return Err(super::fork_preparer_io::invalid(io, "media type is invalid"));
+    }
+    Ok(())
 }

@@ -5,6 +5,7 @@
 //! records and SDK data work, not opaque provider transfers/allocations or RSS.
 
 use super::{FilesystemHost, InternalContentClass, PreparationIo};
+use super::interaction_host::interaction_boundary as observation_boundary;
 use crate::obs::{obs_span, traced};
 use crate::{
     Error, IdempotencyKey, Result,
@@ -14,7 +15,7 @@ use crate::{
     workflow::{
         MachineCheckpoint, MachineStatus, WORKFLOW_REPLAY_PAGE_RECORDS, WorkflowAdmission,
         WorkflowCommitOutcome, WorkflowJournal, WorkflowRecord,
-        validate_workflow_next, validate_workflow_page,
+        validate_workflow_next,
     },
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
@@ -212,42 +213,35 @@ where
         io.absorb_native_custody(verifier_custody)?;
         let (scope, scope_custody) = scope.clone_with_native_work(work)?;
         io.absorb_native_custody(scope_custody)?;
-        let volume_bytes = volume.logical_owned_bytes()?;
-        let owner_bytes = match volume.owner() {
-            crate::conversation::VolumeOwner::Project(id) | crate::conversation::VolumeOwner::Session(id) => id.len(),
-            crate::conversation::VolumeOwner::Agent(_) => 0,
-        };
-        let copied_bytes = [volume.provider().namespace().len(), volume.provider().family().len(),
-            volume.provider().version().len(), volume.id().len(), owner_bytes]
-            .into_iter().try_fold(0_u64, |total, length| total.checked_add(length as u64))
-            .ok_or_else(|| Error::Invalid("volume clone ownership overflow".into()))?;
-        let copying = acyclic_fs::WorkCounters { bytes_copied: copied_bytes, ..Default::default() };
-        io.preflight(copying)?;
-        io.retain_owned(volume_bytes)?;
-        let _volume = io.guard_owned(volume_bytes)?;
-        // The closed VolumeRef clone consists of provider/id/owner strings.
-        for length in [volume.provider().namespace().len(), volume.provider().family().len(),
-            volume.provider().version().len(), volume.id().len()] {
-            if length != 0 { io.allocation_attempt(length as u64)?; }
-        }
-        match volume.owner() {
-            crate::conversation::VolumeOwner::Project(id) | crate::conversation::VolumeOwner::Session(id)
-                if !id.is_empty() => io.allocation_attempt(id.len() as u64)?,
-            _ => {}
-        }
-        let volume = volume.clone();
-        io.charge(copying)?;
-        _volume.into_retained();
-        io.release(volume_bytes.checked_sub(volume.logical_owned_bytes()?)
-            .ok_or_else(|| Error::Invalid("volume clone ownership grew beyond original capacity".into()))?)?;
+        let volume = volume.clone_with_io(&io)?;
         let identity_io = PreparationIo::from_native_work(work)?;
         let _identity;
         let identity = crate::contract::preparation_format(format_args!("{}", owner.operation_id()), Some(&identity_io))?;
         _identity = identity_io.guard_owned(identity.capacity() as u64)?;
         let mut journal = Self::new_with_io(stream, host, &identity, volume, verifier, scope,
             maximum_payload_bytes, Some(&io))?;
-        journal.owner = Some(owner);
+        journal.owner = Some(owner.into_native_shared(work)?);
         Ok(journal)
+    }
+
+    /// Shares an already funded journal, admitting the actual SDK Arc attempt.
+    /// The intrinsic guard covers owned metadata and the logical Self slot,
+    /// not std's opaque allocation header or retained weak-reference backing.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn into_native_shared(
+        self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Arc<Self>> {
+        if !self.native_metadata.as_ref().is_some_and(|custody|
+            custody.work().shares_ledger(work))
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "native journal sharing requires its original funded metadata",
+            });
+        }
+        let io = PreparationIo::from_native_work(work)?;
+        io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
+        Ok(Arc::new(self))
     }
 
     /// Binds a validated workflow identity and its exact private-volume grants.
@@ -354,9 +348,8 @@ where
             || reference.descriptor().media_type() != "application/json"
             || !reference.path().starts_with(&prefix)
         {
-            return Err(Error::Unauthorized(
-                "workflow record belongs to another private volume".into(),
-            ));
+            return Err(observation_boundary(io, crate::wire::ErrorCode::Unauthorized,
+                "workflow record belongs to another private volume"));
         }
         let _bytes;
         let bytes = self.read_bound_content(reference, io).await?;
@@ -373,7 +366,8 @@ where
             } else if record.prior.machine != owner.workflow_admission().initial.machine
                 || record.next.machine != owner.workflow_admission().initial.machine
             {
-                return Err(Error::Unauthorized("observed workflow changed its pinned machine".into()));
+                return Err(observation_boundary(io, crate::wire::ErrorCode::Unauthorized,
+                    "observed workflow changed its pinned machine"));
             }
         }
         if verify_payloads {
@@ -398,7 +392,8 @@ where
             if io.and_then(PreparationIo::original_native_work).is_some() {
                 return self.owner.as_ref().map_or(Ok(()), |owner| owner.require_native_workflow_validation());
             }
-            return Err(Error::Unsupported("finite workflow replay requires a native machine callback".into()));
+            return Err(observation_boundary(io, crate::wire::ErrorCode::Unsupported,
+                "finite workflow replay requires a native machine callback"));
         }
         Ok(())
     }
@@ -408,11 +403,15 @@ where
         verify_machine: bool, io: Option<&PreparationIo>,
     ) -> Result<Vec<WorkflowRecord>> {
         self.require_machine_io(verify_machine, io)?;
-        validate_workflow_page(after, maximum)?;
+        if maximum == 0 {
+            return Err(observation_boundary(io, crate::wire::ErrorCode::Invalid,
+                "workflow page bounds are invalid"));
+        }
         let _path;
         let (stream, held) = self.observation_stream(&self.path, io)?;
         _path = held;
         self.begin_observation_call(io)?;
+        let _request_path = Self::retain_observation_request_path(&self.path, io)?;
         let entries = match stream
             .read(after, maximum.min(WORKFLOW_REPLAY_PAGE_RECORDS))
             .await
@@ -422,12 +421,13 @@ where
                 self.check_observation_cancellation(io)?;
                 return Ok(Vec::new());
             }
-            Err(error) => return Err(Error::Storage(error.to_string())),
+            Err(error) => return Err(Self::observation_stream_error(io, error)),
         };
         let mut entries = entries;
         let capacity = maximum.min(WORKFLOW_REPLAY_PAGE_RECORDS) as usize;
         let vector_bytes = capacity.checked_mul(std::mem::size_of::<WorkflowRecord>())
-            .ok_or_else(|| Error::Invalid("workflow replay vector ownership overflow".into()))? as u64;
+            .ok_or_else(|| observation_boundary(io, crate::wire::ErrorCode::Invalid,
+                "workflow replay vector ownership overflow"))? as u64;
         let vector_hold = if let Some(io) = io {
             io.claim(vector_bytes)?;
             let hold = io.guard_owned(vector_bytes)?;
@@ -441,9 +441,8 @@ where
             _entry = held;
             let sequence = after + records.len() as u64;
             if records.len() >= capacity || entry.sequence != sequence {
-                return Err(Error::Storage(
-                    "workflow sequence or page bound is invalid".into(),
-                ));
+                return Err(observation_boundary(io, crate::wire::ErrorCode::Storage,
+                    "workflow sequence or page bound is invalid"));
             }
             let reference_hold;
             let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
@@ -460,9 +459,8 @@ where
             };
             let record = self.read_record_with_io(&reference, verify_payloads, verify_machine, io).await?;
             if record.prior.revision != sequence || record.next.revision != sequence + 1 {
-                return Err(Error::Storage(
-                    "workflow checkpoint revision is discontinuous".into(),
-                ));
+                return Err(observation_boundary(io, crate::wire::ErrorCode::Storage,
+                    "workflow checkpoint revision is discontinuous"));
             }
             records.push(record);
             drop(reference);
@@ -526,6 +524,23 @@ where
         Ok(self.observe_latest_record().await?.map(|record| record.transition))
     }
 
+    /// Observes the original authenticated outbox without a machine callback.
+    /// Returned custody retains the canonical decoder's logical high-water
+    /// allowance, not an opaque allocator measurement, through payload last use.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn observe_latest_outbox_with_native_work<'a>(
+        &'a self, work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Option<crate::workflow::MachineTransition>, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            let io = PreparationIo::from_native_work(work)?;
+            let transition = self.observe_latest_record_engine(Some(&io)).await?
+                .map(|record| record.transition);
+            let retained = io.owned_bytes()?;
+            let custody = io.into_native_custody(retained)?;
+            Ok((transition, custody))
+        })
+    }
+
     pub(crate) async fn observe_latest_record(&self) -> Result<Option<WorkflowRecord>> {
         self.observe_latest_record_engine(None).await
     }
@@ -539,31 +554,34 @@ where
     async fn observe_latest_record_engine(
         &self, io: Option<&PreparationIo>,
     ) -> Result<Option<WorkflowRecord>> {
-        let owner = self.owner.as_ref().ok_or_else(|| {
-            Error::Unsupported("task outbox observation requires its original owner".into())
-        })?;
+        let owner = self.owner.as_ref().ok_or_else(||
+            observation_boundary(io, crate::wire::ErrorCode::Unsupported,
+                "task outbox observation requires its original owner"))?;
         self.verify_observation_owner(owner, io).await?;
         let Some(admission) = self.read_admission_with_io(io).await? else { return Ok(None); };
         if &admission != owner.workflow_admission() {
-            return Err(Error::Unauthorized("observed outbox differs from original task admission".into()));
+            return Err(observation_boundary(io, crate::wire::ErrorCode::Unauthorized,
+                "observed outbox differs from original task admission"));
         }
         let _path;
         let (stream, held) = self.observation_stream(&self.path, io)?;
         _path = held;
         self.begin_observation_call(io)?;
+        let _request_path = Self::retain_observation_request_path(&self.path, io)?;
         let bounds = match stream.bounds().await {
             Ok(bounds) => bounds,
             Err(StreamError::NotFound) => {
                 self.check_observation_cancellation(io)?;
                 return Ok(None);
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(Self::observation_stream_error(io, error)),
         };
         self.check_observation_cancellation(io)?;
         if bounds.tail == 0 { return Ok(None); }
         let record = self.replay_records_with_io(bounds.tail - 1, 1, true, false, io).await?
             .into_iter().next()
-            .ok_or_else(|| Error::Storage("original outbox record is absent".into()))?;
+            .ok_or_else(|| observation_boundary(io, crate::wire::ErrorCode::Storage,
+                "original outbox record is absent"))?;
         self.verify_observation_owner(owner, io).await?;
         Ok(Some(record))
     }
@@ -584,6 +602,10 @@ where
     ) -> Result<()> {
         match io {
             Some(io) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(work) = io.original_native_work() {
+                    return owner.verify_with_native_work(true, work).await;
+                }
                 let mut borrowed = io.history_io();
                 owner.verify_with_work(true, &mut Some(&mut borrowed)).await
             }
@@ -621,7 +643,31 @@ where
             io.charge(work)?;
             Some(hold)
         } else { None };
-        Ok((stream.stream(path)?, held))
+        Ok((stream.stream(path).map_err(|error| Self::observation_stream_error(io, error))?, held))
+    }
+
+    fn observation_stream_error(io: Option<&PreparationIo>, source: StreamError) -> Error {
+        #[cfg(not(target_arch = "wasm32"))]
+        if io.and_then(PreparationIo::original_native_work).is_some() {
+            return Error::NativeStream {
+                code: crate::wire::ErrorCode::Storage, source, custody: None,
+            };
+        }
+        Error::Storage(source.to_string())
+    }
+
+    fn retain_observation_request_path<'a>(
+        path: &str, io: Option<&'a PreparationIo>,
+    ) -> Result<Option<super::DecodeReservation<'a>>> {
+        let Some(io) = io else { return Ok(None); };
+        let copying = acyclic_fs::WorkCounters {
+            bytes_copied: path.len() as u64, ..Default::default()
+        };
+        io.preflight(copying)?;
+        let held = io.reserve_decode(path.len() as u64)?;
+        io.allocation_attempt(path.len() as u64)?;
+        io.charge(copying)?;
+        Ok(Some(held))
     }
 
     async fn next_observation_record<'a>(
@@ -629,7 +675,8 @@ where
     ) -> Result<Option<(acyclic_stream::Record, Option<super::DecodeReservation<'a>>)>> {
         if let Some(io) = io { io.check_cancellation()?; }
         let held;
-        let Some(record) = entries.try_next().await? else {
+        let Some(record) = entries.try_next().await
+            .map_err(|error| Self::observation_stream_error(io, error))? else {
             if let Some(io) = io { io.check_cancellation()?; }
             return Ok(None);
         };
@@ -638,7 +685,8 @@ where
             Some(io.guard_owned(record.value.len() as u64)?)
         } else { None };
         if record.value.len() > acyclic_stream::MAX_RECORD_BYTES {
-            return Err(Error::Storage("workflow Stream record exceeds protocol bound".into()));
+            return Err(observation_boundary(io, crate::wire::ErrorCode::Storage,
+                "workflow Stream record exceeds protocol bound"));
         }
         Ok(Some((record, held)))
     }
@@ -646,10 +694,23 @@ where
     async fn read_bound_content(&self, reference: &FileRef, io: Option<&PreparationIo>) -> Result<Bytes> {
         match io {
             Some(io) => {
-                super::fork_preparer_io::item(Some(io), 0)?;
-                reference.validate()?;
+                #[cfg(not(target_arch = "wasm32"))]
+                let native_work = io.original_native_work();
+                #[cfg(target_arch = "wasm32")]
+                let native_work: Option<()> = None;
+                if native_work.is_none() {
+                    let _metadata;
+                    let metadata = io.encode_json(reference, io.remaining()?.bytes_encoded, false)?;
+                    _metadata = io.guard_owned(metadata.len() as u64)?;
+                    reference.validate()?;
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(work) = native_work {
+                    reference.validate_with_native_work(work)?;
+                }
                 if reference.volume() != &self.volume {
-                    return Err(Error::Unauthorized("workflow content belongs to another private volume".into()));
+                    return Err(observation_boundary(Some(io), crate::wire::ErrorCode::Unauthorized,
+                        "workflow content belongs to another private volume"));
                 }
                 ContentGrant::verify_original_volume_with_io(
                     &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io,
@@ -926,13 +987,14 @@ where
         let (stream, held) = self.observation_stream(&path, io)?;
         _stream_path = held;
         self.begin_observation_call(io)?;
+        let _request_path = Self::retain_observation_request_path(&path, io)?;
         let mut entries = match stream.read(0, 2).await {
             Ok(entries) => entries,
             Err(StreamError::NotFound) => {
                 self.check_observation_cancellation(io)?;
                 return Ok(None);
             }
-            Err(error) => return Err(Error::Storage(error.to_string())),
+            Err(error) => return Err(Self::observation_stream_error(io, error)),
         };
         let _entry;
         let Some((entry, held)) = Self::next_observation_record(&mut entries, io).await? else {
@@ -940,12 +1002,12 @@ where
         };
         _entry = held;
         if Self::next_observation_record(&mut entries, io).await?.is_some() {
-            return Err(Error::Storage("workflow admission stream is invalid".into()));
+            return Err(observation_boundary(io, crate::wire::ErrorCode::Storage,
+                "workflow admission stream is invalid"));
         }
         if entry.sequence != 0 {
-            return Err(Error::Storage(
-                "workflow admission sequence is invalid".into(),
-            ));
+            return Err(observation_boundary(io, crate::wire::ErrorCode::Storage,
+                "workflow admission sequence is invalid"));
         }
         let _reference_hold;
         let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
@@ -969,9 +1031,8 @@ where
             || reference.path() != expected_path
             || reference.descriptor().media_type() != "application/json"
         {
-            return Err(Error::Unauthorized(
-                "workflow admission belongs to another volume".into(),
-            ));
+            return Err(observation_boundary(io, crate::wire::ErrorCode::Unauthorized,
+                "workflow admission belongs to another volume"));
         }
         let _bytes;
         let bytes = self.read_bound_content(&reference, io).await?;
@@ -987,9 +1048,8 @@ where
             .as_ref()
             .is_some_and(|owner| owner.workflow_admission() != &admission)
         {
-            return Err(Error::Conflict(
-                "workflow differs from retained task admission".into(),
-            ));
+            return Err(observation_boundary(io, crate::wire::ErrorCode::Conflict,
+                "workflow differs from retained task admission"));
         }
         Ok(Some(admission))
     }
@@ -1063,9 +1123,8 @@ where
                 continue;
             }
             if command.payload.volume() != &self.volume {
-                return Err(Error::Unauthorized(
-                    "workflow command payload belongs to another volume".into(),
-                ));
+                return Err(observation_boundary(io, crate::wire::ErrorCode::Unauthorized,
+                    "workflow command payload belongs to another volume"));
             }
             let _bytes;
             let bytes = self.read_bound_content(&command.payload, io).await?;
@@ -1502,8 +1561,12 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn original_machine_identity(&self) -> Option<&crate::workflow::MachineIdentity> {
+        self.owner.as_ref().map(|owner| &owner.workflow_admission().initial.machine)
+    }
+
     fn task_binding(&self) -> Option<(crate::TaskId, &crate::scheduler::LeaseFence)> {
-        self.owner.as_ref().map(TaskJournalOwner::task_binding)
+        self.owner.as_ref().map(|owner| owner.task_binding())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
