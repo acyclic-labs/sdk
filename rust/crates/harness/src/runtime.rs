@@ -1935,15 +1935,24 @@ impl TaskAdmissionRecord {
         let input = crate::core::copy_value(&self.input, &mut quota)?;
         let input_schema = crate::core::copy_value(&self.input_schema, &mut quota)?;
         let output_schema = crate::core::copy_value(&self.output_schema, &mut quota)?;
-        let resource_proofs = crate::core::copy_vector(
-            &self.resource_proofs, &mut quota, |proof, quota| {
-                let (copied, held) = crate::core::resource_creation_proof_clone_with_custody(
-                    proof, quota.work(),
-                )?;
-                quota.adopt(held)?;
-                Ok(copied)
-            },
+        let resource_proofs = RuntimeScope::clone_resource_proofs_with_work(
+            &self.resource_proofs, quota.work(),
         )?;
+        let proof_overflow = || Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow),
+            custody: None,
+        };
+        let proof_slots = resource_proofs.capacity()
+            .checked_mul(std::mem::size_of::<crate::resource_preparation::ResourceCreationProofRef>())
+            .ok_or_else(proof_overflow)? as u64;
+        let proof_bytes = resource_proofs.iter().try_fold(proof_slots, |bytes, proof| -> Result<u64> {
+            let provider = proof.provider.logical_owned_bytes()?;
+            let resource = proof.resource.logical_owned_bytes()?;
+            let evidence = proof.evidence.logical_owned_bytes()?;
+            bytes.checked_add(provider).and_then(|bytes| bytes.checked_add(resource))
+                .and_then(|bytes| bytes.checked_add(evidence)).ok_or_else(proof_overflow)
+        })?;
+        quota.adopt(proof_bytes)?;
         let (grants, grant_custody) = self.grants.clone_with_native_work(work)?;
         let grant_bytes = grant_custody.bytes();
         quota.work().as_deref_mut().expect("native admission clone observer")
