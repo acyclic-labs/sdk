@@ -146,14 +146,15 @@ fn inventory<T>(value: &T, visit: impl FnOnce(&mut Inventory, &T) -> Result<()>)
 fn clone_dto<T: Clone>(
     value: &T, work: &mut Option<&mut dyn HistoryIo>,
     copy: impl FnOnce(&T, &mut CodecQuota<'_, '_>) -> Result<T>,
-) -> Result<T> {
-    if work.is_none() { return Ok(value.clone()); }
+) -> Result<(T, u64)> {
+    if work.is_none() { return Ok((value.clone(), 0)); }
     // The quota outlives every temporary field and partial DTO. Only completed
     // physical copies transfer their actual retained ownership to the caller.
     let mut quota = CodecQuota::new(work, 0)?;
     let output = copy(value, &mut quota)?;
+    let owned = quota.retained();
     quota.transfer();
-    Ok(output)
+    Ok((output, owned))
 }
 
 fn copy_text(source: &str, quota: &mut CodecQuota<'_, '_>) -> Result<String> {
@@ -331,7 +332,7 @@ macro_rules! closed_clone {
     ($kind:ty, $visit:ident, $copy:expr) => {
         impl $kind {
             pub(crate) fn clone_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
-                clone_dto(self, work, $copy)
+                clone_dto(self, work, $copy).map(|(value, _)| value)
             }
             pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
                 inventory(self, |inventory, value| inventory.$visit(value))
@@ -342,7 +343,6 @@ macro_rules! closed_clone {
 
 closed_clone!(SchedulerEvent, event, copy_event);
 closed_clone!(OperationSpec, spec, copy_spec);
-closed_clone!(OperationState, state, copy_state);
 closed_clone!(EntrypointRef, entrypoint, copy_entrypoint);
 closed_clone!(Reservation, reservation, copy_reservation);
 closed_clone!(WorkflowSuspension, workflow, copy_workflow);
@@ -354,6 +354,7 @@ macro_rules! resource_clone {
         impl $kind {
             pub(crate) fn clone_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
                 clone_dto(self, work, |source, quota| copy_resources(&source.0, quota).map(Self))
+                    .map(|(value, _)| value)
             }
             pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
                 inventory(self, |inventory, value| inventory.resources(&value.0))
@@ -375,7 +376,7 @@ pub(super) fn json_value_owned_bytes(value: &Value) -> Result<u64> {
 }
 
 pub(super) fn clone_file_with_work(file: &FileRef, work: &mut Option<&mut dyn HistoryIo>) -> Result<FileRef> {
-    clone_dto(file, work, crate::core::copy_file)
+    clone_dto(file, work, crate::core::copy_file).map(|(value, _)| value)
 }
 
 impl LeaseFence {
@@ -410,6 +411,21 @@ impl SchedulerEvent {
 }
 
 impl OperationState {
+    /// Returns the actual physical field-copy claim, excluding the inline Self.
+    pub(crate) fn clone_owned_with_work(
+        &self, work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<(Self, u64)> {
+        clone_dto(self, work, copy_state)
+    }
+
+    pub(crate) fn clone_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
+        self.clone_owned_with_work(work).map(|(state, _)| state)
+    }
+
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        inventory(self, Inventory::state)
+    }
+
     pub(crate) fn work_lease_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Option<crate::distributed::WorkLease>> {
         observe(work)?;
         if !matches!(self.phase, OperationPhase::Admitted | OperationPhase::Running | OperationPhase::Reconciling) {
