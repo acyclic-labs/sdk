@@ -741,8 +741,8 @@ impl std::error::Error for NativeStreamFailure {
 
 /// Preserves original observer failure separately from the provider's error.
 #[cfg(not(target_arch = "wasm32"))]
-pub type NativeStreamResult<T> =
-    std::io::Result<Result<NativeStreamOutput<T>, NativeStreamFailure>>;
+pub type NativeStreamResult<T, E = NativeStreamFailure> =
+    std::io::Result<Result<NativeStreamOutput<T>, E>>;
 
 /// One original-native record and the storage actually produced for it.
 #[cfg(not(target_arch = "wasm32"))]
@@ -756,27 +756,27 @@ pub type NativeRecordStream =
 /// Object-safe provider future whose real heap frame is admitted before boxing.
 /// A denied allocation or unsupported provider returns inline, without a box.
 #[cfg(not(target_arch = "wasm32"))]
-pub enum NativeProviderFuture<'a, T> {
+pub enum NativeProviderFuture<'a, T, E = NativeStreamFailure> {
     /// No physical future frame was allocated.
-    Ready(Option<NativeStreamResult<T>>),
+    Ready(Option<NativeStreamResult<T, E>>),
     /// The boxed frame drops before its original-ledger allocation guard.
     Funded {
         /// Canonical producer; no alternate request or work root.
-        future: std::pin::Pin<Box<dyn Future<Output = NativeStreamResult<T>> + Send + 'a>>,
+        future: std::pin::Pin<Box<dyn Future<Output = NativeStreamResult<T, E>> + Send + 'a>>,
         /// Actual frame storage on the original ledger.
         allocation: acyclic_native_runtime::ReadAllocation,
     },
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl<'a, T> NativeProviderFuture<'a, T> {
+impl<'a, T, E> NativeProviderFuture<'a, T, E> {
     /// Admits the exact concrete frame before its sole physical allocation.
     pub fn new<F>(
         meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
         future: F,
     ) -> Self
     where
-        F: Future<Output = NativeStreamResult<T>> + Send + 'a,
+        F: Future<Output = NativeStreamResult<T, E>> + Send + 'a,
     {
         match Self::try_new(meter, future) {
             Ok(future) => future,
@@ -791,7 +791,7 @@ impl<'a, T> NativeProviderFuture<'a, T> {
         future: F,
     ) -> std::io::Result<Self>
     where
-        F: Future<Output = NativeStreamResult<T>> + Send + 'a,
+        F: Future<Output = NativeStreamResult<T, E>> + Send + 'a,
     {
         let bytes = std::mem::size_of::<F>();
         let allocation = if bytes == 0 {
@@ -803,7 +803,7 @@ impl<'a, T> NativeProviderFuture<'a, T> {
     }
 
     /// Returns a result without allocating a provider future.
-    pub fn ready(result: NativeStreamResult<T>) -> Self {
+    pub fn ready(result: NativeStreamResult<T, E>) -> Self {
         Self::Ready(Some(result))
     }
 }
@@ -811,11 +811,11 @@ impl<'a, T> NativeProviderFuture<'a, T> {
 // Only the boxed producer is pinned. The inline terminal result is not a
 // structurally pinned field and is moved out exactly once by poll.
 #[cfg(not(target_arch = "wasm32"))]
-impl<T> Unpin for NativeProviderFuture<'_, T> {}
+impl<T, E> Unpin for NativeProviderFuture<'_, T, E> {}
 
 #[cfg(not(target_arch = "wasm32"))]
-impl<T> Future for NativeProviderFuture<'_, T> {
-    type Output = NativeStreamResult<T>;
+impl<T, E> Future for NativeProviderFuture<'_, T, E> {
+    type Output = NativeStreamResult<T, E>;
 
     fn poll(
         self: std::pin::Pin<&mut Self>,
@@ -1191,6 +1191,35 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         ))))
     }
 
+    /// Executes the canonical native Commit with an owned original guard before
+    /// every protected publication attempt. A retry re-runs the same guard;
+    /// stock providers await it without holding their authority/visibility locks.
+    ///
+    /// The guard and its future retain the caller's existing original custody
+    /// through accepted work. Its error remains typed and is never boxed,
+    /// formatted, converted into cancellation, or stored in an out-of-band slot.
+    /// Cloning the guard must alias its already funded immutable owner metadata
+    /// and original lease/work, not copy payload or create another work root.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_commit_guarded<E, F, Fut>(
+        &self,
+        request: CommitRequest,
+        deadline_unix_millis: Option<u64>,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        before: F,
+    ) -> NativeProviderFuture<'_, CommitOutcome, E>
+    where
+        Self: Sized,
+        E: From<NativeStreamFailure> + Send + 'static,
+        F: FnMut() -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+    {
+        let _ = (request, deadline_unix_millis, before);
+        NativeProviderFuture::ready(Ok(Err(E::from(NativeStreamFailure::new(
+            StreamError::Unsupported, acyclic_native_runtime::ReadAllocation::empty(&meter),
+        )))))
+    }
+
     /// Funds the canonical two-tail/one-append/one-record Commit ingress before
     /// physical action. The immutable retry key and request family do not change.
     /// Unsupported custom providers fail inline before any I/O.
@@ -1388,6 +1417,23 @@ impl<P: StreamProvider> StreamClient<P> {
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, CommitOutcome> {
         self.provider.native_commit(request, meter)
+    }
+
+    /// Forwards the owned original publication guard without another future box.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn native_commit_guarded<E, F, Fut>(
+        &self,
+        request: CommitRequest,
+        deadline_unix_millis: Option<u64>,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        before: F,
+    ) -> NativeProviderFuture<'_, CommitOutcome, E>
+    where
+        E: From<NativeStreamFailure> + Send + 'static,
+        F: FnMut() -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+    {
+        self.provider.native_commit_guarded(request, deadline_unix_millis, meter, before)
     }
 
     /// Prepares the real provider's canonical Commit before physical action.

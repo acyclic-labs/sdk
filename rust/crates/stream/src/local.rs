@@ -22,6 +22,10 @@
 //! or at the next ordinary mutation, without skipping durability or recovery.
 //! A prepared short write cannot request another syscall after external action;
 //! it retains the actual prefix, poisons availability and drains accepted sync.
+//! An owned native publication guard runs inside the accepted worker without
+//! either provider lock. The same Memory CAS revalidates its whole state and
+//! re-runs the original guard on drift; Local retains the returned visibility
+//! lock through journal persistence and releases it before mandatory durability.
 
 use std::fs::{File, OpenOptions};
 use std::future::Future;
@@ -41,7 +45,7 @@ use fs2::FileExt as _;
 use futures::{StreamExt as _, stream};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
-use tokio::sync::{RwLock, mpsc, watch};
+use tokio::sync::{OwnedRwLockWriteGuard, RwLock, mpsc, watch};
 #[cfg(test)]
 use tracing::Instrument as _;
 use tracing::field::Empty;
@@ -342,7 +346,7 @@ struct LocalInner {
     journal: OwnedJournal,
     /// Held exclusively while a mutation applies and writes its frame, and
     /// shared while a read observes state; never across a device flush.
-    visibility: RwLock<()>,
+    visibility: Arc<RwLock<()>>,
     /// The journal's `synced` sequence, published under the journal lock so
     /// that callers can wait for their frame, and those before it, to flush.
     synced: watch::Sender<u64>,
@@ -436,16 +440,53 @@ impl JournalFlushWork {
 }
 
 struct MutationCompletion<T> {
-    result: LocalCompletion<T>,
+    result: LocalCompletion<()>,
     flush: Option<JournalFlushPlan>,
     // Keep SDK-owned request controls alive through accepted durability drain.
     _input: Option<MutationInput>,
+    // A guarded Commit acquires this only after awaiting its original guard.
+    // Keep it through the journal's required-sequence capture, never a flush.
+    visibility: Option<CommitVisibility>,
+    // If persistence fails, keep the owned guard's typed value/lease alive until
+    // the same accepted durability plan reaches its real terminal.
+    value: Option<T>,
+    primary_failure: bool,
 }
 
 struct CommitCompletion<T> {
     value: T,
     error: Option<std::io::Error>,
     input: Option<CommitInput>,
+    visibility: Option<CommitVisibility>,
+    // A rejected original guard did not publish and must not write its frame.
+    persist: bool,
+    primary_failure: bool,
+}
+
+struct GuardedCommitOutput<E, F> {
+    result: NativeStreamResult<CommitOutcome, E>,
+    // The actual original lease stays in its existing callback, not a copied
+    // receipt, until journal persistence and mandatory durability terminate.
+    _before: Option<F>,
+}
+
+struct CommitVisibility {
+    _visibility: OwnedRwLockWriteGuard<()>,
+    clock: Arc<PinnedCommitClock>,
+}
+
+impl Drop for CommitVisibility {
+    fn drop(&mut self) {
+        // Unpin before releasing visibility, including on a real CAS retry.
+        // Never clear another worker's timestamp after releasing its sequencer.
+        self.clock.unpin();
+    }
+}
+
+#[derive(Clone, Copy)]
+enum MutationVisibility {
+    BeforeMutation,
+    FromCommit,
 }
 
 enum MutationInput {
@@ -787,7 +828,7 @@ impl LocalStream {
                     journal: Arc::new(Mutex::new(journal)),
                     _ownership_anchor: ownership_anchor,
                 },
-                visibility: RwLock::new(()),
+                visibility: Arc::new(RwLock::new(())),
                 synced: watch::channel(0_u64).0,
                 changed,
                 poisoned: AtomicBool::new(false),
@@ -814,6 +855,15 @@ impl LocalStream {
         command: CommandRef<'_>,
         meter: Option<&Arc<dyn NativeReadMeter>>,
     ) -> LocalCompletion<PreparedFrame> {
+        self.prepare_observed_with_pin(command, meter, true).map(|(frame, _)| frame)
+    }
+
+    fn prepare_observed_with_pin(
+        &self,
+        command: CommandRef<'_>,
+        meter: Option<&Arc<dyn NativeReadMeter>>,
+        pin: bool,
+    ) -> LocalCompletion<(PreparedFrame, u64)> {
         let committed_at_millis = self.inner.commit_clock.source.now_unix_millis();
         if let Some(meter) = meter {
             let length = match command {
@@ -839,8 +889,8 @@ impl LocalStream {
             .map_err(|_| LocalCompletionError::Stream(StreamError::Unavailable))?
             .admit(&frame)
             .map_err(publication_error)?;
-        self.inner.commit_clock.pin(committed_at_millis);
-        Ok(frame)
+        if pin { self.inner.commit_clock.pin(committed_at_millis); }
+        Ok((frame, committed_at_millis))
     }
 
     /// Flushes every frame written without waiting for the storage device
@@ -1094,10 +1144,17 @@ impl LocalStream {
         F: Future<Output = Result<T, StreamError>> + Send + 'static,
     {
         self.exclusive_observed(span, None, move |stream| async move {
+            let (result, value) = match mutation(stream).await {
+                Ok(value) => (Ok(()), Some(value)),
+                Err(error) => (Err(LocalCompletionError::Stream(error)), None),
+            };
             MutationCompletion {
-                result: mutation(stream).await.map_err(LocalCompletionError::Stream),
+                result,
                 flush: None,
                 _input: None,
+                visibility: None,
+                value,
+                primary_failure: false,
             }
         }).await.map_err(LocalCompletionError::ordinary)
     }
@@ -1112,6 +1169,22 @@ impl LocalStream {
         T: Send + 'static,
         F: Future<Output = MutationCompletion<T>> + Send + 'static,
     {
+        self.exclusive_observed_with_visibility(
+            span, meter, MutationVisibility::BeforeMutation, mutation,
+        ).await
+    }
+
+    async fn exclusive_observed_with_visibility<T, F>(
+        &self,
+        span: &obs::OwnedSpan,
+        meter: Option<Arc<dyn NativeReadMeter>>,
+        visibility: MutationVisibility,
+        mutation: impl FnOnce(Self) -> F + Send + 'static,
+    ) -> LocalCompletion<T>
+    where
+        T: Send + 'static,
+        F: Future<Output = MutationCompletion<T>> + Send + 'static,
+    {
         self.check_available().inspect_err(|error| obs::failed(span, error.code()))?;
         if let Some(meter) = &meter { meter.check()?; }
         let stream = self.clone();
@@ -1120,17 +1193,34 @@ impl LocalStream {
         let observer = meter.clone();
         let task = DEFERRED.scope(deferred, async move {
             let result = operation.scope(async {
-                let (completion, required) = {
-                    let _visibility = stream.inner.visibility.write().await;
+                let (mut completion, required) = {
+                    let _visibility = match visibility {
+                        MutationVisibility::BeforeMutation =>
+                            Some(Arc::clone(&stream.inner.visibility).write_owned().await),
+                        MutationVisibility::FromCommit => None,
+                    };
                     stream.check_available()?;
                     if let Some(meter) = &observer { meter.check()?; }
-                    if stream.inner.prepared_compaction.load(Ordering::Acquire) {
-                        stream.compact_if_due_observed(observer.as_ref()).await?;
-                        stream.inner.prepared_compaction.store(false, Ordering::Release);
+                    // Deferred compaction uses the same engine before any guard
+                    // callback, and cannot keep visibility while awaiting it.
+                    {
+                        let _compaction_visibility = match visibility {
+                            MutationVisibility::BeforeMutation => None,
+                            MutationVisibility::FromCommit =>
+                                Some(Arc::clone(&stream.inner.visibility).write_owned().await),
+                        };
+                        if stream.inner.prepared_compaction.load(Ordering::Acquire) {
+                            stream.compact_if_due_observed(observer.as_ref()).await?;
+                            stream.inner.prepared_compaction.store(false, Ordering::Release);
+                        }
                     }
-                    let completion = mutation(stream.clone()).await;
-                    stream.inner.commit_clock.unpin();
-                    (completion, stream.inner.journal.required())
+                    let mut completion = mutation(stream.clone()).await;
+                    if matches!(visibility, MutationVisibility::BeforeMutation) {
+                        stream.inner.commit_clock.unpin();
+                    }
+                    let required = stream.inner.journal.required();
+                    drop(completion.visibility.take());
+                    (completion, required)
                 };
                 let durable = match required {
                     Ok(required) => stream.await_durable_observed(
@@ -1146,10 +1236,12 @@ impl LocalStream {
                         Err(LocalCompletionError::Stream(error))
                     }
                 };
-                let value = completion.result?;
-                durable?;
-                if let Some(meter) = &observer { meter.check()?; }
-                Ok(value)
+                completion.result?;
+                if !completion.primary_failure {
+                    durable?;
+                    if let Some(meter) = &observer { meter.check()?; }
+                }
+                Ok(completion.value.take().expect("successful mutation owns its value"))
             }).await;
             match &result {
                 Ok(_) => { let _ = obs::finish(&operation, Ok::<(), StreamError>(())); }
@@ -1222,7 +1314,8 @@ impl LocalStream {
         input: CommitInput,
         deadline: Option<u64>,
         meter: Option<Arc<dyn NativeReadMeter>>,
-        execute: impl FnOnce(MemoryStream, CommitInput, Option<u64>) -> F + Send + 'static,
+        visibility: MutationVisibility,
+        execute: impl FnOnce(MemoryStream, CommitInput, Option<u64>, u64, u64) -> F + Send + 'static,
     ) -> LocalCompletion<T>
     where
         T: Send + 'static,
@@ -1235,11 +1328,18 @@ impl LocalStream {
             error.kind = Empty
         ));
         let observer = meter.clone();
-        span.scope(self.exclusive_observed(&span, meter, move |stream| async move {
+        span.scope(self.exclusive_observed_with_visibility(&span, meter, visibility, move |stream| async move {
             let mut accepted_flush = None;
             let mut accepted_input = None;
+            let mut accepted_visibility = None;
+            let mut accepted_value = None;
+            let mut primary_failure = false;
             let result = async {
-                let frame = stream.prepare_observed(CommandRef::Commit(&input.request), observer.as_ref())?;
+                let (frame, committed_at) = stream.prepare_observed_with_pin(
+                    CommandRef::Commit(&input.request), observer.as_ref(),
+                    matches!(visibility, MutationVisibility::BeforeMutation),
+                )?;
+                let frame_bytes = frame.bytes;
                 let admission = observer.as_ref()
                     .map(|meter| AdmittedFrameWrite::new(meter, frame.encoded.len()))
                     .transpose()?;
@@ -1249,20 +1349,39 @@ impl LocalStream {
                     None
                 };
                 // Both owned workers are funded before the semantic CAS.
-                let persist = stream.plan_persist(frame, admission, observer.as_ref())?;
-                let completion = execute(stream.inner.provider.clone(), input, deadline).await?;
+                // Once accepted, even a later denial cannot discard the flush.
                 accepted_flush = flush;
+                let persist = stream.plan_persist(frame, admission, observer.as_ref())?;
+                let completion = execute(stream.inner.provider.clone(), input, deadline, committed_at, frame_bytes).await?;
                 accepted_input = completion.input;
-                let persisted = stream.persist_planned(persist, observer.as_ref()).await;
+                accepted_visibility = completion.visibility;
+                accepted_value = Some(completion.value);
+                primary_failure = completion.primary_failure;
+                let persisted = if completion.persist {
+                    stream.persist_planned(persist, observer.as_ref()).await
+                } else {
+                    // No semantic publication occurred. Drop the unused frame
+                    // worker, but still drain its already accepted flush below.
+                    drop(persist);
+                    Ok(())
+                };
                 if let Some(error) = completion.error {
                     return Err(LocalCompletionError::Native(error));
                 }
+                if primary_failure {
+                    // The genuine earlier typed cause is in the owned value.
+                    // Persistence still ran and poisons on actual IO failure.
+                    return Ok(());
+                }
                 persisted?;
-                Ok(completion.value)
+                Ok(())
             }.await;
             MutationCompletion {
                 result, flush: accepted_flush,
                 _input: accepted_input.map(|input| MutationInput::Commit { _input: input }),
+                visibility: accepted_visibility,
+                value: accepted_value,
+                primary_failure,
             }
         })).await
     }
@@ -1273,30 +1392,125 @@ impl LocalStream {
         deadline: Option<u64>,
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, CommitOutcome> {
+        let before: Option<fn() -> std::future::Ready<Result<(), NativeStreamFailure>>> = None;
+        self.native_commit_with_guard(request, deadline, meter, before)
+    }
+
+    fn native_commit_with_guard<E, F, Fut>(
+        &self,
+        request: CommitRequest,
+        deadline: Option<u64>,
+        meter: Arc<dyn NativeReadMeter>,
+        before: Option<F>,
+    ) -> NativeProviderFuture<'_, CommitOutcome, E>
+    where
+        E: From<NativeStreamFailure> + Send + 'static,
+        F: FnMut() -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+    {
         let observer = Arc::clone(&meter);
+        let guard_stream = self.clone();
         NativeProviderFuture::new(&meter, async move {
-            let input = match CommitInput::capture(&request, &observer) {
-                Ok(input) => input,
-                Err(error) => return Err(error),
-            };
-            // The caller's aggregate guard still covers these original Vecs.
-            // They must be physically gone before the SDK-owned worker detaches.
+            let input = CommitInput::capture(&request, &observer)?;
+            // SDK descriptor custody is accepted before the worker detaches.
             drop(request);
             let execute_meter = Arc::clone(&observer);
             let failure_meter = Arc::clone(&observer);
+            let visibility = if before.is_some() {
+                MutationVisibility::FromCommit
+            } else {
+                MutationVisibility::BeforeMutation
+            };
             let result = self.commit_with(
-                input, deadline, Some(observer),
-                move |provider, mut input, deadline| async move {
-                    let completion = provider.native_commit_completion_borrowed_inner(
-                        &mut input.request, deadline, execute_meter,
-                    ).await.map_err(LocalCompletionError::Native)?
-                        .map_err(LocalCompletionError::Stream)?;
+                input, deadline, Some(observer), visibility,
+                move |provider, mut input, deadline, committed_at, frame_bytes| async move {
+                    let mut before = before;
+                    let guarded = before.is_some();
+                    let mut acquire = || {
+                        // The authenticated factory supplies a funded immutable
+                        // Arc alias; this is not another allocation/work root.
+                        let mut original = before.as_mut().expect("guarded Commit has its original callback").clone();
+                        let stream = guard_stream.clone();
+                        let meter = Arc::clone(&execute_meter);
+                        async move {
+                            loop {
+                                // Wait before checking the original fence. The
+                                // callback may inspect this very provider.
+                                let available = Arc::clone(&stream.inner.visibility).write_owned().await;
+                                drop(available);
+                                original().await?;
+                                let Ok(visibility) = Arc::clone(&stream.inner.visibility).try_write_owned() else {
+                                    // No permission survives a contended wait.
+                                    continue;
+                                };
+                                stream.check_available().map_err(|error| E::from(NativeStreamFailure::new(
+                                    error, ReadAllocation::empty(&meter),
+                                )))?;
+                                let admitted = {
+                                    match stream.inner.journal.journal.try_lock() {
+                                        Ok(journal) => Some(journal.admit_bytes(frame_bytes)),
+                                        Err(std::sync::TryLockError::Poisoned(_)) =>
+                                            return Err(E::from(NativeStreamFailure::new(
+                                                stream.inner.poison(), ReadAllocation::empty(&meter),
+                                            ))),
+                                        Err(std::sync::TryLockError::WouldBlock) => None,
+                                    }
+                                };
+                                let Some(admitted) = admitted else {
+                                    drop(visibility);
+                                    // Metadata contention waits outside the
+                                    // sequencer and re-runs the actual guard.
+                                    {
+                                        let _available = stream.inner.journal.journal.lock()
+                                            .map_err(|_| E::from(NativeStreamFailure::new(
+                                                stream.inner.poison(), ReadAllocation::empty(&meter),
+                                            )))?;
+                                    }
+                                    continue;
+                                };
+                                if admitted.is_err() {
+                                    return Err(E::from(NativeStreamFailure::new(
+                                        StreamError::Capacity, ReadAllocation::empty(&meter),
+                                    )));
+                                }
+                                stream.inner.commit_clock.pin(committed_at);
+                                return Ok(CommitVisibility {
+                                    _visibility: visibility, clock: Arc::clone(&stream.inner.commit_clock),
+                                });
+                            }
+                        }
+                    };
+                    let completion = provider.native_commit_completion_guarded_borrowed_inner(
+                        &mut input.request, deadline, Arc::clone(&execute_meter),
+                        if guarded { Some(&mut acquire) } else { None },
+                    ).await;
+                    drop(acquire);
+                    let (result, visibility, persist) = match completion {
+                        Ok(Ok((completion, visibility))) => {
+                            let result = match completion.error {
+                                Some(error) => Err(error),
+                                None => Ok(Ok(completion.outcome)),
+                            };
+                            (result, visibility, true)
+                        }
+                        Ok(Err(error)) => (Ok(Err(error)), None, false),
+                        Err(error) => (Err(error), None, false),
+                    };
+                    let primary_failure = !matches!(&result, Ok(Ok(_)));
                     Ok(CommitCompletion {
-                        value: completion.outcome, error: completion.error, input: Some(input),
+                        value: GuardedCommitOutput { result, _before: before },
+                        error: None, input: Some(input), visibility, persist, primary_failure,
                     })
                 },
             ).await;
-            into_native(result, &failure_meter)
+            match result {
+                Ok(completion) => completion.result,
+                Err(LocalCompletionError::Native(error)) => Err(error),
+                Err(LocalCompletionError::Stream(error)) => Ok(Err(E::from(NativeStreamFailure::new(
+                    error, ReadAllocation::empty(&failure_meter),
+                )))),
+                Err(LocalCompletionError::GuardedStream(error)) => Ok(Err(E::from(error))),
+            }
         })
     }
 
@@ -1349,9 +1563,16 @@ impl LocalStream {
                 if let Some(revision) = completion.revision { obs::record(&operation, "rev", revision); }
                 Ok(completion.value)
             }.await;
+            let (result, value) = match result {
+                Ok(value) => (Ok(()), Some(value)),
+                Err(error) => (Err(error), None),
+            };
             MutationCompletion {
                 result, flush: accepted_flush,
                 _input: accepted_input.map(|input| MutationInput::Append { _input: input }),
+                visibility: None,
+                value,
+                primary_failure: false,
             }
         })).await
     }
@@ -1499,9 +1720,9 @@ impl StreamProvider for LocalStream {
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.commit_with(CommitInput::ordinary(request), None, None, |provider, input, _| async move {
+        self.commit_with(CommitInput::ordinary(request), None, None, MutationVisibility::BeforeMutation, |provider, input, _, _, _| async move {
             let value = provider.commit(input.request).await?;
-            Ok(CommitCompletion { value, error: None, input: None })
+            Ok(CommitCompletion { value, error: None, input: None, visibility: None, persist: true, primary_failure: false })
         }).await.map_err(LocalCompletionError::ordinary)
     }
 
@@ -1511,10 +1732,10 @@ impl StreamProvider for LocalStream {
         deadline_unix_millis: u64,
     ) -> Result<CommitOutcome, StreamError> {
         self.commit_with(
-            CommitInput::ordinary(request), Some(deadline_unix_millis), None,
-            |provider, input, deadline| async move {
+            CommitInput::ordinary(request), Some(deadline_unix_millis), None, MutationVisibility::BeforeMutation,
+            |provider, input, deadline, _, _| async move {
                 let value = provider.commit_before(input.request, deadline.expect("deadline is supplied")).await?;
-                Ok(CommitCompletion { value, error: None, input: None })
+                Ok(CommitCompletion { value, error: None, input: None, visibility: None, persist: true, primary_failure: false })
             },
         ).await.map_err(LocalCompletionError::ordinary)
     }
@@ -1645,6 +1866,21 @@ impl StreamProvider for LocalStream {
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, CommitOutcome> {
         self.native_commit_with_deadline(request, None, meter)
+    }
+
+    fn native_commit_guarded<E, F, Fut>(
+        &self,
+        request: CommitRequest,
+        deadline_unix_millis: Option<u64>,
+        meter: Arc<dyn NativeReadMeter>,
+        before: F,
+    ) -> NativeProviderFuture<'_, CommitOutcome, E>
+    where
+        E: From<NativeStreamFailure> + Send + 'static,
+        F: FnMut() -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+    {
+        self.native_commit_with_guard(request, deadline_unix_millis, meter, Some(before))
     }
 
     fn native_prepare_commit(
@@ -2455,10 +2691,14 @@ impl Journal {
     }
 
     fn admit(&self, frame: &PreparedFrame) -> Result<(), LocalStreamError> {
+        self.admit_bytes(frame.bytes)
+    }
+
+    fn admit_bytes(&self, bytes: u64) -> Result<(), LocalStreamError> {
         if self.operations >= self.limits.journal_operations
             || self
                 .bytes
-                .checked_add(frame.bytes)
+                .checked_add(bytes)
                 .is_none_or(|value| value > self.limits.journal_bytes)
         {
             return Err(LocalStreamError::InvalidLimits);
@@ -2904,6 +3144,43 @@ mod tests {
         }
     }
     impl std::error::Error for NativeDenial {}
+
+    #[derive(Debug)]
+    enum NativeGuardFailure {
+        Provider(NativeStreamFailure),
+        Io(std::io::Error),
+        Owner(u64),
+    }
+
+    impl From<NativeStreamFailure> for NativeGuardFailure {
+        fn from(error: NativeStreamFailure) -> Self { Self::Provider(error) }
+    }
+
+    impl std::fmt::Display for NativeGuardFailure {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Provider(error) => std::fmt::Display::fmt(error, f),
+                Self::Io(error) => std::fmt::Display::fmt(error, f),
+                Self::Owner(identity) => write!(f, "original guard {identity}"),
+            }
+        }
+    }
+
+    impl std::error::Error for NativeGuardFailure {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            match self {
+                Self::Provider(error) => Some(error),
+                Self::Io(error) => Some(error),
+                Self::Owner(_) => None,
+            }
+        }
+    }
+
+    struct GuardLeaseWitness(Arc<AtomicU64>);
+
+    impl Drop for GuardLeaseWitness {
+        fn drop(&mut self) { self.0.fetch_add(1, Ordering::SeqCst); }
+    }
 
     /// A fault seam on the original meter, not a substitute stream producer.
     #[derive(Default)]
@@ -3675,6 +3952,8 @@ mod tests {
     #[tokio::test]
     async fn prepared_reply_drop_keeps_accepted_durability_and_input_custody()
     -> Result<(), Box<dyn std::error::Error>> {
+        let _serial = PERSIST_BLOCKER_TESTS.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let directory = tempfile::tempdir()?;
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         let request = prepared_fixture(&provider).await?;
@@ -5482,4 +5761,157 @@ mod tests {
         ));
         Ok(())
     }
+    #[tokio::test]
+    async fn native_guard_denial_reads_same_provider_without_lock_and_preserves_typed_owner()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        provider.commit(keyed_commit("guard-readable", 0)?).await?;
+        let before = std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len();
+        let request = keyed_commit("guard-denied", 0)?;
+        let key = request.idempotency_key.clone();
+        let meter = Arc::new(LocalNativeMeter::default());
+        let callback_provider = provider.clone();
+        let callback_meter = Arc::clone(&meter);
+        let callback_path = StreamPath::new("guard-readable")?;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5),
+            provider.native_commit_guarded(request, None, meter.original(), move || {
+                let provider = callback_provider.clone();
+                let meter = Arc::clone(&callback_meter);
+                let path = callback_path.clone();
+                async move {
+                    let tail = provider.native_tail(path, meter.original()).await
+                        .map_err(NativeGuardFailure::Io)??;
+                    assert_eq!(*tail.value(), 1);
+                    drop(tail);
+                    // A later original-meter cancellation must not erase the
+                    // earlier actual typed owner denial during accepted drain.
+                    meter.cancelled.store(true, Ordering::SeqCst);
+                    Err(NativeGuardFailure::Owner(0x51))
+                }
+            }),
+        ).await??;
+        assert!(matches!(result, Err(NativeGuardFailure::Owner(0x51))));
+        assert!(provider.inspect_idempotency(key).await?.is_none());
+        assert_eq!(std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len(), before);
+        assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
+        drop(provider);
+        assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
+        meter.assert_refunded();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_guard_rechecks_actual_canonical_drift_before_retaining_owner_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let limits = LocalStreamLimits::default();
+        let provider = LocalStream::open(directory.path(), limits).await?;
+        let request = keyed_commit("guard-drift-target", 0)?;
+        let key = request.idempotency_key.clone();
+        let meter = Arc::new(LocalNativeMeter::default());
+        let calls = Arc::new(AtomicU64::new(0));
+        let callback_provider = provider.clone();
+        let callback_meter = Arc::clone(&meter);
+        let callback_calls = Arc::clone(&calls);
+        let result = provider.native_commit_guarded(request, None, meter.original(), move || {
+            let provider = callback_provider.clone();
+            let meter = Arc::clone(&callback_meter);
+            let calls = Arc::clone(&callback_calls);
+            async move {
+                if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    let intervening = keyed_commit("guard-drift-other", 0)
+                        .map_err(|error| NativeGuardFailure::Provider(NativeStreamFailure::new(
+                            error, ReadAllocation::empty(&meter.original()),
+                        )))?;
+                    let result = provider.native_commit(intervening, meter.original()).await
+                        .map_err(NativeGuardFailure::Io)??;
+                    assert!(matches!(result.value(), CommitOutcome::Committed(_)));
+                    drop(result);
+                    Ok(())
+                } else {
+                    Err(NativeGuardFailure::Owner(0x52))
+                }
+            }
+        }).await?;
+        assert!(matches!(result, Err(NativeGuardFailure::Owner(0x52))));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(provider.inspect_idempotency(key.clone()).await?.is_none());
+        assert_eq!(provider.tail(StreamPath::new("guard-drift-target")?).await, Err(StreamError::NotFound));
+        assert_eq!(provider.tail(StreamPath::new("guard-drift-other")?).await?, 1);
+        drop(provider);
+        let reopened = LocalStream::open(directory.path(), limits).await?;
+        assert!(reopened.inspect_idempotency(key).await?.is_none());
+        assert_eq!(reopened.tail(StreamPath::new("guard-drift-other")?).await?, 1);
+        drop(reopened);
+        assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
+        meter.assert_refunded();
+        Ok(())
+    }
+
+    #[test]
+    fn native_guard_lease_survives_caller_abort_and_real_durability_terminal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let _serial = PERSIST_BLOCKER_TESTS.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2).enable_all().build()?;
+        runtime.block_on(async {
+            let directory = tempfile::tempdir()?;
+            let limits = LocalStreamLimits::default();
+            let provider = LocalStream::open(directory.path(), limits).await?;
+            let request = keyed_commit("guard-owned-drain", 0)?;
+            let key = request.idempotency_key.clone();
+            let meter = Arc::new(LocalNativeMeter::default());
+            let released = Arc::new(AtomicU64::new(0));
+            let lease = Arc::new(GuardLeaseWitness(Arc::clone(&released)));
+            let weak = Arc::downgrade(&lease);
+            let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
+            let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+            *JOURNAL_PERSIST_BLOCKER.lock().map_err(|_| "journal-persist hook was poisoned")? =
+                Some((Arc::as_ptr(&provider.inner.journal.journal) as usize, started_tx, release_rx));
+            let caller = tokio::spawn({
+                let provider = provider.clone();
+                let meter = Arc::clone(&meter);
+                async move {
+                    provider.native_commit_guarded(request, None, meter.original(), move || {
+                        let lease = Arc::clone(&lease);
+                        async move {
+                            let _original_lease = lease;
+                            Ok::<(), NativeGuardFailure>(())
+                        }
+                    }).await
+                }
+            });
+            tokio::task::spawn_blocking(move || {
+                started_rx.recv_timeout(std::time::Duration::from_secs(5))
+            }).await??;
+            caller.abort();
+            let cancelled = caller.await.is_err_and(|error| error.is_cancelled());
+            let retained = weak.upgrade().is_some();
+            let completed_bytes = meter.write_bytes.load(Ordering::SeqCst);
+            let syncs_before_release = meter.durability_operations.load(Ordering::SeqCst);
+            // Always release the accepted real cleanup before asserting.
+            release_tx.send(())?;
+            assert!(cancelled && retained);
+            assert!(completed_bytes > 0);
+            assert_eq!(syncs_before_release, 0);
+            assert_eq!(provider.tail(StreamPath::new("guard-owned-drain")?).await?, 1);
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while weak.upgrade().is_some() { tokio::task::yield_now().await; }
+            }).await?;
+            assert_eq!(released.load(Ordering::SeqCst), 1);
+            assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 1);
+            let accepted = provider.inspect_idempotency(key.clone()).await?
+                .ok_or("owned guarded commit lost its original identity")?;
+            drop(provider);
+            let reopened = LocalStream::open(directory.path(), limits).await?;
+            assert_eq!(reopened.inspect_idempotency(key).await?, Some(accepted));
+            drop(reopened);
+            assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
+            meter.assert_refunded();
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })
+    }
+
 }
