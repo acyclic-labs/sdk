@@ -73,6 +73,8 @@ pub use json::{
     json_from_slice_bounded_trusted, json_value_bounded_trusted, json_value_decode_owned_bytes,
     sdk_json_diagnostic_bytes,
 };
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub use json::json_from_slice_bounded_native_trusted;
 
 /// One sorted-key JSON encoding for durable identities and Rust/WASM output.
 /// The canonical bounded serializer preserves Value integer/float and duplicate

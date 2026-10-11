@@ -785,10 +785,30 @@ struct Scan {
     escape: bool,
     atom: bool,
 }
+enum AdmissionFailure {
+    Root(Error),
+    Bound(&'static str),
+}
+impl From<Error> for AdmissionFailure {
+    fn from(error: Error) -> Self { Self::Root(error) }
+}
+impl AdmissionFailure {
+    fn into_root(self) -> Error {
+        match self {
+            Self::Root(error) => error,
+            Self::Bound(reason) => Error::Invalid(reason.into()),
+        }
+    }
+}
 impl Scan {
     fn push<F: FnMut(JsonCodecCharge) -> Result<()>>(&mut self, bytes: &[u8], bounds: JsonBounds, charge: &mut F) -> Result<()> {
+        self.push_inline(bytes, bounds, charge).map_err(AdmissionFailure::into_root)
+    }
+    fn push_inline<F: FnMut(JsonCodecCharge) -> Result<()>>(
+        &mut self, bytes: &[u8], bounds: JsonBounds, charge: &mut F,
+    ) -> std::result::Result<(), AdmissionFailure> {
         for &byte in bytes {
-            if self.bytes >= bounds.maximum_bytes { return Err(Error::Invalid(LEXICAL_BYTE_ERROR.into())); }
+            if self.bytes >= bounds.maximum_bytes { return Err(AdmissionFailure::Bound(LEXICAL_BYTE_ERROR)); }
             charge(JsonCodecCharge::Read { bytes: 1 })?;
             self.bytes += 1;
             if self.string {
@@ -801,13 +821,13 @@ impl Scan {
             let item = match byte {
                 b'"' => { self.string = true; self.atom = false; true }
                 b'[' | b'{' => { self.depth += 1; self.atom = false; true }
-                b']' | b'}' => { self.depth = self.depth.checked_sub(1).ok_or_else(|| Error::Invalid(LEXICAL_NESTING_ERROR.into()))?; self.atom = false; false }
+                b']' | b'}' => { self.depth = self.depth.checked_sub(1).ok_or(AdmissionFailure::Bound(LEXICAL_NESTING_ERROR))?; self.atom = false; false }
                 b':' | b',' | b' ' | b'\r' | b'\n' | b'\t' => { self.atom = false; false }
                 _ => { let first = !self.atom; self.atom = true; first }
             };
             if item {
                 if item_depth > bounds.maximum_depth || self.items >= bounds.maximum_items {
-                    return Err(Error::Invalid(LEXICAL_ITEM_ERROR.into()));
+                    return Err(AdmissionFailure::Bound(LEXICAL_ITEM_ERROR));
                 }
                 charge(JsonCodecCharge::Work { bytes: 0, items: 1 })?;
                 self.items += 1;
@@ -816,7 +836,10 @@ impl Scan {
         Ok(())
     }
     fn end(&self) -> Result<()> {
-        if self.string || self.depth != 0 { return Err(Error::Invalid(LEXICAL_INCOMPLETE_ERROR.into())); }
+        self.end_inline().map_err(AdmissionFailure::into_root)
+    }
+    fn end_inline(&self) -> std::result::Result<(), AdmissionFailure> {
+        if self.string || self.depth != 0 { return Err(AdmissionFailure::Bound(LEXICAL_INCOMPLETE_ERROR)); }
         Ok(())
     }
 }
@@ -828,10 +851,16 @@ pub(crate) fn admit_json<F: FnMut(JsonCodecCharge) -> Result<()>>(bytes: &[u8], 
 }
 
 pub(super) fn admit_json_trusted<F: FnMut(JsonCodecCharge) -> Result<()>>(bytes: &[u8], bounds: JsonBounds, charge: &mut F) -> Result<()> {
-    if bytes.len() as u64 > bounds.maximum_bytes { return Err(Error::Invalid(LEXICAL_BYTE_ERROR.into())); }
+    admit_json_inline(bytes, bounds, charge).map_err(AdmissionFailure::into_root)
+}
+
+fn admit_json_inline<F: FnMut(JsonCodecCharge) -> Result<()>>(
+    bytes: &[u8], bounds: JsonBounds, charge: &mut F,
+) -> std::result::Result<(), AdmissionFailure> {
+    if bytes.len() as u64 > bounds.maximum_bytes { return Err(AdmissionFailure::Bound(LEXICAL_BYTE_ERROR)); }
     let mut scan = Scan::default();
-    scan.push(bytes, bounds, charge)?;
-    scan.end()
+    scan.push_inline(bytes, bounds, charge)?;
+    scan.end_inline()
 }
 
 /// Existing noncanonical record bytes (not identities). Serialize must be
@@ -916,20 +945,67 @@ pub fn json_bytes_bounded_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharg
 pub fn json_from_slice_bounded_trusted<T: serde::de::DeserializeOwned, F: FnMut(JsonCodecCharge) -> Result<()>>(
     bytes: &[u8], bounds: JsonBounds, maximum_owned_bytes: u64, charge: &mut F,
 ) -> Result<T> {
+    decode_bounded(bytes, bounds, maximum_owned_bytes, charge).map_err(|failure| match failure {
+        DecodeFailure::Root(error) => error,
+        DecodeFailure::Bound(reason) => Error::Invalid(reason.into()),
+        DecodeFailure::Serde(error) => Error::Invalid(error.to_string()),
+    })
+}
+
+/// Native carrier for the SAME trusted concrete-schema decoder. Serde syntax
+/// and schema failures move their actual source without formatting/copying a
+/// diagnostic after admission. The caller must attach its original preclaimed
+/// diagnostic allocation to NativeDecode's custody before returning that error,
+/// and keep successful typed payload custody through its last use. No arbitrary
+/// Deserialize heap/CPU or opaque allocator/RSS guarantee is made.
+/// `code` preserves the caller's wire classification (request Invalid or
+/// persisted-record Storage) for serde failures. SDK lexical/bounds failures
+/// are inline static NativeBoundary Invalid errors, before owned error growth.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub fn json_from_slice_bounded_native_trusted<T: serde::de::DeserializeOwned, F: FnMut(JsonCodecCharge) -> Result<()>>(
+    bytes: &[u8], bounds: JsonBounds, maximum_owned_bytes: u64, code: crate::wire::ErrorCode, charge: &mut F,
+) -> Result<T> {
+    decode_bounded(bytes, bounds, maximum_owned_bytes, charge).map_err(|failure| match failure {
+        DecodeFailure::Root(error) => error,
+        DecodeFailure::Bound(reason) => Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason },
+        DecodeFailure::Serde(source) => Error::NativeDecode { code, source, custody: None },
+    })
+}
+
+enum DecodeFailure {
+    Root(Error),
+    Bound(&'static str),
+    Serde(serde_json::Error),
+}
+impl From<Error> for DecodeFailure {
+    fn from(error: Error) -> Self { Self::Root(error) }
+}
+impl From<AdmissionFailure> for DecodeFailure {
+    fn from(failure: AdmissionFailure) -> Self {
+        match failure {
+            AdmissionFailure::Root(error) => Self::Root(error),
+            AdmissionFailure::Bound(reason) => Self::Bound(reason),
+        }
+    }
+}
+
+fn decode_bounded<T: serde::de::DeserializeOwned, F: FnMut(JsonCodecCharge) -> Result<()>>(
+    bytes: &[u8], bounds: JsonBounds, maximum_owned_bytes: u64, charge: &mut F,
+) -> std::result::Result<T, DecodeFailure> {
     let bounds = JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds };
-    admit_json(bytes, bounds, charge)?;
+    admit_json_inline(bytes, bounds, charge)?;
     // Vec scratch growth is geometric; reserve its conservative logical
     // capacity, not just string length. Borrowed input itself is not newly owned.
     let scratch = (bytes.len() as u64).max(8).checked_mul(2)
-        .ok_or_else(|| Error::Invalid("JSON scratch bound overflow".into()))?;
+        .ok_or(DecodeFailure::Bound("JSON scratch bound overflow"))?;
     let maximum_owned_bytes = maximum_owned_bytes.checked_add(scratch)
-        .ok_or_else(|| Error::Invalid("JSON owned bound overflow".into()))?;
+        .ok_or(DecodeFailure::Bound("JSON owned bound overflow"))?;
     charge(JsonCodecCharge::Admission { maximum_owned_bytes })?;
     charge(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
     decoder.disable_recursion_limit();
-    let value = T::deserialize(&mut decoder).map_err(|error| Error::Invalid(error.to_string()))?;
-    decoder.end().map_err(|error| Error::Invalid(error.to_string()))?;
+    let value = T::deserialize(&mut decoder).map_err(DecodeFailure::Serde)?;
+    decoder.end().map_err(DecodeFailure::Serde)?;
     drop(decoder);
     Ok(value)
 }
@@ -1473,6 +1549,67 @@ mod tests {
         }).is_err());
         assert!(!admitted);
         Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_trusted_decoder_preserves_actual_serde_cause_and_callback_primary() -> Result<()> {
+        #[derive(Debug, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Record { text: String }
+        let valid = br#"{"text":"escape\n\u0041"}"#;
+        let record: Record = json_from_slice_bounded_native_trusted(valid, BOUNDS, 128, crate::wire::ErrorCode::Invalid, &mut |_| Ok(()))?;
+        assert_eq!(record.text, "escape\nA");
+        for bytes in [
+            br#"{"text":"\q"}"#.as_slice(),
+            br#"{"unknown\"field":"large diagnostic","text":"value"}"#.as_slice(),
+            br#"{"text":"value"} {"text":"extra"}"#.as_slice(),
+        ] {
+            let expected = serde_json::from_slice::<Record>(bytes).unwrap_err();
+            let error = json_from_slice_bounded_native_trusted::<Record, _>(bytes, BOUNDS, 128, crate::wire::ErrorCode::Storage, &mut |_| Ok(())).unwrap_err();
+            match error {
+                Error::NativeDecode { code: crate::wire::ErrorCode::Storage, source, custody: None } => {
+                    assert_eq!(source.classify(), expected.classify());
+                    assert_eq!(source.line(), expected.line());
+                    assert_eq!(source.column(), expected.column());
+                    assert_eq!(source.to_string(), expected.to_string());
+                }
+                other => panic!("native producer replaced the actual serde cause: {other}"),
+            }
+        }
+        let cause = Uuid::new_v4();
+        let error = json_from_slice_bounded_native_trusted::<Record, _>(valid, BOUNDS, 128, crate::wire::ErrorCode::Invalid, &mut |event| {
+            if matches!(event, JsonCodecCharge::Admission { .. }) {
+                return Err(Error::Indeterminate(cause));
+            }
+            Ok(())
+        }).unwrap_err();
+        assert!(matches!(error, Error::Indeterminate(id) if id == cause));
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_lexical_and_overflow_denials_are_inline_before_schema_growth() {
+        for (bytes, bounds, owned, label) in [
+            (b"0".as_slice(), JsonBounds { maximum_bytes: 0, ..BOUNDS }, 0, LEXICAL_BYTE_ERROR),
+            (b"]".as_slice(), BOUNDS, 0, LEXICAL_NESTING_ERROR),
+            (b"0".as_slice(), JsonBounds { maximum_items: 0, ..BOUNDS }, 0, LEXICAL_ITEM_ERROR),
+            (b"[".as_slice(), BOUNDS, 0, LEXICAL_INCOMPLETE_ERROR),
+            (b"0".as_slice(), BOUNDS, u64::MAX, "JSON owned bound overflow"),
+        ] {
+            let mut admitted = false;
+            let error = json_from_slice_bounded_native_trusted::<Value, _>(
+                bytes, bounds, owned, crate::wire::ErrorCode::Storage, &mut |event| {
+                    admitted |= matches!(event, JsonCodecCharge::Admission { .. });
+                    Ok(())
+                },
+            ).unwrap_err();
+            assert!(!admitted);
+            assert!(matches!(error, Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid, reason
+            } if reason == label));
+        }
     }
 
     #[test]
