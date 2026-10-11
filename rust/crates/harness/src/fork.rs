@@ -3697,7 +3697,7 @@ mod tests {
         assert_eq!(mutation.validate().unwrap_err().code(), crate::wire::ErrorCode::Invalid);
         mutation = seed;
         mutation.child_result_generation = Some(GenerationRef::new(
-            ProviderRef::new(provider.family(), "foreign-result-provider")?, [73; 32], None)?);
+            ProviderRef::new(provider.namespace(), provider.family(), "foreign-result-provider")?, [73; 32], None)?);
         assert_eq!(mutation.validate().unwrap_err().code(), crate::wire::ErrorCode::Invalid);
         Ok(())
     }

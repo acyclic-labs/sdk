@@ -323,30 +323,21 @@ pub(crate) fn resource_creation_proof_clone_with_custody(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(crate::resource_preparation::ResourceCreationProofRef, u64)> {
     if work.is_none() { return Ok((proof.clone(), 0)); }
-    fn provider(
-        source: &crate::resources::ProviderRef,
-        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-    ) -> Result<crate::resources::ProviderRef> {
-        let namespace = super::native_custody::copy_text(source.namespace(), quota)?;
-        let family = super::native_custody::copy_text(source.family(), quota)?;
-        let version = super::native_custody::copy_text(source.version(), quota)?;
-        crate::resources::ProviderRef::new(namespace, family, version)
-    }
     fn reference(
         source: &crate::resources::ResourceRef,
         quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
     ) -> Result<crate::resources::ResourceRef> {
-        let provider = provider(source.provider(), quota)?;
+        let provider = super::copy_provider(source.provider(), quota)?;
         let key = super::copy_copy_vector(source.key(), quota)?;
         let version = match source.version() {
             Some(version) => Some(super::native_custody::copy_text(version, quota)?),
             None => None,
         };
-        crate::resources::ResourceRef::new(source.kind(), provider, key, version)
+        crate::resources::ResourceRef::new_with_work(source.kind(), provider, key, version, quota.work())
     }
     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
     quota.work().as_deref_mut().expect("proof copy observer").check_cancellation()?;
-    let provider = provider(&proof.provider, &mut quota)?;
+    let provider = super::copy_provider(&proof.provider, &mut quota)?;
     let resource = reference(&proof.resource, &mut quota)?;
     let evidence = reference(&proof.evidence, &mut quota)?;
     let copied = crate::resource_preparation::ResourceCreationProofRef {

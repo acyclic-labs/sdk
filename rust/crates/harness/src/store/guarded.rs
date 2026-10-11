@@ -297,7 +297,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
         drop(retained);
         result
     }
-    pub(super) async fn execute_guarded_publication_with_work(
+
+    pub(crate) async fn execute_guarded_publication_with_work(
         &mut self, command: Command, owner: &TaskJournalOwner<P>,
         write: crate::distributed::JournalWrite,
         return_event: bool,
