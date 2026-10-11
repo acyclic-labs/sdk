@@ -1,6 +1,258 @@
 //! Shared domain/wire conversion for every Stream transport and persistence adapter.
+//!
+//! Optional native funding observes this same closed generated-message graph:
+//! owned path strings and descriptor vectors are admitted before capture, and
+//! immutable existing Bytes remain aliases. Newly encoded or copied raw Bytes
+//! carry their actual Vec capacity in the physical owner through the last alias.
 
 use bytes::Bytes;
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_native_runtime::{NativeReadMeter, ReadAllocation};
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type WireMeter<'a> = Option<&'a Arc<dyn NativeReadMeter>>;
+#[cfg(target_arch = "wasm32")]
+pub(crate) type WireMeter<'a> = Option<&'a ()>;
+
+pub(crate) struct ObservedWire<T> {
+    pub(crate) value: T,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) allocation: Option<ReadAllocation>,
+}
+
+/// Custody of the actual SDK-owned generated DTO fields. Payload `Bytes`
+/// clones are immutable aliases; only their newly allocated descriptor vector
+/// belongs to this conversion.
+pub(crate) struct WireFunding<'a> {
+    #[cfg(not(target_arch = "wasm32"))]
+    meter: WireMeter<'a>,
+    #[cfg(target_arch = "wasm32")]
+    _meter: WireMeter<'a>,
+    #[cfg(not(target_arch = "wasm32"))]
+    allocation: Option<ReadAllocation>,
+}
+
+impl<'a> WireFunding<'a> {
+    pub(crate) fn new(meter: WireMeter<'a>) -> Self {
+        Self {
+            #[cfg(not(target_arch = "wasm32"))]
+            meter,
+            #[cfg(target_arch = "wasm32")]
+            _meter: meter,
+            #[cfg(not(target_arch = "wasm32"))]
+            allocation: meter.map(ReadAllocation::empty),
+        }
+    }
+
+    pub(crate) fn string(&mut self, value: &str) -> std::io::Result<String> {
+        self.copy_admission(value.len())?;
+        let before = self.capacity();
+        self.allocate(value.len())?;
+        let mut owned = String::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(meter) = self.meter {
+            owned.try_reserve_exact(value.len()).map_err(|error| meter.allocation_failed(error))?;
+        } else {
+            owned.reserve_exact(value.len());
+        }
+        #[cfg(target_arch = "wasm32")]
+        owned.reserve_exact(value.len());
+        self.reconcile(before, owned.capacity())?;
+        owned.push_str(value);
+        self.copy_completed(value.len())?;
+        Ok(owned)
+    }
+
+    pub(crate) fn records(&mut self, values: &[Bytes]) -> std::io::Result<Vec<Bytes>> {
+        let bytes = values.len().checked_mul(std::mem::size_of::<Bytes>())
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        self.copy_admission(bytes)?;
+        let mut owned = self.vector(values.len())?;
+        owned.extend(values.iter().cloned());
+        self.copy_completed(bytes)?;
+        Ok(owned)
+    }
+
+    pub(crate) fn vector<T>(&mut self, length: usize) -> std::io::Result<Vec<T>> {
+        let bytes = length.checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        let before = self.capacity();
+        self.allocate(bytes)?;
+        let mut owned = Vec::new();
+        self.reserve_vector(&mut owned, length)?;
+        self.reconcile(before, owned.capacity() * std::mem::size_of::<T>())?;
+        Ok(owned)
+    }
+
+    pub(crate) fn ensure_vector<T>(&mut self, values: &mut Vec<T>, additional: usize) -> std::io::Result<()> {
+        if additional <= values.capacity() - values.len() { return Ok(()); }
+        let required = values.len().checked_add(additional)
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        let capacity = required.max(values.capacity().saturating_mul(2)).max(4);
+        let item = std::mem::size_of::<T>();
+        let old = values.capacity().checked_mul(item)
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        let planned = capacity.checked_mul(item)
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        let before = if self.meter().is_some() {
+            self.capacity().checked_sub(old)
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?
+        } else { 0 };
+        self.allocate(planned - old)?;
+        self.reserve_vector(values, capacity - values.len())?;
+        self.reconcile(before, values.capacity() * item)
+    }
+
+    fn reserve_vector<T>(&self, values: &mut Vec<T>, additional: usize) -> std::io::Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(meter) = self.meter {
+            return values.try_reserve_exact(additional)
+                .map_err(|error| meter.allocation_failed(error));
+        }
+        values.reserve_exact(additional);
+        Ok(())
+    }
+
+    pub(crate) fn retire(&mut self, bytes: usize) -> std::io::Result<()> {
+        #[cfg(target_arch = "wasm32")]
+        let _ = bytes;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(allocation) = &mut self.allocation { allocation.release(bytes)?; }
+        Ok(())
+    }
+
+    pub(crate) fn meter(&self) -> WireMeter<'a> {
+        #[cfg(not(target_arch = "wasm32"))]
+        { self.meter }
+        #[cfg(target_arch = "wasm32")]
+        { self._meter }
+    }
+
+    pub(crate) fn examine(&self, items: u64) -> std::io::Result<()> {
+        #[cfg(target_arch = "wasm32")]
+        let _ = items;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(meter) = self.meter {
+            meter.examine(items, 0)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn bytes(&mut self, value: &[u8]) -> std::io::Result<Bytes> {
+        if value.is_empty() { return Ok(Bytes::new()); }
+        self.copy_admission(value.len())?;
+        let mut owned = self.vector(value.len())?;
+        owned.extend_from_slice(value);
+        self.copy_completed(value.len())?;
+        self.owned_bytes(owned)
+    }
+
+    pub(crate) fn message(&mut self, value: &impl prost::Message) -> std::io::Result<Bytes> {
+        self.examine(1)?;
+        let length = value.encoded_len();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(meter) = self.meter { meter.admit_codec(length as u64, length as u64, 0)?; }
+        let mut owned = self.vector(length)?;
+        value.encode(&mut owned)
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(meter) = self.meter {
+            meter.record_codec(owned.len() as u64, owned.len() as u64, 0)?;
+            meter.check()?;
+        }
+        self.owned_bytes(owned)
+    }
+
+    fn owned_bytes(&mut self, owned: Vec<u8>) -> std::io::Result<Bytes> {
+        if owned.is_empty() {
+            let capacity = owned.capacity();
+            drop(owned);
+            self.retire(capacity)?;
+            return Ok(Bytes::new());
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let (Some(meter), Some(allocation)) = (self.meter, &mut self.allocation) {
+            meter.allocate_refcount_header()?;
+            let allocation = allocation.split(owned.capacity())?;
+            return Ok(Bytes::from_owner(WireOwnedBytes { bytes: owned, _allocation: allocation }));
+        }
+        Ok(Bytes::from(owned))
+    }
+
+    pub(crate) fn capacity(&self) -> usize {
+        #[cfg(not(target_arch = "wasm32"))]
+        { self.allocation.as_ref().map_or(0, |allocation| allocation.bytes() as usize) }
+        #[cfg(target_arch = "wasm32")]
+        { 0 }
+    }
+
+    pub(crate) fn allocate(&mut self, bytes: usize) -> std::io::Result<()> {
+        #[cfg(target_arch = "wasm32")]
+        let _ = bytes;
+        #[cfg(not(target_arch = "wasm32"))]
+        if bytes != 0
+            && let Some(allocation) = &mut self.allocation
+        {
+            allocation.grow(bytes)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn reconcile(&mut self, previous: usize, actual: usize) -> std::io::Result<()> {
+        #[cfg(target_arch = "wasm32")]
+        let _ = (previous, actual);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(allocation) = &mut self.allocation {
+            let total = previous.checked_add(actual)
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+            allocation.reconcile_capacity(total)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn copy_admission(&self, bytes: usize) -> std::io::Result<()> {
+        #[cfg(target_arch = "wasm32")]
+        let _ = bytes;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(meter) = self.meter {
+            meter.admit_codec(0, bytes as u64, 0)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn copy_completed(&self, bytes: usize) -> std::io::Result<()> {
+        #[cfg(target_arch = "wasm32")]
+        let _ = bytes;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(meter) = self.meter {
+            meter.record_codec(0, bytes as u64, 0)?;
+            meter.check()?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish<T>(self, value: T) -> ObservedWire<T> {
+        ObservedWire {
+            value,
+            #[cfg(not(target_arch = "wasm32"))]
+            allocation: self.allocation,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct WireOwnedBytes {
+    bytes: Vec<u8>,
+    _allocation: ReadAllocation,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl AsRef<[u8]> for WireOwnedBytes {
+    fn as_ref(&self) -> &[u8] { &self.bytes }
+}
 
 use crate::{
     AppendOutcome, AppendReceipt, CommitCondition, CommitConflict, CommitId, CommitMutation,
@@ -147,24 +399,104 @@ pub(crate) fn observation_from_wire(
     })
 }
 
+/// Owned conversions move payload aliases; resident snapshots borrow them.
+/// Both feed the same generated-field constructors below.
+enum WireSource<'a, T> {
+    Owned(T),
+    Borrowed(&'a T),
+}
+
+impl<T> WireSource<'_, T> {
+    fn value(&self) -> &T {
+        match self { Self::Owned(value) => value, Self::Borrowed(value) => value }
+    }
+}
+
+enum WireValues<'a, T> {
+    Owned(std::vec::IntoIter<T>),
+    Borrowed(std::slice::Iter<'a, T>),
+}
+
+impl<'a, T: 'a> Iterator for WireValues<'a, T> {
+    type Item = WireSource<'a, T>;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Owned(values) => values.next().map(WireSource::Owned),
+            Self::Borrowed(values) => values.next().map(WireSource::Borrowed),
+        }
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::Owned(values) => values.size_hint(),
+            Self::Borrowed(values) => values.size_hint(),
+        }
+    }
+}
+impl<'a, T: 'a> ExactSizeIterator for WireValues<'a, T> {}
+
+enum ObservationSource<'a> {
+    Append(WireSource<'a, AppendOutcome>),
+    Fork(WireSource<'a, ForkReceipt>),
+    Commit(WireSource<'a, CommitOutcome>),
+}
+
+enum CommitSource<'a> {
+    Committed(WireSource<'a, CommittedEnvelope>),
+    Conflict(WireValues<'a, CommitConflict>),
+}
+
 /// Converts an idempotency observation into its canonical wire representation.
 pub fn observation_wire(value: IdempotencyObservation) -> wire::IdempotencyObservation {
-    let outcome = match value.outcome {
-        IdempotencyOutcome::Append(value) => {
-            wire::idempotency_observation::Outcome::Append(append_outcome_wire(value))
-        }
-        IdempotencyOutcome::Fork(value) => {
-            wire::idempotency_observation::Outcome::Fork(fork_receipt_wire(&value))
-        }
-        IdempotencyOutcome::Commit(value) => {
-            wire::idempotency_observation::Outcome::Commit(commit_outcome_wire(value))
-        }
+    observation_funded(
+        value.idempotency_key.0, &value.request_digest, WireSource::Owned(value.outcome),
+        &mut WireFunding::new(None),
+    ).expect("unmetered canonical conversion cannot fail")
+}
+
+pub(crate) fn observation_wire_observed(
+    key: &Bytes,
+    digest: &[u8; 32],
+    result: &IdempotencyOutcome,
+    meter: WireMeter<'_>,
+) -> std::io::Result<ObservedWire<wire::IdempotencyObservation>> {
+    let mut funding = WireFunding::new(meter);
+    let value = observation_funded(key.clone(), digest, WireSource::Borrowed(result), &mut funding)?;
+    Ok(funding.finish(value))
+}
+
+fn observation_funded(
+    key: Bytes,
+    digest: &[u8; 32],
+    source: WireSource<'_, IdempotencyOutcome>,
+    funding: &mut WireFunding<'_>,
+) -> std::io::Result<wire::IdempotencyObservation> {
+    let source = match source {
+        WireSource::Owned(IdempotencyOutcome::Append(value)) =>
+            ObservationSource::Append(WireSource::Owned(value)),
+        WireSource::Owned(IdempotencyOutcome::Fork(value)) =>
+            ObservationSource::Fork(WireSource::Owned(value)),
+        WireSource::Owned(IdempotencyOutcome::Commit(value)) =>
+            ObservationSource::Commit(WireSource::Owned(value)),
+        WireSource::Borrowed(IdempotencyOutcome::Append(value)) =>
+            ObservationSource::Append(WireSource::Borrowed(value)),
+        WireSource::Borrowed(IdempotencyOutcome::Fork(value)) =>
+            ObservationSource::Fork(WireSource::Borrowed(value)),
+        WireSource::Borrowed(IdempotencyOutcome::Commit(value)) =>
+            ObservationSource::Commit(WireSource::Borrowed(value)),
     };
-    wire::IdempotencyObservation {
-        idempotency_key: Bytes::copy_from_slice(value.idempotency_key.as_bytes()),
-        request_digest: Bytes::copy_from_slice(&value.request_digest),
+    let outcome = match source {
+        ObservationSource::Append(value) =>
+            wire::idempotency_observation::Outcome::Append(append_outcome_funded(value.value(), funding)?),
+        ObservationSource::Fork(value) =>
+            wire::idempotency_observation::Outcome::Fork(fork_receipt_funded(value.value(), funding)?),
+        ObservationSource::Commit(value) =>
+            wire::idempotency_observation::Outcome::Commit(commit_outcome_funded(value, funding)?),
+    };
+    Ok(wire::IdempotencyObservation {
+        idempotency_key: key,
+        request_digest: funding.bytes(digest)?,
         outcome: Some(outcome),
-    }
+    })
 }
 
 pub(crate) fn append_outcome_from_wire(
@@ -181,17 +513,23 @@ pub(crate) fn append_outcome_from_wire(
 }
 
 pub(crate) fn append_outcome_wire(value: AppendOutcome) -> wire::AppendResponse {
+    append_outcome_funded(&value, &mut WireFunding::new(None))
+        .expect("unmetered canonical conversion cannot fail")
+}
+
+fn append_outcome_funded(
+    value: &AppendOutcome,
+    funding: &mut WireFunding<'_>,
+) -> std::io::Result<wire::AppendResponse> {
     let outcome = match value {
         AppendOutcome::Committed(receipt) => {
-            wire::append_response::Outcome::Committed(append_receipt_wire(&receipt))
+            wire::append_response::Outcome::Committed(append_receipt_funded(receipt, funding)?)
         }
         AppendOutcome::TailConflict { actual_tail } => {
-            wire::append_response::Outcome::Conflict(wire::TailConflict { actual_tail })
+            wire::append_response::Outcome::Conflict(wire::TailConflict { actual_tail: *actual_tail })
         }
     };
-    wire::AppendResponse {
-        outcome: Some(outcome),
-    }
+    Ok(wire::AppendResponse { outcome: Some(outcome) })
 }
 
 pub(crate) fn commit_outcome_from_wire(
@@ -212,19 +550,35 @@ pub(crate) fn commit_outcome_from_wire(
 }
 
 pub(crate) fn commit_outcome_wire(value: CommitOutcome) -> wire::CommitResponse {
-    let outcome = match value {
-        CommitOutcome::Committed(envelope) => {
-            wire::commit_response::Outcome::Committed(envelope_wire(envelope))
+    commit_outcome_funded(WireSource::Owned(value), &mut WireFunding::new(None))
+        .expect("unmetered canonical conversion cannot fail")
+}
+
+fn commit_outcome_funded(
+    source: WireSource<'_, CommitOutcome>,
+    funding: &mut WireFunding<'_>,
+) -> std::io::Result<wire::CommitResponse> {
+    let source = match source {
+        WireSource::Owned(CommitOutcome::Committed(value)) =>
+            CommitSource::Committed(WireSource::Owned(value)),
+        WireSource::Borrowed(CommitOutcome::Committed(value)) =>
+            CommitSource::Committed(WireSource::Borrowed(value)),
+        WireSource::Owned(CommitOutcome::Conflict(values)) =>
+            CommitSource::Conflict(WireValues::Owned(values.into_iter())),
+        WireSource::Borrowed(CommitOutcome::Conflict(values)) =>
+            CommitSource::Conflict(WireValues::Borrowed(values.iter())),
+    };
+    let outcome = match source {
+        CommitSource::Committed(envelope) => {
+            wire::commit_response::Outcome::Committed(envelope_funded(envelope, funding)?)
         }
-        CommitOutcome::Conflict(conflicts) => {
-            wire::commit_response::Outcome::Conflict(wire::CommitConflicts {
-                conflicts: conflicts.into_iter().map(conflict_wire).collect(),
-            })
+        CommitSource::Conflict(conflicts) => {
+            let mut owned = funding.vector(conflicts.len())?;
+            for conflict in conflicts { owned.push(conflict_funded(conflict.value(), funding)?); }
+            wire::commit_response::Outcome::Conflict(wire::CommitConflicts { conflicts: owned })
         }
     };
-    wire::CommitResponse {
-        outcome: Some(outcome),
-    }
+    Ok(wire::CommitResponse { outcome: Some(outcome) })
 }
 
 /// Converts a wire commit-id byte sequence into the fixed-width domain id.
@@ -253,31 +607,53 @@ pub(crate) fn append_receipt(value: &wire::AppendReceipt) -> Result<AppendReceip
 
 /// Converts a domain record into its canonical wire representation.
 pub fn record_wire(value: Record) -> wire::Record {
-    wire::Record {
-        sequence: value.sequence,
-        value: value.value,
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-        committed_at_micros: value.committed_at_micros,
-    }
+    record_funded(WireSource::Owned(value), &mut WireFunding::new(None))
+        .expect("unmetered canonical conversion cannot fail")
 }
 
-pub(crate) fn append_receipt_wire(value: &AppendReceipt) -> wire::AppendReceipt {
-    wire::AppendReceipt {
+fn record_funded(
+    source: WireSource<'_, Record>,
+    funding: &mut WireFunding<'_>,
+) -> std::io::Result<wire::Record> {
+    let (sequence, value, commit_id, committed_at_micros) = match source {
+        WireSource::Owned(value) =>
+            (value.sequence, value.value, value.commit_id, value.committed_at_micros),
+        WireSource::Borrowed(value) =>
+            (value.sequence, value.value.clone(), value.commit_id, value.committed_at_micros),
+    };
+    Ok(wire::Record {
+        sequence,
+        value,
+        commit_id: funding.bytes(commit_id.as_bytes())?,
+        committed_at_micros,
+    })
+}
+
+
+fn append_receipt_funded(
+    value: &AppendReceipt,
+    funding: &mut WireFunding<'_>,
+) -> std::io::Result<wire::AppendReceipt> {
+    Ok(wire::AppendReceipt {
         start: value.start,
         end: value.end,
         tail: value.tail,
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-    }
+        commit_id: funding.bytes(value.commit_id.as_bytes())?,
+    })
 }
 
-pub(crate) fn fork_receipt_wire(value: &ForkReceipt) -> wire::ForkReceipt {
-    wire::ForkReceipt {
-        source: value.source.to_string(),
-        destination: value.destination.to_string(),
+
+fn fork_receipt_funded(
+    value: &ForkReceipt,
+    funding: &mut WireFunding<'_>,
+) -> std::io::Result<wire::ForkReceipt> {
+    Ok(wire::ForkReceipt {
+        source: funding.string(value.source.as_str())?,
+        destination: funding.string(value.destination.as_str())?,
         forked_at: value.forked_at,
         tail: value.tail,
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-    }
+        commit_id: funding.bytes(value.commit_id.as_bytes())?,
+    })
 }
 
 #[cfg(any(
@@ -417,17 +793,67 @@ pub fn commit_from_wire(value: wire::CommitRequest) -> Result<crate::CommitReque
 }
 
 pub(crate) fn commit_to_wire(value: &crate::CommitRequest) -> wire::CommitRequest {
-    wire::CommitRequest {
-        conditions: value
-            .conditions
-            .iter()
-            .cloned()
-            .map(condition_wire)
-            .collect(),
-        mutations: value.mutations.iter().cloned().map(mutation_wire).collect(),
-        idempotency_key: Bytes::copy_from_slice(value.idempotency_key.as_bytes()),
-        deadline_unix_millis: None,
+    commit_to_wire_observed(value, None)
+        .expect("unmetered canonical conversion cannot fail")
+        .value
+}
+
+pub(crate) fn commit_to_wire_observed(
+    value: &crate::CommitRequest,
+    meter: WireMeter<'_>,
+) -> std::io::Result<ObservedWire<wire::CommitRequest>> {
+    let mut funding = WireFunding::new(meter);
+    let value = commit_to_wire_funded(value, &mut funding)?;
+    Ok(funding.finish(value))
+}
+
+pub(crate) fn commit_to_wire_funded(
+    value: &crate::CommitRequest,
+    funding: &mut WireFunding<'_>,
+) -> std::io::Result<wire::CommitRequest> {
+    let mut conditions = funding.vector(value.conditions.len())?;
+    for condition in &value.conditions {
+        let condition = match condition {
+            crate::CommitCondition::Tail { path, expected } => {
+                wire::commit_condition::Condition::Tail(wire::TailCondition {
+                    path: funding.string(path.as_str())?,
+                    expected: *expected,
+                })
+            }
+            crate::CommitCondition::Absent { path } => {
+                wire::commit_condition::Condition::Absent(wire::AbsentCondition {
+                    path: funding.string(path.as_str())?,
+                })
+            }
+        };
+        conditions.push(wire::CommitCondition { condition: Some(condition) });
     }
+    let mut mutations = funding.vector(value.mutations.len())?;
+    for mutation in &value.mutations {
+        let mutation = match mutation {
+            crate::CommitMutation::Append { path, records } => {
+                wire::commit_mutation::Mutation::Append(wire::AppendMutation {
+                    path: funding.string(path.as_str())?,
+                    records: funding.records(records)?,
+                })
+            }
+            crate::CommitMutation::Fork { source, destination, at_tail, records } => {
+                wire::commit_mutation::Mutation::Fork(wire::ForkMutation {
+                    source: funding.string(source.as_str())?,
+                    destination: funding.string(destination.as_str())?,
+                    at_tail: *at_tail,
+                    records: funding.records(records)?,
+                })
+            }
+        };
+        mutations.push(wire::CommitMutation { mutation: Some(mutation) });
+    }
+    Ok(wire::CommitRequest {
+        conditions,
+        mutations,
+        idempotency_key: value.idempotency_key.0.clone(),
+        deadline_unix_millis: None,
+    })
 }
 
 #[cfg(any(
@@ -436,22 +862,7 @@ pub(crate) fn commit_to_wire(value: &crate::CommitRequest) -> wire::CommitReques
 ))]
 /// Converts an append outcome into its generated wire representation.
 pub fn append_outcome_to_wire(value: crate::AppendOutcome) -> wire::AppendResponse {
-    let outcome = match value {
-        crate::AppendOutcome::Committed(receipt) => {
-            wire::append_response::Outcome::Committed(wire::AppendReceipt {
-                start: receipt.start,
-                end: receipt.end,
-                tail: receipt.tail,
-                commit_id: Bytes::copy_from_slice(receipt.commit_id.as_bytes()),
-            })
-        }
-        crate::AppendOutcome::TailConflict { actual_tail } => {
-            wire::append_response::Outcome::Conflict(wire::TailConflict { actual_tail })
-        }
-    };
-    wire::AppendResponse {
-        outcome: Some(outcome),
-    }
+    append_outcome_wire(value)
 }
 
 #[cfg(any(
@@ -460,13 +871,8 @@ pub fn append_outcome_to_wire(value: crate::AppendOutcome) -> wire::AppendRespon
 ))]
 /// Converts a fork receipt into its generated wire representation.
 pub fn fork_receipt_to_wire(value: &crate::ForkReceipt) -> wire::ForkReceipt {
-    wire::ForkReceipt {
-        source: value.source.to_string(),
-        destination: value.destination.to_string(),
-        forked_at: value.forked_at,
-        tail: value.tail,
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-    }
+    fork_receipt_funded(value, &mut WireFunding::new(None))
+        .expect("unmetered canonical conversion cannot fail")
 }
 
 pub(crate) fn envelope_from_wire(
@@ -483,14 +889,31 @@ pub(crate) fn envelope_from_wire(
 }
 
 pub(crate) fn envelope_wire(value: CommittedEnvelope) -> wire::CommittedEnvelope {
-    wire::CommittedEnvelope {
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-        mutations: value
-            .mutations
-            .into_iter()
-            .map(committed_mutation_wire)
-            .collect(),
-    }
+    envelope_funded(WireSource::Owned(value), &mut WireFunding::new(None))
+        .expect("unmetered canonical conversion cannot fail")
+}
+
+pub(crate) fn envelope_wire_observed(
+    value: &CommittedEnvelope,
+    meter: WireMeter<'_>,
+) -> std::io::Result<ObservedWire<wire::CommittedEnvelope>> {
+    let mut funding = WireFunding::new(meter);
+    let value = envelope_funded(WireSource::Borrowed(value), &mut funding)?;
+    Ok(funding.finish(value))
+}
+
+fn envelope_funded(
+    source: WireSource<'_, CommittedEnvelope>,
+    funding: &mut WireFunding<'_>,
+) -> std::io::Result<wire::CommittedEnvelope> {
+    let commit_id = funding.bytes(source.value().commit_id.as_bytes())?;
+    let values = match source {
+        WireSource::Owned(value) => WireValues::Owned(value.mutations.into_iter()),
+        WireSource::Borrowed(value) => WireValues::Borrowed(value.mutations.iter()),
+    };
+    let mut mutations = funding.vector(values.len())?;
+    for mutation in values { mutations.push(committed_mutation_funded(mutation, funding)?); }
+    Ok(wire::CommittedEnvelope { commit_id, mutations })
 }
 
 #[cfg(any(
@@ -499,19 +922,7 @@ pub(crate) fn envelope_wire(value: CommittedEnvelope) -> wire::CommittedEnvelope
 ))]
 /// Converts a commit outcome into its generated wire representation.
 pub fn commit_outcome_to_wire(value: crate::CommitOutcome) -> wire::CommitResponse {
-    let outcome = match value {
-        crate::CommitOutcome::Committed(envelope) => {
-            wire::commit_response::Outcome::Committed(envelope_to_wire(envelope))
-        }
-        crate::CommitOutcome::Conflict(conflicts) => {
-            wire::commit_response::Outcome::Conflict(wire::CommitConflicts {
-                conflicts: conflicts.into_iter().map(conflict_to_wire).collect(),
-            })
-        }
-    };
-    wire::CommitResponse {
-        outcome: Some(outcome),
-    }
+    commit_outcome_wire(value)
 }
 
 #[cfg(any(
@@ -520,14 +931,7 @@ pub fn commit_outcome_to_wire(value: crate::CommitOutcome) -> wire::CommitRespon
 ))]
 /// Converts a committed envelope into its generated wire representation.
 pub fn envelope_to_wire(value: crate::CommittedEnvelope) -> wire::CommittedEnvelope {
-    wire::CommittedEnvelope {
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-        mutations: value
-            .mutations
-            .into_iter()
-            .map(committed_mutation_to_wire)
-            .collect(),
-    }
+    envelope_wire(value)
 }
 
 pub(crate) fn committed_mutation(
@@ -563,74 +967,46 @@ pub(crate) fn committed_mutation(
     }
 }
 
-pub(crate) fn committed_mutation_wire(value: CommittedMutation) -> wire::CommittedMutation {
-    let mutation = match value {
+
+fn committed_mutation_funded(
+    source: WireSource<'_, CommittedMutation>,
+    funding: &mut WireFunding<'_>,
+) -> std::io::Result<wire::CommittedMutation> {
+    let mut mutation = match source.value() {
         CommittedMutation::Append(value) => {
             wire::committed_mutation::Mutation::Append(wire::CommittedAppend {
-                path: value.path.to_string(),
+                path: funding.string(value.path.as_str())?,
                 start: value.start,
                 end: value.end,
                 tail: value.tail,
-                records: value.records.into_iter().map(record_wire).collect(),
+                records: Vec::new(),
             })
         }
         CommittedMutation::Fork(value) => {
             wire::committed_mutation::Mutation::Fork(wire::CommittedFork {
-                source: value.source.to_string(),
-                destination: value.destination.to_string(),
+                source: funding.string(value.source.as_str())?,
+                destination: funding.string(value.destination.as_str())?,
                 forked_at: value.forked_at,
                 tail: value.tail,
-                records: value.records.into_iter().map(record_wire).collect(),
+                records: Vec::new(),
             })
         }
     };
-    wire::CommittedMutation {
-        mutation: Some(mutation),
-    }
-}
-
-#[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
-fn record_to_wire(value: crate::Record) -> wire::Record {
-    wire::Record {
-        sequence: value.sequence,
-        value: value.value,
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-        committed_at_micros: value.committed_at_micros,
-    }
-}
-
-#[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
-fn committed_mutation_to_wire(value: crate::CommittedMutation) -> wire::CommittedMutation {
-    let mutation = match value {
-        crate::CommittedMutation::Append(value) => {
-            wire::committed_mutation::Mutation::Append(wire::CommittedAppend {
-                path: value.path.to_string(),
-                start: value.start,
-                end: value.end,
-                tail: value.tail,
-                records: value.records.into_iter().map(record_to_wire).collect(),
-            })
-        }
-        crate::CommittedMutation::Fork(value) => {
-            wire::committed_mutation::Mutation::Fork(wire::CommittedFork {
-                source: value.source.to_string(),
-                destination: value.destination.to_string(),
-                forked_at: value.forked_at,
-                tail: value.tail,
-                records: value.records.into_iter().map(record_to_wire).collect(),
-            })
-        }
+    let values = match source {
+        WireSource::Owned(CommittedMutation::Append(value)) => WireValues::Owned(value.records.into_iter()),
+        WireSource::Owned(CommittedMutation::Fork(value)) => WireValues::Owned(value.records.into_iter()),
+        WireSource::Borrowed(CommittedMutation::Append(value)) => WireValues::Borrowed(value.records.iter()),
+        WireSource::Borrowed(CommittedMutation::Fork(value)) => WireValues::Borrowed(value.records.iter()),
     };
-    wire::CommittedMutation {
-        mutation: Some(mutation),
+    let mut records = funding.vector(values.len())?;
+    for record in values { records.push(record_funded(record, funding)?); }
+    match &mut mutation {
+        wire::committed_mutation::Mutation::Append(value) => value.records = records,
+        wire::committed_mutation::Mutation::Fork(value) => value.records = records,
     }
+    Ok(wire::CommittedMutation { mutation: Some(mutation) })
 }
+
 
 pub(crate) fn conflict_from_wire(
     value: wire::CommitConflict,
@@ -647,75 +1023,35 @@ pub(crate) fn conflict_from_wire(
     }
 }
 
-pub(crate) fn conflict_wire(value: CommitConflict) -> wire::CommitConflict {
+
+fn conflict_funded(
+    value: &CommitConflict,
+    funding: &mut WireFunding<'_>,
+) -> std::io::Result<wire::CommitConflict> {
     let conflict = match value {
-        CommitConflict::Tail {
-            path,
-            expected,
-            actual,
-        } => wire::commit_conflict::Conflict::Tail(wire::TailCommitConflict {
-            path: path.to_string(),
-            expected,
-            actual,
-        }),
+        CommitConflict::Tail { path, expected, actual } => {
+            wire::commit_conflict::Conflict::Tail(wire::TailCommitConflict {
+                path: funding.string(path.as_str())?,
+                expected: *expected,
+                actual: *actual,
+            })
+        }
         CommitConflict::Exists { path } => {
             wire::commit_conflict::Conflict::Exists(wire::ExistsCommitConflict {
-                path: path.to_string(),
+                path: funding.string(path.as_str())?,
             })
         }
     };
-    wire::CommitConflict {
-        conflict: Some(conflict),
-    }
+    Ok(wire::CommitConflict { conflict: Some(conflict) })
 }
 
-#[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
-fn conflict_to_wire(value: crate::CommitConflict) -> wire::CommitConflict {
-    let conflict = match value {
-        crate::CommitConflict::Tail {
-            path,
-            expected,
-            actual,
-        } => wire::commit_conflict::Conflict::Tail(wire::TailCommitConflict {
-            path: path.to_string(),
-            expected,
-            actual,
-        }),
-        crate::CommitConflict::Exists { path } => {
-            wire::commit_conflict::Conflict::Exists(wire::ExistsCommitConflict {
-                path: path.to_string(),
-            })
-        }
-    };
-    wire::CommitConflict {
-        conflict: Some(conflict),
-    }
-}
 
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) fn observation_to_wire(
     value: crate::IdempotencyObservation,
 ) -> wire::InspectIdempotencyResponse {
-    let outcome = match value.outcome {
-        crate::IdempotencyOutcome::Append(value) => {
-            wire::idempotency_observation::Outcome::Append(append_outcome_to_wire(value))
-        }
-        crate::IdempotencyOutcome::Fork(value) => {
-            wire::idempotency_observation::Outcome::Fork(fork_receipt_to_wire(&value))
-        }
-        crate::IdempotencyOutcome::Commit(value) => {
-            wire::idempotency_observation::Outcome::Commit(commit_outcome_to_wire(value))
-        }
-    };
     wire::InspectIdempotencyResponse {
-        observation: Some(wire::IdempotencyObservation {
-            idempotency_key: Bytes::copy_from_slice(value.idempotency_key.as_bytes()),
-            request_digest: Bytes::copy_from_slice(&value.request_digest),
-            outcome: Some(outcome),
-        }),
+        observation: Some(observation_wire(value)),
     }
 }
 

@@ -1,6 +1,11 @@
 //! Shared native/browser command journal codec and Rust replay.
 use crate::wire_codec;
 use crate::{AppendRequest, CommitRequest, ForkRequest, MemoryStream, StreamError, StreamProvider};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_native_runtime::NativeReadMeter;
+#[cfg(test)]
 use bytes::Bytes;
 use prost::Message;
 #[derive(Clone)]
@@ -8,6 +13,25 @@ pub(crate) enum Command {
     Append(AppendRequest),
     Fork(ForkRequest),
     Commit(CommitRequest),
+}
+
+/// A borrowed view of the same canonical command, without copying request
+/// vectors just to prepare a durable frame.
+#[derive(Clone, Copy)]
+pub(crate) enum CommandRef<'a> {
+    Append(&'a AppendRequest),
+    Fork(&'a ForkRequest),
+    Commit(&'a CommitRequest),
+}
+
+impl<'a> From<&'a Command> for CommandRef<'a> {
+    fn from(command: &'a Command) -> Self {
+        match command {
+            Command::Append(request) => Self::Append(request),
+            Command::Fork(request) => Self::Fork(request),
+            Command::Commit(request) => Self::Commit(request),
+        }
+    }
 }
 
 pub(crate) async fn replay(provider: &MemoryStream, command: Command) -> Result<(), StreamError> {
@@ -18,17 +42,35 @@ pub(crate) async fn replay(provider: &MemoryStream, command: Command) -> Result<
     }
 }
 
-pub(crate) fn journal_command(command: &Command) -> JournalCommand {
+pub(crate) fn journal_command<'a>(command: impl Into<CommandRef<'a>>) -> JournalCommand {
+    journal_command_funded(command.into(), &mut wire_codec::WireFunding::new(None))
+        .expect("unmetered canonical conversion cannot fail")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn journal_command_observed<'a>(
+    command: impl Into<CommandRef<'a>>,
+    meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> std::io::Result<wire_codec::ObservedWire<JournalCommand>> {
+    let mut funding = wire_codec::WireFunding::new(meter);
+    let command = journal_command_funded(command.into(), &mut funding)?;
+    Ok(funding.finish(command))
+}
+
+fn journal_command_funded(
+    command: CommandRef<'_>,
+    funding: &mut wire_codec::WireFunding<'_>,
+) -> std::io::Result<JournalCommand> {
     let operation = match command {
-        Command::Append(request) => journal_command::Operation::Append(wire_append(request)),
-        Command::Fork(request) => journal_command::Operation::Fork(wire_fork(request)),
-        Command::Commit(request) => {
-            journal_command::Operation::Commit(wire_codec::commit_to_wire(request))
+        CommandRef::Append(request) => journal_command::Operation::Append(wire_append(request, funding)?),
+        CommandRef::Fork(request) => journal_command::Operation::Fork(wire_fork(request, funding)?),
+        CommandRef::Commit(request) => {
+            journal_command::Operation::Commit(wire_codec::commit_to_wire_funded(request, funding)?)
         }
     };
-    JournalCommand {
+    Ok(JournalCommand {
         operation: Some(operation),
-    }
+    })
 }
 
 pub(crate) fn decode_command(encoded: &[u8]) -> Result<Command, StreamError> {
@@ -69,28 +111,28 @@ mod journal_command {
     }
 }
 
-fn wire_append(request: &AppendRequest) -> crate::wire::AppendRequest {
-    crate::wire::AppendRequest {
-        path: request.path.to_string(),
-        records: request.records.clone(),
+fn wire_append(
+    request: &AppendRequest,
+    funding: &mut wire_codec::WireFunding<'_>,
+) -> std::io::Result<crate::wire::AppendRequest> {
+    Ok(crate::wire::AppendRequest {
+        path: funding.string(request.path.as_str())?,
+        records: funding.records(&request.records)?,
         if_tail: request.if_tail,
-        idempotency_key: request
-            .idempotency_key
-            .as_ref()
-            .map(|key| Bytes::copy_from_slice(key.as_bytes())),
-    }
+        idempotency_key: request.idempotency_key.as_ref().map(|key| key.0.clone()),
+    })
 }
 
-fn wire_fork(request: &ForkRequest) -> crate::wire::ForkRequest {
-    crate::wire::ForkRequest {
-        source: request.source.to_string(),
-        destination: request.destination.to_string(),
+fn wire_fork(
+    request: &ForkRequest,
+    funding: &mut wire_codec::WireFunding<'_>,
+) -> std::io::Result<crate::wire::ForkRequest> {
+    Ok(crate::wire::ForkRequest {
+        source: funding.string(request.source.as_str())?,
+        destination: funding.string(request.destination.as_str())?,
         at_tail: request.at_tail,
-        idempotency_key: request
-            .idempotency_key
-            .as_ref()
-            .map(|key| Bytes::copy_from_slice(key.as_bytes())),
-    }
+        idempotency_key: request.idempotency_key.as_ref().map(|key| key.0.clone()),
+    })
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

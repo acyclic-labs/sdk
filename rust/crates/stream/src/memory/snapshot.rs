@@ -1,7 +1,13 @@
 //! The whole state machine as one self-contained encoding, from which a durable provider
 //! restarts instead of replaying every command it ever ran.
+//!
+//! Native compaction observes the same encoder. Its pointer memo is a sorted
+//! vector beside the original node queue; actual insertion shifts and standard
+//! vector capacities are funded, without guessing opaque map/header capacity.
+//! Scratch guards retire only after their buffers, and the resulting raw
+//! encoding retains its original-meter guard until the consumer drops it.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -9,8 +15,10 @@ use prost::Message as _;
 use tokio::sync::watch;
 
 use super::{History, MemoryStream, PathState, Replay, Retained, State, recount};
-use crate::wire_codec::{envelope_wire, observation_wire};
-use crate::{CommitId, IdempotencyKey, IdempotencyObservation, Record, StreamError, StreamPath};
+use crate::wire_codec::{
+    ObservedWire, WireFunding, WireMeter, envelope_wire_observed, observation_wire_observed,
+};
+use crate::{CommitId, IdempotencyKey, Record, StreamError, StreamPath};
 
 const MAGIC: &[u8] = b"ACYCLIC-STREAM-STATE-V1\0";
 
@@ -24,6 +32,19 @@ impl MemoryStream {
     pub(crate) async fn encode_state(&self) -> Vec<u8> {
         let state = self.state.read().await;
         encode(&state)
+    }
+
+    /// Uses the same canonical snapshot codec, with the original invocation
+    /// admitted before every owned buffer, copy, and retained wire graph.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn encode_state_observed(
+        &self,
+        meter: WireMeter<'_>,
+    ) -> std::io::Result<ObservedWire<Vec<u8>>> {
+        if let Some(meter) = meter { meter.check()?; }
+        let state = self.state.read().await;
+        if let Some(meter) = meter { meter.check()?; }
+        encode_observed(&state, meter)
     }
 
     /// Replaces the whole state with one [`Self::encode_state`] encoded.
@@ -50,91 +71,172 @@ impl MemoryStream {
 }
 
 fn encode(state: &State) -> Vec<u8> {
-    let mut out = MAGIC.to_vec();
-    put_u64(&mut out, state.decision);
-    put_u64(&mut out, state.last_committed_at_micros);
-    out.extend_from_slice(state.hierarchy_version.as_bytes());
-    // Each node after every node it reaches, so decoding links backwards.
-    let mut indices = HashMap::new();
+    encode_observed(state, None)
+        .expect("unmetered canonical snapshot encoding cannot fail").value
+}
+
+fn encode_observed(state: &State, meter: WireMeter<'_>) -> std::io::Result<ObservedWire<Vec<u8>>> {
+    let mut writer = SnapshotWriter { out: Vec::new(), funding: WireFunding::new(meter) };
+    writer.write(MAGIC)?;
+    writer.u64(state.decision)?;
+    writer.u64(state.last_committed_at_micros)?;
+    writer.write(state.hierarchy_version.as_bytes())?;
+    // Each node follows every node it reaches: decoding links backwards.
+    let mut indices = Vec::new();
     let mut nodes = Vec::new();
     for path in state.paths.values() {
+        writer.funding.examine(1)?;
         let mut chain = Vec::new();
         let mut cursor = path.history.clone();
         while let Some(node) = cursor {
-            if indices.contains_key(&Arc::as_ptr(&node)) {
-                break;
-            }
+            writer.funding.examine(1)?;
+            if find_node(&indices, Arc::as_ptr(&node), &writer.funding)?.is_ok() { break; }
             cursor = match node.as_ref() {
                 History::Batch { parent, .. } => parent.clone(),
                 History::Prefix { source, .. } => source.clone(),
             };
+            writer.funding.ensure_vector(&mut chain, 1)?;
             chain.push(node);
         }
+        let chain_bytes = chain.capacity() * std::mem::size_of::<Arc<History>>();
         for node in chain.into_iter().rev() {
-            indices.insert(Arc::as_ptr(&node), nodes.len());
+            let pointer = Arc::as_ptr(&node);
+            let position = find_node(&indices, pointer, &writer.funding)?
+                .expect_err("the canonical chain contains only unseen nodes");
+            writer.funding.ensure_vector(&mut indices, 1)?;
+            let shifted = (indices.len() - position) * std::mem::size_of::<(*const History, usize)>();
+            writer.funding.copy_admission(shifted)?;
+            indices.insert(position, (pointer, nodes.len()));
+            writer.funding.copy_completed(shifted)?;
+            writer.funding.ensure_vector(&mut nodes, 1)?;
             nodes.push(node);
         }
+        writer.funding.retire(chain_bytes)?;
     }
-    let reference = |node: &Option<Arc<History>>| {
-        node.as_ref()
-            .and_then(|node| indices.get(&Arc::as_ptr(node)))
-            .map_or(0, |index| index + 1)
-    };
-    put_len(&mut out, nodes.len());
+    writer.len(nodes.len())?;
     for node in &nodes {
+        writer.funding.examine(1)?;
         match node.as_ref() {
-            History::Batch { parent, records } => {
-                out.push(NODE_BATCH);
-                put_len(&mut out, reference(parent));
-                put_len(&mut out, records.len());
+            History::Batch { parent, records, .. } => {
+                writer.write(&[NODE_BATCH])?;
+                let reference = node_reference(&indices, parent, &writer.funding)?;
+                writer.len(reference)?;
+                writer.len(records.len())?;
                 for record in records.iter() {
-                    put_u64(&mut out, record.sequence);
-                    out.extend_from_slice(record.commit_id.as_bytes());
-                    put_u64(&mut out, record.committed_at_micros);
-                    put_bytes(&mut out, &record.value);
+                    writer.funding.examine(1)?;
+                    writer.u64(record.sequence)?;
+                    writer.write(record.commit_id.as_bytes())?;
+                    writer.u64(record.committed_at_micros)?;
+                    writer.bytes(&record.value)?;
                 }
             }
-            History::Prefix { source, tail } => {
-                out.push(NODE_PREFIX);
-                put_len(&mut out, reference(source));
-                put_u64(&mut out, *tail);
+            History::Prefix { source, tail, .. } => {
+                writer.write(&[NODE_PREFIX])?;
+                let reference = node_reference(&indices, source, &writer.funding)?;
+                writer.len(reference)?;
+                writer.u64(*tail)?;
             }
         }
     }
-    put_len(&mut out, state.paths.len());
+    writer.len(state.paths.len())?;
     for (path, stream) in &state.paths {
-        put_bytes(&mut out, path.as_str().as_bytes());
-        put_len(&mut out, reference(&stream.history));
-        put_u64(&mut out, stream.tail);
+        writer.funding.examine(1)?;
+        writer.bytes(path.as_str().as_bytes())?;
+        let reference = node_reference(&indices, &stream.history, &writer.funding)?;
+        writer.len(reference)?;
+        writer.u64(stream.tail)?;
     }
-    put_len(&mut out, state.retained.len());
+    let node_bytes = nodes.capacity() * std::mem::size_of::<Arc<History>>();
+    drop(nodes);
+    writer.funding.retire(node_bytes)?;
+    // Only the actual standard-vector capacity is claimed. Allocator
+    // bookkeeping, opaque headers, and process RSS are not inferred.
+    let index_bytes = indices.capacity() * std::mem::size_of::<(*const History, usize)>();
+    drop(indices);
+    writer.funding.retire(index_bytes)?;
+    writer.len(state.retained.len())?;
     for retained in &state.retained {
-        let replay = retained
-            .replay
-            .as_ref()
+        writer.funding.examine(1)?;
+        let replay = retained.replay.as_ref()
             .and_then(|key| Some((key, state.replays.get(key)?)));
-        let commit = retained
-            .commit
-            .as_ref()
-            .and_then(|commit| state.commits.get(commit));
-        out.push(
+        let commit = retained.commit.as_ref().and_then(|commit| state.commits.get(commit));
+        writer.write(&[
             if replay.is_some() { RETAINS_REPLAY } else { 0 }
                 | if commit.is_some() { RETAINS_COMMIT } else { 0 },
-        );
+        ])?;
         if let Some((key, replay)) = replay {
-            let observation = observation_wire(IdempotencyObservation {
-                idempotency_key: IdempotencyKey::new(key.clone())
-                    .unwrap_or_else(|_| unreachable!("retained keys were admitted")),
-                request_digest: replay.digest,
-                outcome: replay.result.clone(),
-            });
-            put_bytes(&mut out, &observation.encode_to_vec());
+            let observation = observation_wire_observed(key, &replay.digest, &replay.result, meter)?;
+            let encoded = writer.funding.message(&observation.value)?;
+            writer.bytes(&encoded)?;
         }
         if let Some(envelope) = commit {
-            put_bytes(&mut out, &envelope_wire(envelope.clone()).encode_to_vec());
+            let envelope = envelope_wire_observed(envelope, meter)?;
+            let encoded = writer.funding.message(&envelope.value)?;
+            writer.bytes(&encoded)?;
         }
     }
-    out
+    Ok(writer.funding.finish(writer.out))
+}
+
+fn node_reference(
+    indices: &[(*const History, usize)],
+    node: &Option<Arc<History>>,
+    funding: &WireFunding<'_>,
+) -> std::io::Result<usize> {
+    let Some(node) = node else { return Ok(0); };
+    match find_node(indices, Arc::as_ptr(node), funding)? {
+        Ok(position) => Ok(indices.get(position).expect("a matched memo slot exists").1 + 1),
+        Err(_) => Ok(0),
+    }
+}
+
+fn find_node(
+    indices: &[(*const History, usize)],
+    pointer: *const History,
+    funding: &WireFunding<'_>,
+) -> std::io::Result<Result<usize, usize>> {
+    let mut low = 0;
+    let mut high = indices.len();
+    while low < high {
+        funding.examine(1)?;
+        let middle = low + (high - low) / 2;
+        let known = indices.get(middle).expect("binary search remains inside its memo");
+        match known.0.cmp(&pointer) {
+            std::cmp::Ordering::Less => low = middle + 1,
+            std::cmp::Ordering::Greater => high = middle,
+            std::cmp::Ordering::Equal => return Ok(Ok(middle)),
+        }
+    }
+    Ok(Err(low))
+}
+
+struct SnapshotWriter<'a> {
+    out: Vec<u8>,
+    funding: WireFunding<'a>,
+}
+
+impl SnapshotWriter<'_> {
+    fn write(&mut self, value: &[u8]) -> std::io::Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(meter) = self.funding.meter() {
+            meter.admit_codec(value.len() as u64, value.len() as u64, 0)?;
+        }
+        self.funding.ensure_vector(&mut self.out, value.len())?;
+        self.out.extend_from_slice(value);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(meter) = self.funding.meter() {
+            meter.record_codec(value.len() as u64, value.len() as u64, 0)?;
+            meter.check()?;
+        }
+        Ok(())
+    }
+
+    fn u64(&mut self, value: u64) -> std::io::Result<()> { self.write(&value.to_le_bytes()) }
+    fn len(&mut self, value: usize) -> std::io::Result<()> { self.u64(value as u64) }
+    fn bytes(&mut self, value: &[u8]) -> std::io::Result<()> {
+        self.len(value.len())?;
+        self.write(value)
+    }
 }
 
 fn decode(encoded: &[u8]) -> Option<State> {
@@ -201,8 +303,8 @@ fn validate_inventory(state: &State) -> Option<()> {
                 return None;
             }
             match node.as_ref() {
-                History::Batch { parent, records } => {
-                    let fact = (records.as_ref(), pointer, parent.as_ref().map(Arc::as_ptr));
+                History::Batch { parent, records, .. } => {
+                    let fact = (records.as_ref().as_ref(), pointer, parent.as_ref().map(Arc::as_ptr));
                     if batches
                         .insert((path, records.first()?.commit_id), fact)
                         .is_some()
@@ -211,7 +313,7 @@ fn validate_inventory(state: &State) -> Option<()> {
                     }
                     cursor = parent.as_ref();
                 }
-                History::Prefix { source, tail } => {
+                History::Prefix { source, tail, .. } => {
                     prefixes.insert(path, (source.as_ref().map(Arc::as_ptr), *tail, pointer));
                     break;
                 }
@@ -347,7 +449,8 @@ fn decode_nodes(input: &mut Input<'_>) -> Option<DecodedNodes> {
                 }
                 History::Batch {
                     parent,
-                    records: Arc::from(records),
+                    records: Arc::new(super::MemoryRecords::from(records)),
+                    _allocation: super::MemoryAllocation::default(),
                 }
             }
             NODE_PREFIX => {
@@ -358,6 +461,7 @@ fn decode_nodes(input: &mut Input<'_>) -> Option<DecodedNodes> {
                 History::Prefix {
                     source: parent,
                     tail,
+                    _allocation: super::MemoryAllocation::default(),
                 }
             }
             _ => return None,
@@ -388,6 +492,7 @@ fn decode_paths(
                 history,
                 tail,
                 changed,
+                _allocation: super::MemoryAllocation::default(),
             },
         );
     }
@@ -433,6 +538,7 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
                 Replay {
                     digest: observation.request_digest,
                     result: observation.outcome,
+                    _allocation: super::MemoryAllocation::default(),
                 },
             );
             Some(key)
@@ -501,14 +607,17 @@ fn replay_commit_id(state: &State, result: &crate::IdempotencyOutcome) -> Option
     Some(commit)
 }
 
+#[cfg(test)]
 fn put_u64(out: &mut Vec<u8>, value: u64) {
     out.extend_from_slice(&value.to_le_bytes());
 }
 
+#[cfg(test)]
 fn put_len(out: &mut Vec<u8>, value: usize) {
     put_u64(out, value as u64);
 }
 
+#[cfg(test)]
 fn put_bytes(out: &mut Vec<u8>, value: &[u8]) {
     put_len(out, value.len());
     out.extend_from_slice(value);
@@ -1082,6 +1191,7 @@ mod tests {
             .history = Some(Arc::new(History::Prefix {
             source: future,
             tail: 1,
+            _allocation: super::super::MemoryAllocation::default(),
         }));
         assert!(decode(&encode(&state)).is_none());
         Ok(())
