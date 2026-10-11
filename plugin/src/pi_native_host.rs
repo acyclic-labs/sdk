@@ -26,7 +26,7 @@ use acyclic_harness::{Error, JsonValueSchema, OperationId, Outcome, Result, Task
     effect_host::{ConversationEffectHost, TaskEffectPlan}, effects::EffectRegistry,
     fork::ForkReport,
     filesystem::{BorrowedNativeVolumeBinding, FilesystemExecutionJournal, FilesystemHost,
-        NativeProcessAuthority, NativeProcessReceipt, NativePublicationReservation, workspace_ref,
+        NativeProcessAuthority, NativeProcessDrainProof, NativeProcessReceipt, NativePublicationReservation, workspace_ref,
         NativeVolumeView, NativeVolumeNamespace, NativeReceiptError,
         NativePreparationJournalObservation, NativePreparationJournalError,
         RecursiveSourceSnapshot, TaskCommandHost, TaskCommandProgress, TaskWorkerAttempt},
@@ -193,6 +193,8 @@ struct LiveHandles {
     scratch_released: bool,
     dispose_requested: bool,
     preparation_owner: Option<(Arc<TaskJournalOwner<LocalStream>>, Arc<NativeTaskContext>, OperationId)>,
+    // The actual SDK proof owns its original view and intrinsic allocation custody.
+    process_drained: Option<NativeProcessDrainProof>,
 }
 
 impl LiveHandles {
@@ -767,7 +769,6 @@ impl PiNativeCommandHost {
     pub(crate) async fn drain_stopped_child(&self, task: TaskId, deactivate: bool,
         meter: &NativeMaterializationWork,
     ) -> Result<()> {
-        let cleanup = meter.cancellation();
         async {
             let entry = self.entry(task);
             let (effect, drained, interrupted, dispose) = {
@@ -780,10 +781,7 @@ impl PiNativeCommandHost {
                     if interrupted && self.retained_unstarted_preparation(&entry, &effect, &meter).await? {
                         return self.rollback_preparation(task, meter).await;
                     }
-                    let receipt = effect.runner.request_stop(&meter, cleanup).await.map_err(receipt_error)?;
-                    if receipt.task != task || receipt.command != effect.command || !receipt.observed {
-                        return Err(Error::Indeterminate(effect.command));
-                    }
+                    self.drain_original_process(&entry, &effect, meter).await?;
                 } else if interrupted {
                     return self.rollback_preparation(task, meter).await;
                 } else if self.original_never_started(task, &meter).await? {
@@ -838,6 +836,17 @@ impl PiNativeCommandHost {
         }
     }
 
+    async fn drain_original_process(&self, entry: &NativeEntry, effect: &BoundEffect,
+        work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        if entry.handles.lock().await.process_drained.is_some() { return Ok(()); }
+        let view = self.live_view(effect.owner.task_id()).ok_or(Error::Indeterminate(effect.command))?;
+        let proof = effect.runner.drain_with_native_work(&view, work, work.cancellation())?.await?;
+        let mut handles = entry.handles.lock().await;
+        if handles.process_drained.is_none() { handles.process_drained = Some(proof); }
+        Ok(())
+    }
+
     pub(crate) async fn receipt(&self, task: TaskId) -> Result<Option<NativeProcessReceipt>> {
         let Some(entry) = self.find_entry(task) else { return Ok(None); };
         let effect = entry.handles.lock().await.effect.clone();
@@ -871,6 +880,7 @@ impl PiNativeCommandHost {
             }
             let effect = entry.handles.lock().await.effect.clone()
                 .ok_or_else(|| unauthorized("Pi cleanup has no original native attempt"))?;
+            self.drain_original_process(&entry, &effect, meter).await?;
             let prepared = self.prepared(task).ok_or(Error::Indeterminate(effect.command))?;
             let view = self.live_view(task);
             let drained = effect.runner.confirm_process_cleanup_with_work(&prepared.binding, effect.context(),
