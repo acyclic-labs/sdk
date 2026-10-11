@@ -79,6 +79,11 @@ and unwinding preserve its own completed prefix. Copy-on-write claims precede
 copies, weak-only moves preserve DATA custody, and snapshots distinguish reused
 addresses using checked allocation generations. Custody metadata does not change
 semantic equality.
+Native proof claims carry the resource attribution of their actual paid guards
+until physical retirement. Observer and candidate-diff factories use the same
+canonical engines on the original carrier; guarded diff output includes both
+vector capacities and every owned key/before/after name buffer. Cached proof
+snapshots inventory DATA without adopting it again.
 
 Native stock reads use the original allocation/work carrier through Memory,
 Logical Objects, cache, staged storage and simulation. Logical Objects reserves
@@ -87,6 +92,16 @@ visible payload length. Opaque provider allocation/backing capacity is not an SD
 allocator/RSS claim. Existing shared Memory/cache bytes are borrowed without
 readoption; new SDK vectors, request strings and copies are admitted separately.
 
+`NativeMaterializationWork::read_owned_bytes` reads an already-authorized reader
+through the original operation and byte reservations; a one-byte probe detects
+oversized input. `copy_bytes` uses the same paid byte-buffer engine. Both return
+the actual vector before its original capacity guard, and preserve completed
+read/copy prefixes on denial. Neither opens a path nor grants content authority.
+`reserve_work` withholds additive quota on the same resource without reporting
+spent work. It excludes allocation/live-byte dimensions and is not permission to
+append or mutate after cancellation; an accepted completion window supplies that
+separate authority. Only real completion consumes credit; unused credit refunds.
+
 Mounted callback receipts include SDK-completed prefixes from ordinary lookup
 errors as well as successful callbacks. Expected misses do not poison the source.
 An owned first fatal callback diagnostic is taken once without resetting the
@@ -94,6 +109,18 @@ original cancellation, allowance or reconciliation requirement. Driver reply API
 that expose no transport result report client delivery as unknown: source/backend
 read and write counters are not IPC reply acknowledgements. Real mounted-client
 bytes and termination remain the qualification oracle.
+
+Installed native sources retain their exact original accounting context, including
+resource-less contexts; callbacks do not reset that operation's allowance. This
+header is not task authority. Task-backed mounts install an authentic async owner
+guard, polled on the existing callback runtime before provider exchange allocation
+or effects; direct host-configured mounts retain their explicit host role.
+Authorization failure moves its typed cause into a preadmitted per-callback box,
+not a shared diagnostic slot. The same box is unsized without another allocation
+and physically destroyed before its outer allocation custody is released.
+Directory pages are non-cloneable intrinsic owners of entry/name/cursor capacity.
+Physical projections transfer and split their existing custody for escaping data,
+without adopting that data again or creating another ledger.
 
 Concurrent native read observers share the checkout's semantic proof but admit
 and report their own completed name/path DATA. Weak custody metadata follows
