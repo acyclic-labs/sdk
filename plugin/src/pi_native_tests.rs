@@ -764,3 +764,40 @@ fn funded_native_root_routes_preserve_the_original_canonical_layout_without_path
         Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
     assert_eq!(work.receipt(), before);
 }
+
+#[test]
+fn canonical_native_creator_packet_admits_pi_sibling_layout_without_creating_or_adopting_paths() {
+    use acyclic_fs::materializer::{NativeHostPrivateStateRoot, NativeOwnedRootAllocation, NativeOwnedRootStatus};
+    let directory = tempfile::tempdir().unwrap();
+    let cancellation = CancellationToken::new();
+    let work = pi_meter(super::super::native_root_source::budget(), &cancellation).unwrap();
+    let root = NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(directory.path(), &work).unwrap();
+    let relative = [
+        Path::new("sessions/root/agents/task/view"),
+        Path::new("sessions/root/agents/task/preparation"),
+        Path::new("sessions/root/agents/task/preparation/target"),
+        Path::new("sessions/root/agents/task/preparation/backup"),
+    ];
+    let before = work.receipt();
+    let baseline = work.live_allocation_bytes();
+    let packet = NativeOwnedRootAllocation::new_with_native_work(
+        acyclic_fs::OperationId::from_bytes([0xc1; 16]), &root, relative, &work).unwrap();
+    assert_eq!(work.receipt().backend_write_operations, before.backend_write_operations);
+    assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
+    assert!(work.live_allocation_bytes() > baseline);
+    assert!(packet.parent_count() > 0);
+    for index in 0..4 {
+        assert_eq!(packet.status(index), Some(NativeOwnedRootStatus::Pending));
+        assert!(!directory.path().join(relative[index]).exists());
+    }
+    assert_eq!(packet.known_identities(), None, "planned paths are not native creation receipts");
+    drop(packet);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    cancellation.cancel();
+    let before = work.receipt();
+    assert!(matches!(NativeOwnedRootAllocation::new_with_native_work(
+        acyclic_fs::OperationId::from_bytes([0xc1; 16]), &root, relative, &work),
+        Err(acyclic_fs::NativeTreeMaterializationError::Cancelled)));
+    assert_eq!(work.receipt(), before);
+    assert!(!directory.path().join("sessions").exists());
+}

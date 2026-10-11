@@ -234,6 +234,13 @@ impl<'a> PiSelectedHost<'a> {
         SELECTED_DIAGNOSTIC_LABEL_BYTES, work)?;
     let inspection = self.runtime.runtime.inspect_project_source_with_native_work(context, Arc::clone(owner), handle,
         operation, task, &selection.0, work).await?;
+    if let Some(view) = self.native.live_view(task) {
+        let mut observed = view.inspect_project_snapshot_with_native_work(&inspection, frozen, work)?.await?;
+        if observed.1 != frozen {
+            return Err(denied("immutable mixed-view inspection changed its authorized frozen source"));
+        }
+        selection.1.absorb(&mut observed.2).map_err(native_error)?;
+    }
     let volume = selection.0.project;
     drop(selection.0.generation);
     drop(selection.0.native_snapshot);
