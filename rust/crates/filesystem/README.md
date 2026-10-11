@@ -97,6 +97,12 @@ through the original operation and byte reservations; a one-byte probe detects
 oversized input. `copy_bytes` uses the same paid byte-buffer engine. Both return
 the actual vector before its original capacity guard, and preserve completed
 read/copy prefixes on denial. Neither opens a path nor grants content authority.
+`write_owned_bytes` accepts an already-authorized writer and borrowed input. Each
+actual SDK write attempt and completed partial output is recorded before exposing
+late cancellation, quota exhaustion or the original I/O failure. It makes no
+input copy or implicit flush and does not grant write permission or durability.
+`shares_allocation_context` compares only the original ledger and exact resource
+attribution; pure identity checks are not authority or new budget admission.
 `reserve_work` withholds additive quota on the same resource without reporting
 spent work. It excludes allocation/live-byte dimensions and is not permission to
 append or mutate after cancellation; an accepted completion window supplies that
