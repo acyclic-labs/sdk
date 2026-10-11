@@ -4400,7 +4400,6 @@ pub(crate) fn tool_approval_request_with_native_work(
     prompt_custody: acyclic_fs::NativeAllocation,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<((OperationId, Interaction), acyclic_fs::NativeAllocation)> {
-    use crate::store::history::HistoryIo;
     let paid = NativePolicyPayload { value: prompt, custody: prompt_custody };
     if !paid.custody.work().shares_ledger(work)
         || paid.custody.bytes() < paid.value.capacity() as u64
@@ -4409,38 +4408,17 @@ pub(crate) fn tool_approval_request_with_native_work(
             reason: "approval prompt does not retain its original ledger" });
     }
     work.remaining()?;
-    if !crate::contract::is_valid_component_label(&policy.name)
-        || !crate::contract::is_valid_component_label(&policy.version)
-        || policy.digest == [0; 32]
-        || !crate::contract::is_valid_component_label(&invocation.name)
-        || invocation.call_id.is_empty()
-        || invocation.call_id.len() > crate::COMPONENT_LABEL_MAX_BYTES
-        || invocation.call_id.chars().any(char::is_control)
-        || invocation.call_id.contains(crate::contract::COMPONENT_LABEL_FORBIDDEN_SEPARATORS)
-        || crate::contract::COMPONENT_LABEL_FORBIDDEN_EXACT.contains(&invocation.call_id.as_str())
-        || paid.value.trim().is_empty()
-    {
+    if paid.value.trim().is_empty() {
         return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-            reason: "invalid tool approval identity or prompt" });
+            reason: "approval prompt is empty" });
     }
-    let mut io = crate::store::history::native_work_io(work)?;
-    let mut observed: Option<&mut dyn HistoryIo> = Some(&mut io);
-    let digest = crate::contract::canonical_json_digest_with_work(
-        &(task, policy, definition, invocation), work.remaining()?.bytes_encoded, &mut observed,
-    )?;
-    let prefix = b"harness:tool-approval:v2";
-    io.hashed_bytes((prefix.len() + digest.len()) as u64)?;
-    let mut hash = blake3::Hasher::new();
-    hash.update(prefix);
-    hash.update(&digest);
-    let mut id_bytes = [0; 16];
-    id_bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    let (operation, digest) = tool_approval_binding_with_native_work(task, policy, definition, invocation, work)?;
     if digest == [0; 32] {
         return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
             reason: "approval action digest is empty" });
     }
     let NativePolicyPayload { value: prompt, custody } = paid;
-    Ok(((OperationId::from_bytes(id_bytes), Interaction::Approval {
+    Ok(((operation, Interaction::Approval {
         prompt, operation_id: invocation.operation_id, action_digest: digest,
     }), custody))
 }
@@ -4507,14 +4485,63 @@ pub(crate) fn tool_approval_binding(
     definition: &ToolDefinition,
     invocation: &ToolInvocation,
 ) -> Result<(OperationId, [u8; 32])> {
-    validate_policy_identity(policy)?;
-    invocation.validate()?;
-    let digest = crate::contract::canonical_json_digest(&(task, policy, definition, invocation))?;
-    let mut id_bytes = [0_u8; 16];
-    id_bytes.copy_from_slice(
-        &blake3::hash(&[b"harness:tool-approval:v2".as_slice(), digest.as_slice()].concat())
-            .as_bytes()[..16],
-    );
+    tool_approval_binding_with_work(task, policy, definition, invocation, None)
+}
+
+/// Canonical passive wake identity: no policy evaluation or prompt construction.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn tool_approval_binding_with_native_work(
+    task: TaskId, policy: &ComponentIdentity, definition: &ToolDefinition,
+    invocation: &ToolInvocation, work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(OperationId, [u8; 32])> {
+    tool_approval_binding_with_work(task, policy, definition, invocation, Some(work))
+}
+
+fn tool_approval_binding_with_work(
+    task: TaskId, policy: &ComponentIdentity, definition: &ToolDefinition,
+    invocation: &ToolInvocation, work: Option<&ToolPolicyWork>,
+) -> Result<(OperationId, [u8; 32])> {
+    let digest = match work {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        Some(work) => {
+            work.remaining()?;
+            if !crate::contract::is_valid_component_label(&policy.name)
+                || !crate::contract::is_valid_component_label(&policy.version)
+                || policy.digest == [0; 32]
+                || !crate::contract::is_valid_component_label(&invocation.name)
+                || invocation.call_id.is_empty()
+                || invocation.call_id.len() > crate::COMPONENT_LABEL_MAX_BYTES
+                || invocation.call_id.chars().any(char::is_control)
+                || invocation.call_id.contains(crate::contract::COMPONENT_LABEL_FORBIDDEN_SEPARATORS)
+                || crate::contract::COMPONENT_LABEL_FORBIDDEN_EXACT.contains(&invocation.call_id.as_str())
+            {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "invalid tool approval identity" });
+            }
+            let mut io = crate::store::history::native_work_io(work)?;
+            let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut io);
+            crate::contract::canonical_json_digest_with_work(
+                &(task, policy, definition, invocation), work.remaining()?.bytes_encoded, &mut observed,
+            )?
+        }
+        _ => {
+            validate_policy_identity(policy)?;
+            invocation.validate()?;
+            crate::contract::canonical_json_digest(&(task, policy, definition, invocation))?
+        }
+    };
+    let prefix = b"harness:tool-approval:v2";
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = work {
+        work.charge(acyclic_fs::WorkCounters {
+            bytes_hashed: (prefix.len() + digest.len()) as u64, ..Default::default()
+        })?;
+    }
+    let mut hash = blake3::Hasher::new();
+    hash.update(prefix);
+    hash.update(&digest);
+    let mut id_bytes = [0; 16];
+    id_bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
     Ok((OperationId::from_bytes(id_bytes), digest))
 }
 
@@ -7879,6 +7906,69 @@ impl TaskContext {
         self.policy_overrides.iter().map(|(identity, policy)| (identity, policy))
     }
 
+    /// A borrowed scope can restrict the original grant, never replace its
+    /// sealed selections, created-access owner, or runtime provenance.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn require_native_scope_restriction(&self, scope: &RuntimeScope) -> Result<()> {
+        let limits = scope.limits;
+        let run = scope.run_limits;
+        let maximum = crate::conversation::MAX_EXACT_JS_INTEGER;
+        if limits.file_bytes == 0 || limits.path_bytes == 0 || limits.attachments == 0
+            || limits.render_bytes == 0 || limits.model_steps == 0
+            || limits.model_events_per_step == 0 || limits.tool_calls_per_step == 0
+            || limits.context_messages == 0
+            || limits.file_bytes > crate::conversation::MAX_LIMIT_FILE_BYTES
+            || limits.path_bytes as u64 > crate::conversation::MAX_PATH_BYTES as u64
+            || limits.attachments as u64 > crate::conversation::MAX_LIMIT_ATTACHMENTS as u64
+            || limits.render_bytes > crate::conversation::MAX_LIMIT_RENDER_BYTES
+            || limits.model_steps as u64 > crate::conversation::MAX_LIMIT_MODEL_STEPS as u64
+            || limits.model_events_per_step as u64 > crate::conversation::MAX_LIMIT_MODEL_EVENTS_PER_STEP as u64
+            || limits.tool_calls_per_step as u64 > crate::conversation::MAX_LIMIT_TOOL_CALLS_PER_STEP as u64
+            || limits.context_messages as u64 > crate::conversation::MAX_LIMIT_CONTEXT_MESSAGES as u64
+            || run.concurrency.is_some_and(|value| value == 0 || value as u64 > maximum)
+            || run.max_steps.is_some_and(|value| value == 0 || value as u64 > maximum)
+            || run.deadline_epoch_ms.is_some_and(|value| value == 0 || value > maximum)
+        {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "native scope limits are invalid" });
+        }
+        let same_runtime = match (&self.scope.extension_runtime, &scope.extension_runtime) {
+            (None, None) => true,
+            (Some(original), Some(candidate)) => Arc::ptr_eq(original, candidate),
+            _ => false,
+        };
+        let same_created_access = match (&self.scope.created_access, &scope.created_access) {
+            (None, None) => true,
+            (Some(original), Some(candidate)) => Arc::ptr_eq(original, candidate),
+            _ => false,
+        };
+        if !self.scope.extensions_sealed || !scope.extensions_sealed
+            || self.scope.extensions != scope.extensions
+            || self.scope.extension_schemas != scope.extension_schemas
+            || self.scope.resource_proofs != scope.resource_proofs
+            || !same_runtime || !same_created_access
+            || !scope.grants.is_subset_of(&self.scope.grants)
+            || limits.file_bytes > self.scope.limits.file_bytes
+            || limits.path_bytes > self.scope.limits.path_bytes
+            || limits.attachments > self.scope.limits.attachments
+            || limits.render_bytes > self.scope.limits.render_bytes
+            || limits.model_steps > self.scope.limits.model_steps
+            || limits.model_events_per_step > self.scope.limits.model_events_per_step
+            || limits.tool_calls_per_step > self.scope.limits.tool_calls_per_step
+            || limits.context_messages > self.scope.limits.context_messages
+            || [
+                (self.scope.run_limits.concurrency.map(|value| value as u64), run.concurrency.map(|value| value as u64)),
+                (self.scope.run_limits.max_steps.map(|value| value as u64), run.max_steps.map(|value| value as u64)),
+                (self.scope.run_limits.deadline_epoch_ms, run.deadline_epoch_ms),
+            ].into_iter().any(|(original, candidate)| original.is_some_and(|bound|
+                candidate.is_none_or(|value| value > bound)))
+        {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native scope cannot widen or replace its original scope" });
+        }
+        Ok(())
+    }
+
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) async fn authorize_tool_with_native_work(
         &self, definition: &ToolDefinition, invocation: &ToolInvocation,
@@ -7896,19 +7986,20 @@ impl TaskContext {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<OperationId>> {
         self.require_original_native_work(work)?;
-        self.authorize_tool_pending_with_work(definition, invocation, Some(work), None).await
+        self.require_native_scope_restriction(&self.scope)?;
+        self.authorize_tool_pending_with_work(definition, invocation, Some(work), None, &self.scope).await
     }
 
     // Only a successfully routed, durably pending outcome becomes a wait.
     pub(crate) async fn authorize_tool_pending(
         &self, definition: &ToolDefinition, invocation: &ToolInvocation,
     ) -> Result<Option<OperationId>> {
-        self.authorize_tool_pending_with_work(definition, invocation, None, None).await
+        self.authorize_tool_pending_with_work(definition, invocation, None, None, &self.scope).await
     }
 
     async fn authorize_tool_pending_with_work(
         &self, definition: &ToolDefinition, invocation: &ToolInvocation,
-        work: Option<&ToolPolicyWork>, command_router: Option<&dyn InteractionRouter>,
+        work: Option<&ToolPolicyWork>, command_router: Option<&dyn InteractionRouter>, scope: &RuntimeScope,
     ) -> Result<Option<OperationId>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
@@ -7933,14 +8024,14 @@ impl TaskContext {
                 "scoped policy identity changed after binding"
             };
             if let Some(paid) = self.policy_approval_with_work(
-                policy.as_ref(), Some((identity, bound_reason)), definition, invocation, work,
+                policy.as_ref(), Some((identity, bound_reason)), definition, invocation, work, scope,
             ).await? {
                 let PaidPolicyValue { value: (approval_id, request), custody } = paid;
                 let outcome = match work {
                     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                     Some(work) => {
                         let (value, custody) = self.interact_with_native_work_and_router(
-                            approval_id, request, custody.expect("native approval retains its prompt"), work, command_router,
+                            approval_id, request, custody.expect("native approval retains its prompt"), work, command_router, scope,
                         ).await?;
                         PaidPolicyValue { value, custody: Some(custody) }
                     }
@@ -7965,27 +8056,29 @@ impl TaskContext {
     pub(crate) async fn policy_approval(
         &self, policy: &dyn ToolPolicy, definition: &ToolDefinition, invocation: &ToolInvocation,
     ) -> Result<Option<(OperationId, Interaction)>> {
-        Ok(self.policy_approval_with_work(policy, None, definition, invocation, None)
+        Ok(self.policy_approval_with_work(policy, None, definition, invocation, None, &self.scope)
             .await?.map(|paid| paid.value))
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) async fn policy_approval_with_native_work(
-        &self, policy: &dyn ToolPolicy, definition: &ToolDefinition, invocation: &ToolInvocation,
+    pub(crate) async fn stock_policy_approval_with_native_work(
+        &self, policy: &dyn ToolPolicy, scope: &RuntimeScope,
+        definition: &ToolDefinition, invocation: &ToolInvocation,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<((OperationId, Interaction), acyclic_fs::NativeAllocation)>> {
         self.require_original_native_work(work)?;
+        self.require_native_scope_restriction(scope)?;
         let expected = self.stock_tool_policy_binding().into_iter().chain(self.stock_tool_policy_overrides())
             .find_map(|(identity, original)| std::ptr::eq(original.as_ref(), policy).then_some(identity))
             .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                 reason: "policy is not an original task binding" })?;
-        Ok(self.policy_approval_with_work(policy, Some((expected, "policy identity changed after binding")), definition, invocation, Some(work))
+        Ok(self.policy_approval_with_work(policy, Some((expected, "policy identity changed after binding")), definition, invocation, Some(work), scope)
             .await?.map(|paid| (paid.value, paid.custody.expect("native approval retains its prompt"))))
     }
 
     async fn policy_approval_with_work(
         &self, policy: &dyn ToolPolicy, expected: Option<(&ComponentIdentity, &'static str)>,
-        definition: &ToolDefinition, invocation: &ToolInvocation, work: Option<&ToolPolicyWork>,
+        definition: &ToolDefinition, invocation: &ToolInvocation, work: Option<&ToolPolicyWork>, scope: &RuntimeScope,
     ) -> Result<Option<PaidPolicyValue<(OperationId, Interaction)>>> {
         let identity = match work {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -8010,7 +8103,7 @@ impl TaskContext {
         let decision = match work {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Some(work) => {
-                let future = policy.evaluate_with_native_work(invocation, &self.scope, work)?;
+                let future = policy.evaluate_with_native_work(invocation, scope, work)?;
                 if !future.work().shares_ledger(work) {
                     return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                         reason: "policy evaluator belongs to another ledger" });
@@ -8020,7 +8113,7 @@ impl TaskContext {
                 validate_native_policy_decision(&paid, work)?;
                 paid
             }
-            _ => PaidPolicyValue { value: policy.evaluate(invocation, &self.scope).await?, custody: None },
+            _ => PaidPolicyValue { value: policy.evaluate(invocation, scope).await?, custody: None },
         };
         let after = match work {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -8212,7 +8305,7 @@ impl TaskContext {
         request_custody: acyclic_fs::NativeAllocation,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(InteractionOutcome, acyclic_fs::NativeAllocation)> {
-        self.interact_with_native_work_and_router(operation_id, interaction, request_custody, work, None).await
+        self.interact_with_native_work_and_router(operation_id, interaction, request_custody, work, None, &self.scope).await
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -8221,6 +8314,7 @@ impl TaskContext {
         request_custody: acyclic_fs::NativeAllocation,
         work: &acyclic_fs::NativeMaterializationWork,
         command_router: Option<&dyn InteractionRouter>,
+        scope: &RuntimeScope,
     ) -> Result<(InteractionOutcome, acyclic_fs::NativeAllocation)> {
         let paid = NativePolicyPayload { value: interaction, custody: request_custody };
         self.require_original_native_work(work)?;
@@ -8255,7 +8349,7 @@ impl TaskContext {
         let mut io = crate::store::history::native_work_io(work)?;
         let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut io);
         paid.value.validate_with_work(&mut observed)?;
-        if !self.scope.grants.contains(capability::INTERACTION_ROUTE) {
+        if !scope.grants.contains(capability::INTERACTION_ROUTE) {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "scope lacks interaction:route" });
         }
@@ -9829,12 +9923,13 @@ impl ToolContext {
     ) -> Result<Option<OperationId>> {
         let task = self.task();
         task.require_original_native_work(work)?;
+        task.require_native_scope_restriction(self.effective_scope())?;
         if invocation.operation_id != self.operation_id() || invocation.call_id != self.call_id() {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                 reason: "native policy invocation differs from its original command" });
         }
         task.authorize_tool_pending_with_work(
-            definition, invocation, Some(work), self.stock_native_interactions(),
+            definition, invocation, Some(work), self.stock_native_interactions(), self.effective_scope(),
         ).await
     }
 
@@ -10894,6 +10989,8 @@ mod tests {
         assert_eq!(custody.bytes(), prompt.capacity() as u64);
         let pointer = prompt.as_ptr();
         let task = TaskId::new();
+        let passive = tool_approval_binding_with_native_work(task, &policy.identity, &definition, &invocation, &work)?;
+        assert_eq!(passive, tool_approval_binding(task, &policy.identity, &definition, &invocation)?);
         let expected = tool_approval_request(task, &policy.identity, &definition, &invocation, prompt.clone())?;
         let (actual, custody) = tool_approval_request_with_native_work(
             task, &policy.identity, &definition, &invocation, prompt, custody, &work,
@@ -11099,15 +11196,15 @@ mod tests {
             }
             let before = work.receipt();
             assert!(matches!(narrowed.authorize_tool_pending_with_work(
-                &definition, &invocation, Some(&work), Some(&OpaqueCommandRouter),
+                &definition, &invocation, Some(&work), Some(&OpaqueCommandRouter), &narrowed.scope,
             ).await, Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, .. })));
             assert_eq!(work.receipt(), before);
             assert!(narrowed.policy_approval_with_work(policy.as_ref(),
                 Some((identity, "runtime policy identity changed after binding")),
-                &definition, &invocation, Some(&work)).await?.is_none());
+                &definition, &invocation, Some(&work), &narrowed.scope).await?.is_none());
             let error = narrowed.policy_approval_with_work(overrides[0].1.as_ref(),
                 Some((overrides[0].0, "scoped policy identity changed after binding")),
-                &definition, &invocation, Some(&work)).await.err().expect("original scoped veto");
+                &definition, &invocation, Some(&work), &narrowed.scope).await.err().expect("original scoped veto");
             match error {
                 Error::NativeDiagnostic { code: crate::wire::ErrorCode::Unauthorized, message, custody } => {
                     assert_eq!(message, "child veto");
@@ -11157,12 +11254,26 @@ mod tests {
                     })
                 }
             }
+            let effective = narrowed.scope.narrow(Capabilities::new(std::iter::empty::<&str>()), narrowed.scope.limits)?;
+            narrowed.require_native_scope_restriction(&effective)?;
+            assert!(!effective.grants().contains("tool:call:test.echo"));
+            assert!(narrowed.scope.grants().contains("tool:call:test.echo"));
+            let mut foreign = effective.clone();
+            foreign.grants = Capabilities::new(["tool:call:foreign"]);
+            let before = work.receipt();
+            assert!(matches!(narrowed.require_native_scope_restriction(&foreign),
+                Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+            assert_eq!(work.receipt(), before);
+            let mut invalid = effective.clone();
+            invalid.run_limits.max_steps = Some(0);
+            assert!(matches!(narrowed.require_native_scope_restriction(&invalid),
+                Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
             let changing = ChangingPolicy { original: identity.clone(),
                 changed: std::sync::atomic::AtomicBool::new(false),
-                scope_address: &narrowed.scope as *const RuntimeScope as usize };
+                scope_address: &effective as *const RuntimeScope as usize };
             assert!(matches!(narrowed.policy_approval_with_work(&changing,
                 Some((identity, "runtime policy identity changed after binding")),
-                &definition, &invocation, Some(&work)).await,
+                &definition, &invocation, Some(&work), &effective).await,
                 Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                     reason: "policy identity changed during evaluation" })));
             assert_eq!(work.live_allocation_bytes(), acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
