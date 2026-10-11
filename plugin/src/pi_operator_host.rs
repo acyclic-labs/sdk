@@ -374,10 +374,10 @@ impl<'a> PiOperatorHost<'a> {
         if command.kind != PI_OPERATOR_COMMAND_KIND { return if reconcile {
             self.selected.reconcile(context, fence, command, payload).await
         } else { self.selected.execute(context, fence, command, payload).await }; }
-        let request: PiOperatorRequest = serde_json::from_value(payload).map_err(|error| Error::Invalid(error.to_string()))?;
+        let (request, _request_custody) = PiOperatorRequest::from_value_with_native_work(&payload, &self.work)?;
+        drop(payload);
         validate_approval_request(&self.runtime, &self.filesystem, &self.protected, self.session, &request, &self.work).await?;
         let PiOperatorBody::Approval { mut prepared, digest, decision } = request.body else { return Err(denied("inspect cannot dispatch a Root command")); };
-        let _prepared_custody = self.work.retain_journal(&prepared.journal).map_err(native_error)?;
         let root = self.protected.policy().root_task;
         if context.durable_task_id() != Some(root) || prepared.command.caller != root
             || command.operation_id != derived(original_operation(root, root, &prepared.command.sdk_operation), "selected-writeback-publish") {
