@@ -142,11 +142,11 @@ const fn diagnostic_label_bytes() -> u64 {
 }
 const DIAGNOSTIC_LABEL_BYTES: u64 = diagnostic_label_bytes();
 
-// Additional labels of the finite stock PreparationRecord graphs in bounded_io:
-// Context/checkpoint/compaction, response projection, model content/request/event,
-// inherited prefix, extension configuration, refs/attachments and workflow DTOs.
+// Finite stock PreparationRecord graphs plus registered recursive/resource/task,
+// configured Snapshot/conversation and native process/MCP stdio graphs below.
+// Concrete owners supply the actual declaration/custom-static literal closure.
 // Event labels stay a separate scope so ordinary Event admission is unchanged.
-// Private DTO owners supply their own additional manifest, not a generic-T guess.
+// Other private DTO owners add their own manifest, not a generic-T guess.
 const PREPARATION_DIAGNOSTIC_LABELS: &[&str] = &[
     "Model", "ModelMessage", "ModelRole", "ModelContent", "ModelContentPart",
     "FileProjectionPolicy", "ModelDataPart", "ToolResultContent", "NativeConfigurationBinding",
@@ -171,14 +171,113 @@ const PREPARATION_DIAGNOSTIC_LABELS: &[&str] = &[
     "file or volume label is invalid", "volume-relative path is invalid",
     "data did not match any variant of untagged enum ModelContent",
     "struct ", "struct variant ", "tuple variant ", "newtype variant ", "unit variant ",
+    // Registered recursive/resource/task DTO closure; declared by the concrete
+    // record owners, including their fork summary/grant/reference wrappers.
+    "RecursiveForkSourceIntent", "RecursiveForkToolPlan", "RecursiveMergeToolPlan",
+    "ForkToolArguments", "MergeToolArguments", "MergeToolSelection", "MergeToolSide",
+    "Plan", "Stage", "State", "InitialPlan", "SourcePin", "Receipt",
+    "ConfiguredRecursiveSourceCheckpoint", "SourceCheckpoint", "CommandResults", "CommandResult",
+    "ResourceCreationProofRef", "ResourcePreparationRequest", "TaskAdmissionRecord",
+    "ComponentIdentity", "ExecutionPlacement", "TaskRunLimits", "ExtensionAdmission",
+    "Limits",
+    "ExtensionConfiguration", "ExtensionDependency", "EventReference",
+    "ForkRequest", "ForkHistoryPolicy", "ForkPreparation", "ForkSelection", "AttestedBoundary",
+    "ForkReport", "ForkSeed", "Capture", "CapturedResource", "ForkOmission",
+    "SharedGrant", "ReferenceGrant", "SummaryForkSelection", "SummaryForkCapture",
+    "ResourceRevision", "WorkflowCommand", "MachineIdentity",
+    "arguments", "caller", "source_task", "child_operation_id", "allocation_digest", "request",
+    "preparation", "child_message_pointer", "child_message_file_pointer", "source_checkpoint",
+    "operation_id", "destination", "source", "source_project", "source_generation", "authorized_source",
+    "target_project", "expected_target_generation", "notice", "id", "msg", "selections", "conflict", "side",
+    "kind", "plan", "phase", "stage", "intent", "command", "report", "receipt", "value", "next",
+    "snapshot", "request_digest", "commands", "provider", "resource", "evidence", "child", "resources",
+    "creation_grant", "maximum_resources", "maximum_work", "maximum_bytes", "payload", "input_files",
+    "read_authorization", "task", "machine", "input", "input_schema", "output_schema", "parent",
+    "resource_proofs", "grants", "limits", "run_limits", "policy", "extensions", "execution",
+    "name", "version", "digest", "build", "environment", "readiness_revision", "concurrency", "max_steps",
+    "deadline_epoch_ms", "selected", "configurations", "extension", "schema_digest", "content",
+    "parent_revision", "child_agent", "attached_agents", "boundary", "child_project_volume",
+    "child_private_volume", "child_result_volume", "inherited_through_sequence", "maximum_inherited_messages",
+    "maximum_inherited_bytes", "maximum_inherited_references", "summary", "required", "revision",
+    "reference", "volume", "generation", "paths", "implementation_digest", "captures",
+    "child_private_generation", "child_result_generation", "inherited_context", "shared_grants",
+    "reference_grants", "history_witness", "attachment_manifests", "selection", "outcome", "omissions",
+    "operations", "file", "reader", "attachment_manifest", "checkpoint", "history_limits", "context",
+    "payloads", "references",
+    "fork", "merge", "prepare", "observe", "fork_publish", "child_admit", "merge_apply", "merge_publish",
+    "ready", "source_pinned", "waiting", "complete", "settled", "base", "target", "fresh",
+    "history", "project", "private_volume", "process", "artifact", "shared_volume", "extension",
+    "captured", "unsupported", "in_flight", "indeterminate",
+    // Actual SnapshotWire and conversation Deserialize closure reached by the
+    // configured source checkpoint; native custody fields are serde-skipped.
+    "Snapshot", "SnapshotWire", "format_version", "authority", "revision", "events",
+    "projection", "state_digest", "attestation", "Projection", "lifecycle",
+    "active_extensions", "active_extension_revision", "extension_states",
+    "configured_extensions", "active_configurations", "effects", "indexed_terminal_effects",
+    "effects_archived", "forks", "published_merges", "conversation",
+    "latest_context_checkpoint", "interactions", "bindings",
+    "VolumeRefWire", "provider", "id", "class", "owner", "VolumeClass",
+    "project", "agent_private", "session_shared", "VolumeOwner", "kind", "agent", "session",
+    "FileDescriptorWire", "sha256", "byte_length", "media_type",
+    "SHA-256 digest must contain exactly 32 bytes", "FileRefWire", "volume", "path",
+    "version", "descriptor", "display_name", "Attachment", "file", "label",
+    "ReferencedAttachmentsWire", "inline", "manifest", "items", "item_count",
+    "MessageKind", "user", "assistant", "system", "tool_call", "tool_result",
+    "interaction", "permission", "fork", "merge", "ConversationMessage",
+    "sequence", "content", "attachments", "reply_to", "tool_call_id", "extensions",
+    "ConversationState", "ConversationStateWire", "messages", "archived_prefix",
+    "ArchivedConversationPrefix", "through_sequence", "history_digest", "checkpoint",
+    "invalid request: ", "file or volume label is invalid", "volume-relative path is invalid",
+    "media type is invalid", "attachment manifest metadata is invalid",
+    "message identity is nil", "message sequence must start at one",
+    "extension key must be namespaced", "tool linkage does not match message kind",
+    "archived conversation prefix is unbound", "conversation order or identity is invalid",
+    // Projection's actual intermediate types are distinct from EventPayload.
+    "Authority", "AggregateKind", "kind", "id", "agent", "conversation", "session", "turn", "task",
+    "LifecycleState", "pending", "active", "waiting", "completed", "failed", "cancelled",
+    "EffectGuarantee", "exactly_once", "idempotent_retry", "at_most_once",
+    "EffectStatus", "state", "planned", "dispatched", "succeeded", "result", "message", "indeterminate",
+    "EffectState", "provider", "guarantee", "effect_kind", "request", "request_digest",
+    "result_schema", "result_schema_digest", "status", "attempts",
+    "ExtensionForkPolicy", "inherit", "reset", "reject", "ExtensionRecord",
+    "name", "version", "schema_digest", "implementation_digest", "fork_policy", "content",
+    "ExtensionDependency", "ExtensionConfiguration", "extension",
+    "InteractionTicket", "deadline_unix_ms", "approval", "ApprovalBinding",
+    "operation_id", "action_digest", "InteractionKind", "question", "choice", "form",
+    "InteractionResolution", "expected_version", "outcome", "detail", "InteractionOutcome",
+    "answered", "answer", "approved", "declined", "expired", "denied",
+    "interaction outcome must be an object", "interaction outcome kind must be a string",
+    "unknown interaction outcome field ",
+    // Registered native request/result, including the real WorkBudget alias
+    // (WorkCounters), lazy snapshot primitives and MCP stdio parameter carrier.
+    // Runtime validation/exchange errors are not Deserialize diagnostics.
+    "NativeProcessRequest", "NativeProcessResult", "NativeProcessStop", "NativeProcessStopKind",
+    "NativeViewOptions", "NativeVolumeMapping", "NativeViewManifest", "NativeVolumeNamespace",
+    "executable", "argv", "cwd", "environment", "timeout_ms", "control_timeout_ms",
+    "cancellation_poll_ms", "maximum_output_bytes", "maximum_result_bytes", "mcp_stdio",
+    "standard_input", "view", "root", "maximum_volumes", "work_per_volume", "options",
+    "volumes", "volume", "generation", "namespace", "path", "writable", "authority_revision",
+    "materialized_directory", "lazy_mount", "snapshot", "success", "exit_code", "stdout",
+    "stderr", "stop", "kind", "message", "cleanup_completed",
+    "timeout", "output_limit", "control_stopped", "capture_failed",
+    "McpStdioRequest", "McpStdioMethod", "initialization", "operation", "method", "params",
+    "maximum_bytes", "tools/list", "tools/call",
+    "LazySnapshotRef", "SourceReference", "id", "workspace_id", "authored_generation",
+    "source", "overlay", "shadows", "identity", "epoch",
+    "WorkCounters", "authorityRecordsRead", "authorityRecordsAppended", "authorityBytesRead",
+    "authorityBytesWritten", "objectProbes", "backendReadOperations", "backendWriteOperations",
+    "durabilityOperations", "pageReads", "pageWrites", "objectBytesRead", "objectBytesWritten",
+    "bytesHashed", "bytesCopied", "bytesEncoded", "sourceBytesRead", "sourcePathComponents",
+    "sourceEntriesVisited", "outputBytes", "itemsExamined", "itemsReturned", "allocationOperations",
+    "peakAllocationBytes", "materializations", "path string", "an array of length 16",
 ];
 
-/// Compile-time label/punctuation upper bound for the fixed stock preparation
-/// graphs listed above, refs/attachments and reached Event/SourceAuth schemas.
-/// Covers their derived type/variant/field names and the audited moving ref
+/// Compile-time label/punctuation upper bound for the concrete preparation
+/// graphs listed above: stock records, recursive/resource/task DTOs, configured
+/// Snapshot/conversation, native process/MCP stdio, refs and reached Event/SourceAuth.
+/// Covers their actual derived type/variant/field names and audited moving ref
 /// constructors' static errors, not arbitrary custom Deserialize/Display code.
-/// A private/external containing DTO adds its own actual static manifest. This
-/// pure scalar inventory grants no permission and constructs no source shape.
+/// Other private/external DTOs add their actual manifest. No authority is granted.
 pub const fn preparation_serde_diagnostic_label_bytes() -> u64 {
     let mut result = DIAGNOSTIC_LABEL_BYTES;
     let mut index = 0;
@@ -189,8 +288,8 @@ pub const fn preparation_serde_diagnostic_label_bytes() -> u64 {
     result
 }
 
-/// Diagnostic capacity for the finite stock SDK preparation graphs above.
-/// Owners of private records add their actual field/type/custom-static manifest.
+/// Diagnostic capacity for the finite concrete SDK preparation graphs above.
+/// Other private records add their actual field/type/custom-static manifest.
 /// No unknown custom Deserialize/Display message is supported by this inventory.
 pub(crate) fn audited_preparation_diagnostic_bytes(
     input_bytes: u64, native_code: Option<crate::wire::ErrorCode>,

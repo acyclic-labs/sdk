@@ -1133,6 +1133,62 @@ mod native {
     }
 
     #[test]
+    fn registered_admission_diagnostic_uses_original_owned_converter_and_paid_error_lifetime() {
+        let mut source = consuming_request_source(Value::Null).as_object_mut().unwrap()
+            .remove("child").unwrap();
+        let unknown = format!("!{}", "\0\n\"\\😀".repeat(256));
+        source.as_object_mut().unwrap().insert(unknown, Value::Bool(true));
+        let expected = serde_json::from_value::<crate::runtime::TaskAdmissionRecord>(source.clone()).err().unwrap();
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
+            allocation_operations: 1, peak_allocation_bytes: 1024 * 1024,
+            ..acyclic_fs::WorkBudget::default()
+        }, &cancellation).unwrap();
+        let before = work.remaining().unwrap().peak_allocation_bytes;
+        let operations = work.receipt().allocation_operations;
+        let mut original = work.retain_owned(0).unwrap();
+        original.resize_retained(concrete_owned(&source)).unwrap();
+        let mut future = work.retain_owned(0).unwrap();
+        let mut admitted = false;
+        let mut diagnostic = 0;
+        let failure = json_from_value_owned_bounded_native_trusted::<crate::runtime::TaskAdmissionRecord, _>(
+            source, LIMITS, 0, crate::wire::ErrorCode::Storage,
+            JsonValueSchema::TaskAdmissionRecord, &mut |event| {
+                if let JsonCodecCharge::Admission { value_shape, .. } = event {
+                    diagnostic = crate::contract::json_typed_diagnostic_owned_bytes(
+                        value_shape, crate::contract::preparation_serde_diagnostic_label_bytes(),
+                        Some(crate::wire::ErrorCode::Storage),
+                    )?;
+                    // This first unknown key fails before any valid nested
+                    // typed field is decoded. The actual SDK Value/scratch/base
+                    // allowance and diagnostic overlap are prepaid separately.
+                    future.resize_retained(json_owned_value_conversion_additional_bytes(value_shape)?
+                        + diagnostic + std::mem::size_of::<crate::runtime::TaskAdmissionRecord>() as u64)?;
+                    admitted = true;
+                }
+                Ok(())
+            },
+        ).err().unwrap();
+        assert!(admitted);
+        // The genuine consuming converter has dropped the whole old source on
+        // failure; its guard is no longer needed for moved resident strings.
+        drop(original);
+        let Error::NativeDecode { code, source, custody: None } = failure else {
+            panic!("original typed serde source expected")
+        };
+        assert_eq!(source.to_string(), expected.to_string());
+        assert!(diagnostic >= source.to_string().len() as u64);
+        let held = future.bytes();
+        let failure = Error::NativeDecode { code, source, custody: Some(future) };
+        assert_eq!(before - work.remaining().unwrap().peak_allocation_bytes, held);
+        assert_eq!(work.receipt().allocation_operations, operations,
+            "logical claims are not observed opaque serde allocator operations");
+        cancellation.cancel();
+        drop(failure);
+        assert_eq!(work.remaining().unwrap().peak_allocation_bytes, before);
+    }
+
+    #[test]
     fn consuming_public_request_moves_strings_under_original_and_preclaimed_quota() {
         let source = consuming_request_source(Value::String("payload".repeat(1024)));
         let expected: crate::resource_preparation::ResourcePreparationRequest =

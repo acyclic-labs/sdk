@@ -1506,8 +1506,8 @@ where S: serde::de::DeserializeSeed<'de>, F: FnMut(JsonCodecCharge) -> Result<()
 /// The closed owner MUST audit borrowed/owned visitor acceptance equivalence
 /// and its actual new String/Vec/Content/Box/diagnostic quota; arbitrary custom
 /// Deserialize and visit_string-only visitors are explicitly unsupported.
-/// Consuming from_value callers retain their original semantics and use the
-/// separate inspection/additional-quota helpers instead.
+/// Consuming from_value callers retain their original semantics with
+/// json_from_value_owned_bounded_native_trusted and its additional-quota witness.
 /// Admission carries the SDK-issued BorrowedConversion shape. It is a concrete
 /// owner quota basis, not an actual receipt, arbitrary-T heap/CPU sandbox, or
 /// universal stack/RSS proof; borrowed source custody remains with the caller.
