@@ -34,6 +34,9 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 use uuid::Uuid;
 
+mod native_records;
+mod native_transactions;
+
 const RECORD_LOCK_DEADLINE: Duration = Duration::from_secs(5);
 const RECORD_LOCK_RETRY: Duration = Duration::from_millis(5);
 const GIT_COMPAT_NAMESPACE: &str = "git-compat-v9";
@@ -744,6 +747,37 @@ impl WorkspaceLineageStore for LocalCoreStateStore {
         self.compare_and_swap_logged(workspace_id, expected_revision, replacement)
             .await
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn load_with_native_work(
+        &self,
+        workspace_id: WorkspaceId,
+        original: &crate::materializer::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<Option<NativeOwnedCoreState<WorkspaceLineageRecord>>,
+        (crate::lineage::WorkspaceLineageError<Self::Error>, Option<crate::materializer::NativeAllocation>)> {
+        self.native_logged_transaction(original, cancellation, move |root, log, work, cancellation| {
+            native_records::load_native_lineage(root, log, workspace_id, work, cancellation)
+        }).await.map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn compare_and_swap_with_native_work(
+        &self,
+        workspace_id: WorkspaceId,
+        expected_revision: u64,
+        replacement: NativeOwnedCoreState<WorkspaceLineageRecord>,
+        original: &crate::materializer::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<bool,
+        (crate::lineage::WorkspaceLineageError<Self::Error>, Option<crate::materializer::NativeAllocation>)> {
+        let replacement = native_transactions::checked_native_packet(
+            replacement, original, cancellation, native_records::native_lineage_owned_bytes,
+        ).map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))?;
+        self.native_logged_transaction(original, cancellation, move |root, log, work, cancellation| {
+            native_records::compare_native_lineage(root, log, workspace_id, expected_revision, replacement, work, cancellation)
+        }).await.map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))
+    }
 }
 
 impl WorkspaceContextStore for LocalCoreStateStore {
@@ -754,6 +788,37 @@ impl WorkspaceContextStore for LocalCoreStateStore {
         context_id: WorkspaceContextId,
     ) -> Result<Option<WorkspaceContext>, Self::Error> {
         self.load_logged(context_id).await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn load_with_native_work(
+        &self,
+        context_id: WorkspaceContextId,
+        original: &crate::materializer::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<Option<NativeOwnedCoreState<WorkspaceContext>>,
+        (crate::workspace_context::WorkspaceContextError<Self::Error>, Option<crate::materializer::NativeAllocation>)> {
+        self.native_logged_transaction(original, cancellation, move |root, log, work, cancellation| {
+            native_records::load_native_context(root, log, context_id, work, cancellation)
+        }).await.map_err(|error| (crate::workspace_context::WorkspaceContextError::Store(error), None))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn compare_and_swap_with_native_work(
+        &self,
+        context_id: WorkspaceContextId,
+        expected_revision: u64,
+        replacement: NativeOwnedCoreState<WorkspaceContext>,
+        original: &crate::materializer::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<bool,
+        (crate::workspace_context::WorkspaceContextError<Self::Error>, Option<crate::materializer::NativeAllocation>)> {
+        let replacement = native_transactions::checked_native_packet(
+            replacement, original, cancellation, native_records::native_context_owned_bytes,
+        ).map_err(|error| (crate::workspace_context::WorkspaceContextError::Store(error), None))?;
+        self.native_logged_transaction(original, cancellation, move |root, log, work, cancellation| {
+            native_records::compare_native_context(root, log, context_id, expected_revision, replacement, work, cancellation)
+        }).await.map_err(|error| (crate::workspace_context::WorkspaceContextError::Store(error), None))
     }
 
     async fn list(&self) -> Result<Vec<WorkspaceContext>, Self::Error> {
@@ -1873,12 +1938,9 @@ impl Namespace {
                     let mut log = CoreLog::open_measured(self, Arc::default(), work)?;
                     let result = operation(&mut log);
                     if !log.dirty.is_empty() && !log.broken {
-                        // The WAL may already be durable: a measured checkpoint failure
-                        // retains that decision and must be reconciled by the caller.
-                        if let Err(error @ LocalCoreStateStoreError::MaterializationWork(_)) =
-                            log.checkpoint_measured(self, work) {
-                            return Err(error);
-                        }
+                        // Acceptance belongs to the already flushed WAL, never to
+                        // an optional postcommit checkpoint (same as with_log).
+                        drop(log.checkpoint_measured(self, work));
                     }
                     result
                 })
