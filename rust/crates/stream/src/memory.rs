@@ -4068,23 +4068,41 @@ mod tests {
                 let issued = provider.native_prepare_commit(request, 64, meter.original()).await??;
                 let (mut issued, packet_guard) = issued.into_parts();
                 let recovery = issued.take_recovery_future().ok_or(StreamError::Unavailable)?;
-                if larger_commit {
-                    provider.commit(CommitRequest {
-                        conditions: vec![],
+                let published = if larger_commit {
+                    let outcome = provider.commit(CommitRequest {
+                        // Each real Append mutation needs its own current-tail guard.
+                        conditions: vec![
+                            CommitCondition::Tail { path: path("completion/owner")?, expected: 1 },
+                            CommitCondition::Tail { path: path("completion/target")?, expected: 1 },
+                        ],
                         mutations: vec![
                             CommitMutation::Append { path: path("completion/owner")?,
                                 records: vec![OwnedBytes::from_static(b"foreign-owner")] },
                             CommitMutation::Append { path: path("completion/target")?,
                                 records: vec![OwnedBytes::from_static(b"foreign-target")] },
                         ],
-                        idempotency_key: foreign_key,
+                        idempotency_key: foreign_key.clone(),
                     }).await?;
+                    let CommitOutcome::Committed(envelope) = &outcome else {
+                        panic!("the larger foreign Commit must actually publish")
+                    };
+                    assert_eq!(envelope.mutations.len(), 2);
+                    assert_eq!(provider.tail(path("completion/owner")?).await?, 2);
+                    IdempotencyOutcome::Commit(outcome)
                 } else {
-                    provider.append(AppendRequest {
+                    let outcome = provider.append(AppendRequest {
                         path: path("completion/target")?, records: vec![OwnedBytes::from_static(b"foreign-append")],
-                        if_tail: Some(1), idempotency_key: Some(foreign_key),
+                        if_tail: Some(1), idempotency_key: Some(foreign_key.clone()),
                     }).await?;
-                }
+                    assert!(matches!(&outcome, AppendOutcome::Committed(_)));
+                    IdempotencyOutcome::Append(outcome)
+                };
+                assert_eq!(provider.tail(path("completion/target")?).await?, 2);
+                let retained = provider.inspect_idempotency(foreign_key).await?
+                    .ok_or(StreamError::Unavailable)?;
+                assert_eq!(retained.outcome, published);
+                drop(retained);
+                drop(published);
                 let allocations = meter.allocations.load(Ordering::SeqCst);
                 meter.cancelled.store(true, Ordering::SeqCst);
                 let failure = match recovery.await? {
@@ -4102,6 +4120,9 @@ mod tests {
                 drop(failure);
                 drop(issued);
                 drop(packet_guard);
+                assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
+                assert_eq!(meter.pending_write_operations.load(Ordering::SeqCst), 0);
+                assert_eq!(*meter.pending_allocations.lock(), (0, 0));
                 drop(provider);
                 assert_eq!(meter.held.load(Ordering::SeqCst), 0);
             }
