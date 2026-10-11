@@ -15,7 +15,7 @@
 use super::{DaytonaApi, status_error, transport_error};
 use acyclic_machines::{OperationId, ProviderError};
 use futures::{SinkExt, StreamExt};
-use reqwest::{Method, RequestBuilder, Url};
+use reqwest::{RequestBuilder, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -205,6 +205,19 @@ fn original_mutation<T>(result: Result<T, ProviderError>, operation: OperationId
     }
 }
 
+fn observe_original_command(
+    session: Session,
+    original: &SessionExecuteRequest,
+) -> Result<SessionCommandObservation, ProviderError> {
+    let mut commands = session.commands.into_iter();
+    match (commands.next(), commands.next()) {
+        (None, None) => Ok(SessionCommandObservation::NotObserved),
+        (Some(command), None) if command.command == original.command =>
+            Ok(SessionCommandObservation::Observed(command)),
+        _ => Err(ProviderError::Conflict("dedicated original session contains a different command intent".into())),
+    }
+}
+
 fn checked_segment(value: &str) -> Result<(), ProviderError> {
     if value.is_empty() || matches!(value, "." | "..") {
         return Err(ProviderError::Invalid("provider identity is not a path segment".into()));
@@ -271,13 +284,7 @@ impl DaytonaApi {
             Err(ProviderError::NotFound(_)) => return Ok(SessionCommandObservation::NotObserved),
             Err(error) => return Err(error),
         };
-        let mut commands = session.commands.into_iter();
-        match (commands.next(), commands.next()) {
-            (None, None) => Ok(SessionCommandObservation::NotObserved),
-            (Some(command), None) if command.command == original.command =>
-                Ok(SessionCommandObservation::Observed(command)),
-            _ => Err(ProviderError::Conflict("dedicated original session contains a different command intent".into())),
-        }
+        observe_original_command(session, original)
     }
 
     /// Gets actual command metadata, including an optional observed exit code.
@@ -372,7 +379,8 @@ impl DaytonaApi {
         use reqwest::header::{CONNECTION, UPGRADE, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_PROTOCOL, SEC_WEBSOCKET_VERSION};
         let key = tokio_tungstenite::tungstenite::handshake::client::generate_key();
         let expected = tokio_tungstenite::tungstenite::handshake::derive_accept_key(key.as_bytes());
-        let builder = builder.header(CONNECTION, "Upgrade").header(UPGRADE, "websocket")
+        let builder = builder.version(reqwest::Version::HTTP_11)
+            .header(CONNECTION, "Upgrade").header(UPGRADE, "websocket")
             .header(SEC_WEBSOCKET_VERSION, "13").header(SEC_WEBSOCKET_KEY, key);
         let builder = match subprotocol {
             Some(protocol) => builder.header(SEC_WEBSOCKET_PROTOCOL, protocol),
@@ -694,13 +702,13 @@ impl ExecServerLogReader {
         use sha2::Digest;
         let end = usize::try_from(self.bytes)
             .map_err(|_| ProviderError::Rejected("original native log cursor exceeds this platform".into()))?;
-        let prefix = snapshot.bytes.get(..end)
+        let (prefix, unread) = snapshot.bytes.split_at_checked(end)
             .ok_or_else(|| ProviderError::Conflict("original native logs were truncated".into()))?;
         let actual: [u8; 32] = sha2::Sha256::digest(prefix).into();
         if actual != self.cursor().prefix_sha256 {
             return Err(ProviderError::Conflict("original native log prefix was replaced".into()));
         }
-        self.feed(&snapshot.bytes[end..])
+        self.feed(unread)
     }
 
     fn feed_inner(&mut self, bytes: &[u8], emit: bool) -> Result<Vec<ExecServerLogEvent>, ProviderError> {
@@ -787,5 +795,127 @@ impl ExecServerLogReader {
         }
         if !diagnostics.is_empty() { events.push(ExecServerLogEvent::Diagnostics(diagnostics)); }
         Ok(events)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use exec_server_protocol::{JSONRPCMessage, JSONRPCNotification, JSONRPCResponse, RequestId};
+
+    fn native_output(message: &JSONRPCMessage) -> Vec<u8> {
+        let mut output = vec![1, 1, 1];
+        output.extend(serde_json::to_vec(message).expect("upstream protocol fixture"));
+        output.push(b'\n');
+        output
+    }
+
+    fn response() -> JSONRPCMessage {
+        JSONRPCMessage::Response(JSONRPCResponse {
+            id: RequestId::String("read-original".into()),
+            result: serde_json::json!({"rawData": "AQAC/w==", "unicode": "λ"}),
+        })
+    }
+
+    #[test]
+    fn native_rpc_and_binary_stderr_survive_every_byte_boundary() {
+        let expected = response();
+        let mut bytes = native_output(&expected);
+        bytes.extend_from_slice(&[2, 2, 2, 0xff, 0, b'\n']);
+        let notification = JSONRPCMessage::Notification(JSONRPCNotification {
+            method: exec_server_protocol::EXEC_CLOSED_METHOD.into(),
+            params: Some(serde_json::json!({"processId": "original-process"})),
+        });
+        bytes.extend(native_output(&notification));
+        let mut reader = ExecServerLogReader::default();
+        let mut messages = Vec::new();
+        let mut diagnostics = Vec::new();
+        for byte in &bytes {
+            for event in reader.feed(std::slice::from_ref(byte)).expect("actual protocol decode") {
+                match event {
+                    ExecServerLogEvent::Message(message) => messages.push(message),
+                    ExecServerLogEvent::Diagnostics(chunk) => diagnostics.extend(chunk),
+                }
+            }
+        }
+        assert_eq!(messages, vec![expected, notification]);
+        assert_eq!(diagnostics, vec![0xff, 0, b'\n']);
+        assert!(reader.finish().expect("complete observer stream").is_empty());
+        use sha2::Digest;
+        let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
+        assert_eq!(reader.cursor(), ExecServerLogCursor { bytes: bytes.len() as u64, prefix_sha256: digest });
+    }
+
+    #[test]
+    fn original_cursor_restores_partial_line_without_reemitting_committed_messages() {
+        let first = response();
+        let second = JSONRPCMessage::Response(JSONRPCResponse {
+            id: RequestId::Integer(19),
+            result: serde_json::json!({"exitCode": 7}),
+        });
+        let first_bytes = native_output(&first);
+        let second_bytes = native_output(&second);
+        let prefix = first_bytes.len() + second_bytes.len() / 2;
+        let mut full = first_bytes;
+        full.extend(second_bytes);
+        let snapshot = SessionLogSnapshot { bytes: full };
+        let mut original = ExecServerLogReader::default();
+        let before = original.feed(&snapshot.bytes[..prefix]).expect("partial original feed");
+        assert!(matches!(before.as_slice(), [ExecServerLogEvent::Message(message)] if message == &first));
+        let cursor = original.cursor();
+        let mut restored = ExecServerLogReader::restore(&snapshot, &cursor).expect("verified original prefix");
+        let after = restored.feed_snapshot(&snapshot).expect("unread native suffix");
+        assert!(matches!(after.as_slice(), [ExecServerLogEvent::Message(message)] if message == &second));
+        assert!(restored.feed_snapshot(&snapshot).expect("same retained snapshot").is_empty());
+        let mut replaced = snapshot.clone();
+        replaced.bytes[3] ^= 1;
+        assert!(matches!(ExecServerLogReader::restore(&replaced, &cursor), Err(ProviderError::Conflict(_))));
+        let truncated = SessionLogSnapshot { bytes: snapshot.bytes[..prefix - 1].to_vec() };
+        assert!(matches!(ExecServerLogReader::restore(&truncated, &cursor), Err(ProviderError::Conflict(_))));
+        assert!(matches!(restored.feed_snapshot(&replaced), Err(ProviderError::Conflict(_))));
+    }
+
+    #[test]
+    fn malformed_unlabelled_and_truncated_native_output_never_become_exit_receipts() {
+        let mut reader = ExecServerLogReader::default();
+        assert!(matches!(reader.feed(b"{\"id\":1,\"result\":{}}\n"), Err(ProviderError::Rejected(_))));
+        let mut reader = ExecServerLogReader::default();
+        assert!(matches!(reader.feed(b"\x01\x01\x01not-json\n"), Err(ProviderError::Rejected(_))));
+        let mut reader = ExecServerLogReader::default();
+        reader.feed(b"\x01\x01\x01{\"id\":1,\"result\":").expect("partial actual line");
+        assert_eq!(reader.finish().err(), Some(ProviderError::Unavailable));
+    }
+
+    #[test]
+    fn ambiguous_mutations_keep_the_exact_original_operation_without_replacement() {
+        let original = OperationId::parse("a663a8b1-9a49-4d33-9b40-576b99627f28").expect("retained operation");
+        assert_eq!(original_mutation::<()>(Err(ProviderError::Unavailable), original),
+            Err(ProviderError::OperationIndeterminate(original)));
+        assert_eq!(original_mutation::<()>(Err(ProviderError::Rejected("malformed success".into())), original),
+            Err(ProviderError::OperationIndeterminate(original)));
+        let conflict = ProviderError::Conflict("already retained".into());
+        assert_eq!(original_mutation::<()>(Err(conflict.clone()), original), Err(conflict));
+    }
+
+    #[test]
+    fn dedicated_session_reconciliation_preserves_generated_identity_and_rejects_foreign_or_multiple_commands() {
+        let original = SessionExecuteRequest {
+            command: "printf 'one\\n'".into(), run_async: true, suppress_input_echo: true,
+        };
+        let command = SessionCommand {
+            id: "provider-generated-original".into(), command: original.command.clone(),
+            exit_code: Some(7), extra: Map::new(),
+        };
+        let session = |commands| Session { session_id: "caller-retained-session".into(), commands, extra: Map::new() };
+        assert_eq!(observe_original_command(session(vec![]), &original).expect("read-only absent observation"),
+            SessionCommandObservation::NotObserved);
+        assert_eq!(observe_original_command(session(vec![command.clone()]), &original).expect("exact singleton"),
+            SessionCommandObservation::Observed(command.clone()));
+        assert!(matches!(observe_original_command(session(vec![command.clone(), command.clone()]), &original),
+            Err(ProviderError::Conflict(_))));
+        let mut foreign = command;
+        foreign.command = "printf 'different\\n'".into();
+        assert!(matches!(observe_original_command(session(vec![foreign]), &original),
+            Err(ProviderError::Conflict(_))));
     }
 }
