@@ -33,7 +33,18 @@ if ($Lane -eq 'windows-arm64') {
     node scripts/build-filesystem-native.mjs build --target aarch64-pc-windows-msvc `
         --output "$nativeRoot/bundle" --target-dir $nativeTarget
     Copy-Item "$nativeTarget/filesystem-native-build-inputs.receipt.json" "$nativeRoot/producer-receipt.json"
-    bun run --filter '@acyclic-labs/fs' build
+    # The public package builds WASM too; use the same direct-rustc boundary as the main lane.
+    $rustcWrapper = $env:RUSTC_WRAPPER
+    Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+    try {
+        bun run --filter '@acyclic-labs/fs' build
+    } finally {
+        if ($null -eq $rustcWrapper) {
+            Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+        } else {
+            $env:RUSTC_WRAPPER = $rustcWrapper
+        }
+    }
     node scripts/check-filesystem-napi.mjs --bundle "$nativeRoot/bundle" `
         --producer-receipt "$nativeRoot/producer-receipt.json" --adapter
     exit 0

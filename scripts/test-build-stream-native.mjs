@@ -156,6 +156,7 @@ test("Darwin strip preflight installs only the matching active toolchain's missi
       calls.push([command, ...args]);
       if (args[0] === "show") return "1.98.1-aarch64-apple-darwin (overridden by rust-toolchain.toml)";
       if (args[0] === "component") { available = true; return ""; }
+      if (args.includes("--target")) return resolve(tmpdir(), "pinned-rust/lib/rustlib/x86_64-apple-darwin/lib");
       return libdir;
     },
     optional() { return available ? identity : null; },
@@ -165,11 +166,11 @@ test("Darwin strip preflight installs only the matching active toolchain's missi
       return identity;
     },
   };
-  assert.deepEqual(darwinRustObjcopyIdentity("aarch64-apple-darwin", commands), identity);
+  assert.deepEqual(darwinRustObjcopyIdentity("x86_64-apple-darwin", commands), identity);
   assert.deepEqual(calls.at(-1), ["rustup", "component", "add", "llvm-tools-preview", "--toolchain", "1.98.1-aarch64-apple-darwin"]);
   calls.length = 0;
   darwinRustObjcopyIdentity("aarch64-apple-darwin", commands);
-  assert.equal(calls.length, 1, "working strip helper must not invoke rustup");
+  assert.equal(calls.some(([command]) => command === "rustup"), false, "working strip helper must not alter the installed toolchain");
   available = false;
   assert.throws(() => darwinRustObjcopyIdentity("aarch64-apple-darwin", { ...commands,
     output: (command, args) => args[0] === "run" ? "another-sysroot" : commands.output(command, args),

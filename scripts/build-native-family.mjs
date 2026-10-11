@@ -368,7 +368,8 @@ function linkerInputs(target, environment = process.env, { attestApple = process
 
 function darwinRustObjcopyIdentity(target, commands = { output: commandOutput, optional: optionalCommandIdentity, identity: executableIdentity }) {
   if (typeof target !== "string" || !target.endsWith("-apple-darwin")) return null;
-  const args = ["--print", "target-libdir", "--target", target];
+  // LLVM tools run on the compiler host, even when compiling the other Darwin architecture.
+  const args = ["--print", "target-libdir"];
   const libdir = commands.output("rustc", args);
   const executable = resolve(libdir, "../bin/rust-objcopy");
   if (commands.optional(executable, ["--version"]) === null) {
