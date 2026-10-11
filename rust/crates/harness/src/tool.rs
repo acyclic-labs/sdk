@@ -23,32 +23,51 @@ fn decode<T: serde::de::DeserializeOwned>(value: &Value) -> Result<T> {
     T::deserialize(value).map_err(|error| Error::Invalid(error.to_string()))
 }
 
-/// Decodes an audited SDK DTO while its original native allocation is retained.
+/// Decodes the same borrowed Value visitor under the original audited DTO quota.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn decode_with_native_work<T: crate::filesystem::UploadRecord>(
     value: &Value,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<(T, acyclic_fs::NativeAllocation)> {
-    decode_serialized_with_native_work(value, work)
+    let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+    let value: T = io.value_decode(value, crate::wire::ErrorCode::Invalid)?;
+    let retained = (std::mem::size_of::<T>() as u64)
+        .checked_add(value.logical_owned_bytes()?)
+        .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+            reason: "tool DTO ownership overflow" })?;
+    let custody = io.into_native_custody(retained)?;
+    Ok((value, custody))
+}
+
+/// Copies the actual Value graph, including literal serde-private map keys.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn clone_value_with_native_work(
+    value: &Value,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+    let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+    io.retain_owned(std::mem::size_of::<Value>() as u64)?;
+    let copied = crate::model::model_value_clone_with_io(value, Some(&io))?;
+    let retained = value_owned_bytes(&copied)?;
+    let custody = io.into_native_custody(retained)?;
+    Ok((copied, custody))
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn decode_serialized_with_native_work<
-    T: crate::filesystem::UploadRecord, S: Serialize,
->(
-    value: &S,
+fn clone_definition_with_native_work(
+    value: &ToolDefinition,
     work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(T, acyclic_fs::NativeAllocation)> {
+) -> Result<(ToolDefinition, acyclic_fs::NativeAllocation)> {
+    use crate::filesystem::UploadRecord as _;
     let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-    let encoded_hold;
-    let encoded = io.encode_json(value, io.remaining()?.bytes_encoded, false)?;
-    encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
-    let value: T = io.decode_json(&encoded)?;
-    let retained = value.logical_owned_bytes()?;
-    drop(encoded);
-    drop(encoded_hold);
+    io.retain_owned(std::mem::size_of::<ToolDefinition>() as u64)?;
+    let copied = crate::model::model_tool_definition_clone_with_io(value, Some(&io))?;
+    let retained = (std::mem::size_of::<ToolDefinition>() as u64)
+        .checked_add(copied.logical_owned_bytes()?)
+        .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+            reason: "tool definition ownership overflow" })?;
     let custody = io.into_native_custody(retained)?;
-    Ok((value, custody))
+    Ok((copied, custody))
 }
 
 /// Builds the canonical result tree through the existing bounded SDK codec.
@@ -67,13 +86,8 @@ pub(crate) fn value_with_native_work_bounded<T: Serialize>(
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
     let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-    let encoded_hold;
-    let encoded = io.encode_json(value, maximum_bytes, false)?;
-    encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
-    let value = io.decode_preparation::<Value>(&encoded)?.into_retained();
+    let value = io.value_json(value, maximum_bytes)?;
     let retained = value_owned_bytes(&value)?;
-    drop(encoded);
-    drop(encoded_hold);
     let custody = io.into_native_custody(retained)?;
     Ok((value, custody))
 }
@@ -113,7 +127,7 @@ pub(crate) fn value_owned_bytes(value: &Value) -> Result<u64> {
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl crate::filesystem::UploadRecord for ToolDefinition {
     fn logical_owned_bytes(&self) -> Result<u64> {
-        let mut bytes = std::mem::size_of::<Self>() as u64;
+        let mut bytes = 0_u64;
         for text in [&self.name, &self.revision, &self.description] {
             bytes = bytes.checked_add(text.capacity() as u64).ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
@@ -135,9 +149,8 @@ impl crate::filesystem::UploadRecord for ToolDefinition {
 impl crate::filesystem::UploadRecord for ToolInvocation {
     fn logical_owned_bytes(&self) -> Result<u64> {
         let deep = value_owned_bytes(&self.arguments)? - std::mem::size_of::<Value>() as u64;
-        (std::mem::size_of::<Self>() as u64)
-            .checked_add(self.call_id.capacity() as u64)
-            .and_then(|bytes| bytes.checked_add(self.name.capacity() as u64))
+        (self.call_id.capacity() as u64)
+            .checked_add(self.name.capacity() as u64)
             .and_then(|bytes| bytes.checked_add(deep))
             .ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
@@ -148,7 +161,9 @@ impl crate::filesystem::UploadRecord for ToolInvocation {
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl crate::filesystem::UploadRecord for ToolResult {
-    fn logical_owned_bytes(&self) -> Result<u64> { value_owned_bytes(&self.value) }
+    fn logical_owned_bytes(&self) -> Result<u64> {
+        Ok(value_owned_bytes(&self.value)? - std::mem::size_of::<Value>() as u64)
+    }
 }
 
 #[cfg(feature = "filesystem")]
@@ -243,14 +258,10 @@ impl ToolDefinition {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         crate::contract::validate_json_schema_value_with_io(
             &self.projection_schema, value, "tool projection", Some(&io))?;
-        let encoded_hold;
-        let encoded = io.encode_json(value, limits.render_bytes, false)?;
-        encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
-        let content = io.decode_preparation::<crate::model::ToolResultContent>(&encoded)?.into_retained();
+        let content: crate::model::ToolResultContent =
+            io.value_decode(value, crate::wire::ErrorCode::Invalid)?;
         content.validate_limits_with_io(limits, Some(&io))?;
         let retained = content.logical_owned_bytes()?;
-        drop(encoded);
-        drop(encoded_hold);
         let custody = io.into_native_custody(retained)?;
         Ok((content, custody))
     }
@@ -353,7 +364,7 @@ impl ToolInvocation {
 
     /// Validates an event identity before it can enter the durable model journal.
     pub fn validate_identity(call_id: &str, name: &str) -> Result<()> {
-        Self::validate_identity_with_io(call_id, Some(name), None)
+        Self::validate_identity_with_io(call_id, name, None)
     }
 
     /// Validates the same complete identity on its original native ledger.
@@ -363,7 +374,7 @@ impl ToolInvocation {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         let io = crate::executor::PreparationIo::from_native_work(work)?;
-        Self::validate_identity_with_io(&self.call_id, Some(&self.name), Some(&io))
+        Self::validate_identity_with_io(&self.call_id, &self.name, Some(&io))
     }
 
     /// Validates the original model-owned identity without inventing a name.
@@ -373,10 +384,18 @@ impl ToolInvocation {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         let io = crate::executor::PreparationIo::from_native_work(work)?;
-        Self::validate_identity_with_io(call_id, None, Some(&io))
+        Self::validate_call_identity_with_io(call_id, None, Some(&io))
     }
 
-    fn validate_identity_with_io(
+    pub(crate) fn validate_identity_with_io(
+        call_id: &str,
+        name: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        Self::validate_call_identity_with_io(call_id, Some(name), io)
+    }
+
+    fn validate_call_identity_with_io(
         call_id: &str,
         name: Option<&str>,
         io: Option<&crate::executor::PreparationIo>,
@@ -823,10 +842,16 @@ impl ToolRegistry {
         let mut custody = work.retain_owned(std::mem::size_of::<Self>() as u64)?;
         let mut copied = Self::default();
         for ((name, revision), tool) in &self.versions {
-            let (definition, mut definition_hold) =
-                decode_serialized_with_native_work::<ToolDefinition, _>(&tool.definition, work)?;
-            let (name, mut name_hold) = work.display(name)?;
-            let (revision, mut revision_hold) = work.display(revision)?;
+            let mut definition_hold;
+            let (definition, hold) =
+                clone_definition_with_native_work(&tool.definition, work)?;
+            definition_hold = hold;
+            let mut name_hold;
+            let (name, hold) = work.display(name)?;
+            name_hold = hold;
+            let mut revision_hold;
+            let (revision, hold) = work.display(revision)?;
+            revision_hold = hold;
             custody.absorb(&mut definition_hold)?;
             custody.absorb(&mut name_hold)?;
             custody.absorb(&mut revision_hold)?;
@@ -841,11 +866,15 @@ impl ToolRegistry {
             });
         }
         for (name, selection) in &self.selected {
-            let (name, mut name_hold) = work.display(name)?;
+            let mut name_hold;
+            let (name, hold) = work.display(name)?;
+            name_hold = hold;
             custody.absorb(&mut name_hold)?;
             let selection = match selection {
                 ModelSelection::Revision(revision) => {
-                    let (revision, mut hold) = work.display(revision)?;
+                    let mut hold;
+                    let (revision, owned) = work.display(revision)?;
+                    hold = owned;
                     custody.absorb(&mut hold)?;
                     ModelSelection::Revision(revision)
                 }
@@ -859,7 +888,9 @@ impl ToolRegistry {
             copied.selected.insert(name, selection);
         }
         for (name, revision) in &self.catalog_revisions {
-            let (name, mut hold) = work.display(name)?;
+            let mut hold;
+            let (name, owned) = work.display(name)?;
+            hold = owned;
             custody.absorb(&mut hold)?;
             custody.resize_retained(custody.bytes().checked_add(
                 std::mem::size_of::<(String, [u8; 32])>() as u64).ok_or(
@@ -901,8 +932,10 @@ impl ToolRegistry {
                 code: crate::wire::ErrorCode::Storage,
                 reason: "selected tool revision is not registered",
             })?;
-            let (definition, mut hold) =
-                decode_serialized_with_native_work::<ToolDefinition, _>(&tool.definition, work)?;
+            let mut hold;
+            let (definition, owned) =
+                clone_definition_with_native_work(&tool.definition, work)?;
+            hold = owned;
             hold.substitute(hold.bytes() - std::mem::size_of::<ToolDefinition>() as u64)?;
             custody.absorb(&mut hold)?;
             definitions.push(definition);
