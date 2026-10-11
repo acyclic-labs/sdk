@@ -854,6 +854,14 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
     assert!(work.receipt().backend_read_operations > before.backend_read_operations);
     assert!(custody.work().shares_ledger(&work));
     assert!(matches!(reopened.task_host().outcome(task).await?, Some(Outcome::Cancelled)));
+    let witness = reopened.readonly_workflow_journal_with_native_work(task, &work).await?;
+    let records = crate::workflow::WorkflowJournal::replay_with_native_work(
+        witness.as_ref(), 0, 64, &work,
+    )?.await?;
+    assert!(!records.0.is_empty());
+    assert!(records.1.work().shares_ledger(&work));
+    drop(records);
+    drop(witness);
     drop(attempt);
     drop(custody);
     Ok(())

@@ -1579,6 +1579,30 @@ where
         )?.into_native_shared(work)
     }
 
+    /// Observes the original workflow under its protected readonly owner,
+    /// including terminal records, without claiming a new lease.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn readonly_workflow_journal_with_native_work(
+        &self, task: TaskId, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Arc<FilesystemWorkflowJournal<P, A, O>>> {
+        let io = super::PreparationIo::from_native_work(work)?;
+        let admission = self.admission_observed(task, Some(&io)).await?;
+        self.readonly_workflow_journal_observed(task, &admission, work).await?
+            .into_native_shared(work)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn readonly_workflow_journal_observed(
+        &self, task: TaskId, admission: &TaskAdmissionRecord,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<FilesystemWorkflowJournal<P, A, O>> {
+        let owner = self.host.readonly_journal_owner_with_native_work(task, work).await?;
+        FilesystemWorkflowJournal::for_task_with_native_work(
+            owner, Arc::clone(&self.filesystem), &self.volume, &self.verifier,
+            &self.signed, self.maximum_payload_bytes.min(admission.limits.file_bytes), work,
+        )
+    }
+
     /// Reopens the admitted registered task and its bound workflow without
     /// requiring a typed definition at the worker boundary.
     pub async fn open_task(&self, task: TaskId, fence: LeaseFence) -> Result<ResumableTaskSession> {
@@ -1907,11 +1931,7 @@ where
             let work = io.original_native_work().ok_or_else(|| observed::boundary(
                 Some(io), crate::wire::ErrorCode::Unsupported, "native wake journal requires original observer",
             ))?;
-            let owner = self.host.readonly_journal_owner_with_native_work(task, work).await?;
-            FilesystemWorkflowJournal::for_task_with_native_work(
-                owner, Arc::clone(&self.filesystem), &self.volume, &self.verifier,
-                &self.signed, self.maximum_payload_bytes.min(admission.limits.file_bytes), work,
-            )?
+            self.readonly_workflow_journal_observed(task, &admission, work).await?
         } else {
             FilesystemWorkflowJournal::new(
                 self.host.workflow_stream(), Arc::clone(&self.filesystem),
