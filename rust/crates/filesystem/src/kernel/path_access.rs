@@ -327,29 +327,6 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
         result.map(|()| ObjectReceipt { value: (), work }).map_err(|error| ObjectFailure::new(object_error(error), work))
     }
 
-    async fn flush_before_publish(
-        &self,
-        scope: crate::PublicationScope<'_>,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<crate::PublicationHold> {
-        let resident = self.resident_bytes()?;
-        let receipt = self.store.flush_before_publish(
-            scope, budget_after_resident(budget, resident)?, cancellation,
-        ).await.map_err(|failure| {
-            merge_backend_failure(WorkCounters::default(), *failure.work, resident, failure.error)
-        })?;
-        let work = merge_backend_peak(WorkCounters::default(), receipt.work, resident, budget)?;
-        Ok(ObjectReceipt { value: receipt.value, work })
-    }
-
-    fn collection(&self) -> Option<&std::sync::Arc<crate::Collection>> {
-        self.store.collection()
-    }
-
-    fn collection_sweeps(&self) -> u64 {
-        self.store.collection_sweeps()
-    }
 
     async fn historical_generation_evidence(
         &self,
@@ -360,15 +337,26 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<Option<crate::kernel::HistoricalGenerationEvidence>> {
-        let resident = self.resident_bytes()?;
-        let receipt = self.store.historical_generation_evidence(
-            authority_id, record, maximum_bytes, maximum_objects,
-            budget_after_resident(budget, resident)?, cancellation,
-        ).await.map_err(|failure| {
-            merge_backend_failure(WorkCounters::default(), *failure.work, resident, failure.error)
-        })?;
-        let work = merge_backend_peak(WorkCounters::default(), receipt.work, resident, budget)?;
-        Ok(ObjectReceipt { value: receipt.value, work })
+        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        let result = async {
+            let resident = self.extra_resident()?;
+            let remaining = provider_remaining(&accounting, resident)?;
+            match self.store.historical_generation_evidence(
+                authority_id, record, maximum_bytes, maximum_objects, remaining, cancellation,
+            ).await {
+                Ok(receipt) => {
+                    compose_backend(&mut accounting, receipt.work, resident)?;
+                    Ok(receipt.value)
+                }
+                Err(failure) => {
+                    compose_backend(&mut accounting, *failure.work, resident)?;
+                    Err(failure.error.into())
+                }
+            }
+        }.await;
+        let work = accounting.spent();
+        result.map(|value| ObjectReceipt { value, work })
+            .map_err(|error| ObjectFailure::new(object_error(error), work))
     }
     #[cfg(not(target_arch = "wasm32"))]
     async fn put_with_native_work(&self, object_id: ObjectId, bytes: Bytes,

@@ -709,7 +709,7 @@ fn native_object_error(error: crate::storage::ObjectStoreError) -> crate::FsErro
 #[cfg(not(target_arch = "wasm32"))]
 fn native_authority_error(error: AuthorityStoreError) -> crate::FsError {
     match error {
-        AuthorityStoreError::Native(error) => crate::FsError::NativeKernel(error),
+        AuthorityStoreError::NativeOriginal(error) => crate::FsError::NativeKernel(error),
         error => crate::FsError::Authority(error),
     }
 }
