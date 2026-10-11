@@ -61,6 +61,17 @@ custody until their payload or file is dropped, rather than until an observer
 stops awaiting. Capacity reconciliation records completed SDK-owned capacity
 before evaluating a late cancellation or quota refusal.
 
+`NativeFile::write_bounded_async_with_custody` accepts owned `AsRef<[u8]>` payloads
+without converting or copying their backing. The same positional validation and
+ordered completion driver retain the complete payload before its separate custody
+guard, so SDK byte carriers keep their original guard through accepted I/O.
+
+The synchronous held write adapter admits Windows mode queries and overlapped
+reopens before using that same positional completion engine. Namespace publication
+and durable rename likewise share ordinary/native syscall engines; measured calls
+retain their actual terminated platform path buffers through the physical effect
+and account for each namespace and durability attempt on the original meter.
+
 These limits cover SDK-visible logical payload capacities and known metadata,
 not allocator bookkeeping, RSS, kernel buffers, private codec allocations, or
 physical transport acknowledgments. An `Arc`'s known value is charged for its
