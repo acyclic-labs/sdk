@@ -746,3 +746,68 @@ async fn child_cancellation_cannot_borrow_the_hosts_broader_control_grant() -> R
     assert!(!runtime.task_host().observe_task(child).await?.cancellation_requested);
     Ok(())
 }
+
+#[tokio::test]
+async fn native_machine_without_callback_rejects_before_owner_deadline_or_provider_work() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let runtime = fixture.runtime().await?;
+    let lease = fixture.admit(&runtime).await?;
+    let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+    let fence = LeaseFence::from(&lease.reservation);
+    runtime.task_host().start_task(&lease).await?;
+    let mut session = runtime.open_task(task, fence).await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget {
+            allocation_operations: 1,
+            peak_allocation_bytes: acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
+            ..Default::default()
+        }, &cancellation,
+    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let custody = work.retain_owned(0).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    let prefix = work.receipt();
+    fixture.clock.0.store(20, Ordering::SeqCst);
+    assert!(matches!(session.step_with_native_work(
+        OperationId::from_bytes([118; 16]),
+        IdempotencyKey::new("native-unsupported-machine")?,
+        Value::Null,
+        custody,
+    ).await, Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, .. })));
+    assert_eq!(work.receipt(), prefix);
+    assert_eq!(session.checkpoint().revision, 0);
+    assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
+    let state = runtime.task_host().observe_task(task).await?;
+    assert!(!state.cancellation_requested);
+    assert_eq!(state.reservation, Some(lease.reservation));
+    assert!(state.outcome.is_none());
+    // The same custom state machine still works through ordinary None.
+    fixture.clock.0.store(10, Ordering::SeqCst);
+    session.step(
+        OperationId::from_bytes([119; 16]),
+        IdempotencyKey::new("ordinary-custom-machine")?,
+        Value::Null,
+    ).await?;
+    assert_eq!(session.checkpoint().revision, 1);
+    assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[test]
+fn native_step_identity_denial_precedes_string_growth() -> Result<()> {
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget {
+            allocation_operations: 1,
+            peak_allocation_bytes: acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
+            ..Default::default()
+        }, &cancellation,
+    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let prefix = work.receipt();
+    assert!(matches!(native_step_key(u64::MAX, &work), Err(Error::NativeWork { .. })));
+    assert_eq!(work.receipt().allocation_operations, prefix.allocation_operations);
+    assert_eq!(work.receipt().bytes_encoded, 0);
+    assert_eq!(work.receipt().authority_records_acknowledged, 0);
+    assert_eq!(work.receipt().backend_write_operations, 0);
+    Ok(())
+}

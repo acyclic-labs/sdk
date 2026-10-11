@@ -1320,13 +1320,70 @@ where
             digest.update(&revision.to_be_bytes());
             let mut bytes = [0; 16];
             bytes.copy_from_slice(&digest.finalize().as_bytes()[..16]);
-            session
-                .step(
+            #[cfg(not(target_arch = "wasm32"))]
+            let native_input = if let Some(CommandDispatch::Ready {
+                custody: Some(primary), additional_custody, ..
+            }) = command_input.as_mut() {
+                for incoming in additional_custody {
+                    primary.absorb(incoming).map_err(|cause| Error::NativeWork {
+                        cause, custody: None,
+                    })?;
+                }
+                let (key, mut key_guard) = match native_step_key(revision, primary.work()) {
+                    Ok(key) => key,
+                    Err(Error::NativeWork { cause, custody }) => {
+                        drop(input);
+                        // Transfer actual already-held reply custody on failure,
+                        // without another claim, clock check, or SDK operation.
+                        let mut held = match primary.split_off(primary.bytes()) {
+                            Ok(held) => held,
+                            Err(_) => return Err(Error::NativeWork { cause, custody }),
+                        };
+                        if let Some(mut incoming) = custody {
+                            if !held.work().shares_ledger(incoming.work())
+                                || held.absorb(&mut incoming).is_err()
+                            {
+                                return Err(Error::NativeWork { cause, custody: Some(incoming) });
+                            }
+                        }
+                        return Err(Error::NativeWork { cause, custody: Some(held) });
+                    }
+                    Err(error) => return Err(error),
+                };
+                primary.absorb(&mut key_guard).map_err(|cause| Error::NativeWork {
+                    cause, custody: Some(key_guard),
+                })?;
+                Some(key)
+            } else {
+                None
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(key) = native_input {
+                let Some(CommandDispatch::Ready { custody, .. }) = command_input.as_mut() else {
+                    unreachable!("native key requires retained command custody");
+                };
+                let custody = custody.take().ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unsupported,
+                    reason: "native input has no original command custody",
+                })?;
+                // The returned tuple drops transition data before its guard;
+                // storage has consumed both before advancing the worker loop.
+                session.step_with_native_work(
+                    OperationId::from_bytes(bytes), key, input, custody,
+                ).await?;
+            } else {
+                session.step(
                     OperationId::from_bytes(bytes),
                     IdempotencyKey::new(format!("task-step:{revision}"))?,
                     input,
-                )
-                .await?;
+                ).await?;
+            }
+            #[cfg(target_arch = "wasm32")]
+            session.step(
+                OperationId::from_bytes(bytes),
+                IdempotencyKey::new(format!("task-step:{revision}"))?,
+                input,
+            ).await?;
             advanced += 1;
         }
     }
@@ -1449,6 +1506,29 @@ where
             fence,
         })
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_step_key(
+    revision: u64, work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(IdempotencyKey, acyclic_fs::NativeAllocation)> {
+    use std::fmt::Write as _;
+    let io = super::PreparationIo::from_native_work(work)?;
+    let hold = io.reserve_decode(32)?;
+    io.allocation_attempt(32)?;
+    let mut key = String::new();
+    key.try_reserve_exact(32).map_err(Error::Allocation)?;
+    if key.capacity() > 32 {
+        io.retain_owned((key.capacity() - 32) as u64)?;
+    }
+    write!(&mut key, "task-step:{revision}").map_err(|_| Error::NativeBoundary {
+        code: crate::wire::ErrorCode::Invalid,
+        reason: "native task step identity formatting failed",
+    })?;
+    let retained = key.capacity() as u64;
+    let key = IdempotencyKey::new(key)?;
+    hold.into_retained();
+    Ok((key, io.into_native_custody(retained)?))
 }
 
 pub(super) fn execution_operation(task: TaskId, turn: OperationId) -> OperationId {

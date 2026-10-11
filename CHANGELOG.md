@@ -23,6 +23,7 @@ release commit.
 - Update Rust code generation consumers to Syn 3 and Prettyplease 0.3, N-API build support to 2.6, selected Base64 consumers to 0.23, and Objects entropy and TLS test support to Getrandom 0.4 and Tokio Rustls 0.26.6.
 - Add `acyclic-harness-codex` (unpublished): an `Executor` that runs a turn as one pinned Codex CLI 0.155.1 process. Model calls go through a metered local Responses proxy, and the consumer's granted tools are served over MCP. It is qualified end to end against the real binary.
 - Filesystem fork preparation consumes owner-sealed, operation-specific project source reads without changing the caller's grants. Selected generations remain immutable and isolated; foreign workspace sources cannot inherit conversation history.
+- Native Harness machine steps consume owned command responses with their original allocation custody, admit durable state/envelope copies before construction, and retain checkpoint/output guards through the original fenced journal commit. Custom machines without the native callback fail before invocation; ordinary and browser machine callbacks are unchanged. Schema/serde and map internals are not process-RSS or opaque allocator guarantees.
 
 ## 0.1.1 - 2026-09-24
 

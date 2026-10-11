@@ -114,6 +114,26 @@ pub trait ResumableMachine: acyclic_stream::ProviderPlatform {
 
     /// Applies one durable input synchronously and deterministically.
     fn transition(&self, state: &Value, input: &Value) -> Result<MachineTransition>;
+
+    /// Whether this implementation accepts original-ledger owned inputs.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_work(&self) -> bool {
+        false
+    }
+
+    /// Moves the response into native hosting state after admitting construction.
+    /// The guard covers new SDK-owned allocations, not moved input bytes: callers
+    /// retain and transfer actual input custody across the callback and its result.
+    /// Opaque callback CPU, allocator internals and process RSS are not sandboxed.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn transition_with_native_work(
+        &self,
+        _state: &Value,
+        _input: Value,
+        _work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(MachineTransition, acyclic_fs::NativeAllocation)> {
+        Err(native_workflow_unsupported("machine has no native state callback"))
+    }
 }
 
 /// Immutable registry used to restore pinned resumable work.
@@ -156,19 +176,103 @@ impl MachineRegistry {
         checkpoint: &MachineCheckpoint,
         input: &Value,
     ) -> Result<(MachineCheckpoint, MachineTransition)> {
+        self.step_with_io(checkpoint, input, None, None)
+            .map(|(next, transition, _, _)| (next, transition))
+    }
+
+    fn step_with_io(
+        &self,
+        checkpoint: &MachineCheckpoint,
+        input: &Value,
+        #[allow(unused_variables)] native_input: Option<Value>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(MachineCheckpoint, MachineTransition, u64, u64)> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if io.is_some() {
+            self.require_native_work(&checkpoint.machine)?;
+        }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let machine = if io.is_some() {
+            self.native_machine(&checkpoint.machine)?
+        } else {
+            self.resolve(&checkpoint.machine).ok_or_else(|| {
+                Error::Unsupported("pinned machine implementation is unavailable".into())
+            })?
+        };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let machine = self.resolve(&checkpoint.machine).ok_or_else(|| {
             Error::Unsupported("pinned machine implementation is unavailable".into())
         })?;
-        validate_state(machine.state_schema(), &checkpoint.state)?;
-        let transition = machine.transition(&checkpoint.state, input)?;
-        validate_state(machine.state_schema(), &transition.state)?;
-        validate_commands(&transition.commands)?;
-        let next = MachineCheckpoint {
-            machine: checkpoint.machine.clone(),
-            revision: next_revision(checkpoint.revision)?,
-            state: transition.state.clone(),
+        #[allow(unused_mut)]
+        let mut transition_retained = 0;
+        validate_state_with_io(machine.state_schema(), &checkpoint.state, io)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let transition = if let Some(io) = io {
+            let work = io.original_native_work().ok_or_else(|| native_workflow_unsupported(
+                "native state requires the original ledger",
+            ))?;
+            let input = native_input.ok_or_else(|| native_workflow_unsupported(
+                "native state requires owned input",
+            ))?;
+            let (transition, custody) =
+                machine.transition_with_native_work(&checkpoint.state, input, work)?;
+            transition_retained = custody.bytes();
+            io.absorb_native_custody(custody)?;
+            transition
+        } else {
+            machine.transition(&checkpoint.state, input)?
         };
-        Ok((next, transition))
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let transition = machine.transition(&checkpoint.state, input)?;
+        validate_state_with_io(machine.state_schema(), &transition.state, io)?;
+        validate_commands_with_io(&transition.commands, io)?;
+        let before = workflow_owned_bytes(io)?;
+        let next = MachineCheckpoint {
+            machine: crate::executor::clone_preparation(&checkpoint.machine, io)?,
+            revision: next_revision(checkpoint.revision)?,
+            state: crate::executor::clone_preparation(&transition.state, io)?,
+        };
+        let checkpoint_retained = workflow_owned_bytes(io)? - before;
+        Ok((next, transition, checkpoint_retained, transition_retained))
+    }
+
+    /// Rejects custom machines before native invocation or provider IO.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn native_machine(&self, identity: &MachineIdentity) -> Result<&Arc<dyn ResumableMachine>> {
+        let machine = self.0.iter().find_map(|((name, version, digest), machine)| {
+            (name == &identity.name && version == &identity.version && digest == &identity.digest)
+                .then_some(machine)
+        }).ok_or_else(|| native_workflow_unsupported("pinned native machine is unavailable"))?;
+        if !machine.supports_native_work() {
+            return Err(native_workflow_unsupported("machine has no native state callback"));
+        }
+        Ok(machine)
+    }
+
+    /// Checks native capability without allocating a lookup key or doing IO.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn require_native_work(&self, identity: &MachineIdentity) -> Result<()> {
+        self.native_machine(identity).map(|_| ())
+    }
+
+    /// Runs the original step engine with admitted owned-input construction.
+    /// The caller retains the actual input guard until both returned values have
+    /// been consumed; `ResumableTaskSession` performs the owned guard transfer.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn step_with_native_work(
+        &self,
+        checkpoint: &MachineCheckpoint,
+        input: Value,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(MachineCheckpoint, MachineTransition, acyclic_fs::NativeAllocation)> {
+        self.require_native_work(&checkpoint.machine)?;
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let result = self.step_with_io(checkpoint, &Value::Null, Some(input), Some(&io));
+        let retained = result.as_ref().map_or(0, |(_, _, checkpoint, transition)| {
+            checkpoint.saturating_add(*transition)
+        });
+        let ((next, transition, _, _), custody) = finish_native_io(result, io, retained)?;
+        Ok((next, transition, custody))
     }
 
     /// Validates that a checkpoint is restorable by its exactly pinned implementation.
@@ -216,25 +320,9 @@ impl WorkflowRecord {
         self.validate_with_io(None)
     }
 
-    pub(crate) fn validate_with_io(
-        &self, io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<()> {
-        #[cfg(feature = "filesystem")]
-        let _key_hold;
-        #[cfg(feature = "filesystem")]
-        if let Some(io) = io {
-            let key_work = acyclic_fs::WorkCounters {
-                bytes_copied: self.idempotency_key.0.len() as u64,
-                items_examined: self.idempotency_key.0.len() as u64 + 1,
-                ..Default::default()
-            };
-            io.preflight(key_work)?;
-            _key_hold = io.reserve_decode(self.idempotency_key.0.len() as u64)?;
-            io.allocation_attempt(self.idempotency_key.0.len() as u64)?;
-            io.charge(key_work)?;
-        }
-        IdempotencyKey::new(self.idempotency_key.0.clone())?;
-        if self.input_digest != input_digest_with_io(&self.input, io)?
+    pub(crate) fn validate_with_io(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
+        validate_workflow_key(&self.idempotency_key, io)?;
+        if self.input_digest != crate::executor::preparation_digest(&self.input, io)?
             || self.prior.machine != self.next.machine
             || self.next.revision != next_revision(self.prior.revision)?
             || self.next.state != self.transition.state
@@ -365,8 +453,17 @@ pub(crate) fn validate_workflow_commit(
     key: &IdempotencyKey,
     record: &WorkflowRecord,
 ) -> Result<()> {
-    IdempotencyKey::new(key.0.clone())?;
-    record.validate()?;
+    validate_workflow_commit_with_io(expected_revision, key, record, None)
+}
+
+pub(crate) fn validate_workflow_commit_with_io(
+    expected_revision: u64,
+    key: &IdempotencyKey,
+    record: &WorkflowRecord,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    validate_workflow_key(key, io)?;
+    record.validate_with_io(io)?;
     if record.idempotency_key != *key || record.prior.revision != expected_revision {
         return Err(Error::Invalid(
             "workflow commit identity or revision is invalid".into(),
@@ -382,7 +479,18 @@ pub(crate) fn validate_workflow_next(
     keys: &BTreeSet<IdempotencyKey>,
     record: &WorkflowRecord,
 ) -> Result<()> {
-    record.validate()?;
+    validate_workflow_next_with_io(checkpoint, terminal, reserved, keys, record, None)
+}
+
+pub(crate) fn validate_workflow_next_with_io(
+    checkpoint: &MachineCheckpoint,
+    terminal: bool,
+    reserved: &BTreeSet<OperationId>,
+    keys: &BTreeSet<IdempotencyKey>,
+    record: &WorkflowRecord,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    record.validate_with_io(io)?;
     if record.prior != *checkpoint || terminal {
         return Err(Error::Conflict(
             "workflow transition differs from its current checkpoint".into(),
@@ -429,6 +537,35 @@ pub trait WorkflowJournal: acyclic_stream::ProviderPlatform {
         idempotency_key: IdempotencyKey,
         record: WorkflowRecord,
     ) -> BoxFuture<'a, Result<WorkflowCommitOutcome>>;
+
+    /// Native callbacks must share the ordinary journal and fenced commit engine.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_work(&self) -> bool {
+        false
+    }
+
+    /// Reads records retaining original-ledger decode custody.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn replay_with_native_work<'a>(
+        &'a self,
+        _after: u64,
+        _maximum: u32,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<BoxFuture<'a, Result<(Vec<WorkflowRecord>, acyclic_fs::NativeAllocation)>>> {
+        Err(native_workflow_unsupported("journal has no native replay callback"))
+    }
+
+    /// Uses the original CAS, cancellation and coordinator fence.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn commit_with_native_work<'a>(
+        &'a self,
+        _expected_revision: u64,
+        _idempotency_key: IdempotencyKey,
+        _record: WorkflowRecord,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<BoxFuture<'a, Result<(WorkflowCommitOutcome, acyclic_fs::NativeAllocation)>>> {
+        Err(native_workflow_unsupported("journal has no native commit callback"))
+    }
 }
 
 /// Complete in-process journal for local resumable work and conformance
@@ -579,6 +716,12 @@ pub struct DurableWorkflowHost {
     intents: BTreeMap<OperationId, (u64, [u8; 32])>,
     reserved_operations: BTreeSet<OperationId>,
     terminal: bool,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    checkpoint_custody: Option<acyclic_fs::NativeAllocation>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    index_custody: Vec<acyclic_fs::NativeAllocation>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    index_vector_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl DurableWorkflowHost {
@@ -668,6 +811,12 @@ impl DurableWorkflowHost {
             intents,
             reserved_operations,
             terminal,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            checkpoint_custody: None,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            index_custody: Vec::new(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            index_vector_custody: None,
         })
     }
 
@@ -734,9 +883,53 @@ impl DurableWorkflowHost {
         F: FnOnce(&MachineTransition) -> Result<()>,
     {
         crate::obs::outcome(
-            self.step_checked_untraced(operation_id, idempotency_key, input, check)
-                .await,
+            self.step_checked_untraced(operation_id, idempotency_key, input, check, None)
+                .await.map(|(transition, _, _)| transition),
         )
+    }
+
+    /// Rejects native-incompatible machine/journal composition before provider IO.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn require_native_work(&self) -> Result<()> {
+        self.registry.require_native_work(&self.checkpoint.machine)?;
+        if !self.journal.supports_native_work() {
+            return Err(native_workflow_unsupported("journal has no native workflow callbacks"));
+        }
+        Ok(())
+    }
+
+    /// Runs the ordinary workflow body with the borrowed original work observer.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub async fn step_checked_with_native_work<F>(
+        &mut self,
+        operation_id: OperationId,
+        idempotency_key: IdempotencyKey,
+        input: Value,
+        work: &acyclic_fs::NativeMaterializationWork,
+        check: F,
+    ) -> Result<(MachineTransition, acyclic_fs::NativeAllocation)>
+    where
+        F: FnOnce(&MachineTransition) -> Result<()>,
+    {
+        self.require_native_work()?;
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let original_index_custody = self.index_custody.len();
+        let result = self.step_checked_untraced(
+            operation_id, idempotency_key, input, check, Some(&io),
+        ).await;
+        if result.is_err() {
+            self.index_custody.truncate(original_index_custody);
+        }
+        let retained = result.as_ref().map_or(0, |(_, checkpoint, transition)| {
+            checkpoint.saturating_add(*transition)
+        });
+        let ((transition, checkpoint_retained, _), mut custody) =
+            finish_native_io(result, io, retained)?;
+        if checkpoint_retained != 0 {
+            self.checkpoint_custody = Some(custody.split_off(checkpoint_retained)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?);
+        }
+        Ok((transition, custody))
     }
 
     async fn step_checked_untraced<F>(
@@ -745,77 +938,98 @@ impl DurableWorkflowHost {
         idempotency_key: IdempotencyKey,
         input: Value,
         check: F,
-    ) -> Result<MachineTransition>
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(MachineTransition, u64, u64)>
     where
         F: FnOnce(&MachineTransition) -> Result<()>,
     {
-        IdempotencyKey::new(idempotency_key.0.clone())?;
+        validate_workflow_key(&idempotency_key, io)?;
         if let Some((revision, digest)) = self.intents.get(&operation_id) {
-            let records = self.journal.replay(*revision, 1).await?;
+            let records = self.replay_with_io(*revision, 1, io).await?;
             let [record] = records.as_slice() else {
-                return Err(Error::Storage(
-                    "workflow retry record is unavailable".into(),
-                ));
+                return Err(Error::Storage("workflow retry record is unavailable".into()));
             };
-            if crate::contract::canonical_json_digest(record)? != *digest {
+            if crate::executor::preparation_digest(record, io)? != *digest {
                 return Err(Error::Storage("workflow retry record changed".into()));
             }
             return if record.idempotency_key == idempotency_key && record.input == input {
                 check(&record.transition)?;
-                Ok(record.transition.clone())
+                let before = workflow_owned_bytes(io)?;
+                let transition = crate::executor::clone_preparation(&record.transition, io)?;
+                Ok((transition, 0, workflow_owned_bytes(io)? - before))
             } else {
-                Err(Error::Conflict(
-                    "workflow operation identity is bound to another input".into(),
-                ))
+                Err(Error::Conflict("workflow operation identity is bound to another input".into()))
             };
         }
         if self.terminal {
-            return Err(Error::Conflict(
-                "workflow cannot advance after a terminal transition".into(),
-            ));
+            return Err(Error::Conflict("workflow cannot advance after a terminal transition".into()));
         }
         if self.reserved_operations.contains(&operation_id) {
-            return Err(Error::Conflict(
-                "workflow step reuses a command identity".into(),
-            ));
+            return Err(Error::Conflict("workflow step reuses a command identity".into()));
         }
-        let (next, transition) = self.registry.step(&self.checkpoint, &input)?;
+        // The durable v2 envelope retains both input and machine state. Admit
+        // that necessary replay copy before the machine consumes the original.
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let (input, native_input) = if io.is_some() {
+            (crate::executor::clone_preparation(&input, io)?, Some(input))
+        } else {
+            (input, None)
+        };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let native_input = None;
+        let (next, transition, checkpoint_retained, transition_retained) =
+            self.registry.step_with_io(&self.checkpoint, &input, native_input, io)?;
         check(&transition)?;
         let record = WorkflowRecord {
             operation_id,
-            idempotency_key: idempotency_key.clone(),
-            input_digest: input_digest(&input)?,
-            prior: self.checkpoint.clone(),
+            idempotency_key: crate::executor::clone_preparation(&idempotency_key, io)?,
+            input_digest: crate::executor::preparation_digest(&input, io)?,
+            prior: crate::executor::clone_preparation(&self.checkpoint, io)?,
             input,
-            transition: transition.clone(),
-            next: next.clone(),
+            transition: crate::executor::clone_preparation(&transition, io)?,
+            next: crate::executor::clone_preparation(&next, io)?,
         };
-        record.validate()?;
-        if record
-            .transition
-            .commands
-            .iter()
-            .any(|command| self.reserved_operations.contains(&command.operation_id))
-        {
-            return Err(Error::Conflict(
-                "workflow command identity was already committed".into(),
-            ));
+        record.validate_with_io(io)?;
+        if record.transition.commands.iter().any(|command| {
+            self.reserved_operations.contains(&command.operation_id)
+        }) {
+            return Err(Error::Conflict("workflow command identity was already committed".into()));
         }
-        let observed = self
-            .journal
-            .commit(
-                self.checkpoint.revision,
-                idempotency_key.clone(),
-                record.clone(),
-            )
-            .await?;
+        // Ordinary None retains its original digest timing. Native encoding
+        // must finish before publication rather than fail after the SDK effect.
+        let digest = if io.is_some() {
+            Some(crate::executor::preparation_digest(&record, io)?)
+        } else {
+            None
+        };
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = io {
+            self.reserve_native_index(record.transition.commands.len(), io)?;
+        }
+        let committed_record = crate::executor::clone_preparation(&record, io)?;
+        let commit_key = crate::executor::clone_preparation(&idempotency_key, io)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let observed = if let Some(io) = io {
+            let work = io.original_native_work().ok_or_else(|| native_workflow_unsupported(
+                "native commit requires the original ledger",
+            ))?;
+            let (observed, custody) = self.journal.commit_with_native_work(
+                self.checkpoint.revision, commit_key, committed_record, work,
+            )?.await?;
+            io.absorb_native_custody(custody)?;
+            observed
+        } else {
+            self.journal.commit(self.checkpoint.revision, commit_key, committed_record).await?
+        };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let observed = self.journal.commit(
+            self.checkpoint.revision, commit_key, committed_record,
+        ).await?;
         let committed = match observed {
             WorkflowCommitOutcome::Applied(value) | WorkflowCommitOutcome::Replayed(value) => value,
         };
         if committed != record {
-            return Err(Error::Conflict(
-                "workflow retry identity is bound to another transition".into(),
-            ));
+            return Err(Error::Conflict("workflow retry identity is bound to another transition".into()));
         }
         self.checkpoint = next;
         self.terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
@@ -823,14 +1037,79 @@ impl DurableWorkflowHost {
         for command in &record.transition.commands {
             self.reserved_operations.insert(command.operation_id);
         }
-        self.intents.insert(
-            operation_id,
-            (
-                record.prior.revision,
-                crate::contract::canonical_json_digest(&record)?,
-            ),
-        );
-        Ok(transition)
+        self.intents.insert(operation_id, (record.prior.revision, match digest {
+            Some(digest) => digest,
+            None => crate::contract::canonical_json_digest(&record)?,
+        }));
+        Ok((transition, checkpoint_retained, transition_retained))
+    }
+
+    async fn replay_with_io(
+        &self, after: u64, maximum: u32, io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Vec<WorkflowRecord>> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = io {
+            let work = io.original_native_work().ok_or_else(|| native_workflow_unsupported(
+                "native replay requires the original ledger",
+            ))?;
+            let (records, custody) = self.journal.replay_with_native_work(after, maximum, work)?.await?;
+            io.absorb_native_custody(custody)?;
+            return Ok(records);
+        }
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let _ = io;
+        self.journal.replay(after, maximum).await
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn reserve_native_index(
+        &mut self, commands: usize, io: &crate::executor::PreparationIo,
+    ) -> Result<()> {
+        let work = io.original_native_work().ok_or_else(|| native_workflow_unsupported(
+            "native index requires original work",
+        ))?;
+        if self.index_custody.len() == self.index_custody.capacity() {
+            let capacity = self.index_custody.len().checked_add(1)
+                .and_then(|count| count.checked_mul(std::mem::size_of::<acyclic_fs::NativeAllocation>()))
+                .ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "native workflow index custody capacity overflow",
+                })? as u64;
+            let storage_io = crate::filesystem::PreparationIo::from_native_work(work)?;
+            storage_io.retain_owned(capacity)?;
+            storage_io.allocation_attempt(capacity)?;
+            let copied = acyclic_fs::WorkCounters {
+                bytes_copied: (self.index_custody.len()
+                    * std::mem::size_of::<acyclic_fs::NativeAllocation>()) as u64,
+                ..Default::default()
+            };
+            storage_io.preflight(copied)?;
+            storage_io.charge(copied)?;
+            self.index_custody.try_reserve_exact(1).map_err(Error::Allocation)?;
+            self.index_vector_custody = Some(storage_io.into_native_custody(capacity)?);
+            let actual = (self.index_custody.capacity()
+                * std::mem::size_of::<acyclic_fs::NativeAllocation>()) as u64;
+            if let Some(guard) = &mut self.index_vector_custody {
+                guard.resize_retained(actual).map_err(|cause| Error::NativeWork {
+                    cause, custody: None,
+                })?;
+            }
+        }
+        // Only concrete operation-ID and intent slots are claimed here. Opaque
+        // BTree nodes/allocator bookkeeping are not counted as physical RSS or
+        // one allocator operation per slot.
+        let bytes = (commands as u64).checked_add(1)
+            .and_then(|count| count.checked_mul(std::mem::size_of::<OperationId>() as u64))
+            .and_then(|bytes| bytes.checked_add(
+                std::mem::size_of::<(OperationId, (u64, [u8; 32]))>() as u64,
+            )).ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "native workflow index slot overflow",
+            })?;
+        let slots_io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        slots_io.retain_owned(bytes)?;
+        self.index_custody.push(slots_io.into_native_custody(bytes)?);
+        Ok(())
     }
 }
 
@@ -857,8 +1136,84 @@ fn input_digest_with_io(
     crate::contract::canonical_json_digest(input)
 }
 
+fn workflow_owned_bytes(io: Option<&crate::executor::PreparationIo>) -> Result<u64> {
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        return io.owned_bytes();
+    }
+    #[cfg(not(feature = "filesystem"))]
+    let _ = io;
+    Ok(0)
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn finish_native_io<T>(
+    result: Result<T>, io: crate::filesystem::PreparationIo, retained: u64,
+) -> Result<(T, acyclic_fs::NativeAllocation)> {
+    match result {
+        Ok(value) => Ok((value, io.into_native_custody(retained)?)),
+        Err(Error::NativeWork { cause, custody }) => {
+            // No cancellation/clock/authority observation after failure.
+            let owned = match io.owned_bytes() {
+                Ok(owned) => owned,
+                Err(_) => return Err(Error::NativeWork { cause, custody }),
+            };
+            let mut held = match io.into_native_custody(owned) {
+                Ok(held) => held,
+                Err(_) => return Err(Error::NativeWork { cause, custody }),
+            };
+            if let Some(mut incoming) = custody {
+                if !held.work().shares_ledger(incoming.work()) {
+                    return Err(Error::NativeWork { cause, custody: Some(incoming) });
+                }
+                if held.absorb(&mut incoming).is_err() {
+                    return Err(Error::NativeWork { cause, custody: Some(incoming) });
+                }
+            }
+            Err(Error::NativeWork { cause, custody: Some(held) })
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn validate_state(schema: &Value, state: &Value) -> Result<()> {
-    crate::contract::validate_json_schema_value(schema, state, "machine state")
+    validate_state_with_io(schema, state, None)
+}
+
+fn validate_state_with_io(
+    schema: &Value, state: &Value, io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    crate::contract::validate_json_schema_value_with_io(schema, state, "machine state", io)
+}
+
+fn validate_commands_with_io(
+    commands: &[WorkflowCommand], io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    #[cfg(feature = "filesystem")]
+    let _workspace = io.map(|io| {
+        crate::executor::reserve_preparation_workspace(&commands, io)
+    }).transpose()?;
+    #[cfg(not(feature = "filesystem"))]
+    let _ = io;
+    validate_commands(commands)
+}
+
+fn validate_workflow_key(
+    key: &IdempotencyKey, io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    #[cfg(feature = "filesystem")]
+    let _workspace = io.map(|io| {
+        crate::executor::reserve_preparation_workspace(&key.0, io)
+    }).transpose()?;
+    #[cfg(not(feature = "filesystem"))]
+    let _ = io;
+    IdempotencyKey::new(key.0.clone())?;
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn native_workflow_unsupported(reason: &'static str) -> Error {
+    Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason }
 }
 
 #[cfg(test)]
