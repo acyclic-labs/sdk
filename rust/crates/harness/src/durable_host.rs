@@ -410,7 +410,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 let mut borrowed = io.history_io();
                 self.verify_with_work(true, &mut Some(&mut borrowed)).await?;
                 let bytes = crate::store::history::HistoryIo::read_content(
-                    &mut borrowed, reader.as_ref(), file).await?;
+                    &mut borrowed, reader.as_ref(), file)?.await?;
                 bytes_hold = Some(io.guard_owned(bytes.capacity() as u64)?);
                 crate::store::history::HistoryIo::hashed_bytes(&mut borrowed, bytes.len() as u64)?;
                 bytes
@@ -512,7 +512,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let bytes_hold;
         let mut borrowed = io.history_io();
         let bytes = crate::store::history::HistoryIo::read_content(
-            &mut borrowed, self.host.reader.as_ref(), &binding.configuration.content).await?;
+            &mut borrowed, self.host.reader.as_ref(), &binding.configuration.content)?.await?;
         bytes_hold = io.guard_owned(bytes.capacity() as u64)?;
         let result = schemas.verify_configuration_binding_with_io(
             &binding.configuration, expected, &bytes, self.input_limits, io);
@@ -4063,7 +4063,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             return Err(Error::Invalid("durable task payload is not JSON".into()));
         }
         let bytes = match work.as_deref_mut() {
-            Some(io) => io.read_content(self.reader.as_ref(), reference).await?,
+            Some(io) => io.read_content(self.reader.as_ref(), reference)?.await?,
             None => self.reader.read(reference).await?,
         };
         if let Some(io) = work.as_deref_mut() { io.hashed_bytes(bytes.len() as u64)?; }
