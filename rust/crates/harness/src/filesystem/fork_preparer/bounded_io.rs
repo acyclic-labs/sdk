@@ -739,11 +739,11 @@ impl PreparationIo {
     /// Admit the actual ordinary History box before constructing it. Shared
     /// History observers release only this frame after the box physically drops;
     /// any returned DTO custody remains in the same IO ledger.
-    fn history_future<'a, T, F, B>(
+    pub(crate) fn history_future<'a, T, F, B>(
         &'a self, build: B,
     ) -> Result<crate::store::history::HistoryContentFuture<'a, T>>
     where
-        F: Future<Output = Result<T>> + Send + 'a,
+        F: Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a,
         B: FnOnce() -> F,
     {
         let bytes = std::mem::size_of::<F>() as u64;
@@ -752,6 +752,22 @@ impl PreparationIo {
         Ok(crate::store::history::HistoryContentFuture::Ordinary {
             future: Box::pin(build()), frame_bytes: bytes,
         })
+    }
+
+    pub(crate) async fn verify_publication_lease(
+        &self, lease: &dyn crate::resource_preparation::CreatedTaskLease,
+    ) -> Result<()> {
+        let future = lease.verify_with_io(self)?;
+        let frame = match &future {
+            crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } => *frame_bytes,
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::store::history::HistoryContentFuture::Native(_) => 0,
+        };
+        let result = future.await;
+        // Await consumes and destroys the future before its ordinary frame
+        // claim is retired. Native bundles retire their own original guard.
+        let released = if frame == 0 { Ok(()) } else { self.release(frame) };
+        result.and(released)
     }
 
     // Audited closed serde derives only: upload records and approval-only wires.
