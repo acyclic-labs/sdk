@@ -3500,6 +3500,55 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &self, reference: &FileRef, maximum_bytes: u64,
         io: Option<&fork_preparer_io::PreparationIo>,
     ) -> Result<Bytes> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some((io, original)) = io.and_then(|io| {
+            io.original_native_work().map(|original| (io, original))
+        }) {
+            use sha2::Digest as _;
+            reference.validate_with_native_work(original)?;
+            if reference.volume().provider() != &self.provider
+                || reference.descriptor().byte_length() > maximum_bytes
+            {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "content provider or size limit mismatch",
+                });
+            }
+            let generation = self.file_generation_with_io(reference, Some(io))?;
+            let workspace = fork_preparer_io::content_workspace(
+                &self.provider, reference.volume(), Some(io),
+            )?;
+            let rendered = original.display(&format_args!("/{}", reference.path()))
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            let path_custody = rendered.1;
+            let path = rendered.0;
+            let opened = fork_preparer_io::open(self, &workspace, io).await?;
+            let pinned = fork_preparer_io::generation(self, &opened, &generation, io).await?;
+            let bytes = pinned.read_with_native_work(
+                &path, maximum_bytes, original, &io.cancellation,
+            ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+            fork_preparer_io::retain(self, &pinned, io).await?;
+            let hashed = acyclic_fs::WorkCounters {
+                bytes_hashed: bytes.len() as u64,
+                ..acyclic_fs::WorkCounters::UNCHARGED
+            };
+            original.admit(hashed)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            let digest = sha2::Sha256::digest(&bytes);
+            original.spent(hashed)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            if bytes.len() as u64 != reference.descriptor().byte_length()
+                || digest.as_slice() != reference.descriptor().sha256()
+            {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "file content does not match its descriptor",
+                });
+            }
+            drop(path);
+            drop(path_custody);
+            return Ok(bytes);
+        }
         if reference.volume().provider() != &self.provider
             || reference.descriptor().byte_length() > maximum_bytes
         {
@@ -3704,6 +3753,33 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .map_err(map_error)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn open_with_native_work(
+        &self,
+        reference: &WorkspaceRef,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Workspace<A, O>> {
+        let io = PreparationIo::from_native_work(work)?;
+        fork_preparer::bounded_io::open(self, reference, &io).await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn open_volume_with_native_work(
+        &self,
+        volume: &VolumeRef,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Workspace<A, O>> {
+        if volume.provider() != &self.provider {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "volume belongs to another Filesystem provider",
+            });
+        }
+        let io = PreparationIo::from_native_work(work)?;
+        let reference = fork_preparer::bounded_io::content_workspace(&self.provider, volume, Some(&io))?;
+        fork_preparer::bounded_io::open(self, &reference, &io).await
+    }
+
     async fn open_measured(
         &self,
         reference: &WorkspaceRef,
@@ -3740,6 +3816,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .generation(GenerationId::new(Digest::from_bytes(bytes)))
             .await
             .map_err(map_error)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn generation_with_native_work(
+        &self,
+        workspace: &Workspace<A, O>,
+        reference: &GenerationRef,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Generation<A, O>> {
+        let io = PreparationIo::from_native_work(work)?;
+        fork_preparer::bounded_io::generation(self, workspace, reference, &io).await
     }
 
     async fn generation_measured(

@@ -1273,6 +1273,21 @@ pub(in crate::filesystem) async fn operation_generation<A: AsyncAuthorityStore, 
     match io {
         Some(io) => {
             let workspace = open(host, reference, io).await?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(original) = io.original_native_work() {
+                let hash = WorkCounters {
+                    bytes_hashed: key.as_str().len() as u64,
+                    ..WorkCounters::UNCHARGED
+                };
+                original.admit(hash)
+                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                let operation = super::super::filesystem_key(key);
+                original.spent(hash)
+                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                return workspace.operation_generation_with_native_work(
+                    operation, original, &io.cancellation,
+                ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody });
+            }
             let hash = WorkCounters { bytes_hashed: key.as_str().len() as u64, ..Default::default() };
             io.preflight(hash)?;
             io.charge(hash)?;
@@ -1288,6 +1303,12 @@ pub(in crate::filesystem) fn content_workspace(
 ) -> Result<WorkspaceRef> {
     let _name_hold;
     let name = volume_storage_name(volume, io)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
+        // The generated hash name is already canonical ASCII. Transfer that
+        // same paid string backing into the reference key without another copy.
+        return WorkspaceRef::new(host_provider.clone_with_io(io)?, name.into_bytes(), None);
+    }
     _name_hold = io.map(|io| io.guard_owned(name.len() as u64)).transpose()?;
     if let Some(io) = io {
         strings(io, &[host_provider.namespace(), host_provider.family(), host_provider.version()])?;
@@ -1300,6 +1321,39 @@ pub(in crate::filesystem) fn volume_storage_name(
     volume: &VolumeRef, io: Option<&PreparationIo>,
 ) -> Result<String> {
     let Some(io) = io else { return volume.storage_name(); };
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = io.original_native_work() {
+        let encoded = io.encode_json(volume, io.remaining()?.bytes_encoded, true)?;
+        let hash = WorkCounters {
+            bytes_hashed: encoded.len() as u64,
+            ..WorkCounters::UNCHARGED
+        };
+        original.admit(hash)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let digest = blake3::hash(&encoded);
+        original.spent(hash)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut custody = original.claim(72)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut name = String::new();
+        name.try_reserve_exact(72).map_err(|source| Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::AllocationFailed(source),
+            custody: None,
+        })?;
+        custody.reconcile_capacity(name.capacity() as u64)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let copy = WorkCounters {
+            bytes_copied: 72, bytes_encoded: 64, ..WorkCounters::UNCHARGED
+        };
+        original.admit(copy)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        name.push_str("harness-");
+        name.push_str(digest.to_hex().as_str());
+        original.spent(copy)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        io.absorb_native_custody(custody)?;
+        return Ok(name);
+    }
     let _encoded_hold;
     let encoded = io.encode_json(volume, io.remaining()?.bytes_encoded, true)?;
     _encoded_hold = io.guard_owned(encoded.len() as u64)?;
@@ -1318,6 +1372,27 @@ pub(in crate::filesystem) fn volume_storage_name(
 pub(crate) async fn open<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, reference: &WorkspaceRef, io: &PreparationIo,
 ) -> Result<acyclic_fs::Workspace<A, O>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = io.original_native_work() {
+        original.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        // WorkspaceRef construction and deserialization validate its canonical
+        // shape. Check this host binding without rebuilding owned diagnostics.
+        if reference.as_resource().provider() != &host.provider {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "resource belongs to another Filesystem provider",
+            });
+        }
+        let name = std::str::from_utf8(reference.as_resource().key())
+            .map_err(|_| Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "workspace reference key must be UTF-8",
+            })?;
+        return host.filesystem.open_workspace_with_native_work(
+            name, original, &io.cancellation,
+        ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody });
+    }
     reference.validate()?;
     host.validate_provider(reference.as_resource().provider())?;
     let name = std::str::from_utf8(reference.as_resource().key())
@@ -1329,6 +1404,26 @@ pub(crate) async fn generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, workspace: &acyclic_fs::Workspace<A, O>,
     reference: &crate::resources::GenerationRef, io: &PreparationIo,
 ) -> Result<acyclic_fs::Generation<A, O>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = io.original_native_work() {
+        original.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        if reference.as_resource().provider() != &host.provider {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "resource belongs to another Filesystem provider",
+            });
+        }
+        let bytes: [u8; 32] = reference.as_resource().key().try_into()
+            .map_err(|_| Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "generation reference key must be 32 bytes",
+            })?;
+        return workspace.generation_with_native_work(
+            acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(bytes)),
+            original, &io.cancellation,
+        ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody });
+    }
     reference.validate()?;
     host.validate_provider(reference.as_resource().provider())?;
     let bytes: [u8; 32] = reference.as_resource().key().try_into()
@@ -1345,6 +1440,13 @@ pub(in crate::filesystem) async fn read<A: AsyncAuthorityStore, O: AsyncObjectSt
 ) -> Result<bytes::Bytes> {
     let Some(io) = io else { return host.read(reference, None, path, maximum_bytes).await; };
     let workspace = open(host, reference, io).await?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = io.original_native_work() {
+        let generation = workspace.head_with_native_work(original, &io.cancellation)
+            .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+        return generation.read_with_native_work(path, maximum_bytes, original, &io.cancellation)
+            .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody });
+    }
     io.receive(workspace.read_measured(path, maximum_bytes, io.remaining()?, &io.cancellation).await)
 }
 
@@ -1353,6 +1455,15 @@ pub(in crate::filesystem) async fn resolve<A: AsyncAuthorityStore, O: AsyncObjec
 ) -> Result<super::super::WorkspaceObservation> {
     let Some(io) = io else { return host.resolve(reference).await; };
     let workspace = open(host, reference, io).await?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = io.original_native_work() {
+        let generation = workspace.head_with_native_work(original, &io.cancellation)
+            .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+        return Ok(super::super::WorkspaceObservation {
+            workspace: reference.clone_with_io(io)?,
+            generation: generation_ref(host, &generation, Some(io))?,
+        });
+    }
     let generation = io.receive(workspace.head_measured(io.remaining()?, &io.cancellation).await)?;
     let provider = reference.as_resource().provider();
     strings(io, &[provider.namespace(), provider.family(), provider.version()])?;
@@ -1369,14 +1480,32 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
         host.filesystem.create_workspace(name).await.map_err(map_error)?;
         return Ok(());
     };
-    let operation = acyclic_fs::OperationId::from_bytes(
-        super::super::filesystem_key(key).into_bytes(),
-    );
     let lifecycle = if host.filesystem.capabilities().durable {
         acyclic_fs::Lifecycle::Durable
     } else {
         acyclic_fs::Lifecycle::Ephemeral
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = io.original_native_work() {
+        let hash_work = WorkCounters {
+            bytes_hashed: key.as_str().len() as u64, ..WorkCounters::UNCHARGED
+        };
+        original.admit(hash_work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let operation = acyclic_fs::OperationId::from_bytes(
+            super::super::filesystem_key(key).into_bytes(),
+        );
+        original.spent(hash_work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        host.filesystem.create_workspace_with_operation_with_native_work(
+            name, acyclic_fs::VolumeConfig::portable(lifecycle),
+            operation, original, &io.cancellation,
+        ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+        return Ok(());
+    }
+    let operation = acyclic_fs::OperationId::from_bytes(
+        super::super::filesystem_key(key).into_bytes(),
+    );
     io.receive(host.filesystem.create_workspace_with_operation_measured(
         name, acyclic_fs::VolumeConfig::portable(lifecycle),
         operation, io.remaining()?, &io.cancellation,
@@ -1391,7 +1520,7 @@ pub(in crate::filesystem) async fn apply<A: AsyncAuthorityStore, O: AsyncObjectS
 ) -> Result<crate::resources::GenerationRef> {
     let Some(io) = io else { return host.apply(reference, expected, mutations, key).await; };
     let generation = apply_generation(host, reference, expected, mutations, key, io).await?;
-    host.generation_ref(&generation)
+    generation_ref(host, &generation, Some(io))
 }
 
 pub(in crate::filesystem) async fn apply_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -1400,6 +1529,95 @@ pub(in crate::filesystem) async fn apply_generation<A: AsyncAuthorityStore, O: A
     key: &IdempotencyKey, io: &PreparationIo,
 ) -> Result<acyclic_fs::Generation<A, O>> {
     let workspace = open(host, reference, io).await?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = io.original_native_work() {
+        let pinned = match expected {
+            Some(reference) => generation(host, &workspace, reference, io).await?,
+            None => workspace.head_with_native_work(original, &io.cancellation)
+                .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?,
+        };
+        let hashing = WorkCounters {
+            bytes_hashed: key.0.len() as u64, ..WorkCounters::UNCHARGED
+        };
+        original.admit(hashing)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let operation = super::super::filesystem_key(key);
+        original.spent(hashing)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        // The transaction may retain input Bytes through its candidate. Its
+        // input claims are declared first, so all transaction data drops before
+        // these original guards on success, failure or caller cancellation.
+        let mut transferred: Option<acyclic_fs::NativeAllocation> = None;
+        let mut transaction = workspace.begin_pinned_transaction_with_native_work(
+            &pinned, operation, original, &io.cancellation,
+        ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+        for mutation in mutations {
+            match mutation {
+                WorkspaceMutation::CreateDirectory { path } => {
+                    transaction.create_directories_with_native_work(
+                        path, original, &io.cancellation,
+                    ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+                }
+                WorkspaceMutation::PutFile { path, bytes } => {
+                    let owned = if bytes.is_empty() {
+                        bytes::Bytes::new()
+                    } else {
+                        let mut custody = original.claim(bytes.len() as u64)
+                            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                        let mut buffer = Vec::new();
+                        buffer.try_reserve_exact(bytes.len()).map_err(|source| Error::NativeWork {
+                            cause: acyclic_fs::NativeTreeMaterializationError::AllocationFailed(source),
+                            custody: None,
+                        })?;
+                        custody.reconcile_capacity(buffer.capacity() as u64)
+                            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                        let copied = WorkCounters {
+                            bytes_copied: bytes.len() as u64, ..WorkCounters::UNCHARGED
+                        };
+                        original.admit(copied)
+                            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                        buffer.extend_from_slice(bytes);
+                        original.spent(copied)
+                            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                        if let Some(retained) = transferred.as_mut() {
+                            retained.absorb(&mut custody)
+                                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                        } else {
+                            transferred = Some(custody);
+                        }
+                        bytes::Bytes::from(buffer)
+                    };
+                    transaction.write_with_native_work(
+                        path, owned, original, &io.cancellation,
+                    ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+                }
+                WorkspaceMutation::Remove { .. } => {
+                    return Err(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unsupported,
+                        reason: "bounded publication does not remove content",
+                    });
+                }
+            }
+        }
+        return match transaction.commit_with_permit_with_native_work(
+            acyclic_fs::PublicationPermit::Unrestricted, original, &io.cancellation,
+        ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })? {
+            acyclic_fs::TransactionCommit::Committed(generation)
+            | acyclic_fs::TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
+            acyclic_fs::TransactionCommit::Conflict { .. } => Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Conflict,
+                reason: "workspace generation changed",
+            }),
+            acyclic_fs::TransactionCommit::Fenced => Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Conflict,
+                reason: "workspace writer was fenced",
+            }),
+            acyclic_fs::TransactionCommit::IdempotencyConflict => Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Conflict,
+                reason: "filesystem idempotency key belongs to another mutation",
+            }),
+        };
+    }
     let generation = match expected {
         Some(reference) => generation(host, &workspace, reference, io).await?,
         None => io.receive(workspace.head_measured(io.remaining()?, &io.cancellation).await)?,
@@ -1448,6 +1666,16 @@ pub(in crate::filesystem) fn generation_ref<A: AsyncAuthorityStore, O: AsyncObje
     host: &FilesystemHost<A, O>, generation: &acyclic_fs::Generation<A, O>,
     io: Option<&PreparationIo>,
 ) -> Result<crate::resources::GenerationRef> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some((io, original)) = io.and_then(|io| {
+        io.original_native_work().map(|original| (io, original))
+    }) {
+        let (reference, custody) = crate::resources::GenerationRef::new_with_native_work(
+            &host.provider, &generation.id().digest().into_bytes(), None, original,
+        )?;
+        io.absorb_native_custody(custody)?;
+        return Ok(reference);
+    }
     if let Some(io) = io {
         strings(io, &[host.provider.namespace(), host.provider.family(), host.provider.version()])?;
         io.claim(32)?;
@@ -1458,6 +1686,29 @@ pub(in crate::filesystem) fn generation_ref<A: AsyncAuthorityStore, O: AsyncObje
 pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     _host: &FilesystemHost<A, O>, generation: &acyclic_fs::Generation<A, O>, io: &PreparationIo,
 ) -> Result<()> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = io.original_native_work() {
+        let encoding = WorkCounters { bytes_encoded: 64, ..WorkCounters::UNCHARGED };
+        original.admit(encoding)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let encoded = blake3::Hash::from_bytes(
+            generation.id().digest().into_bytes(),
+        ).to_hex();
+        original.spent(encoding)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let owned = original.display(&format_args!(
+            "harness-generation-{}", encoded.as_str(),
+        )).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        // Declare custody before its data so rejection drops the actual string
+        // first. The canonical SDK pin takes its own admitted retained copy.
+        let custody = owned.1;
+        let identity = owned.0;
+        generation.pin_with_native_work(&identity, original, &io.cancellation)
+            .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+        drop(identity);
+        drop(custody);
+        return Ok(());
+    }
     io.claim(64)?;
     io.claim(("harness-generation-".len() + 64) as u64)?;
     let identity = format!("harness-generation-{}", hex::encode(generation.id().digest().into_bytes()));
@@ -1470,8 +1721,59 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
     source_generation: &crate::resources::GenerationRef, child: &VolumeRef,
     paths: Option<Vec<String>>, key: &IdempotencyKey, io: Option<&PreparationIo>,
 ) -> Result<super::super::WorkspaceObservation> {
-    grant.require(source, VolumeOperation::Read)?;
-    let Some(io) = io else { return host.fork_volume_pinned(source, source_generation, child, paths, key).await; };
+    let Some(io) = io else {
+        grant.require(source, VolumeOperation::Read)?;
+        return host.fork_volume_pinned(source, source_generation, child, paths, key).await;
+    };
+    grant.require_with_io(source, VolumeOperation::Read, Some(io))?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = io.original_native_work() {
+        source.validate_with_native_work(original)?;
+        child.validate_with_native_work(original)?;
+        if source.provider() != &host.provider || child.provider() != &host.provider
+            || source == child
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "volume fork has a foreign or identical destination",
+            });
+        }
+        let source_reference = content_workspace(&host.provider, source, Some(io))?;
+        let workspace = open(host, &source_reference, io).await?;
+        let pinned = generation(host, &workspace, source_generation, io).await?;
+        retain(host, &pinned, io).await?;
+        let child_name = volume_storage_name(child, Some(io))?;
+        let hashing = WorkCounters {
+            bytes_hashed: key.0.len() as u64, ..WorkCounters::UNCHARGED
+        };
+        original.admit(hashing)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let creation = super::super::filesystem_key(key);
+        original.spent(hashing)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let options = acyclic_fs::ForkOptions::from_generation(pinned, creation);
+        let options = match paths {
+            Some(paths) => options.inherit_paths(paths),
+            None => options,
+        };
+        let forked = workspace.fork_with_native_work(
+            &child_name, options, original, &io.cancellation,
+        ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+        let initial = forked.operation_generation_with_native_work(
+            creation, original, &io.cancellation,
+        ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?
+            .ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Storage,
+                reason: "fork creation has no durable original generation",
+            })?;
+        retain(host, &initial, io).await?;
+        let provider = host.provider.clone_with_io(io)?;
+        let reference = WorkspaceRef::new(provider, child_name.into_bytes(), None)?;
+        return Ok(super::super::WorkspaceObservation {
+            workspace: reference,
+            generation: generation_ref(host, &initial, Some(io))?,
+        });
+    }
     source.validate()?;
     child.validate()?;
     host.validate_provider(source.provider())?;

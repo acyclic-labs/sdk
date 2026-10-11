@@ -256,6 +256,15 @@ differ from the policy scope's limits. Both producers use the same attenuation e
 Filesystem creation identity for binding an already-created child to its native
 overlay. It does not authorize creation or start another fork.
 
+`FilesystemForkPreparer::new_with_native_work` moves the authenticated parent,
+scope and prepared-history cut together with their already admitted custody.
+Its attempts reuse the original resource-tagged work and cancellation rather
+than constructing a fresh budget from remaining counters. `into_native_shared`
+admits the known logical preparer header before the SDK Arc allocation; opaque
+standard-library allocator backing is not an RSS claim. Custody membership is
+not authority: the original scope MAC, parent agent, provider and history cut
+are still verified before filesystem work.
+
 An optional explicit child result volume uses the same original fork, protected
 allocation claims and admission proofs. Its mandatory `Result` role creates an
 empty, unmounted private volume with READ/WRITE custody; it is never inferred

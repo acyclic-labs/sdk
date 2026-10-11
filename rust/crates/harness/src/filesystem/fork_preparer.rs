@@ -146,6 +146,11 @@ pub struct FilesystemForkPreparer<A, O> {
     history: Option<PreparedForkHistory>,
     task_preparation: Option<Arc<TaskResourcePreparation>>,
     project_source: Option<ProjectSourceReadHandle>,
+    #[cfg(not(target_arch = "wasm32"))]
+    native_work: Option<acyclic_fs::NativeMaterializationWork>,
+    // Every moved parent, grant and prepared-history buffer precedes custody.
+    #[cfg(not(target_arch = "wasm32"))]
+    native_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 struct BoundSummary {
@@ -230,7 +235,88 @@ impl<A, O> FilesystemForkPreparer<A, O> {
             history: None,
             task_preparation: None,
             project_source: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            native_work: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            native_custody: None,
         })
+    }
+
+    /// Moves an already admitted parent and its authentic prepared history
+    /// onto the same original native ledger; this creates no new grant.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::too_many_arguments, reason = "original parent and custody are explicit")]
+    pub fn new_with_native_work(
+        host: Arc<FilesystemHost<A, O>>,
+        parent: Reducer,
+        verifier: AuthorityVerifier,
+        scope: Scope,
+        project: VolumeRef,
+        stream_provider: ProviderRef,
+        resolver: Arc<dyn ContentResidencyVerifier>,
+        history: PreparedForkHistory,
+        source_read: Option<ProjectSourceReadHandle>,
+        custody: acyclic_fs::NativeAllocation,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        // Own data before the last-field guard even when validation rejects it.
+        let this = Self {
+            host, parent, verifier, scope, project, stream_provider, resolver,
+            capture_providers: Vec::new(), summary: None, history: Some(history),
+            task_preparation: None, project_source: source_read,
+            native_work: Some(work.clone()), native_custody: Some(custody),
+        };
+        let reject = |code, reason| Error::NativeBoundary { code, reason };
+        if !this.native_custody.as_ref().is_some_and(|guard| guard.matches_work(work)) {
+            return Err(reject(crate::wire::ErrorCode::Invalid, "fork custody belongs to another original resource"));
+        }
+        this.stream_provider.validate_with_native_work(work)?;
+        if this.stream_provider.family() != "stream" {
+            return Err(reject(crate::wire::ErrorCode::Invalid, "fork history requires a Stream provider"));
+        }
+        if this.parent.authority().kind != crate::core::AggregateKind::Conversation {
+            return Err(reject(crate::wire::ErrorCode::Invalid, "fork parent is not a conversation"));
+        }
+        this.verifier.verify_audience_with_native_work(this.parent.authority(), work)?;
+        this.verifier.verify_with_native_work(&this.scope, work)?;
+        if this.scope.agent().is_none()
+            || this.parent.conversation().and_then(|state| state.agent) != this.scope.agent()
+        {
+            return Err(reject(crate::wire::ErrorCode::Unauthorized, "fork scope is not bound to the parent agent"));
+        }
+        this.project.validate_with_native_work(work)?;
+        if this.project.provider() != &this.host.provider {
+            return Err(reject(crate::wire::ErrorCode::Invalid, "fork project belongs to another provider"));
+        }
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let history = this.history.as_ref().expect("native constructor owns prepared history");
+        history.verify_with_work(&this.verifier, &mut Some(&mut io))?;
+        if history.parent() != this.parent.authority()
+            || history.parent_revision() != this.parent.revision()
+        {
+            return Err(reject(crate::wire::ErrorCode::Conflict, "fork history differs from the original parent"));
+        }
+        if this.project_source.as_ref().is_some_and(|handle|
+            handle.authorization().project.provider() != &this.host.provider)
+        {
+            return Err(reject(crate::wire::ErrorCode::Unauthorized, "fork source belongs to another provider"));
+        }
+        Ok(this)
+    }
+
+    /// Admits the known logical Self header before its single SDK Arc attempt.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn into_native_shared(mut self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Arc<Self>> {
+        if !self.native_custody.as_ref().is_some_and(|guard| guard.matches_work(work)) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "fork preparer belongs to another original resource" });
+        }
+        let mut header = work.claim(std::mem::size_of::<Self>() as u64)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.native_custody.as_mut().expect("native custody was checked").absorb(&mut header)
+            .map_err(|cause| Error::NativeWork { cause, custody: Some(header) })?;
+        Ok(Arc::new(self))
     }
 
     /// Retains an operation-specific project read sealed by the original task
@@ -448,6 +534,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         &'a self,
         task: Option<&'a TaskResourcePreparation>,
     ) -> Result<PreparationAttempt<'a, A, O>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = &self.native_work {
+            let io = PreparationIo::from_native_work(work)?;
+            if let Some(task) = task {
+                io.encode(task.request(), task.request().maximum_bytes)?;
+            }
+            return Ok(PreparationAttempt { preparer: self, io: Some(io), task_preparation: task });
+        }
         let io = task.map(|task| {
             let cancellation = task.cancellation().ok_or_else(|| Error::Unauthorized(
                 "task-bound preparation has no original invocation cancellation token".into()))?;
