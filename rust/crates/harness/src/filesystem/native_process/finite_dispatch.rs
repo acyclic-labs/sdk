@@ -48,7 +48,6 @@ pub(super) struct ObservedPayload {
 struct SupervisorPayload {
     dispatch: EffectDispatch,
     path: StreamPath,
-    _path_custody: Option<NativeAllocation>,
     _custody: Option<NativeAllocation>,
 }
 
@@ -56,7 +55,6 @@ struct ExecutedPayload {
     dispatch: EffectDispatch,
     execution: NativeExecution,
     path: StreamPath,
-    _path_custody: Option<NativeAllocation>,
     _custody: Option<NativeAllocation>,
 }
 
@@ -126,7 +124,9 @@ pub(super) fn root_error(error: NativeReceiptError) -> Error {
         NativeReceiptError::Record(reason) => Error::NativeBoundary {
             code: crate::wire::ErrorCode::Storage, reason,
         },
-        NativeReceiptError::Backend(source) => Error::NativeStream { source, custody: None },
+        NativeReceiptError::Backend(source) => Error::NativeStream {
+            code: crate::wire::ErrorCode::Storage, source, custody: None,
+        },
         NativeReceiptError::Supervisor(source) => Error::NativeSupervisor { source, custody: None },
         NativeReceiptError::Decode { source, custody } => Error::NativeDecode {
             code: crate::wire::ErrorCode::Storage, source, custody,
@@ -337,9 +337,11 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             return effect_result(receipt, work.is_some());
         }
         let (task, fence) = self.owner.task_binding();
-        let mut path_custody = work.map(|work| work.claim(
-            ("harness/v2/native-process/".len() + 36) as u64)).transpose()?;
-        let path = receipt_path(dispatch.attempt_id)?;
+        let path = match work {
+            Some(work) => super::receipt_observation::receipt_path_with_native_work(
+                dispatch.attempt_id, work)?,
+            None => receipt_path(dispatch.attempt_id)?,
+        };
         let launch = LaunchReceipt {
             dispatch: Cow::Borrowed(&dispatch), plan: Cow::Borrowed(&self.plan),
             conversation: Cow::Borrowed(self.authority.verifier.audience()), task,
@@ -357,7 +359,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         // supervisor errors leave the very same launch-only uncertain slot.
         let payload = SupervisorPayload {
             dispatch: payload.dispatch, path,
-            _path_custody: path_custody.take(), _custody: payload._custody,
+            _custody: payload._custody,
         };
         let owner = Arc::clone(&self.owner);
         let view = Arc::clone(self.view.as_ref().ok_or(NativeReceiptError::Record(
@@ -401,8 +403,8 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                     "finite native execution lost original payload custody"))?;
                 guard.absorb(&mut execution_custody)?;
             }
-            let SupervisorPayload { dispatch, path, _path_custody, _custody } = payload;
-            let payload = ExecutedPayload { dispatch, execution, path, _path_custody, _custody };
+            let SupervisorPayload { dispatch, path, _custody } = payload;
+            let payload = ExecutedPayload { dispatch, execution, path, _custody };
             let dispatch = &payload.dispatch;
             let execution = &payload.execution;
             let observed = ObservedWrite {
@@ -436,9 +438,8 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 supervisor.record_capture(NativeCapturePhase::Recorded)
                     .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
             }
-            let ExecutedPayload { dispatch, execution, path, _path_custody, _custody } = payload;
+            let ExecutedPayload { dispatch, execution, path, _custody } = payload;
             drop(path);
-            drop(_path_custody);
             let EffectDispatch { provider, effect_id, attempt_id, request_digest, guarantee,
                 effect_kind, request } = dispatch;
             drop(effect_kind);
@@ -505,7 +506,6 @@ async fn append_receipt_original<P: StreamProvider>(
         return Err(NativeReceiptError::Record("native receipt exceeds Stream limit"));
     }
     let mut key_custody = None;
-    let mut path_custody = None;
     if let Some(work) = work {
         work.charge(WorkCounters { bytes_hashed: bytes.len() as u64, ..WorkCounters::default() })?;
     }
@@ -522,18 +522,17 @@ async fn append_receipt_original<P: StreamProvider>(
     }
     key_bytes.extend_from_slice(hash.as_bytes());
     let key = acyclic_stream::IdempotencyKey::new(Bytes::from(key_bytes))?;
-    let mut target = String::new();
-    if let Some(work) = work {
-        work.admit(WorkCounters { bytes_copied: path.as_str().len() as u64, ..WorkCounters::default() })?;
-        path_custody = Some(work.claim(path.as_str().len() as u64)?);
-    }
-    target.try_reserve_exact(path.as_str().len())
-        .map_err(acyclic_fs::NativeTreeMaterializationError::AllocationFailed)?;
-    if let Some(work) = work {
-        work.charge(WorkCounters { bytes_copied: path.as_str().len() as u64, ..WorkCounters::default() })?;
-    }
-    target.push_str(path.as_str());
-    let target = StreamPath::new(target)?;
+    let target = match work {
+        // StreamPath aliases its intrinsically guarded original payload.
+        Some(_) => path.clone(),
+        None => {
+            let mut target = String::new();
+            target.try_reserve_exact(path.as_str().len())
+                .map_err(acyclic_fs::NativeTreeMaterializationError::AllocationFailed)?;
+            target.push_str(path.as_str());
+            StreamPath::new(target)?
+        }
+    };
     let bytes = Bytes::from(bytes);
     let result = match work {
         Some(work) => owner.append_with_native_work(target, tail, &key, bytes.clone(), write, work).await,
@@ -542,7 +541,6 @@ async fn append_receipt_original<P: StreamProvider>(
     drop(bytes);
     drop(key);
     drop(key_custody);
-    drop(path_custody);
     drop(custody);
     result.map_err(NativeReceiptError::Owner)
 }
@@ -552,6 +550,41 @@ mod tests {
     use super::*;
     use acyclic_fs::{CancellationToken, WorkBudget};
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn intrinsic_receipt_path_alias_retains_original_custody_through_cancellation() {
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+        let attempt = crate::EffectAttemptId::from_bytes([7; 16]);
+        let before = work.live_allocation_bytes();
+        let path = receipt_observation::receipt_path_with_native_work(attempt, &work).unwrap();
+        assert_eq!(path.as_str(), receipt_path(attempt).unwrap().as_str());
+        assert!(work.live_allocation_bytes() > before);
+        let alias = path.clone();
+        drop(path);
+        let retained = work.live_allocation_bytes();
+        let prefix = work.receipt();
+        cancellation.cancel();
+        assert_eq!(work.live_allocation_bytes(), retained);
+        assert_eq!(work.receipt(), prefix);
+        assert!(work.cancellation().is_cancelled());
+        drop(alias);
+        assert_eq!(work.live_allocation_bytes(), before);
+    }
+
+    #[test]
+    fn native_receipt_path_denial_precedes_encoding_without_changing_ordinary_policy() {
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(WorkBudget {
+            items_examined: 0, ..WorkBudget::UNBOUNDED
+        }, &cancellation).unwrap();
+        let attempt = crate::EffectAttemptId::from_bytes([7; 16]);
+        let before = work.receipt();
+        assert!(receipt_observation::receipt_path_with_native_work(attempt, &work).is_err());
+        assert_eq!(work.receipt(), before);
+        assert_eq!(receipt_path(attempt).unwrap().as_str(),
+            "harness/v2/native-process/07070707-0707-0707-0707-070707070707");
+    }
 
     #[test]
     fn finite_launch_frame_denial_precedes_construction_and_preserves_prefix() {

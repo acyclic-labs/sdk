@@ -229,7 +229,49 @@ pub struct NativeProcessRequest {
     pub view: NativeViewManifest,
 }
 
+// This closed inventory includes the request's typed containers and only the
+// actual arbitrary JSON field, mcp_stdio.params. It is not a generic heap profile.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl super::PreparationRecord for NativeProcessRequest {
+    fn maximum_slot_bytes() -> u64 {
+        let typed = [
+            std::mem::size_of::<Self>() as u64,
+            std::mem::size_of::<NativeVolumeMapping>() as u64,
+            std::mem::size_of::<(String, String)>() as u64,
+            std::mem::size_of::<serde_json::Value>() as u64,
+            std::mem::size_of::<(String, serde_json::Value)>() as u64,
+            std::mem::size_of::<crate::mcp::stdio::McpStdioRequest>() as u64,
+        ].into_iter().max().unwrap_or(0);
+        // The reachable adjacently tagged VolumeOwner has one Content envelope.
+        // Account for its pair/vector capacity, not unrelated model tag layers.
+        let content = std::mem::size_of::<serde::__private229::de::Content<'static>>()
+            .max(std::mem::size_of::<(
+                serde::__private229::de::Content<'static>,
+                serde::__private229::de::Content<'static>,
+            )>()) as u64;
+        typed + 2 * content
+    }
+
+    fn json_value_schema() -> crate::contract::JsonValueSchema {
+        crate::contract::JsonValueSchema::NativeProcessRequest
+    }
+}
+
 impl NativeProcessRequest {
+    /// Decodes the pinned approved request with the canonical closed-record codec.
+    /// The caller retains the source bytes. Returned custody retains the audited
+    /// opaque decode allowance, not a claim about allocator calls or RSS.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn decode_with_native_work(
+        bytes: &[u8],
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        let io = super::PreparationIo::from_native_work(work)?;
+        io.decode_preparation_with_code::<Self>(
+            bytes, crate::wire::ErrorCode::Storage,
+        )?.into_native_parts()
+    }
+
     /// Checks only capture/control/result arithmetic, without consulting the OS.
     /// Native admission additionally validates paths, environment and authority.
     pub const fn has_valid_capture_allowances(&self) -> bool {
@@ -245,6 +287,24 @@ impl NativeProcessRequest {
     /// Binds the existing approval mechanism to the task, command and exact request.
     pub fn approval_digest(&self, task: crate::TaskId, command: OperationId) -> Result<[u8; 32]> {
         self.approval_digest_with_io(task, command, None)
+    }
+
+    /// Computes the same approval digest using the caller's original finite work.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn approval_digest_with_native_work(
+        &self, task: crate::TaskId, command: OperationId,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<[u8; 32]> {
+        if !work.remaining().map_err(|cause| crate::Error::NativeWork {
+            cause, custody: None,
+        })?.has_finite_allowances() {
+            return Err(crate::Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "native approval digest requires finite original work",
+            });
+        }
+        let io = super::PreparationIo::from_native_work(work)?;
+        self.approval_digest_with_io(task, command, Some(&io))
     }
 
     pub(crate) fn approval_digest_with_io(
@@ -274,6 +334,24 @@ impl NativeProcessRequest {
         }
         exchange.decode_response(&result.stdout)
     }
+
+    /// Decodes the same complete receipt using the original work ledger.
+    /// The returned allocation retains the actual decoded response.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn mcp_response_with_native_work(
+        &self,
+        result: &NativeProcessResult,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(serde_json::Value, acyclic_fs::NativeAllocation)> {
+        let exchange = self.mcp_stdio.as_ref().ok_or(crate::Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "native request has no MCP exchange",
+        })?;
+        if result.stop.is_some() {
+            return Err(crate::Error::Indeterminate(exchange.operation));
+        }
+        exchange.decode_response_with_native_work(&result.stdout, work)
+    }
 }
 
 /// Bounded bytes from a completed process. Bytes preserve non-UTF-8 output.
@@ -291,6 +369,47 @@ pub struct NativeProcessResult {
     pub stderr: Vec<u8>,
     /// Present for a stopped capture; stdout/stderr then contain bounded prefixes.
     pub stop: Option<NativeProcessStop>,
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl super::PreparationRecord for NativeProcessResult {
+    fn maximum_slot_bytes() -> u64 {
+        [
+            std::mem::size_of::<Self>(),
+            std::mem::size_of::<NativeProcessStop>(),
+            std::mem::size_of::<Vec<u8>>(),
+            std::mem::size_of::<String>(),
+            std::mem::size_of::<(String, u8)>(),
+        ].into_iter().max().unwrap_or(0) as u64
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl NativeProcessResult {
+    /// Decodes a pinned result with the canonical closed-record decoder.
+    /// The caller retains the source bytes; the returned allocation retains
+    /// this result's inline storage and actual byte/string capacities.
+    pub fn decode_with_native_work(
+        bytes: &[u8],
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        let io = super::PreparationIo::from_native_work(work)?;
+        let mut decoded = io.decode_preparation_with_code::<Self>(
+            bytes, crate::wire::ErrorCode::Storage,
+        )?;
+        let owned = (std::mem::size_of::<Self>() as u64)
+            .checked_add(decoded.stdout.capacity() as u64)
+            .and_then(|bytes| bytes.checked_add(decoded.stderr.capacity() as u64))
+            .and_then(|bytes| bytes.checked_add(
+                decoded.stop.as_ref().map_or(0, |stop| stop.message.capacity() as u64),
+            ))
+            .ok_or(crate::Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Storage,
+                reason: "native result ownership overflow",
+            })?;
+        decoded.substitute_owned(owned)?;
+        decoded.into_native_parts()
+    }
 }
 
 /// Why capture stopped, including whether cleanup was confirmed.
@@ -317,4 +436,94 @@ pub enum NativeProcessStopKind {
     ControlStopped,
     /// Pipe observation or containment cleanup failed.
     CaptureFailed,
+}
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod native_result_decode_tests {
+    use super::*;
+
+    #[test]
+    fn closed_request_decode_keeps_mcp_value_and_original_custody() {
+        let request = NativeProcessRequest {
+            executable: PathBuf::from("native/bin"),
+            argv: vec!["argument".into()],
+            cwd: PathBuf::from("native"),
+            environment: BTreeMap::from([("KEY".into(), "value".into())]),
+            timeout_ms: 1,
+            control_timeout_ms: 1,
+            cancellation_poll_ms: 1,
+            maximum_output_bytes: 1,
+            maximum_result_bytes: 1,
+            mcp_stdio: Some(crate::mcp::stdio::McpStdioRequest {
+                initialization: OperationId::from_bytes([1; 16]),
+                operation: OperationId::from_bytes([2; 16]),
+                method: crate::mcp::stdio::McpStdioMethod::CallTool,
+                params: serde_json::json!({"name":"tool","arguments":{"nested":[1,null,{"key":"value"}]}}),
+                maximum_bytes: 1024,
+            }),
+            standard_input: None,
+            view: NativeViewManifest {
+                options: NativeViewOptions {
+                    root: PathBuf::from("native"),
+                    maximum_volumes: 1,
+                    work_per_volume: WorkBudget::UNBOUNDED,
+                },
+                volumes: Vec::new(),
+            },
+        };
+        let bytes = crate::contract::canonical_json_bytes(&request).unwrap();
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            WorkBudget::UNBOUNDED, &cancellation,
+        ).unwrap();
+        let source_custody = work.retain_owned(bytes.capacity() as u64).unwrap();
+        let (decoded, custody) = NativeProcessRequest::decode_with_native_work(&bytes, &work).unwrap();
+        assert_eq!(decoded, request);
+        assert!(custody.bytes() >= std::mem::size_of::<NativeProcessRequest>() as u64);
+        assert!(custody.work().shares_ledger(&work));
+        drop(decoded);
+        drop(custody);
+        drop(bytes);
+        drop(source_custody);
+    }
+
+    #[test]
+    fn closed_result_decode_retains_actual_payload_on_original_ledger() {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            WorkBudget::UNBOUNDED, &cancellation,
+        ).unwrap();
+        let bytes = br#"{"success":false,"exit_code":null,"stdout":[255,0],"stderr":[1],"stop":{"kind":"capture_failed","message":"partial capture","cleanup_completed":false}}"#;
+        let (result, custody) = NativeProcessResult::decode_with_native_work(bytes, &work).unwrap();
+        assert_eq!(result.stdout, [255, 0]);
+        assert_eq!(result.stderr, [1]);
+        let stop = result.stop.as_ref().unwrap();
+        assert_eq!(stop.kind, NativeProcessStopKind::CaptureFailed);
+        assert!(!stop.cleanup_completed);
+        let actual = std::mem::size_of::<NativeProcessResult>() as u64
+            + result.stdout.capacity() as u64
+            + result.stderr.capacity() as u64
+            + stop.message.capacity() as u64;
+        assert_eq!(custody.bytes(), actual);
+        assert!(custody.work().shares_ledger(&work));
+        drop(result);
+        drop(custody);
+    }
+
+    #[test]
+    fn closed_result_decode_preserves_storage_error_and_paid_diagnostic() {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            WorkBudget::UNBOUNDED, &cancellation,
+        ).unwrap();
+        match NativeProcessResult::decode_with_native_work(b"{}", &work).unwrap_err() {
+            crate::Error::NativeDecode { code, source, custody: Some(custody) } => {
+                assert_eq!(code, crate::wire::ErrorCode::Storage);
+                assert!(custody.work().shares_ledger(&work));
+                drop(source);
+                drop(custody);
+            }
+            error => panic!("unexpected decode error: {error:?}"),
+        }
+    }
 }
