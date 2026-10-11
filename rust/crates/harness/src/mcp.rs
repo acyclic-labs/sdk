@@ -610,14 +610,39 @@ impl RemoteTool {
     fn result_with_native_work(
         &self,
         remote: NativeRemoteResult,
+        operation: OperationId,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<NativeRemoteToolResult> {
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        self.validate_result(&remote.result, Some(&io))?;
-        let (value, custody) = crate::tool::value_with_native_work(&remote.result, work)?;
-        let output = NativeRemoteToolResult { result: ToolResult { value }, custody };
-        rpc::check_dto(rpc::Dto::CallToolResult, &output.result.value, Some(work))?;
-        Ok(output)
+        (|| {
+            let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+            self.validate_result(&remote.result, Some(&io))?;
+            let (value, custody) = crate::tool::value_with_native_work(&remote.result, work)?;
+            let output = NativeRemoteToolResult { result: ToolResult { value }, custody };
+            rpc::check_dto(rpc::Dto::CallToolResult, &output.result.value, Some(work))?;
+            Ok(output)
+        })().map_err(|error| Self::native_response_error(error, operation))
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn native_response_error(error: Error, operation: OperationId) -> Error {
+        // An actual remote response is already past dispatch. Preserve its
+        // typed source and existing custody; never authorize a safe resend.
+        let code = crate::wire::ErrorCode::Indeterminate;
+        match error {
+            Error::NativeDecode { source, custody, .. } if source.is_eof() =>
+                Error::NativeMcpIncomplete { operation, source, custody },
+            Error::NativeDecode { source, custody, .. } =>
+                Error::NativeDecode { code, source, custody },
+            Error::NativeEncode { source, custody, .. } =>
+                Error::NativeEncode { code, source, custody },
+            Error::NativeSchema { source, custody, .. } =>
+                Error::NativeSchema { code, source, custody },
+            Error::NativeBoundary { reason, .. } =>
+                Error::NativeBoundary { code, reason },
+            Error::NativeDiagnostic { message, custody, .. } =>
+                Error::NativeDiagnostic { code, message, custody },
+            error => error,
+        }
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn authorize_native_selection(
@@ -779,7 +804,7 @@ impl ToolExecutor for RemoteTool {
                 context, &self.remote.name, &invocation.arguments, work,
             )?.await?;
             let remote = NativeRemoteResult { result, _custody: custody };
-            let output = self.result_with_native_work(remote, work)?;
+            let output = self.result_with_native_work(remote, context.operation_id(), work)?;
             Ok((output.result, output.custody))
         })
     }
@@ -801,12 +826,12 @@ impl ToolExecutor for RemoteTool {
             match result {
                 Some(result) => {
                     let remote = NativeRemoteResult { result, _custody: custody };
-                    let mut output = self.result_with_native_work(remote, work)?;
+                    let mut output = self.result_with_native_work(remote, context.operation_id(), work)?;
                     let retained = output.custody.bytes().checked_add(
                         (std::mem::size_of::<Option<ToolResult>>()
                             - std::mem::size_of::<ToolResult>()) as u64,
                     ).ok_or(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Invalid,
+                        code: crate::wire::ErrorCode::Indeterminate,
                         reason: "MCP observation ownership overflow",
                     })?;
                     output.custody.resize_retained(retained)
