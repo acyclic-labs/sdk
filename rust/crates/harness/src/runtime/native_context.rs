@@ -332,7 +332,7 @@ mod tests {
             task, created.request.child.operation_id, &original,
         ).await?;
         let shared = context.into_native_shared(custody, &original)?;
-        let owner = fixture.host.journal_owner_native(task, &fence, &original).await?
+        let owner = fixture.host.journal_owner_with_native_work(task, &fence, &original).await?
             .into_native_shared(&original)?;
         let shared_users = Arc::strong_count(&shared);
         let reader = shared.content_residency_verifier_with_native_work(
@@ -355,7 +355,7 @@ mod tests {
         reader.verify_with_native_work(&staged.0, 65_536, &original)?.await?;
 
         let root_fence = crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation);
-        let root_owner = fixture.host.journal_owner_native(
+        let root_owner = fixture.host.journal_owner_with_native_work(
             fixture.root, &root_fence, &original,
         ).await?.into_native_shared(&original)?;
         let before = original.receipt();
