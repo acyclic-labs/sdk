@@ -277,6 +277,7 @@ const PREPARATION_DIAGNOSTIC_LABELS: &[&str] = &[
     "deadline_unix_ms", "admission_operation", "name", "version", "input",
     "selected_context", "max_steps", "max_output_tokens", "revision", "arguments",
     "recipient", "payload", "after", "selection", "messages",
+    "Outcome", "Succeeded", "Failed", "Cancelled", "Indeterminate", "message", "operation_id",
 ];
 
 /// Compile-time label/punctuation upper bound for the concrete preparation

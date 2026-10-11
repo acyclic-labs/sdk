@@ -795,6 +795,42 @@ proptest::proptest! {
         expected.sort_all_objects();
         proptest::prop_assert_eq!(serde_json::to_vec(&actual).unwrap(), serde_json::to_vec(&expected).unwrap());
     }
+
+    #[test]
+    fn real_outcome_value_branch_matches_original_decode_and_shape_model(
+        strings in proptest::collection::vec(proptest::prelude::any::<String>(), 0..12),
+        integers in proptest::collection::vec(proptest::prelude::any::<u64>(), 0..12),
+        float in -1.0e100f64..1.0e100f64,
+        layers in 0usize..5,
+        succeeds in proptest::prelude::any::<bool>(),
+    ) {
+        let leaf = serde_json::to_string(&(strings, integers, float)).unwrap();
+        let (payload, raw_bytes, virtual_items) = raw_layers(leaf, layers);
+        let document = if succeeds {
+            format!(r#"{{"Succeeded":{payload}}}"#)
+        } else {
+            serde_json::to_string(&crate::Outcome::<Value>::Failed { message: payload }).unwrap()
+        };
+        let expected: crate::Outcome<Value> = serde_json::from_str(&document).unwrap();
+        let mut issued = None;
+        let actual = json_from_slice_seed_bounded_trusted(
+            std::marker::PhantomData::<crate::Outcome<Value>>, document.as_bytes(), LIMITS, 0,
+            JsonValueSchema::TaskOutcome, &mut |event| {
+                if let JsonCodecCharge::Admission { value_shape, .. } = event { issued = Some(value_shape); }
+                Ok(())
+            },
+        ).unwrap();
+        let issued = issued.unwrap();
+        proptest::prop_assert_eq!(issued.raw_frames, if succeeds { layers as u64 } else { 0 });
+        proptest::prop_assert_eq!(issued.raw_bytes, if succeeds { raw_bytes } else { 0 });
+        proptest::prop_assert_eq!(issued.virtual_items, if succeeds { virtual_items } else { 0 });
+        proptest::prop_assert_eq!(&actual, &expected);
+        if let crate::Outcome::Succeeded(value) = &actual {
+            proptest::prop_assert!(json_value_decode_owned_bytes(issued).unwrap() >= concrete_owned(value) + raw_bytes);
+        }
+        proptest::prop_assert_eq!(crate::contract::canonical_json_bytes(&actual).unwrap(),
+            crate::contract::canonical_json_bytes(&expected).unwrap());
+    }
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -806,6 +842,145 @@ mod native {
         bytes: &[u8], bounds: JsonBounds, charge: &mut F,
     ) -> Result<Value> {
         json_from_slice_bounded_native_trusted(bytes, bounds, 0, crate::wire::ErrorCode::Storage, JsonValueSchema::Root, charge)
+    }
+
+    #[test]
+    fn real_task_outcome_root_selects_only_success_and_keeps_original_wire_identity() {
+        let payload = r#"{"z":[18446744073709551615,-0.0,"\n😀"],"a":1,"a":2}"#;
+        let raw = raw_document(payload);
+        let success = format!(r#"{{"Succeeded":{raw}}}"#);
+        let escaped = success.replacen("Succeeded", r#"\u0053ucceeded"#, 1);
+        let failed = serde_json::to_string(&crate::Outcome::<Value>::Failed { message: raw.clone() }).unwrap();
+        let indeterminate = serde_json::to_string(&crate::Outcome::<Value>::Indeterminate {
+            operation_id: Uuid::from_bytes([9; 16]),
+        }).unwrap();
+        for (document, selected) in [
+            (success, true), (escaped, true), (failed, false),
+            (r#""Cancelled""#.into(), false), (indeterminate, false),
+        ] {
+            let expected: crate::Outcome<Value> = serde_json::from_str(&document).unwrap();
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
+                allocation_operations: 1, peak_allocation_bytes: 1024 * 1024,
+                ..acyclic_fs::WorkBudget::default()
+            }, &cancellation).unwrap();
+            let before = work.remaining().unwrap().peak_allocation_bytes;
+            let mut future = work.retain_owned(0).unwrap();
+            let mut issued = None;
+            let mut read = 0;
+            let actual = json_from_slice_bounded_native_trusted::<crate::Outcome<Value>, _>(
+                document.as_bytes(), LIMITS, 0, crate::wire::ErrorCode::Storage,
+                JsonValueSchema::TaskOutcome, &mut |event| {
+                    match event {
+                        JsonCodecCharge::Read { bytes } => read += bytes,
+                        JsonCodecCharge::Admission { value_shape, .. } => {
+                            let diagnostics = crate::contract::json_typed_diagnostic_owned_bytes(
+                                value_shape, crate::contract::preparation_serde_diagnostic_label_bytes(),
+                                Some(crate::wire::ErrorCode::Storage),
+                            )?;
+                            future.resize_retained(json_value_decode_owned_bytes(value_shape)?
+                                + diagnostics + std::mem::size_of::<crate::Outcome<Value>>() as u64)
+                                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                            issued = Some(value_shape);
+                        }
+                        _ => {}
+                    }
+                    Ok(())
+                },
+            ).unwrap();
+            let issued = issued.unwrap();
+            assert_eq!(read, document.len() as u64, "one original lexical input, not another backend read");
+            assert_eq!(issued.raw_frames, u64::from(selected));
+            assert_eq!(issued.raw_bytes, if selected { payload.len() as u64 } else { 0 });
+            assert_eq!(actual, expected);
+            assert_eq!(crate::contract::canonical_json_bytes(&actual).unwrap(),
+                crate::contract::canonical_json_bytes(&expected).unwrap());
+            assert_eq!(before - work.remaining().unwrap().peak_allocation_bytes, future.bytes());
+            assert_eq!(work.receipt().allocation_operations, 0,
+                "opaque serde allocations are not observed SDK buffer reservations");
+            drop(actual);
+            drop(future);
+            assert_eq!(work.remaining().unwrap().peak_allocation_bytes, before);
+        }
+
+        // A malformed typed String is not a Value subtree, even if its object
+        // contains the private key. Preserve the actual enum/String serde error.
+        let document = format!(r#"{{"Failed":{{"message":{}}}}}"#, raw_document("[0,]"));
+        let expected = serde_json::from_str::<crate::Outcome<Value>>(&document).err().unwrap();
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
+            allocation_operations: 1, peak_allocation_bytes: 1024 * 1024,
+            ..acyclic_fs::WorkBudget::default()
+        }, &cancellation).unwrap();
+        let before = work.remaining().unwrap().peak_allocation_bytes;
+        let mut future = work.retain_owned(0).unwrap();
+        let mut selected = None;
+        let failure = json_from_slice_bounded_native_trusted::<crate::Outcome<Value>, _>(
+            document.as_bytes(), LIMITS, 0, crate::wire::ErrorCode::Invalid,
+            JsonValueSchema::TaskOutcome, &mut |event| {
+                if let JsonCodecCharge::Admission { value_shape, .. } = event {
+                    let diagnostics = crate::contract::json_typed_diagnostic_owned_bytes(
+                        value_shape, crate::contract::preparation_serde_diagnostic_label_bytes(),
+                        Some(crate::wire::ErrorCode::Invalid),
+                    )?;
+                    future.resize_retained(json_value_decode_owned_bytes(value_shape)?
+                        + diagnostics + std::mem::size_of::<crate::Outcome<Value>>() as u64)
+                        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                    selected = Some(value_shape);
+                }
+                Ok(())
+            },
+        ).err().unwrap();
+        assert_eq!(selected.unwrap().raw_frames, 0);
+        let Error::NativeDecode { source, code: crate::wire::ErrorCode::Invalid, custody: None } = failure else {
+            panic!("original failed-message String error expected")
+        };
+        assert_eq!(source.to_string(), expected.to_string());
+        let held = future.bytes();
+        let failure = Error::NativeDecode { source, code: crate::wire::ErrorCode::Invalid, custody: Some(future) };
+        assert_eq!(before - work.remaining().unwrap().peak_allocation_bytes, held);
+        cancellation.cancel();
+        drop(failure);
+        assert_eq!(work.remaining().unwrap().peak_allocation_bytes, before);
+    }
+
+    #[test]
+    fn task_outcome_hidden_growth_and_every_callback_cancellation_precede_real_enum_decode() {
+        let hidden = format!("[{}0]", "0,".repeat(999_999));
+        let document = format!(r#"{{"Succeeded":{}}}"#, raw_document(&hidden));
+        let mut admitted = false;
+        let failure = json_from_slice_bounded_native_trusted::<crate::Outcome<Value>, _>(
+            document.as_bytes(), JsonBounds { maximum_items: 128, ..LIMITS }, 0,
+            crate::wire::ErrorCode::Storage, JsonValueSchema::TaskOutcome, &mut |event| {
+                admitted |= matches!(event, JsonCodecCharge::Admission { .. });
+                Ok(())
+            },
+        ).err().unwrap();
+        assert!(!admitted, "selected hidden growth fails before the genuine enum/Value parser");
+        assert!(matches!(failure, Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. }));
+
+        let document = format!(r#"{{"Succeeded":{}}}"#, raw_document("[0,1]"));
+        let mut callbacks = 0;
+        json_from_slice_bounded_native_trusted::<crate::Outcome<Value>, _>(
+            document.as_bytes(), LIMITS, 0, crate::wire::ErrorCode::Storage,
+            JsonValueSchema::TaskOutcome, &mut |_| { callbacks += 1; Ok(()) },
+        ).unwrap();
+        for denied in 0..callbacks {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let cause = Uuid::new_v4();
+            let mut reached = 0;
+            let failure = json_from_slice_bounded_native_trusted::<crate::Outcome<Value>, _>(
+                document.as_bytes(), LIMITS, 0, crate::wire::ErrorCode::Storage,
+                JsonValueSchema::TaskOutcome, &mut |_| {
+                    let current = reached;
+                    reached += 1;
+                    if current == denied { cancellation.cancel(); }
+                    cancellation.check().map_err(|_| Error::Indeterminate(cause))
+                },
+            ).err().unwrap();
+            assert!(matches!(failure, Error::Indeterminate(id) if id == cause));
+            assert_eq!(reached, denied + 1, "no later callback replaces the original root cause");
+        }
     }
 
     #[test]
@@ -1163,7 +1338,8 @@ mod native {
                     // typed field is decoded. The actual SDK Value/scratch/base
                     // allowance and diagnostic overlap are prepaid separately.
                     future.resize_retained(json_owned_value_conversion_additional_bytes(value_shape)?
-                        + diagnostic + std::mem::size_of::<crate::runtime::TaskAdmissionRecord>() as u64)?;
+                        + diagnostic + std::mem::size_of::<crate::runtime::TaskAdmissionRecord>() as u64)
+                        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
                     admitted = true;
                 }
                 Ok(())

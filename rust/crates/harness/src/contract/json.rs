@@ -91,6 +91,9 @@ pub enum JsonValueSchema {
     RecursiveInitialPlan,
     /// Recursive receipt's externally tagged successful Value.
     RecursiveReceipt,
+    /// The SDK Outcome<Value> root's externally tagged Succeeded payload only.
+    /// Failed.message, Cancelled and Indeterminate retain ordinary typed fields.
+    TaskOutcome,
     /// Provider join proof statement only.
     ProjectMergeReceipt,
     /// Stock tool task's arguments only.

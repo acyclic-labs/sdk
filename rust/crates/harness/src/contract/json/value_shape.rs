@@ -285,6 +285,7 @@ impl ValueInspector {
             Some(JsonValueSchema::RecursiveInitialPlan) => Node::RecursiveInitialPlan,
             Some(JsonValueSchema::RecursiveState) => Node::RecursiveState,
             Some(JsonValueSchema::RecursiveReceipt) => Node::RecursiveReceipt,
+            Some(JsonValueSchema::TaskOutcome) => Node::ValueOutcome,
             Some(JsonValueSchema::ProjectMergeReceipt) => Node::ProjectMergeReceipt,
             Some(JsonValueSchema::ToolTaskCommand) => Node::ToolTaskCommand,
             Some(JsonValueSchema::TaskAdmitCommand) => Node::TaskAdmitCommand,
