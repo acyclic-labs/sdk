@@ -979,11 +979,11 @@ where
                     mutations: vec![
                         acyclic_stream::CommitMutation::Append {
                             path: registry.clone(),
-                            records: vec![Bytes::copy_from_slice(path.as_str().as_bytes())],
+                            records: vec![Bytes::copy_from_slice(path.as_str().as_bytes()).into()],
                         },
                         acyclic_stream::CommitMutation::Append {
                             path: path.clone(),
-                            records: vec![record.clone()],
+                            records: vec![record.clone().into()],
                         },
                     ],
                     idempotency_key: attempt,

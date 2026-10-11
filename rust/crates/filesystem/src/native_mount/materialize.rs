@@ -243,7 +243,7 @@ impl GenerationReceipt {
     }
 
     fn take(&mut self, bytes: usize) -> Result<crate::materializer::NativeAllocation, GenerationFailure> {
-        let result = self.custody.split(bytes as u64);
+        let result = self.custody.split_off(bytes as u64);
         self.custody_result(result)
     }
 
@@ -1822,7 +1822,7 @@ fn prepare_restore(
     work: &mut impl crate::demand::SourceDemandReadWork,
 ) -> Result<PreparedRestore, MaterializeError> {
     let allocation_work = destination_root.allocation.work().clone();
-    let root = HostRoot::open_measured(&destination_root, work).map_err(restore_demand_error)?;
+    let root = HostRoot::open_with_work(&destination_root, work).map_err(restore_demand_error)?;
     let actual = root.identity();
     if let Some(expected) = expected_root_identity {
         if actual != expected {
@@ -1852,7 +1852,7 @@ fn prepare_restore(
         )?,
     };
     let stage_parent_root = match replacement {
-        HostPathReplacement::Atomic => HostRoot::open_measured(&stage_parent_path, work)
+        HostPathReplacement::Atomic => HostRoot::open_with_work(&stage_parent_path, work)
             .map_err(restore_demand_error)?,
         HostPathReplacement::LiveMount => destination_parent.open_root_measured(Path::new(""), work)
             .map_err(restore_demand_error)?,
@@ -2367,7 +2367,7 @@ where
                     #[cfg(target_os = "macos")]
                     let file = receipt.host(|work| host_root.open_file_with_work(host_path.path(), work))?.into_std();
                     #[cfg(windows)]
-                    let file = receipt.host(|work| host_root.open_file_wide_with_work(&host_path.units, work))?.into_std();
+                    let file = receipt.host(|work| host_root.open_file_positional_wide_with_work(&host_path.units, work))?.into_std();
                     let meter = receipt.native_meter();
                     let file = receipt.runtime_result(
                         acyclic_native_runtime::NativeFile::from_file_measured_owned(file, meter)
@@ -2824,7 +2824,7 @@ async fn apply_host_attributes_offloaded(
             let target = root.open_linux_metadata_target_measured(path.path(), work)?;
             #[cfg(target_os = "macos")]
             let target = root.open_macos_metadata_target_measured(path.path(), work)?;
-            let result = target.set_extended_attributes_measured(&attributes, work);
+            let result = target.set_extended_attributes(&attributes, work);
             #[cfg(target_os = "macos")]
             {
                 let target_bytes = target.logical_owned_bytes();
@@ -3071,8 +3071,8 @@ mod windows_name_tests {
         let resize = receipt.runtime_result(native.set_len_bounded_async(1024 * 1024, meter))?;
         receipt.runtime_result(resize.await)?;
         let mut ordinary_control = None::<&mut fn(NativeMaterializationActionPhase) -> std::future::Ready<Result<(), MaterializeError>>>;
-        write_generation_bytes(&native, 1024 * 1024 - 4, acyclic_stream::OwnedBytes::from_static(b"tail"), 0, &mut receipt, &mut ordinary_control).await?;
-        sync_generation_file(&native, &mut receipt, &mut ordinary_control).await?;
+        write_generation_bytes(&native, 1024 * 1024 - 4, acyclic_stream::OwnedBytes::from_static(b"tail"), 0, &mut receipt, &mut ordinary_control).await.map_err(|failure| failure.error)?;
+        sync_generation_file(&native, &mut receipt, &mut ordinary_control).await.map_err(|failure| failure.error)?;
         let path = Path::new("sparse-control.bin");
         let bytes = std::fs::read(directory.path().join(path))?;
         assert_eq!(bytes.len(), 1024 * 1024);

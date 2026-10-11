@@ -8062,7 +8062,7 @@ pub mod native {
                     drop(name);
                     drop(name_guard);
                     let cleanup = work.release(owned);
-                    return Err(error).and(cleanup);
+                    return Err::<(), DemandError>(error).and(cleanup);
                 }
             };
             let altered = altered && exact && (node.is_some() || name.is_root());
@@ -8075,7 +8075,7 @@ pub mod native {
                 if let Err(error) = ownership.retain(owned, work) {
                     drop(name);
                     let cleanup = work.release(owned);
-                    return Err(error).and(cleanup);
+                    return Err::<(), DemandError>(error).and(cleanup);
                 }
                 if let Some(mut incoming) = name_guard.take() {
                     if let Some(existing) = native_names.as_mut() {
@@ -8085,7 +8085,7 @@ pub mod native {
                             let cleanup = if ownership.has_native_custody() {
                                 ownership.retire(owned)
                             } else { work.release(owned) };
-                            return Err(crate::native_name::original_name_error(error)).and(cleanup);
+                            return Err::<(), DemandError>(crate::native_name::original_name_error(error)).and(cleanup);
                         }
                     } else { *native_names = Some(incoming); }
                 }
@@ -8113,19 +8113,19 @@ pub mod native {
                 if let Err(error) = entries.try_reserve_exact(capacity) {
                     drop(entries);
                     let cleanup = work.release(vector_bytes);
-                    return Err(DemandError::Allocation(error)).and(cleanup);
+                    return Err::<(), DemandError>(DemandError::Allocation(error)).and(cleanup);
                 }
                 let actual = entries.capacity().checked_mul(std::mem::size_of::<SourceChange>())
                     .ok_or(crate::WorkError::Overflow)? as u64;
                 if let Err(error) = work.reconcile_allocation(&mut vector_bytes, actual) {
                     drop(entries);
                     let cleanup = work.release(vector_bytes);
-                    return Err(error).and(cleanup);
+                    return Err::<(), DemandError>(error).and(cleanup);
                 }
                 if let Err(error) = ownership.retain(vector_bytes, work) {
                     drop(entries);
                     let cleanup = work.release(vector_bytes);
-                    return Err(error).and(cleanup);
+                    return Err::<(), DemandError>(error).and(cleanup);
                 }
                 (NativeChangeReport::Heap(entries), vector_bytes)
             };
