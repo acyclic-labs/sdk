@@ -1,6 +1,4 @@
 //! Consumer-selected conversion through existing admitted tools, not a model fallback.
-//! IMG1 is a bounded test codec: a little-endian pixel count followed by byte pixels.
-//! This example defines a tool; production conversion/model adapters remain deferred.
 #![allow(
     missing_docs,
     dead_code,
@@ -133,8 +131,6 @@ impl ToolExecutor for ImageConversion {
                 "conversion requires bounded fixture bytes".into(),
             ));
         }
-        // Reuse original-call checks and source/destination authorization. These
-        // local checks perform no tool effect or publication under another identity.
         let read = ToolInvocation {
             arguments: json!({"file":input.source}),
             ..invocation.clone()
@@ -179,8 +175,6 @@ impl ToolExecutor for ImageConversion {
         context: ToolContext,
         invocation: ToolInvocation,
     ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        // Pure bounded computation over the pinned source; stage_file_once reuses
-        // the existing exact operation receipt rather than publishing another file.
         Box::pin(async move { self.run(context, invocation).await.map(Some) })
     }
 }
@@ -216,8 +210,6 @@ impl ToolProjection for ImageConversion {
 }
 
 fn main() -> Result<()> {
-    // Creating this definition performs no effects; an admitted consumer selects
-    // the tool, source and mask before passing its derived Parts to a model.
     println!(
         "{}",
         serde_json::to_string_pretty(&conversion_tool()?.definition)

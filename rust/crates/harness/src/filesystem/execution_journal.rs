@@ -1,6 +1,4 @@
 //! Stream-backed execution observations with private Filesystem payloads.
-//! Version 2 observations bind the execution namespace to its original turn.
-//! Unversioned records are not replayable after this envelope cutover.
 
 use super::{FilesystemHost, FilesystemInteractionHost, InternalContentClass};
 use crate::contract::capability;
@@ -47,7 +45,6 @@ struct ExecutionSummary {
     retries: BTreeMap<[u8; 32], (u64, [u8; 32])>,
     prepared_contexts: HashSet<u32>,
     compacted_contexts: HashSet<u32>,
-    // None is a completed dispatch. Its event/call bodies are no longer needed.
     models: BTreeMap<(u32, crate::executor::ModelPurpose), Option<ModelEventAdmission>>,
     tools: BTreeMap<(u32, [u8; 32]), bool>,
 }
@@ -331,7 +328,6 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     verified: tokio::sync::Mutex<ExecutionSummary>,
     conversation_projection: tokio::sync::Mutex<Option<StreamAggregate<P>>>,
     history_read_limits: Option<crate::store::HistoryReadLimits>,
-    // Metadata payloads physically drop before their original-ledger custody.
     #[cfg(not(target_arch = "wasm32"))]
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
@@ -344,8 +340,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         self._native_metadata.as_ref().is_some_and(|custody| work.shares_ledger(custody.work()))
     }
 
-    /// Compares existing private bindings; it grants no lease or authority and
-    /// performs no I/O, allocation, copying, or scope construction.
+    /// Compares existing private bindings; it grants no lease or authority and performs no I/O, allocation, copying, or scope construction.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn original_task_execution_binding_matches(
         &self, task: crate::TaskId, fence: &crate::scheduler::LeaseFence,
@@ -360,9 +355,6 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
     }
 
     /// Binds one execution to the task's exact lease and coordinator provider.
-    /// The original turn identifies committed context independently of this
-    /// task's execution namespace.
-    /// Fresh model starts require their matching retained shared-budget claim.
     #[expect(
         clippy::too_many_arguments,
         reason = "task, execution, original turn and storage bindings are explicit"
@@ -436,7 +428,6 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
     }
 
     /// Admits the SDK Arc attempt while keeping metadata custody intrinsic.
-    /// Known Self ownership is logical; opaque Arc backing/RSS is excluded.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn into_native_shared(
         mut self, work: &acyclic_fs::NativeMaterializationWork,
@@ -460,17 +451,6 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
     }
 
 
-    /// Binds passive replay to an original turn without granting a task lease.
-    pub(super) fn with_turn(mut self, operation: OperationId, turn: OperationId) -> Self {
-        self.execution = Some(TaskExecutionIdentity { operation, turn });
-        self
-    }
-
-    fn turn_operation(&self, operation: OperationId) -> OperationId {
-        self.execution
-            .as_ref()
-            .map_or(operation, |identity| identity.turn)
-    }
 
     fn require_operation(&self, operation: OperationId) -> Result<()> {
         self.require_operation_with_io(operation, None)
@@ -546,7 +526,6 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
     }
 
     /// Observes the same validated dispatch summary used by passive suspension.
-    /// This grants no dispatch or release authority, including after cancellation.
     pub(crate) async fn is_quiescent(&self) -> Result<bool>
     where
         P: StreamProvider,
@@ -566,8 +545,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         Ok(quiescent)
     }
 
-    /// Observes the original settled-dispatch proof without retaining a
-    /// request-funded summary in the journal's ordinary verification cache.
+    /// Observes the original settled-dispatch proof without retaining a request-funded summary in the journal's ordinary verification cache.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn is_quiescent_with_native_work<'a>(
         &'a self, work: &'a acyclic_fs::NativeMaterializationWork,
@@ -598,9 +576,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         })
     }
 
-    /// Releases only after both configured original journals prove passive
-    /// workflow state and settled dispatches. Their tails and the current owner
-    /// fence are compared atomically by the canonical coordinator release.
+    /// Releases only after both configured original journals prove passive workflow state and settled dispatches.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn release_if_quiescent_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
@@ -634,9 +610,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         owner.release_quiescent_execution_with_native_work(*operation, tail, &pending, work).await
     }
 
-    /// Releases a passive workflow command only after this task-bound journal
-    /// proves every started model and tool dispatch settled. Publication compares
-    /// the same journal tail and current task lease atomically.
+    /// Releases a passive workflow command only after this task-bound journal proves every started model and tool dispatch settled.
     pub async fn suspend_workflow_command_if_quiescent(
         &self,
         revision: u64,
@@ -662,8 +636,6 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         let io = PreparationIo::from_native_work(work)?;
         let span = obs_span!("acyclic.harness.journal.suspend", rev = revision);
         traced(span, async {
-            // Native summaries are attempt-local: no retained cache can escape
-            // the original ledger or outlive its transient replay custody.
             let mut summary = ExecutionSummary::default();
             self.suspend_with_summary(revision, command, &mut summary, Some(&io)).await
         }).await
@@ -733,7 +705,6 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             retry_digest: &'a str,
             event: &'a ExecutionEvent,
         }
-        // Display's UUID spelling and the separator are the existing retry domain.
         let hash_input_bytes = 37_u64.checked_add(claim_id.len() as u64)
             .ok_or_else(|| super::fork_preparer_io::invalid(io, "execution retry identity length overflows"))?;
         let hash_input_hold = io.map(|io| io.reserve_decode(hash_input_bytes)).transpose()?;
@@ -809,8 +780,6 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             None => crate::contract::canonical_json_digest(event)?,
         };
         let mut shared = self.verified.lock().await;
-        // Native summaries are request-local: their DTO custody must never
-        // become a permanent cache loan from this execution's original ledger.
         let mut transient = ExecutionSummary::default();
         let summary = if io.is_some() { &mut transient } else { &mut *shared };
         loop {
@@ -842,8 +811,6 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                     &retry_digest, event, io).await?
             };
             if committed {
-                // The next ordinary append refreshes this rebuildable index;
-                // no borrowed DTO is cloned into an artificial result record.
                 drop(key); drop(key_hold); drop(bytes); drop(body_hold);
                 drop(retry_digest); drop(retry_hold);
                 return Ok(true);
@@ -1210,8 +1177,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         )
     }
 
-    /// Binds passive service wiring on the original ledger without creating a
-    /// task owner or lease. The ordinary constructor's RW policy is unchanged.
+    /// Binds passive service wiring on the original ledger without creating a task owner or lease.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new_with_native_work(
         stream: StreamClient<P>, host: Arc<FilesystemHost<A, O>>,
@@ -1271,8 +1237,6 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         )
     }
 
-    // Every caller has authenticated the exact borrowed or moved configuration
-    // above. This is one field/interaction graph for ordinary and finite wiring.
     fn assemble_validated_configuration(
         stream: StreamClient<P>, host: Arc<FilesystemHost<A, O>>,
         volume: VolumeRef, verifier: AuthorityVerifier, schemas: SchemaRegistry,
@@ -1362,10 +1326,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         Ok(())
     }
 
-    /// Binds approval/question tickets to an existing conversation owner on the
-    /// same Stream and Filesystem providers. This does not grant response rights.
-    /// Task-bound request publication also requires retained interaction:route
-    /// and atomically compares the current task lease with the conversation tail.
+    /// Binds approval/question tickets to an existing conversation owner on the same Stream and Filesystem providers.
     pub fn with_interaction_owner(
         mut self,
         verifier: AuthorityVerifier,
@@ -1454,8 +1415,6 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
     }
 
     /// Sets a separate finite work/byte allowance for cold canonical deltas.
-    /// All canonical message kinds count toward this work limit. Without an
-    /// override, the admitted context-message limit also bounds delta reads.
     pub fn with_history_read_limits(
         mut self,
         limits: crate::store::HistoryReadLimits,
@@ -1534,7 +1493,6 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
     {
         let host = self.interactions.as_ref().ok_or_else(|| super::interaction_host::interaction_boundary(
             io, crate::wire::ErrorCode::Unsupported, "task execution has no conversation interaction owner"))?;
-        // Authenticate against the original conversation, not the task aggregate.
         host.verify_responder_scope_with_io(id, responder, io)?;
         let mut borrowed = io.map(PreparationIo::history_io);
         let mut work = borrowed.as_mut().map(
@@ -1652,8 +1610,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         Ok(())
     }
 
-    /// Shares the existing authoritative reducer between turn admission and
-    /// selected-context verification; refresh never rebuilds its retained prefix.
+    /// Shares the existing authoritative reducer between turn admission and selected-context verification; refresh never rebuilds its retained prefix.
     pub(super) async fn conversation_projection(
         &self,
         limits: Limits,
@@ -1846,7 +1803,6 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         } else { None };
         let stream = self.stream.stream(&path)
             .map_err(|error| Self::journal_read_stream_error(io, crate::wire::ErrorCode::Invalid, error))?;
-        // Stream::read makes a distinct SDK-owned request-path clone.
         let _read_path_hold;
         _read_path_hold = if let Some(io) = io {
             let call = acyclic_fs::WorkCounters {
@@ -1910,8 +1866,6 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 return Err(canonical_boundary(io, crate::wire::ErrorCode::Conflict,
                     "execution journal belongs to another original turn"));
             }
-            // The protocol-bounded page already owns each identity. Compare
-            // borrowed keys rather than allocate a second set of string bodies.
             for (previous, _) in &result {
                 super::fork_preparer_io::item(io, 0)?;
                 if previous.idempotency_key == observation.retry_digest {
@@ -1994,7 +1948,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 super::fork_preparer_io::item(Some(io), 0)?;
                 ContentGrant::verify_original_volume_with_io(
                     &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io)?;
-                native_bytes = self.host.read_pinned_owned_io(reference, self.maximum_payload_bytes, io).await?;
+                native_bytes = self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(io)).await?;
                 _bytes_hold = io.guard_bytes(&native_bytes)?;
                 native_bytes.as_ref()
             } else {
@@ -2145,7 +2099,6 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             references.push((file, binding));
             Ok(())
         })?;
-        // Authenticate every retained claim before reading any media or options.
         for (_, binding) in &references {
             if let Some(binding) = binding {
                 let (owner, _) = self.owner.as_ref().ok_or_else(|| Self::journal_read_boundary(
@@ -2363,7 +2316,7 @@ where
             }
             ContentGrant::verify_original_volume_with_io(
                 &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, &io)?;
-            let bytes = self.host.read_pinned_owned_io(reference, self.maximum_payload_bytes, &io).await?;
+            let bytes = self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(&io)).await?;
             drop(io);
             Ok(bytes)
         })
@@ -2437,7 +2390,6 @@ where
                 .map_err(|cause| acyclic_fs::OperationFailure::new(cause, io.receipt()))
         })
     }
-
 
     fn append<'a>(
         &'a self,
@@ -2552,7 +2504,7 @@ where
                 }
                 ContentGrant::verify_original_volume_with_io(
                     &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, &io)?;
-                self.host.read_pinned_owned_io(reference, self.maximum_payload_bytes, &io).await
+                self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(&io)).await
             }.await;
             match result {
                 Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
@@ -2695,7 +2647,6 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             return Err(super::interaction_host::interaction_boundary(
                 io, crate::wire::ErrorCode::Conflict, "model-context selection does not match the committed turn"));
         }
-        // The attested selection fixes the immutable record cutoff on every retry.
         let slots = committed.message_ids.len().checked_mul(
             std::mem::size_of::<crate::conversation::ConversationMessage>())
             .ok_or_else(|| super::interaction_host::interaction_boundary(
@@ -2732,7 +2683,6 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 }
                 crate::conversation::ReferencedAttachments::Manifest { manifest, item_count }
                     if message.kind == crate::conversation::MessageKind::ToolCall => {
-                    // Tool-call projection otherwise skips its attachment list.
                     match io {
                         #[cfg(not(target_arch = "wasm32"))]
                         Some(io) => {
@@ -3256,8 +3206,6 @@ mod tests {
         let (_, first_retry, _) = Observation::encode(operation, turn, "first", &event)?;
         let (_, second_retry, _) = Observation::encode(operation, turn, "second", &event)?;
         assert_ne!(first_retry, second_retry);
-        // Summary provider attempts have their own operation, not a new journal
-        // namespace. Substituting that operation into the envelope must fail.
         let summary_operation = ModelPurpose::Summary.attempt_operation(operation);
         assert_ne!(summary_operation, operation);
         for mutation in [
@@ -3411,7 +3359,6 @@ mod tests {
             None,
             Limits::default(),
         )?;
-        // Even a fresh summary checkpoint identity cannot publish after response dispatch.
         state.compacted_contexts.clear();
         assert!(state.require_next(&compacted).is_err());
         Ok(())
@@ -3747,8 +3694,6 @@ mod tests {
             .last()
             .ok_or_else(|| Error::NotFound("cold placeholder".into()))?
             .clone();
-        // This tests the actual source barrier, not complete checkpoint publication:
-        // no summary admission or compaction-envelope validity is asserted here.
         let envelope = |operation_id, selection| crate::context::CanonicalContextCheckpoint {
             operation_id,
             selection,
@@ -3772,8 +3717,6 @@ mod tests {
             maximum_events: 4,
             maximum_bytes: 16_384,
         })?;
-        // The committed conversation operation is the original turn, while
-        // stock execution and its checkpoint retain the task-derived namespace.
         let execution_operation = super::super::task_runtime::execution_operation(
             crate::TaskId::new(),
             complete_operation,
@@ -3831,8 +3774,6 @@ mod tests {
             matches!(journal.verify_canonical_source(&envelope(complete_operation, complete.clone()), &altered, limits).await,
             Err(Error::Conflict(message)) if message.contains("canonical base and delta"))
         );
-        // Model projection fits three records, while the independent range work
-        // bound must count the intervening Interaction record as well.
         let bounded = new_journal()?;
         provider.observation_reads.store(0, Ordering::SeqCst);
         assert!(matches!(

@@ -185,8 +185,6 @@ async fn commit_fixture_with_work(
     client: &StreamClient<FaultStream>, tail: u64, key: &str, operation: OperationId,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<(CommitOutcome, u64)> {
-    // Fixture-owned path/digest precede the request producer. Preserve the
-    // original two-record mutation so partial returned envelopes remain tested.
     let path = StreamPath::new("harness/v2/execution/measured-commit")?;
     if let Some(work) = work.as_deref_mut() {
         work.hashed_bytes((b"acyclic-harness-coordinator-v3".len() + key.len()) as u64)?;
@@ -431,8 +429,6 @@ async fn index_canonical_codec_admits_encoded_copy_and_owned_growth_before_publi
         let mut allowance = budget();
         match mode {
             0 => allowance.bytes_encoded = 0,
-            // The original key validation copy is admitted. No capacity or
-            // canonical-copy allowance is silently reset for the serializer.
             1 => allowance.bytes_copied = location.key.len() as u64,
             2 => allowance.peak_allocation_bytes = 2 * location.key.capacity() as u64,
             _ => unreachable!(),
@@ -455,8 +451,6 @@ async fn index_canonical_codec_admits_encoded_copy_and_owned_growth_before_publi
         assert_eq!(provider.io_snapshot().reads, u64::from(mode == 0));
         assert_eq!(provider.io_snapshot().writes, 0);
         assert!(client.bounds(&intent_location_path(&location.key)).await.is_err());
-        // The exact original event/location is still publishable through the
-        // same engine; quota rejection leaves no partial immutable index.
         coordinator.ensure_intent_location_with_work(&location, &mut None).await?;
         assert_eq!(client.bounds(&intent_location_path(&location.key)).await?.tail, 1);
     }
@@ -481,7 +475,6 @@ async fn direct_idempotent_commit_receipts_acknowledge_without_claiming_new_dura
     drop(first);
     drop(second);
     work.release_owned(first_retained + second_retained)?;
-    // These are SDK-confirmed acknowledgment records, not physical new appends.
     assert_eq!(work.receipt().authority_records_appended, 4);
     assert_eq!(work.receipt().authority_bytes_written, 22);
     assert_eq!(work.receipt().authority_records_read, 4);
@@ -763,8 +756,6 @@ async fn measured_quiescent_release_requires_witness_and_the_same_owner_verified
     ).await, Err(Error::Invalid(_))));
     assert_eq!(provider.io_snapshot().reads, 0);
     assert_eq!(provider.io_snapshot().writes, 0);
-    // A real other coordinator moves the original task after this cached owner
-    // snapshot. Its original immutable index is already published.
     let mut remote = DistributedCoordinator::open(&client, Arc::new(UnmeasuredContent::default())).await?;
     remote.apply(operation, IdempotencyKey::new("remote-original-start")?,
         SchedulerEvent::Started {
@@ -924,7 +915,6 @@ async fn scheduler_json_admission_guards_all_original_variants_without_second_de
             outcome:crate::Outcome::Succeeded(file),cancel:vec![operation;17],
             reducer:Some(entrypoint),reduction_digest:Some([4;32])},
     ];
-    // The frozen original enum has exactly these 17 variants.
     assert_eq!(events.len(),17);
     for event in events {
         let bytes = crate::contract::canonical_json_bytes(&event)?;
@@ -993,8 +983,6 @@ async fn scheduler_json_quota_guard_releases_unused_and_cancelled_reservations()
     let mut allowance = budget();
     allowance.peak_allocation_bytes = exact;
     let mut work = HistoryWork::new(allowance,&cancellation);
-    // The same exact reservation fits twice only if the unused witness releases
-    // its true quota custody; cumulative lexical work is intentionally retained.
     drop(SchedulerEventJsonAdmission::prepare(&bytes,&mut work)?);
     let admission = SchedulerEventJsonAdmission::prepare(&bytes,&mut work)?;
     cancellation.cancel();
@@ -1039,7 +1027,7 @@ async fn prepared_key_admits_before_copy_and_unused_request_releases_its_custody
 #[tokio::test]
 async fn prepared_append_partial_growth_releases_actual_vectors_and_prevents_record_allocation() -> Result<()> {
     let cancellation = CancellationToken::new();
-    let key = stream_key("prepared-partial-growth")?;
+    let key = stream_key_with_work("prepared-partial-growth", &mut None).map(|(key, _)| key)?;
     let path = StreamPath::new("harness/v2/execution/prepared-partial-growth")?;
     let mut allowance = budget();
     allowance.peak_allocation_bytes = std::mem::size_of::<CommitMutation>() as u64;

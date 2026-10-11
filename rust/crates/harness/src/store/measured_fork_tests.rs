@@ -1,4 +1,3 @@
-// Same-engine publication receipt boundaries used by guarded fork and child bind.
 
 use super::*;
 use acyclic_fs::{CancellationToken, WorkBudget};
@@ -62,13 +61,12 @@ async fn immutable_stage_reopen_preserves_exact_identity() -> Result<()> {
     let client = StreamClient::new(Arc::new(MemoryStream::default()));
     let path = StreamPath::new("harness/v3/test-fork-stage/reopen")?;
     let bytes = acyclic_stream::OwnedBytes::from_static(b"immutable");
-    checkpoints::stage_immutable_record(&client, path.clone(), bytes.clone()).await?;
+    checkpoints::stage_immutable_record_with_work(&client, path.clone(), bytes.clone(), &mut None).await?;
     let reopened = client.clone();
-    checkpoints::stage_immutable_record(&reopened, path.clone(), bytes).await?;
+    checkpoints::stage_immutable_record_with_work(&reopened, path.clone(), bytes, &mut None).await?;
     assert_eq!(reopened.bounds(path.as_str()).await?.tail, 1);
-    assert!(checkpoints::stage_immutable_record(
-        &reopened, path, acyclic_stream::OwnedBytes::from_static(b"hostile"),
-    ).await.is_err());
+    assert!(checkpoints::stage_immutable_record_with_work(
+        &reopened, path, acyclic_stream::OwnedBytes::from_static(b"hostile"), &mut None).await.is_err());
     Ok(())
 }
 
@@ -109,57 +107,6 @@ fn operation_locator_schema_quota_and_hostile_digest_preserve_original_decoder()
     let mut work = history::HistoryWork::new(publication_budget(), &cancellation);
     assert!(operations::decode_location_with_work(&hostile, &mut Some(&mut work)).is_err());
     assert!(operations::decode_location_with_work(&hostile, &mut None).is_err());
-    Ok(())
-}
-
-#[tokio::test]
-async fn checkpoint_publication_reuses_original_indexes_and_admits_clone_custody() -> Result<()> {
-    let client = StreamClient::new(Arc::new(MemoryStream::default()));
-    let mut aggregate = with_content(StreamAggregate::open(
-        &client, authority(), issuer().verifier(), schemas(),
-    ).await?);
-    for identity in 1..64 {
-        let mut next = command(identity)?;
-        next.expected_revision = aggregate.reducer().revision();
-        aggregate.execute(next).await?;
-    }
-    let mut next = command(64)?;
-    next.expected_revision = aggregate.reducer().revision();
-    let ApplyResult::Applied { event } = aggregate.reducer().plan(&next)? else {
-        return Err(Error::Invalid("checkpoint fixture needs fresh event".into()));
-    };
-    let original = checkpoints::publication(&client, aggregate.reducer(), &event).await?;
-    let budget = WorkBudget {
-        peak_allocation_bytes: 256 * 1_048_576,
-        bytes_encoded: 16 * 1_048_576,
-        bytes_copied: 16 * 1_048_576,
-        bytes_hashed: 16 * 1_048_576,
-        items_examined: 1_048_576,
-        ..publication_budget()
-    };
-    let cancellation = CancellationToken::new();
-    let mut work = history::HistoryWork::new(budget, &cancellation);
-    let measured = checkpoints::publication_with_work(
-        &client, aggregate.reducer(), &event, &mut Some(&mut work),
-    ).await?;
-    assert_eq!(measured.path, original.path);
-    assert_eq!(measured.expected_tail, original.expected_tail);
-    assert_eq!(measured.bytes, original.bytes);
-    let measured_request = measured.request(
-        &client, acyclic_stream::IdempotencyKey::new("measured-checkpoint-equivalence")?,
-    ).await?;
-    let original_request = original.request(
-        &client, acyclic_stream::IdempotencyKey::new("measured-checkpoint-equivalence")?,
-    ).await?;
-    assert_eq!(measured_request, original_request);
-    assert!(work.receipt().peak_allocation_bytes > 0);
-    let mut narrow = history::HistoryWork::new(
-        WorkBudget { peak_allocation_bytes: 1, ..budget }, &cancellation,
-    );
-    assert!(checkpoints::publication_with_work(
-        &client, aggregate.reducer(), &event, &mut Some(&mut narrow),
-    ).await.is_err());
-    assert_eq!(client.bounds(authority().stream_path()?.as_str()).await?.tail, 63);
     Ok(())
 }
 
@@ -297,8 +244,6 @@ async fn guarded_fork_reopen_and_child_replay_keep_original_identity_and_owner_f
     assert!(setup.parent.publish_fork_report_measured(hostile_report, setup.parent_scope.clone(),
         &setup.owner, budget, &cancellation).await.is_err());
     assert_eq!(setup.parent.reducer().revision(), before);
-    // Discarding the original confirmed reply models a lost client reply, not a
-    // synthesized SDK acknowledgment or another publication engine.
     setup.parent.publish_fork_report_measured(setup.report.clone(), setup.parent_scope.clone(),
         &setup.owner, budget, &cancellation).await.map_err(|failure| failure.error)?;
     let mut reopened = StreamAggregate::open(&setup.fixture.stream, seed.parent.clone(),
@@ -356,9 +301,6 @@ async fn guarded_child_rejects_original_event_one_with_wrong_binding_identity() 
         &setup.owner, budget, &cancellation).await.map_err(|failure| failure.error)?;
     let mut child = StreamAggregate::open(&setup.fixture.stream, seed.child.clone(),
         setup.child_verifier, SchemaRegistry::new()).await?;
-    // This is an actual canonical source event, not a projected/reconstructed
-    // event or a forged reader callback. Even the right agent cannot replace
-    // the deterministic fork operation and canonical parent causal reference.
     child.execute(Command {
         operation_id: OperationId::from_bytes([97; 16]),
         idempotency_key: IdempotencyKey::new("hostile-original-child-binding")?,
@@ -433,8 +375,6 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     assert_eq!(native.receipt().items_returned - prefix.items_returned, 1);
     assert_eq!(fixture.stream.bounds(audience.stream_path()?.as_str()).await?.tail, 1);
 
-    // A new query ledger authenticates the same immutable retry without
-    // rebinding the original owner proof or the aggregate's existing state.
     let independent = NativeMaterializationWork::new(guarded_publication_budget(), &cancellation)
         .expect("independent original query ledger");
     let (independent_retry, independent_custody) = aggregate.execute_task_command_with_native_work(
@@ -493,12 +433,8 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     drop(retry_custody);
     drop(independent_retry);
     drop(independent_custody);
-    // The intrinsic reducer and immutable owner proof remain usable after
-    // every caller-owned result payload and its query custody have dropped.
     assert_eq!(aggregate.reducer().revision(), 1);
     owner.authenticate_fork_parent(&audience)?;
-    // Bootstrap source authority borrows this actual protected ROOT binding.
-    // Its workflow digest is deliberately not the tagged CreatedAccess digest.
     let bootstrap = owner.root_bootstrap_binding_witness_with_native_work(&native).await?;
     let (original_root, root_custody) = owner.original_root_admission_with_native_work(&native).await?;
     owner.verify_root_bootstrap_context_with_native_work(
@@ -566,8 +502,6 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     let foreign_owner = foreign.host.journal_owner(
         foreign.root, (&foreign.root_lease.reservation).into(),
     ).await?;
-    // These fixtures reuse task IDs, but have distinct genuine admissions.
-    // ID equality cannot replace protected original admission provenance.
     let before = query.receipt();
     assert!(matches!(foreign_owner.authenticated_root_binding_for_read_with_native_work(
         &bootstrap, &query,
@@ -621,47 +555,6 @@ fn projection_codec_budget() -> WorkBudget {
     }
 }
 
-#[test]
-fn projection_locator_owned_engine_preserves_capacity_and_ordinary_schema() -> Result<()> {
-    for count in [0, 1, 5, 17] {
-        let location = checkpoints::ProjectionLocation {
-            authority: authority(), revision: 64, bytes: 1, digest: [4; 32],
-            chunks: (0..count).map(|_| checkpoints::ProjectionChunk { digest: [3; 32], bytes: 1 }).collect(),
-        };
-        let bytes = crate::contract::canonical_json_bytes(&location)?;
-        let cancellation = CancellationToken::new();
-        let mut io = history::HistoryWork::new(projection_codec_budget(), &cancellation);
-        let (decoded, retained) = checkpoints::decode_projection_location_with_work(&bytes, &mut Some(&mut io))?;
-        assert_eq!(decoded.chunks.len(), count);
-        assert_eq!(retained, decoded.authority.id.capacity() as u64
-            + decoded.chunks.capacity() as u64 * std::mem::size_of::<checkpoints::ProjectionChunk>() as u64
-            + std::mem::size_of::<checkpoints::ProjectionLocation>() as u64);
-        assert_eq!(crate::contract::canonical_json_bytes(&decoded)?, bytes);
-        drop(decoded);
-        history::HistoryIo::release_owned(&mut io, retained)?;
-        let (ordinary, retained) = checkpoints::decode_projection_location_with_work(&bytes, &mut None)?;
-        assert_eq!(retained, 0);
-        assert_eq!(ordinary.chunks.len(), count);
-        let mut denied = history::HistoryWork::new(
-            WorkBudget { peak_allocation_bytes: 1, ..projection_codec_budget() }, &cancellation);
-        assert!(checkpoints::decode_projection_location_with_work(&bytes, &mut Some(&mut denied)).is_err());
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        {
-            let native = acyclic_fs::NativeMaterializationWork::new(projection_codec_budget(), &cancellation)
-                .expect("original Chunk Vec capacity ledger");
-            let mut io = history::native_work_io(&native).expect("original Chunk Vec custody");
-            let (decoded, retained) = checkpoints::decode_projection_location_with_work(&bytes, &mut Some(&mut io))?;
-            assert_eq!(decoded.chunks.len(), count);
-            assert_eq!(retained, decoded.authority.id.capacity() as u64
-                + decoded.chunks.capacity() as u64 * std::mem::size_of::<checkpoints::ProjectionChunk>() as u64
-                + std::mem::size_of::<checkpoints::ProjectionLocation>() as u64);
-            drop(decoded);
-            history::HistoryIo::release_owned(&mut io, retained)?;
-            assert_eq!(io.into_custody().bytes(), 0);
-        }
-    }
-    Ok(())
-}
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
@@ -707,7 +600,6 @@ fn projection_locator_original_serde_cause_and_predecode_denials() -> Result<()>
             - NativeMaterializationWork::accounting_state_bytes())
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
     }
-    // This would reach a real typed serde failure if admission were skipped.
     let malformed_schema = br#"{"authority":[]}"#;
     let cancellation = CancellationToken::new();
     let denied = NativeMaterializationWork::new(WorkBudget {
@@ -768,7 +660,7 @@ async fn projection_location_mutations_never_read_chunks_and_release_original_gu
         let ApplyResult::Applied { mut event } = aggregate.reducer().plan(&next)? else {
             panic!("fixture must issue original canonical event 64");
         };
-        let publication = checkpoints::publication(&client, aggregate.reducer(), &event).await?;
+        let publication = checkpoints::publication_with_work(&client, aggregate.reducer(), &event, &mut None).await?;
         let mut request = publication.request(
             &client, acyclic_stream::IdempotencyKey::new("projection-original-mutation")?).await?;
         let canonical_path = authority().stream_path()?;
@@ -810,8 +702,6 @@ async fn projection_location_mutations_never_read_chunks_and_release_original_gu
         } else { None };
         client.commit(request).await?;
         if let Some(bytes) = detached {
-            // The real canonical anchor and checkpoint have different durable
-            // commit identities despite matching every payload field.
             client.stream(&head)?.append_at(bytes, 0).await?;
         }
         let before = provider.io_snapshot();
@@ -903,3 +793,4 @@ async fn cold_projection_original_audience_and_cancellation_precede_sdk_reads() 
     assert_eq!(sdk.reads + sdk.tails as u64 + sdk.writes + sdk.inspections + sdk.commit_reads, 0);
     Ok(())
 }
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    

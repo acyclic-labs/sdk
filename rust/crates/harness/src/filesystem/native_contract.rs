@@ -1,5 +1,4 @@
 //! Portable approval and result data for optional native host execution.
-//! These types perform no OS operations and carry no host credentials.
 
 use crate::{OperationId, Result, conversation::VolumeRef, resources::GenerationRef};
 use acyclic_fs::WorkBudget;
@@ -11,12 +10,10 @@ use std::{collections::BTreeMap, path::PathBuf};
 #[serde(deny_unknown_fields)]
 pub struct NativeViewOptions {
     /// Absolute owner namespace root, preallocated and witnessed by the host.
-    /// Preparation preserves unrelated user data and rejects root replacement.
     pub root: PathBuf,
     /// Caller-selected positive bound; no fixed volume count is built in.
     pub maximum_volumes: u32,
     /// Per-volume preparation and each later capture/publication work allowance.
-    /// Total work scales by the admitted volume count; there is no joint commit.
     pub work_per_volume: WorkBudget,
 }
 
@@ -28,8 +25,7 @@ pub struct NativeVolumeMapping {
     pub volume: VolumeRef,
     /// Pinned immutable source revision.
     pub generation: GenerationRef,
-    /// Actual mechanism for this independently selected volume. Snapshot
-    /// evidence is required only for an existing owner-authenticated lazy mount.
+    /// Actual mechanism for this independently selected volume.
     pub namespace: NativeVolumeNamespace,
     /// Absolute native path, used directly by the command.
     pub path: PathBuf,
@@ -49,15 +45,13 @@ pub struct NativeViewManifest {
     pub volumes: Vec<NativeVolumeMapping>,
 }
 
-/// Namespace semantics for one independently owned volume. A mixed view has
-/// mixed entries, never a synthetic aggregate mechanism or snapshot.
+/// Namespace semantics for one independently owned volume.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeVolumeNamespace {
     /// Ordinary host directory with its existing SDK publication owner.
     MaterializedDirectory,
-    /// Actual existing demand-backed mount. This observation is not authority
-    /// to create, adopt, or reopen a mount without its original owner.
+    /// Actual existing demand-backed mount.
     LazyMount {
         /// Original exact lazy overlay/shadow and source commitments.
         snapshot: acyclic_fs::LazySnapshotRef,
@@ -97,16 +91,13 @@ impl NativeViewOptions {
 }
 
 impl NativeViewManifest {
-    /// One finite validation span for the actual original selection. Root
-    /// observation and serial per-volume checks consume this same allowance.
+    /// One finite validation span for the actual original selection.
     pub fn validation_budget(&self) -> Result<WorkBudget> {
         self.validate()?;
         self.options.budget_for_volume_count(self.volumes.len())
     }
 
     /// Validate selection shape and finite bounds without opening native paths.
-    /// This does not authenticate a view; its host owner must verify the exact
-    /// pins against the existing mount and provider before dispatch/publication.
     pub fn validate(&self) -> Result<()> {
         self.validate_with_io(None)
     }
@@ -205,8 +196,7 @@ pub struct NativeProcessRequest {
     pub cwd: PathBuf,
     /// Complete environment after clearing the inherited host environment.
     pub environment: BTreeMap<String, String>,
-    /// Positive finite capture allowance in milliseconds. Intent checks and
-    /// mandatory cleanup have separate admitted/platform observation bounds.
+    /// Positive finite capture allowance in milliseconds.
     pub timeout_ms: u32,
     /// Positive finite wait for each durable task-intent check.
     pub control_timeout_ms: u32,
@@ -217,20 +207,15 @@ pub struct NativeProcessRequest {
     /// Positive bound for the complete serialized result, including metadata.
     pub maximum_result_bytes: u32,
     /// Optional exact MCP exchange; mutually exclusive with literal standard input.
-    /// Absence preserves canonical approval bytes of existing requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_stdio: Option<crate::mcp::stdio::McpStdioRequest>,
-    /// Exact literal bytes written to stdin, followed by EOF without terminating
-    /// the process. Some(empty) requests EOF explicitly; None preserves the
-    /// ordinary closed-stdin contract. Mutually exclusive with `mcp_stdio`.
+    /// Exact literal bytes written to stdin, followed by EOF without terminating the process.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub standard_input: Option<Vec<u8>>,
     /// Exact namespace, volumes, generations, authority revisions and work bounds.
     pub view: NativeViewManifest,
 }
 
-// This closed inventory includes the request's typed containers and only the
-// actual arbitrary JSON field, mcp_stdio.params. It is not a generic heap profile.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl super::PreparationRecord for NativeProcessRequest {
     fn maximum_slot_bytes() -> u64 {
@@ -242,8 +227,6 @@ impl super::PreparationRecord for NativeProcessRequest {
             std::mem::size_of::<(String, serde_json::Value)>() as u64,
             std::mem::size_of::<crate::mcp::stdio::McpStdioRequest>() as u64,
         ].into_iter().max().unwrap_or(0);
-        // The reachable adjacently tagged VolumeOwner has one Content envelope.
-        // Account for its pair/vector capacity, not unrelated model tag layers.
         let content = std::mem::size_of::<serde::__private229::de::Content<'static>>()
             .max(std::mem::size_of::<(
                 serde::__private229::de::Content<'static>,
@@ -259,8 +242,6 @@ impl super::PreparationRecord for NativeProcessRequest {
 
 impl NativeProcessRequest {
     /// Decodes the pinned approved request with the canonical closed-record codec.
-    /// The caller retains the source bytes. Returned custody retains the audited
-    /// opaque decode allowance, not a claim about allocator calls or RSS.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn decode_with_native_work(
         bytes: &[u8],
@@ -273,7 +254,6 @@ impl NativeProcessRequest {
     }
 
     /// Checks only capture/control/result arithmetic, without consulting the OS.
-    /// Native admission additionally validates paths, environment and authority.
     pub const fn has_valid_capture_allowances(&self) -> bool {
         super::native_capture_bounds::capture_allowances_valid(
             self.timeout_ms,
@@ -323,9 +303,7 @@ impl NativeProcessRequest {
         Ok(digest)
     }
 
-    /// Decodes a pinned complete MCP process receipt, with no process or network
-    /// I/O. Intentional protocol completion may terminate the server with a
-    /// nonzero exit status; any stopped capture remains uncertain.
+    /// Decodes a pinned complete MCP process receipt, with no process or network I/O.
     pub fn mcp_response(&self, result: &NativeProcessResult) -> Result<serde_json::Value> {
         let exchange = self.mcp_stdio.as_ref().ok_or_else(|| {
             crate::Error::Unsupported("native request has no MCP exchange".into())
@@ -337,7 +315,6 @@ impl NativeProcessRequest {
     }
 
     /// Decodes the same complete receipt using the original work ledger.
-    /// The returned allocation retains the actual decoded response.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn mcp_response_with_native_work(
         &self,
@@ -359,8 +336,7 @@ impl NativeProcessRequest {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeProcessResult {
-    /// Whether the OS exit status indicates success; nonzero exits still return
-    /// their captured output as a known invocation result.
+    /// Whether the OS exit status indicates success; nonzero exits still return their captured output as a known invocation result.
     pub success: bool,
     /// Exit code, or absent when the OS reports termination by signal.
     pub exit_code: Option<i32>,
@@ -388,8 +364,6 @@ impl super::PreparationRecord for NativeProcessResult {
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl NativeProcessResult {
     /// Decodes a pinned result with the canonical closed-record decoder.
-    /// The caller retains the source bytes; the returned allocation retains
-    /// this result's inline storage and actual byte/string capacities.
     pub fn decode_with_native_work(
         bytes: &[u8],
         work: &acyclic_fs::NativeMaterializationWork,

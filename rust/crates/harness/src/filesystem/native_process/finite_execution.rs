@@ -48,8 +48,6 @@ impl NativePublicationSlot {
     }
 
     fn ordinary() -> Self {
-        // The existing ordinary policy is unbounded. Preallocate the same
-        // recursive failure slot before invoking even a custom publish factory.
         Self { slot: Box::new_uninit(), failure_custody: None, custody: None }
     }
 
@@ -107,8 +105,6 @@ where F: FnOnce() -> T + Send + 'static, T: Send + 'static {
     Ok(tokio::task::spawn_blocking(move || task.run()))
 }
 
-// This is deliberately a synchronous, non-inlined construction boundary. The
-// installed ordinary path and finite path both poll this same boxed engine.
 #[inline(never)]
 pub(super) fn execute<'a, P: StreamProvider + 'static>(
     owner: &'a Arc<TaskJournalOwner<P>>, view: &'a dyn NativeProcessView<P>,
@@ -571,7 +567,6 @@ async fn capture<P: StreamProvider + 'static>(
             }
             Ok(output)
         })();
-        // All unused buffers have physically dropped before releasing their quota.
         drop(buffers);
         drop(scopes);
         if let Some(guard) = custody.as_mut() {

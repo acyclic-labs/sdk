@@ -9,8 +9,7 @@ use acyclic_fs::demand::DemandSource;
 use acyclic_fs::kernel::{FileKind, LogicalName, NameEncoding};
 use serde::Deserialize;
 
-/// One transient reader over an existing owner and immutable allocation. It is
-/// neither a task/source registry nor an executable foreign task context.
+/// One transient reader over an existing owner and immutable allocation.
 pub(super) struct ProjectSourceReader<P, A, O> {
     host: Arc<FilesystemHost<A, O>>,
     owner: Arc<TaskJournalOwner<P>>,
@@ -19,8 +18,6 @@ pub(super) struct ProjectSourceReader<P, A, O> {
     workspace_id: acyclic_fs::WorkspaceId,
     limits: Limits,
     pub(super) io: PreparationIo,
-    // Serialize use of the same finite allowance, rather than racing snapshots
-    // of its remaining budget in simultaneous SDK calls.
     pub(super) serial: tokio::sync::Mutex<()>,
 }
 
@@ -48,7 +45,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         Self::verify_owner(&owner, &io).await?;
         let workspace = bounded_io::open(&host, &reference, &io).await?;
         Self::verify_owner(&owner, &io).await?;
-        // Both handles share the opened workspace name payload.
         io.retain_owned(workspace.name().as_str().len() as u64)?;
         let generation = bounded_io::generation(&host, &workspace, &authorization.generation, &io).await?;
         Self::verify_owner(&owner, &io).await?;
@@ -195,7 +191,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         self.guard().await?;
         let result = self.host.read_content_measured(file, self.handle.grant(), self.limits.file_bytes,
             self.io.remaining()?, &self.io.cancellation).await;
-        // Charge real backend work even if the original owner became stale.
         let result = self.io.receive_content(result);
         self.guard().await?;
         result
@@ -338,9 +333,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         Ok(result)
     }
 
-    /// The backend argument is the trusted host's actual configured lazy binding,
-    /// never a workspace reconstructed from public selector metadata. Identity is
-    /// checked against the same workspace opened under the sealed source grant.
+    /// The backend argument is the trusted host's actual configured lazy binding, never a workspace reconstructed from public selector metadata.
     pub(super) fn native_binding<D, S>(&self, lazy: &LazyWorkspace<A, O, D, S>, frozen: LazySnapshotRef,
         path: &str) -> Result<()>
     where D: DemandSource + 'static, S: LazyWorkspaceStore {
@@ -368,8 +361,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             code: crate::wire::ErrorCode::Unauthorized,
             reason: "selection has no native source proof",
         })?;
-        // Compare exact canonical SDK proof bytes under the original observer.
-        // No unobserved serde decoder or temporary hydrated Value is needed.
         let mut observer = io.history_io();
         let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
         let expected = crate::contract::canonical_json_digest_with_work(
@@ -435,10 +426,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     /// Reads the immutable selected native source on its original caller ledger.
-    /// The intrinsic SDK carrier keeps its original source-data custody through
-    /// the last alias; it is never extracted, absorbed or charged again.
-    /// Request metadata drops before completion; no new allowance is derived
-    /// from a measured receipt.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn read_native_path_with_native_work<D, S>(
         &self, lazy: &LazyWorkspace<A, O, D, S>, frozen: LazySnapshotRef,
@@ -486,7 +473,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         ).await;
         match result {
             Ok(owned) => {
-                // The original intrinsic carrier survives the final owner check.
                 self.require_native_project_selection_with_native_work(
                     selected.source_task, &selected.project, &selected.generation, Some(frozen), work,
                 ).await?;
@@ -503,9 +489,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
     }
 
-    /// Looks up one exact immutable native path under the original caller's
-    /// operation-bound selection and original ledger. The returned lookup
-    /// must physically drop before its separate metadata custody.
+    /// Looks up one exact immutable native path under the original caller's operation-bound selection and original ledger.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn lookup_native_path_with_native_work<D, S>(
         &self, lazy: &LazyWorkspace<A, O, D, S>, frozen: LazySnapshotRef,
@@ -543,7 +527,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let result = lazy.lookup_at_snapshot_with_work(frozen, path, work, cancellation).await;
         match result {
             Ok(owned) => {
-                // Preserve the actual lookup and guard together on final rejection.
                 self.require_native_project_selection_with_native_work(
                     selected.source_task, &selected.project, &selected.generation, Some(frozen), work,
                 ).await?;
@@ -561,8 +544,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     /// Reads an opaque selected symbolic-link target, never following it.
-    /// The original caller's file ceiling and sealed source byte ceiling are
-    /// forwarded to the same SDK body before its payload IO.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn read_native_link_with_native_work<D, S>(
         &self, lazy: &LazyWorkspace<A, O, D, S>, frozen: LazySnapshotRef,
@@ -609,7 +590,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         ).await;
         match result {
             Ok(owned) => {
-                // Move the actual intrinsic carrier without extracting custody.
                 self.require_native_project_selection_with_native_work(
                     selected.source_task, &selected.project, &selected.generation, Some(frozen), work,
                 ).await?;
@@ -627,8 +607,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     /// Plans immutable selected source imports on the actual destination work.
-    /// Existing source custody stays with this inspection; parsed caller-owned
-    /// roots are borrowed, and destination approval/publication remain separate.
     #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
     pub async fn prepare_native_selected_import_with_native_work<D, S>(
         &self, lazy: &LazyWorkspace<A, O, D, S>, frozen: LazySnapshotRef,
@@ -691,10 +669,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
     }
 
-    /// Reads unresolved native content through the trusted host's ACTUAL lazy
-    /// binding and the original frozen snapshot, not its authored-only generation.
-    /// Receipts retain the actual SDK work, including failed/stale-source reads.
-    /// The reader's cumulative allowance and original invocation token are reused.
+    /// Reads unresolved native content through the trusted host's ACTUAL lazy binding and the original frozen snapshot, not its authored-only generation.
     pub async fn read_native_path<D, S>(
         &self, lazy: &LazyWorkspace<A, O, D, S>, frozen: LazySnapshotRef,
         path: &str, maximum_bytes: u64, budget: WorkBudget,
@@ -713,8 +688,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         reader.finish_native(result).await
     }
 
-    /// Reads an exact frozen link target without following it or widening source
-    /// authority. The caller's remaining allowance intersects the retained meter.
+    /// Reads an exact frozen link target without following it or widening source authority.
     pub async fn read_native_link<D, S>(
         &self, lazy: &LazyWorkspace<A, O, D, S>, frozen: LazySnapshotRef,
         path: &str, budget: WorkBudget,
@@ -747,8 +721,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         reader.finish_native(result).await
     }
 
-    /// Pages only the selected frozen native directory using its exact SDK
-    /// continuation token. This never enumerates or hydrates a task/swarm tree.
+    /// Pages only the selected frozen native directory using its exact SDK continuation token.
     pub async fn list_native_directory<D, S>(
         &self, lazy: &LazyWorkspace<A, O, D, S>, frozen: LazySnapshotRef, path: &str,
         cursor: Option<acyclic_fs::LazyDirectoryCursor>, maximum_entries: u32, budget: WorkBudget,
@@ -767,9 +740,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         reader.finish_native(result).await
     }
 
-    /// Produces the SDK's real bounded selected-import plan. It neither commits
-    /// into a destination nor changes the source head. Destination authority,
-    /// exact-root approval and conflict protection remain the caller's workflow.
+    /// Produces the SDK's real bounded selected-import plan.
     pub async fn prepare_native_selected_import<D, S>(
         &self, lazy: &LazyWorkspace<A, O, D, S>, frozen: LazySnapshotRef,
         requested: &[acyclic_fs::kernel::NamespacePath], budget: WorkBudget,

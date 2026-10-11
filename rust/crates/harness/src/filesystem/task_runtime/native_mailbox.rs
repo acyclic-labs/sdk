@@ -2,8 +2,6 @@ use super::*;
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 use acyclic_stream::OwnedBytes;
 
-// These callbacks borrow the original SDK owner. Metadata ledger membership is
-// a preflight, never a substitute for the owner's live READ or execution check.
 fn require_original<P: StreamProvider + 'static>(
     mailbox: &TaskJournalMailbox<P>, work: &NativeMaterializationWork,
 ) -> Result<()> {

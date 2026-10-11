@@ -1,23 +1,4 @@
 //! Provider-owned fork preparation journal and exact Filesystem captures.
-//!
-//! The journal is a separate workspace: putting it in the child private or
-//! project volume would leak implementation metadata into the published fork.
-//!
-//! Task-bound allocations retain the original creation fence in those same
-//! journals. A configured `FilesystemResourceCreationProvider` authenticates
-//! the complete request, seed and original generations before deriving exact
-//! created-volume IO; each resulting handle reauthenticates on every use.
-//! Ordinary preparation attempts aggregate measured Filesystem counter receipts
-//! under their admitted finite work/byte envelope, including failed boundaries.
-//! Native task preparation borrows the immutable admitted request and invokes
-//! this same journal/capture engine on its original owner-bound ledger. Its
-//! `(ForkReport, NativeAllocation)` result retains the actual funded copies
-//! beyond the provider/request lifetime; drop report data before that guard.
-//! Read-only recovery observes the actual protected allocation claim for every
-//! fork role using a genuine immutable admission witness and issued READ query.
-//! Its opaque receipt moves the funded original request and decoded claim with
-//! original custody last; absence never falls back to process intents or a
-//! current Started fence, and observation cannot create or publish resources.
 
 use super::{FilesystemHost, ParentProjectController, WorkspaceMutation, map_error, workspace_ref};
 use crate::contract::capability;
@@ -88,13 +69,10 @@ struct AllocationClaim {
 }
 
 /// A read-only observation of the actual protected fork allocation journal.
-/// Only the authenticated witness observer constructs this receipt. Original
-/// fences remain crate-private data, never a public authority constructor.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct OriginalForkAllocationClaim {
     claim: AllocationClaim,
     request: crate::resource_preparation::ResourcePreparationRequest,
-    // All decoded origin/request-resource fields drop before their original guard.
     custody: acyclic_fs::NativeAllocation,
 }
 
@@ -125,8 +103,6 @@ impl OriginalForkAllocationClaim {
     ) -> Result<(crate::resource_preparation::ResourcePreparationRequest, acyclic_fs::NativeAllocation)> {
         let released = bounded_io::UploadRecord::logical_owned_bytes(&self.claim)?;
         let Self { claim, request, mut custody } = self;
-        // The record decoder retained these known deep fields, not a second
-        // receipt allocation. Preserve the request's actual original custody.
         drop(claim);
         if let Err(cause) = custody.release(released) {
             drop(request);
@@ -153,7 +129,6 @@ struct SeedBinding {
 
 impl bounded_io::UploadRecord for SeedBinding {
     fn logical_owned_bytes(&self) -> Result<u64> {
-        // The complete decoded record is an inline fixed-size digest.
         Ok(0)
     }
 }
@@ -219,9 +194,7 @@ struct CaptureResultRef<'a> {
     selection: &'a ForkSelection,
     capture: &'a Capture,
 }
-/// Idempotent local capture of an exact Stream-backed parent snapshot and its
-/// Filesystem project/private resources. Other providers remain explicit
-/// unsupported captures; no cross-provider transaction is implied.
+/// Idempotent local capture of an exact Stream-backed parent snapshot and its Filesystem project/private resources.
 pub struct FilesystemForkPreparer<A, O> {
     host: Arc<FilesystemHost<A, O>>,
     parent: Reducer,
@@ -237,7 +210,6 @@ pub struct FilesystemForkPreparer<A, O> {
     project_source: Option<ProjectSourceReadHandle>,
     #[cfg(not(target_arch = "wasm32"))]
     native_work: Option<acyclic_fs::NativeMaterializationWork>,
-    // Every moved parent, grant and prepared-history buffer precedes custody.
     #[cfg(not(target_arch = "wasm32"))]
     native_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -316,8 +288,7 @@ impl<A, O> std::ops::Deref for PreparationAttempt<'_, A, O> {
 }
 
 impl<A, O> FilesystemForkPreparer<A, O> {
-    /// Binds a persisted parent revision, authenticated parent authority, and
-    /// the providers that own the selected history and project resources.
+    /// Binds a persisted parent revision, authenticated parent authority, and the providers that own the selected history and project resources.
     #[allow(
         clippy::too_many_arguments,
         reason = "every provider and authority is bound explicitly"
@@ -358,8 +329,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
         })
     }
 
-    /// Moves an already admitted parent and its authentic prepared history
-    /// onto the same original native ledger; this creates no new grant.
+    /// Moves an already admitted parent and its authentic prepared history onto the same original native ledger; this creates no new grant.
     #[cfg(not(target_arch = "wasm32"))]
     #[allow(clippy::too_many_arguments, reason = "original parent and custody are explicit")]
     pub fn new_with_native_work(
@@ -375,7 +345,6 @@ impl<A, O> FilesystemForkPreparer<A, O> {
         custody: acyclic_fs::NativeAllocation,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
-        // Own data before the last-field guard even when validation rejects it.
         let this = Self {
             host, parent, verifier, scope, project, stream_provider, resolver,
             capture_providers: Vec::new(), summary: None, history: Some(history),
@@ -435,8 +404,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
         Ok(Arc::new(self))
     }
 
-    /// Retains an operation-specific project read sealed by the original task
-    /// owner. This does not change caller grants or authorize private/history IO.
+    /// Retains an operation-specific project read sealed by the original task owner.
     pub fn with_project_source_read_handle(mut self, handle: ProjectSourceReadHandle) -> Result<Self> {
         if handle.authorization().project.provider() != &self.host.provider {
             return Err(Error::Unauthorized("project source belongs to another Filesystem provider".into()));
@@ -446,7 +414,6 @@ impl<A, O> FilesystemForkPreparer<A, O> {
     }
 
     /// Binds a finite archive selection produced by the original history reader.
-    /// This does not grant file access or publish a child.
     pub fn with_history_context(mut self, history: PreparedForkHistory) -> Result<Self> {
         history.verify(&self.verifier)?;
         if history.parent() != self.parent.authority()
@@ -458,9 +425,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
         Ok(self)
     }
 
-    /// Binds the original owner journal, receiving scope and immutable history
-    /// cut. Preparation revalidates the complete Summary proof under its own
-    /// ledger; no previously prepared projection substitutes for that work.
+    /// Binds the original owner journal, receiving scope and immutable history cut.
     pub fn with_summary_history<P: StreamProvider + 'static>(
         mut self,
         selection: SummaryForkSelection,
@@ -502,7 +467,6 @@ impl<A, O> FilesystemForkPreparer<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        // All moved payloads drop before the original guard on rejection.
         let mut registration = (
             selection, journal, OriginalSummaryHistory { scope, history, cursor }, custody,
         );
@@ -534,8 +498,6 @@ impl<A, O> FilesystemForkPreparer<A, O> {
     }
 
     /// Pins an authenticated ordinary preparation task to this provider.
-    /// The existing allocation records retain its origin; raw trusted
-    /// preparation records cannot substitute for task-bound creation evidence.
     pub fn with_task_preparation(
         mut self,
         preparation: Arc<TaskResourcePreparation>,
@@ -551,8 +513,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
         Ok(self)
     }
 
-    /// Registers an exact provider-owned resource capture. A provider may be
-    /// bound once; unsupported selections remain explicit in the report.
+    /// Registers an exact provider-owned resource capture.
     pub fn with_capture_provider(mut self, provider: Arc<dyn ForkCaptureProvider>) -> Result<Self> {
         provider.provider().validate()?;
         if self
@@ -570,10 +531,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
-    /// Computes the exact foreign-reader references before immutable child
-    /// admission, using the materializer's canonical authenticated history and
-    /// attachment-manifest projection. This allocates no child resource and
-    /// performs no capture or publication.
+    /// Computes the exact foreign-reader references before immutable child admission, using the materializer's canonical authenticated history and attachment-manifest projection.
     pub async fn required_reference_grants(&self, request: &ForkRequest) -> Result<Vec<ReferenceGrant>> {
         self.check_request(request)?;
         let controller = ParentProjectController::new(
@@ -726,8 +684,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         Ok((resources.values, custody))
     }
 
-    /// Actual Filesystem operation that created the child project, not the
-    /// enclosing Harness operation. This pure identity grants no access.
+    /// Actual Filesystem operation that created the child project, not the enclosing Harness operation.
     pub fn project_creation_operation(&self, request: &ForkRequest) -> Result<acyclic_fs::OperationId> {
         request.validate()?;
         self.creation_operation(request, ForkAllocationRole::Project)
@@ -767,8 +724,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         Ok(acyclic_fs::OperationId::from_bytes(super::filesystem_key(&key).into_bytes()))
     }
 
-    /// Builds exact allocation-journal references. These are request data,
-    /// never access grants; only a configured creation verifier consumes them.
+    /// Builds exact allocation-journal references.
     pub fn creation_proofs(
         &self,
         request: &ForkRequest,
@@ -1081,9 +1037,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
             native_creation_guard: None })
     }
 
-    /// Executes the existing exact capture under one authenticated preparation
-    /// task without copying the selected parent reducer or retaining its lease
-    /// in a reusable provider binding.
+    /// Executes the existing exact capture under one authenticated preparation task without copying the selected parent reducer or retaining its lease in a reusable provider binding.
     pub async fn prepare_for_task(
         &self,
         request: ForkRequest,
@@ -1100,8 +1054,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
     }
 
     /// Borrows the exact admitted request and genuine current preparation owner.
-    /// All returned report buffers carry the original allocation ledger; the
-    /// report must be dropped before its accompanying custody.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn prepare_for_task_with_native_work<'a>(
         &'a self, preparation: &'a Arc<TaskResourcePreparation>, request: &'a ForkRequest,
@@ -1124,9 +1076,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         })
     }
 
-    /// Passively observes the exact retained preparation report under the
-    /// genuine original settlement owner. This never creates a journal,
-    /// restarts captures, or materializes inherited/summary content.
+    /// Passively observes the exact retained preparation report under the genuine original settlement owner.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn reconcile_for_task_with_native_work<'a>(
         &'a self, preparation: &'a Arc<TaskResourcePreparation>, request: &'a ForkRequest,
@@ -1276,7 +1226,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
         if let Some(io) = &self.io { io.charge(hash)?; }
         Ok(digest)
     }
-
 
     fn encode<T: Serialize>(&self, value: &T, maximum_bytes: u64) -> Result<acyclic_stream::OwnedBytes> {
         match &self.io {
@@ -1561,7 +1510,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
         Ok(journal)
     }
 
-
     async fn read_report(
         &self,
         journal: &WorkspaceRef,
@@ -1626,9 +1574,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
         }
     }
 
-    /// Returns true only to the writer that durably won this attempt. Once a
-    /// start record exists, all other callers reconcile instead of invoking
-    /// an effectful provider again.
+    /// Returns true only to the writer that durably won this attempt.
     async fn start_capture(
         &self,
         journal: &WorkspaceRef,
@@ -1820,8 +1766,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
         let project_key = IdempotencyKey::new(bounded_io::format_text(
             format_args!("fork:{}:{request_digest}:project", request.operation_id), self.io.as_ref())?)?;
         self.verify_task_lease(false).await?;
-        // The same authenticated original source-read was required above;
-        // do not rebuild an ordinary grant or substitute provider-root scope.
         let child_project = bounded_io::fork_guarded(
             &self.host, source_project, &project_grant, source_generation,
             &request.preparation.child_project_volume, None, &project_key, self.io.as_ref(), self.task_preparation,
@@ -1904,8 +1848,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
             let prefix = inherited_context
                 .first()
                 .ok_or_else(|| self.failure(crate::wire::ErrorCode::Invalid, "summary fork omitted its logical prefix"))?;
-            // Count the exact additional reader grants before either Summary
-            // publication phase. Reuse original prefix grants when identical.
             let (_, summary_references) = super::summary_fork::split_references(prepared, self.io.as_ref())?;
             let mut planned_grants = BTreeSet::new();
             for grant in &reference_grants {
@@ -2120,7 +2062,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
                     let mut observer = io.history_io();
                     self.parent.attest_fork_history_with_work(&mut seed, history.conversation(), &mut Some(&mut observer))?;
                 } else {
-                    self.parent.attest_fork_history(&mut seed, history.conversation())?;
+                    self.parent.attest_fork_history_with_work(&mut seed, history.conversation(), &mut None)?;
                 }
                 report.history_witness = seed.history_witness;
             }
@@ -2134,8 +2076,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
     }
 }
 
-/// The member proof is produced by the canonical authenticated manifest
-/// traversal and retained in the protected original report/seed binding.
+/// The member proof is produced by the canonical authenticated manifest traversal and retained in the protected original report/seed binding.
 pub(super) fn require_reference_donor(grants: &crate::Capabilities, reference: &ReferenceGrant) -> Result<()> {
     reference.validate()?;
     if crate::runtime::read_granted(grants, &reference.file)? {
@@ -2152,9 +2093,7 @@ pub(super) fn require_reference_donor(grants: &crate::Capabilities, reference: &
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
-    /// Claims exact child-volume identities for a custom parent-authorized
-    /// preparation path. The stock preparer claims the same identities from
-    /// its immutable request before creating either workspace.
+    /// Claims exact child-volume identities for a custom parent-authorized preparation path.
     pub async fn claim_fork_seed(
         &self,
         seed: &ForkSeed,
@@ -2208,8 +2147,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 if seed.history_witness != Some(verifier.fork_history_proof(seed)?) {
                     return Err(Error::Unauthorized("archived fork activation requires its original witness".into()));
                 }
-                // The signed seed pins this file's exact descriptor/digest.
-                // Earlier retired cuts cannot be recomputed from a resident suffix.
                 actual.format_version == 3
                     && actual.parent == seed.parent
                     && actual.parent_revision == seed.parent_revision
@@ -2263,9 +2200,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         self.bind_fork_seed(seed).await
     }
 
-    /// Reads the original protected claim through the same bounded codec as
-    /// publication verification. A qualified current READ query and genuine
-    /// immutable admission witness are required before any claim-provider IO.
+    /// Reads the original protected claim through the same bounded codec as publication verification.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn observe_original_fork_allocation_claim_with_native_work<'a, P: StreamProvider>(
         &'a self,
@@ -2275,8 +2210,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         volume: &'a VolumeRef,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, Option<OriginalForkAllocationClaim>>> {
-        // The witness producer statically authenticates the actual issued query
-        // before constructing its funded decoder future; no UUID grants a read.
         let original = witness.original_preparation_request_with_native_work(query, work)?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
@@ -2339,8 +2272,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let claim = read_original_fork_claim_record_io(
                 self, &journal, MAX_REQUEST_BYTES.min(request.maximum_bytes), Some(&io),
             ).await?;
-            // Missing means authenticated absence, never a new allocation or a
-            // search through a native-process intent or current Started record.
             witness.verify_query_with_native_work(query, work).await?;
             let Some(claim) = claim else { return Ok(None) };
             let origin = claim.task_origin.as_ref()
@@ -2583,8 +2514,6 @@ fn same_allocation_claim(retained: &AllocationClaim, requested: &AllocationClaim
         || retained.volume != requested.volume || retained.role != requested.role {
         return false;
     }
-    // Recovery changes only the current reservation: retain the original
-    // creation fence without cloning either complete claim or lease strings.
     match (&retained.task_origin,&requested.task_origin) {
         (None,None) => true,
         (Some(prior),Some(current)) =>
@@ -2767,7 +2696,6 @@ fn encode_bounded<T: Serialize>(value: &T, maximum_bytes: u64, io: Option<&Prepa
     }
 }
 
-
 async fn read_request_claim<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, journal: &WorkspaceRef, request: &ForkRequest, maximum_bytes: u64, io: Option<&PreparationIo>,
 ) -> Result<bool> {
@@ -2851,7 +2779,6 @@ where
         })
     }
 }
-
 
 fn encode_record<T: Serialize>(value: &T, maximum_bytes: u64) -> Result<acyclic_stream::OwnedBytes> {
     struct BoundedRecord {
@@ -3008,8 +2935,6 @@ mod task_origin_tests {
             .await?
             .ok_or_else(|| Error::NotFound("retained allocation".into()))?;
         assert_eq!(retained, claim);
-        // Decode the actual retained provider record through the same audited
-        // codec used by the finite allocation verifier, not a Value heap label.
         let bytes = host.read(&journal,None,"/claim.json",65_536).await?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::WorkBudget {
@@ -3046,8 +2971,6 @@ mod task_origin_tests {
                 .expect("original production journal ledger");
             let baseline = native.live_allocation_bytes();
             let native_io = PreparationIo::from_native_work(&native)?;
-            // Read the real retained journal on the original Filesystem engine.
-            // Cold read work is a lower bound, never an exact reconstructed bill.
             let decoded = read_original_fork_claim_record_io(
                 &host, &journal, 65_536, Some(&native_io)).await?
                 .expect("original retained allocation");

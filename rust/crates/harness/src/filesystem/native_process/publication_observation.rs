@@ -35,9 +35,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         Ok(())
     }
 
-    /// Reads only authentic original final-publication metadata. This candidate
-    /// is not Project READ, a successful source selection, or namespace authority.
-    /// The caller retains its custody through the genuine source-loan factory.
+    /// Reads only authentic original final-publication metadata.
     pub fn published_project_candidate_with_native_work<'a>(
         &'a self, attempt: crate::EffectAttemptId, project: &'a VolumeRef,
         work: &'a NativeMaterializationWork,
@@ -48,10 +46,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         })
     }
 
-    /// Selects the same accepted immutable final snapshot only after the actual
-    /// operation-bound Common Project reader authenticates current READ. The
-    /// caller's candidate is compared with a fresh canonical protected receipt;
-    /// it never substitutes for original SDK publication data or grants.
+    /// Selects the same accepted immutable final snapshot only after the actual operation-bound Common Project reader authenticates current READ.
     pub fn inspect_published_project_snapshot_with_native_work<'a, A, O>(
         &'a self, attempt: crate::EffectAttemptId,
         inspection: &'a TaskSourceInspection<P, A, O>, project: &'a VolumeRef,

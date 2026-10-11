@@ -2,11 +2,6 @@ use super::*;
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use crate::filesystem::PreparationIo;
 
-// Reachable serde labels: native_contract.rs, mcp/stdio.rs, resources.rs,
-// conversation.rs; filesystem lazy_workspace.rs, demand.rs, workspace.rs,
-// foundation.rs, performance.rs; uuid 1.27.0 serde_support.rs/error.rs.
-// Backticks/separators cover expected-field/variant list punctuation. The
-// shared audit accounts for dynamic input, common templates and positions.
 const NATIVE_SERDE_LABELS: &str = concat!(
     "struct NativeProcessRequest `executable`, `argv`, `cwd`, `environment`, ",
     "`timeout_ms`, `control_timeout_ms`, `cancellation_poll_ms`, ",
@@ -41,7 +36,6 @@ const NATIVE_SERDE_LABELS: &str = concat!(
     "non-UTF8 input invalid length: found failed to parse a UUID ",
 );
 
-
 enum ContentPayload {
     Ordinary(Vec<u8>),
     Original(acyclic_stream::OwnedBytes),
@@ -55,7 +49,6 @@ impl AsRef<[u8]> for ContentPayload {
         }
     }
 }
-
 
 pub(super) fn require_family(
     bound: Option<&NativeMaterializationWork>, work: &NativeMaterializationWork,
@@ -164,9 +157,6 @@ pub(super) async fn bind_original<P: StreamProvider + 'static>(
             reason: "borrowed native plan requires original preparation IO",
         })?)?,
     };
-    // All constructor diagnostics use the same admitted closed SDK inventory.
-    // On failure the body drops its parsed/raw payloads before custody moves to
-    // the original cause; no fresh error allowance is constructed afterward.
     let diagnostic = io.as_ref().map(|io| {
         let input = plan.request.descriptor().byte_length()
             .max(plan.result_schema.descriptor().byte_length());
@@ -235,8 +225,6 @@ async fn bind_body<P: StreamProvider + 'static>(
         return Err(validation_error(io, crate::wire::ErrorCode::Invalid, "native request must be JSON content"));
     }
     let bytes = content(&authority, &plan.request, owner.input_limits().file_bytes, work).await?;
-    // The native content contract returns exact authenticated, descriptor-
-    // verified bytes and records that checksum on this same original ledger.
     if io.is_none() { plan.request.descriptor().verify(bytes.as_ref())?; }
     let request = match io {
         Some(io) => io.decode_preparation_with_code::<NativeProcessRequest>(
@@ -364,8 +352,6 @@ mod tests {
         let keeper = shared_custody(io.into_native_custody(bytes).unwrap(), &work).unwrap();
         let weak_schema = Arc::downgrade(&schema);
         let original = (schema, keeper);
-        // The same real cached schema and the same one AL, not a copied graph
-        // or a newly retained substitute allowance.
         let supervised = (Arc::clone(&original.0), Arc::clone(&original.1));
         let before = work.receipt();
         drop(original);

@@ -16,8 +16,6 @@ use super::super::{FilesystemContentPublisher, FilesystemContentVerifier};
 use acyclic_fs::{CancellationToken, MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
 
 /// Trusted creation verifier configured with host-managed signing authority.
-/// Raw proof references never mint scopes; protected task-bound records must
-/// match the entire admitted request before exact content handles are returned.
 pub struct FilesystemResourceCreationProvider<A, O> {
     host: Arc<FilesystemHost<A, O>>,
     issuer: AuthorityIssuer,
@@ -33,7 +31,6 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
     }
 
     /// Copies the configured signing identity through the original ledger.
-    /// This neither issues a new scope nor treats raw allocation labels as proof.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new_with_native_work(
         host: Arc<FilesystemHost<A, O>>, issuer: &AuthorityIssuer,
@@ -49,7 +46,6 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
     }
 
     /// Shares the already paid logical creator Self with one SDK Arc attempt.
-    /// The stdlib's private allocator backing is excluded from payload custody.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn into_native_shared(self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Arc<Self>> {
         if !self.native_custody.as_ref().is_some_and(|guard| guard.matches_work(work)) {
@@ -62,8 +58,7 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
         Ok(Arc::new(self))
     }
 
-    /// Pins only this configured creator's already protected original Root
-    /// identities. Conflicting selection is rejected before installing a slot.
+    /// Pins only this configured creator's already protected original Root identities.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn bind_root_bootstrap_allocation_with_native_work(
         &self, proof: Arc<FilesystemRootBootstrapAllocation<A, O>>,
@@ -124,9 +119,7 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
     }
 }
 
-/// Original Root allocation association issued only by the configured creator
-/// after canonical Root binding and protected Filesystem birth authentication.
-/// There is deliberately no deserializer or application constructor.
+/// Original Root allocation association issued only by the configured creator after canonical Root binding and protected Filesystem birth authentication.
 pub struct FilesystemRootBootstrapAllocation<A, O> {
     pub(crate) host: Arc<FilesystemHost<A, O>>,
     pub(crate) owner: Authority,
@@ -177,8 +170,7 @@ struct RootBootstrapRecord<'a> {
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     FilesystemResourceCreationProvider<A, O>
 {
-    /// Associates successful pre-admission FS allocation with the actual
-    /// original Root owner. It admits no task and grants no additional rights.
+    /// Associates successful pre-admission FS allocation with the actual original Root owner.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn protect_root_bootstrap_with_native_work<'a, P: StreamProvider>(
         &'a self, owner: &'a crate::durable_host::TaskJournalOwner<P>,
@@ -301,7 +293,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             })?;
             let create = IdempotencyKey::new(Self::owned_label("root-bootstrap-journal:", suffix, &io)?)?;
             bounded_io::create(&self.host, name, &create, Some(&io)).await?;
-            // Existing child claims cannot be relabeled as original Root birth.
             match bounded_io::read(&self.host, &journal, "/claim.json", MAX_REQUEST_BYTES, Some(&io)).await {
                 Ok(_) => return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "child allocation cannot be claimed as original Root bootstrap" }),
@@ -323,8 +314,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 let observed = bounded_io::resolve(&self.host, &journal, Some(&io)).await?;
                 let key = IdempotencyKey::new(Self::owned_label("root-bootstrap-claim:", suffix, &io)?)?;
                 let path = Self::owned_label("", "/root-bootstrap.json", &io)?;
-                // Move the admitted record into the actual mutation and back;
-                // no temporary whole-record clone precedes publication.
                 let mutations = [WorkspaceMutation::PutFile { path, bytes: record }];
                 let outcome = bounded_io::apply(&self.host, &journal, Some(&observed.generation),
                     &mutations, &key, Some(&io)).await;
@@ -395,7 +384,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let value = crate::contract::json_value_bounded_native_trusted(&snapshot, crate::contract::JsonBounds {
                 maximum_bytes: remaining.bytes_encoded, maximum_items: remaining.items_examined, maximum_depth: 32,
             }, crate::wire::ErrorCode::Invalid, &mut |charge| io.codec_charge(charge, true))?;
-            // Value's inline slot is already part of the token's request slot.
             io.release(std::mem::size_of::<serde_json::Value>() as u64)?;
             Some(value)
         } else { None };
@@ -549,7 +537,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         Ok((file.version() == revision.as_str()).then_some(generation))
     }
 
-
     pub(in crate::filesystem) async fn publish_lazy_candidate_with_io(
         &self, mutations: &[super::super::WorkspaceMutation], key: &IdempotencyKey,
         permit: acyclic_fs::PublicationPermit, io: Option<&PreparationIo>,
@@ -622,7 +609,6 @@ struct RootCreatedFilesystemAccess<A, O> {
     allocation: Arc<FilesystemRootBootstrapAllocation<A, O>>,
     reader: FilesystemContentVerifier<A, O>,
     writer: Option<FilesystemContentPublisher<A, O>>,
-    // All reader/writer aliases share this one owner, whose guard drops last.
     _custody: acyclic_fs::NativeAllocation,
 }
 
@@ -734,9 +720,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
                 reason: "Root directory page differs from its immutable selection or bound" });
         }
         let io = PreparationIo::for_unmeasured(self.allocation._custody.work().cancellation())?;
-        // Last-name public cursors are not SDK source/authored continuations.
-        // Traverse the actual immutable continuations with a bounded sorted
-        // window; never manufacture a cursor or observe the current head.
         self.authorize_ordinary_path(volume, prefix, path, &io)?;
         self.authenticate(volume, &io).await?;
         let snapshot = self.allocation.native_snapshot.expect("frozen directory route");
@@ -1132,8 +1115,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
     }
 }
 
-/// The seed bytes are the SDK's original canonical source encoding reconstructed
-/// from the retained published report, not a raw standalone seed record.
+/// The seed bytes are the SDK's original canonical source encoding reconstructed from the retained published report, not a raw standalone seed record.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, PartialEq, Eq)]
 pub enum NativeCreatedAllocationSourceOrigin {
@@ -1141,7 +1123,6 @@ pub enum NativeCreatedAllocationSourceOrigin {
 }
 
 /// Authenticated protected records; this observation grants no task authority.
-/// Buffers cannot be detached from their original native allocation custody.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct NativeCreatedAllocationObservation {
     records: StoredAllocationRecords,
@@ -1156,8 +1137,7 @@ impl NativeCreatedAllocationObservation {
     pub fn seed_binding_json(&self) -> &[u8] { &self.records.binding }
     /// Exact protected `/request.json` bytes, verified against the claim's hash.
     pub fn fork_request_json(&self) -> &[u8] { &self.records.request }
-    /// SDK source encoding derived from the retained published report, whose
-    /// digest must match `/seed.json`; not bytes of a standalone raw seed record.
+    /// SDK source encoding derived from the retained published report, whose digest must match `/seed.json`; not bytes of a standalone raw seed record.
     pub fn fork_seed_json(&self) -> &[u8] { &self.records.seed }
     pub fn source_origin(&self) -> NativeCreatedAllocationSourceOrigin {
         NativeCreatedAllocationSourceOrigin::CanonicalForkSeedFromPublishedReport
@@ -1253,8 +1233,7 @@ fn task_origin(claim: &AllocationClaim) -> Result<&ResourceCreationOrigin> {
     ))
 }
 
-/// Every invocation aggregates actual measured Filesystem IO under the original
-/// request's finite bounds. No mutable volume head substitutes for evidence.
+/// Every invocation aggregates actual measured Filesystem IO under the original request's finite bounds.
 async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, owner: &Authority,
     request: &ResourcePreparationRequest, proof: &ResourceCreationProofRef,
@@ -1532,8 +1511,6 @@ async fn authenticate_records_with_io<A: AsyncAuthorityStore, O: AsyncObjectStor
             return Err(Error::Unauthorized("child input lacks original donor and exact child read authority".into()));
         }
         if selected.default_writer {
-            // Same finite ledger, immutable generation, byte digest and retention
-            // machinery as ordinary provider reads; no mutable head substitution.
             let bytes = host.read_pinned_io(file, request.maximum_bytes, Some(io)).await?;
             let byte_custody = io.guard_bytes(&bytes)?;
             drop(bytes);
@@ -1603,8 +1580,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             let receipt = self.verify_with_io(request, proof, Some(&io)).await?;
-            // This is conservative closed-capture quota plus real owned scopes/
-            // buffers, never a claim of exact allocator-node footprint or RSS.
             let retained = io.owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
             Ok((receipt, custody))
@@ -1738,8 +1713,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemResourceCreationProvider<A, O> {
     /// Observes the admitted original allocation without granting a read scope.
-    /// Sixteen protected source records at most are traversed across capture and
-    /// final authentication; output encodings are individually bounded to 64KiB.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn inspect_created_allocation_with_native_work<'a>(
         &'a self, request: &'a ResourcePreparationRequest,
@@ -1749,7 +1722,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             request.validate()?;
             let units = request.maximum_work;
             let bytes = request.maximum_bytes;
-            // A scoped tag on the original root, never a fresh meter or token.
             let scoped = work.native_volume_work(work.budget().intersect_budget(WorkBudget {
                 authority_records_read: units, authority_records_appended: units,
                 authority_bytes_read: bytes, authority_bytes_written: bytes,
@@ -1766,9 +1738,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let mut records = StoredAllocationRecords::default();
             let first = authenticate_records_with_io(&self.host, self.issuer.audience(),
                 request, proof, &io, Some(&mut records)).await?;
-            // The authentication frame has now physically dropped its parsed
-            // request/report/claim temporaries. Retain the selected DTO and
-            // observation header; each output owns its original byte custody.
             let overflow = || Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                 reason: "created observation ownership overflows" };
             let reference_slots = first.reference_files.capacity()
@@ -2020,7 +1989,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CreatedFilesystemAccess<A, O> 
 }
 
 /// Revalidates the original creator seal and admits only its one immutable file.
-/// Its signer scope contains no volume, directory or publication capability.
 struct CreatedFilesystemReference<A, O> {
     allocation: Arc<CreatedFilesystemAccess<A, O>>,
     file: FileRef,
@@ -2214,8 +2182,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         if self.writer.volume() != &self.volume {
             return Err(Error::Unauthorized("created writer is not its exact bound namespace".into()));
         }
-        // Availability is not allocation authentication. Actual staging below
-        // still reauthenticates original creator evidence before any write.
         self.writer.supports_native_stage(work)
     }
     fn stage<'a>(&'a self, operation: OperationId, path: &'a str, bytes: &'a [u8], media_type: &'a str, display_name: &'a str) -> BoxFuture<'a, Result<FileRef>> {
@@ -2320,7 +2286,6 @@ mod tests {
         fixture: &crate::durable_host::tests::created_resource_access::CreationFixture,
     ) -> Result<FilesystemResourceCreationProvider<acyclic_fs::MemoryAuthorityBackend,
         acyclic_fs::MemoryObjectBackend>> {
-        // The real coordinator fixture installs this exact configured issuer.
         let issuer = AuthorityIssuer::new("created-owner", [80; 32],
             Authority { kind: AggregateKind::Task, id: "created-owner".into() });
         FilesystemResourceCreationProvider::new(fixture.filesystem.clone(), issuer)

@@ -35,8 +35,6 @@ fn encode<T: Serialize + ?Sized>(value: &T, maximum: u64, io: Option<&Preparatio
     let mut observer = io.map(PreparationIo::history_io);
     let mut work = observer.as_mut().map(|io| io as &mut dyn HistoryIo);
     let bytes = canonical_bytes_with_work(value, maximum, &mut work)?;
-    // The actual canonical encoder's existing guard moves into SDK bytes;
-    // the request never detaches/re-adopts the encoded byte buffer.
     Ok(operations::owned_bytes_from_retained_vec(bytes, &mut work)?.0)
 }
 
@@ -108,7 +106,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             io.absorb_native_custody(custody)?;
             return Ok(admission);
         }
-        self.admission(OperationId::from_bytes(task.into_bytes())).await
+        self.admission_with_work(OperationId::from_bytes(task.into_bytes()), &mut None).await
     }
 
     async fn prepare_mail_with_io(&self, sender: TaskId, recipient: TaskId, message: OperationId,
@@ -375,12 +373,11 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             }
             return owner.verify_with_work(settlement, work).await;
         }
-        if let Some(fence) = fence { return self.verify_owner(sender, fence, settlement).await; }
+        if let Some(fence) = fence { return self.verify_owner_with_work(sender, fence, settlement, &mut None).await; }
         Ok(())
     }
 }
 
-// The original canonical ordered conditions, without a temporary heap Vec.
 struct ConditionView<'a>([Option<&'a CommitCondition>; 3]);
 impl Serialize for ConditionView<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {

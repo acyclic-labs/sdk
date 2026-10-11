@@ -7,8 +7,6 @@ use std::{future::Future, pin::Pin, task::{Context, Poll}};
 
 type NativeResult<T> = std::result::Result<T, NativeReceiptError>;
 
-// Serialize borrowed payloads. The protected wire contract remains Receipt;
-// neither launch nor observed payload is cloned just to encode that contract.
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ReceiptWrite<'a, 'b> {
@@ -57,13 +55,9 @@ struct ExecutedPayload {
     execution: NativeExecution,
     path: StreamPath,
     _custody: Option<NativeAllocation>,
-    // Ordinary dispatch keeps the SDK publication ledger separate: it covers
-    // only the SDK-owned execution inventory, never the unmeasured effect DTO.
     _sdk_custody: Option<NativeAllocation>,
 }
 
-// Capture this whole value, never independent Arc fields: the shared original
-// guard must outlive every cached payload even if the registry/provider drops.
 struct SupervisorGraph<P: StreamProvider> {
     owner: Arc<TaskJournalOwner<P>>,
     view: Arc<dyn NativeProcessView<P>>,
@@ -220,8 +214,6 @@ fn require_same_launch(
     retained: &LaunchReceipt<'_>, requested: &LaunchReceipt<'_>,
     work: Option<&NativeMaterializationWork>,
 ) -> NativeResult<()> {
-    // A legitimate recovery can hold a later fence. The original recorded
-    // fence is evidence, never permission to redispatch under a new lease.
     if !examine(work, || retained.dispatch == requested.dispatch)?
         || !examine(work, || retained.plan == requested.plan)?
         || !examine(work, || retained.conversation == requested.conversation)?
@@ -243,9 +235,6 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             Some(work) => self.owner.verify_with_native_work(false, work).await?,
             None => { self.owner.verify(false).await?; }
         }
-        // The cached reader is the original authenticated Core archive reader.
-        // Its native adapter borrows the caller's ledger; no history reader or
-        // fresh materialization allowance is constructed for dispatch.
         let mut io = work.map(crate::store::history::native_work_io).transpose()?;
         let cursor = self.history.pin_with_work(0,
             io.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo)).await?;
@@ -253,7 +242,6 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             self.authority.history_limits,
             io.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo)).await?
             .ok_or(NativeReceiptError::Record("native command has no committed effect admission"))?;
-        // Compare borrowed fields rather than cloning EffectDispatch::from_state.
         if !examine(work, || state.status == EffectStatus::Dispatched)?
             || !examine(work, || state.attempts.last() == Some(&dispatch.attempt_id))?
             || !examine(work, || dispatch.effect_id == self.effect_id)?
@@ -276,8 +264,6 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         let view = self.view.as_ref().ok_or(NativeReceiptError::Record(
             "recovered native provider can only reconcile receipts"))?;
         let (request, _, approval_digest) = self.executable_admission()?;
-        // These immutable request paths were checked at bind. Dispatch rechecks
-        // the original selection without a second Windows case-folding copy.
         if !examine(work, || view.manifest() == &request.view)? {
             return Err(NativeReceiptError::Record("native dispatch view changed"));
         }
@@ -334,8 +320,6 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             return effect_result(receipt, work.is_some());
         }
         drop(launch);
-        // A retained launch is never replayed. All subsequent admission or
-        // supervisor errors leave the very same launch-only uncertain slot.
         let payload = SupervisorPayload {
             dispatch: payload.dispatch, path,
             _custody: payload._custody,
@@ -353,8 +337,6 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         let history = Arc::clone(&self.history);
         let approval = self.approval;
         let attempt = payload.dispatch.attempt_id;
-        // Clone only the original shared ledger handle, retaining its alias in
-        // the supervisor after either the caller or the provider is dropped.
         let original_work = work.cloned();
         let graph = SupervisorGraph {
             owner, view, authority, request, schema, supervisor, plan, history,
@@ -372,8 +354,6 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             let history = &graph.history;
             let _completion = NativeSupervisorCompletion(Arc::clone(supervisor));
             let work = original_work.as_ref();
-            // Capture the complete payload, not individual fields: on every
-            // early return its original guards are dropped after its values.
             let payload = payload;
             let (execution, execution_custody) = execute(&owner, view.as_ref(), &authority,
                 &request, &payload.dispatch, &schema, &supervisor, work)?.await?;
@@ -413,8 +393,6 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                     return Err(NativeReceiptError::Record("native observed outcome was not retained"));
                 }
             }
-            // Recorded also requires physical quiescence. A durable uncertain
-            // outcome must not erase the original unresolved process phase.
             let (_, phase) = supervisor.snapshot(attempt)?;
             if matches!(phase, NativeCapturePhase::Pending | NativeCapturePhase::Drained) {
                 supervisor.record_capture(NativeCapturePhase::Recorded)
@@ -437,8 +415,6 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 },
                 _custody,
             });
-            // The observed handoff has physically dropped SDK snapshot data.
-            // Release the ordinary SDK ledger only now, including on error.
             drop(_sdk_custody);
             result
         }, work)?;
@@ -489,7 +465,6 @@ async fn append_receipt_original<P: StreamProvider>(
         None => crate::contract::canonical_json_bytes(receipt)?,
     };
     if let Some(guard) = custody.as_mut() {
-        // Encoding succeeded: no SDK diagnostic payload was created.
         guard.release(diagnostic_bytes)?;
     }
     if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
@@ -513,7 +488,6 @@ async fn append_receipt_original<P: StreamProvider>(
     key_bytes.extend_from_slice(hash.as_bytes());
     let key = acyclic_stream::IdempotencyKey::new(Bytes::from(key_bytes))?;
     let target = match work {
-        // StreamPath aliases its intrinsically guarded original payload.
         Some(_) => path.clone(),
         None => {
             let mut target = String::new();
@@ -737,8 +711,6 @@ mod tests {
         assert_eq!(retained.work().receipt().items_examined, before.items_examined + 1);
         cancellation.cancel();
         assert!(retained.work().cancellation().is_cancelled());
-        // The notification comes from the original completion guard, not a new
-        // supervisor or a reset invocation after dropping the caller handle.
         while !control.snapshot(attempt).unwrap().0 {
             tokio::task::yield_now().await;
         }
@@ -854,8 +826,6 @@ mod tests {
         let pointer = message.as_ptr();
         let inner = foreign.retain_owned(bytes).unwrap();
         let original_alias = original.retain_owned(0).unwrap();
-        // This is the closed codec constructor's inventory: temporary SDK
-        // buffers are gone, while the independently guarded cause still lives.
         drop(buffer);
         let error = root_error(slot.retain(Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Allocation(message),

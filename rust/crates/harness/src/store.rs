@@ -30,18 +30,13 @@ use acyclic_stream::{
     CommitOutcome, IdempotencyKey as StreamIdempotencyKey, IdempotencyOutcome, Stream,
     StreamClient, StreamError, StreamProvider,
 };
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use futures::TryStreamExt as _;
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 
-/// Finite recent terminal cache. Original results and identities are recovered
-/// through the authenticated bounded archive; uncertainty remains resident.
+/// Finite recent terminal cache.
 pub const DEFAULT_TERMINAL_EFFECTS: usize = 64;
-
-fn fork_child_binding(seed: &ForkSeed) -> Result<(OperationId, EventReference)> {
-    fork_child_binding_with_work(seed, &mut None)
-}
 
 fn fork_child_binding_with_work(
     seed: &ForkSeed,
@@ -106,9 +101,7 @@ fn fork_command_key_with_work(
     result.map(|key| (key, held))
 }
 
-/// Native, deterministic migration implementation selected by the exact
-/// installed target digest. External-effect migrations belong in an effect
-/// journal, not this pre-publication transformation boundary.
+/// Native, deterministic migration implementation selected by the exact installed target digest.
 pub trait ExtensionMigrationProvider: Send + Sync {
     /// Transforms verified prior state into the candidate target state.
     fn migrate(
@@ -197,8 +190,7 @@ impl ExtensionMigrationProvider for NativeExtensionMigrations {
     }
 }
 
-/// Caller-retained identity of one exact state migration. Keeping the source
-/// and aggregate CAS revision permits deterministic retry after a lost reply.
+/// Caller-retained identity of one exact state migration.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExtensionMigrationRequest {
     /// Stable migration operation.
@@ -272,10 +264,7 @@ pub struct StreamAggregate<P> {
 }
 
 impl<P: StreamProvider> StreamAggregate<P> {
-    /// Executes a pinned pure migration, stages its bytes through the owning
-    /// provider, then publishes only the resulting ref. The admission path
-    /// executes the same migration again before CAS, so a caller cannot
-    /// substitute arbitrary staged JSON for the registered implementation.
+    /// Executes a pinned pure migration, stages its bytes through the owning provider, then publishes only the resulting ref.
     pub async fn migrate_extension_state(
         &mut self,
         request: ExtensionMigrationRequest,
@@ -423,8 +412,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         Ok(output)
     }
 
-    /// Asks an explicit provider to prepare each selected resource at the
-    /// parent's exact current revision. No child is published by preparation.
+    /// Asks an explicit provider to prepare each selected resource at the parent's exact current revision.
     pub async fn prepare_fork(
         &self,
         provider: &dyn ForkPreparer,
@@ -472,9 +460,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         Ok(report)
     }
 
-    /// Converts a fully captured report to a seed and publishes it only
-    /// through the parent's authenticated, conflict-checked Stream append.
-    /// Replaying the same operation reconciles a lost publication reply.
+    /// Converts a fully captured report to a seed and publishes it only through the parent's authenticated, conflict-checked Stream append.
     pub async fn publish_fork_report(
         &mut self,
         report: ForkReport,
@@ -500,8 +486,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         .await
     }
 
-    /// Publishes the original fork report under its admitted task owner's
-    /// fresh atomic fence, charging the same canonical publication engine.
+    /// Publishes the original fork report under its admitted task owner's fresh atomic fence, charging the same canonical publication engine.
     #[cfg(feature = "filesystem")]
     pub async fn publish_fork_report_measured(
         &mut self,
@@ -520,8 +505,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         work.finish(result)
     }
 
-    /// Publishes the exact report on the original native ledger and atomic owner
-    /// fence. The result's guard must outlive its returned event payload.
+    /// Publishes the exact report on the original native ledger and atomic owner fence.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn publish_fork_report_with_native_work(
         &mut self, report: &ForkReport, scope: &Scope,
@@ -541,8 +525,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let input_bytes = input.retained();
             let result = self.publish_fork_report_with_work(
                 report, scope, owner, input.work()).await;
-            // The canonical command consumed both input DTOs before returning;
-            // persistent reducer components retain only their own funded copies.
             let released = input.relinquish(input_bytes);
             match result {
                 Err(error) => Err(error),
@@ -580,7 +562,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         if let Some(observer) = custody.work().as_deref_mut() {
             observer.admit_allocation(box_slots)?;
         }
-        // Fund the original Box before its physical allocation, not afterward.
         custody.retain(box_slots)?;
         let seed = Box::new(seed);
         self.execute_guarded_publication_with_work(
@@ -599,10 +580,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         ).await
     }
 
-    /// Admits a prepared child through the parent, then binds its fresh
-    /// conversation to the published seed. A failed child bind does not undo
-    /// parent publication: retry this exact report and scopes to reconcile it.
-    /// The child aggregate must have no independent conversation binding.
+    /// Admits a prepared child through the parent, then binds its fresh conversation to the published seed.
     pub async fn spawn_from_report(
         &mut self,
         parent: &mut Self,
@@ -632,8 +610,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         Ok(seed)
     }
 
-    /// Binds a child conversation only after its exact parent seed is already
-    /// committed. A retry observes the same immutable agent binding.
+    /// Binds a child conversation only after its exact parent seed is already committed.
     pub async fn bind_published_child(
         &mut self,
         parent: &Self,
@@ -669,7 +646,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 "parent fork event does not match the child seed".into(),
             ));
         }
-        let (bind_operation, causal_parent) = fork_child_binding(seed)?;
+        let (bind_operation, causal_parent) = fork_child_binding_with_work(seed, &mut None)?;
         let conversation = self
             .reducer
             .conversation()
@@ -710,7 +687,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     /// Binds only the exact child of an authenticated canonical parent fork.
-    /// The parent publication owner fences this append; no root binder is used.
     #[cfg(feature = "filesystem")]
     pub async fn bind_published_child_measured(
         &mut self,
@@ -731,7 +707,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     /// Binds only the exact canonically published child on the original ledger.
-    /// This preserves the parent's publication proof and current owner fence.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn bind_published_child_with_native_work(
         &mut self, parent: &Self, seed: &ForkSeed, scope: &Scope,
@@ -864,15 +839,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         )
     }
 
-    /// Opens through the original authenticated checkpoint and finite suffix
-    /// engine with a cumulative SDK-boundary receipt, including failed prefixes.
-    /// Output counts the canonical checkpoint payload and suffix bytes used to
-    /// restore the returned projection, not a re-encoding of its reducer.
-    /// Explicit checkpoint digest inputs are charged before their original hashes.
-    /// Canonical encoding uses the same bounded codec with admission before
-    /// owned storage/copies grow. Its live storage, assembly/vector capacities
-    /// and raw records share one ledger; opaque provider/reducer internals and
-    /// allocator overhead are excluded.
+    /// Opens through the original authenticated checkpoint and finite suffix engine with a cumulative SDK-boundary receipt, including failed prefixes.
     #[cfg(feature = "filesystem")]
     pub async fn open_measured(
         client: &StreamClient<P>,
@@ -885,21 +852,18 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let mut work = history::HistoryWork::new(budget, cancellation);
         let result = async {
             work.preflight()?;
-            let aggregate = Self::open_with_work(
+            let aggregate = Self::open_with_read_limits_with_work(
                 client,
                 authority,
                 authority_verifier,
-                schemas,
-                &mut Some(&mut work),
-            ).await?;
+                schemas, crate::store::default_projection_read_limits(), &mut Some(&mut work)).await?;
             work.return_staged_output()?;
             Ok(aggregate)
         }.await;
         work.finish(result)
     }
 
-    /// Restores the same authenticated checkpoint and suffix on the original
-    /// native ledger. Drop the aggregate before releasing its returned custody.
+    /// Restores the same authenticated checkpoint and suffix on the original native ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn open_with_native_work(
         client: &StreamClient<P>,
@@ -912,30 +876,15 @@ impl<P: StreamProvider> StreamAggregate<P> {
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let aggregate = async {
             history::HistoryIo::check_cancellation(&native_io)?;
-            let aggregate = Self::open_with_work(
+            let aggregate = Self::open_with_read_limits_with_work(
                 client,
                 authority,
                 authority_verifier,
-                schemas,
-                &mut Some(&mut native_io),
-            ).await?;
+                schemas, crate::store::default_projection_read_limits(), &mut Some(&mut native_io)).await?;
             native_io.return_staged_output()?;
             Ok::<Self, Error>(aggregate)
         }.await?;
         Ok((aggregate, native_io.into_custody()))
-    }
-
-    pub(crate) async fn open_with_work(
-        client: &StreamClient<P>,
-        authority: Authority,
-        authority_verifier: AuthorityVerifier,
-        schemas: SchemaRegistry,
-        work: &mut Option<&mut dyn history::HistoryIo>,
-    ) -> Result<Self> {
-        Self::open_inner(
-            client, authority, authority_verifier, schemas, None,
-            default_projection_read_limits(), DEFAULT_TERMINAL_EFFECTS, None, work,
-        ).await
     }
 
     pub(crate) async fn open_at_revision_with_work(
@@ -958,13 +907,10 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     /// Moves the canonical reducer out without copying or replaying it.
-    /// Native component custody remains intrinsic to the returned reducer.
     pub fn into_reducer(self) -> Reducer {
         self.reducer
     }
-    /// Restores the original authenticated checkpoint at or before an exact
-    /// committed revision, then only its bounded canonical suffix through that
-    /// revision. Later parent appends cannot change the restored projection.
+    /// Restores the original authenticated checkpoint at or before an exact committed revision, then only its bounded canonical suffix through that revision.
     pub async fn open_at_revision_with_read_limits(
         client: &StreamClient<P>,
         authority: Authority,
@@ -986,9 +932,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         ).await
     }
 
-    /// Restores the same exact historical cut with one cumulative finite
-    /// SDK-boundary receipt. Future cuts reject after observing the real tail;
-    /// no latest-checkpoint fallback or unbounded historical replay is used.
+    /// Restores the same exact historical cut with one cumulative finite SDK-boundary receipt.
     #[cfg(feature = "filesystem")]
     #[allow(clippy::too_many_arguments, reason = "original exact-cut open arguments plus the cumulative work receipt")]
     pub async fn open_at_revision_measured(
@@ -1022,8 +966,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     /// Opens the latest authenticated durable projection and a finite canonical suffix.
-    /// The allowance includes checkpoint pointer, payload, canonical anchor and suffix.
-    /// Missing checkpoints for established histories fail rather than replaying from zero.
     pub async fn open_with_read_limits(
         client: &StreamClient<P>,
         authority: Authority,
@@ -1042,9 +984,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         .await
     }
 
-    /// Opens with finite cold input bounds and a configurable terminal-effect
-    /// cache. Only originally indexed successes/failures can be retired; active
-    /// and indeterminate effects remain resident. Zero cache size is invalid.
+    /// Opens with finite cold input bounds and a configurable terminal-effect cache.
     pub async fn open_with_projection_limits(
         client: &StreamClient<P>,
         authority: Authority,
@@ -1068,9 +1008,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     /// Restores an integrity-checked snapshot, then replays its retained suffix.
-    ///
-    /// Caller-supplied storage is supported alongside default Stream checkpoints.
-    /// Snapshot bytes, cached events and suffix share the ordinary finite default allowance.
     #[cfg_attr(
         not(target_arch = "wasm32"),
         tracing::instrument(
@@ -1100,8 +1037,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         )
     }
 
-    /// Restores caller-supplied authenticated state under one cumulative input
-    /// allowance for serialized snapshot bytes, cached events and canonical suffix.
+    /// Restores caller-supplied authenticated state under one cumulative input allowance for serialized snapshot bytes, cached events and canonical suffix.
     pub async fn open_from_snapshot_with_read_limits(
         client: &StreamClient<P>,
         authority: Authority,
@@ -1175,7 +1111,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let reader_bytes = if work.is_some() { reader.logical_owned_bytes()? } else { 0 };
         let loaded = match snapshot {
             Some(snapshot) => checkpoints::supplied(client, &authority, snapshot, limits, original_revision, work).await?,
-            None if work.is_none() && original_revision.is_none() => checkpoints::load(client, &authority, &authority_verifier, limits).await?,
             None => checkpoints::load_with_work(client, &authority, &authority_verifier, limits, original_revision, work).await?,
         };
         let stream = match work.as_deref_mut() {
@@ -1341,14 +1276,12 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     /// Configures retirement of originally indexed successful/failed effects.
-    /// Active/indeterminate states and protected legacy terminal entries stay resident.
     pub fn with_resident_terminal_effect_limit(mut self, maximum: usize) -> Result<Self> {
         self.reducer.set_resident_terminal_effect_limit(maximum)?;
         Ok(self)
     }
 
-    /// Sets the finite archive allowance used by effect permission checks and
-    /// fresh transitions, including exact retries whose terminal state was retired.
+    /// Sets the finite archive allowance used by effect permission checks and fresh transitions, including exact retries whose terminal state was retired.
     pub fn with_effect_history_read_limits(mut self, limits: HistoryReadLimits) -> Result<Self> {
         if limits.maximum_events == 0 || limits.maximum_bytes == 0 {
             return Err(Error::Invalid(
@@ -1360,8 +1293,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     /// Reads an exact typed effect at this aggregate's current committed cut.
-    /// Cached data and archival data share explicit input/output bounds; this
-    /// observation never refreshes, dispatches or admits an operation.
     pub async fn effect(
         &self,
         effect: crate::EffectId,
@@ -1435,28 +1366,22 @@ impl<P: StreamProvider> StreamAggregate<P> {
 
     fn apply_published_event(&mut self, event: &crate::core::Event) -> Result<ApplyResult> {
         let result = self.reducer.apply_committed(event.clone())?;
-        self.reducer.mark_indexed_terminal_effect(event)?;
+        self.reducer.mark_indexed_terminal_effect_with_work(event, &mut None)?;
         Ok(result)
     }
 
     /// Configures the event/retry cache; canonical Stream history and live projections remain authoritative.
-    /// The default is 1024 events. Older identities are resolved through the atomic operation index.
     pub fn with_resident_event_limit(mut self, maximum: usize) -> Result<Self> {
         self.set_resident_event_limit(maximum)?;
         Ok(self)
     }
 
     /// Reconfigures the bounded event/retry cache without moving a borrowed aggregate.
-    /// Canonical history and live projections remain authoritative; older retry
-    /// identities and selections are resolved through the existing atomic index.
     pub fn set_resident_event_limit(&mut self, maximum: usize) -> Result<()> {
         self.reducer.set_resident_event_limit(maximum)
     }
 
     /// Retires only closed, checkpoint-covered conversation records from memory.
-    /// Canonical Stream events and atomic identity indexes remain unchanged.
-    /// Old selections and replies must be resolved through the history reader;
-    /// this cache operation admits no events and grants no authority.
     pub fn compact_conversation_projection(&mut self) -> Result<()> {
         self.reducer.compact_conversation_projection(&mut None)
     }
@@ -1482,8 +1407,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self
     }
 
-    /// Requires an installed, exact-digest migration implementation before
-    /// accepting any `MigrateExtensionState` event.
+    /// Requires an installed, exact-digest migration implementation before accepting any `MigrateExtensionState` event.
     #[must_use]
     pub fn with_extension_migrations(
         mut self,
@@ -1549,7 +1473,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     async fn replay_indexed(&mut self, command: &Command) -> Result<Option<ApplyResult>> {
-        self.reducer.verify_command_scope(command)?;
+        self.reducer.verify_command_scope_with_work(command, &mut None)?;
         let Some(event) = self.operation_event(command.operation_id).await? else {
             if self
                 .reducer
@@ -1562,7 +1486,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             }
             return Ok(None);
         };
-        self.reducer.verify_retained_command(command, &event)?;
+        self.reducer.verify_retained_command_with_work(command, &event, &mut None)?;
         if event.revision > self.reducer.revision() {
             if event.revision
                 != self
@@ -1576,11 +1500,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 ));
             }
             let indexed =
-                effects::retirement_proof_for_event(&self.client, self.reducer.authority(), &event)
+                effects::retirement_proof_for_event_with_work(&self.client, self.reducer.authority(), &event, &mut None)
                     .await?;
             let result = self.reducer.apply_committed(event.clone())?;
             if indexed {
-                self.reducer.mark_indexed_terminal_effect(&event)?;
+                self.reducer.mark_indexed_terminal_effect_with_work(&event, &mut None)?;
             }
             self.reducer.enforce_terminal_effect_limit()?;
             return Ok(Some(result));
@@ -1629,9 +1553,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     /// Advances the existing verified projection by at most one caller-sized page.
-    /// Returns whether the captured `through_revision` has been reached. Later
-    /// appends are excluded; callers may continue paging without a total-work cap.
-    /// On failure, any successfully applied prefix remains authoritative.
     pub async fn refresh_through(
         &mut self,
         through_revision: u64,
@@ -1670,17 +1591,16 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     "aggregate refresh event binding is invalid".into(),
                 ));
             }
-            let (indexed, _) = effects::retirement_proof(
+            let (indexed, _) = effects::retirement_proof_with_work(
                 &self.client,
                 self.reducer.authority(),
                 &event,
                 &record,
-                2 * acyclic_stream::MAX_RECORD_BYTES as u64,
-            )
+                2 * acyclic_stream::MAX_RECORD_BYTES as u64, &mut None)
             .await?;
             self.reducer.apply_committed(event.clone())?;
             if indexed {
-                self.reducer.mark_indexed_terminal_effect(&event)?;
+                self.reducer.mark_indexed_terminal_effect_with_work(&event, &mut None)?;
             }
             self.reducer.enforce_terminal_effect_limit()?;
             consumed += 1;
@@ -1715,7 +1635,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             return Ok(result);
         }
         let idempotency_key =
-            stream_idempotency_key(self.stream.path().as_str(), &command.idempotency_key)?;
+            stream_idempotency_key_with_work(self.stream.path().as_str(), &command.idempotency_key, &mut None)?;
         let fresh_migration = matches!(&command.action, Action::MigrateExtensionState { .. })
             && self
                 .reducer
@@ -1733,10 +1653,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
         self.validate_causal_reference(event.causal_parent.as_ref())
             .await?;
-        let publication = checkpoints::publication(&self.client, &self.reducer, &event).await?;
+        let publication = checkpoints::publication_with_work(&self.client, &self.reducer, &event, &mut None).await?;
         let request = publication.request(&self.client, idempotency_key).await?;
-        // The private-volume reservation spans the final scan and the Stream
-        // append. An unknown append result retains the durable reservation.
         let fork_guard = if let crate::core::Action::PublishFork { seed } = &command.action {
             let verifier = self
                 .fork_verifier
@@ -1750,10 +1668,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             .await
     }
 
-    /// Uses the existing conversation reducer and content validation, while the
-    /// task owner compares its lease and this conversation tail in one Stream
-    /// transaction. Fresh admission rejects cancellation; effect settlement
-    /// remains allowed for that exact owner. Responders remain conversation-owned.
+    /// Uses the existing conversation reducer and content validation, while the task owner compares its lease and this conversation tail in one Stream transaction.
     #[cfg(feature = "filesystem")]
     pub(crate) async fn execute_task_command(
         &mut self,
@@ -1809,8 +1724,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self.validate_admission_content(&command.action).await?;
         self.validate_causal_reference(event.causal_parent.as_ref())
             .await?;
-        let publication = checkpoints::publication(&self.client, &self.reducer, &event).await?;
-        let key = stream_idempotency_key(self.stream.path().as_str(), &command.idempotency_key)?;
+        let publication = checkpoints::publication_with_work(&self.client, &self.reducer, &event, &mut None).await?;
+        let key = stream_idempotency_key_with_work(self.stream.path().as_str(), &command.idempotency_key, &mut None)?;
         if !owner.append_conversation(&publication, &key, write).await? {
             return Err(Error::Conflict(
                 "task publication lost its owner or conversation tail".into(),
@@ -1829,7 +1744,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     .reducer
                     .plan_with_archived_effect(command, effect_id, &effect);
             }
-            return self.reducer.plan_indexed(command, false);
+            return self.reducer.plan_indexed_with_retained_quota(command, false, &mut None).map(|(result, _)| result);
         }
         if let Action::MigrateExtensionState {
             name,
@@ -1848,7 +1763,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             )?;
         }
         self.validate_admission_content(&command.action).await?;
-        self.reducer.plan_indexed(command, true)
+        self.reducer.plan_indexed_with_retained_quota(command, true, &mut None).map(|(result, _)| result)
     }
 
     #[cfg_attr(
@@ -1976,8 +1891,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 }
                 Error::NotFound(format!("effect {}", observation.effect_id))
             })?;
-            // Declare custody before either carrier: a failed second read drops
-            // the first physical bytes before releasing its observer claim.
             let mut scratch = crate::wire_codec::CodecQuota::from_retained(work, 0);
             let (bytes, claim) = Self::read_admission_content_with_work(
                 verifier.as_ref(), reference, scratch.work()).await?;
@@ -2019,8 +1932,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
     ) -> Result<(acyclic_stream::OwnedBytes, u64)> {
         match work.as_deref_mut() {
             Some(observer) => history::read_content_with_work(observer, verifier, reference).await,
-            // Public reads carry their own native guard, if any. Without an
-            // observer there is no separately retained claim to adopt.
             None => verifier.read(reference).await.map(|bytes| (bytes, 0)),
         }
     }
@@ -2143,7 +2054,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let (request_bytes, request_claim) = Self::read_admission_content_with_work(
             verifier.as_ref(), &ticket.request, scratch.work()).await?;
         scratch.adopt(request_claim)?;
-        // Preserve the original denial boundary before the response read.
         let request = ticket.validate_request_bytes_owned_with_work(&request_bytes, scratch.work())?;
         scratch.adopt(request.measured_owned_bytes())?;
         let (bytes, claim) = Self::read_admission_content_with_work(
@@ -2384,9 +2294,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let bytes = verified_content_bytes(verifier.as_ref(), content).await?;
             self.reducer
                 .validate_custom_bytes(name, *to_version, content, &bytes)?;
-            // A direct admission must publish the executor's exact canonical
-            // bytes, not merely a JSON value that compares equal after parse.
-            // This makes content identity deterministic across host paths.
             if bytes.as_ref() != crate::contract::canonical_json_bytes(&expected)?.as_slice() {
                 return Err(Error::Conflict(
                     "staged extension migration differs from its pinned implementation".into(),
@@ -2466,9 +2373,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     /// Reconciles a possibly committed append without issuing another append.
-    ///
-    /// `None` means the provider has no durable observation yet; callers must
-    /// retain the original command and operation identity until it resolves.
     #[cfg_attr(
         not(target_arch = "wasm32"),
         tracing::instrument(
@@ -2508,7 +2412,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         if let Some(result) = self.replay_indexed(command).await? {
             return Ok(Some(result));
         }
-        let key = stream_idempotency_key(self.stream.path().as_str(), &command.idempotency_key)?;
+        let key = stream_idempotency_key_with_work(self.stream.path().as_str(), &command.idempotency_key, &mut None)?;
         let Some(observation) = self.client.inspect_idempotency(key).await? else {
             return Ok(None);
         };
@@ -2557,10 +2461,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 }
 
-fn stream_idempotency_key(path: &str, value: &IdempotencyKey) -> Result<StreamIdempotencyKey> {
-    stream_idempotency_key_with_work(path, value, &mut None)
-}
-
 fn stream_idempotency_key_with_work(
     path: &str,
     value: &IdempotencyKey,
@@ -2582,7 +2482,7 @@ fn stream_idempotency_key_with_work(
     hasher.update(path.as_bytes());
     hasher.update(&(value.0.len() as u64).to_le_bytes());
     hasher.update(value.0.as_bytes());
-    let key = StreamIdempotencyKey::new(Bytes::copy_from_slice(hasher.finalize().as_bytes()))
+    let key = StreamIdempotencyKey::new(OwnedBytes::copy_from_slice(hasher.finalize().as_bytes()))
         .map_err(|error| Error::Invalid(error.to_string()))?;
     if let Some(work) = work.as_deref_mut() { work.retain_owned(32)?; }
     Ok(key)
@@ -3023,8 +2923,6 @@ mod tests {
                 .request(&client, StreamIdempotencyKey::new("head-racing-commit")?)
                 .await?,
         );
-        // The first lookup captured the empty head before this actual atomic
-        // append. The next lookup sees the newly committed message.
         assert!(reader.latest_conversation_message(65_536).await?.is_none());
         assert_eq!(
             reader.latest_conversation_message(65_536).await?,
@@ -3058,8 +2956,6 @@ mod tests {
         assert!(matches!(reader.latest_conversation_message(65_536).await,
             Err(Error::Storage(detail)) if detail.contains("atomic canonical event")));
 
-        // A separately appended canonical binding has no atomic head proof.
-        // Missing derived state must not be reported as an empty conversation.
         let incomplete = StreamClient::new(Arc::new(MemoryStream::default()));
         let reducer = Reducer::new(authority(), issuer().verifier(), schemas());
         let (ApplyResult::Applied { event } | ApplyResult::Replayed { event }) =
@@ -3141,8 +3037,6 @@ mod tests {
             }
             writer.execute(next).await?;
             if matches!(sequence, 1 | 1_000 | 10_000) {
-                // A fresh reader has no reducer or cached history. The same
-                // two reads suffice while retained history grows by 10,000x.
                 let cold = HistoryReader::new(&client, &authority(), issuer().verifier())?;
                 provider.forbid_writes.store(true, Ordering::SeqCst);
                 provider.observation_reads.store(0, Ordering::SeqCst);
@@ -3155,9 +3049,6 @@ mod tests {
                 provider.forbid_writes.store(false, Ordering::SeqCst);
             }
         }
-        // The large checkpoint spans reused immutable chunks. Restore through
-        // the real default constructor with writes prohibited, then compare the
-        // complete logical-prefix identity with the original live reducer.
         provider.forbid_writes.store(true, Ordering::SeqCst);
         let restored =
             StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?;
@@ -3183,8 +3074,6 @@ mod tests {
                 <= 64
         );
         assert!(provider.observation_maximum.load(Ordering::SeqCst) <= 64);
-        // Subsequent one-record index observations have their own measurement
-        // window; the cold canonical suffix above legitimately reads 17 records.
         provider.observation_maximum.store(0, Ordering::SeqCst);
         provider.forbid_writes.store(false, Ordering::SeqCst);
         let archived = writer.reducer().archived_through_revision();
@@ -3238,7 +3127,6 @@ mod tests {
                 .await?,
             ApplyResult::Replayed { .. }
         ));
-        // Forge a separate-commit locator pointing at the signed first message.
         let first_path = format!(
             "harness/v2/conversation-messages/conversations/conversation-1/{}",
             message(1).id
@@ -3361,7 +3249,6 @@ mod tests {
             Err(Error::Storage(_))
         ));
         assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 2);
-        // Exact aggregate byte exhaustion stops before the third locator read.
         let mut two_record_bytes = 0u64;
         for sequence in [9_998u64, 9_999] {
             let index = client
@@ -3541,9 +3428,8 @@ mod tests {
                 65_536,
             )?
             .with_input_verifier(Arc::new(TestContent));
-            let sparse = crate::conversation::ConversationState::selected_view(
-                [1, 5_000, 10_000].into_iter().map(message).collect(),
-            )?;
+            let sparse = crate::conversation::ConversationState::selected_view_with_work(
+                [1, 5_000, 10_000].into_iter().map(message).collect(), &mut None).map(|(state, _)| state)?;
             assert_eq!(sparse.messages().len(), 3);
             assert!(sparse.agent.is_none());
             let selected = crate::projection::select_model_context_at_revision(
@@ -3560,8 +3446,6 @@ mod tests {
             journal
                 .verify_selected_context(selection_operation, &selected)
                 .await?;
-            // One operation locator/event and three message locator/event pairs.
-            // Reopening the old reducer would instead read all 10,000 messages.
             assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 8);
             assert_eq!(provider.observation_maximum.load(Ordering::SeqCst), 1);
             let mut altered = selected.clone();
@@ -3685,7 +3569,6 @@ mod tests {
         let last = writer.read_event_at(10_000).await?;
         let mut later = command(2)?;
         later.expected_revision = writer.reducer().revision();
-        // A cold reader opens no reducer and does not read any event on construction/pin.
         provider.forbid_writes.store(true, Ordering::SeqCst);
         let reader = HistoryReader::new(&client, &authority(), issuer().verifier())?;
         let cursor = reader.pin(9_997).await?;
@@ -4012,7 +3895,7 @@ mod tests {
         client
             .stream(authority().stream_path()?)?
             .append_batch(
-                vec![Bytes::from(encode_event(&authority(), &event)?)],
+                vec![OwnedBytes::from(encode_event(&authority(), &event)?)],
                 Some(0),
                 None,
             )
@@ -4022,7 +3905,7 @@ mod tests {
         client
             .stream(operations::operation_path(&authority(), event.operation_id)?.as_str())?
             .append_batch(
-                vec![Bytes::from(crate::contract::canonical_json_bytes(
+                vec![OwnedBytes::from(crate::contract::canonical_json_bytes(
                     &location,
                 )?)],
                 Some(0),
@@ -4052,7 +3935,7 @@ mod tests {
             client
                 .stream(authority().stream_path()?)?
                 .append_batch(
-                    vec![Bytes::from(encode_event(&wire_authority, &event)?)],
+                    vec![OwnedBytes::from(encode_event(&wire_authority, &event)?)],
                     Some(0),
                     None,
                 )
@@ -4651,8 +4534,6 @@ mod tests {
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         assert_eq!(io.into_custody().bytes(), 0);
 
-        // The ordinary measured source keeps its real Vec capacity claim
-        // separate from OwnedBytes and retires it on the same second-read error.
         let mut ordinary = history::HistoryWork::new(budget, &cancellation);
         let error = aggregate.validate_interaction_part_with_work(
             &ticket, &missing, None, &mut Some(&mut ordinary)).await
@@ -4959,8 +4840,6 @@ mod tests {
                     .execute(projection_command(u128::from(revision + 1), revision)?)
                     .await?;
             }
-            // Model the older checkpoint-tail observation made immediately
-            // before the boundary commit became visible to the canonical read.
             provider
                 .stale_projection_head_tail
                 .store(cut / 64, Ordering::SeqCst);
@@ -4978,50 +4857,6 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn default_cold_projection_reads_fixed_work_at_increasing_history() -> Result<()> {
-        use std::sync::atomic::Ordering;
-        let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-        let client = StreamClient::new(provider.clone());
-        let mut writer = with_content(
-            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
-        );
-        for cut in [64_u64, 1_024, 10_240] {
-            while writer.reducer().revision() < cut + 5 {
-                let revision = writer.reducer().revision();
-                writer
-                    .execute(projection_command(u128::from(revision + 1), revision)?)
-                    .await?;
-            }
-            provider.forbid_writes.store(true, Ordering::SeqCst);
-            provider.observation_reads.store(0, Ordering::SeqCst);
-            provider.observation_maximum.store(0, Ordering::SeqCst);
-            let started = std::time::Instant::now();
-            let mut cold = with_content(
-                StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
-            );
-            let elapsed = started.elapsed();
-            assert_eq!(cold.reducer().revision(), cut + 5);
-            assert_eq!(cold.reducer().snapshot()?.events.len(), 6);
-            assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 4);
-            assert_eq!(provider.observation_maximum.load(Ordering::SeqCst), 5);
-            let bytes = crate::contract::canonical_json_bytes(&cold.reducer().snapshot()?)?.len();
-            assert!(bytes < 32_768);
-            eprintln!(
-                "cold-projection retained={} reads=4 max_records=5 resident_events=6 serialized_bytes={} elapsed_ns={}",
-                cut + 5,
-                bytes,
-                elapsed.as_nanos()
-            );
-            assert!(matches!(
-                cold.execute(projection_command(1, 0)?).await?,
-                ApplyResult::Replayed { .. }
-            ));
-            assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
-            provider.forbid_writes.store(false, Ordering::SeqCst);
-        }
-        Ok(())
-    }
 
     #[tokio::test]
     async fn default_cold_projection_enforces_bounds_and_recovers_failed_observations() -> Result<()>
@@ -5041,7 +4876,7 @@ mod tests {
         provider.forbid_writes.store(true, Ordering::SeqCst);
         let defaults = default_projection_read_limits();
         let loaded =
-            checkpoints::load(&client, &authority(), &issuer().verifier(), defaults).await?;
+            checkpoints::load_with_work(&client, &authority(), &issuer().verifier(), defaults, None, &mut None).await?;
         let suffix = HistoryReader::new(&client, &authority(), issuer().verifier())?
             .read_page(
                 &HistoryCursor {
@@ -5208,7 +5043,7 @@ mod tests {
         client: &StreamClient<MemoryStream>,
         canonical: &[acyclic_stream::Record],
         head_path: acyclic_stream::StreamPath,
-        head_bytes: Bytes,
+        head_bytes: OwnedBytes,
         non_atomic: bool,
     ) -> Result<()> {
         use acyclic_stream::{CommitCondition, CommitMutation, CommitRequest};
@@ -5259,9 +5094,6 @@ mod tests {
         Ok(())
     }
 
-    // Copy authentic events into an independent provider, then vary the derived
-    // projection's visibility or bytes. This keeps the signed canonical control
-    // valid while attacking the new cold-restore boundary itself.
     async fn copied_projection_client(
         source: &StreamClient<crate::test_stream::LostSessionAck<MemoryStream>>,
         mode: u8,
@@ -5310,14 +5142,14 @@ mod tests {
                     "harness/v3/projection-chunks/conversations/conversation-1/{}",
                     blake3::Hash::from_bytes(digest).to_hex()
                 ))?
-                .append(Bytes::from(payload))
+                .append(OwnedBytes::from(payload))
                 .await?;
         }
         publish_copied_projection(
             &client,
             &canonical,
             head_path,
-            Bytes::from(crate::contract::canonical_json_bytes(&location)?),
+            OwnedBytes::from(crate::contract::canonical_json_bytes(&location)?),
             mode == 3,
         )
         .await?;
@@ -5385,7 +5217,7 @@ mod tests {
             authority(),
             issuer().verifier(),
             schemas(),
-            snapshot.clone(),
+            snapshot.try_clone()?,
             HistoryReadLimits {
                 maximum_events: 6,
                 maximum_bytes: bytes,
@@ -5409,7 +5241,7 @@ mod tests {
                     authority(),
                     issuer().verifier(),
                     schemas(),
-                    snapshot.clone(),
+                    snapshot.try_clone()?,
                     limits,
                 )
                 .await
@@ -5436,3 +5268,4 @@ mod tests {
         Ok(())
     }
 }
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             

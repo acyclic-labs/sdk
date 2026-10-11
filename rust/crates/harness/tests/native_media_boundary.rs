@@ -218,7 +218,6 @@ struct MockAdapter {
     generates: AtomicUsize,
     wrong_count_digest: AtomicBool,
     captures: Mutex<Vec<Capture>>,
-    // Provider-owned receipts survive runtime reconstruction in this memory fixture.
     receipts: Mutex<NativeReceipts>,
     receipts_enabled: bool,
     interrupt_after_capture: AtomicBool,
@@ -313,8 +312,6 @@ impl ModelProvider for MockAdapter {
     fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
         Self::selection(&request.request().model)?;
         self.counts.fetch_add(1, Ordering::SeqCst);
-        // The fixture's token codec charges one unit per canonical byte and
-        // stored media/options byte, plus fixed framing. This is provider-owned.
         let message_tokens = request
             .request()
             .messages
@@ -1073,8 +1070,6 @@ async fn exercise_live_native_boundary() -> Result<()> {
                 let counts = adapter.counts.load(Ordering::SeqCst);
                 let generates = adapter.generates.load(Ordering::SeqCst);
                 let reads = reader.reads.load(Ordering::SeqCst);
-                // A missing original reference must fail at the same authenticated
-                // reader boundary as corruption, before adapter counting/dispatch.
                 let captured = adapter.captures.lock().map_err(|_| Error::Storage("capture lock".into()))?.len();
                 reader.missing.store(true, Ordering::SeqCst);
                 assert!(matches!(context.model_events(only_file(&original.0, &original.1), Some(16)).await, Err(Error::NotFound(_))));
@@ -1134,8 +1129,6 @@ async fn exercise_live_native_boundary() -> Result<()> {
         .grant("tool:call:fixture.media_tool")
         .grant(read.clone())
         .build()?;
-    // Advance the mutable agent after immutable runtime capture. Its new config
-    // selection must not replace the original options observed by this task.
     let next_bytes = br#"{"mode":"strict","scale":3}"#;
     let next = writer
         .stage(
@@ -1291,9 +1284,6 @@ async fn exercise_live_native_boundary() -> Result<()> {
     Ok(())
 }
 
-// A real admitted task and its original lease drive the production stock journal.
-// Memory providers and the provider-owned receipt are retained across composition
-// reopen; this is not an OS process restart or default fork/compaction proof.
 struct ReplayMachine {
     identity: MachineIdentity,
     schema: Value,
@@ -1358,8 +1348,6 @@ where
     let stream = StreamClient::new(Arc::new(MemoryStream::default()));
     let admission = OperationId::from_bytes([115; 16]);
     let task = TaskId::from_bytes(admission.into_bytes());
-    // Journal storage is task-owned; original Agent extension selection remains
-    // pinned in the separately retained runtime scope.
     let issuer = AuthorityIssuer::new(
         "native-replay-task",
         [23; 32],
@@ -1462,8 +1450,6 @@ where
         assert_eq!(original.extensions.as_ref(), scope.extensions());
         let context = runtime.harness().durable_context(task, admission).await?;
         assert_eq!(context.scope().extensions(), scope.extensions());
-        // Public low-level consumer composition binds the real original admission
-        // to its authorized reader/writer. The conversion has a separate effect ID.
         let writable = AgentHarness::with_policy(
             tasks.clone(),
             conversion_tools.clone(),
@@ -1654,8 +1640,6 @@ where
         drop(execution);
         drop(runtime);
         if pass == 0 {
-            // Change the mutable source paths after the request/receipt are pinned.
-            // Reopen must validate and reconcile the original generation references.
             writer
                 .stage(
                     OperationId::new(),
@@ -1690,7 +1674,6 @@ async fn live_original_options_and_actual_native_parts_reach_adapter_without_con
 #[wasm_bindgen_test::wasm_bindgen_test]
 async fn live_original_options_and_actual_native_parts_reach_adapter_without_conversion()
 -> std::result::Result<(), wasm_bindgen::JsValue> {
-    // Browser live tasks use Tokio's local executor rather than a native runtime.
     tokio::task::LocalSet::new()
         .run_until(exercise_live_native_boundary())
         .await

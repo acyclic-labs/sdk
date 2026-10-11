@@ -44,7 +44,6 @@ fn root_lazy_mutations(mutations: &[super::WorkspaceMutation])
     })
 }
 
-
 trait RootLazyBacking<A, O>: acyclic_stream::ProviderPlatform {
     fn workspace_id(&self) -> acyclic_fs::WorkspaceId;
     #[cfg(not(target_arch = "wasm32"))]
@@ -261,16 +260,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootNati
 }
 
 /// Creator-only project selection within one explicitly configured service graph.
-///
-/// The coordinator supplies authenticated creator/admission facts. This provider
-/// independently verifies the original source read grant and immutable backend
-/// generation. Uncreated root bootstrap seeds are deliberately rejected: a path
-/// observation is not a protected successful bootstrap allocation record.
-///
-/// Native verification uses the same canonical namespace/read-capability codec
-/// and original backend policy on the supplied ledger. Native configuration
-/// copies only its known owner/project payloads; shared host/lazy Arc headers,
-/// pre-existing referents and opaque allocator metadata are not re-admitted.
 pub struct FsRootProjectSourceProvider<A, O> {
     host: Arc<FilesystemHost<A, O>>,
     owner: Authority,
@@ -280,7 +269,6 @@ pub struct FsRootProjectSourceProvider<A, O> {
     #[cfg(not(target_arch = "wasm32"))]
     _native_custody: Option<acyclic_fs::NativeAllocation>,
 }
-
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProjectSourceProvider<A, O> {
     /// Requires the actual service owner and exact configured graph root.
@@ -304,8 +292,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
     }
 
     /// Copies the configured service owner on this original native ledger.
-    /// The provider's logical root and actual copied payload remain retained
-    /// until after every provider field has been dropped.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new_with_native_work(
         host: Arc<FilesystemHost<A, O>>, owner: &Authority, graph_root: TaskId,
@@ -327,8 +313,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
         })
     }
 
-    /// Binds and copies only the actual configured project identity, keeping
-    /// custody on the same ledger as the native configured owner/root.
+    /// Binds and copies only the actual configured project identity, keeping custody on the same ledger as the native configured owner/root.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_native_source_with_native_work(
         mut self, project: &VolumeRef, lazy: FsRootNativeSource<A, O>,
@@ -355,8 +340,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
         let copied = project.clone_with_native_work(work)?;
         project_custody = copied.1;
         let project = copied.0;
-        // The branch above establishes custody before copying or constructing
-        // the new binding. No optional-guard path can silently drop it.
         let custody = self._native_custody.as_mut().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Invalid,
             reason: "native source configuration is missing its admitted custody",
@@ -380,8 +363,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
         Ok(Arc::new(self))
     }
 
-    /// Moves the configured creator's opaque protected Root association into
-    /// this policy. Raw operation/generation labels have no constructor here.
+    /// Moves the configured creator's opaque protected Root association into this policy.
     pub fn with_bootstrap_source(
         mut self, proof: Arc<super::fork_preparer::FilesystemRootBootstrapAllocation<A, O>>,
     ) -> Result<Self> {
@@ -394,8 +376,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
         Ok(self)
     }
 
-    /// Transfers only an already admitted Arc handle; all original record and
-    /// Project payload remains guarded by the authentic creator token.
+    /// Transfers only an already admitted Arc handle; all original record and Project payload remains guarded by the authentic creator token.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_bootstrap_source_with_native_work(
         mut self, proof: Arc<super::fork_preparer::FilesystemRootBootstrapAllocation<A, O>>,
@@ -469,9 +450,6 @@ where
                 return Err(Error::Unauthorized("project source belongs to another namespace or provider".into()));
             }
             let mut admission = SourceAdmission::new(context.maximum_work, context.maximum_bytes, context.cancellation)?;
-            // Use the one bounded canonical serializer, not declaration-order JSON
-            // or an unbounded temporary Value tree. These are the original namespace
-            // and capability digests used by VolumeRef's ordinary conveniences.
             let bounds = JsonBounds { maximum_bytes: context.maximum_bytes, maximum_items: context.maximum_work, maximum_depth: 32 };
             let encoded = canonical_json_bytes_bounded(&snapshot.project, bounds, &mut |charge| admission.codec(charge))?;
             let encoded_owned = encoded.len() as u64;
@@ -493,8 +471,6 @@ where
             let opened = self.host.filesystem.open_workspace_measured(name, admission.remaining()?, context.cancellation).await
                 .map_err(|failure| map_error(failure.error))?;
             admission.merge(opened.work)?;
-            // The measured open creates this Arc<str> payload; generation handles
-            // share it, so retain it once through subsequent child operations.
             admission.retain(opened.value.name().as_str().len() as u64)?;
             let generation_bytes: [u8; 32] = snapshot.generation.as_resource().key().try_into()
                 .map_err(|_| Error::Invalid("project generation key must be 32 bytes".into()))?;
@@ -510,8 +486,6 @@ where
                 if lazy.workspace_id() != opened.value.id() {
                     return Err(Error::Unauthorized("native source names another original workspace".into()));
                 }
-                // The concrete SDK descriptor is constant-size. Bound the borrowed
-                // input with the same codec before typed decoding; no Value clone.
                 let encoded = canonical_json_bytes_bounded(value, bounds, &mut |charge| admission.codec(charge))?;
                 let owned = encoded.len() as u64;
                 let frozen = LazySnapshotRef::deserialize(value)
@@ -547,8 +521,6 @@ where
             if context.owner != &self.owner || context.graph_root != self.graph_root
                 || !context.created_project_authenticated
             {
-                // There is no protected successful bootstrap allocation record
-                // supplied by this policy. Observing a root directory is not one.
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "project source lacks this graph's authenticated creator",
@@ -579,8 +551,6 @@ where
                     reason: "bound lazy project requires its original native snapshot",
                 });
             }
-            // This adapter retains the SAME original ledger; it does not mint
-            // a SourceAdmission, meter or remaining-budget child operation.
             let io = super::fork_preparer::PreparationIo::from_native_work(work)?;
             let bounds = JsonBounds {
                 maximum_bytes: context.maximum_bytes,
@@ -606,7 +576,6 @@ where
             read[..12].copy_from_slice(b"volume:read:");
             read[12..].copy_from_slice(digest.as_bytes());
             work.spent(copying)?;
-            // These fixed ASCII digests use no String allocation.
             let name = std::str::from_utf8(&name).map_err(|_| Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
                 reason: "invalid source namespace digest",
@@ -644,9 +613,6 @@ where
                     });
                 }
                 let encoded = native_source_json(value, bounds, &io, work)?;
-                // The audited SnapshotRef is entirely fixed-size Copy fields.
-                // Admit its concrete root before parsing, retaining it through
-                // the actual frozen-source verification, not only the parser.
                 let _frozen_hold = work.retain_owned(std::mem::size_of::<LazySnapshotRef>() as u64)?;
                 let frozen: LazySnapshotRef = crate::contract::json_from_slice_bounded_native_trusted(
                     &encoded, bounds, 0, crate::wire::ErrorCode::Invalid,
@@ -676,8 +642,6 @@ fn native_source_json<T: serde::Serialize>(
     value: &T, bounds: JsonBounds, io: &super::fork_preparer::PreparationIo,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<acyclic_stream::OwnedBytes> {
-    // Known SDK encoder diagnostic payload is admitted before serialization.
-    // Serde's private error wrapper and allocator nodes are not an RSS claim.
     let diagnostic = work.retain_owned(crate::contract::sdk_json_diagnostic_bytes())?;
     let bytes = crate::contract::canonical_json_bytes_bounded_native_trusted(
         value, bounds, crate::wire::ErrorCode::Invalid,
@@ -690,9 +654,6 @@ fn native_source_json<T: serde::Serialize>(
     super::fork_preparer::bounded_io::source_bytes_from_vec(bytes, Some(io))
 }
 
-// One outer admission composes canonical codec storage and actual SDK receipts.
-// Per-dimension shares conservatively bound the aggregate declared work/bytes;
-// they are limits, never fabricated actual counters or allocator/RSS estimates.
 struct SourceAdmission<'a> {
     work: WorkCounters,
     budget: WorkBudget,
@@ -799,7 +760,6 @@ fn source_cancelled(error: acyclic_fs::CancellationError) -> Error {
     #[cfg(target_arch = "wasm32")]
     { let _ = error; Error::Unauthorized("project source operation cancelled".into()) }
 }
-
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {

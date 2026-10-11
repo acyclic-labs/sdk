@@ -18,8 +18,7 @@ use acyclic_fs::{
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use std::{collections::BTreeMap, sync::Arc};
 
-/// One signed parent binding. Its child plans retain the same authenticated
-/// parent authority and exact inspected Filesystem generations.
+/// One signed parent binding.
 pub struct FilesystemProjectWorkspaces<A, O> {
     host: Arc<FilesystemHost<A, O>>,
     parent: Authority,
@@ -150,9 +149,6 @@ where
 struct FilesystemProjectJoinPlan<A, O> {
     binding: FilesystemProjectWorkspaces<A, O>,
     plan: ParentMergePlan<A, O>,
-    // Publication was authenticated against the current parent reducer during
-    // preparation. The plan keeps only the child identity; its Filesystem
-    // generations remain the independent CAS boundary for application.
     child: Authority,
     source: GenerationRef,
     target: GenerationRef,

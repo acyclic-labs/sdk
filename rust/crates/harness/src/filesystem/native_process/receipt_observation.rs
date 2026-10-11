@@ -69,10 +69,8 @@ pub(super) fn receipt_path_with_native_work(
 pub(super) struct ReadReceipt {
     pub(super) launch: LaunchReceipt<'static>,
     pub(super) observed: Option<NativeObservation>,
-    // All decoded payloads precede their original accounting guard.
     pub(super) custody: Option<NativeAllocation>,
 }
-
 
 fn check(work: Option<&NativeMaterializationWork>) -> std::result::Result<(), NativeReceiptError> {
     if let Some(work) = work { work.remaining()?; }
@@ -155,13 +153,6 @@ pub(super) fn receipt_bytes(value: &Receipt<'static>) -> std::result::Result<u64
     }
 }
 
-// serde 1.0.229: Receipt (internally tagged), EffectStatus (internally tagged),
-// and VolumeOwner (adjacently tagged) form at most three Content layers. The
-// remaining reference converters move their wire fields; there is no Value
-// variant or from_value pass in this closed DTO. FileDescriptorWire's digest
-// Vec<u8>, NativePublicationFailure.completed and the fixed SDK publication
-// snapshot vector are its typed collections. SDK snapshot context is externally
-// tagged and its profile/limits are inline Copy records, not new Content layers.
 const CONTENT_LAYERS: u64 = 3;
 const RECEIPT_LABELS: &str = concat!(
     "launch observed dispatch plan conversation task command fence approval approval_digest ",
@@ -248,7 +239,6 @@ pub(super) async fn read<P: StreamProvider>(
     owner: &TaskJournalOwner<P>, path: &StreamPath, work: Option<&NativeMaterializationWork>,
     marker: OperationId,
 ) -> std::result::Result<Option<ReadReceipt>, NativeReceiptError> {
-    // Guards precede the physical records/decoded payloads on every unwind path.
     let mut custody = work.map(|work| work.retain_owned(0)).transpose()?;
     let client = owner.stream();
     check(work)?;
@@ -383,7 +373,6 @@ fn effect_identity(
         Ok(bytes) => bytes,
         Err(source) => {
             if let Some(mut opaque) = opaque_custody.take() {
-                // Both inventories were issued by this exact original work.
                 custody.absorb(&mut opaque)
                     .expect("one live original ledger bounds its combined custody");
             }
@@ -399,9 +388,6 @@ fn effect_identity(
 }
 
 /// Authenticates one protected launch against the original qualified effect reader.
-///
-/// Admission, approval and namespace checks remain with the caller; both cold
-/// observation and detached lost-ack recovery use this exact archive comparison.
 pub(super) async fn authenticate_core_launch<P: StreamProvider>(
     reader: &HistoryReader<P>,
     launch: &LaunchReceipt<'_>,
@@ -483,11 +469,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             .ok_or(Error::Indeterminate(self.command))
     }
 
-    /// Reopens only an original protected receipt. Terminal tasks remain
-    /// read-only: this mode has no view, dispatch, reservation, or new lease.
-    ///
-    /// Original approval is checked against the protected accepted launch
-    /// when observing an attempt, not recreated from its digest or task ID.
+    /// Reopens only an original protected receipt.
     pub async fn recover_with_native_work(
         owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: &TaskEffectPlan,
         approval: InteractionId, authority: NativeProcessAuthority,
@@ -515,8 +497,6 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             let copied_plan_bytes = plan_io.owned_bytes()?;
             copied_plan_custody = plan_io.into_native_custody(copied_plan_bytes)?;
             custody.absorb(&mut copied_plan_custody)?;
-            // The borrowed plan is copied only inside this admitted body.
-            // Service controls are admitted immediately before allocation.
             let mut authority_custody = work.claim(size_of::<NativeProcessAuthority>() as u64)?;
             custody.absorb(&mut authority_custody)?;
             let authority = Arc::new(authority);
@@ -542,7 +522,6 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         })?.await?
     }
     /// Observe the original attempt on the caller's original native work ledger.
-    /// Previous capture/publication work remains receipt data, never query work.
     pub async fn receipt_with_native_work(
         &self, attempt: crate::EffectAttemptId, work: &NativeMaterializationWork,
     ) -> std::result::Result<Option<NativeProcessReceipt>, NativeReceiptError> {

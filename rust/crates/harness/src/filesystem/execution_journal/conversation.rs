@@ -43,11 +43,7 @@ where
             )
             .await
     }
-    /// Runs a canonical conversation turn from already staged primary content
-    /// and ordered attachments. The user record and model-context selection
-    /// commit before model dispatch; the assistant record commits afterward.
-    /// Retrying the same operation recovers both records and the exact
-    /// previously selected context rather than silently selecting newer history.
+    /// Runs a canonical conversation turn from already staged primary content and ordered attachments.
     #[allow(
         clippy::too_many_lines,
         reason = "one complete idempotent conversation turn"
@@ -207,8 +203,6 @@ where
             limits.attachments,
         )
         .await?;
-        // The execution journal verifies selection through this same projection.
-        // Release its guard before entering the executor.
         drop(aggregate);
         let output = bundle
             .run(TurnInput::from_selected_context(

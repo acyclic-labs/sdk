@@ -1,9 +1,4 @@
 //! Derived exact-operation locations, committed with their canonical event.
-//!
-//! Native publication buffers transfer their existing encoder custody into the
-//! SDK's intrinsic byte carrier before any request, index, or receipt alias.
-//! SDK record metadata stays with its output container, independently of cached
-//! byte aliases and the allocation ledger of a later reader.
 
 use crate::{
     Error, OperationId, Result,
@@ -55,9 +50,6 @@ pub(crate) fn retain_original_decode_error<T>(
     if let Err(Error::NativeDecode { custody, .. }) = &mut result
         && custody.is_none()
     {
-        // The original Admission callback retained this exact reservation.
-        // Original-native adapters split it without cancellation/admission;
-        // another fallible claim must not replace the original serde cause.
         *custody = Some(observer.take_native_custody(*reservation)
             .expect("original native decoder reservation has source custody"));
         *reservation = 0;
@@ -105,8 +97,6 @@ pub(super) fn validate_canonical_json_with_work(
                     observer.codec_charge(charge)
                 }
                 crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes, value_shape } => {
-                    // The original lexical pass supplies the sealed Value/RawValue
-                    // witness; do not replace it with an input-byte ratio.
                     let planned = crate::contract::json_value_decode_owned_bytes(value_shape)?
                         .checked_add(maximum_owned_bytes)
                         .and_then(|owned| owned.checked_add(diagnostic_bytes))
@@ -178,8 +168,6 @@ pub(super) fn decode_location_with_work(
     let Some(observer) = work.as_deref_mut() else {
         return crate::executor::decode_json(bytes);
     };
-    // This named-field schema owns only Authority.id; every other field is
-    // fixed-width. Decoded UTF-8 string storage cannot exceed lexical input.
     let mut reservation = 0;
     let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(
         bytes.len() as u64,
@@ -392,8 +380,6 @@ pub(super) fn release_owned_after_drop<T>(
     }
 }
 
-// Both original String buffers and the SDK Arc<str> character payload are
-// known here. Arc headers and allocator bookkeeping are deliberately excluded.
 pub(super) fn publication_path_with_work(
     authority: &Authority,
     prefix: &str,
@@ -485,7 +471,6 @@ pub(super) fn canonical_publication_path_with_work(
 }
 
 /// Freezes a producer-retained vector without replacing its original claim.
-/// The returned scalar describes only an ordinary observer's external custody.
 pub(crate) fn owned_bytes_from_retained_vec(
     bytes: Vec<u8>,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
@@ -689,7 +674,6 @@ impl IndexedPublication {
                     let path = if work.is_none() { (message_head_path(authority)?, 0) } else {
                         publication_path_with_work(authority, "harness/v2/conversation-heads/", None, work)?
                     };
-                    // These three locators share the original encoded allocation.
                     publication.push_index_with_work(
                         path, message.sequence, publication.indexes[index].2.clone(), 0, work)?;
                 } else {
@@ -715,7 +699,6 @@ impl IndexedPublication {
     }
 
     /// Ordinary callers must first drop request/ACK clones sharing bytes/paths.
-    /// This physically drops publication storage before returning its release size.
     pub(crate) fn into_retained_owned(self) -> u64 {
         let owned = self.retained_owned();
         drop(self);
@@ -855,9 +838,6 @@ impl IndexedPublication {
         key: IdempotencyKey,
         work: &'a mut Option<&'b mut dyn super::history::HistoryIo>,
     ) -> Result<crate::distributed::PreparedCommitRequest<'a, 'b>> {
-        // This key was produced and retained by the original stream-key
-        // encoder. Its existing claim enters the owned request before any
-        // cancellation, bounds await or vector allocation can fail.
         let key_owned = if work.as_deref().is_some_and(|observer|
             !original_native_decode_mode(observer)) { 32 } else { 0 };
         let mut request = crate::distributed::PreparedCommitRequest::new_with_retained_key(
@@ -928,7 +908,7 @@ impl IndexedPublication {
                 || append.records.len() != 1
                 || append.records.first().is_none_or(|record| {
                     record.sequence != tail
-                        || record.value != bytes
+                        || record.value != *bytes
                         || record.commit_id != envelope.commit_id
                 })
             {
@@ -948,8 +928,6 @@ fn indexed_receipt_error(native: bool, reason: &'static str) -> Error {
     Error::Storage(reason.into())
 }
 
-// Fields retire in declaration order: the SDK handle's Arc payload must die
-// before its independent source allocation claim, including future cancellation.
 pub(crate) struct ObservedStream<P> {
     pub(crate) stream: acyclic_stream::Stream<P>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -990,7 +968,6 @@ pub(crate) fn stream_text_with_work<P: StreamProvider>(
     let path_custody = if let Some(observer) = work.as_deref_mut()
         .filter(|observer| observer.original_native_work().is_some())
     {
-        // The input text is not the Arc recreated by StreamClient.
         let bytes = path.len() as u64;
         observer.admit_owned(bytes)?;
         observer.admit_allocation(bytes)?;
@@ -1064,7 +1041,6 @@ fn original_sdk_metadata_output<T>(
     Ok(output)
 }
 
-
 impl ObservedRecords {
     pub(crate) async fn next(
         &mut self,
@@ -1091,8 +1067,6 @@ impl ObservedRecords {
                 let record = super::history::native_sdk_result(&original, Ok(record))?;
                 work.as_deref_mut().expect("native cursor observer")
                     .receive_native_record(record.value().value.len() as u64)?;
-                // Byte aliases may be cached from another invocation. Only the
-                // freshly returned output metadata must use this SDK call's ledger.
                 Ok(Some(ObservedRecord::Native(
                     original_sdk_metadata_output(&original, record)?)))
             }
@@ -1146,7 +1120,6 @@ async fn read_path_records_with_work<P: StreamProvider>(
     let handle = stream_with_work(client, path, work)?;
     read_records_with_work(client, &handle.stream, from, count, work).await
 }
-
 
 /// Preserves the provider's NotFound result for the canonical CAS selector.
 pub(crate) async fn bounds_with_work<P: StreamProvider>(
@@ -1320,8 +1293,7 @@ pub(crate) async fn find_operation_bounded_with_work<P: StreamProvider>(
     ).await.map(|(event, bytes)| (event.map(|(event, _)| event), bytes))
 }
 
-/// Carries the actual original wire decoder's retained event claim, without
-/// inventorying the returned event again or replacing its source admission.
+/// Carries the actual original wire decoder's retained event claim, without inventorying the returned event again or replacing its source admission.
 pub(crate) async fn bounded_operation_with_retained_quota<P: StreamProvider>(
     client: &StreamClient<P>,
     authority: &Authority,
@@ -1550,7 +1522,6 @@ fn message_lookup_error(
 }
 
 /// Loads one exact archived message without reconstructing a conversation projection.
-/// Both the derived location and canonical record must belong to the same commit.
 pub(crate) async fn find_message<P: StreamProvider>(
     client: &StreamClient<P>,
     authority: &Authority,
@@ -1645,7 +1616,6 @@ pub(crate) async fn find_message_sequence_with_work<P: StreamProvider>(
     drop(path);
     release_owned_after_drop(result, owned, work)
 }
-
 
 #[allow(clippy::too_many_arguments, reason = "same exact indexed locator and pinned cut with optional SDK receipts")]
 async fn find_message_at_locator_with_work<P: StreamProvider>(
@@ -1776,9 +1746,6 @@ async fn verify_message_locator_with_work<P: StreamProvider>(
                     crate::core::EventPayload::ProjectMergePublished { receipt } => receipt.notice,
                     _ => unreachable!("selected canonical message payload"),
                 };
-                // Keep the original single decoded-event allowance on this moved
-                // output until the caller's query custody drops. No second sizer,
-                // encoder, clone, or persistent per-query guard is introduced.
                 drop(event.scope);
                 drop(event.causal_parent);
                 Ok((Some(message), consumed_bytes))
@@ -1794,7 +1761,6 @@ async fn verify_message_locator_with_work<P: StreamProvider>(
 }
 
 /// Captures one logical message head without a reducer or retained-history scan.
-/// The head locator and canonical record share the existing publication commit.
 pub(crate) async fn latest_message<P: StreamProvider>(
     client: &StreamClient<P>,
     authority: &Authority,
@@ -2169,15 +2135,11 @@ mod native_publication_custody_tests {
             })));
         drop(work);
         let mut custody = io.into_custody();
-        // The cancelled prepared request physically dropped its retained key;
-        // only the caller's original publication remains source-owned.
         assert_eq!(custody.bytes(), retained);
         drop(envelope);
         assert_eq!(publication.into_retained_owned(), retained);
         custody.release(retained).expect("physically dropped source publication");
         assert_eq!(custody.bytes(), 0);
-        // Provider cache and old immutable locator aliases retain their original
-        // guards even after the publication's external scalar custody retires.
         assert!(native.live_allocation_bytes() >= original_capacity);
         drop(client);
         assert!(native.live_allocation_bytes() >= old_snapshot_capacity as u64);

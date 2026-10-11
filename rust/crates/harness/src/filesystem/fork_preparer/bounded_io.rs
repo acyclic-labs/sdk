@@ -4,10 +4,7 @@ use crate::conversation::{FileDescriptor, FileRef, VolumeOwner};
 use acyclic_fs::{CancellationToken, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkspaceError};
 use std::sync::Mutex;
 
-/// The pinned Filesystem creation contract interprets maximum_work as the
-/// allowance for each SDK-observed non-byte counter, and maximum_bytes as the
-/// allowance for each SDK-observed byte counter. Opaque provider work is not
-/// invented as physical I/O; receipts aggregate across the complete attempt.
+/// The pinned Filesystem creation contract interprets maximum_work as the allowance for each SDK-observed non-byte counter, and maximum_bytes as the allowance for each SDK-observed byte counter.
 pub(crate) struct PreparationIo {
     ledger: PreparationLedger,
     pub(crate) cancellation: CancellationToken,
@@ -41,7 +38,6 @@ impl Drop for OrdinaryPublicationScope<'_> {
 }
 
 /// A real logical quota reservation spanning an audited opaque serde decode.
-/// It is not a claim about allocator calls, allocated bytes, or RSS.
 pub(crate) struct DecodeReservation<'a> {
     io: &'a PreparationIo,
     bytes: u64,
@@ -71,9 +67,7 @@ impl Drop for DecodeReservation<'_> {
     }
 }
 
-/// The actual admitted typed-decode allowance. Native decoding owns its guard
-/// directly until Serde succeeds, so a decoder error can move that same guard
-/// without a fallible post-error transfer or another retention attempt.
+/// The actual admitted typed-decode allowance.
 struct TrustedDecodeReservation<'a> {
     io: &'a PreparationIo,
     scoped: Option<DecodeReservation<'a>>,
@@ -119,8 +113,6 @@ impl<'a> TrustedDecodeReservation<'a> {
                 return Err(error);
             }
         };
-        // Serde has returned successfully and its diagnostic temporaries have
-        // physically dropped. Only payload custody survives this boundary.
         if self.diagnostic_bytes != 0 {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(guard) = self.native.as_mut() {
@@ -144,8 +136,7 @@ impl<'a> TrustedDecodeReservation<'a> {
         Ok(ReservedDecoded { value, _reservation })
     }
 
-    /// Known SDK serialization diagnostics use the existing audited logical
-    /// allowance, not a measurement of Serde's private Message/ErrorImpl heap.
+    /// Known SDK serialization diagnostics use the existing audited logical allowance, not a measurement of Serde's private Message/ErrorImpl heap.
     #[cfg(not(target_arch = "wasm32"))]
     fn finish_serialization<T>(mut self, result: Result<T>) -> Result<T> {
         match result {
@@ -156,18 +147,12 @@ impl<'a> TrustedDecodeReservation<'a> {
     }
 }
 
-/// Audited closed Harness DTOs only, including their Value/string/vector
-/// containers. This is not an arbitrary DeserializeOwned heap sandbox.
+/// Audited closed Harness DTOs only, including their Value/string/vector containers.
 pub(crate) trait PreparationRecord: serde::de::DeserializeOwned + Serialize {
     fn maximum_slot_bytes() -> u64;
-    /// Audited static fields, discriminators, expected types, and custom error
-    /// labels reachable by this closed visitor; include list punctuation.
+    /// Audited static fields, discriminators, expected types, and custom error labels reachable by this closed visitor; include list punctuation.
     fn diagnostic_label_bytes() -> u64;
-    /// Payload/scratch allowance before the audited visitor, including custom
-    /// DTO reconstruction/cache temporaries and the closed codec diagnostic base
-    /// exactly once. Typed formatter diagnostics are reserved separately from
-    /// diagnostic_label_bytes(). Snapshot overrides remove their old diagnostic
-    /// component and use the canonical admission, never a second source scan.
+    /// Payload/scratch allowance before the audited visitor, including custom DTO reconstruction/cache temporaries and the closed codec diagnostic base exactly once.
     fn decode_owned_allowance(
         shape: crate::contract::JsonValueShape, codec_scratch: u64, input_bytes: u64,
         native_code: Option<crate::wire::ErrorCode>,
@@ -185,8 +170,6 @@ fn preparation_decode_owned_allowance<T: PreparationRecord>(
     native_code: Option<crate::wire::ErrorCode>,
 ) -> Result<u64> {
     let value_owned = match T::json_value_schema() {
-        // Value-free visitors have scanner scratch but no full-Value base.
-        // Value-bearing profiles below already include this closed codec base.
         crate::contract::JsonValueSchema::None => codec_scratch
             .checked_add(crate::contract::sdk_json_diagnostic_bytes())
             .ok_or_else(|| decode_allowance_error("preparation codec base overflow", native_code))?,
@@ -244,13 +227,6 @@ pub(crate) fn preparation_slot_bytes<T>() -> u64 {
         std::mem::size_of::<crate::workflow::MachineCheckpoint>(),
         std::mem::size_of::<crate::workflow::MachineTransition>(),
     ].into_iter().max().unwrap_or(0) as u64;
-    // Pinned Serde 229 Content storage is distinct from the eventual DTO.
-    // The closed model graph has at most five simultaneous Content envelopes:
-    // ModelContent -> ModelContentPart -> ToolResultContent -> ModelDataPart ->
-    // NativeMediaIntent (or VolumeOwner). ModelDataPart is nonrecursive.
-    // Each envelope permits the actual Content/pair vector's geometric
-    // capacity. The decoder's 8*N multiplier covers these audited containers;
-    // arbitrary DeserializeOwned implementations are not admitted by this API.
     let content = std::mem::size_of::<serde::__private229::de::Content<'static>>()
         .max(std::mem::size_of::<(
             serde::__private229::de::Content<'static>,
@@ -294,9 +270,6 @@ audited_preparation_records!(
 
 impl PreparationRecord for crate::Outcome<serde_json::Value> {
     fn maximum_slot_bytes() -> u64 {
-        // Outcome is externally tagged: only Succeeded reaches Value, Failed
-        // owns one String, and Indeterminate carries one fixed operation ID.
-        // It has no internally tagged/untagged Content buffering layers.
         [
             std::mem::size_of::<Self>(),
             std::mem::size_of::<serde_json::Value>(),
@@ -313,8 +286,6 @@ impl PreparationRecord for crate::Outcome<serde_json::Value> {
     }
 }
 
-// A raw Value has no closed SDK typed visitor or expected-field inventory.
-// Its canonical full-Value decode allowance already covers diagnostics.
 impl PreparationRecord for serde_json::Value {
     fn maximum_slot_bytes() -> u64 { preparation_slot_bytes::<Self>() }
     fn diagnostic_label_bytes() -> u64 { 0 }
@@ -355,8 +326,6 @@ impl<'a, T> ReservedDecoded<'a, T> {
     }
 
     pub(crate) fn into_retained(mut self) -> T {
-        // Transfer actual held logical quota to this attempt's DTO custody.
-        // It is conservative allowance, not an allocator-capacity assertion.
         self._reservation.bytes = 0;
         self.value
     }
@@ -406,8 +375,6 @@ impl PreparationIo {
     }
 
     /// Moves genuine existing custody without consulting cancellation or quota.
-    /// Recovery must observe those conditions while it still owns the lease.
-    /// This does not admit growth, allocate a guard, or create another ledger.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn from_native_custody(custody: acyclic_fs::NativeAllocation) -> Self {
         let work = custody.work().clone();
@@ -508,9 +475,6 @@ impl PreparationIo {
         }
     }
 
-
-    // Honest ordinary convenience uses the same engine without pretending its
-    // allowance is finite. Measured public entry points use from_budget.
     pub(crate) fn for_unmeasured(cancellation: &CancellationToken) -> Result<Self> {
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
         Ok(Self {
@@ -773,9 +737,6 @@ impl PreparationIo {
 
     fn encoding_bounds(&self, maximum_bytes: u64) -> Result<crate::contract::JsonBounds> {
         let remaining = self.remaining()?;
-        // A valid JSON value necessarily consumes a byte and a token. This is
-        // admission only: actual codec work remains charged by its callbacks.
-        // Keep an explicit invalid caller bound for the codec to diagnose.
         if maximum_bytes != 0 {
             self.preflight(WorkCounters { bytes_encoded: 1, items_examined: 1, ..Default::default() })?;
         }
@@ -798,8 +759,6 @@ impl PreparationIo {
     ) -> Result<Vec<u8>> {
         #[cfg(not(target_arch = "wasm32"))]
         if self.original_native_work().is_some() {
-            // Only closed SDK serializers are called by this producer. User
-            // serializer work and arbitrary custom messages are not sandboxed.
             let mut diagnostics = TrustedDecodeReservation::new(self);
             diagnostics.reserve(crate::contract::sdk_json_diagnostic_bytes())?;
             let result = if canonical {
@@ -840,8 +799,6 @@ impl PreparationIo {
                 .ok_or_else(|| self.invalid("clone byte ownership exceeds admitted quota"))?;
         }
         let encoded = source_bytes_from_vec(encoded, Some(self))?;
-        // The concrete Context clone consumes this admitted ownership. Failure
-        // instead drops the guard without consulting cancellation or authority.
         transferred.bytes = 0;
         Ok(encoded)
     }
@@ -880,9 +837,7 @@ impl PreparationIo {
         Ok(granted)
     }
 
-    /// Admit the actual ordinary History box before constructing it. Shared
-    /// History observers release only this frame after the box physically drops;
-    /// any returned DTO custody remains in the same IO ledger.
+    /// Admit the actual ordinary History box before constructing it.
     pub(crate) fn history_future<'a, T, F, B>(
         &'a self, build: B,
     ) -> Result<crate::store::history::HistoryContentFuture<'a, T>>
@@ -908,15 +863,10 @@ impl PreparationIo {
             crate::store::history::HistoryContentFuture::Native(_) => 0,
         };
         let result = future.await;
-        // Await consumes and destroys the future before its ordinary frame
-        // claim is retired. Native bundles retire their own original guard.
         let released = if frame == 0 { Ok(()) } else { self.release(frame) };
         result.and(released)
     }
 
-    // Audited closed serde derives only: upload records and approval-only wires.
-    // Their strings/key vectors occupy at most twice encoded input bytes plus
-    // the concrete root body; opaque allocator nodes and RSS are excluded.
     pub(crate) fn decode_json<T: UploadRecord>(&self, bytes: &[u8]) -> Result<T> {
         let remaining = self.remaining()?;
         let native_code = self.uses_native_work().then_some(crate::wire::ErrorCode::Storage);
@@ -1029,8 +979,7 @@ impl PreparationIo {
         reservation.finish(result)
     }
 
-    /// Builds the original serde JSON graph directly. Wire-size admission is
-    /// distinct from bytes actually encoded: this path creates no wire buffer.
+    /// Builds the original serde JSON graph directly.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn value_json<T: Serialize>(
         &self, source: &T, maximum_bytes: u64,
@@ -1057,8 +1006,7 @@ impl PreparationIo {
         Ok(value)
     }
 
-    /// Checks the original JSON wire-size policy without building a graph or
-    /// buffer. Resident strings are inspected before the serde sizing scan.
+    /// Checks the original JSON wire-size policy without building a graph or buffer.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn check_json_byte_bound(
         &self, source: &serde_json::Value, maximum_bytes: u64,
@@ -1082,7 +1030,6 @@ impl PreparationIo {
     }
 
     /// The original borrowed Value visitor, restricted to audited SDK DTOs.
-    /// No whole-Value clone, byte encoding, or parser round trip is performed.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn value_decode<T: UploadRecord>(
         &self, source: &serde_json::Value, code: crate::wire::ErrorCode,
@@ -1150,16 +1097,12 @@ impl PreparationIo {
         reservation.finish(result)
     }
 
-    /// Preserves the consuming `serde_json::from_value` protocol. The old
-    /// strings are moved, not cloned; their existing allocation stays live
-    /// across the visitor and is combined with the preadmitted new temporaries.
+    /// Preserves the consuming `serde_json::from_value` protocol.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn value_decode_owned<T: UploadRecord>(
         &self, value: serde_json::Value, allocation: acyclic_fs::NativeAllocation,
         code: crate::wire::ErrorCode,
     ) -> Result<(T, acyclic_fs::NativeAllocation)> {
-        // Field order matters on every early error: Value physically drops
-        // before its original guard, including cancellation before inspection.
         let mut input = (value, allocation);
         let work = self.original_native_work()
             .ok_or_else(|| self.invalid("owned Value decoding requires original work"))?;
@@ -1179,9 +1122,6 @@ impl PreparationIo {
             .ok_or_else(|| decode_allowance_error("owned Value item count overflow", Some(code)))?;
         let additional = crate::contract::json_owned_value_conversion_additional_bytes(shape)
             .map_err(|error| decode_allowance_with_code(error, Some(code)))?;
-        // Only ModelContent's reachable untagged visitor clones ContentRef
-        // strings. Tagged descendants consume those strings by visit_string.
-        // This funds NEW temporary copies, not the existing moved input.
         let content_copy_bytes = match T::json_value_schema() {
             crate::contract::JsonValueSchema::ModelContent
             | crate::contract::JsonValueSchema::Context
@@ -1218,8 +1158,6 @@ impl PreparationIo {
     pub(crate) fn codec_charge(&self, next: crate::contract::JsonCodecCharge, encode: bool) -> Result<()> {
         match next {
             crate::contract::JsonCodecCharge::Retain { bytes } => {
-                // Codec reports finite logical ownership, not opaque allocator
-                // operations. Never invent one allocation per logical node.
                 self.retain_owned(bytes)
             }
             crate::contract::JsonCodecCharge::Release { bytes } => self.release(bytes),
@@ -1258,8 +1196,7 @@ impl PreparationIo {
 }
 
 pub(crate) trait UploadRecord: serde::de::DeserializeOwned {
-    /// Deep owned capacities only. Direct Value conversion separately owns
-    /// sizeof(Self); existing upload/staging DTO contracts remain deep-only.
+    /// Deep owned capacities only.
     fn logical_owned_bytes(&self) -> Result<u64>;
     fn diagnostic_label_bytes() -> u64;
     fn json_value_schema() -> crate::contract::JsonValueSchema {
@@ -1493,8 +1430,6 @@ pub(in crate::filesystem) fn content_workspace(
     let name = volume_storage_name(volume, io)?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        // The generated hash name is already canonical ASCII. Transfer that
-        // same paid string backing into the reference key without another copy.
         return WorkspaceRef::new(host_provider.clone_with_io(io)?, name.into_bytes(), None);
     }
     _name_hold = io.map(|io| io.guard_owned(name.len() as u64)).transpose()?;
@@ -1564,8 +1499,6 @@ pub(crate) async fn open<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     if let Some(original) = io.original_native_work() {
         original.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        // WorkspaceRef construction and deserialization validate its canonical
-        // shape. Check this host binding without rebuilding owned diagnostics.
         if reference.as_resource().provider() != &host.provider {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
@@ -1854,7 +1787,6 @@ where
                 let result = transaction.put_measured(
                     path, bytes.clone(), io.remaining()?, &io.cancellation,
                 ).await;
-                // Candidate custody may retain the transferred buffer until commit.
                 match result {
                     Ok(work) => io.charge(work)?,
                     Err(failure) => { io.spent(*failure.work)?; return Err(Error::from(failure.error)); }
@@ -1906,8 +1838,7 @@ where
     }
 }
 
-/// Runs the original ordinary transaction engine with its actual owner check
-/// at every authoritative seal and stale retry, without a native ledger.
+/// Runs the original ordinary transaction engine with its actual owner check at every authoritative seal and stale retry, without a native ledger.
 pub(in crate::filesystem) async fn apply_generation_ordinary_guarded<A, O, F, Fut>(
     host: &FilesystemHost<A, O>, reference: &WorkspaceRef,
     expected: Option<&crate::resources::GenerationRef>, mutations: &[WorkspaceMutation],
@@ -1924,8 +1855,7 @@ where
     ).await
 }
 
-/// Uses the finite ordinary transaction with an owner callback borrowing this
-/// exact PreparationIo/history observer and its original cancellation token.
+/// Uses the finite ordinary transaction with an owner callback borrowing this exact PreparationIo/history observer and its original cancellation token.
 pub(in crate::filesystem) async fn apply_generation_measured_guarded<A, O, F, Fut>(
     host: &FilesystemHost<A, O>, reference: &WorkspaceRef,
     expected: Option<&crate::resources::GenerationRef>, mutations: &[WorkspaceMutation],
@@ -1957,8 +1887,6 @@ fn exclude_publication_callback(mut work: WorkCounters, callback: WorkCounters) 
         bytes_encoded, source_bytes_read, source_path_components, source_entries_visited, output_bytes,
         items_examined, items_returned, allocation_operations, materializations
     );
-    // Peak is simultaneous memory, not an additive callback counter. The
-    // original ledger's callback events already included actual SDK overlap.
     Ok(work)
 }
 
@@ -2085,7 +2013,6 @@ pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObject
 }
 
 /// Pins the acknowledged immutable generation with its original typed cause.
-/// The fixed label needs no display allocation or independent custody.
 pub(in crate::filesystem) async fn retain_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     generation: &acyclic_fs::Generation<A, O>, io: Option<&PreparationIo>,
 ) -> std::result::Result<(), acyclic_fs::LazyWorkspaceError> {
@@ -2474,8 +2401,6 @@ impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
         self.charged(WorkCounters { backend_write_operations: 1, ..Default::default() })
     }
     fn receive_record(&mut self, bytes: u64) -> Result<()> {
-        // Observe arrival before cancellation/quota. A rejected receipt owns
-        // no new record claim and callers must not release one.
         self.io.spent(WorkCounters { authority_records_read: 1,
             authority_bytes_read: bytes, items_examined: 1,
             peak_allocation_bytes: bytes, ..Default::default() })?;
@@ -2603,8 +2528,6 @@ impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
             return crate::NativeFutureBundle::new(work, || async move {
                 let bytes = verifier.read_with_native_work(reference,
                     reference.descriptor().byte_length(), work)?.await?;
-                // Its intrinsic original guard owns all byte storage. No
-                // additional History/Preparation retention was acquired.
                 Ok((bytes, 0))
             }).map(crate::store::history::HistoryContentFuture::Native);
         }

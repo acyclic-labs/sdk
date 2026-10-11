@@ -58,8 +58,6 @@ async fn original_native_creator_denies_quota_cancel_and_forged_evidence() -> Re
     assert_eq!(work.receipt().backend_read_operations, 0);
     assert_eq!(work.receipt().backend_write_operations, 0);
     let mut allocator_denied = creation_control_budget();
-    // Its sole allocation constructs the genuine original ledger, leaving no
-    // attempt for the verifier's future or any IO body.
     allocator_denied.allocation_operations = 1;
     let exhausted = NativeMaterializationWork::new(allocator_denied, &cancellation)
         .expect("admitted original ledger with exhausted allocator allowance");
@@ -150,8 +148,6 @@ async fn created_seal_keeps_exact_sdk_custody_after_original_observer_and_scope_
         &created.request.child, Some(access), &mut Some(&mut observer),
     )?;
     let scope_custody = observer.take_native_custody(scope_held)?;
-    // Any opaque provider backing remains under its genuine original custody;
-    // it is not duplicated into the known SDK payload inventory.
     let provider_custody = observer.into_custody();
     let scope = Arc::new(scope);
     let escaped = Arc::clone(&scope);
@@ -309,7 +305,6 @@ async fn genuine_created_proof_quota_denial_precedes_any_deep_clone_allocation_o
 async fn retained_preparation_native_decode_binds_every_original_field_and_releases_after_drop() -> Result<()> {
     let fixture = CreationFixture::new().await?;
     let created = fixture.create_filesystem_child().await?;
-    // Fixture input is borrowed caller-owned authority, not new native request memory.
     let input = serde_json::to_value(&created.request)
         .expect("the actual retained filesystem preparation request");
     let cancellation = CancellationToken::new();

@@ -85,7 +85,6 @@ async fn native_owner_guard_exhausts_phase_cancel_and_fence_conditions() -> Resu
         }
     }
     assert_eq!(checked, 256);
-    // This calls the same guard used by TaskJournalOwner; no process has run.
     assert!(
         !fixture
             .view
@@ -659,8 +658,6 @@ async fn original_native_cancel_at_observed_commit_keeps_launch_uncertain_withou
     let prefix = work.receipt();
     assert!(process.reconcile_with_native_work(attempt, &work).is_err());
     assert_eq!(work.receipt(), prefix);
-    // A separate read-only query has its own admitted budget, never a replacement
-    // process allowance or a reset of the cancelled original view token.
     let query_cancellation = acyclic_fs::CancellationToken::new();
     let query = acyclic_fs::NativeMaterializationWork::new(
         process_work_budget(1_000_000_000)?, &query_cancellation,
@@ -731,7 +728,6 @@ struct ProcessFixture<
     command: OperationId,
     approval: InteractionId,
     plan: TaskEffectPlan,
-    // Test teardown retains the actual never-launched mount, not a fake view.
     lazy_mount: Option<Arc<acyclic_fs::LazyMount<A, O, acyclic_fs::NativeDemandSource,
         acyclic_fs::MemoryLazyWorkspaceStore>>>,
     lazy_work: Option<acyclic_fs::NativeMaterializationWork>,
@@ -809,8 +805,6 @@ where
         })?.0;
         let (task, fence) = self.owner.task_binding();
         let context = self.task.task_context_with_native_work(task, fence, work).await?;
-        // This is a new authenticated query invocation, not adoption of the
-        // cancelled process invocation's ledger, token or mounted authority.
         let owner = self.task.task_host().journal_owner_with_native_work(task, fence, work)
             .await?.with_invocation_cancellation(work.cancellation()).into_native_shared(work)?;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
@@ -866,7 +860,6 @@ async fn process_fixture_on<P: StreamProvider + 'static>(
         .await
 }
 
-
 fn process_work_budget(allowance: u64) -> Result<acyclic_fs::WorkBudget> {
     let mut budget = serde_json::to_value(acyclic_fs::WorkBudget::UNBOUNDED)
         .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -916,8 +909,6 @@ async fn issued_mixed_working_view_retains_actual_lazy_project_and_materialized_
     assert!(project.matches_meter(&fixture.lazy_work.as_ref().expect("original seeded volume work").runtime_meter_owner()));
     assert!(work.receipt().source_bytes_read - before >= project.len() as u64);
     drop(project);
-    // Demand observations may advance overlay/shadow state, never the original
-    // bound workspace/source cut or the protected prepared declaration.
     issued.verify_with_native_work(&work)?.await?;
     issued.write_builtin_file(operation, Path::new("dst/issued.txt"), "scratch",
         false, None, &work)?.await?;
@@ -934,15 +925,12 @@ async fn issued_mixed_working_view_retains_actual_lazy_project_and_materialized_
         .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
     assert!(issued.read_builtin_file(operation, Path::new("src/cold.txt"), 64, &foreign).is_err());
     assert_eq!(foreign.receipt().source_bytes_read, 0);
-    // This fixture has never created or launched a NativeProcessProvider.
-    // Teardown uses its actual original mount, not an invented drain boolean.
     fixture.owner.verify_with_native_work(false, &work).await?;
     fixture.lazy_mount.as_ref().expect("actual fixture lazy mount")
         .abandon_with_work(&fixture.lazy_work.as_ref().expect("original seeded volume work").native_mount_work())
         .map_err(Error::from)?;
     Ok(())
 }
-
 
 #[tokio::test]
 async fn issued_working_view_retains_genuine_paid_owner_and_builtin_io() -> Result<()> {
@@ -992,8 +980,6 @@ async fn issued_working_view_retains_genuine_paid_owner_and_builtin_io() -> Resu
         true, None, &work).is_err());
     assert_eq!(work.receipt().backend_write_operations, before);
     assert!(!fixture.view.manifest().options.root.join("dst/budget-denied.txt").exists());
-    // Physical bytes and their intrinsic original guard survive the producer,
-    // denial, cancellation and empty aliases without a new allocation attempt.
     let before_alias = work.receipt().allocation_operations;
     let retained = output.retained_capacity();
     let alias = output.clone();
@@ -1084,7 +1070,6 @@ async fn genuine_view_retirement_preserves_cached_proof_on_admission_and_wait_de
     let mut cached_process = Some(proof);
     let mut cached_partial = None;
     let mut denied_budget = process_work_budget(1_000_000_000)?;
-    // Only the actual meter's constructor fits; the outer future is denied.
     denied_budget.allocation_operations = 1;
     let denied = acyclic_fs::NativeMaterializationWork::new(denied_budget, &cleanup_wait)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -1104,8 +1089,6 @@ async fn genuine_view_retirement_preserves_cached_proof_on_admission_and_wait_de
     assert!(cached_process.is_some());
     assert!(cached_partial.is_none());
     assert_eq!(original.receipt(), source_before);
-    // Physical source retirement spends accepted birth credit, even after the
-    // invocation stops. The independent token authorizes waiting only.
     cancellation.cancel();
     let result = fixture.view.cleanup_mounts_with_native_work(
         fixture.owner.native_view_owner(), &mut cached_process, &mut cached_partial,
@@ -2057,8 +2040,6 @@ impl<P: StreamProvider + 'static> StreamProvider for ReceiptFaultStream<P> {
         }
         let result = self.inner.commit(request).await?;
         if fault.is_some() || preparation_fault.is_some() {
-            // Hide the immediate keyed observation as well, so this is
-            // an unknown commit rather than a recovered lost reply.
             self.hide_next_inspection
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             return Err(acyclic_stream::StreamError::Unavailable);
@@ -3044,7 +3025,6 @@ async fn native_host_child() -> Result<()> {
         true,
     )
     .await?;
-    // Host-only restart metadata; it never enters the model's process request.
     std::fs::write(
         storage.join("restart.json"),
         crate::contract::canonical_json_bytes(&NativeRestart::from_fixture(&fixture))?,
@@ -3091,7 +3071,6 @@ async fn actual_host_termination_reopens_launch_only_receipt_without_replay_or_s
         }
     })
     .await;
-    // Always stop and reap the exact host child, including a setup timeout.
     child
         .kill()
         .map_err(|error| Error::Storage(error.to_string()))?;
@@ -3144,7 +3123,6 @@ async fn actual_host_termination_reopens_launch_only_receipt_without_replay_or_s
     assert_eq!(receipt.diagnostic, None);
     assert_eq!(receipt.publication_failure, None);
     assert_eq!(receipt.invocation_failure, None);
-    // No publication was observed; this counts view work, not OS process work.
     assert_eq!(receipt.work, acyclic_fs::WorkCounters::default());
     let output = seed.root.join("dst/output.txt");
     if output.exists() {
@@ -3236,7 +3214,6 @@ fn native_process_child() -> std::result::Result<(), Box<dyn std::error::Error>>
     assert_eq!(std::env::var("NATIVE_TEST_TOKEN")?, "approved-env");
     if mode == "host-death" {
         std::fs::write("host-death-ready", b"ready")?;
-        // An orphan on Unix finishes within this bound even after its host dies.
         std::thread::sleep(std::time::Duration::from_secs(3));
     }
     if mode == "wait" || mode == "timeout" {
@@ -3558,7 +3535,6 @@ async fn publication_races_preserve_output_and_do_not_claim_joint_volume_success
         assert!(receipt.published.is_empty());
         assert!(failure.work.backend_read_operations > 0);
         if mode == "partial-publication" {
-            // The completed first mapping's actual capture/publication is retained.
             assert!(failure.work.backend_write_operations > 0);
             assert!(failure.work.source_entries_visited > 0);
             assert!(failure.work.source_bytes_read > 0);
@@ -3729,7 +3705,6 @@ async fn timeout_and_output_overflow_retain_cleanup_failure_without_publication(
         assert_eq!(receipt.diagnostic, None);
         assert_eq!(receipt.publication_failure, None);
         assert_eq!(receipt.invocation_failure, None);
-        // Stopped captures skip publication; OS/artifact work is not view work.
         assert_eq!(receipt.work, acyclic_fs::WorkCounters::default());
         assert_eq!(process.output(attempt).await?.as_ref(), Some(result));
         let output: NativeProcessResult =
@@ -4302,7 +4277,6 @@ async fn cancellation_after_actual_provider_drop_keeps_receipt_and_cleans_descen
     assert_eq!(receipt.diagnostic, None);
     assert_eq!(receipt.publication_failure, None);
     assert_eq!(receipt.invocation_failure, None);
-    // Cancellation cleanup retains OS output but performs no view publication.
     assert!(receipt.work.allocation_operations > 0);
     let output: NativeProcessResult =
         crate::contract::json_from_slice(&fixture.content.read(&captured).await?)
@@ -4401,8 +4375,6 @@ async fn native_preparation_adopts_actual_input_vector_capacity_before_root_io()
     let failed = PreparationView::prepare(
         &fixture.owner, fixture.allocation.clone(), options, bindings, &acyclic_fs::CancellationToken::new(),
     ).await.err().ok_or_else(|| Error::Storage("input capacity outside original allowance".into()))?;
-    // The control ledger and the admitted preparation frame are both real
-    // allocations; input custody is adopted without another allocation.
     assert_eq!(failed.1.allocation_operations, 2);
     assert_eq!(failed.1.backend_read_operations, 0);
     assert_eq!(failed.1.backend_write_operations, 0);
@@ -4501,8 +4473,6 @@ async fn native_preparation_partial_typed_decode_keeps_acquired_quota_receipt() 
         &acyclic_fs::CancellationToken::new(),
     ).await.map_err(|failure| Error::Storage(failure.to_string()))?;
     let journal = &prepared.value.preparation_receipts()[0].journal;
-    // The actual original fenced fault host writes a malformed next record to
-    // the SAME journal. No recovery archive or provider-created authority.
     let mut invalid = serde_json::to_value(journal).map_err(|error| Error::Storage(error.to_string()))?;
     invalid["revision"] = serde_json::json!(journal.revision + 1);
     invalid["work"]["itemsExamined"] = serde_json::json!("invalid counter");
@@ -4520,8 +4490,6 @@ async fn native_preparation_partial_typed_decode_keeps_acquired_quota_receipt() 
         &acyclic_fs::CancellationToken::new(),
     ).await.err().ok_or_else(|| Error::Storage("partial typed journal decode unexpectedly succeeded".into()))?;
     assert!(failed.1.authority_bytes_read >= encoded_length);
-    // The acquired schema quota, including temporary serde scratch, is real
-    // ledger highwater even though typed construction fails before handoff.
     assert!(failed.1.peak_allocation_bytes > encoded_length);
     assert_eq!(failed.1.backend_write_operations, 0);
     assert_eq!(std::fs::read(fixture.allocation.root.join("a-source/input.txt"))
@@ -4553,9 +4521,6 @@ async fn native_allocation_recovery_never_adopts_pending_directory_identity() ->
     let parent = witness.root_identity(fixture.allocation.operation_directory.parent()
         .ok_or_else(|| Error::Storage("original allocation parent is absent".into()))?)
         .map_err(|error| Error::Storage(error.to_string()))?;
-    // The original fenced fault host retains its known operation allocation,
-    // but the target mkdir acknowledgement carries no durable target identity.
-    // Existing physical directories must not fill that gap.
     let journal = original.journal;
     let mut pending = serde_json::to_value(&journal).map_err(|error| Error::Storage(error.to_string()))?;
     pending["revision"] = serde_json::json!(journal.revision + 1);
@@ -4623,8 +4588,6 @@ async fn approved_literal_stdin_reaches_eof_without_terminating_the_process() ->
         ).map_err(|error| Error::Invalid(error.to_string()))?;
         assert!(output.success && output.stop.is_none());
         assert_eq!(output.exit_code, Some(0));
-        // The real child only writes its artifact after read_to_end observes
-        // EOF, then prints this sentinel and exits normally.
         assert!(String::from_utf8_lossy(&output.stdout).contains("approved stdout"));
         let destination = workspace_ref(
             fixture.destination.provider().clone(), &fixture.destination.storage_name()?,
@@ -4637,8 +4600,6 @@ async fn approved_literal_stdin_reaches_eof_without_terminating_the_process() ->
 #[tokio::test]
 async fn even_exactly_approved_mcp_requests_cannot_also_supply_literal_stdin() -> Result<()> {
     for mode in ["mcp-stdin-empty", "mcp-stdin-bytes"] {
-        // These exact bytes and the MCP descriptor are present before the real
-        // original approval is issued; denial is not an approval mismatch.
         let fixture = process_fixture(mode, true).await?;
         let request = fixture.request().await?;
         assert!(request.mcp_stdio.is_some() && request.standard_input.is_some());
@@ -4678,8 +4639,6 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
         if stale {
             fixture.files.write(&destination, "/concurrent.txt", b"new original head").await?;
         }
-        // The host declares this distinct original filesystem operation before
-        // requesting its actual gate; it is neither a task fence nor prep ID.
         let reserved = fixture.owner.native_view_owner().reserve_publication(
             &workspace, &fixture.destination, original_generation, operation,
             &work, &cancellation, &cleanup_cancellation,
@@ -4692,8 +4651,6 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
             assert!(failed.cleanup.is_none() && failed.cleanup_error.is_none());
             assert!(failed.unwitnessed_workspace.is_none());
             assert!(failed.work.backend_read_operations > 0);
-            // The actual SDK write succeeds only after the mismatched gate
-            // has really been released, not merely marked cleanup-complete.
             fixture.files.write(&destination, "/release-check.txt", b"settled").await?;
         } else {
             let receipt = reserved?;
@@ -4717,8 +4674,6 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
             assert!(matches!(mismatched_failure.error, crate::filesystem::NativeReservationError::Selection(_)));
             assert!(mismatched_failure.cleanup.is_some());
             assert_eq!(mismatched_failure.work.backend_write_operations, before_query);
-            // Read-only failure drops no physical gate: the next query still
-            // returns the identical real proof held by the original owner.
             drop(mismatched);
             let reopened = fixture.owner.native_view_owner().recover_publication(
                 &recovery_workspace, &fixture.destination, original_generation, operation,
@@ -4792,8 +4747,6 @@ async fn original_supervisor_stop_is_attempt_fenced_and_does_not_cancel_the_nati
         process.signal_stop(crate::EffectAttemptId::from_bytes([255; 16]), &work, &cleanup_cancellation).await,
         Err(crate::filesystem::NativeReceiptError::Record(_)),
     ));
-    // A reopened provider can inspect the original journal, but it never owns
-    // the warm supervisor and cannot hydrate control from launch intent/PID.
     let reopened = Process::recover(
         fixture.owner.clone(), fixture.command, fixture.plan.clone(),
         fixture.approval, fixture.authority(),
@@ -4832,8 +4785,6 @@ async fn original_supervisor_stop_is_attempt_fenced_and_does_not_cancel_the_nati
         output.stop.as_ref(),
         Some(stop) if stop.kind == NativeProcessStopKind::ControlStopped && stop.cleanup_completed,
     ));
-    // Stop is physical supervisor control, not task cancellation, view token
-    // cancellation, filesystem publication, or namespace release authority.
     fixture.owner.verify(false).await?;
     fixture.view.validate_for_dispatch(budget).await
         .map_err(|(cause, _)| cause)?;
@@ -4864,8 +4815,6 @@ async fn original_warm_supervisor_stop_settles_after_real_task_cancellation() ->
     let attempt = crate::EffectAttemptId::from_bytes(
         task_effect_id(fixture.owner.task_binding().0, fixture.command)?.into_bytes(),
     );
-    // True-close may have already durably cancelled the task. Physical stop
-    // still requires its same original current settlement fence, not dispatch.
     fixture.task.task_host().cancel(fixture.owner.task_binding().0).await?;
     let cleanup_cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
@@ -4886,8 +4835,6 @@ async fn original_warm_supervisor_stop_settles_after_real_task_cancellation() ->
         output.stop.as_ref(),
         Some(stop) if stop.kind == NativeProcessStopKind::ControlStopped && stop.cleanup_completed,
     ));
-    // The enclosing effect caller is not the supervisor being joined. Its
-    // acknowledgement may be fenced by task closure; the receipt is canonical.
     let _ = dispatch.await.map_err(|error| Error::Storage(error.to_string()))?;
     assert!(fixture.owner.verify(false).await.is_err());
     assert!(fixture.owner.verify(true).await.is_ok());
