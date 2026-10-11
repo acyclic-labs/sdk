@@ -3156,7 +3156,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     through_every_object_cut!(checkout.apply_authored_transaction(
         vec![AuthoredMutation::CreateFile {
             path: authored.clone(),
-            bytes: bytes::Bytes::from(vec![b'a'; 4_096]),
+            bytes: OwnedBytes::from(vec![b'a'; 4_096]),
             metadata: empty_metadata(),
         }],
         WorkBudget::UNBOUNDED,
@@ -6875,13 +6875,13 @@ fn authored_live_transaction_preserves_create_ids_and_publishes_atomically()
         vec![
             AuthoredMutation::CreateFile {
                 path: file.clone(),
-                bytes: bytes::Bytes::from_static(b"initial"),
+                bytes: OwnedBytes::from_static(b"initial"),
                 metadata: empty_metadata(),
             },
             AuthoredMutation::Write {
                 path: file.clone(),
                 offset: 7,
-                bytes: bytes::Bytes::from_static(b"-published"),
+                bytes: OwnedBytes::from_static(b"-published"),
             },
         ],
         OperationId::from_bytes([118; 16]),
@@ -6944,7 +6944,7 @@ fn authored_transaction_is_atomic_and_preserves_result_positions()
             },
             AuthoredMutation::CreateFile {
                 path: file.clone(),
-                bytes: bytes::Bytes::from_static(b"initial"),
+                bytes: OwnedBytes::from_static(b"initial"),
                 metadata: empty_metadata(),
             },
             AuthoredMutation::Write {
@@ -7060,7 +7060,7 @@ fn authored_bulk_transaction_is_bounded_and_atomic() -> Result<(), Box<dyn std::
             },
             AuthoredMutation::CreateFile {
                 path: path("bulk0")?,
-                bytes: bytes::Bytes::from_static(b"duplicate"),
+                bytes: OwnedBytes::from_static(b"duplicate"),
                 metadata: empty_metadata(),
             },
         ],
@@ -7224,8 +7224,8 @@ fn authored_transaction_reuses_a_staged_file_metadata_object()
     let mut staged_metadata = AuthoredMetadataCache::new();
     let mut writes_after_create = 0;
     for (index, authored) in [
-        AuthoredMutation::CreateFile { path: file.clone(), bytes: bytes::Bytes::new(), metadata, },
-        AuthoredMutation::CreateFile { path: path("other.txt")?, bytes: bytes::Bytes::new(), metadata, },
+        AuthoredMutation::CreateFile { path: file.clone(), bytes: OwnedBytes::new(), metadata, },
+        AuthoredMutation::CreateFile { path: path("other.txt")?, bytes: OwnedBytes::new(), metadata, },
         AuthoredMutation::SetMetadata { path: file.clone(), metadata },
     ].into_iter().enumerate() {
         let bytes = authored.logical_owned_bytes();
@@ -8042,12 +8042,12 @@ fn public_authored_transaction_reuses_metadata_across_paths()
             vec![
                 AuthoredMutation::CreateFile {
                     path: first.clone(),
-                    bytes: bytes::Bytes::new(),
+                    bytes: OwnedBytes::new(),
                     metadata: shared,
                 },
                 AuthoredMutation::CreateFile {
                     path: second.clone(),
-                    bytes: bytes::Bytes::new(),
+                    bytes: OwnedBytes::new(),
                     metadata: second_metadata,
                 },
                 AuthoredMutation::SetMetadata {
@@ -8147,7 +8147,7 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         vec![AuthoredMutation::Write {
             path: path("absent")?,
             offset: 0,
-            bytes: bytes::Bytes::new(),
+            bytes: OwnedBytes::new(),
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -8183,11 +8183,11 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
             AuthoredMutation::Write {
                 path: path("ordered")?,
                 offset: 0,
-                bytes: bytes::Bytes::new(),
+                bytes: OwnedBytes::new(),
             },
             AuthoredMutation::CreateFile {
                 path: path("ordered")?,
-                bytes: bytes::Bytes::new(),
+                bytes: OwnedBytes::new(),
                 metadata: empty_metadata(),
             },
         ],
@@ -8231,7 +8231,7 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     let created = poll_ready(noop_checkout.apply_authored_transaction(
         vec![AuthoredMutation::CreateFile {
             path: path("present")?,
-            bytes: bytes::Bytes::new(),
+            bytes: OwnedBytes::new(),
             metadata: empty_metadata(),
         }],
         WorkBudget::UNBOUNDED,
@@ -8253,7 +8253,7 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         vec![AuthoredMutation::Write {
             path: path("present")?,
             offset: 0,
-            bytes: bytes::Bytes::new(),
+            bytes: OwnedBytes::new(),
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -8351,9 +8351,9 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     .ok_or("byte-limited checkout blocked")??
     .value;
     for mutation in [
-        AuthoredMutation::CreateFile { path: path("created-file")?, bytes: bytes::Bytes::from_static(b"xx"), metadata: empty_metadata() },
+        AuthoredMutation::CreateFile { path: path("created-file")?, bytes: OwnedBytes::from_static(b"xx"), metadata: empty_metadata() },
         AuthoredMutation::Write { path: path("file")?, offset: 0, bytes: OwnedBytes::from_static(b"xx") },
-        AuthoredMutation::CreateSymbolicLink { path: path("link")?, target: bytes::Bytes::from_static(b"xx"), metadata: empty_metadata() },
+        AuthoredMutation::CreateSymbolicLink { path: path("link")?, target: OwnedBytes::from_static(b"xx"), metadata: empty_metadata() },
     ] {
         let failure = poll_ready(checkout.apply_authored_transaction(
             vec![mutation],
@@ -8535,7 +8535,7 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
             },
             AuthoredMutation::CreateFile {
                 path: source.clone(),
-                bytes: bytes::Bytes::from_static(b"abcdefgh"),
+                bytes: OwnedBytes::from_static(b"abcdefgh"),
                 metadata: empty_metadata(),
             },
             AuthoredMutation::CreateFile {
@@ -8562,7 +8562,7 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
             AuthoredMutation::Write {
                 path: source.clone(),
                 offset: 0,
-                bytes: bytes::Bytes::new(),
+                bytes: OwnedBytes::new(),
             },
             AuthoredMutation::Write {
                 path: source.clone(),
@@ -11978,7 +11978,7 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
         .is_none()
     );
 
-    let target = OwnedBytes::from_static(b"../identity.bin");
+    let target = bytes::Bytes::from_static(b"../identity.bin");
     ready!(checkout.value.create_symbolic_link(
         path("link")?,
         target.clone(),
@@ -13248,13 +13248,13 @@ fn directory_merge_helper_covers_scalar_binding_limit_and_invalid_diff_matrix()
         &store, empty, empty, 1, config(), prior, WorkBudget::UNBOUNDED, &cancellation,
     )).ok_or("invalid-root diff blocked")?.expect_err("a tree is not a file-table root");
     assert!(matches!(invalid_root.error, FsError::InvalidDiff));
-    assert_eq!(invalid_root.work, prior, "pre-I/O rejection preserves the actual caller prefix");
+    assert_eq!(*invalid_root.work, prior, "pre-I/O rejection preserves the actual caller prefix");
     let table = ObjectId { kind: ObjectKind::FileTablePage, digest: empty.digest };
     let invalid_bound = poll_ready(diff_generation_file_tables(
         &store, table, table, 0, config(), prior, WorkBudget::UNBOUNDED, &cancellation,
     )).ok_or("zero-bound diff blocked")?.expect_err("the canonical engine rejects a zero bound");
     assert!(matches!(invalid_bound.error, FsError::InvalidDiff));
-    assert_eq!(invalid_bound.work, prior);
+    assert_eq!(*invalid_bound.work, prior);
     Ok(())
 }
 
@@ -14057,7 +14057,7 @@ fn profile_folded_authored_batches_reject_intra_batch_collisions()
             },
             AuthoredMutation::CreateFile {
                 path: path("batch")?,
-                bytes: bytes::Bytes::from_static(b"body"),
+                bytes: OwnedBytes::from_static(b"body"),
                 metadata: empty_metadata(),
             },
         ],
@@ -14434,7 +14434,7 @@ fn grouped_changes_land_together_and_each_keeps_its_own_result()
             path: path(name)?,
             metadata: Box::new(FileMetadata::default()),
             file_id: FileId::new(),
-            bytes: bytes::Bytes::new(),
+            bytes: OwnedBytes::new(),
         })
     };
 
