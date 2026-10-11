@@ -6015,12 +6015,13 @@ mod native_grant_controls {
     #[test]
     fn native_volume_grant_keeps_its_real_backing_until_data_drop() -> Result<()> {
         let (issuer, scope, volume) = owner()?;
+        let verifier = issuer.verifier();
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("finite original grant ledger");
         let baseline = work.remaining().expect("original quota").peak_allocation_bytes;
         let grant = ContentGrant::verify_with_native_work(
-            &issuer.verifier(), &scope, &volume, VolumeOperation::Write, &work,
+            &verifier, &scope, &volume, VolumeOperation::Write, &work,
         )?;
         grant.0.require(&volume, VolumeOperation::Write)?;
         assert!(grant.1.work().shares_ledger(&work));
@@ -6039,18 +6040,19 @@ mod native_grant_controls {
         let child = issuer.delegate_private_directory_read(
             &parent, AgentId::from_bytes([73; 16]), "attached-directory", &volume, "private",
         )?;
+        let verifier = issuer.verifier();
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("finite original directory ledger");
         let baseline = work.remaining().expect("original quota").peak_allocation_bytes;
         let grant = ContentGrant::verify_directory_read_with_native_work(
-            &issuer.verifier(), &child, &volume, "private", &work,
+            &verifier, &child, &volume, "private", &work,
         )?;
         grant.0.require_directory_path(&volume, "private/nested")?;
         assert!(grant.0.require_directory_path(&volume, "private-other").is_err());
         assert!(grant.0.require(&volume, VolumeOperation::Write).is_err());
         assert!(matches!(ContentGrant::verify_with_native_work(
-            &issuer.verifier(), &child, &volume, VolumeOperation::Write, &work,
+            &verifier, &child, &volume, VolumeOperation::Write, &work,
         ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
         drop(grant);
         assert_eq!(work.remaining().expect("dropped directory grant").peak_allocation_bytes, baseline);
