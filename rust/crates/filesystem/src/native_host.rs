@@ -325,6 +325,19 @@ pub struct HostStatReader {
 impl HostStatReader {
     const BUFFER_BYTES: usize = 64 * 1024;
 
+    fn from_directory(directory: &Dir) -> io::Result<Self> {
+        let directory = reopen_windows_directory(directory)?;
+        let identity = crate::NativeRootIdentity::from_metadata(&directory.dir_metadata()?)?;
+        Ok(Self {
+            directory,
+            volume_serial_number: u32::try_from(identity.device)
+                .map_err(|_| io::Error::other("directory volume has no serial number"))?,
+            buffer: vec![0; Self::BUFFER_BYTES / std::mem::size_of::<u64>()],
+            next: None,
+            exhausted: false,
+        })
+    }
+
     /// Reads the next buffer of records; `false` once none remain.
     fn refill(&mut self) -> io::Result<bool> {
         use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
@@ -600,7 +613,9 @@ pub(crate) enum HostReadDir<'a> {
         entries: rustix::fs::Dir,
         held: &'a Dir,
     },
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    Windows(HostStatReader, std::marker::PhantomData<&'a Dir>),
+    #[cfg(not(any(target_os = "linux", windows)))]
     Native(ReadDir, std::marker::PhantomData<&'a Dir>),
 }
 
@@ -633,7 +648,15 @@ impl Iterator for HostReadDir<'_> {
                     is_dir,
                 }));
             },
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(windows)]
+            Self::Windows(entries, _) => entries.next().map(|entry| {
+                let entry = entry?;
+                Ok(HostDirectoryEntry {
+                    name: entry.name,
+                    is_dir: entry.stat.is_some_and(|stat| stat.is_dir()),
+                })
+            }),
+            #[cfg(not(any(target_os = "linux", windows)))]
             Self::Native(entries, _) => entries.next().map(|entry| {
                 let entry = entry?;
                 let file_type = entry.file_type()?;
@@ -1078,16 +1101,9 @@ impl HostRoot {
     }
 
     pub fn is_empty(&self) -> io::Result<bool> {
-        Ok(self.directory.entries()?.next().is_none())
+        Self::scan_held_dir(&self.directory)?.next().transpose().map(|entry| entry.is_none())
     }
 
-    pub fn read_dir(&self, path: &Path) -> io::Result<ReadDir> {
-        if path.as_os_str().is_empty() {
-            self.directory.entries()
-        } else {
-            self.directory.read_dir(path)
-        }
-    }
 
     /// Enumerates the directory at `path`, reached without following any
     /// link, with each entry's facts as [`Self::stat`] reports them, or with
@@ -1095,21 +1111,8 @@ impl HostRoot {
     pub fn read_dir_stats(&self, path: &Path) -> io::Result<HostStatReader> {
         #[cfg(windows)]
         {
-            // An enumeration's position belongs to the open file object, which
-            // a duplicated handle shares, so each listing opens its own.
-            let directory = if path.as_os_str().is_empty() {
-                self.directory.open_dir(Path::new("."))?
-            } else {
-                self.open_dir_held(path)?
-            };
-            Ok(HostStatReader {
-                directory,
-                // A path without reparse points never leaves the root's volume.
-                volume_serial_number: self.volume_serial_number()?,
-                buffer: vec![0; HostStatReader::BUFFER_BYTES / std::mem::size_of::<u64>()],
-                next: None,
-                exhausted: false,
-            })
+            let directory = self.open_dir_held(path)?;
+            HostStatReader::from_directory(&directory)
         }
         #[cfg(not(windows))]
         {
@@ -1123,6 +1126,13 @@ impl HostRoot {
         open_directory_held(self.directory.try_clone()?, path)
     }
 
+    pub(crate) fn open_child_directory_held(directory: &Dir, path: &Path) -> io::Result<Dir> {
+        #[cfg(windows)]
+        { open_windows_directory(directory, path, false) }
+        #[cfg(not(windows))]
+        { directory.open_dir_nofollow(path) }
+    }
+
     pub(crate) fn scan_held_dir(directory: &Dir) -> io::Result<HostReadDir<'_>> {
         #[cfg(target_os = "linux")]
         {
@@ -1132,7 +1142,14 @@ impl HostRoot {
                 held: directory,
             })
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(windows)]
+        {
+            Ok(HostReadDir::Windows(
+                HostStatReader::from_directory(directory)?,
+                std::marker::PhantomData,
+            ))
+        }
+        #[cfg(not(any(target_os = "linux", windows)))]
         {
             Ok(HostReadDir::Native(
                 directory.entries()?,
@@ -1142,10 +1159,11 @@ impl HostRoot {
     }
 
     pub fn symlink_metadata(&self, path: &Path) -> io::Result<Metadata> {
-        if path.as_os_str().is_empty() {
-            self.directory.dir_metadata()
-        } else {
-            self.directory.symlink_metadata(path)
+        #[cfg(windows)]
+        { self.symlink_metadata_held(path) }
+        #[cfg(not(windows))]
+        {
+            if path.as_os_str().is_empty() { self.directory.dir_metadata() } else { self.directory.symlink_metadata(path) }
         }
     }
 
@@ -1256,10 +1274,12 @@ impl HostRoot {
                 FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
             };
             use windows::Win32::Storage::FileSystem::{FILE_READ_ATTRIBUTES, SYNCHRONIZE};
-            if let Some(file) = self.open_by_name(
+            if let Some(file) = Self::open_by_name(
+                &self.directory,
                 path,
                 FILE_READ_ATTRIBUTES | SYNCHRONIZE,
                 FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+                windows::Wdk::Storage::FileSystem::FILE_OPEN,
             )? {
                 return Metadata::from_file(&file.into_std());
             }
@@ -1276,7 +1296,10 @@ impl HostRoot {
             if components.peek().is_none() {
                 return current.symlink_metadata(name);
             }
-            current = current.open_dir_nofollow(name)?;
+            #[cfg(windows)]
+            { current = open_windows_directory(&current, Path::new(name), false)?; }
+            #[cfg(not(windows))]
+            { current = current.open_dir_nofollow(name)?; }
         }
         Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1299,10 +1322,12 @@ impl HostRoot {
         use windows::Win32::Storage::FileSystem::FILE_GENERIC_READ;
 
         let opened = |options| {
-            self.open_by_name(
+            Self::open_by_name(
+                &self.directory,
                 path,
                 FILE_GENERIC_READ,
                 FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | options,
+                windows::Wdk::Storage::FileSystem::FILE_OPEN,
             )
         };
         // Opened and granted its oplock in one step, so no rename meets the
@@ -1361,7 +1386,10 @@ impl HostRoot {
                 Err(error) => return Err(error),
             }
         }
-        self.directory.open_with(path, &options)
+        #[cfg(windows)]
+        { open_windows_metadata_file(&self.directory, path, &options) }
+        #[cfg(not(windows))]
+        { self.directory.open_with(path, &options) }
     }
 
     /// Opens `path` for reading with one `NtCreateFile` relative to the held
@@ -1381,7 +1409,8 @@ impl HostRoot {
         };
         use windows::Win32::Storage::FileSystem::FILE_GENERIC_READ;
 
-        self.open_by_name(
+        Self::open_by_name(
+            &self.directory,
             path,
             FILE_GENERIC_READ,
             FILE_NON_DIRECTORY_FILE
@@ -1390,6 +1419,7 @@ impl HostRoot {
                     FileReads::Cursor => FILE_SYNCHRONOUS_IO_NONALERT,
                     FileReads::Positional => NTCREATEFILE_CREATE_OPTIONS(0),
                 },
+            windows::Wdk::Storage::FileSystem::FILE_OPEN,
         )
     }
 
@@ -1399,14 +1429,15 @@ impl HostRoot {
     /// refused, which only the held walk may resolve.
     #[cfg(windows)]
     fn open_by_name(
-        &self,
+        directory: &Dir,
         path: &Path,
         access: windows::Win32::Storage::FileSystem::FILE_ACCESS_RIGHTS,
         options: windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS,
+        disposition: windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_DISPOSITION,
     ) -> io::Result<Option<cap_std::fs::File>> {
         use std::os::windows::io::{AsHandle as _, AsRawHandle as _, FromRawHandle as _};
         use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
-        use windows::Wdk::Storage::FileSystem::{FILE_OPEN, NtCreateFile};
+        use windows::Wdk::Storage::FileSystem::NtCreateFile;
         use windows::Win32::Foundation::{
             HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE, UNICODE_STRING,
         };
@@ -1427,7 +1458,7 @@ impl HostRoot {
         let attributes = OBJECT_ATTRIBUTES {
             Length: u32::try_from(std::mem::size_of::<OBJECT_ATTRIBUTES>())
                 .map_err(|_| io::Error::other("object attributes size"))?,
-            RootDirectory: HANDLE(self.directory.as_handle().as_raw_handle()),
+            RootDirectory: HANDLE(directory.as_handle().as_raw_handle()),
             ObjectName: &raw const name,
             Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
             ..OBJECT_ATTRIBUTES::default()
@@ -1445,7 +1476,7 @@ impl HostRoot {
                 None,
                 FILE_ATTRIBUTE_NORMAL,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                FILE_OPEN,
+                disposition,
                 options,
                 None,
                 0,
@@ -1466,9 +1497,10 @@ impl HostRoot {
     pub fn create_file(&self, path: &Path) -> io::Result<File> {
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
-        self.directory
-            .open_with(path, &options)
-            .map(cap_std::fs::File::into_std)
+        #[cfg(windows)]
+        { open_windows_metadata_file(&self.directory, path, &options).map(cap_std::fs::File::into_std) }
+        #[cfg(not(windows))]
+        { self.directory.open_with(path, &options).map(cap_std::fs::File::into_std) }
     }
 
     /// Creates a capability-rooted Windows file ready for native overlapped I/O.
@@ -1483,13 +1515,17 @@ impl HostRoot {
             .write(true)
             .create_new(true)
             .custom_flags(FILE_FLAG_OVERLAPPED.0);
-        self.directory
-            .open_with(path, &options)
-            .map(cap_std::fs::File::into_std)
+        open_windows_metadata_file(&self.directory, path, &options).map(cap_std::fs::File::into_std)
     }
 
     pub fn create_dir(&self, path: &Path) -> io::Result<()> {
-        self.directory.create_dir(path)
+        #[cfg(windows)]
+        {
+            let (parent, name) = open_windows_parent(&self.directory, path)?;
+            open_windows_directory(&parent, Path::new(name), true).map(drop)
+        }
+        #[cfg(not(windows))]
+        { self.directory.create_dir(path) }
     }
 
     /// Opens or creates each real directory component without following links.
@@ -1502,21 +1538,48 @@ impl HostRoot {
                     "invalid directory path",
                 ));
             };
-            match current.open_dir_nofollow(name) {
-                Ok(next) => current = next,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    current.create_dir(name)?;
-                    current = current.open_dir_nofollow(name)?;
+            #[cfg(windows)]
+            {
+                current = match open_windows_directory(&current, Path::new(name), false) {
+                    Ok(next) => next,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        open_windows_directory(&current, Path::new(name), true)?
+                    }
+                    Err(error) => return Err(error),
+                };
+            }
+            #[cfg(not(windows))]
+            {
+                match current.open_dir_nofollow(name) {
+                    Ok(next) => current = next,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        current.create_dir(name)?;
+                        current = current.open_dir_nofollow(name)?;
+                    }
+                    Err(error) => return Err(error),
                 }
-                Err(error) => return Err(error),
             }
         }
         Ok(HostDirectory { directory: current })
     }
 
     pub fn hard_link(&self, source: &Path, destination: &Path) -> io::Result<()> {
-        self.directory
-            .hard_link(source, &self.directory, destination)
+        #[cfg(windows)]
+        {
+            use cap_std::fs::OpenOptionsExt as _;
+            use windows::Win32::Storage::FileSystem::{DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, SYNCHRONIZE};
+            let mut options = OpenOptions::new();
+            options.access_mode((DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE).0).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0);
+            let source = open_windows_metadata_file(&self.directory, source, &options)?.into_std();
+            let metadata = source.metadata()?;
+            if !metadata.is_file() || root_is_reparse_point(&metadata) {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "hardlink source must be a real regular file"));
+            }
+            let (parent, name) = open_windows_parent(&self.directory, destination)?;
+            StagedWindowsFile::link_file(&source, &parent, name, false)
+        }
+        #[cfg(not(windows))]
+        { self.directory.hard_link(source, &self.directory, destination) }
     }
 
     /// Creates an APFS copy-on-write clone when the hosting volume supports it.
@@ -1608,11 +1671,11 @@ impl HostRoot {
         }
         let mut target = create_windows_copy_target(&self.directory, destination, false)?;
         let cloned = clone_windows_file_into(&mut source, &mut target, length);
-        drop(target);
         // A failed attempt is always removed.
         if !matches!(cloned, Ok(true)) {
-            self.directory.remove_file(destination)?;
+            delete_windows_entry(&target)?;
         }
+        drop(target);
         cloned
     }
 
@@ -1675,18 +1738,29 @@ impl HostRoot {
     }
 
     pub fn read_link(&self, path: &Path) -> io::Result<std::path::PathBuf> {
-        self.directory.read_link_contents(path)
+        #[cfg(windows)]
+        {
+            let (parent, name) = open_windows_parent(&self.directory, path)?;
+            parent.read_link_contents(name)
+        }
+        #[cfg(not(windows))]
+        { self.directory.read_link_contents(path) }
     }
 
     pub fn set_permissions(&self, path: &Path, permissions: Permissions) -> io::Result<()> {
-        self.directory.set_permissions(
-            if path.as_os_str().is_empty() {
-                Path::new(".")
-            } else {
-                path
-            },
-            permissions,
-        )
+        #[cfg(windows)]
+        {
+            use cap_std::fs::OpenOptionsExt as _;
+            use windows::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES, SYNCHRONIZE};
+            let mut options = OpenOptions::new();
+            options.access_mode((FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE).0)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0);
+            open_windows_metadata_file(&self.directory, path, &options)?.set_permissions(permissions)
+        }
+        #[cfg(not(windows))]
+        {
+            self.directory.set_permissions(if path.as_os_str().is_empty() { Path::new(".") } else { path }, permissions)
+        }
     }
 
     /// Pins one ordinary macOS inode before an offloaded metadata mutation.
@@ -1727,7 +1801,7 @@ impl HostRoot {
 
     #[cfg(windows)]
     pub fn symlink_file(&self, target: &Path, destination: &Path) -> io::Result<()> {
-        self.directory.symlink_file(target, destination)
+        create_windows_symlink(&self.directory, target, destination)
     }
 
     /// Applies a permission mask without opening the target node.
@@ -2364,11 +2438,13 @@ fn open_windows_metadata_file(
     path: &Path,
     options: &OpenOptions,
 ) -> io::Result<cap_std::fs::File> {
+    let mut options = options.clone();
+    options._cap_fs_ext_follow(cap_primitives::fs::FollowSymlinks::No);
     if path.as_os_str().is_empty() {
-        return root.open_with(Path::new("."), options);
+        return root.open_with(Path::new("."), &options);
     }
     let (parent, name) = open_windows_parent(root, path)?;
-    parent.open_with(Path::new(name), options)
+    parent.open_with(Path::new(name), &options)
 }
 
 /// Opens the directory holding `path`'s leaf without following any
@@ -2387,7 +2463,7 @@ fn open_windows_parent<'a>(root: &Dir, path: &'a Path) -> io::Result<(Dir, &'a O
         if components.peek().is_none() {
             return Ok((parent, name));
         }
-        parent = parent.open_dir_nofollow(name)?;
+        parent = open_windows_directory(&parent, Path::new(name), false)?;
     }
     Err(io::Error::new(
         io::ErrorKind::InvalidInput,
@@ -2524,6 +2600,10 @@ impl StagedWindowsFile {
     }
 
     fn link(&self, directory: &Dir, name: &OsStr, replace: bool) -> io::Result<()> {
+        Self::link_file(&self.guard, directory, name, replace)
+    }
+
+    fn link_file(file: &File, directory: &Dir, name: &OsStr, replace: bool) -> io::Result<()> {
         use std::mem::{offset_of, size_of};
         use std::os::windows::ffi::OsStrExt as _;
         use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
@@ -2539,12 +2619,8 @@ impl StagedWindowsFile {
         use windows::Win32::Foundation::HANDLE;
         use windows::Win32::System::IO::IO_STATUS_BLOCK;
 
-        let name = name.encode_wide().collect::<Vec<_>>();
         let overflow = || io::Error::other("link information overflow");
-        let name_bytes = name
-            .len()
-            .checked_mul(size_of::<u16>())
-            .ok_or_else(overflow)?;
+        let name_bytes = name.encode_wide().count().checked_mul(size_of::<u16>()).ok_or_else(overflow)?;
         let name_offset = offset_of!(FILE_LINK_INFORMATION, FileName);
         let total = name_offset
             .checked_add(name_bytes)
@@ -2563,18 +2639,15 @@ impl StagedWindowsFile {
             }
             (*information).RootDirectory = HANDLE(directory.as_handle().as_raw_handle());
             (*information).FileNameLength = u32::try_from(name_bytes).map_err(|_| overflow())?;
-            std::ptr::copy_nonoverlapping(
-                name.as_ptr(),
-                information.cast::<u8>().add(name_offset).cast::<u16>(),
-                name.len(),
-            );
+            let name_storage = information.cast::<u8>().add(name_offset).cast::<u16>();
+            for (index, unit) in name.encode_wide().enumerate() { name_storage.add(index).write(unit); }
         }
         let mut status_block = IO_STATUS_BLOCK::default();
         // SAFETY: both handles, the status block, and the initialized information
         // buffer outlive this synchronous call; the length is exactly the buffer's.
         let status = unsafe {
             NtSetInformationFile(
-                HANDLE(self.guard.as_handle().as_raw_handle()),
+                HANDLE(file.as_handle().as_raw_handle()),
                 &raw mut status_block,
                 information.cast(),
                 u32::try_from(total).map_err(|_| overflow())?,
@@ -2620,10 +2693,10 @@ fn open_windows_regular_source(root: &Dir, path: &Path, overlapped: bool) -> io:
 #[cfg(windows)]
 fn create_windows_copy_target(root: &Dir, path: &Path, overlapped: bool) -> io::Result<File> {
     use cap_std::fs::OpenOptionsExt as _;
-    use windows::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
+    use windows::Win32::Storage::FileSystem::{DELETE, FILE_FLAG_OVERLAPPED, FILE_GENERIC_WRITE};
 
     let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
+    options.write(true).create_new(true).access_mode((FILE_GENERIC_WRITE | DELETE).0);
     if overlapped {
         options.custom_flags(FILE_FLAG_OVERLAPPED.0);
     }
@@ -2776,7 +2849,17 @@ fn metadata_time(
 
 impl HostDirectory {
     pub fn symlink_metadata(&self, name: &Path) -> io::Result<Metadata> {
-        self.directory.symlink_metadata(name)
+        #[cfg(windows)]
+        {
+            let mut options = OpenOptions::new();
+            use cap_std::fs::OpenOptionsExt as _;
+            use windows::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT};
+            options.access_mode(0).custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0);
+            let file = open_windows_metadata_file(&self.directory, name, &options)?.into_std();
+            Metadata::from_file(&file)
+        }
+        #[cfg(not(windows))]
+        { self.directory.symlink_metadata(name) }
     }
 
     pub fn rename_to(
@@ -2785,21 +2868,39 @@ impl HostDirectory {
         destination: &Self,
         destination_name: &Path,
     ) -> io::Result<()> {
-        self.directory
-            .rename(name, &destination.directory, destination_name)
+        #[cfg(windows)]
+        {
+            let source = open_windows_delete_target(&self.directory, name)?;
+            let (parent, leaf) = open_windows_parent(&destination.directory, destination_name)?;
+            rename_windows_entry(&source, &parent, leaf)
+        }
+        #[cfg(not(windows))]
+        { self.directory.rename(name, &destination.directory, destination_name) }
     }
 
     /// Creates one child directory and retains a capability for it.
     pub fn create_dir_held(&self, name: &Path) -> io::Result<Self> {
-        self.directory.create_dir(name)?;
-        Ok(Self {
-            directory: self.directory.open_dir_nofollow(name)?,
-        })
+        #[cfg(windows)]
+        { open_windows_directory(&self.directory, name, true).map(|directory| Self { directory }) }
+        #[cfg(not(windows))]
+        {
+            self.directory.create_dir(name)?;
+            Ok(Self { directory: self.directory.open_dir_nofollow(name)? })
+        }
     }
 
     /// Removes one empty child directory.
     pub fn remove_dir(&self, name: &Path) -> io::Result<()> {
-        self.directory.remove_dir(name)
+        #[cfg(windows)]
+        {
+            let file = open_windows_delete_target(&self.directory, name)?;
+            if !file.metadata()?.is_dir() || root_is_reparse_point(&file.metadata()?) {
+                return Err(io::Error::new(io::ErrorKind::NotADirectory, "remove_dir target is not a real directory"));
+            }
+            delete_windows_entry(&file)
+        }
+        #[cfg(not(windows))]
+        { self.directory.remove_dir(name) }
     }
 
     /// Releases the held directory handle before callers remove its subtree.
@@ -2808,6 +2909,10 @@ impl HostDirectory {
     }
 
     pub fn remove(&self, name: &Path) -> io::Result<()> {
+        #[cfg(windows)]
+        { return remove_windows_tree(&self.directory, name); }
+        #[cfg(not(windows))]
+        {
         let metadata = match self.directory.symlink_metadata(name) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -2817,6 +2922,7 @@ impl HostDirectory {
             self.directory.remove_dir_all(name)
         } else {
             self.directory.remove_file(name)
+        }
         }
     }
 }
@@ -3671,12 +3777,217 @@ fn open_directory_held(mut current: Dir, path: &Path) -> io::Result<Dir> {
                 Err(error) => return Err(error),
             };
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(windows)]
+        {
+            current = open_windows_directory(&current, Path::new(name), false)?;
+        }
+        #[cfg(not(any(target_os = "linux", windows)))]
         {
             current = current.open_dir_nofollow(name)?;
         }
     }
     Ok(current)
+}
+
+#[cfg(windows)]
+fn reopen_windows_directory(directory: &Dir) -> io::Result<Dir> {
+    use std::os::windows::io::{AsHandle as _, AsRawHandle as _, FromRawHandle as _};
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_READ, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, ReOpenFile,
+    };
+    // A new file object gives each enumeration its own cursor without resolving a path.
+    let handle = unsafe {
+        ReOpenFile(
+            HANDLE(directory.as_handle().as_raw_handle()),
+            FILE_GENERIC_READ.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_FLAG_BACKUP_SEMANTICS,
+        )
+    }.map_err(|error| io::Error::from_raw_os_error(error.code().0 & 0xffff))?;
+    // SAFETY: ReOpenFile returned a new exclusively owned handle.
+    Ok(Dir::from_std_file(unsafe { File::from_raw_handle(handle.0) }))
+}
+
+#[cfg(windows)]
+fn open_windows_directory(directory: &Dir, path: &Path, create: bool) -> io::Result<Dir> {
+    use windows::Wdk::Storage::FileSystem::{
+        FILE_CREATE, FILE_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
+        FILE_SYNCHRONOUS_IO_NONALERT,
+    };
+    use windows::Win32::Storage::FileSystem::FILE_GENERIC_READ;
+    let file = HostRoot::open_by_name(
+        directory,
+        path,
+        FILE_GENERIC_READ,
+        FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        if create { FILE_CREATE } else { FILE_OPEN },
+    )?.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "directory name was redirected"))?.into_std();
+    let metadata = file.metadata()?;
+    if !metadata.is_dir() || root_is_reparse_point(&metadata) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "directory is a reparse point"));
+    }
+    Ok(Dir::from_std_file(file))
+}
+
+#[cfg(windows)]
+fn open_windows_delete_target(directory: &Dir, path: &Path) -> io::Result<File> {
+    use cap_std::fs::OpenOptionsExt as _;
+    use windows::Win32::Storage::FileSystem::{
+        DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_READ_ATTRIBUTES, SYNCHRONIZE,
+    };
+    let mut options = OpenOptions::new();
+    options.access_mode((DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE).0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0);
+    open_windows_metadata_file(directory, path, &options).map(cap_std::fs::File::into_std)
+}
+
+#[cfg(windows)]
+fn delete_windows_entry(file: &File) -> io::Result<()> {
+    use std::mem::size_of;
+    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+    use windows::Wdk::Storage::FileSystem::{
+        FILE_DISPOSITION_INFORMATION, FileDispositionInformation, NtSetInformationFile,
+    };
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::IO::IO_STATUS_BLOCK;
+    let information = FILE_DISPOSITION_INFORMATION { DeleteFile: true };
+    let mut status_block = IO_STATUS_BLOCK::default();
+    // SAFETY: this exclusively held entry and the fully initialized input outlive the call.
+    let status = unsafe {
+        NtSetInformationFile(
+            HANDLE(file.as_handle().as_raw_handle()),
+            &raw mut status_block,
+            (&raw const information).cast(),
+            u32::try_from(size_of::<FILE_DISPOSITION_INFORMATION>()).map_err(|_| io::Error::other("delete information size"))?,
+            FileDispositionInformation,
+        )
+    };
+    if status.is_ok() { Ok(()) } else { Err(status_error(status)) }
+}
+
+#[cfg(windows)]
+fn remove_windows_tree(directory: &Dir, path: &Path) -> io::Result<()> {
+    let file = match open_windows_delete_target(directory, path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let metadata = file.metadata()?;
+    if metadata.is_dir() && !root_is_reparse_point(&metadata) {
+        let directory = Dir::from_std_file(file.try_clone()?);
+        for entry in HostRoot::scan_held_dir(&directory)? {
+            remove_windows_tree(&directory, Path::new(&entry?.name))?;
+        }
+    }
+    delete_windows_entry(&file)
+}
+
+#[cfg(windows)]
+pub(crate) fn rename_windows_entry(source: &File, destination: &Dir, name: &OsStr) -> io::Result<()> {
+    use std::mem::{offset_of, size_of};
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+    use windows::Wdk::Storage::FileSystem::{FILE_RENAME_INFORMATION, FileRenameInformation, NtSetInformationFile};
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::IO::IO_STATUS_BLOCK;
+    if !matches!((Path::new(name).components().next(), Path::new(name).components().count()), (Some(std::path::Component::Normal(_)), 1)) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "rename destination must be one leaf"));
+    }
+    let overflow = || io::Error::other("rename information overflow");
+    let name_bytes = name.encode_wide().count().checked_mul(size_of::<u16>()).ok_or_else(overflow)?;
+    let name_offset = offset_of!(FILE_RENAME_INFORMATION, FileName);
+    let total = name_offset.checked_add(name_bytes).ok_or_else(overflow)?.max(size_of::<FILE_RENAME_INFORMATION>());
+    let mut storage = vec![0_u64; total.div_ceil(size_of::<u64>())];
+    let information = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+    // SAFETY: aligned storage spans the structure and the complete leaf name.
+    unsafe {
+        (*information).Anonymous.ReplaceIfExists = false;
+        (*information).RootDirectory = HANDLE(destination.as_handle().as_raw_handle());
+        (*information).FileNameLength = u32::try_from(name_bytes).map_err(|_| overflow())?;
+        let name_storage = information.cast::<u8>().add(name_offset).cast::<u16>();
+        for (index, unit) in name.encode_wide().enumerate() { name_storage.add(index).write(unit); }
+    }
+    let mut status_block = IO_STATUS_BLOCK::default();
+    // SAFETY: both original handles and the input/status buffers outlive the call.
+    let status = unsafe {
+        NtSetInformationFile(
+            HANDLE(source.as_handle().as_raw_handle()),
+            &raw mut status_block,
+            information.cast(),
+            u32::try_from(total).map_err(|_| overflow())?,
+            FileRenameInformation,
+        )
+    };
+    if status.is_ok() { Ok(()) } else { Err(status_error(status)) }
+}
+
+#[cfg(windows)]
+fn create_windows_symlink(directory: &Dir, target: &Path, destination: &Path) -> io::Result<()> {
+    use std::mem::{offset_of, size_of};
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+    use windows::Wdk::Storage::FileSystem::{REPARSE_DATA_BUFFER, REPARSE_DATA_BUFFER_0_0};
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::IO::DeviceIoControl;
+    use windows::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT;
+    use windows::Win32::System::SystemServices::IO_REPARSE_TAG_SYMLINK;
+    let (parent, name) = open_windows_parent(directory, destination)?;
+    let staged = StagedWindowsFile::create(parent)?;
+    let writer = staged.open_writer(false)?;
+    let relative = !target.is_absolute();
+    let target_name = target.as_os_str();
+    let (prefix, skip): (&[u16], usize) = if relative {
+        (&[], 0)
+    } else if target_name.encode_wide().take(4).eq([92, 92, 63, 92]) {
+        (&[92, 63, 63, 92], 4)
+    } else if target_name.encode_wide().take(2).eq([92, 92]) {
+        (&[92, 63, 63, 92, 85, 78, 67, 92], 2)
+    } else {
+        (&[92, 63, 63, 92], 0)
+    };
+    let overflow = || io::Error::new(io::ErrorKind::InvalidInput, "symlink reparse data is too long");
+    let target_units = target_name.encode_wide().count();
+    let substitute_bytes = prefix.len().checked_add(target_units - skip).and_then(|value| value.checked_mul(size_of::<u16>())).ok_or_else(overflow)?;
+    let print_bytes = target_units.checked_mul(size_of::<u16>()).ok_or_else(overflow)?;
+    let names_bytes = substitute_bytes.checked_add(print_bytes).and_then(|value| value.checked_add(4)).ok_or_else(overflow)?;
+    let names_offset = offset_of!(REPARSE_DATA_BUFFER, Anonymous) + offset_of!(REPARSE_DATA_BUFFER_0_0, PathBuffer);
+    let total = names_offset.checked_add(names_bytes).ok_or_else(overflow)?;
+    if total > 16 * 1024 { return Err(overflow()); }
+    let mut storage = vec![0_u64; total.div_ceil(size_of::<u64>())];
+    let reparse = storage.as_mut_ptr().cast::<REPARSE_DATA_BUFFER>();
+    // SAFETY: zeroed aligned storage covers every field and both terminated names.
+    unsafe {
+        (*reparse).ReparseTag = IO_REPARSE_TAG_SYMLINK;
+        (*reparse).ReparseDataLength = u16::try_from(total - offset_of!(REPARSE_DATA_BUFFER, Anonymous)).map_err(|_| overflow())?;
+        let symbolic = &mut (*reparse).Anonymous.SymbolicLinkReparseBuffer;
+        symbolic.SubstituteNameOffset = 0;
+        symbolic.SubstituteNameLength = u16::try_from(substitute_bytes).map_err(|_| overflow())?;
+        symbolic.PrintNameOffset = u16::try_from(substitute_bytes + 2).map_err(|_| overflow())?;
+        symbolic.PrintNameLength = u16::try_from(print_bytes).map_err(|_| overflow())?;
+        symbolic.Flags = u32::from(relative);
+        let names = reparse.cast::<u8>().add(names_offset).cast::<u16>();
+        for (index, unit) in prefix.iter().copied().chain(target_name.encode_wide().skip(skip)).enumerate() { names.add(index).write(unit); }
+        let print = names.add(substitute_bytes / 2 + 1);
+        for (index, unit) in target_name.encode_wide().enumerate() { print.add(index).write(unit); }
+    }
+    let mut returned = 0;
+    // SAFETY: the staged file is original and private; the complete buffer remains live.
+    unsafe {
+        DeviceIoControl(
+            HANDLE(writer.as_handle().as_raw_handle()),
+            FSCTL_SET_REPARSE_POINT,
+            Some(storage.as_ptr().cast()),
+            u32::try_from(total).map_err(|_| overflow())?,
+            None,
+            0,
+            Some(&raw mut returned),
+            None,
+        )
+    }.map_err(|error| io::Error::from_raw_os_error(error.code().0 & 0xffff))?;
+    staged.publish(name)
 }
 
 #[cfg(unix)]
@@ -4237,6 +4548,40 @@ mod windows_clone_tests {
     use acyclic_native_runtime::{Durability, NativeFile, OwnedWrite};
     use proptest::prelude::*;
 
+
+    #[test]
+    fn held_directory_operations_follow_original_handles_after_root_and_parent_moves() -> std::io::Result<()> {
+        use std::path::Path;
+        let temporary = tempfile::tempdir()?;
+        let root_path = temporary.path().join("root");
+        let moved_root = temporary.path().join("moved-root");
+        std::fs::create_dir(&root_path)?;
+        let root = HostRoot::open(&root_path)?;
+        let parent = root.create_dir_all_held(Path::new("parent"))?;
+        std::fs::write(root_path.join("parent/original"), b"original")?;
+        let nested = root.open_dir_held(Path::new("parent"))?;
+        std::fs::rename(&root_path, &moved_root)?;
+        std::fs::create_dir(&root_path)?;
+        std::fs::write(root_path.join("foreign"), b"foreign")?;
+        std::fs::rename(moved_root.join("parent"), moved_root.join("moved-parent"))?;
+        std::fs::create_dir(moved_root.join("parent"))?;
+        std::fs::write(moved_root.join("parent/foreign"), b"foreign-parent")?;
+        let names = HostRoot::scan_held_dir(&nested)?.map(|entry| entry.map(|entry| entry.name)).collect::<std::io::Result<Vec<_>>>()?;
+        assert_eq!(names, [std::ffi::OsString::from("original")]);
+        parent.rename_to(Path::new("original"), &parent, Path::new("renamed"))?;
+        let created = parent.create_dir_held(Path::new("created"))?;
+        assert_eq!(std::fs::read(moved_root.join("moved-parent/renamed"))?, b"original");
+        assert!(moved_root.join("moved-parent/created").is_dir());
+        assert!(!moved_root.join("parent/renamed").exists());
+        assert!(!root_path.join("parent").exists());
+        assert_eq!(std::fs::read(root_path.join("foreign"))?, b"foreign");
+        assert_eq!(std::fs::read(moved_root.join("parent/foreign"))?, b"foreign-parent");
+        created.close();
+        parent.remove_dir(Path::new("created"))?;
+        parent.remove(Path::new("renamed"))?;
+        assert!(!moved_root.join("moved-parent/renamed").exists());
+        Ok(())
+    }
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(128))]
 

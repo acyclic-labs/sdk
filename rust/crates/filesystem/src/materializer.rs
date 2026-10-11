@@ -773,7 +773,7 @@ impl NativeTreeMaterializationBackend {
         }
         if metadata.is_some() && descendants {
             let directory = root.open_dir_held(path)?;
-            let names = directory.entries()?.map(|entry| entry.map(|entry| entry.file_name())).collect::<Result<Vec<_>, _>>()?;
+            let names = HostRoot::scan_held_dir(&directory)?.map(|entry| entry.map(|entry| entry.name)).collect::<Result<Vec<_>, _>>()?;
             let namespace = source.namespace(path)?;
             let expected_children = source.preimages
                 .range((std::ops::Bound::Included(&namespace), std::ops::Bound::Unbounded))
@@ -1397,9 +1397,9 @@ fn hash_native_entry(
     if file_type.is_symlink() {
         hash_native_os_str(parent.read_link_contents(name)?.as_os_str(), hasher);
     } else if file_type.is_dir() {
-        let directory = parent.open_dir_nofollow(name)?;
+        let directory = HostRoot::open_child_directory_held(parent, Path::new(name))?;
         ensure_native_metadata_stable(metadata, &directory.dir_metadata()?)?;
-        let mut names = directory.entries()?.map(|entry| entry.map(|entry| entry.file_name())).collect::<Result<Vec<_>, _>>()?;
+        let mut names = HostRoot::scan_held_dir(&directory)?.map(|entry| entry.map(|entry| entry.name)).collect::<Result<Vec<_>, _>>()?;
         names.sort_unstable();
         for name in names {
             hash_native_os_str(&name, hasher);

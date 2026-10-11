@@ -163,45 +163,20 @@ fn rename_no_replace(source: &Entry, destination: &Entry) -> io::Result<()> {
 #[cfg(windows)]
 fn rename_no_replace(source: &Entry, destination: &Entry) -> io::Result<()> {
     use cap_std::fs::OpenOptionsExt as _;
-    use std::mem::{offset_of, size_of};
-    use std::os::windows::ffi::OsStrExt as _;
-    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
-    use windows::Wdk::Storage::FileSystem::{FILE_RENAME_INFORMATION, FileRenameInformation, NtSetInformationFile};
-    use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Storage::FileSystem::{DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, SYNCHRONIZE};
-    use windows::Win32::System::IO::IO_STATUS_BLOCK;
 
     let mut options = OpenOptions::new();
     options.access_mode((DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE).0)
         .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0);
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0)
+        .follow(cap_primitives::fs::FollowSymlinks::No);
     let source_file = source.parent.open_with(source.name, &options)?.into_std();
     if let Some(pinned) = &source.pinned
         && crate::NativeRootIdentity::from_file(pinned)? != crate::NativeRootIdentity::from_file(&source_file)?
     {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "rename source binding changed"));
     }
-    let name_units = destination.name.encode_wide().count();
-    let overflow = || io::Error::other("rename information overflow");
-    let name_bytes = name_units.checked_mul(size_of::<u16>()).ok_or_else(overflow)?;
-    let name_offset = offset_of!(FILE_RENAME_INFORMATION, FileName);
-    let total = name_offset.checked_add(name_bytes).ok_or_else(overflow)?.max(size_of::<FILE_RENAME_INFORMATION>());
-    let mut storage = vec![0_u64; total.div_ceil(size_of::<u64>())];
-    let information = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
-    // SAFETY: the aligned storage contains the complete structure and its leaf name.
-    unsafe {
-        (*information).Anonymous.ReplaceIfExists = false;
-        (*information).RootDirectory = HANDLE(destination.parent.as_handle().as_raw_handle());
-        (*information).FileNameLength = u32::try_from(name_bytes).map_err(|_| overflow())?;
-        let name_storage = information.cast::<u8>().add(name_offset).cast::<u16>();
-        for (index, unit) in destination.name.encode_wide().enumerate() {
-            name_storage.add(index).write(unit);
-        }
-    }
-    let mut status_block = IO_STATUS_BLOCK::default();
-    // SAFETY: the source and destination handles, information, and status outlive the call.
-    let status = unsafe { NtSetInformationFile(HANDLE(source_file.as_handle().as_raw_handle()), &raw mut status_block, information.cast(), u32::try_from(total).map_err(|_| overflow())?, FileRenameInformation) };
-    if status.is_ok() { Ok(()) } else { Err(nt_status_error(status)) }
+    crate::native_host::rename_windows_entry(&source_file, &destination.parent, destination.name)
 }
 
 #[cfg(windows)]
@@ -246,7 +221,8 @@ fn pin_entry_present(parent: &Dir, name: &OsStr) -> io::Result<std::fs::File> {
     let mut options = OpenOptions::new();
     options.access_mode((FILE_READ_ATTRIBUTES | SYNCHRONIZE).0)
         .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0);
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0)
+        .follow(cap_primitives::fs::FollowSymlinks::No);
     parent.open_with(name, &options).map(cap_std::fs::File::into_std)
 }
 
