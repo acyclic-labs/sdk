@@ -147,6 +147,10 @@ impl PendingCustomerLeaf {
     /// Expired certificates remain restorable for SQL renewal; mint still enforces expiry.
     pub fn commit(self, namespace: CustomerCustodyNamespace, birth: &str, certificate: &str, sql_session: Zeroizing<String>) -> Result<RestoredCustomerLeaf, CustodyError> {
         namespace.bind(&self.key.verifying_key(), birth, certificate)?;
+        self.store_pair(namespace, sql_session)
+    }
+
+    fn store_pair(self, namespace: CustomerCustodyNamespace, sql_session: Zeroizing<String>) -> Result<RestoredCustomerLeaf, CustodyError> {
         if sql_session.is_empty() || sql_session.chars().any(char::is_control) {
             return Err(CustodyError::InvalidSession);
         }
@@ -251,3 +255,7 @@ impl RestoredCustomerLeaf {
         platform::delete(&self.namespace.name)
     }
 }
+
+#[cfg(test)]
+#[path = "customer_custody/smoke.rs"]
+mod smoke;
