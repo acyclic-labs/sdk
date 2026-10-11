@@ -32,7 +32,6 @@ pub use compaction::*;
 pub(crate) use compaction::{
     clone_base_messages_native, clone_content_native, clone_context_native, clone_context_prefix_native, clone_file_native,
     clone_messages_native, clone_metadata_native, clone_retention_native, mandatory_positions_native,
-    NativeContextValueRecipe,
 };
 mod snapshot;
 pub use snapshot::*;
@@ -152,17 +151,10 @@ impl CanonicalContextCheckpoint {
     pub(crate) fn validate_with_io(
         &self, limits: Limits, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        validate_context_limits_with_io(limits, io)?;
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        limits.validate()?;
         #[cfg(feature = "filesystem")]
-        let _workspace = match io {
-            #[cfg(not(target_arch = "wasm32"))]
-            Some(io) if io.original_native_work().is_some() => None,
-            Some(io) => Some(crate::executor::reserve_preparation_workspace(self, io)?),
-            None => None,
-        };
+        validate_context_limits_with_io(limits, io)?;
+        #[cfg(not(feature = "filesystem"))]
+        limits.validate()?;
         if self.selection.conversation_revision == 0
             || self.selection.message_ids.is_empty()
             || self.selection.message_ids.len() > limits.context_messages
@@ -182,18 +174,18 @@ impl CanonicalContextCheckpoint {
         if let Some(previous) = &self.selection.checkpoint {
             context_checkpoint_file(limits, previous, io)?;
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let _unique_guard = match io.and_then(crate::executor::PreparationIo::original_native_work) {
-            Some(work) => {
-                // Logical borrowed entry slots only. Opaque std tree nodes are
-                // outside the SDK allocator boundary, not invented operations.
-                let bytes = self.selection.message_ids.len()
-                    .checked_mul(std::mem::size_of::<&()>())
-                    .ok_or_else(|| context_checkpoint_error(io, "canonical checkpoint identity storage overflows"))?;
-                Some(work.retain_owned(bytes as u64)
-                    .map_err(|cause| crate::Error::NativeWork { cause, custody: None })?)
-            }
-            None => None,
+        #[cfg(feature = "filesystem")]
+        let mut history = io.map(crate::executor::PreparationIo::history_io);
+        #[cfg(feature = "filesystem")]
+        let mut observed: Option<&mut dyn crate::store::history::HistoryIo> =
+            history.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
+        #[cfg(feature = "filesystem")]
+        let _unique_guard = {
+            // Logical borrowed entry slots only, never opaque allocator nodes.
+            let bytes = self.selection.message_ids.len()
+                .checked_mul(std::mem::size_of::<&uuid::Uuid>())
+                .ok_or_else(|| context_checkpoint_error(io, "canonical checkpoint identity storage overflows"))?;
+            crate::wire_codec::CodecQuota::new(&mut observed, bytes as u64)?
         };
         let mut unique = std::collections::BTreeSet::new();
         for id in &self.selection.message_ids {
@@ -271,9 +263,10 @@ fn context_checkpoint_error(io: Option<&crate::executor::PreparationIo>, reason:
 }
 
 fn context_checkpoint_file(limits: Limits, file: &FileRef, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-        return limits.validate_file_with_native_work(file, work);
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let mut history = io.history_io();
+        return limits.validate_file_with_work(file, &mut Some(&mut history));
     }
     let _ = io;
     limits.validate_file(file)
@@ -901,8 +894,6 @@ impl DurableContextProvider {
             io.absorb_native_custody(compacted.1)?;
             return Ok(compacted.0);
         }
-        #[cfg(feature = "filesystem")]
-        let workspace = io.map(|io| crate::executor::reserve_preparation_workspace(context, io)).transpose()?;
         retention.validate()?;
         context.validate_current_input()?;
         if max_messages == 0 {
@@ -912,21 +903,28 @@ impl DurableContextProvider {
         }
         let source_digest = crate::executor::preparation_digest(context, io)?;
         if let Some(summary) = &summary {
-            let covered = context
-                .messages
-                .get(..summary.source_messages as usize)
-                .ok_or_else(|| {
-                    crate::Error::Invalid("summary extent exceeds source projection".into())
-                })?;
-            let summarized = Context {
-                messages: covered.to_vec(),
-                metadata: context.metadata.clone(),
-                current_input_index: context
-                    .current_input_index
-                    .filter(|index| *index < summary.source_messages),
-            };
+            let mut observed_claim = 0;
+            let digest = (|| {
+                #[cfg(feature = "filesystem")]
+                let summarized = if let Some(io) = io {
+                    let mut history = io.history_io();
+                    let (copy, claim) = compaction::clone_context_prefix_with_work(
+                        context, summary.source_messages as usize, &mut Some(&mut history))?;
+                    observed_claim = claim;
+                    copy
+                } else {
+                    compaction::clone_context_prefix_with_work(context, summary.source_messages as usize, &mut None)?.0
+                };
+                #[cfg(not(feature = "filesystem"))]
+                let summarized = compaction::clone_context_prefix_with_work(
+                    context, summary.source_messages as usize, &mut None)?.0;
+                crate::executor::preparation_digest(&summarized, io)
+            })();
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io { io.release(observed_claim)?; }
+            let _ = observed_claim;
             if summary.source_messages == 0
-                || summary.source_digest != crate::executor::preparation_digest(&summarized, io)?
+                || summary.source_digest != digest?
                 || summary.output.descriptor().media_type() != "text/plain"
             {
                 return Err(crate::Error::Invalid(
@@ -943,9 +941,18 @@ impl DurableContextProvider {
                         .into(),
                 )
             })?;
-            compact_projection(context, max_messages, summary, &retention, io)?
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io {
+                let mut history = io.history_io();
+                compaction::compact_context_with_work(context, max_messages, summary, &retention,
+                    &mut Some(&mut history))?.0
+            } else {
+                compact_projection(context, max_messages, summary, &retention)?
+            }
+            #[cfg(not(feature = "filesystem"))]
+            { compact_projection(context, max_messages, summary, &retention)? }
         } else {
-            context.clone()
+            context_clone_with_io(context, io)?
         };
         let reference = CompactionReference {
             source_digest,
@@ -955,8 +962,6 @@ impl DurableContextProvider {
             summary,
             retention,
         };
-        #[cfg(feature = "filesystem")]
-        if let Some(workspace) = workspace { workspace.into_retained(); }
         Ok((compacted, reference))
     }
 
@@ -1355,9 +1360,42 @@ pub(crate) fn validate_projected_context_with_io(
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) fn context_contract_native<T: Serialize>(
-    value: &T, recipe: NativeContextValueRecipe<'_>, work: &acyclic_fs::NativeMaterializationWork,
+    value: &T, work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-    recipe.produce(value, work)
+    use crate::store::history::HistoryIo as _;
+    let remaining = work.remaining().map_err(native_context_work_error)?;
+    let bounds = crate::contract::JsonBounds {
+        maximum_bytes: remaining.bytes_encoded,
+        maximum_items: remaining.items_examined,
+        maximum_depth: 256,
+    };
+    let labels = [
+        "Contract", "name", "revision", "max_messages", "summary", "retention",
+        "roles", "native_media", "operation_id", "step", "source_messages", "source_digest", "output",
+        "selection", "renderer", "mode", "placement", "limits", "reference",
+        "ContextSelection", "source", "extent", "representation", "ContextSourceValue", "kind", "file",
+        "attribute", "ContextAttribute", "type_name", "type_revision", "schema", "state_revision", "value",
+        "ContextExtent", "whole", "span", "start", "end", "ContextRepresentation", "full",
+        "ContextRenderMode", "prompt", "update", "prepend", "append", "ContextPlacement",
+    ].iter().map(|label| label.len() as u64 + 4).sum::<u64>();
+    let private_labels = labels.checked_add(std::any::type_name::<T>().len() as u64 + 4)
+        .ok_or_else(|| native_context_boundary(crate::wire::ErrorCode::Invalid,
+            "context serializer diagnostic witness overflows"))?;
+    let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(0, private_labels)?;
+    let diagnostic = work.retain_owned(diagnostic_bytes).map_err(native_context_work_error)?;
+    let mut io = crate::store::history::native_work_io(work).map_err(native_context_work_error)?;
+    let encoded = (|| {
+        crate::contract::validate_json_byte_bound_native_trusted(value, bounds,
+            crate::wire::ErrorCode::Invalid, &mut |charge| io.codec_charge(charge))?;
+        crate::contract::json_value_bounded_native_trusted(value, bounds,
+            crate::wire::ErrorCode::Invalid, &mut |charge| io.codec_charge(charge))
+    })();
+    match encoded {
+        Ok(value) => Ok((value, io.into_custody())),
+        Err(crate::Error::NativeEncode { code, source, custody: None }) =>
+            Err(crate::Error::NativeEncode { code, source, custody: Some(diagnostic) }),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -1812,20 +1850,8 @@ impl ContextStage for CompactionStage {
             name: &'static str, revision: &'static str, max_messages: usize,
             summary: &'a Option<ContextSummary>, retention: &'a CompactionRetention,
         }
-        let mut recipe = NativeContextValueRecipe::new(work);
-        recipe.field_keys(&["name", "revision", "max_messages", "summary", "retention"])?;
-        recipe.text("compaction")?; recipe.text("3")?;
-        recipe.field_keys(&["roles", "native_media"])?;
-        recipe.array(self.retention.roles.len())?;
-        for role in &self.retention.roles { recipe.text(role.as_str())?; }
-        if let Some(summary) = &self.summary {
-            recipe.field_keys(&["operation_id", "step", "source_messages", "source_digest", "output"])?;
-            recipe.uuid()?;
-            recipe.array(summary.source_digest.len())?;
-            recipe.file(&summary.output)?;
-        }
         context_contract_native(&Contract { name: "compaction", revision: "3",
-            max_messages: self.max_messages, summary: &self.summary, retention: &self.retention }, recipe, work)
+            max_messages: self.max_messages, summary: &self.summary, retention: &self.retention }, work)
     }
 
     fn apply<'a>(

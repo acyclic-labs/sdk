@@ -232,47 +232,6 @@ impl ContextSelection {
         self.validate_with_work(limits, &mut Some(&mut work))
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn add_native_value_recipe(
-        &self,
-        recipe: &mut super::NativeContextValueRecipe<'_>,
-    ) -> Result<()> {
-        recipe.field_keys(&["source", "extent", "representation"])?;
-        match &self.source {
-            ContextSourceValue::File { file } => {
-                recipe.field_keys(&["kind", "file"])?;
-                recipe.text("file")?;
-                recipe.file(file)?;
-            }
-            ContextSourceValue::Attribute { attribute } => {
-                recipe.field_keys(&["kind", "attribute"])?;
-                recipe.text("attribute")?;
-                recipe.field_keys(&[
-                    "type_name", "type_revision", "schema", "state_revision", "value",
-                ])?;
-                recipe.text(&attribute.type_name)?;
-                recipe.text(&attribute.type_revision)?;
-                recipe.value(&attribute.schema)?;
-                recipe.text(&attribute.state_revision)?;
-                recipe.value(&attribute.value)?;
-            }
-        }
-        match self.extent {
-            ContextExtent::Whole => {
-                recipe.field_keys(&["kind"])?;
-                recipe.text("whole")?;
-            }
-            ContextExtent::Span { .. } => {
-                recipe.field_keys(&["kind", "start", "end"])?;
-                recipe.text("span")?;
-            }
-        }
-        recipe.text(match self.representation {
-            ContextRepresentation::Full => "full",
-            ContextRepresentation::Summary => "summary",
-            ContextRepresentation::Reference => "reference",
-        })
-    }
 }
 
 fn selection_has_native_work(
@@ -302,23 +261,23 @@ fn observe_selection_value_with_work(
     value: &Value,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
-    if let Some(observer) = work.as_deref_mut() {
-        observer.check_cancellation()?;
-        observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if selection_has_native_work(work) {
+        let observer = work.as_deref_mut().expect("native selection observer");
+        let remaining = observer.remaining()?;
+        crate::contract::json_owned_value_shape_bounded(
+            value,
+            crate::contract::JsonBounds {
+                maximum_bytes: remaining.bytes_encoded,
+                maximum_items: remaining.items_examined,
+                maximum_depth: 256,
+            },
+            crate::contract::JsonValueSchema::None,
+            &mut |charge| observer.codec_charge(charge),
+        )?;
+        return Ok(());
     }
-    match value {
-        Value::Array(values) => {
-            for value in values {
-                observe_selection_value_with_work(value, work)?;
-            }
-        }
-        Value::Object(values) => {
-            for value in values.values() {
-                observe_selection_value_with_work(value, work)?;
-            }
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
-    }
+    let _ = (value, work);
     Ok(())
 }
 
@@ -467,6 +426,9 @@ impl ContextStage for SelectionStage {
             return Err(super::native_context_boundary(crate::wire::ErrorCode::Invalid,
                 "context renderer contract must be an object"));
         }
+        let mut source_io = crate::store::history::native_work_io(work)
+            .map_err(super::native_context_work_error)?;
+        observe_selection_value_with_work(&renderer.0, &mut Some(&mut source_io))?;
         #[derive(Serialize)]
         struct Contract<'a> {
             name: &'a str,
@@ -480,17 +442,6 @@ impl ContextStage for SelectionStage {
             ContextPlacement::Prepend => "prepend",
             ContextPlacement::Append => "append",
         };
-        let mut recipe = super::NativeContextValueRecipe::new(work);
-        recipe.field_keys(&["name", "selection", "renderer", "mode", "placement", "limits"])?;
-        recipe.text(&self.name)?;
-        self.selection.add_native_value_recipe(&mut recipe)?;
-        recipe.value(&renderer.0)?;
-        recipe.text(match self.mode {
-            ContextRenderMode::Prompt => "prompt",
-            ContextRenderMode::Update => "update",
-        })?;
-        recipe.text(placement)?;
-        recipe.limits()?;
         // Borrow the renderer's actual guarded payload until the funded copy finishes.
         // Its independent original ledger is never rebound into the stage output.
         let contract = super::context_contract_native(&Contract {
@@ -500,7 +451,7 @@ impl ContextStage for SelectionStage {
             mode: self.mode,
             placement,
             limits: self.limits,
-        }, recipe, work)?;
+        }, work)?;
         drop(renderer);
         Ok(contract)
     }
@@ -856,4 +807,46 @@ pub fn validate_projected_context(context: &Context, limits: Limits) -> Result<(
         limits.validate_file(file)?;
     }
     Ok(())
+}
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod native_source_tests {
+    use super::*;
+
+    #[test]
+    fn native_attribute_rejects_deep_source_before_schema_compilation_or_copy() {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+        let cancellation = CancellationToken::new();
+        let budget = WorkBudget {
+            allocation_operations: 1024,
+            peak_allocation_bytes: 1_048_576,
+            bytes_copied: 1_048_576,
+            bytes_encoded: 1_048_576,
+            items_examined: 8192,
+            ..WorkBudget::default()
+        };
+        let mut value = Value::Null;
+        for _ in 0..257 {
+            value = Value::Array(vec![value]);
+        }
+        let mut attribute = ContextAttribute {
+            type_name: "application:state".into(),
+            type_revision: "1".into(),
+            schema: Value::Bool(true),
+            state_revision: "1".into(),
+            value,
+        };
+        // The new finite native API does not narrow the original ordinary API.
+        attribute.validate().expect("ordinary deep attribute remains legal");
+        let work = NativeMaterializationWork::new(budget, &cancellation).expect("original ledger");
+        let before = work.receipt();
+        let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
+        assert!(attribute.validate_with_work(&mut Some(&mut observer)).is_err());
+        assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
+        assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
+        attribute.value = Value::Array(vec![Value::Null]);
+        let control = NativeMaterializationWork::new(budget, &cancellation).expect("control ledger");
+        let mut observer = crate::store::history::native_work_io(&control).expect("control observer");
+        attribute.validate_with_work(&mut Some(&mut observer)).expect("bounded source is valid");
+    }
 }

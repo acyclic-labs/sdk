@@ -706,7 +706,7 @@ pub(crate) fn event_owned_bytes(event: &Event) -> Result<u64> {
 }
 
 
-    fn value_owned_bytes_for(value: &Value, cloned: bool) -> Result<u64> {
+    pub(crate) fn value_owned_bytes(value: &Value) -> Result<u64> {
         let overflow = || {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             { Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "JSON ownership overflows" } }
@@ -714,32 +714,26 @@ pub(crate) fn event_owned_bytes(event: &Event) -> Result<u64> {
             { Error::Invalid("JSON ownership overflows".into()) }
         };
         match value {
-            Value::String(text) => Ok((if cloned { text.len() } else { text.capacity() }) as u64),
+            Value::String(text) => Ok(text.capacity() as u64),
             Value::Array(values) => {
-                let slots = (if cloned { values.len() } else { values.capacity() })
+                let slots = values.capacity()
                     .checked_mul(std::mem::size_of::<Value>())
                     .ok_or_else(overflow)? as u64;
                 values.iter().try_fold(slots, |bytes,value| {
-                    bytes.checked_add(value_owned_bytes_for(value, cloned)?).ok_or_else(overflow)
+                    bytes.checked_add(value_owned_bytes(value)?).ok_or_else(overflow)
                 })
             }
             Value::Object(values) => {
                 let slots = values.len().checked_mul(std::mem::size_of::<(String,Value)>())
                     .ok_or_else(overflow)? as u64;
                 values.iter().try_fold(slots, |bytes,(key,value)| {
-                    let owned = value_owned_bytes_for(value, cloned)?;
-                    bytes.checked_add((if cloned { key.len() } else { key.capacity() }) as u64)
+                    let owned = value_owned_bytes(value)?;
+                    bytes.checked_add(key.capacity() as u64)
                         .and_then(|bytes| bytes.checked_add(owned)).ok_or_else(overflow)
                 })
             }
             Value::Null | Value::Bool(_) | Value::Number(_) => Ok(0),
         }
-    }
-    pub(crate) fn value_clone_owned_bytes(value: &Value) -> Result<u64> {
-        value_owned_bytes_for(value, true)
-    }
-    pub(crate) fn value_owned_bytes(value: &Value) -> Result<u64> {
-        value_owned_bytes_for(value, false)
     }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -1309,26 +1303,3 @@ pub(super) fn admission_from_owned_value(
 }
 
 
-/// Pure temporary-copy sizing witness; physical copies use `copy_value`.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn value_clone_work(value: &Value) -> Result<(u64, u64)> {
-    fn add(total: &mut (u64, u64), part: (u64, u64)) -> Result<()> {
-        total.0 = total.0.checked_add(part.0).ok_or_else(|| Error::Invalid("JSON copy allocations overflow".into()))?;
-        total.1 = total.1.checked_add(part.1).ok_or_else(|| Error::Invalid("JSON copy bytes overflow".into()))?;
-        Ok(())
-    }
-    let mut total = (0, 0);
-    match value {
-        Value::String(text) => total = (u64::from(!text.is_empty()), text.len() as u64),
-        Value::Array(values) => {
-            total.0 = u64::from(!values.is_empty());
-            for value in values { add(&mut total, value_clone_work(value)?)?; }
-        }
-        Value::Object(values) => for (key, value) in values {
-            add(&mut total, (u64::from(!key.is_empty()), key.len() as u64))?;
-            add(&mut total, value_clone_work(value)?)?;
-        },
-        Value::Null | Value::Bool(_) | Value::Number(_) => {}
-    }
-    Ok(total)
-}

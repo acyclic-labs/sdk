@@ -127,6 +127,14 @@ impl ProviderRef {
     pub fn validate(&self) -> Result<()> {
         self.validation_reason().map_or(Ok(()), |reason| Err(Error::Invalid(reason.into())))
     }
+
+    /// Validates the same identity fields on the original native ledger.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn validate_with_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.validate_with_work(&mut Some(&mut io))
+    }
     pub(crate) fn validate_with_work(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -168,17 +176,6 @@ impl ProviderRef {
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn validate_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        for part in self.parts() {
-            crate::conversation::inspect_native_metadata(work, part.len())?;
-        }
-        self.validation_reason().map_or(Ok(()), |reason| Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid, reason,
-        }))
-    }
 
     pub(crate) fn validation_error(&self) -> Option<&'static str> {
         self.validation_reason()
@@ -598,6 +595,14 @@ impl GenerationRef {
         io.release(unused)?;
         held.into_retained();
         Ok(value)
+    }
+
+    /// Validates the same immutable reference and semantic kind on native work.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn validate_with_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.validate_with_work(&mut Some(&mut io))
     }
 }
 typed_reference!(

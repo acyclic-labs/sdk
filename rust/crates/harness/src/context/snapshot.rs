@@ -223,14 +223,8 @@ impl ContextStage for PinnedContextStage {
             name: &'a str, revision: &'a str, reference: &'a FileRef,
             placement: ContextPlacement, limits: Limits,
         }
-        let mut recipe = super::NativeContextValueRecipe::new(work);
-        recipe.field_keys(&["name", "revision", "reference", "placement", "limits"])?;
-        recipe.text(&self.name)?; recipe.text(&self.revision)?;
-        recipe.file(&self.reference)?;
-        recipe.text(match self.placement { ContextPlacement::Prepend => "prepend", ContextPlacement::Append => "append" })?;
-        recipe.limits()?;
         super::context_contract_native(&Contract { name: &self.name, revision: &self.revision,
-            reference: &self.reference, placement: self.placement, limits: self.limits }, recipe, work)
+            reference: &self.reference, placement: self.placement, limits: self.limits }, work)
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

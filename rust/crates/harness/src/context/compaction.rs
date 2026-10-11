@@ -272,7 +272,7 @@ pub(crate) fn clone_metadata_with_work(
             let file = file.clone_in_quota(&mut quota)?;
             let bytes = std::mem::size_of::<(String, crate::conversation::FileRef)>() as u64;
             let io = quota.work().as_deref_mut().expect("observed metadata");
-            io.admit_allocation(bytes)?;
+            io.admit_owned(bytes)?;
             io.retain_owned(bytes)?;
             quota.adopt(bytes)?;
             result.insert(key, file);
@@ -342,6 +342,140 @@ pub(crate) fn clone_base_messages_with_work(
     Ok((result, claim))
 }
 
+fn quota_vector<T>(capacity: usize, quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<Vec<T>> {
+    let mut values = Vec::new();
+    reserve_vector_with_work(&mut values, capacity, quota.work())?;
+    quota.adopt((values.capacity() * std::mem::size_of::<T>()) as u64)?;
+    Ok(values)
+}
+
+fn retire_vector<T>(values: Vec<T>, quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<()> {
+    let bytes = (values.capacity() * std::mem::size_of::<T>()) as u64;
+    drop(values);
+    quota.relinquish(bytes)
+}
+
+pub(crate) fn compact_context_with_work(
+    context: &Context, maximum: usize, summary: &super::ContextSummary,
+    retention: &super::CompactionRetention,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<(Context, u64)> {
+    use crate::model::{ModelContent, ModelMessage, ModelRole};
+    if work.is_none() {
+        return super::compact_projection(context, maximum, summary, retention).map(|context| (context, 0));
+    }
+    if maximum < 2 {
+        return Err(Error::Invalid("compaction must retain the current input and summary".into()));
+    }
+    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let mut result = Context::default();
+    let made = (|| {
+        let parts = context.messages.iter().try_fold(0_usize, |count, message|
+            count.checked_add(message.content.parts().len()))
+            .ok_or_else(|| Error::Invalid("context part count overflows".into()))?;
+        let mut pending = quota_vector::<(&str, usize)>(parts, &mut quota)?;
+        let mut edges = quota_vector::<(usize, usize)>(parts, &mut quota)?;
+        let mut selected = quota_vector::<bool>(context.messages.len(), &mut quota)?;
+        for (position, message) in context.messages.iter().enumerate() {
+            quota.work().as_deref_mut().expect("observed compaction")
+                .codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            selected.push(context.current_input_index.map(|index| index as usize) == Some(position)
+                || position + 1 == context.messages.len()
+                || position >= summary.source_messages as usize
+                || retention.roles.contains(&message.role)
+                || (retention.native_media && message.content.contains_native_media()));
+            for part in message.content.parts() {
+                quota.work().as_deref_mut().expect("observed compaction")
+                    .codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                match part {
+                    ModelContentPart::ToolCall { call_id, .. } => {
+                        if let Some(prior) = pending.iter_mut().find(|(id, _)| *id == call_id) {
+                            prior.1 = position;
+                        } else { pending.push((call_id, position)); }
+                    }
+                    ModelContentPart::ToolResult { call_id, .. } => {
+                        if let Some(prior) = pending.iter().position(|(id, _)| *id == call_id) {
+                            let (_, call) = pending.swap_remove(prior);
+                            edges.push((call, position));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        loop {
+            let mut changed = false;
+            for &(call, response) in &edges {
+                quota.work().as_deref_mut().expect("observed compaction")
+                    .codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                if selected[call] || selected[response] {
+                    changed |= !selected[call] || !selected[response];
+                    selected[call] = true;
+                    selected[response] = true;
+                }
+            }
+            if !changed { break; }
+        }
+        retire_vector(edges, &mut quota)?;
+        pending.clear();
+        let mut count = selected.iter().filter(|value| **value).count();
+        if count >= maximum {
+            return Err(Error::Invalid("mandatory context exceeds compaction message budget".into()));
+        }
+        for selected in selected.iter_mut().rev() {
+            if count + 1 == maximum { break; }
+            if !*selected { *selected = true; count += 1; }
+        }
+        result.messages = quota_vector::<ModelMessage>(count + 1, &mut quota)?;
+        let file = summary.output.clone_in_quota(&mut quota)?;
+        result.messages.push(ModelMessage { role: ModelRole::Assistant,
+            content: ModelContent::Part(ModelContentPart::File {
+                file, policy: crate::model::FileProjectionPolicy::BoundedFull,
+            }) });
+        for (position, message) in context.messages.iter().enumerate() {
+            if !selected[position] { continue; }
+            for part in message.content.parts() {
+                quota.work().as_deref_mut().expect("observed compaction")
+                    .codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                match part {
+                    ModelContentPart::ToolCall { call_id, .. } => {
+                        if !pending.iter().any(|(id, _)| *id == call_id) { pending.push((call_id, position)); }
+                    }
+                    ModelContentPart::ToolResult { call_id, .. } => {
+                        let prior = pending.iter().position(|(id, _)| *id == call_id)
+                            .ok_or_else(|| Error::Invalid("compaction boundary splits a tool exchange".into()))?;
+                        pending.swap_remove(prior);
+                    }
+                    _ => {}
+                }
+            }
+            if context.current_input_index.map(|index| index as usize) == Some(position) {
+                result.current_input_index = Some(u32::try_from(result.messages.len())
+                    .map_err(|_| Error::Invalid("current input index exceeds portable count".into()))?);
+            }
+            let slot = std::mem::size_of::<ModelMessage>() as u64;
+            quota.work().as_deref().expect("observed compaction").admit_copy(slot)?;
+            let (content, claim) = crate::model::clone_content_with_work(&message.content, quota.work())?;
+            quota.adopt(claim)?;
+            quota.work().as_deref_mut().expect("observed compaction").copy_bytes(slot)?;
+            result.messages.push(ModelMessage { role: message.role, content });
+        }
+        if !pending.is_empty() {
+            return Err(Error::Invalid("compaction boundary splits a tool exchange".into()));
+        }
+        retire_vector(pending, &mut quota)?;
+        retire_vector(selected, &mut quota)?;
+        let (metadata, claim) = clone_metadata_with_work(&context.metadata, quota.work())?;
+        result.metadata = metadata;
+        quota.adopt(claim)?;
+        Ok(())
+    })();
+    if let Err(error) = made { drop(result); return Err(error); }
+    let claim = quota.retained();
+    quota.transfer();
+    Ok((result, claim))
+}
+
 pub(crate) fn reserve_vector_with_work<T>(
     values: &mut Vec<T>, capacity: usize,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -394,129 +528,6 @@ mod native {
         Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "context clone storage overflows" }
     }
 
-    /// A recipe describes the actual typed clone, not its serialized representation.
-    #[derive(Default)]
-    struct CloneRecipe { owned: u64, copied: u64, allocations: u64 }
-
-    impl CloneRecipe {
-        fn add(&mut self, bytes: usize, copied: bool, allocated: bool) -> Result<()> {
-            self.owned = self.owned.checked_add(bytes as u64).ok_or_else(overflow)?;
-            if copied { self.copied = self.copied.checked_add(bytes as u64).ok_or_else(overflow)?; }
-            if allocated { self.allocations = self.allocations.checked_add(1).ok_or_else(overflow)?; }
-            Ok(())
-        }
-        fn text(&mut self, text: &str) -> Result<()> { self.add(text.len(), true, !text.is_empty()) }
-        fn vector<T>(&mut self, count: usize) -> Result<()> {
-            self.add(count.checked_mul(size_of::<T>()).ok_or_else(overflow)?, false, count != 0)
-        }
-        fn fund(&self, work: &NativeMaterializationWork) -> Result<NativeAllocation> {
-            work.admit(WorkCounters { bytes_copied: self.copied, allocation_operations: self.allocations,
-                ..WorkCounters::default() }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            work.retain_owned(self.owned).map_err(|cause| Error::NativeWork { cause, custody: None })
-        }
-        fn begin(&self, work: &NativeMaterializationWork) -> Result<()> {
-            work.charge(WorkCounters { bytes_copied: self.copied, allocation_operations: self.allocations,
-                ..WorkCounters::default() }).map_err(|cause| Error::NativeWork { cause, custody: None })
-        }
-        fn admit(self, work: &NativeMaterializationWork) -> Result<NativeAllocation> {
-            let guard = self.fund(work)?;
-            self.begin(work)?;
-            Ok(guard)
-        }
-    }
-
-    /// Actual tree storage emitted by the closed SDK metadata producer. UUID
-    /// strings here are real to_value output, never a typed source-clone proxy.
-    pub(crate) struct NativeContextValueRecipe<'a> {
-        inner: CloneRecipe,
-        work: &'a NativeMaterializationWork,
-        field_label_bytes: u64,
-    }
-
-    impl<'a> NativeContextValueRecipe<'a> {
-        pub(crate) fn new(work: &'a NativeMaterializationWork) -> Self {
-            Self { inner: CloneRecipe::default(), work, field_label_bytes: 0 }
-        }
-        pub(crate) fn field_keys(&mut self, keys: &[&str]) -> Result<()> {
-            self.inner.add(keys.len().checked_mul(size_of::<(String, serde_json::Value)>()).ok_or_else(overflow)?, false, false)?;
-            for key in keys {
-                self.field_label_bytes = self.field_label_bytes.checked_add(key.len() as u64).ok_or_else(overflow)?;
-                self.text(key)?;
-            }
-            Ok(())
-        }
-        pub(crate) fn text(&mut self, text: &str) -> Result<()> { self.inner.text(text) }
-        pub(crate) fn array(&mut self, count: usize) -> Result<()> { self.inner.vector::<serde_json::Value>(count) }
-        pub(crate) fn uuid(&mut self) -> Result<()> { self.inner.add(36, true, true) }
-        pub(crate) fn limits(&mut self) -> Result<()> {
-            self.field_keys(&["file_bytes", "path_bytes", "attachments", "render_bytes",
-                "model_steps", "model_events_per_step", "tool_calls_per_step", "context_messages"])
-        }
-        pub(crate) fn file(&mut self, file: &FileRef) -> Result<()> {
-            use crate::conversation::{VolumeClass, VolumeOwner};
-            self.field_keys(&["volume", "path", "version", "descriptor", "display_name"])?;
-            self.text(file.path())?; self.text(file.version())?; self.text(file.display_name())?;
-            self.field_keys(&["provider", "id", "class", "owner"])?;
-            let volume = file.volume();
-            self.text(volume.id())?;
-            self.text(match volume.class() {
-                VolumeClass::Project => "project",
-                VolumeClass::AgentPrivate => "agent_private",
-                VolumeClass::SessionShared => "session_shared",
-            })?;
-            self.field_keys(&["namespace", "family", "version"])?;
-            self.text(volume.provider().namespace())?;
-            self.text(volume.provider().family())?;
-            self.text(volume.provider().version())?;
-            self.field_keys(&["kind", "id"])?;
-            match volume.owner() {
-                VolumeOwner::Project(id) => { self.text("project")?; self.text(id)?; }
-                VolumeOwner::Agent(_) => { self.text("agent")?; self.uuid()?; }
-                VolumeOwner::Session(id) => { self.text("session")?; self.text(id)?; }
-            }
-            self.field_keys(&["sha256", "byte_length", "media_type"])?;
-            self.array(file.descriptor().sha256().len())?;
-            self.text(file.descriptor().media_type())
-        }
-        pub(crate) fn value(&mut self, value: &serde_json::Value) -> Result<()> {
-            fn examine_value(value: &serde_json::Value, work: &NativeMaterializationWork) -> Result<()> {
-                examine(work)?;
-                match value {
-                    serde_json::Value::Array(values) => for value in values { examine_value(value, work)?; },
-                    serde_json::Value::Object(values) => for value in values.values() { examine_value(value, work)?; },
-                    _ => {}
-                }
-                Ok(())
-            }
-            examine_value(value, self.work)?;
-            let (allocations, copied) = crate::core::value_clone_work(value)?;
-            let owned = crate::core::value_clone_owned_bytes(value)?;
-            self.inner.allocations = self.inner.allocations.checked_add(allocations).ok_or_else(overflow)?;
-            self.inner.copied = self.inner.copied.checked_add(copied).ok_or_else(overflow)?;
-            self.inner.owned = self.inner.owned.checked_add(owned).ok_or_else(overflow)?;
-            Ok(())
-        }
-        pub(crate) fn produce<T: Serialize>(
-            self, value: &T, work: &NativeMaterializationWork,
-        ) -> Result<(serde_json::Value, NativeAllocation)> {
-            if !work.shares_ledger(self.work) {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "context metadata recipe belongs to another original work" });
-            }
-            let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(0,
-                self.field_label_bytes.checked_add(std::any::type_name::<T>().len() as u64).ok_or_else(overflow)?)?;
-            let diagnostic = work.retain_owned(diagnostic_bytes)
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            let guard = self.inner.admit(work)?;
-            // Only the audited SDK field serializers reach this original
-            // producer; no encoded buffer, parser or ordinary trait callback.
-            match serde_json::to_value(value) {
-                Ok(value) => Ok((value, guard)),
-                Err(source) => Err(Error::NativeEncode { code: crate::wire::ErrorCode::Invalid,
-                    source, custody: Some(diagnostic) }),
-            }
-        }
-    }
 
     pub(crate) fn native_vector<T>(capacity: usize, work: &NativeMaterializationWork) -> Result<(Vec<T>, NativeAllocation)> {
         let bytes = capacity.checked_mul(size_of::<T>()).ok_or_else(overflow)? as u64;
@@ -764,12 +775,83 @@ mod native {
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use native::{clone_base_messages_native, clone_content_native, clone_context_native, clone_context_prefix_native, clone_file_native, clone_messages_native, clone_metadata_native, clone_retention_native, clone_text_native, mandatory_positions_native, native_vector, NativeContextValueRecipe};
+pub(crate) use native::{clone_base_messages_native, clone_content_native, clone_context_native, clone_context_prefix_native, clone_file_native, clone_messages_native, clone_metadata_native, clone_retention_native, clone_text_native, mandatory_positions_native, native_vector};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::{ModelContent, ModelMessage, ModelRole, ToolResultContent};
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_metadata_depth_denial_precedes_output_tree_allocation() {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+        let cancellation = CancellationToken::new();
+        let budget = WorkBudget {
+            allocation_operations: 1024, peak_allocation_bytes: 1_048_576,
+            bytes_copied: 1_048_576, bytes_encoded: 1_048_576, items_examined: 4096,
+            ..WorkBudget::default()
+        };
+        let work = NativeMaterializationWork::new(budget, &cancellation).expect("original ledger");
+        let mut source = serde_json::Value::Null;
+        for _ in 0..257 { source = serde_json::Value::Array(vec![source]); }
+        let before = work.receipt();
+        assert!(super::super::context_contract_native(&source, &work).is_err());
+        assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
+        assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
+        let control = NativeMaterializationWork::new(budget, &cancellation).expect("control ledger");
+        let source = serde_json::json!({ "source": ["bounded"] });
+        let (actual, custody) = super::super::context_contract_native(&source, &control).expect("bounded actual metadata");
+        assert_eq!(actual, source);
+        assert!(custody.work().shares_ledger(&control));
+        assert!(custody.bytes() > 0);
+        drop(actual);
+        drop(custody);
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn observed_compaction_matches_ordinary_exchange_and_input_selection() -> Result<()> {
+        use crate::conversation::{FileDescriptor, FileRef, ProviderRef, VolumeClass, VolumeOwner, VolumeRef};
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+        let file = FileRef::new(VolumeRef::new(
+            ProviderRef::new("test", "filesystem", "2")?, "context", VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])))?,
+            "context/summary.txt", "pinned", FileDescriptor::from_bytes(b"summary", "text/plain")?, "summary.txt")?;
+        let context = Context {
+            messages: vec![
+                ModelMessage { role: ModelRole::User, content: ModelContent::Text("old".into()) },
+                ModelMessage { role: ModelRole::Assistant, content: ModelContent::Part(ModelContentPart::ToolCall {
+                    call_id: "call".into(), name: "tool".into(), arguments: serde_json::Value::Null,
+                }) },
+                ModelMessage { role: ModelRole::Tool, content: ModelContent::Part(ModelContentPart::ToolResult {
+                    call_id: "call".into(), name: "tool".into(),
+                    content: ToolResultContent::Json { value: serde_json::Value::Null },
+                }) },
+                ModelMessage { role: ModelRole::User, content: ModelContent::Text("current".into()) },
+            ], current_input_index: Some(3), ..Context::default()
+        };
+        let summary = super::super::ContextSummary { operation_id: crate::OperationId::new(), step: 0,
+            source_messages: 3, source_digest: [0; 32], output: file };
+        let retention = CompactionRetention { roles: vec![], native_media: false };
+        let expected = super::super::compact_projection(&context, 4, &summary, &retention)?;
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(WorkBudget {
+            allocation_operations: 1024, peak_allocation_bytes: 1_048_576,
+            bytes_copied: 1_048_576, items_examined: 1024,
+            ..WorkBudget::default()
+        }, &cancellation).expect("original ledger");
+        let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
+        let (actual, claim) = compact_context_with_work(&context, 4, &summary, &retention,
+            &mut Some(&mut observer))?;
+        let custody = observer.into_custody();
+        assert_eq!(actual, expected);
+        assert_eq!(claim, custody.bytes());
+        assert!(custody.work().shares_ledger(&work));
+        drop(actual);
+        drop(custody);
+        Ok(())
+    }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
