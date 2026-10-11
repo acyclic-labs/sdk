@@ -242,8 +242,8 @@ mod tests {
     impl Fixture {
         async fn new(nested: bool) -> Result<Self, Box<dyn std::error::Error>> {
             let directory = tempfile::tempdir()?;
-            let source = directory.path().join("customer-working-tree");
-            std::fs::create_dir(&source)?;
+            let source = directory.path().join("customer-parent/working-tree");
+            std::fs::create_dir_all(&source)?;
             std::fs::write(source.join("keep.txt"), b"original unrelated bytes")?;
             let relative = if nested {
                 std::fs::create_dir(source.join("directory"))?;
@@ -335,6 +335,26 @@ mod tests {
         assert!(fixture.apply(OperationId::new()).await.is_err());
         assert_eq!(std::fs::read(moved.join("file.txt"))?, b"original captured bytes");
         assert_eq!(std::fs::read(fixture.source.join("file.txt"))?, b"foreign replacement working tree");
+        assert!(restore_native_directory_capture(&LocalCoreStateStore::new(fixture.state.root()), fixture.capture.operation_id()).await.is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn moved_ancestor_symlink_back_to_the_original_inode_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = Fixture::new(false).await?;
+        let parent = fixture.source.parent().ok_or("missing captured root parent")?;
+        let moved = fixture.directory.path().join("moved-customer-parent");
+        std::fs::rename(parent, &moved)?;
+        std::os::unix::fs::symlink(&moved, parent)?;
+        // The rebound ambient path still resolves to the original root inode.
+        // Identity alone must not grant publication through this new ancestor.
+        let reopened = std::fs::File::open(&fixture.source)?;
+        assert_eq!(crate::NativeRootIdentity::from_file(&reopened)?, fixture.capture.root_identity());
+        let operation = OperationId::new();
+        assert!(fixture.apply(operation).await.is_err());
+        assert_eq!(std::fs::read(moved.join("working-tree/file.txt"))?, b"original captured bytes");
+        assert!(MaterializationJournalStore::load(&fixture.state, operation).await?.is_none());
         assert!(restore_native_directory_capture(&LocalCoreStateStore::new(fixture.state.root()), fixture.capture.operation_id()).await.is_err());
         Ok(())
     }
