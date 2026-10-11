@@ -26,6 +26,8 @@ use bytes::Bytes;
 use crate::async_storage::{NativeObjectRead, NativeObjectReadBatch};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::materializer::{NativeAllocation, NativeMaterializationWork};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::{Future, poll_fn};
 use std::mem::size_of;
@@ -175,7 +177,7 @@ enum FlightState {
 struct FlightWaiters {
     values: Vec<Waker>,
     #[cfg(not(target_arch = "wasm32"))]
-    allocation: Option<NativeAllocation>,
+    allocation: Option<KernelOwnedAllocation>,
 }
 
 struct Flight {
@@ -247,39 +249,41 @@ impl Flight {
                 if waiters.values.len() == waiters.values.capacity()
                     && (work.is_some() || waiters.allocation.is_some())
                 {
-                    // Only the concrete vector backing is SDK DATA. Build an
-                    // empty replacement while loaning the original ledger; no
-                    // waker or existing payload is dropped under that lock.
+                    // Fund the actual replacement scope before entering its
+                    // allocator; never construct or drop storage under a root loan.
                     let capacity = waiters.values.len().saturating_mul(2).max(1)
                         .min(usize::try_from(self.maximum_waiters).unwrap_or(usize::MAX));
                     let mut replacement = FlightWaiters::default();
                     if let Some(work) = work {
-                        let (values, allocation) = work.with_owned_allocations(|ledger, counters, budget, cancellation| {
-                            cancellation.check().map_err(|_| crate::materializer::NativeTreeMaterializationError::Cancelled)?;
-                            ledger.claim_elements::<Waker>(capacity, counters, budget)
-                                .map_err(|error| error.into_work_or(
-                                    crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow)))?;
-                            let mut values = Vec::new();
-                            values.try_reserve_exact(capacity).map_err(
-                                crate::materializer::NativeTreeMaterializationError::AllocationFailed)?;
-                            let excess = values.capacity().saturating_sub(capacity) * size_of::<Waker>();
-                            ledger.record_owned_bytes(excess as u64, counters).map_err(|error| error.into_work_or(
-                                crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow)))?;
-                            Ok::<_, crate::materializer::NativeTreeMaterializationError>(values)
-                        })?;
-                        replacement = FlightWaiters { values, allocation: Some(allocation) };
-                        // Record actual allocator excess before any late denial.
-                        work.remaining()?;
+                        let mut accounting = KernelAccounting::native(work, work.cancellation());
+                        let requested = capacity.checked_mul(size_of::<Waker>())
+                            .ok_or(ObjectStoreError::Work(crate::WorkError::Overflow))? as u64;
+                        replacement.allocation = Some(accounting.claim_owned(requested, 1)
+                            .map_err(crate::async_storage::sequential_read_error)?);
+                        replacement.values.try_reserve_exact(capacity).map_err(|error| ObjectStoreError::Native(
+                            crate::materializer::NativeTreeMaterializationError::AllocationFailed(error)))?;
+                        let actual = replacement.values.capacity().checked_mul(size_of::<Waker>())
+                            .ok_or(ObjectStoreError::Work(crate::WorkError::Overflow))? as u64;
+                        accounting.reconcile_owned(
+                            replacement.allocation.as_mut().expect("native waiter buffer owns its backing"),
+                            requested, actual,
+                        ).map_err(crate::async_storage::sequential_read_error)?;
                     } else {
                         replacement.values.try_reserve_exact(capacity).map_err(|error| ObjectStoreError::Native(
                             crate::materializer::NativeTreeMaterializationError::AllocationFailed(error)))?;
                     }
                     let copy = work.map(|work| work.reserve_copy((waiters.values.len() * size_of::<Waker>()) as u64)).transpose()?;
                     replacement.values.append(&mut waiters.values);
-                    if let Some(copy) = copy { copy.record((replacement.values.len() * size_of::<Waker>()) as u64)?; }
-                    // Vec storage is dropped before the custody field in this
-                    // concrete owner, including failure and unwind paths.
+                    let copied = (replacement.values.len() * size_of::<Waker>()) as u64;
+                    // Commit moved waiters before a late refusal, preserving all
+                    // prior registrations. Free old storage before its guard.
                     drop(std::mem::replace(waiters, replacement));
+                    if let Some(copy) = copy { copy.record(copied)?; }
+                    if let Some(work) = work {
+                        KernelAccounting::native(work, work.cancellation())
+                            .record_completed(WorkCounters::UNCHARGED)
+                            .map_err(crate::async_storage::sequential_read_error)?;
+                    }
                 }
                 waiters.values.push(context.waker().clone());
                 Poll::Pending
@@ -343,7 +347,7 @@ struct BatchLeader {
 struct BatchBuffer<T> {
     values: Vec<T>,
     #[cfg(not(target_arch = "wasm32"))]
-    allocation: Option<NativeAllocation>,
+    allocation: Option<KernelOwnedAllocation>,
 }
 
 impl<T> BatchBuffer<T> {
@@ -354,23 +358,20 @@ impl<T> BatchBuffer<T> {
     ) -> Result<Self, ObjectStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(native) = native {
-            // Only allocate an empty backing under the short original-ledger
-            // loan. Existing byte/flight owners are moved outside that lock.
-            let (values, allocation) = native.with_owned_allocations(|ledger, work, budget, cancellation| {
-                cancellation.check().map_err(|_| crate::materializer::NativeTreeMaterializationError::Cancelled)?;
-                ledger.claim_elements::<T>(count, work, budget).map_err(|error| error.into_work_or(
-                    crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow)))?;
-                let mut values = Vec::new();
-                values.try_reserve_exact(count).map_err(
-                    crate::materializer::NativeTreeMaterializationError::AllocationFailed)?;
-                let excess = values.capacity().saturating_sub(count).checked_mul(size_of::<T>())
-                    .ok_or(crate::WorkError::Overflow)?;
-                ledger.record_owned_bytes(excess as u64, work).map_err(|error| error.into_work_or(
-                    crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow)))?;
-                Ok::<_, crate::materializer::NativeTreeMaterializationError>(values)
-            })?;
-            let owner = Self { values, allocation: Some(allocation) };
-            native.remaining()?;
+            let requested = count.checked_mul(size_of::<T>())
+                .ok_or(ObjectStoreError::Work(crate::WorkError::Overflow))? as u64;
+            let mut accounting = KernelAccounting::native(native, native.cancellation());
+            let allocation = accounting.claim_owned(requested, u64::from(count != 0))
+                .map_err(crate::async_storage::sequential_read_error)?;
+            let mut owner = Self { values: Vec::new(), allocation: Some(allocation) };
+            owner.values.try_reserve_exact(count).map_err(|error| ObjectStoreError::Native(
+                crate::materializer::NativeTreeMaterializationError::AllocationFailed(error)))?;
+            let actual = owner.values.capacity().checked_mul(size_of::<T>())
+                .ok_or(ObjectStoreError::Work(crate::WorkError::Overflow))? as u64;
+            accounting.reconcile_owned(
+                owner.allocation.as_mut().expect("native batch buffer owns its backing"),
+                requested, actual,
+            ).map_err(crate::async_storage::sequential_read_error)?;
             return Ok(owner);
         }
         let mut values = Vec::new();
@@ -1006,7 +1007,10 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
                 let batch = self.inner.read_many_with_native_work(&requests.values, native, cancellation).await
                     .map_err(|error| (error, prepared.work))?;
                 let (values, allocation) = batch.into_parts();
-                return Ok(ObjectReceipt { value: BatchBuffer { values, allocation: Some(allocation) }, work: WorkCounters::default() });
+                return Ok(ObjectReceipt {
+                    value: BatchBuffer { values, allocation: Some(KernelOwnedAllocation::NativeOriginal(allocation)) },
+                    work: WorkCounters::default(),
+                });
             }
             let remaining = prepared.work.remaining(budget).map_err(|error| (error.into(), prepared.work))?;
             self.inner.read_many(&requests.values, remaining, cancellation).await
@@ -1385,8 +1389,13 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
         let receipt = self.read_many_engine(requests, work.remaining()?, cancellation, Some(work))
             .await.map_err(|(error, _)| error)?;
         let BatchBuffer { values, allocation } = receipt.value;
-        let allocation = allocation.expect("native result vector owns its original backing guard");
-        NativeObjectReadBatch::new(values, allocation)
+        match allocation {
+            Some(KernelOwnedAllocation::NativeOriginal(allocation)) => NativeObjectReadBatch::new(values, allocation),
+            _ => {
+                drop(values);
+                Err(ObjectStoreError::Corrupt)
+            }
+        }
     }
 
     async fn contains(

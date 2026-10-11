@@ -1117,6 +1117,62 @@ pub trait AsyncAuthorityStore: StorageProvider {
 /// a provider-owned bounded blocking executor instead. Original native work
 /// requires an explicit implementation; opaque stores reject before I/O.
 pub trait ImmediateAuthorityStore: AuthorityStore {
+    /// Canonical first-record producer. Opaque stores retain the ordered
+    /// create/append/recovery fallback; atomic stores override this seam.
+    fn create_authority_with_first_record(
+        &self, authority: AuthorityId, commit: ProposedCommit, budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = AuthorityResult<bool>> + StorageFuture {
+        append_first_record(self, authority, commit, WorkCounters::default(), budget, cancellation)
+    }
+
+    /// Canonical guarded first-record producer, including successful recovery.
+    fn create_authority_with_first_record_guarded<F, Fut>(
+        &self, authority: AuthorityId, commit: ProposedCommit, budget: WorkBudget,
+        cancellation: &CancellationToken, guard: &mut F,
+    ) -> impl Future<Output = crate::facade::FsResult<bool>> + StorageFuture
+    where
+        F: FnMut(WorkBudget) -> Fut + Send,
+        Fut: Future<Output = crate::facade::FsResult<()>> + Send,
+    {
+        append_first_record_guarded(self, authority, commit, WorkCounters::default(), budget, cancellation, guard)
+    }
+
+    /// Original-ledger atomic first-record publication.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn create_authority_with_first_record_with_native_work(
+        &self, authority: AuthorityId, commit: ProposedCommit,
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
+    ) -> Result<bool, crate::storage::AuthorityStoreError> {
+        let _ = (authority, commit, original, cancellation);
+        Err(crate::storage::AuthorityStoreError::NativeOriginalUnsupported)
+    }
+
+    /// Original-ledger canonical guarded append.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn compare_and_append_guarded_with_native_work(
+        &self, request: GuardedAppend, original: &crate::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<(AppendOutcome, crate::NativeAllocation), crate::storage::AuthorityStoreError> {
+        let _ = (request, original, cancellation);
+        Err(crate::storage::AuthorityStoreError::NativeOriginalUnsupported)
+    }
+
+    /// Plans first, then seals outside every provider and ledger lock.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn compare_and_append_guarded_with_native_owner<F, Fut, E>(
+        &self, request: GuardedAppend, original: &crate::NativeMaterializationWork,
+        cancellation: &CancellationToken, guard: &mut F,
+    ) -> impl Future<Output = Result<(AppendOutcome, crate::NativeAllocation), E>> + StorageFuture
+    where
+        F: FnMut(crate::NativeMaterializationWork) -> Fut + Send,
+        Fut: Future<Output = Result<(), E>> + Send,
+        E: From<crate::storage::AuthorityStoreError> + Send,
+    {
+        let _ = (request, original, cancellation, guard);
+        std::future::ready(Err(crate::storage::AuthorityStoreError::NativeOriginalUnsupported.into()))
+    }
+
     /// Reads the canonical head directly against the original native ledger.
     #[cfg(not(target_arch = "wasm32"))]
     fn head_with_native_work(
@@ -1163,6 +1219,53 @@ pub trait ImmediateAuthorityStore: AuthorityStore {
 }
 
 impl<T: ImmediateAuthorityStore + ?Sized> ImmediateAuthorityStore for Arc<T> {
+    fn create_authority_with_first_record(
+        &self, authority: AuthorityId, commit: ProposedCommit, budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = AuthorityResult<bool>> + StorageFuture {
+        ImmediateAuthorityStore::create_authority_with_first_record(self.as_ref(), authority, commit, budget, cancellation)
+    }
+
+    fn create_authority_with_first_record_guarded<F, Fut>(
+        &self, authority: AuthorityId, commit: ProposedCommit, budget: WorkBudget,
+        cancellation: &CancellationToken, guard: &mut F,
+    ) -> impl Future<Output = crate::facade::FsResult<bool>> + StorageFuture
+    where
+        F: FnMut(WorkBudget) -> Fut + Send,
+        Fut: Future<Output = crate::facade::FsResult<()>> + Send,
+    {
+        ImmediateAuthorityStore::create_authority_with_first_record_guarded(self.as_ref(), authority, commit, budget, cancellation, guard)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn create_authority_with_first_record_with_native_work(
+        &self, authority: AuthorityId, commit: ProposedCommit,
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
+    ) -> Result<bool, crate::storage::AuthorityStoreError> {
+        ImmediateAuthorityStore::create_authority_with_first_record_with_native_work(self.as_ref(), authority, commit, original, cancellation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn compare_and_append_guarded_with_native_work(
+        &self, request: GuardedAppend, original: &crate::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<(AppendOutcome, crate::NativeAllocation), crate::storage::AuthorityStoreError> {
+        ImmediateAuthorityStore::compare_and_append_guarded_with_native_work(self.as_ref(), request, original, cancellation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn compare_and_append_guarded_with_native_owner<F, Fut, E>(
+        &self, request: GuardedAppend, original: &crate::NativeMaterializationWork,
+        cancellation: &CancellationToken, guard: &mut F,
+    ) -> impl Future<Output = Result<(AppendOutcome, crate::NativeAllocation), E>> + StorageFuture
+    where
+        F: FnMut(crate::NativeMaterializationWork) -> Fut + Send,
+        Fut: Future<Output = Result<(), E>> + Send,
+        E: From<crate::storage::AuthorityStoreError> + Send,
+    {
+        ImmediateAuthorityStore::compare_and_append_guarded_with_native_owner(self.as_ref(), request, original, cancellation, guard)
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn head_with_native_work(
         &self, authority_id: AuthorityId,
@@ -1760,28 +1863,14 @@ async fn read_many_sequential_engine<S: AsyncObjectStore + ?Sized>(
         items_examined: item_count,
         ..crate::performance::WorkCounters::UNCHARGED
     })?;
-    let (reads, allocation) = accounting.with_owned_allocations(
-        |allocations, work, budget, _| {
-            allocations.claim_bytes(requested_bytes, 1, work, budget)
-                .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-            let mut reads = Vec::new();
-            if let Err(error) = reads.try_reserve_exact(requests.len()) {
-                allocations.release(requested_bytes)
-                    .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-                return Err(crate::storage::ObjectStoreError::MemoryTableAllocationFailed(error).into());
-            }
-            let actual_bytes = reads.capacity().checked_mul(size_of::<ObjectRead>())
-                .and_then(|bytes| u64::try_from(bytes).ok())
-                .ok_or(crate::performance::WorkError::Overflow)?;
-            allocations.record_owned_bytes(actual_bytes - requested_bytes, work)
-                .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-            Ok(reads)
-        },
-    )?;
-    let mut values = SequentialObjectReads { reads, allocation };
-    // Preserve the actual vector and its guard until after any late capacity
-    // denial. No native allocation guard is dropped under the work lock.
-    accounting.admit(crate::performance::WorkCounters::UNCHARGED)?;
+    let allocation = accounting.claim_owned(requested_bytes, 1)?;
+    let mut values = SequentialObjectReads { reads: Vec::new(), allocation };
+    values.reads.try_reserve_exact(requests.len())
+        .map_err(crate::storage::ObjectStoreError::MemoryTableAllocationFailed)?;
+    let actual_bytes = values.reads.capacity().checked_mul(size_of::<ObjectRead>())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(crate::performance::WorkError::Overflow)?;
+    accounting.reconcile_owned(&mut values.allocation, requested_bytes, actual_bytes)?;
     for request in requests {
         accounting.check()?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -1862,11 +1951,59 @@ pub(crate) fn sequential_read_error(error: crate::FsError) -> crate::storage::Ob
         crate::FsError::Cancelled(_) => crate::storage::ObjectStoreError::Cancelled,
         #[cfg(not(target_arch = "wasm32"))]
         crate::FsError::NativeKernel(error) => crate::storage::ObjectStoreError::Native(error),
+        crate::FsError::HandleAllocationFailed => crate::storage::ObjectStoreError::SdkAllocationFailed,
         _ => crate::storage::ObjectStoreError::Corrupt,
     }
 }
 
 impl<T: ImmediateAuthorityStore + ?Sized> AsyncAuthorityStore for T {
+    async fn create_authority_with_first_record(
+        &self, authority: AuthorityId, commit: ProposedCommit, budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<bool> {
+        ImmediateAuthorityStore::create_authority_with_first_record(self, authority, commit, budget, cancellation).await
+    }
+
+    async fn create_authority_with_first_record_guarded<F, Fut>(
+        &self, authority: AuthorityId, commit: ProposedCommit, budget: WorkBudget,
+        cancellation: &CancellationToken, guard: &mut F,
+    ) -> crate::facade::FsResult<bool>
+    where
+        F: FnMut(WorkBudget) -> Fut + Send,
+        Fut: Future<Output = crate::facade::FsResult<()>> + Send,
+    {
+        ImmediateAuthorityStore::create_authority_with_first_record_guarded(self, authority, commit, budget, cancellation, guard).await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn create_authority_with_first_record_with_native_work(
+        &self, authority: AuthorityId, commit: ProposedCommit,
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
+    ) -> Result<bool, crate::storage::AuthorityStoreError> {
+        ImmediateAuthorityStore::create_authority_with_first_record_with_native_work(self, authority, commit, original, cancellation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn compare_and_append_guarded_with_native_work(
+        &self, request: GuardedAppend, original: &crate::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<(AppendOutcome, crate::NativeAllocation), crate::storage::AuthorityStoreError> {
+        ImmediateAuthorityStore::compare_and_append_guarded_with_native_work(self, request, original, cancellation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn compare_and_append_guarded_with_native_owner<F, Fut, E>(
+        &self, request: GuardedAppend, original: &crate::NativeMaterializationWork,
+        cancellation: &CancellationToken, guard: &mut F,
+    ) -> Result<(AppendOutcome, crate::NativeAllocation), E>
+    where
+        F: FnMut(crate::NativeMaterializationWork) -> Fut + Send,
+        Fut: Future<Output = Result<(), E>> + Send,
+        E: From<crate::storage::AuthorityStoreError> + Send,
+    {
+        ImmediateAuthorityStore::compare_and_append_guarded_with_native_owner(self, request, original, cancellation, guard).await
+    }
+
     async fn fork_generation_authority(
         &self,
         source: GenerationForkSource,

@@ -64,29 +64,29 @@ fn put_request_bytes(request: &PutRequest) -> u64 {
 
 fn put_request_original(
     bucket: &wire::BucketRef, object_id: ObjectId, bytes: Bytes,
-    allocations: &mut crate::kernel::allocation::AllocationLedger,
-    work: &mut WorkCounters, budget: WorkBudget, cancellation: &CancellationToken,
-) -> Result<PutRequest, crate::FsError> {
-    let (request, _) = read_request_original(bucket, object_id, 0, allocations, work, budget, cancellation)?;
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(PutRequest, KernelOwnedAllocation), crate::FsError> {
+    let mut request_custody;
+    let ((request, _), custody) = read_request_original(bucket, object_id, 0, accounting)?;
+    request_custody = custody;
     let content_type = "application/vnd.acyclic.fs-object-v1";
-    work.admit(&WorkCounters { bytes_copied: content_type.len() as u64, ..WorkCounters::UNCHARGED }, &budget)?;
-    allocations.claim_bytes(content_type.len() as u64, 1, work, budget)
-        .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
+    let copy = WorkCounters { bytes_copied: content_type.len() as u64, ..WorkCounters::UNCHARGED };
+    accounting.admit(copy)?;
+    let mut metadata_custody = accounting.claim_owned(content_type.len() as u64, 1)?;
     let mut owned_type = String::new();
     owned_type.try_reserve_exact(content_type.len()).map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
-    allocations.record_owned_bytes((owned_type.capacity() - content_type.len()) as u64, work)
-        .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-    work.verify(budget)?;
-    work.charge(&WorkCounters { bytes_copied: content_type.len() as u64, ..WorkCounters::UNCHARGED }, &budget)?;
+    accounting.reconcile_owned(&mut metadata_custody, content_type.len() as u64, owned_type.capacity() as u64)?;
     owned_type.push_str(content_type);
-    Ok((wire::PutObjectHeader {
+    accounting.record_completed(copy)?;
+    request_custody.absorb(&mut metadata_custody)?;
+    Ok(((wire::PutObjectHeader {
         bucket: request.bucket, object_key: request.object_key,
         metadata: Some(wire::ObjectMetadata { content_type: owned_type, ..Default::default() }),
         preconditions: Some(wire::Preconditions {
             condition: Some(wire::preconditions::Condition::IfAbsent(true)),
         }),
         mutation: None,
-    }, bytes))
+    }, bytes), request_custody))
 }
 
 fn record_write_completion(accounting: &mut KernelAccounting<'_>, bytes: u64) -> Result<(), crate::FsError> {
@@ -129,21 +129,8 @@ fn release_write_custody(
 
 fn inventory_write_records(
     accounting: &mut KernelAccounting<'_>, bytes: u64,
-) -> Result<(KernelOwnedAllocation, WorkBudget), crate::FsError> {
-    match accounting {
-        KernelAccounting::Standalone { allocations, work, budget, .. } => {
-            allocations.record_owned_bytes(bytes, work)
-                .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-            Ok((KernelOwnedAllocation::Standalone, *budget))
-        }
-        KernelAccounting::BorrowedStandalone { allocations, work, budget, .. } => {
-            allocations.record_owned_bytes(bytes, work)
-                .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-            Ok((KernelOwnedAllocation::Standalone, *budget))
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        KernelAccounting::NativeOriginal { .. } => inventory_read_records(accounting, bytes),
-    }
+) -> Result<(KernelOwnedAllocation, Result<(), crate::FsError>), crate::FsError> {
+    accounting.record_actual_owned(bytes)
 }
 
 fn put_info_bytes(info: &wire::ObjectInfo) -> Result<u64, crate::FsError> {
@@ -217,23 +204,15 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
     ) -> Result<(ObjectRead, KernelOwnedAllocation), crate::FsError> {
         accounting.check()?;
         let request_custody;
-        let (request, custody) = accounting.with_owned_allocations(
-            |allocations, work, budget, cancellation| {
-                read_request_original(&self.bucket, object_id, maximum_bytes,
-                    allocations, work, budget, cancellation)
-            },
-        )?;
+        let (request, custody) = read_request_original(
+            &self.bucket, object_id, maximum_bytes, accounting)?;
         request_custody = custody;
         let request_bytes = request.0.object_key.capacity() as u64
             + request.0.bucket.as_ref().map_or(0, |bucket| bucket.name.capacity() as u64);
         let remaining = accounting.remaining()?;
         let maximum = maximum_bytes.min(self.maximum_object_bytes)
             .min(remaining.object_bytes_read).min(remaining.peak_allocation_bytes);
-        let ((), mut body_custody) = accounting.with_owned_allocations(|allocations, work, budget, _| {
-            allocations.claim_bytes(maximum, 0, work, budget)
-                .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-            Ok(())
-        })?;
+        let mut body_custody = accounting.claim_owned(maximum, 0)?;
         // Declared before the DTO so unwinding destroys provider payload first.
         let header_custody;
         accounting.charge(WorkCounters {
@@ -247,35 +226,25 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
         })?;
         let observed = value.body.len() as u64;
         let read_delta = WorkCounters { object_bytes_read: observed, ..WorkCounters::UNCHARGED };
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            original.record_admitted(read_delta)?;
-        } else {
-            accounting.charge(read_delta)?;
-        }
-        #[cfg(target_arch = "wasm32")]
-        accounting.charge(read_delta)?;
+        let read_completion = accounting.record_completed(read_delta);
         if observed > maximum {
+            read_completion?;
             return Err(ObjectStoreError::TooLarge { observed, maximum }.into());
         }
-        match &mut body_custody {
-            KernelOwnedAllocation::Standalone => accounting.with_allocations(|allocations, _, _, _| {
-                allocations.release(maximum - observed)
-                    .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-                Ok(())
-            })?,
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelOwnedAllocation::NativeOriginal(custody) => custody.substitute(observed)?,
-        }
+        accounting.release_owned(&mut body_custody, maximum - observed)?;
         let header_bytes = read_header_bytes(&value.header)?;
         // These opaque returned records already exist. Inventory their logical
         // data without claiming an allocator attempt or letting cancellation
         // erase the completed provider prefix.
-        let (custody, header_budget) = inventory_read_records(accounting, header_bytes)?;
+        let (custody, header_completion) = inventory_read_records(accounting, header_bytes)?;
         header_custody = custody;
-        accounting.spent().verify(header_budget)?;
-        accounting.charge(WorkCounters { bytes_hashed: observed, ..WorkCounters::UNCHARGED })?;
-        if object_digest(object_id.kind, &value.body) != object_id.digest {
+        read_completion?;
+        header_completion?;
+        let hash_work = WorkCounters { bytes_hashed: observed, ..WorkCounters::UNCHARGED };
+        accounting.admit(hash_work)?;
+        let digest = object_digest(object_id.kind, &value.body);
+        accounting.record_completed(hash_work)?;
+        if digest != object_id.digest {
             return Err(ObjectStoreError::Corrupt.into());
         }
         let Object { header, body } = value;
@@ -295,28 +264,22 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
         if requests.is_empty() {
             return Err(ObjectStoreError::EmptyReadBatch.into());
         }
-        let request_custody;
-        let (mut provider_requests, custody) = accounting.with_owned_allocations(
-            |allocations, work, budget, cancellation| {
-                allocations.claim_elements::<GetRequest>(requests.len(), work, budget)
-                    .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-                let mut values = Vec::new();
-                values.try_reserve_exact(requests.len()).map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
-                let excess = (values.capacity() - requests.len()) as u64
-                    * size_of::<GetRequest>() as u64;
-                allocations.record_owned_bytes(excess, work)
-                    .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-                work.verify(budget)?;
-                for request in requests {
-                    cancellation.check()?;
-                    values.push(read_request_original(&self.bucket, request.object_id,
-                        request.maximum_bytes.min(self.maximum_object_bytes),
-                        allocations, work, budget, cancellation)?);
-                }
-                Ok(values)
-            },
-        )?;
-        request_custody = custody;
+        let requested_vector_bytes = (requests.len() as u64)
+            .checked_mul(size_of::<GetRequest>() as u64).ok_or(WorkError::Overflow)?;
+        let mut request_custody = accounting.claim_owned(requested_vector_bytes, 1)?;
+        let mut provider_requests = Vec::new();
+        provider_requests.try_reserve_exact(requests.len()).map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
+        accounting.reconcile_owned(&mut request_custody, requested_vector_bytes,
+            (provider_requests.capacity() as u64).checked_mul(size_of::<GetRequest>() as u64)
+                .ok_or(WorkError::Overflow)?)?;
+        for request in requests {
+            let mut incoming;
+            let (value, custody) = read_request_original(&self.bucket, request.object_id,
+                request.maximum_bytes.min(self.maximum_object_bytes), accounting)?;
+            incoming = custody;
+            request_custody.absorb(&mut incoming)?;
+            provider_requests.push(value);
+        }
         let request_bytes = provider_requests.iter().try_fold(
             (provider_requests.capacity() as u64).checked_mul(size_of::<GetRequest>() as u64)
                 .ok_or(WorkError::Overflow)?,
@@ -325,36 +288,22 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
                     .map_or(0, |bucket| bucket.name.capacity() as u64)))
                 .ok_or(WorkError::Overflow),
         )?;
-        let output_custody;
-        let (mut values, custody) = accounting.with_owned_allocations(|allocations, work, budget, _| {
-            allocations.claim_elements::<ObjectRead>(requests.len(), work, budget)
-                .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-            let mut values = Vec::new();
-            values.try_reserve_exact(requests.len()).map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
-            let excess = (values.capacity() - requests.len()) as u64
-                * size_of::<ObjectRead>() as u64;
-            allocations.record_owned_bytes(excess, work)
-                .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-            work.verify(budget)?;
-            Ok(values)
-        })?;
-        output_custody = custody;
+        let requested_output_bytes = (requests.len() as u64)
+            .checked_mul(size_of::<ObjectRead>() as u64).ok_or(WorkError::Overflow)?;
+        let mut output_custody = accounting.claim_owned(requested_output_bytes, 1)?;
+        let mut values = Vec::new();
+        values.try_reserve_exact(requests.len()).map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
+        accounting.reconcile_owned(&mut output_custody, requested_output_bytes,
+            (values.capacity() as u64).checked_mul(size_of::<ObjectRead>() as u64)
+                .ok_or(WorkError::Overflow)?)?;
         let result_bytes = (requests.len() as u64)
             .checked_mul(size_of::<Result<Object, Error>>() as u64).ok_or(WorkError::Overflow)?;
-        let ((), result_custody) = accounting.with_owned_allocations(|allocations, work, budget, _| {
-            allocations.claim_bytes(result_bytes, 0, work, budget)
-                .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-            Ok(())
-        })?;
+        let result_custody = accounting.claim_owned(result_bytes, 0)?;
         let maximum = provider_requests.iter().try_fold(0_u64,
             |total, request| total.checked_add(request.1).ok_or(WorkError::Overflow))?;
         let remaining = accounting.remaining()?;
         let quota = maximum.min(remaining.object_bytes_read).min(remaining.peak_allocation_bytes);
-        let ((), mut body_custody) = accounting.with_owned_allocations(|allocations, work, budget, _| {
-            allocations.claim_bytes(quota, 0, work, budget)
-                .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-            Ok(())
-        })?;
+        let mut body_custody = accounting.claim_owned(quota, 0)?;
         let mut left = quota;
         for request in &mut provider_requests {
             request.1 = request.1.min(left);
@@ -370,11 +319,7 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
                 .ok_or(WorkError::Overflow)
         })?;
         let delta = WorkCounters { object_bytes_read: observed, ..WorkCounters::UNCHARGED };
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() { original.record_admitted(delta)?; }
-        else { accounting.charge(delta)?; }
-        #[cfg(target_arch = "wasm32")]
-        accounting.charge(delta)?;
+        let read_completion = accounting.record_completed(delta);
         let header_bytes = results.iter().try_fold(
             (results.len() as u64).checked_mul(size_of::<Result<Object, Error>>() as u64)
                 .ok_or(WorkError::Overflow)?.saturating_sub(result_bytes),
@@ -383,9 +328,8 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
                 total.checked_add(bytes).ok_or_else(|| crate::FsError::Work(WorkError::Overflow))
             },
         )?;
-        let (custody, header_budget) = inventory_read_records(accounting, header_bytes)?;
+        let (custody, header_completion) = inventory_read_records(accounting, header_bytes)?;
         header_custody = custody;
-        accounting.spent().verify(header_budget)?;
         if results.len() != requests.len() { return Err(ObjectStoreError::Corrupt.into()); }
         let mut left = quota;
         for (request, result) in requests.iter().zip(&results) {
@@ -398,23 +342,28 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
                 }
             }
         }
-        match &mut body_custody {
-            KernelOwnedAllocation::Standalone => accounting.with_allocations(|allocations, _, _, _| {
-                allocations.release(quota - observed)
-                    .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-                Ok(())
-            })?,
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelOwnedAllocation::NativeOriginal(custody) => custody.substitute(observed)?,
+        accounting.release_owned(&mut body_custody, quota - observed)?;
+        if read_completion.is_err() || header_completion.is_err() {
+            if let Some(error) = results.iter().find_map(|result| result.as_ref().err().copied()) {
+                return Err(match error.code {
+                    wire::ErrorCode::NotFound => ObjectStoreError::Missing,
+                    _ => ObjectStoreError::LogicalObjects(error),
+                }.into());
+            }
         }
+        read_completion?;
+        header_completion?;
         for (request, result) in requests.iter().zip(results) {
             let Object { header, body } = result.map_err(|error| match error.code {
                 wire::ErrorCode::NotFound => ObjectStoreError::Missing,
                 _ => ObjectStoreError::LogicalObjects(error),
             })?;
             let observed = body.len() as u64;
-            accounting.charge(WorkCounters { bytes_hashed: observed, ..WorkCounters::UNCHARGED })?;
-            if object_digest(request.object_id.kind, &body) != request.object_id.digest {
+            let hash_work = WorkCounters { bytes_hashed: observed, ..WorkCounters::UNCHARGED };
+            accounting.admit(hash_work)?;
+            let digest = object_digest(request.object_id.kind, &body);
+            accounting.record_completed(hash_work)?;
+            if digest != request.object_id.digest {
                 return Err(ObjectStoreError::Corrupt.into());
             }
             drop(header);
@@ -444,18 +393,20 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
             return Err(ObjectStoreError::TooLarge { observed: length, maximum: self.maximum_object_bytes }.into());
         }
         if !verified {
-            accounting.charge(WorkCounters {
+            let hash_work = WorkCounters {
                 bytes_hashed: length.saturating_add(crate::OBJECT_DIGEST_ENVELOPE_BYTES),
                 ..WorkCounters::UNCHARGED
-            })?;
-            if object_digest(object_id.kind, &bytes) != object_id.digest {
+            };
+            accounting.admit(hash_work)?;
+            let digest = object_digest(object_id.kind, &bytes);
+            let late = accounting.record_completed(hash_work);
+            if digest != object_id.digest {
                 return Err(ObjectStoreError::DigestMismatch.into());
             }
+            late?;
         }
         let request_custody;
-        let (request, custody) = accounting.with_owned_allocations(|allocations, work, budget, cancellation| {
-            put_request_original(&self.bucket, object_id, bytes, allocations, work, budget, cancellation)
-        })?;
+        let (request, custody) = put_request_original(&self.bucket, object_id, bytes, accounting)?;
         request_custody = custody;
         let request_bytes = put_request_bytes(&request);
         accounting.admit(WorkCounters { object_bytes_written: length, ..WorkCounters::UNCHARGED })?;
@@ -468,10 +419,10 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
                 let result_size = version.size;
                 record_write_completion(accounting, length)?;
                 let response_bytes = put_info_bytes(&version)?;
-                let (custody, budget) = inventory_write_records(accounting, response_bytes)?;
+                let (custody, late) = inventory_write_records(accounting, response_bytes)?;
                 response_custody = custody;
                 if result_size != length { return Err(ObjectStoreError::Corrupt.into()); }
-                accounting.spent().verify(budget)?;
+                late?;
                 drop(version);
                 release_write_custody(accounting, response_custody, response_bytes)?;
             }
@@ -497,52 +448,45 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
         if writes.is_empty() {
             return Err(ObjectStoreError::EmptyWriteBatch.into());
         }
-        let mut request_custody;
-        let ((requests, unique), custody) = accounting.with_owned_allocations(
-            |allocations, work, budget, cancellation| {
-                allocations.claim_elements::<PutRequest>(writes.len(), work, budget)
-                    .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-                let mut requests = Vec::new();
-                requests.try_reserve_exact(writes.len()).map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
-                allocations.record_owned_bytes(
-                    ((requests.capacity() - writes.len()) * size_of::<PutRequest>()) as u64, work)
-                    .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-                work.verify(budget)?;
-                allocations.claim_elements::<usize>(writes.len(), work, budget)
-                    .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-                let mut unique = Vec::<usize>::new();
-                unique.try_reserve_exact(writes.len()).map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
-                allocations.record_owned_bytes(
-                    ((unique.capacity() - writes.len()) * size_of::<usize>()) as u64, work)
-                    .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-                work.verify(budget)?;
-                for (index, write) in writes.iter().enumerate() {
-                    cancellation.check()?;
-                    let length = write.bytes.len() as u64;
-                    if length > self.maximum_object_bytes {
-                        return Err(ObjectStoreError::TooLarge { observed: length, maximum: self.maximum_object_bytes }.into());
-                    }
-                    work.charge(&WorkCounters {
-                        bytes_hashed: length.saturating_add(crate::OBJECT_DIGEST_ENVELOPE_BYTES),
-                        ..WorkCounters::UNCHARGED
-                    }, &budget)?;
-                    if object_digest(write.object_id.kind, &write.bytes) != write.object_id.digest {
-                        return Err(ObjectStoreError::DigestMismatch.into());
-                    }
-                    if let Some(&previous) = unique.iter().find(|&&previous| writes[previous].object_id == write.object_id) {
-                        if writes[previous].bytes != write.bytes {
-                            return Err(ObjectStoreError::DigestMismatch.into());
-                        }
-                        continue;
-                    }
-                    requests.push(put_request_original(&self.bucket, write.object_id, write.bytes.clone(),
-                        allocations, work, budget, cancellation)?);
-                    unique.push(index);
-                }
-                Ok((requests, unique))
-            },
-        )?;
-        request_custody = custody;
+        let requested_requests = writes.len().checked_mul(size_of::<PutRequest>()).ok_or(WorkError::Overflow)? as u64;
+        let mut request_custody = accounting.claim_owned(requested_requests, 1)?;
+        let mut requests = Vec::new();
+        requests.try_reserve_exact(writes.len()).map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
+        accounting.reconcile_owned(&mut request_custody, requested_requests,
+            (requests.capacity() * size_of::<PutRequest>()) as u64)?;
+        let requested_unique = writes.len().checked_mul(size_of::<usize>()).ok_or(WorkError::Overflow)? as u64;
+        let mut unique_custody = accounting.claim_owned(requested_unique, 1)?;
+        let mut unique = Vec::<usize>::new();
+        unique.try_reserve_exact(writes.len()).map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
+        accounting.reconcile_owned(&mut unique_custody, requested_unique,
+            (unique.capacity() * size_of::<usize>()) as u64)?;
+        request_custody.absorb(&mut unique_custody)?;
+        for (index, write) in writes.iter().enumerate() {
+            accounting.check()?;
+            let length = write.bytes.len() as u64;
+            if length > self.maximum_object_bytes {
+                return Err(ObjectStoreError::TooLarge { observed: length, maximum: self.maximum_object_bytes }.into());
+            }
+            let hash_work = WorkCounters {
+                bytes_hashed: length.saturating_add(crate::OBJECT_DIGEST_ENVELOPE_BYTES),
+                ..WorkCounters::UNCHARGED
+            };
+            accounting.admit(hash_work)?;
+            let digest = object_digest(write.object_id.kind, &write.bytes);
+            let late = accounting.record_completed(hash_work);
+            if digest != write.object_id.digest { return Err(ObjectStoreError::DigestMismatch.into()); }
+            late?;
+            if let Some(&previous) = unique.iter().find(|&&previous| writes[previous].object_id == write.object_id) {
+                if writes[previous].bytes != write.bytes { return Err(ObjectStoreError::DigestMismatch.into()); }
+                continue;
+            }
+            let mut incoming;
+            let (request, custody) = put_request_original(&self.bucket, write.object_id, write.bytes.clone(), accounting)?;
+            incoming = custody;
+            request_custody.absorb(&mut incoming)?;
+            requests.push(request);
+            unique.push(index);
+        }
         let unique_bytes = (unique.capacity() * size_of::<usize>()) as u64;
         let request_bytes = (requests.capacity() * size_of::<PutRequest>()) as u64
             + requests.iter().map(put_request_bytes).sum::<u64>();
@@ -573,9 +517,9 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
                 Err(_) => 0,
             }).ok_or_else(|| crate::FsError::from(WorkError::Overflow)),
         )?;
-        let (custody, response_budget) = inventory_write_records(accounting, response_bytes)?;
+        let (custody, response_late) = inventory_write_records(accounting, response_bytes)?;
         response_custody = custody;
-        let response_denial = accounting.spent().verify(response_budget).err();
+        let response_denial = response_late.err();
         if results.len() != unique.len() { return Err(ObjectStoreError::Corrupt.into()); }
         let mut failure = unique.iter().zip(&results).find_map(|(&index, result)| match result {
             Ok(info) if info.size != writes[index].bytes.len() as u64 => Some(crate::FsError::from(ObjectStoreError::Corrupt)),
@@ -833,74 +777,53 @@ fn read_accounting_error(error: crate::FsError) -> ObjectStoreError {
 }
 
 fn release_read_custody(
-    accounting: &mut KernelAccounting<'_>, custody: KernelOwnedAllocation, bytes: u64,
+    accounting: &mut KernelAccounting<'_>, mut custody: KernelOwnedAllocation, bytes: u64,
 ) -> Result<(), crate::FsError> {
-    match custody {
-        KernelOwnedAllocation::Standalone => accounting.with_allocations(|allocations, _, _, _| {
-            allocations.release(bytes)
-                .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-            Ok(())
-        }),
-        #[cfg(not(target_arch = "wasm32"))]
-        KernelOwnedAllocation::NativeOriginal(custody) => { drop(custody); Ok(()) }
-    }
+    accounting.release_owned(&mut custody, bytes)?;
+    drop(custody);
+    Ok(())
 }
 
 fn read_request_original(
     bucket: &wire::BucketRef, object_id: ObjectId, maximum_bytes: u64,
-    allocations: &mut crate::kernel::allocation::AllocationLedger,
-    work: &mut WorkCounters, budget: WorkBudget, cancellation: &CancellationToken,
-) -> Result<GetRequest, crate::FsError> {
-    cancellation.check()?;
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(GetRequest, KernelOwnedAllocation), crate::FsError> {
+    accounting.check()?;
     let bucket_bytes = bucket.name.len() as u64;
-    work.admit(&WorkCounters { bytes_copied: bucket_bytes, ..WorkCounters::UNCHARGED }, &budget)?;
-    allocations.claim_bytes(bucket_bytes, u64::from(bucket_bytes != 0), work, budget)
-        .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-    work.charge(&WorkCounters { bytes_copied: bucket_bytes, ..WorkCounters::UNCHARGED }, &budget)?;
+    let bucket_copy = WorkCounters { bytes_copied: bucket_bytes, ..WorkCounters::UNCHARGED };
+    accounting.admit(bucket_copy)?;
+    let mut custody = accounting.claim_owned(bucket_bytes, u64::from(bucket_bytes != 0))?;
     let bucket = bucket.clone();
-    allocations.record_owned_bytes(bucket.name.capacity() as u64 - bucket_bytes, work)
-        .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-    work.verify(budget)?;
+    let copied = accounting.record_completed(bucket_copy);
+    let reconciled = accounting.reconcile_owned(
+        &mut custody, bucket_bytes, bucket.name.capacity() as u64);
+    copied?;
+    reconciled?;
     let key_bytes = 7 + object_id.kind.canonical_tag().len() + 64;
-    work.admit(&WorkCounters { bytes_copied: key_bytes as u64, ..WorkCounters::UNCHARGED }, &budget)?;
-    allocations.claim_bytes(key_bytes as u64, 1, work, budget)
-        .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
+    let key_copy = WorkCounters { bytes_copied: key_bytes as u64, ..WorkCounters::UNCHARGED };
+    accounting.admit(key_copy)?;
+    let mut key_custody = accounting.claim_owned(key_bytes as u64, 1)?;
     let mut key = String::new();
     key.try_reserve_exact(key_bytes).map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
-    allocations.record_owned_bytes((key.capacity() - key_bytes) as u64, work)
-        .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-    work.verify(budget)?;
+    accounting.reconcile_owned(&mut key_custody, key_bytes as u64, key.capacity() as u64)?;
     let mut digest = [0_u8; 64];
     hex::encode_to_slice(object_id.digest.as_bytes(), &mut digest).map_err(|_| ObjectStoreError::Corrupt)?;
     let digest = std::str::from_utf8(&digest).map_err(|_| ObjectStoreError::Corrupt)?;
-    work.charge(&WorkCounters { bytes_copied: key_bytes as u64, ..WorkCounters::UNCHARGED }, &budget)?;
     write!(&mut key, "fs/v1/{}/{digest}", object_id.kind.canonical_tag())
         .map_err(|_| ObjectStoreError::Corrupt)?;
-    Ok((wire::GetObjectRequest { bucket: Some(bucket), object_key: key, ..Default::default() }, maximum_bytes))
+    accounting.record_completed(key_copy)?;
+    custody.absorb(&mut key_custody)?;
+    Ok(((wire::GetObjectRequest {
+        bucket: Some(bucket), object_key: key, ..Default::default()
+    }, maximum_bytes), custody))
 }
 
 fn inventory_read_records(
     accounting: &mut KernelAccounting<'_>, bytes: u64,
-) -> Result<(KernelOwnedAllocation, WorkBudget), crate::FsError> {
-    let mut original_budget = WorkBudget::UNBOUNDED;
-    let record = |allocations: &mut crate::kernel::allocation::AllocationLedger,
-        work: &mut WorkCounters, budget: WorkBudget, _: &CancellationToken|
-        -> Result<(), crate::FsError> {
-        original_budget = budget;
-        allocations.record_owned_bytes(bytes, work)
-            .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-        Ok(())
-    };
-    #[cfg(not(target_arch = "wasm32"))]
-    let custody = if let Some(original) = accounting.native_work() {
-        let ((), custody) = original.with_owned_allocations(record)?;
-        KernelOwnedAllocation::NativeOriginal(custody)
-    } else { accounting.with_owned_allocations(record)?.1 };
-    #[cfg(target_arch = "wasm32")]
-    let custody = accounting.with_owned_allocations(record)?.1;
-    // Caller binds the guard before checking this budget: actual records must
-    // be destroyed before their custody even when completed bytes exceed it.
-    Ok((custody, original_budget))
+) -> Result<(KernelOwnedAllocation, Result<(), crate::FsError>), crate::FsError> {
+    // Return completed custody before its late refusal; caller binds the guard
+    // behind the already-visible records before propagating that refusal.
+    accounting.record_actual_owned(bytes)
 }
 
 fn read_header_bytes(header: &wire::GetObjectHeader) -> Result<u64, crate::FsError> {
@@ -1240,18 +1163,15 @@ mod tests {
         let cancellation = CancellationToken::new();
         let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)?;
         let baseline = work.remaining()?.peak_allocation_bytes;
-        let (mut bytes, mut custody) = work.with_owned_allocations(|ledger, counters, budget, _| {
-            ledger.claim_elements::<u8>(4, counters, budget)
-                .map_err(|error| error.into_work_or(crate::NativeTreeMaterializationError::Work(WorkError::Overflow)))?;
-            let mut bytes = Vec::new();
-            bytes.try_reserve_exact(4).map_err(crate::NativeTreeMaterializationError::AllocationFailed)?;
-            ledger.record_owned_bytes((bytes.capacity() - 4) as u64, counters)
-                .map_err(|error| error.into_work_or(crate::NativeTreeMaterializationError::Work(WorkError::Overflow)))?;
-            counters.verify(budget)?;
-            counters.charge(&WorkCounters { bytes_copied: 4, ..WorkCounters::UNCHARGED }, &budget)?;
-            bytes.extend_from_slice(b"body");
-            Ok::<_, crate::NativeTreeMaterializationError>(bytes)
-        })?;
+        let mut custody = work.claim_allocation(4, 1)?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(4).map_err(crate::NativeTreeMaterializationError::AllocationFailed)?;
+        custody.reconcile_capacity(bytes.capacity() as u64)?;
+        let copy = WorkCounters { bytes_copied: 4, ..WorkCounters::UNCHARGED };
+        work.admit(copy)?;
+        bytes.extend_from_slice(b"body");
+        work.record_admitted(copy)?;
+        work.admit(WorkCounters::UNCHARGED)?;
         let object = crate::storage::HashedObject::from_native_vec(ObjectKind::BlobChunk,
             &mut bytes, &mut custody, &work, &cancellation)?;
         let id = object.object_id();
@@ -1369,7 +1289,8 @@ mod tests {
     #[tokio::test]
     async fn native_logical_error_cancellation_and_panic_keep_attempted_prefix() -> Result<(), Box<dyn std::error::Error>> {
         use futures::FutureExt as _;
-        for (cancel, panic, error) in [(true, false, false), (false, true, false), (false, false, true)] {
+        for (cancel, panic, error) in [(true, false, false), (false, true, false),
+            (false, false, true), (true, false, true)] {
             let (store, work, cancellation) = observed_native_store(WorkBudget::UNBOUNDED, cancel, panic, error);
             let future = store.read_with_native_work(native_test_id(), 4, &work, &cancellation);
             let result = std::panic::AssertUnwindSafe(future).catch_unwind().await;
@@ -1542,7 +1463,8 @@ mod tests {
         -> Result<(), Box<dyn std::error::Error>> {
         use futures::FutureExt as _;
         let requests = [ObjectReadRequest { object_id: native_test_id(), maximum_bytes: 4 }; 2];
-        for (cancel, panic, error) in [(true, false, false), (false, true, false), (false, false, true)] {
+        for (cancel, panic, error) in [(true, false, false), (false, true, false),
+            (false, false, true), (true, false, true)] {
             let (store, work, cancellation) = observed_native_store(WorkBudget::UNBOUNDED, cancel, panic, error);
             let future = store.read_many_with_native_work(&requests, &work, &cancellation);
             let result = std::panic::AssertUnwindSafe(future).catch_unwind().await;
