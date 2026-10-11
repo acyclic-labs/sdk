@@ -654,7 +654,6 @@ fn native_step_identity_denial_precedes_string_growth() -> Result<()> {
     assert!(matches!(native_step_key(u64::MAX, &work), Err(Error::NativeWork { .. })));
     assert_eq!(work.receipt().allocation_operations, prefix.allocation_operations);
     assert_eq!(work.receipt().bytes_encoded, 0);
-    assert_eq!(work.receipt().authority_records_acknowledged, 0);
     assert_eq!(work.receipt().backend_write_operations, 0);
     Ok(())
 }

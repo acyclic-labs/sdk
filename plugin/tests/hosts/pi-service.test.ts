@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import { test } from "bun:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { invokePi, piEnvironment } from "./pi-fixture.ts";
 
@@ -28,7 +28,7 @@ export default function(pi) {
 
 // This exercises installed-extension root admission and native service restart,
 // not workspace allocation, child process execution or effect qualification.
-test("installed Pi controls retain one authenticated root across service death and native model switch", { timeout: 120_000 }, async () => {
+test("installed Pi controls retain one authenticated root across service death and native model switch", async () => {
   const requested = process.env.ACYCLIC_BINARY;
   assert.ok(requested && isAbsolute(requested), "ACYCLIC_BINARY must name the final built CLI");
   const binary = realpathSync(requested);
@@ -123,4 +123,4 @@ test("installed Pi controls retain one authenticated root across service death a
     await stop();
     rmSync(directory, {recursive:true});
   }
-});
+}, { timeout: 120_000 });

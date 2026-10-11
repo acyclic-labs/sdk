@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import test from "node:test";
+import { test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { installedNativeFixture, type InstalledNativeFixture } from "./pi-native-fixture.ts";
 
@@ -55,7 +55,7 @@ export default function directoryPages(pi) {
 }
 `;
 
-test("native directory selection preserves opaque continuations and rejects cross-directory or cross-tool cursors", { timeout: 240_000 }, async () => {
+test("native directory selection preserves opaque continuations and rejects cross-directory or cross-tool cursors", async () => {
   const directory = mkdtempSync(fileURLToPath(new URL(".pi-context-pages-", import.meta.url)));
   let fixture: InstalledNativeFixture | undefined;
   try {
@@ -103,4 +103,4 @@ test("native directory selection preserves opaque continuations and rejects cros
     if (fixture) await fixture.close();
     rmSync(directory, { recursive: true });
   }
-});
+}, { timeout: 240_000 });

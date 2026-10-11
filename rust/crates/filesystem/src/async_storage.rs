@@ -372,8 +372,8 @@ pub async fn commit_workspace_fork_in_steps_guarded<S, F, Fut>(
 ) -> crate::facade::FsResult<WorkspaceForkOutcome>
 where
     S: AsyncAuthorityStore + ?Sized,
-    F: FnMut(WorkBudget) -> Fut + Send,
-    Fut: Future<Output = crate::facade::FsResult<()>> + Send,
+    F: FnMut(WorkBudget) -> Fut + StorageFuture,
+    Fut: Future<Output = crate::facade::FsResult<()>> + StorageFuture,
 {
     commit_workspace_fork_steps_engine(store, fork, permit, ForkStepsWork::ordinary(budget, cancellation), Some(guard), &mut NoNativeForkGuard)
         .await.map_err(ForkStepsFailure::measured)
@@ -448,8 +448,8 @@ impl<'a> ForkStepsWork<'a> {
         &mut self, store: &S, authority: AuthorityId, commit: ProposedCommit, guard: Option<&mut F>,
         native_guard: &mut G,
     ) -> Result<bool, ForkStepsFailure<G::Error>>
-    where S: AsyncAuthorityStore + ?Sized, F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::facade::FsResult<()>> + Send,
+    where S: AsyncAuthorityStore + ?Sized, F: FnMut(WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::facade::FsResult<()>> + StorageFuture,
     {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = self.original {
@@ -471,8 +471,8 @@ impl<'a> ForkStepsWork<'a> {
         &mut self, store: &S, source: Option<GenerationForkSource>, destination: AuthorityId,
         operation: OperationId, guard: Option<&mut F>, native_guard: &mut G,
     ) -> Result<CreateAuthorityOutcome, ForkStepsFailure<G::Error>>
-    where S: AsyncAuthorityStore + ?Sized, F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::facade::FsResult<()>> + Send,
+    where S: AsyncAuthorityStore + ?Sized, F: FnMut(WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::facade::FsResult<()>> + StorageFuture,
     {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = self.original {
@@ -517,8 +517,8 @@ async fn commit_workspace_fork_steps_engine<'a, S, F, Fut, G: NativeForkStepGuar
     store: &S, fork: WorkspaceForkCommit, permit: PublicationPermit,
     mut work: ForkStepsWork<'a>, mut guard: Option<&mut F>, native_guard: &mut G,
 ) -> Result<crate::facade::FsReceipt<WorkspaceForkOutcome>, ForkStepsFailure<G::Error>>
-where S: AsyncAuthorityStore + ?Sized, F: FnMut(WorkBudget) -> Fut + Send,
-    Fut: Future<Output = crate::facade::FsResult<()>> + Send,
+where S: AsyncAuthorityStore + ?Sized, F: FnMut(WorkBudget) -> Fut + StorageFuture,
+    Fut: Future<Output = crate::facade::FsResult<()>> + StorageFuture,
 {
     if permit != PublicationPermit::Unrestricted {
         return Err(work.failure(crate::storage::AuthorityStoreError::RejectedStatic(
@@ -678,8 +678,8 @@ pub async fn append_first_record_guarded<S, F, Fut>(
 ) -> crate::facade::FsResult<bool>
 where
     S: AsyncAuthorityStore + ?Sized,
-    F: FnMut(WorkBudget) -> Fut + Send,
-    Fut: Future<Output = crate::facade::FsResult<()>> + Send,
+    F: FnMut(WorkBudget) -> Fut + StorageFuture,
+    Fut: Future<Output = crate::facade::FsResult<()>> + StorageFuture,
 {
     append_first_record_engine(
         store, authority, commit, prior, budget, cancellation, Some(guard),
@@ -697,8 +697,8 @@ async fn append_first_record_engine<S, F, Fut>(
 ) -> crate::facade::FsResult<bool>
 where
     S: AsyncAuthorityStore + ?Sized,
-    F: FnMut(WorkBudget) -> Fut + Send,
-    Fut: Future<Output = crate::facade::FsResult<()>> + Send,
+    F: FnMut(WorkBudget) -> Fut + StorageFuture,
+    Fut: Future<Output = crate::facade::FsResult<()>> + StorageFuture,
 {
     let remaining = remaining_authority(prior, budget).map_err(authority_to_fs)?;
     let created = match guard.as_deref_mut() {
@@ -815,8 +815,8 @@ async fn run_authority_guard<F, Fut>(
     budget: WorkBudget,
 ) -> crate::facade::FsResult<()>
 where
-    F: FnMut(WorkBudget) -> Fut + Send,
-    Fut: Future<Output = crate::facade::FsResult<()>> + Send,
+    F: FnMut(WorkBudget) -> Fut + StorageFuture,
+    Fut: Future<Output = crate::facade::FsResult<()>> + StorageFuture,
 {
     let receipt = guard(remaining_authority(*work, budget).map_err(authority_to_fs)?)
         .await
@@ -952,8 +952,8 @@ pub trait AsyncAuthorityStore: StorageProvider {
         guard: &mut F,
     ) -> impl Future<Output = crate::facade::FsResult<CreateAuthorityOutcome>> + StorageFuture
     where
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::facade::FsResult<()>> + Send,
+        F: FnMut(WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::facade::FsResult<()>> + StorageFuture,
     {
         async move {
             let mut work = WorkCounters::default();
@@ -990,8 +990,8 @@ pub trait AsyncAuthorityStore: StorageProvider {
         guard: &mut F,
     ) -> impl Future<Output = crate::facade::FsResult<CreateAuthorityOutcome>> + StorageFuture
     where
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::facade::FsResult<()>> + Send,
+        F: FnMut(WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::facade::FsResult<()>> + StorageFuture,
     {
         async move {
             let mut work = WorkCounters::default();
@@ -1155,8 +1155,8 @@ pub trait AsyncAuthorityStore: StorageProvider {
         guard: &mut F,
     ) -> impl Future<Output = crate::facade::FsResult<bool>> + StorageFuture
     where
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::facade::FsResult<()>> + Send,
+        F: FnMut(WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::facade::FsResult<()>> + StorageFuture,
     {
         append_first_record_guarded(
             self, authority, commit, WorkCounters::default(), budget, cancellation, guard,
@@ -1187,8 +1187,8 @@ pub trait AsyncAuthorityStore: StorageProvider {
         guard: &mut F,
     ) -> impl Future<Output = crate::facade::FsResult<WorkspaceForkOutcome>> + StorageFuture
     where
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::facade::FsResult<()>> + Send,
+        F: FnMut(WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::facade::FsResult<()>> + StorageFuture,
     {
         commit_workspace_fork_in_steps_guarded(self, fork, permit, budget, cancellation, guard)
     }
@@ -1512,8 +1512,8 @@ pub trait ImmediateAuthorityStore: AuthorityStore {
         cancellation: &CancellationToken, guard: &mut F,
     ) -> impl Future<Output = crate::facade::FsResult<bool>> + StorageFuture
     where
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::facade::FsResult<()>> + Send,
+        F: FnMut(WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::facade::FsResult<()>> + StorageFuture,
     {
         append_first_record_guarded(self, authority, commit, WorkCounters::default(), budget, cancellation, guard)
     }
@@ -1680,8 +1680,8 @@ impl<T: ImmediateAuthorityStore + ?Sized> ImmediateAuthorityStore for Arc<T> {
         cancellation: &CancellationToken, guard: &mut F,
     ) -> impl Future<Output = crate::facade::FsResult<bool>> + StorageFuture
     where
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::facade::FsResult<()>> + Send,
+        F: FnMut(WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::facade::FsResult<()>> + StorageFuture,
     {
         ImmediateAuthorityStore::create_authority_with_first_record_guarded(self.as_ref(), authority, commit, budget, cancellation, guard)
     }
@@ -2487,8 +2487,8 @@ impl<T: ImmediateAuthorityStore + ?Sized> AsyncAuthorityStore for T {
         cancellation: &CancellationToken, guard: &mut F,
     ) -> crate::facade::FsResult<bool>
     where
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::facade::FsResult<()>> + Send,
+        F: FnMut(WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::facade::FsResult<()>> + StorageFuture,
     {
         ImmediateAuthorityStore::create_authority_with_first_record_guarded(self, authority, commit, budget, cancellation, guard).await
     }

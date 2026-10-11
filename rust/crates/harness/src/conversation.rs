@@ -459,23 +459,6 @@ impl VolumeRef {
         ))
     }
 
-    /// Computes the original capability identity through the finite codec.
-    #[cfg(feature = "filesystem")]
-    pub fn capability_measured(
-        &self, operation: VolumeOperation, budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<String>, Error> {
-        let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
-            .map_err(acyclic_fs::OperationFailure::before_work)?;
-        let result = io.capability(self, match operation {
-            VolumeOperation::Read => "volume:read:", VolumeOperation::Write => "volume:write:",
-        });
-        match result {
-            Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
-            Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
-        }
-    }
-
     /// Computes the same grant on the original native operation ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn capability_with_native_work(
@@ -784,21 +767,6 @@ impl ContentGrant {
             .ok_or_else(|| Error::Invalid("grant prefix ownership overflow".into()))
     }
 
-    /// Checks the original signed whole-volume authority without cloning a grant or minting any new proof.
-    #[cfg(feature = "filesystem")]
-    pub fn verify_original_volume_measured(
-        verifier: &AuthorityVerifier, scope: &Scope, volume: &VolumeRef,
-        operation: VolumeOperation, budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
-        let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
-            .map_err(acyclic_fs::OperationFailure::before_work)?;
-        let result = Self::verify_original_volume_with_io(verifier, scope, volume, operation, &io);
-        match result {
-            Ok(()) => Ok(acyclic_fs::OperationReceipt { value: (), work: io.receipt() }),
-            Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
-        }
-    }
 
     #[cfg(feature = "filesystem")]
     pub(crate) fn verify_original_volume_with_io(
@@ -1615,17 +1583,6 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
             reason: "original native-ledger content resolution is unavailable" })
     }
 
-    /// Observes only the copy selected by an authenticated committed receive.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn observe_received_copy_with_native_work<'a>(
-        &'a self, _volume: &'a VolumeRef,
-        _proof: &'a crate::runtime::ReceivedCopyReadWitness<'_>,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> crate::Result<crate::NativeFutureBundle<'a, (Option<FileRef>, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "committed received-copy observation is unavailable" })
-    }
-
     /// Availability only; it conveys no read authority.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_read(&self, _volume: &VolumeRef, _work: &acyclic_fs::NativeMaterializationWork) -> crate::Result<bool> {
@@ -1930,16 +1887,6 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
             reason: "original native-ledger publication observation is unavailable" })
     }
 
-    /// Reads only the original copy selected by an authenticated committed receive.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn observe_received_copy_with_native_work<'a>(
-        &'a self, _proof: &'a crate::runtime::ReceivedCopyReadWitness<'_>,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> crate::Result<crate::NativeFutureBundle<'a, (Option<FileRef>, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "committed received-copy observation is unavailable" })
-    }
-
     /// Resolves the original operation, metadata and generation without head.
     #[cfg(feature = "filesystem")]
     fn observe_staged_once_measured<'a>(
@@ -2115,17 +2062,6 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let reader = self.finite_bound_reader(reference.volume(), &io)?;
         reader.read_with_native_work(reference, maximum_bytes, work)
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn observe_received_copy_with_native_work<'a>(
-        &'a self, volume: &'a VolumeRef,
-        proof: &'a crate::runtime::ReceivedCopyReadWitness<'_>,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> crate::Result<crate::NativeFutureBundle<'a, (Option<FileRef>, acyclic_fs::NativeAllocation)>> {
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let reader = self.finite_bound_reader(volume, &io)?;
-        reader.observe_received_copy_with_native_work(volume, proof, work)
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -2716,63 +2652,6 @@ impl ConversationMessage {
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-#[derive(Default)]
-struct NativeReferenceClone {
-    allocations: u64,
-    copied: u64,
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-impl NativeReferenceClone {
-    fn allocation(&mut self) -> Result<()> {
-        self.allocations = self.allocations.checked_add(1).ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid, reason: "reference clone operations overflow",
-        })?;
-        Ok(())
-    }
-    fn text(&mut self, text: &str) -> Result<()> {
-        if !text.is_empty() { self.allocation()?; }
-        self.copied = self.copied.checked_add(text.len() as u64).ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid, reason: "reference clone bytes overflow",
-        })?;
-        Ok(())
-    }
-    fn file(&mut self, file: &FileRef) -> Result<()> {
-        self.text(file.volume.provider.namespace())?;
-        self.text(file.volume.provider.family())?;
-        self.text(file.volume.provider.version())?;
-        self.text(&file.volume.id)?;
-        match &file.volume.owner {
-            VolumeOwner::Project(text) | VolumeOwner::Session(text) => self.text(text)?,
-            VolumeOwner::Agent(_) => {}
-        }
-        self.text(&file.path)?;
-        self.text(&file.version)?;
-        self.text(&file.descriptor.media_type)?;
-        self.text(&file.display_name)
-    }
-    fn message(&mut self, message: &ConversationMessage) -> Result<()> {
-        self.file(&message.content)?;
-        match &message.attachments {
-            ReferencedAttachments::Inline { items } => {
-                if !items.is_empty() { self.allocation()?; }
-                for attachment in items {
-                    self.file(&attachment.file)?;
-                    if let Some(label) = &attachment.label { self.text(label)?; }
-                }
-            }
-            ReferencedAttachments::Manifest { manifest, .. } => self.file(manifest)?,
-        }
-        if let Some(call) = &message.tool_call_id { self.text(call)?; }
-        for (key, file) in &message.extensions {
-            self.text(key)?;
-            self.file(file)?;
-        }
-        Ok(())
-    }
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn clone_native_reference_text(
     source: &str, work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<(String, acyclic_fs::NativeAllocation)> {
@@ -2832,28 +2711,22 @@ impl FileRef {
     }
 
     pub(crate) fn logical_clone_owned_bytes(&self) -> Result<u64> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        { self.clone_work_recipe().map(|(_, copied)| copied) }
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        {
-            let owner = match &self.volume.owner {
-                VolumeOwner::Project(text) | VolumeOwner::Session(text) => text.len() as u64,
-                VolumeOwner::Agent(_) => 0,
-            };
-            let provider = &self.volume.provider;
-            [provider.namespace().len(), provider.family().len(), provider.version().len(),
-                self.volume.id.len(), self.path.len(), self.version.len(),
-                self.descriptor.media_type.len(), self.display_name.len()]
-                .into_iter().try_fold(owner, |bytes, length| bytes.checked_add(length as u64)
-                    .ok_or_else(|| Error::Invalid("file clone ownership overflow".into())))
-        }
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn clone_work_recipe(&self) -> Result<(u64, u64)> {
-        let mut recipe = NativeReferenceClone::default();
-        recipe.file(self)?;
-        Ok((recipe.allocations, recipe.copied))
+        let owner = match &self.volume.owner {
+            VolumeOwner::Project(text) | VolumeOwner::Session(text) => text.len() as u64,
+            VolumeOwner::Agent(_) => 0,
+        };
+        let provider = &self.volume.provider;
+        [provider.namespace().len(), provider.family().len(), provider.version().len(),
+            self.volume.id.len(), self.path.len(), self.version.len(),
+            self.descriptor.media_type.len(), self.display_name.len()]
+            .into_iter().try_fold(owner, |bytes, length| bytes.checked_add(length as u64))
+            .ok_or_else(|| {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                { Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "reference clone bytes overflow" } }
+                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                { Error::Invalid("file clone ownership overflow".into()) }
+            })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -2920,13 +2793,6 @@ fn copy_preclaimed_conversation_vector<T: Copy>(
 }
 
 impl ConversationMessage {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn clone_work_recipe(&self) -> Result<(u64, u64)> {
-        let mut recipe = NativeReferenceClone::default();
-        recipe.message(self)?;
-        Ok((recipe.allocations, recipe.copied))
-    }
-
     pub(crate) fn clone_with_work(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
@@ -3542,12 +3408,6 @@ impl ConversationState {
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn native_archived_prefix_bytes(&self) -> Result<u64> {
-        self.archived_prefix.as_ref()
-            .map_or(Ok(0), crate::core::source_inventory)
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn install_native_archived_prefix(&mut self, allocation: acyclic_fs::NativeAllocation) {
         assert!(self.native_custody.archive.is_none(), "archived prefix already has custody");
         self.native_custody.archive = Some(allocation);
@@ -3735,26 +3595,6 @@ impl ConversationState {
             .ok_or_else(|| Error::Invalid("conversation clone cache inventory overflows".into()))
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn native_clone_cache_copy_bytes(&self) -> Result<u64> {
-        native_conversation_buffer_bytes::<[u8; 32]>(self.prefix_digests.len())?
-            .checked_add(native_conversation_buffer_bytes::<usize>(self.model_positions.len())?)
-            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "conversation clone bytes overflow" })
-    }
-
-    /// Typed heap clone and CopyVec source work, not logical BTree slots.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn native_clone_copy_recipe(&self) -> Result<(u64, u64)> {
-        let mut recipe = NativeReferenceClone::default();
-        for message in &self.messages { recipe.message(message)?; }
-        if let Some(prefix) = &self.archived_prefix { recipe.file(&prefix.checkpoint)?; }
-        let copied = recipe.copied.checked_add(self.native_clone_cache_copy_bytes()?)
-            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "conversation clone bytes overflow" })?;
-        Ok((recipe.allocations, copied))
-    }
-
     /// Logical history head, independent of the number of resident records.
     #[must_use]
     pub fn logical_revision(&self) -> u64 {
@@ -3816,39 +3656,20 @@ impl ConversationState {
         })
     }
 
-    /// Builds the snapshot suffix only after a committed checkpoint and closed user/tool exchange.
-    pub(crate) fn checkpointed_suffix_with_work(
-        &self, selection: &ModelContextSelection,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
-        self.checkpointed_suffix_with_work_and_custody(selection, work).map(|(state, _)| state)
-    }
-
-    pub(crate) fn checkpointed_suffix_with_work_and_custody(
-        &self, selection: &ModelContextSelection,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<(Self, u64)> {
-        self.checkpointed_suffix_with_work_engine(selection, work, None)
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn checkpointed_suffix_with_work_and_message_custody<'work>(
-        &self, selection: &ModelContextSelection,
-        work: &mut Option<&'work mut dyn crate::store::history::HistoryIo>,
-        retain: &mut dyn FnMut(u64, u64, &mut Option<&'work mut dyn crate::store::history::HistoryIo>) -> Result<()>,
-    ) -> Result<(Self, u64)> {
-        if !work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "message component custody requires original native work" });
-        }
-        self.checkpointed_suffix_with_work_engine(selection, work, Some(retain))
-    }
-
-    fn checkpointed_suffix_with_work_engine<'work>(
+    pub(crate) fn checkpointed_suffix<'work>(
         &self, selection: &ModelContextSelection,
         work: &mut Option<&'work mut dyn crate::store::history::HistoryIo>,
         mut retain: Option<&mut dyn FnMut(u64, u64, &mut Option<&'work mut dyn crate::store::history::HistoryIo>) -> Result<()>>,
     ) -> Result<(Self, u64)> {
+        if retain.is_some() {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if !work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "message component custody requires original native work" });
+            }
+            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            return Err(Error::Invalid("message component custody requires original native work".into()));
+        }
         self.require_native_work(work)?;
         let reference = selection.checkpoint.as_ref()
             .ok_or_else(|| conversation_boundary(work, "history retirement requires a checkpoint pin"))?;
@@ -4469,46 +4290,6 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_owned_file_wire_moves_original_strings_without_new_claims() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-        use crate::store::history::HistoryIo as _;
-        let source = file(AgentId::from_bytes([28; 16]), "native-owned-value.txt")?;
-        let encoded = serde_json::to_vec(&source).map_err(|error| Error::Invalid(error.to_string()))?;
-        let source_token = CancellationToken::new();
-        let source_work = NativeMaterializationWork::new(native_conversation_budget(), &source_token)
-            .expect("original input Value ledger");
-        let mut source_io = crate::store::history::native_work_io(&source_work).expect("input decoder");
-        let (value, retained) = source_io.decode_json_value(&encoded)?;
-        let path = value.get("path").and_then(serde_json::Value::as_str)
-            .expect("original path String").as_ptr();
-        let namespace = value.get("volume").and_then(|volume| volume.get("provider"))
-            .and_then(|provider| provider.get("namespace")).and_then(serde_json::Value::as_str)
-            .expect("original provider String").as_ptr();
-        let incoming = source_io.take_native_custody(retained)?;
-        let source_receipt = source_work.receipt();
-        source_token.cancel();
-        let observer_token = CancellationToken::new();
-        let observer = NativeMaterializationWork::new(native_conversation_budget(), &observer_token)
-            .expect("independent consuming visitor ledger");
-        let mut io = crate::store::history::native_work_io(&observer).expect("owned visitor observer");
-        let before = observer.receipt();
-        let file = FileRef::from_owned_value_with_work(value, &mut Some(&mut io))?;
-        assert_eq!(file, source);
-        assert_eq!(file.path().as_ptr(), path);
-        assert_eq!(file.volume().provider().namespace().as_ptr(), namespace);
-        assert_eq!(observer.receipt().allocation_operations, before.allocation_operations);
-        assert_eq!(observer.receipt().bytes_copied, before.bytes_copied);
-        assert_eq!(observer.receipt().bytes_encoded + observer.receipt().bytes_hashed, 0);
-        assert!(observer.receipt().items_examined > before.items_examined);
-        assert_eq!(source_work.receipt(), source_receipt);
-        assert_eq!(io.into_custody().bytes(), 0, "the incoming guard, not a duplicate claim, owns Strings");
-        drop(file);
-        drop(incoming);
-        assert_eq!(source_io.into_custody().bytes(), 0);
-        Ok(())
-    }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
@@ -4531,15 +4312,11 @@ mod tests {
         source_token.cancel();
         let copy_token = CancellationToken::new();
         let copy_work = NativeMaterializationWork::new(budget, &copy_token).expect("independent copy ledger");
-        let before = copy_work.receipt();
-        let recipe = source.clone_work_recipe()?;
         let (copied, guard) = source.clone_with_native_work(&copy_work)?;
         assert_eq!(copied, source);
         assert_eq!(guard.bytes(), copied.logical_owned_bytes()?);
         assert!(guard.work().shares_ledger(&copy_work));
         assert_eq!(source_work.receipt(), source_receipt);
-        assert_eq!(copy_work.receipt().allocation_operations - before.allocation_operations, recipe.0);
-        assert_eq!(copy_work.receipt().bytes_copied - before.bytes_copied, recipe.1);
         assert_eq!(copy_work.receipt().bytes_hashed + copy_work.receipt().bytes_encoded, 0);
         drop(copied);
         drop(guard);
@@ -4679,7 +4456,7 @@ mod tests {
         source.attachments = ReferencedAttachments::Inline {
             items: vec![Attachment { file: content.clone(), label: None }],
         };
-        let content_bytes = content.clone_work_recipe()?.1;
+        let content_bytes = content.logical_clone_owned_bytes()?;
         let token = CancellationToken::new();
         let mut budget = native_conversation_budget();
         budget.bytes_copied = 4 + content_bytes;
@@ -4710,8 +4487,6 @@ mod tests {
         let cancellation = CancellationToken::new();
         let budget = native_conversation_budget();
         let native = NativeMaterializationWork::new(budget, &cancellation).expect("message copy ledger");
-        let before = native.receipt();
-        let recipe = source.clone_work_recipe()?;
         let (copied, guard) = source.clone_with_native_work(&native)?;
         assert_eq!(copied, source);
         let ReferencedAttachments::Inline { items } = &copied.attachments else { unreachable!() };
@@ -4726,8 +4501,6 @@ mod tests {
                 + key.capacity() as u64 + file.logical_owned_bytes()?;
         }
         assert_eq!(guard.bytes(), actual, "message Self and outer messageVec slots are not claimed");
-        assert_eq!(native.receipt().allocation_operations - before.allocation_operations, recipe.0);
-        assert_eq!(native.receipt().bytes_copied - before.bytes_copied, recipe.1);
         assert_eq!(native.receipt().bytes_encoded + native.receipt().bytes_hashed, 0);
         drop(copied);
         drop(guard);
@@ -4750,13 +4523,10 @@ mod tests {
         let budget = native_conversation_budget();
         let first = NativeMaterializationWork::new(budget, &first_token).expect("snapshot copy ledger");
         let mut io = crate::store::history::native_work_io(&first).expect("snapshot copy observer");
-        let recipe = source.native_clone_copy_recipe()?;
-        let before = first.receipt().bytes_copied;
         let (held, produced) = source.clone_with_work_and_custody(&mut Some(&mut io))?;
         assert_eq!(held, source);
         assert_eq!(held.native_unclaimed_message_buffer_bytes()?, 0);
         assert_eq!(held.native_unclaimed_cache_bytes()?, 0);
-        assert_eq!(first.receipt().bytes_copied - before, recipe.1);
         let deep = io.into_custody();
         assert_eq!(deep.bytes(), produced, "only observer-owned deep payload is reported");
         let original_receipt = first.receipt();
@@ -4775,8 +4545,8 @@ mod tests {
             components.push((sequence, guard));
             Ok(())
         };
-        let (suffix, produced) = held.checkpointed_suffix_with_work_and_message_custody(
-            &selection, &mut Some(&mut io), &mut retain)?;
+        let (suffix, produced) = held.checkpointed_suffix(
+            &selection, &mut Some(&mut io), Some(&mut retain))?;
         drop(retain);
         assert_eq!(produced, 0);
         assert_eq!(io.into_custody().bytes(), 0);
@@ -4954,7 +4724,7 @@ mod tests {
                 };
                 let digest = state.history_prefix_digest(sequence)?;
                 let mut io = crate::store::history::native_work_io(ledger).expect("retirement observer");
-                let suffix = state.checkpointed_suffix_with_work(&selection, &mut Some(&mut io))?;
+                let suffix = state.checkpointed_suffix(&selection, &mut Some(&mut io), None).map(|(state, _)| state)?;
                 state = suffix;
                 assert!(state.messages.is_empty());
                 assert!(state.by_id.is_empty() && state.outcomes.is_empty());
@@ -5131,7 +4901,7 @@ mod tests {
             checkpoint: Some(checkpoint.clone()),
         };
         HISTORY_HASH_CALLS.with(|calls| calls.set(0));
-        let suffix = state.checkpointed_suffix_with_work(&selection, &mut None)?;
+        let suffix = state.checkpointed_suffix(&selection, &mut None, None).map(|(state, _)| state)?;
         assert_eq!(suffix.messages().len(), 2);
         assert_eq!(suffix.logical_revision(), 1_000);
         assert_eq!(suffix.resident_after_sequence(), 998);
@@ -5162,38 +4932,10 @@ mod tests {
         assert_eq!(restored.logical_revision(), 1_001);
         assert_eq!(restored.messages().len(), 3);
         assert_eq!(restored.unresolved_user(), Some(Uuid::from_u128(1_001)));
-        assert_eq!(restored.checkpointed_suffix_with_work(&selection, &mut None)?, restored);
+        assert_eq!(restored.checkpointed_suffix(&selection, &mut None, None).map(|(state, _)| state)?, restored);
         Ok(())
     }
 
-    #[test]
-    fn logical_file_ownership_counts_retained_metadata_capacity() -> Result<()> {
-        let padded = |text: &str, capacity| {
-            let mut value = String::with_capacity(capacity);
-            value.push_str(text);
-            value
-        };
-        let provider = ProviderRef::new("harness", "filesystem", "v1")?;
-        let volume = VolumeRef::new(provider, padded("volume", 128),
-            VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::new()))?;
-        let file = FileRef::new(volume, padded("file.txt", 256), padded("generation", 512),
-            FileDescriptor::new([0; 32], 0, padded("text/plain", 1024))?,
-            padded("file.txt", 2048))?;
-        let expected = file.volume.logical_owned_bytes()? + file.path.capacity() as u64
-            + file.version.capacity() as u64 + file.display_name.capacity() as u64
-            + file.descriptor.media_type.capacity() as u64;
-        assert_eq!(file.logical_owned_bytes()?, expected);
-        let copied = file.volume.provider.namespace().len() + file.volume.provider.family().len()
-            + file.volume.provider.version().len() + file.volume.id.len() + file.path.len()
-            + file.version.len() + file.display_name.len() + file.descriptor.media_type.len();
-        assert_eq!(file.logical_clone_owned_bytes()?, copied as u64);
-        assert!(file.logical_clone_owned_bytes()? < file.logical_owned_bytes()?);
-        let clone = file.clone();
-        assert_eq!(clone.logical_clone_owned_bytes()?, file.logical_clone_owned_bytes()?);
-        assert!(file.logical_owned_bytes()? > file.path.len() as u64 + file.version.len() as u64
-            + file.display_name.len() as u64 + file.descriptor.media_type.len() as u64);
-        Ok(())
-    }
 
     #[test]
     fn full_history_fork_fingerprint_is_incremental_and_rebuilds_after_decode() -> Result<()> {

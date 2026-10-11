@@ -4,6 +4,7 @@ use super::{
     CanonicalDecodeError, ClosureError, ClosureLimits, GenerationProof, codec::Decoder,
     volume_authority_id,
 };
+use crate::async_storage::StorageFuture;
 use crate::cancellation::CancellationToken;
 use crate::foundation::{
     AuthorityId, Digest, Epoch, Head, OperationId, ProposedCommit, VolumeId, usize_to_u64,
@@ -511,8 +512,8 @@ where
     O: crate::AsyncObjectStore,
     A: crate::AsyncAuthorityStore,
     E: From<crate::FsError> + Send,
-    F: FnMut(WorkBudget) -> Fut + Send,
-    Fut: Future<Output = crate::MeasuredResult<crate::OperationReceipt<()>, E>> + Send,
+    F: FnMut(WorkBudget) -> Fut + StorageFuture,
+    Fut: Future<Output = crate::MeasuredResult<crate::OperationReceipt<()>, E>> + StorageFuture,
 {
     let mut accounting = PublicationAccounting::standalone(budget, cancellation);
     let mut seal = |allowance: Option<WorkBudget>| {
@@ -653,8 +654,8 @@ async fn publish_generation_async_inner<O, E, F, Fut, G, Dispatch, R>(
 where
     O: crate::AsyncObjectStore,
     E: From<crate::FsError> + Send,
-    F: FnMut(Option<WorkBudget>) -> Fut + Send,
-    Fut: Future<Output = Result<Option<WorkCounters>, PublicationStepFailure<E>>> + Send,
+    F: FnMut(Option<WorkBudget>) -> Fut + StorageFuture,
+    Fut: Future<Output = Result<Option<WorkCounters>, PublicationStepFailure<E>>> + StorageFuture,
     G: FnMut(GuardedAppend, Option<WorkBudget>) -> Dispatch + crate::async_storage::StorageFuture,
     Dispatch: Future<Output = Result<(PublicationAppend, Option<WorkCounters>), PublicationStepFailure<E>>> + crate::async_storage::StorageFuture,
     R: FnMut(&super::GenerationRoot, &mut PublicationProofGuard, &mut PublicationAccounting<'_>) -> Result<(), E>,

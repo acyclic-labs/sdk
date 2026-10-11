@@ -588,17 +588,14 @@ impl RemoteTool {
     fn result_with_native_work(
         &self,
         remote: NativeRemoteResult,
-        operation: OperationId,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<NativeRemoteToolResult> {
-        (|| {
-            let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-            self.validate_result(&remote.result, Some(&io))?;
-            let (value, custody) = crate::tool::value_with_native_work(&remote.result, work)?;
-            let output = NativeRemoteToolResult { result: ToolResult { value }, custody };
-            rpc::check_dto(rpc::Dto::CallToolResult, &output.result.value, Some(work))?;
-            Ok(output)
-        })().map_err(|error| rpc::native_response_error(error, operation))
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        self.validate_result(&remote.result, Some(&io))?;
+        let (value, custody) = crate::tool::value_with_native_work(&remote.result, work)?;
+        let output = NativeRemoteToolResult { result: ToolResult { value }, custody };
+        rpc::check_dto(rpc::Dto::CallToolResult, &output.result.value, Some(work))?;
+        Ok(output)
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -760,7 +757,7 @@ impl ToolExecutor for RemoteTool {
                 context, &self.remote.name, &invocation.arguments, work,
             )?.await?;
             let remote = NativeRemoteResult { result, _custody: custody };
-            let output = self.result_with_native_work(remote, context.operation_id(), work)?;
+            let output = self.result_with_native_work(remote, work)?;
             Ok((output.result, output.custody))
         })
     }
@@ -781,7 +778,7 @@ impl ToolExecutor for RemoteTool {
             match result {
                 Some(result) => {
                     let remote = NativeRemoteResult { result, _custody: custody };
-                    let mut output = self.result_with_native_work(remote, context.operation_id(), work)?;
+                    let mut output = self.result_with_native_work(remote, work)?;
                     let retained = output.custody.bytes().checked_add(
                         (std::mem::size_of::<Option<ToolResult>>()
                             - std::mem::size_of::<ToolResult>()) as u64,

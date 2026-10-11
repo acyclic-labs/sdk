@@ -5,7 +5,8 @@ import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const execute = promisify(execFile);
-const cli = fileURLToPath(new URL(
+export const nodeExecutable = Bun.which("node") ?? "node";
+export const pinnedPiCli = fileURLToPath(new URL(
   "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js", import.meta.url,
 ));
 
@@ -25,7 +26,7 @@ export function piEnvironment(directory: string): NodeJS.ProcessEnv {
 /** Invoke the pinned native CLI with bounded output and isolated host settings. */
 export async function invokePi(args: string[], cwd: string, directory: string,
   environment: NodeJS.ProcessEnv = piEnvironment(directory)) {
-  const invocation = execute(process.execPath, [cli, ...args], {
+  const invocation = execute(nodeExecutable, [pinnedPiCli, ...args], {
     cwd, env: environment, windowsHide: true,
     timeout: 60_000, maxBuffer: 1024 * 1024, encoding: "utf8",
   });
