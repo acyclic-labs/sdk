@@ -26,6 +26,11 @@ export interface NativeIdentityRequest {
   readonly signal?: AbortSignal;
 }
 export type NativeIdentityResult = Pick<NativeIdentityResponse, "status"> & { readonly body: Uint8Array<ArrayBuffer> };
+/** Only an actual absent OS-vault namespace produces this error; other failures propagate. */
+export class NativeCustomerCredentialNotFound extends Error {
+  readonly code = "not_found";
+  constructor() { super("native customer credential not found"); this.name = "NativeCustomerCredentialNotFound"; }
+}
 /** An opaque OS handle. Local close/deletion is not server revocation. */
 export interface NativeCustomerCredential {
   readonly origin: string;
@@ -133,5 +138,6 @@ export async function openNativeCustomerCredential(tuple: NativeCustomerPublicTu
   const snapshot = { ...tuple };
   const native = await binding();
   const handle = await native.openNativeCustomerCredential(snapshot.origin, snapshot.publicKey, snapshot.birth, snapshot.certificate);
+  if (handle === null || handle === undefined) throw new NativeCustomerCredentialNotFound();
   return restored(handle, snapshot);
 }

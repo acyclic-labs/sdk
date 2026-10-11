@@ -51,6 +51,7 @@ pub struct TurnInput {
     /// When present its last user message is the current `input`; the stock
     /// context pipeline does not synthesize a duplicate user message.
     #[serde(default)]
+    #[cfg_attr(feature = "wasm", tsify(type = "SelectedModelContext | null"))]
     pub selected_context: Option<SelectedModelContext>,
     /// Maximum model/tool steps permitted for this turn.
     pub max_steps: u32,

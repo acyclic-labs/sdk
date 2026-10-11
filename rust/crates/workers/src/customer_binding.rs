@@ -183,14 +183,18 @@ impl NativeCustomerCredential {
 
 /// Restore the original namespace, including an expired public certificate for SQL renewal.
 #[napi]
-pub async fn open_native_customer_credential(login_origin: String, public_key: String, birth: String, certificate: String) -> Result<NativeCustomerCredential> {
+pub async fn open_native_customer_credential(login_origin: String, public_key: String, birth: String, certificate: String) -> Result<Option<NativeCustomerCredential>> {
     let origin = origin(&login_origin)?;
     let namespace = namespace(&origin, &public_key, &birth, &certificate)?;
     let expected = account::public_key(&public_key).map_err(error)?.to_bytes();
     let leaf = blocking(move || {
-        let leaf = RestoredCustomerLeaf::open(namespace).map_err(error)?;
+        let leaf = match RestoredCustomerLeaf::open(namespace) {
+            Ok(leaf) => leaf,
+            Err(acyclic_native_runtime::customer_custody::CustodyError::NotFound) => return Ok(None),
+            Err(failure) => return Err(error(failure)),
+        };
         if leaf.public_key() != expected { return Err(error("stored customer leaf does not match its certificate")); }
-        Ok(leaf)
+        Ok(Some(leaf))
     }).await?;
-    NativeCustomerCredential::new(leaf, origin)
+    leaf.map(|leaf| NativeCustomerCredential::new(leaf, origin)).transpose()
 }
