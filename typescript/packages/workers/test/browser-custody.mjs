@@ -76,6 +76,22 @@ export async function runBrowserCustodySmoke({ accountId, issue, issueExpiring, 
     assert((await restored.mint(30n)).bearer.length > 0, "Failed replacement destroyed the prior login");
     await rejects(() => BrowserCustomerCredential.login(options, async () => originalLogin), "Certificate for another public key was accepted");
     assert((await restored.mint(30n)).bearer.length > 0, "Invalid certificate replacement destroyed the prior login");
+    const originalPut = IDBObjectStore.prototype.put;
+    let abortedPublication = false;
+    IDBObjectStore.prototype.put = function (value, key) {
+      const request = originalPut.call(this, value, key);
+      if (this.name === "credentials" && !abortedPublication) {
+        abortedPublication = true;
+        this.transaction.abort(); // Actual IndexedDB rollback after queuing replacement.
+      }
+      return request;
+    };
+    try {
+      await rejects(() => BrowserCustomerCredential.login(options, issue), "Aborted storage replacement unexpectedly succeeded");
+      assert(abortedPublication, "Replacement did not reach the actual IndexedDB publication boundary");
+    } finally { IDBObjectStore.prototype.put = originalPut; }
+    assert(await verifyBearer((await restored.mint(30n)).bearer, originalPublicKey),
+      "Aborted IndexedDB publication removed the previous usable login");
     const cancelledLoginGate = Promise.withResolvers();
     const cancelledLoginStarted = Promise.withResolvers();
     const loginCancellation = new AbortController();
@@ -155,7 +171,7 @@ export async function runBrowserCustodySmoke({ accountId, issue, issueExpiring, 
     });
 
     return { status: "passed", origin: location.origin, accountId,
-      checks: ["real nonextractable Ed25519/AES-GCM keys", "canonical Rust/WASM signed bearer", "encrypted SQL session", "IndexedDB close/reopen", "account namespace isolation", "failed/invalid/cancelled replacement preservation", "own-public-key rejection", "closed/cancelled mint fencing", "single-flight renewal", "deletion fences in-flight login and retained handles", "expiry after reopen"] };
+      checks: ["real nonextractable Ed25519/AES-GCM keys", "canonical Rust/WASM signed bearer", "encrypted SQL session", "IndexedDB close/reopen", "account namespace isolation", "issuer/invalid/cancelled/transaction-aborted replacement preservation", "own-public-key rejection", "closed/cancelled mint fencing", "single-flight renewal", "deletion fences in-flight login and retained handles", "expiry after reopen"] };
   } finally {
     for (const handle of handles) handle?.close();
     await BrowserCustomerCredential.delete(options);
