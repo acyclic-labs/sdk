@@ -83,6 +83,31 @@ impl MachineIdentity {
         self.validate_with_io(None)
     }
 
+    /// Builds the pinned SDK identity with paid strings before their growth.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn new_with_native_work(
+        name: &str, version: &str, digest: [u8; 32],
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let result = (|| {
+            workflow_label(name, "machine name", Some(&io))?;
+            workflow_label(version, "machine version", Some(&io))?;
+            if digest == [0; 32] {
+                return Err(workflow_invalid_error(Some(&io),
+                    "machine implementation digest must be a nonzero 32-byte value"));
+            }
+            io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+            use crate::store::history::HistoryIo as _;
+            let mut observer = io.history_io();
+            Ok(Self {
+                name: observer.clone_text(name)?, version: observer.clone_text(version)?, digest,
+            })
+        })();
+        let retained = io.owned_bytes()?;
+        finish_native_io(result, io, retained)
+    }
+
     fn validate_with_io(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
         workflow_label(&self.name, "machine name", io)?;
         workflow_label(&self.version, "machine version", io)?;
@@ -141,6 +166,14 @@ pub trait ResumableMachine: acyclic_stream::ProviderPlatform {
     /// Returns the immutable implementation identity.
     fn identity(&self) -> &MachineIdentity;
 
+    /// Borrows the original SDK-published identity without an ordinary callback.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn identity_with_native_work<'a>(
+        &'a self, _work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<&'a MachineIdentity> {
+        Err(native_workflow_unsupported("machine has no native identity callback"))
+    }
+
     /// Returns the JSON Schema for durable state.
     fn state_schema(&self) -> &Value;
 
@@ -161,7 +194,7 @@ pub trait ResumableMachine: acyclic_stream::ProviderPlatform {
     /// Applies one durable input synchronously and deterministically.
     fn transition(&self, state: &Value, input: &Value) -> Result<MachineTransition>;
 
-    /// Whether genuine native initialization and transition callbacks are available.
+    /// Whether genuine native identity, initialization and transition callbacks are available.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_work(&self) -> bool {
         false
@@ -217,6 +250,16 @@ impl MachineRegistry {
         if io.is_some() && !machine.supports_native_work() {
             return Err(native_workflow_unsupported("machine has no native state callbacks"));
         }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let identity = if let Some(io) = io {
+            let work = io.original_native_work().ok_or_else(|| {
+                native_workflow_unsupported("native machine metadata requires original work")
+            })?;
+            machine.identity_with_native_work(work)?
+        } else {
+            machine.identity()
+        };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let identity = machine.identity();
         identity.validate_with_io(io)?;
         crate::contract::compile_json_schema_with_io(machine.state_schema(), "machine state", io)?;
@@ -1493,11 +1536,15 @@ fn validate_workflow_key(
 
 fn workflow_label(value: &str, field: &str, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if io.is_some() {
+    if let Some(io) = io {
+        use crate::store::history::HistoryIo as _;
+        let mut observer = io.history_io();
+        observer.check_cancellation()?;
+        observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
         return if crate::contract::is_valid_component_label(value) {
             Ok(())
         } else {
-            Err(workflow_invalid_error(io, "workflow component label is invalid"))
+            Err(workflow_invalid_error(Some(io), "workflow component label is invalid"))
         };
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
