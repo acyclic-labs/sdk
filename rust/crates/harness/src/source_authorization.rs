@@ -65,6 +65,23 @@ pub trait RootProjectSourceProvider: acyclic_stream::ProviderPlatform {
         context: RootProjectSourceContext<'a>,
         snapshot: &'a ProjectSourceSnapshot,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>;
+
+    /// Authenticates that same exact selection on the supplied original native
+    /// ledger. Implementations admit their concrete callback future before
+    /// boxing it and use native observed backend operations, not an ordinary
+    /// verifier wrapped in a newly reconstructed allowance.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn verify_with_native_work<'a>(
+        &'a self,
+        _context: RootProjectSourceContext<'a>,
+        _snapshot: &'a ProjectSourceSnapshot,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "Root project source provider has no original native-ledger verifier",
+        })
+    }
 }
 
 /// MAC-bound, operation-specific project evidence retained in original admission input.

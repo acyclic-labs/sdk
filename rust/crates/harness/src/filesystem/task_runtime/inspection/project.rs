@@ -417,6 +417,56 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
     }
 
+    /// Looks up one exact immutable native path under the original caller's
+    /// operation-bound selection and original ledger. The returned lookup
+    /// must physically drop before its separate metadata custody.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn lookup_native_path_with_native_work<D, S>(
+        &self, lazy: &LazyWorkspace<A, O, D, S>, frozen: LazySnapshotRef,
+        path: &str, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(acyclic_fs::LazyLookup, acyclic_fs::NativeAllocation)>
+    where D: DemandSource + 'static, S: LazyWorkspaceStore {
+        work.remaining()?;
+        let reader = match &self.reader {
+            SourceReader::Project(reader) => reader,
+            SourceReader::Caller(_) => return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native source inspection requires operation-bound authorization",
+            }),
+        };
+        if reader.io.cancellation.is_cancelled() {
+            return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
+        }
+        reader.owner.verify_project_source_read_with_native_work(&reader.handle, work).await?;
+        let _serial = reader.serial.lock().await;
+        reader.owner.verify_project_source_read_with_native_work(&reader.handle, work).await?;
+        if reader.io.cancellation.is_cancelled() {
+            return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
+        }
+        let io = PreparationIo::from_native_work(work)?;
+        reader.native_binding_with_io(lazy, frozen, path, &io)?;
+        let cancellation = reader.owner.invocation_cancellation().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "selected source has no original invocation token",
+        })?;
+        let result = lazy.lookup_at_snapshot_with_work(frozen, path, work, cancellation).await;
+        match result {
+            Ok(owned) => {
+                // Preserve the actual lookup and guard together on final rejection.
+                reader.owner.verify_project_source_read_with_native_work(&reader.handle, work).await?;
+                if reader.io.cancellation.is_cancelled() {
+                    return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
+                }
+                Ok(owned)
+            }
+            Err((acyclic_fs::LazyWorkspaceError::NativeWork(cause), custody)) =>
+                Err(Error::NativeWork { cause, custody }),
+            Err((acyclic_fs::LazyWorkspaceError::Cancelled, custody)) =>
+                Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody }),
+            Err((source, custody)) => Err(Error::NativeSource { source, custody }),
+        }
+    }
+
     /// Reads unresolved native content through the trusted host's ACTUAL lazy
     /// binding and the original frozen snapshot, not its authored-only generation.
     /// Receipts retain the actual SDK work, including failed/stale-source reads.

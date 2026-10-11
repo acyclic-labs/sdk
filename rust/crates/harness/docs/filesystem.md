@@ -355,6 +355,13 @@ not the size or custody proof of intrinsically owned source data. Native
 work/cancellation causes and source failures move into their typed Harness error
 carriers with existing custody, without formatting a new diagnostic after denial.
 
+`lookup_native_path_with_native_work` uses that same selected handle, frozen
+snapshot and original ledger for the SDK's actual immutable lookup body. It
+keeps the returned lookup and metadata guard together through the final owner
+check; callers drop the lookup before its guard. Native Root project source
+policies likewise return the canonical funded future and reject unsupported
+native verification before constructing a future or calling a backend.
+
 `ForkPreparation.child_result_volume` optionally declares one distinct
 child-owned unmounted result namespace. Its report and seed retain the paired
 original allocation generation; it is neither scratch nor a merge destination.
