@@ -608,6 +608,8 @@ fn source_authorization_composites_preserve_wire_and_owned_map_order() {
     let fork_event = format!(r#"{{"seed":{seed},"kind":"fork_pu\u0062lished"}}"#);
     let merge_event = format!(r#"{{"receipt":{{"provider_proof":{{"statement":{raw}}}}},"kind":"project_merge_published"}}"#);
     let snapshot = format!(r#"{{"events":[{{"payload":{fork_event}}},{{"payload":{merge_event}}}],"projection":{{"forks":[[{{"kind":"task","id":"parent"}},{seed}]],"published_merges":[["operation",[0]]]}}}}"#);
+    let merge_plan = format!(r#"{{"authorized_source":{authorization}}}"#);
+    let recursive_merge = format!(r#"{{"p\u006can":{merge_plan},"kind":"m\u0065rge"}}"#);
     for (schema, document, selected) in [
         (JsonValueSchema::ProjectSourceAuthorization, authorization.clone(), 1),
         (JsonValueSchema::ForkRequest, request.clone(), 1),
@@ -623,6 +625,10 @@ fn source_authorization_composites_preserve_wire_and_owned_map_order() {
         (JsonValueSchema::EventPayload, merge_event, 1),
         (JsonValueSchema::Snapshot, snapshot.clone(), 3),
         (JsonValueSchema::ConfiguredRecursiveSourceCheckpoint, format!(r#"{{"snapshot":{snapshot},"request":{request}}}"#), 4),
+        (JsonValueSchema::RecursiveMergeToolPlan, merge_plan, 1),
+        (JsonValueSchema::RecursivePlan, recursive_merge.clone(), 1),
+        (JsonValueSchema::RecursiveInitialPlan, format!(r#"{{"plan":{recursive_merge}}}"#), 1),
+        (JsonValueSchema::RecursiveState, format!(r#"{{"plan":{recursive_merge},"phase":"waiting"}}"#), 1),
     ] {
         // Literal graph controls for the joined source carriers/private DTOs:
         // omitted required fields make these explicitly NOT producer E2E.
@@ -664,6 +670,12 @@ fn authorization_names_dormant_variants_and_failed_outcomes_remain_ordinary() {
         (JsonValueSchema::Snapshot, format!(r#"{{"projection":{{"forks":[[{{"authorized_source":{authorization}}},null]],"published_merges":[["operation",{hidden}]]}}}}"#)),
         (JsonValueSchema::ForkPreparationCommandResults, format!(r#"{{"commands":[{{"value":{{"Failed":{{"request":{request},"message":{}}}}}}}]}}"#, serde_json::to_string(&hidden).unwrap())),
         (JsonValueSchema::ForkPreparationCommandResults, format!(r#"{{"commands":[{{"value":{{"succeeded":{{"request":{request}}}}}}}]}}"#)),
+        (JsonValueSchema::RecursiveMergeToolPlan, format!(r#"{{"source_project":{{"native_snapshot":{hidden}}},"request":{request}}}"#)),
+        (JsonValueSchema::RecursivePlan, format!(r#"{{"plan":{{"authorized_source":{authorization}}},"kind":"fork"}}"#)),
+        (JsonValueSchema::RecursivePlan, format!(r#"{{"plan":{{"request":{request}}},"kind":"merge"}}"#)),
+        (JsonValueSchema::RecursivePlan, format!(r#"{{"kind":"fork","plan":{{"authorized_source":{authorization}}},"kind":"merge"}}"#)),
+        (JsonValueSchema::RecursivePlan, format!(r#"{{"kind":"merge","plan":{{"authorized_source":{authorization}}},"kind":"merge"}}"#)),
+        (JsonValueSchema::RecursiveState, format!(r#"{{"plan":{{"plan":{{"authorized_source":{authorization}}},"kind":"merge"}},"phase":"ready"}}"#)),
     ] {
         let admitted = inspect(document.as_bytes(), Some(schema), JsonBounds {
             maximum_items: 256, maximum_depth: 16, ..LIMITS
@@ -1089,6 +1101,298 @@ mod native {
             assert_eq!(source.to_string(), expected.to_string());
             assert!(matches!(error, Error::NativeDecode { code: crate::wire::ErrorCode::Storage, .. }));
         }
+    }
+
+    fn consuming_request_source(payload: Value) -> Value {
+        let request = crate::resource_preparation::ResourcePreparationRequest {
+            provider: crate::resources::ProviderRef::new("codec", "control", "1").unwrap(),
+            child: crate::runtime::TaskAdmissionRecord {
+                operation_id: Uuid::from_bytes([3; 16]),
+                task: crate::registry::ComponentIdentity {
+                    name: "control".into(), version: "1".into(), digest: [1; 32],
+                },
+                machine: crate::workflow::MachineIdentity {
+                    name: "control".into(), version: "1".into(), digest: [2; 32],
+                },
+                input: Value::String("child input".into()),
+                input_schema: Value::Null, output_schema: Value::Null,
+                parent: None, resource_proofs: Vec::new(),
+                grants: crate::Capabilities::new(["read"]),
+                limits: crate::conversation::Limits::default(),
+                run_limits: crate::runtime::TaskRunLimits::default(),
+                policy: None, extensions: None, execution: None,
+            },
+            resources: Vec::new(), creation_grant: "create".into(),
+            maximum_resources: 1, maximum_work: 4096, maximum_bytes: 65536,
+            payload, command: None, source_checkpoint: None,
+            input_files: Vec::new(), read_authorization: None,
+        };
+        // A real closed public Deserialize fixture, not provider validation or
+        // authentication: the empty resources intentionally are not validated.
+        serde_json::to_value(request).unwrap()
+    }
+
+    #[test]
+    fn consuming_public_request_moves_strings_under_original_and_preclaimed_quota() {
+        let source = consuming_request_source(Value::String("payload".repeat(1024)));
+        let expected: crate::resource_preparation::ResourcePreparationRequest =
+            serde_json::from_value(source.clone()).unwrap();
+        let Value::String(input) = &source["child"]["input"] else { unreachable!() };
+        let input_identity = (input.as_ptr(), input.capacity());
+        let Value::String(payload) = &source["payload"] else { unreachable!() };
+        let payload_identity = (payload.as_ptr(), payload.capacity());
+        let token = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
+            allocation_operations: 1, peak_allocation_bytes: 16 * 1024 * 1024,
+            ..acyclic_fs::WorkBudget::default()
+        }, &token).unwrap();
+        let before = work.remaining().unwrap().peak_allocation_bytes;
+        let operations = work.receipt().allocation_operations;
+        let mut original = work.retain_owned(0).unwrap();
+        original.resize_retained(concrete_owned(&source)).unwrap();
+        let mut future = work.retain_owned(0).unwrap();
+        future.resize_retained(sdk_json_diagnostic_bytes()).unwrap();
+        // This concrete fixture has no nonempty resource/proof/file Vec. Its
+        // two owned Value strings move; remaining typed fields are fixed slots.
+        let slots = std::mem::size_of::<crate::resource_preparation::ResourcePreparationRequest>() as u64;
+        let mut admitted = false;
+        let actual: crate::resource_preparation::ResourcePreparationRequest =
+            json_from_value_owned_bounded_native_trusted(
+                source, LIMITS, slots, crate::wire::ErrorCode::Storage,
+                JsonValueSchema::ResourcePreparationRequest, &mut |event| {
+                    match event {
+                        JsonCodecCharge::Admission { maximum_owned_bytes, value_shape } => {
+                            assert!(!admitted);
+                            assert_eq!(maximum_owned_bytes, slots);
+                            assert!(json_typed_value_decode_owned_bytes(value_shape, slots).is_err());
+                            let additional = json_owned_value_conversion_additional_bytes(value_shape)?;
+                            future.resize_retained(slots + additional).unwrap();
+                            admitted = true;
+                        }
+                        JsonCodecCharge::Read { .. } | JsonCodecCharge::Copy { .. }
+                        | JsonCodecCharge::AllocationOperation { .. } => panic!("resident consuming serde has no SDK copy/allocation operation"),
+                        _ => {}
+                    }
+                    Ok(())
+                },
+            ).unwrap();
+        assert!(admitted);
+        assert!(actual == expected);
+        let Value::String(input) = &actual.child.input else { unreachable!() };
+        let Value::String(payload) = &actual.payload else { unreachable!() };
+        assert_eq!((input.as_ptr(), input.capacity()), input_identity);
+        assert_eq!((payload.as_ptr(), payload.capacity()), payload_identity);
+        assert_eq!(before - work.remaining().unwrap().peak_allocation_bytes, original.bytes() + future.bytes());
+        assert_eq!(work.receipt().allocation_operations, operations);
+        assert_eq!(work.receipt().bytes_copied, 0);
+        drop(actual);
+        drop(future);
+        assert_eq!(before - work.remaining().unwrap().peak_allocation_bytes, original.bytes());
+        drop(original);
+        assert_eq!(work.remaining().unwrap().peak_allocation_bytes, before);
+    }
+
+    #[test]
+    fn consuming_real_serde_map_order_raw_and_none_string_map_match_original() {
+        for first in [true, false] {
+            let mut map = serde_json::Map::new();
+            if !first { map.insert("!ordinary".into(), Value::Null); }
+            map.insert(RAW.into(), Value::String("[0,1]".into()));
+            let source = Value::Object(map);
+            let expected = serde_json::from_value::<Value>(source.clone());
+            let selected = json_owned_value_shape_bounded(&source, LIMITS, JsonValueSchema::Root, &mut |_| Ok(())).unwrap();
+            assert_eq!(selected.raw_frames, u64::from(first));
+            let actual = json_from_value_owned_bounded_native_trusted::<Value, _>(
+                source, LIMITS, 0, crate::wire::ErrorCode::Storage,
+                JsonValueSchema::Root, &mut |_| Ok(()),
+            ).unwrap();
+            assert_eq!(actual, expected.unwrap());
+        }
+        let hidden = format!("{}0{}", "[".repeat(1024), "]".repeat(1024));
+        let source = serde_json::json!({(RAW): hidden});
+        let expected: BTreeMap<String, String> = serde_json::from_value(source.clone()).unwrap();
+        let actual: BTreeMap<String, String> = json_from_value_owned_bounded_native_trusted(
+            source, JsonBounds { maximum_depth: 1, maximum_items: 3, ..LIMITS }, 0,
+            crate::wire::ErrorCode::Storage, JsonValueSchema::None, &mut |event| {
+                if let JsonCodecCharge::Admission { value_shape, .. } = event {
+                    assert_eq!(value_shape.raw_frames, 0);
+                    assert_eq!(value_shape.virtual_items, 0);
+                }
+                Ok(())
+            },
+        ).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn consuming_hidden_root_and_public_request_deny_before_serde_and_guard_real_error() {
+        for schema in [JsonValueSchema::Root, JsonValueSchema::ResourcePreparationRequest] {
+            let raw = serde_json::json!({(RAW): format!("[{}0]", "0,".repeat(1024))});
+            let source = if schema == JsonValueSchema::Root { raw } else { consuming_request_source(raw) };
+            let mut admitted = false;
+            let failure = json_from_value_owned_bounded_native_trusted::<Value, _>(
+                source, JsonBounds { maximum_items: 128, ..LIMITS }, 0,
+                crate::wire::ErrorCode::Storage, schema, &mut |event| {
+                    admitted |= matches!(event, JsonCodecCharge::Admission { .. });
+                    Ok(())
+                },
+            ).unwrap_err();
+            assert!(!admitted);
+            assert!(matches!(failure, Error::NativeBoundary { .. }));
+        }
+        let source = consuming_request_source(serde_json::json!({(RAW): "[0,]"}));
+        let expected = serde_json::from_value::<crate::resource_preparation::ResourcePreparationRequest>(source.clone()).err().unwrap();
+        let token = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
+            allocation_operations: 1, peak_allocation_bytes: 1024 * 1024,
+            ..acyclic_fs::WorkBudget::default()
+        }, &token).unwrap();
+        let before = work.remaining().unwrap().peak_allocation_bytes;
+        let operations = work.receipt().allocation_operations;
+        let mut original = work.retain_owned(0).unwrap();
+        original.resize_retained(concrete_owned(&source) + sdk_json_diagnostic_bytes()).unwrap();
+        let error = json_from_value_owned_bounded_native_trusted::<crate::resource_preparation::ResourcePreparationRequest, _>(
+            source, LIMITS, 0, crate::wire::ErrorCode::Storage,
+            JsonValueSchema::ResourcePreparationRequest, &mut |event| {
+                if let JsonCodecCharge::Admission { value_shape, .. } = event {
+                    original.resize_retained(original.bytes() + json_owned_value_conversion_additional_bytes(value_shape)?).unwrap();
+                }
+                Ok(())
+            },
+        ).err().unwrap();
+        let error = match error {
+            Error::NativeDecode { code, source, custody: None } => Error::NativeDecode { code, source, custody: Some(original) },
+            _ => panic!("original consuming serde source expected"),
+        };
+        let actual = std::error::Error::source(&error).unwrap().downcast_ref::<serde_json::Error>().unwrap();
+        assert_eq!(actual.classify(), expected.classify());
+        assert_eq!(actual.line(), expected.line());
+        assert_eq!(actual.column(), expected.column());
+        assert_eq!(actual.to_string(), expected.to_string());
+        let Error::NativeDecode { source, custody: Some(guard), code } = &error else { unreachable!() };
+        assert_eq!(*code, crate::wire::ErrorCode::Storage);
+        assert!(std::ptr::eq(actual, source));
+        assert_eq!(before - work.remaining().unwrap().peak_allocation_bytes, guard.bytes());
+        assert_eq!(work.receipt().allocation_operations, operations);
+        token.cancel();
+        drop(error);
+        assert_eq!(work.remaining().unwrap().peak_allocation_bytes, before);
+    }
+
+    #[test]
+    fn consuming_every_callback_denial_preserves_owned_cause_without_running_converter() {
+        std::thread_local! {
+            static CONVERSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        }
+        struct CountedRequest(crate::resource_preparation::ResourcePreparationRequest);
+        impl<'de> serde::Deserialize<'de> for CountedRequest {
+            fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> std::result::Result<Self, D::Error> {
+                use serde::Deserialize as _;
+                CONVERSIONS.with(|count| count.set(count.get() + 1));
+                crate::resource_preparation::ResourcePreparationRequest::deserialize(decoder).map(Self)
+            }
+        }
+        let fixture = || consuming_request_source(serde_json::json!({(RAW): "[0,1]"}));
+        CONVERSIONS.with(|count| count.set(0));
+        let mut trace = Vec::new();
+        let converted = json_from_value_owned_bounded_native_trusted::<CountedRequest, _>(
+            fixture(), LIMITS, 0, crate::wire::ErrorCode::Storage,
+            JsonValueSchema::ResourcePreparationRequest, &mut |event| {
+                trace.push(std::mem::discriminant(&event));
+                Ok(())
+            },
+        ).unwrap();
+        assert_eq!(converted.0.payload, serde_json::json!([0,1]));
+        assert_eq!(CONVERSIONS.with(|count| count.get()), 1);
+        drop(converted);
+        for denied in 0..trace.len() {
+            CONVERSIONS.with(|count| count.set(0));
+            let token = acyclic_fs::CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
+                allocation_operations: 1, peak_allocation_bytes: 1024 * 1024,
+                ..acyclic_fs::WorkBudget::default()
+            }, &token).unwrap();
+            let before = work.remaining().unwrap().peak_allocation_bytes;
+            let operations = work.receipt().allocation_operations;
+            let source = fixture();
+            let mut input = work.retain_owned(0).unwrap();
+            input.resize_retained(concrete_owned(&source)).unwrap();
+            let mut future = work.retain_owned(0).unwrap();
+            future.resize_retained(sdk_json_diagnostic_bytes()).unwrap();
+            let cause = String::from("original owned inspector/admission rejection");
+            let identity = (cause.as_ptr(), cause.capacity());
+            let mut cause = Some(Error::Invalid(cause));
+            let mut prefix = Vec::new();
+            let failure = json_from_value_owned_bounded_native_trusted::<CountedRequest, _>(
+                source, LIMITS, 0, crate::wire::ErrorCode::Storage,
+                JsonValueSchema::ResourcePreparationRequest, &mut |event| {
+                    prefix.push(std::mem::discriminant(&event));
+                    if prefix.len() == denied + 1 {
+                        token.cancel();
+                        return Err(cause.take().expect("the first owned cause moves once"));
+                    }
+                    token.check().map_err(|_| Error::Indeterminate(Uuid::nil()))?;
+                    if let JsonCodecCharge::Admission { value_shape, .. } = event {
+                        future.resize_retained(json_owned_value_conversion_additional_bytes(value_shape)?).unwrap();
+                    }
+                    Ok(())
+                },
+            ).err().unwrap();
+            let Error::Invalid(text) = &failure else { panic!("first callback cause must remain original"); };
+            assert_eq!((text.as_ptr(), text.capacity()), identity);
+            assert_eq!(prefix, trace[..=denied]);
+            assert_eq!(CONVERSIONS.with(|count| count.get()), 0);
+            assert_eq!(before - work.remaining().unwrap().peak_allocation_bytes, input.bytes() + future.bytes());
+            assert_eq!(work.receipt().allocation_operations, operations);
+            // The consumed source has been physically dropped on return; the
+            // caller's original AL stays live throughout that drop and cleanup.
+            drop(failure);
+            drop(future);
+            drop(input);
+            assert_eq!(work.remaining().unwrap().peak_allocation_bytes, before);
+        }
+    }
+
+    #[test]
+    fn consuming_derive_string_capacity_is_moved_not_borrowed_clone() {
+        #[derive(serde::Deserialize)]
+        struct Text { text: String }
+        let mut text = String::with_capacity(4096);
+        text.push_str("owned");
+        let identity = (text.as_ptr(), text.capacity());
+        let source = serde_json::json!({"text": null});
+        let mut source = source;
+        source["text"] = Value::String(text);
+        let borrowed: Text = json_from_value_bounded_native_trusted(
+            &source, LIMITS, std::mem::size_of::<Text>() as u64,
+            crate::wire::ErrorCode::Storage, JsonValueSchema::None, &mut |_| Ok(()),
+        ).unwrap();
+        assert_ne!(borrowed.text.as_ptr(), identity.0);
+        let actual: Text = json_from_value_owned_bounded_native_trusted(
+            source, LIMITS, std::mem::size_of::<Text>() as u64,
+            crate::wire::ErrorCode::Storage, JsonValueSchema::None, &mut |_| Ok(()),
+        ).unwrap();
+        assert_eq!((actual.text.as_ptr(), actual.text.capacity()), identity);
+        assert_eq!(actual.text, borrowed.text);
+    }
+
+    #[test]
+    fn consuming_additional_quota_rejects_slice_and_borrowed_sealed_origins_statically() {
+        let slice = shape(b"null", JsonValueSchema::Root);
+        assert!(matches!(json_owned_value_conversion_additional_bytes(slice),
+            Err(Error::NativeBoundary { .. })));
+        let mut borrowed_shape = None;
+        let _: Value = json_from_value_bounded_native_trusted(
+            &Value::Null, LIMITS, 0, crate::wire::ErrorCode::Storage,
+            JsonValueSchema::Root, &mut |event| {
+                if let JsonCodecCharge::Admission { value_shape, .. } = event {
+                    borrowed_shape = Some(value_shape);
+                }
+                Ok(())
+            },
+        ).unwrap();
+        assert!(matches!(json_owned_value_conversion_additional_bytes(borrowed_shape.unwrap()),
+            Err(Error::NativeBoundary { .. })));
     }
 
     #[test]
@@ -1812,5 +2116,249 @@ mod native {
             assert!(matches!(failure, Error::Indeterminate(id) if id == cause));
             assert_eq!(retained, 0, "failure drops actual temporary tree/output before cleanup");
         }
+    }
+
+    fn prepaid_journal_fixture() -> Value {
+        // Actual public DTO serialization, not a physical journal producer E2E:
+        // these literal identities confer no root or preparation authority.
+        let journal = acyclic_fs::MaterializationJournal {
+            version: 1, revision: 0,
+            plan: acyclic_fs::MaterializationPlan {
+                operation_id: acyclic_fs::OperationId::new(),
+                intent: acyclic_fs::MaterializationIntent::NativePreparation {
+                    selection: Vec::new(), original: b"immutable original request".to_vec(),
+                },
+                edits: vec![acyclic_fs::MaterializationEdit::Remove {
+                    path: "immutable/escaped-\n\"\\😀".into(),
+                }],
+            },
+            root_identity: None, preparation_identity: None, preparation_progress: None,
+            work: acyclic_fs::WorkCounters::default(), preimages: Vec::new(),
+            phase: acyclic_fs::MaterializationPhase::Prepared, applied: 0, restored: 0,
+        };
+        let mut value = serde_json::to_value(journal).unwrap();
+        value.sort_all_objects();
+        value
+    }
+
+    fn update_prepaid_scalars(value: &mut Value, scalar: u64) {
+        *value.get_mut("revision").unwrap() = Value::from(scalar);
+        for slot in value.get_mut("work").unwrap().as_object_mut().unwrap().values_mut() {
+            assert!(slot.is_u64(), "actual WorkCounters fields are u64 slots");
+            *slot = Value::from(scalar);
+        }
+    }
+
+    fn prepaid_trace_event(event: JsonCodecCharge) -> (bool, u64) {
+        match event {
+            JsonCodecCharge::Work { bytes, items: 0 } => (false, bytes),
+            JsonCodecCharge::Copy { bytes } => (true, bytes),
+            _ => panic!("prepaid final serde emits only actual Work and Copy"),
+        }
+    }
+
+    fn prepaid_depth(value: &Value) -> usize {
+        match value {
+            Value::Array(values) => 1 + values.iter().map(prepaid_depth).max().unwrap_or(0),
+            Value::Object(values) => 1 + values.values().map(prepaid_depth).max().unwrap_or(0),
+            _ => 0,
+        }
+    }
+
+    #[test]
+    fn prepaid_public_journal_and_literal_float_vectors_preserve_paid_buffers() {
+        // No accepted completion-reservation API exists in this dependency.
+        // This is a final-writer/AL control, not post-effect native authority.
+        for mut value in [
+            prepaid_journal_fixture(),
+            serde_json::json!({
+                "revision": 0, "work": {"bytes_encoded": 0, "bytes_copied": 0},
+                "immutable": ["\0\n😀\"\\", u64::MAX, i64::MIN, -0.0, 0.1,
+                    f64::MIN_POSITIVE, f64::MAX, f64::from_bits(1)],
+                "$serde_json::private::RawValue": "[0,1]",
+            }),
+        ] {
+            value.sort_all_objects();
+            update_prepaid_scalars(&mut value, u64::MAX);
+            assert!(prepaid_depth(&value) <= 256, "semantic depth admitted before scalar updates");
+            let maximum = serde_json::to_vec(&value).unwrap().len() as u64;
+            let mut output = Vec::with_capacity(maximum as usize);
+            let capacity = output.capacity();
+            let pointer = output.as_ptr();
+            let text = if value.get("plan").is_some() {
+                value["plan"]["edits"][0]["Remove"]["path"].as_str().unwrap()
+            } else { value["immutable"][0].as_str().unwrap() };
+            let text_pointer = text.as_ptr();
+            let token = acyclic_fs::CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
+                allocation_operations: 1, peak_allocation_bytes: 1024 * 1024,
+                bytes_encoded: 1024 * 1024, bytes_copied: 1024 * 1024,
+                ..acyclic_fs::WorkBudget::default()
+            }, &token).unwrap();
+            let baseline = work.remaining().unwrap().peak_allocation_bytes;
+            let original = work.retain_owned(concrete_owned(&value) + capacity as u64
+                + sdk_json_diagnostic_bytes()).unwrap();
+            let paid = original.bytes();
+            assert_eq!(work.remaining().unwrap().allocation_operations, 0);
+            for scalar in [0, u64::MAX] {
+                output.clear();
+                update_prepaid_scalars(&mut value, scalar);
+                let standard = serde_json::to_vec(&value).unwrap();
+                assert_eq!(canonical_json_bytes_trusted(&value).unwrap(), standard);
+                let before = work.receipt();
+                let mut trace = Vec::new();
+                canonical_json_value_into_prepaid_native_trusted(&value, &mut output, maximum,
+                    crate::wire::ErrorCode::Storage, &mut |event| {
+                        let (copy, bytes) = prepaid_trace_event(event);
+                        trace.push((copy, bytes));
+                        work.charge(acyclic_fs::WorkCounters {
+                            bytes_copied: if copy { bytes } else { 0 },
+                            bytes_encoded: if copy { 0 } else { bytes },
+                            ..acyclic_fs::WorkCounters::default()
+                        }).unwrap();
+                        Ok(())
+                    }).unwrap();
+                assert_eq!(output, standard);
+                assert_eq!(trace[0], (false, 0), "entry checkpoint precedes serde");
+                assert_eq!(trace.iter().filter(|(copy, _)| *copy).map(|(_, bytes)| bytes).sum::<u64>(),
+                    output.len() as u64);
+                assert_eq!(work.receipt().bytes_copied - before.bytes_copied, output.len() as u64);
+                assert_eq!(work.receipt().bytes_encoded - before.bytes_encoded, output.len() as u64);
+                assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
+                assert_eq!(output.as_ptr(), pointer);
+                assert_eq!(output.capacity(), capacity);
+                let text = if value.get("plan").is_some() {
+                    value["plan"]["edits"][0]["Remove"]["path"].as_str().unwrap()
+                } else { value["immutable"][0].as_str().unwrap() };
+                assert_eq!(text.as_ptr(), text_pointer);
+                assert_eq!(original.bytes(), paid);
+            }
+            drop(output);
+            drop(value);
+            drop(original);
+            assert_eq!(work.remaining().unwrap().peak_allocation_bytes, baseline);
+        }
+    }
+
+    #[test]
+    fn prepaid_every_denial_keeps_original_cause_and_paid_physical_prefix() {
+        let value = prepaid_journal_fixture();
+        let expected = serde_json::to_vec(&value).unwrap();
+        let maximum = expected.len() as u64;
+        let mut output = Vec::with_capacity(expected.len());
+        let mut trace = Vec::new();
+        canonical_json_value_into_prepaid_native_trusted(&value, &mut output, maximum,
+            crate::wire::ErrorCode::Storage, &mut |event| {
+                trace.push(prepaid_trace_event(event)); Ok(())
+            }).unwrap();
+        for denied in 0..trace.len() {
+            let token = acyclic_fs::CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
+                allocation_operations: 1, peak_allocation_bytes: 1024 * 1024,
+                bytes_encoded: maximum, bytes_copied: maximum,
+                ..acyclic_fs::WorkBudget::default()
+            }, &token).unwrap();
+            let value = value.clone(); // setup, not a helper allocation
+            let mut output = Vec::with_capacity(expected.len());
+            let pointer = output.as_ptr();
+            let capacity = output.capacity();
+            let baseline = work.live_allocation_bytes();
+            let original = work.retain_owned(concrete_owned(&value) + capacity as u64
+                + sdk_json_diagnostic_bytes()).unwrap();
+            let paid = original.bytes();
+            let cause = Uuid::new_v4();
+            let mut reached = Vec::new();
+            let failure = canonical_json_value_into_prepaid_native_trusted(&value, &mut output,
+                maximum, crate::wire::ErrorCode::Storage, &mut |event| {
+                    reached.push(prepaid_trace_event(event));
+                    if reached.len() == denied + 1 { token.cancel(); }
+                    token.check().map_err(|_| Error::Indeterminate(cause))?;
+                    let (copy, bytes) = prepaid_trace_event(event);
+                    work.charge(acyclic_fs::WorkCounters {
+                        bytes_copied: if copy { bytes } else { 0 },
+                        bytes_encoded: if copy { 0 } else { bytes },
+                        ..acyclic_fs::WorkCounters::default()
+                    }).unwrap();
+                    Ok(())
+                }).unwrap_err();
+            assert!(matches!(failure, Error::Indeterminate(id) if id == cause));
+            assert_eq!(reached, trace[..=denied]);
+            let copied = trace[..denied].iter().filter(|(copy, _)| *copy)
+                .map(|(_, bytes)| *bytes).sum::<u64>() as usize;
+            assert_eq!(output, expected[..copied], "only accepted Copy chunks physically extend");
+            assert_eq!(work.receipt().bytes_copied, copied as u64);
+            assert_eq!(work.receipt().bytes_encoded,
+                trace[..denied].iter().filter(|(copy, _)| !*copy)
+                    .map(|(_, bytes)| *bytes).sum::<u64>());
+            assert_eq!(output.as_ptr(), pointer);
+            assert_eq!(output.capacity(), capacity);
+            assert_eq!(original.bytes(), paid, "no false release of partial caller output");
+            output.clear(); // capacity is still live and paid
+            assert_eq!(original.bytes(), paid);
+            assert_eq!(work.live_allocation_bytes(), baseline + paid);
+            drop(output);
+            drop(value);
+            drop(original);
+            assert_eq!(work.live_allocation_bytes(), baseline,
+                "original AL cleanup follows physical drops even after cancellation");
+            assert_eq!(work.receipt().allocation_operations, 1);
+        }
+    }
+
+    #[test]
+    fn prepaid_static_preconditions_and_zero_copy_quota_do_not_fallback() {
+        let value = serde_json::json!({"immutable": "\0\n😀\"\\", "revision": u64::MAX});
+        for (mut output, maximum) in [(vec![7], 1), (Vec::new(), 1)] {
+            let pointer = output.as_ptr();
+            let capacity = output.capacity();
+            let before = output.clone();
+            let error = canonical_json_value_into_prepaid_native_trusted(&value, &mut output,
+                maximum, crate::wire::ErrorCode::Storage, &mut |_| panic!("static precondition before callbacks"))
+                .unwrap_err();
+            assert!(matches!(error, Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, .. }));
+            assert_eq!(output, before);
+            assert_eq!(output.as_ptr(), pointer);
+            assert_eq!(output.capacity(), capacity);
+        }
+        let mut no_output = Vec::new();
+        let mut checkpoint = Vec::new();
+        let error = canonical_json_value_into_prepaid_native_trusted(&value, &mut no_output,
+            0, crate::wire::ErrorCode::Storage, &mut |event| {
+                checkpoint.push(prepaid_trace_event(event)); Ok(())
+            }).unwrap_err();
+        assert!(matches!(error, Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, .. }));
+        assert_eq!(checkpoint, [(false, 0)], "static byte bound rejects the first serde chunk without Copy");
+        assert!(no_output.is_empty());
+        assert_eq!(no_output.capacity(), 0, "no heap-engine fallback");
+        let expected = serde_json::to_vec(&value).unwrap();
+        let mut output = Vec::with_capacity(expected.len());
+        let token = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
+            allocation_operations: 1, peak_allocation_bytes: 1024 * 1024,
+            bytes_encoded: expected.len() as u64, bytes_copied: 0,
+            ..acyclic_fs::WorkBudget::default()
+        }, &token).unwrap();
+        let original = work.retain_owned(concrete_owned(&value) + output.capacity() as u64).unwrap();
+        let paid = original.bytes();
+        let mut denied = None;
+        let cause = Uuid::new_v4();
+        let failure = canonical_json_value_into_prepaid_native_trusted(&value, &mut output,
+            expected.len() as u64, crate::wire::ErrorCode::Storage, &mut |event| {
+                let (copy, bytes) = prepaid_trace_event(event);
+                work.charge(acyclic_fs::WorkCounters {
+                    bytes_copied: if copy { bytes } else { 0 },
+                    bytes_encoded: if copy { 0 } else { bytes },
+                    ..acyclic_fs::WorkCounters::default()
+                }).map_err(|error| { denied = Some(error); Error::Indeterminate(cause) })
+            }).unwrap_err();
+        assert!(matches!(failure, Error::Indeterminate(id) if id == cause));
+        assert!(matches!(denied, Some(acyclic_fs::NativeTreeMaterializationError::Work(_))));
+        assert!(output.is_empty(), "zero copy allowance denies the first real extend");
+        assert_eq!(work.receipt().bytes_copied, 0);
+        assert_eq!(work.receipt().allocation_operations, 1);
+        assert_eq!(original.bytes(), paid);
+        drop(output);
+        drop(value);
+        drop(original);
     }
 }

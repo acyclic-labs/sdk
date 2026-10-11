@@ -5,7 +5,7 @@ use super::{AdmissionFailure, JsonBounds, JsonCodecCharge, JsonValueSchema, Json
 
 const RAW_KEY: &[u8] = b"$serde_json::private::RawValue";
 // Literal SDK field/tag names only; this is not a public selector language.
-const KEYS: [&[u8]; 74] = [
+const KEYS: [&[u8]; 75] = [
     RAW_KEY, b"type", b"schema", b"response_schema", b"result", b"question", b"form",
     b"kind", b"interaction_resolved", b"resolution", b"outcome", b"events",
     b"payload", b"projection", b"interactions", b"messages", b"content", b"context",
@@ -20,7 +20,7 @@ const KEYS: [&[u8]; 74] = [
     b"selected_context", b"mcp_stdio", b"params",
     b"authorized_source", b"native_snapshot", b"read_authorization", b"intent", b"report",
     b"commands", b"seed", b"fork_published", b"forks", b"project_merge_published",
-    b"snapshot",
+    b"snapshot", b"merge",
 ];
 const _: () = assert!(KEYS.len() < u128::BITS as usize);
 const FRAMES: usize = 258 + usize::BITS as usize;
@@ -48,6 +48,7 @@ enum Node {
     RecursiveSourcePin, ForkPreparationCommandResults, ForkPreparationCommands,
     ForkPreparationCommandResult, ForkReportOutcome, Forks, ForkTuple,
     ConfiguredRecursiveSourceCheckpoint,
+    RecursiveMergeToolPlan, RecursivePlanPayload,
 }
 #[derive(Clone, Copy)]
 struct Selection { node: Node, scope: Scope }
@@ -297,6 +298,7 @@ impl ValueInspector {
             Some(JsonValueSchema::RecursiveSourcePin) => Node::RecursiveSourcePin,
             Some(JsonValueSchema::ForkPreparationCommandResults) => Node::ForkPreparationCommandResults,
             Some(JsonValueSchema::ConfiguredRecursiveSourceCheckpoint) => Node::ConfiguredRecursiveSourceCheckpoint,
+            Some(JsonValueSchema::RecursiveMergeToolPlan) => Node::RecursiveMergeToolPlan,
         };
         let mut layers = [Layer::EMPTY; LAYERS];
         layers[0].root = Selection { node, scope: if node == Node::Unknown { Scope::Unknown } else { Scope::Value } };
@@ -343,6 +345,7 @@ impl ValueInspector {
             (Node::SchedulerEvent, b"declared") | (Node::Orchestration, b"reduce") => 1,
             (Node::SchedulerEvent, b"orchestrated") => 2,
             (Node::InteractionResponse, b"question" | b"form") | (Node::RecursivePlan, b"fork") => 1,
+            (Node::RecursivePlan, b"merge") => 2,
             (Node::RecursiveState, b"ready" | b"source_pinned") => 1,
             (Node::RecursiveState, b"waiting") => 3,
             (Node::RecursiveState, b"complete") => 4,
@@ -410,9 +413,9 @@ impl ValueInspector {
             (Node::Orchestration, b"reducer") => (Node::EntrypointRef, gate(0)),
             (Node::EntrypointRef, b"result_schema") => (Node::Value, scope),
             (Node::InteractionResponse, b"value") => (Node::Value, gate(0)),
-            (Node::RecursiveForkToolPlan, b"request") => (Node::ResourcePreparationRequest, scope),
-            (Node::RecursiveForkToolPlan, b"preparation") => (Node::TaskAdmissionRecord, scope),
-            (Node::RecursivePlan, b"plan") => (Node::RecursiveForkToolPlan, gate(0)),
+            (Node::RecursiveForkToolPlan | Node::RecursivePlanPayload, b"request") => (Node::ResourcePreparationRequest, scope),
+            (Node::RecursiveForkToolPlan | Node::RecursivePlanPayload, b"preparation") => (Node::TaskAdmissionRecord, scope),
+            (Node::RecursivePlan, b"plan") => (Node::RecursivePlanPayload, gate(0)),
             (Node::RecursiveInitialPlan, b"plan") => (Node::RecursivePlan, scope),
             (Node::RecursiveState, b"arguments") => (Node::Value, gate(0)),
             (Node::RecursiveState, b"intent") => (Node::RecursiveForkSourceIntent, gate(0)),
@@ -434,6 +437,17 @@ impl ValueInspector {
             (Node::ForkReportOutcome, b"Succeeded") => (Node::ForkReport, scope),
             (Node::ConfiguredRecursiveSourceCheckpoint, b"snapshot") => (Node::Snapshot, scope),
             (Node::ConfiguredRecursiveSourceCheckpoint, b"request") => (Node::ForkRequest, scope),
+            (Node::RecursiveMergeToolPlan, b"authorized_source") => (Node::ProjectSourceAuthorization, scope),
+            (Node::RecursivePlanPayload, b"authorized_source") => {
+                // The adjacent plan field can precede its kind tag. Its fork
+                // fields use branch zero; merge evidence belongs to branch one
+                // of the same outer discriminator, including through Raw frames.
+                let scope = match scope {
+                    Scope::Gate(owner, _) => Scope::Gate(owner, 1),
+                    _ => Scope::Ignore,
+                };
+                (Node::ProjectSourceAuthorization, scope)
+            }
             (Node::ToolTaskCommand, b"arguments") => (Node::Value, scope),
             (Node::TaskAdmitCommand, b"input") => (Node::Value, scope),
             (Node::ModelTaskCommand, b"input") => (Node::ModelContent, scope),

@@ -117,6 +117,8 @@ pub enum JsonValueSchema {
     ForkPreparationCommandResults,
     /// Configured recursive checkpoint's Snapshot and source fork request.
     ConfiguredRecursiveSourceCheckpoint,
+    /// Recursive merge plan's optional authorized-source native snapshot.
+    RecursiveMergeToolPlan,
 }
 
 /// Copied data issued by an SDK source pass or borrowed resident-tree inspection.
@@ -361,13 +363,16 @@ pub(crate) fn json_owned_value_shape_bounded<F: FnMut(JsonCodecCharge) -> Result
         })
 }
 
-/// NEW logical Value-container/Raw replay/syntax diagnostic quota for a genuine
-/// consuming SDK Value converter. Resident strings MOVE and remain covered by
-/// the original input guard; this helper must not claim them a second time.
-/// Keep that original guard until the converter physically consumes its input.
-/// Custom DTO clones, Content storage, new strings and typed nodes are audited
-/// separately by the concrete owner. Not a generic from_value heap proof.
-pub(crate) fn json_owned_value_conversion_additional_bytes(shape: JsonValueShape) -> Result<u64> {
+/// NEW logical Value-container/Raw replay/scratch/static diagnostic quota for a
+/// genuine consuming Value converter, using the original SDK-issued owned shape.
+/// Resident strings MOVE and remain covered by the whole original input guard;
+/// this helper excludes those already-owned strings, not their custody lifetime.
+/// Keep that guard through the physical last use/drop of the moved DTO or source
+/// on failure. The concrete closed DTO owner separately admits its actual new
+/// String/Vec/Content/Box/typed-node and dynamic diagnostic storage BEFORE serde,
+/// and retains that additional guard through its payload/error's physical drop.
+/// This is not a generic Deserialize heap/CPU, allocator/RSS or stack sandbox.
+pub fn json_owned_value_conversion_additional_bytes(shape: JsonValueShape) -> Result<u64> {
     if shape.origin != ShapeOrigin::OwnedConversion { return Err(shape_boundary("JSON conversion shape is not owned")); }
     value_storage_bytes(shape).ok_or_else(|| shape_boundary("JSON owned bound overflow"))
 }
@@ -1077,6 +1082,76 @@ pub(super) fn canonical_json_bytes_trusted<T: Serialize + ?Sized>(value: &T) -> 
     encode(value, JsonBounds::IDENTITY, None, &mut |_| Ok(()))
 }
 
+/// Finish an SDK-owned, already canonical immutable journal template in its
+/// caller-owned prepaid output. Before the physical action, the caller must
+/// freeze and canonicalize every non-scalar field, admit the template's semantic
+/// depth (at most 256), and pay for both the resident Value and an empty output
+/// with capacity for `maximum_bytes`. That byte bound must include the full
+/// 20-digit worst case for every subsequently updated u64 scalar slot.
+///
+/// This deliberately does not validate arbitrary Value canonicality, size or
+/// depth, sort keys, clone a tree, or reserve output storage. Only in-place u64
+/// scalar edits are permitted after the pre-action admission. The callback must
+/// consume the original accepted completion-work reservation, not acquire fresh
+/// work, cancellation permission, or native admission after the action.
+///
+/// Known SDK buffers cannot grow here; opaque serde internals are not covered by
+/// a global no-allocation guarantee. The caller keeps its original diagnostic
+/// guard and attaches it to NativeEncode errors. Partial output on failure stays
+/// caller-owned and paid until cleared or dropped; no custody is adopted or
+/// released by this helper.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn canonical_json_value_into_prepaid_native_trusted<F: FnMut(JsonCodecCharge) -> Result<()>>(
+    value: &Value, output: &mut Vec<u8>, maximum_bytes: u64,
+    code: crate::wire::ErrorCode, charge: &mut F,
+) -> Result<()> {
+    let maximum = usize::try_from(maximum_bytes)
+        .map_err(|_| Error::NativeBoundary { code, reason: "JSON output exceeds address space" })?;
+    if !output.is_empty() {
+        return Err(Error::NativeBoundary { code, reason: "JSON prepaid output must be empty" });
+    }
+    if output.capacity() < maximum {
+        return Err(Error::NativeBoundary { code, reason: "JSON prepaid output capacity is insufficient" });
+    }
+    let mut meter = Meter { bounds: JsonBounds { maximum_bytes, ..JsonBounds::IDENTITY },
+        items: 0, bytes: 0, charge, failure: None, bound_failure: None,
+        native_code: Some(code), retained: 0, tree_only: false };
+    if let Err(error) = meter.charge(JsonCodecCharge::Work { bytes: 0, items: 0 }) {
+        return Err(meter.root_error(error));
+    }
+    write_canonical_output(value, output, maximum, &mut meter)
+}
+
+struct Output<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> {
+    bytes: &'a mut Vec<u8>,
+    maximum: usize,
+    meter: &'a mut Meter<'b, F>,
+}
+
+impl<F: FnMut(JsonCodecCharge) -> Result<()>> std::io::Write for Output<'_, '_, F> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let remaining = self.maximum.checked_sub(self.bytes.len())
+            .ok_or_else(|| self.meter.bound("JSON exceeds admitted output").into_io())?;
+        if bytes.len() > remaining {
+            return Err(self.meter.bound("JSON exceeds admitted output").into_io());
+        }
+        self.meter.charge(JsonCodecCharge::Work { bytes: bytes.len() as u64, items: 0 }).map_err(CodecError::into_io)?;
+        self.meter.charge(JsonCodecCharge::Copy { bytes: bytes.len() as u64 }).map_err(CodecError::into_io)?;
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+}
+
+fn write_canonical_output<F: FnMut(JsonCodecCharge) -> Result<()>>(
+    value: &Value, bytes: &mut Vec<u8>, maximum: usize, meter: &mut Meter<'_, F>,
+) -> Result<()> {
+    if let Err(error) = serde_json::to_writer(Output { bytes, maximum, meter }, value) {
+        return Err(meter.root_error(error.into()));
+    }
+    Ok(())
+}
+
 fn encode<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &T, bounds: JsonBounds, native_code: Option<crate::wire::ErrorCode>, charge: &mut F,
 ) -> Result<Vec<u8>> {
@@ -1099,22 +1174,7 @@ fn encode<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     }
     let mut bytes = Vec::new();
     if size != 0 { bytes.try_reserve_exact(size).map_err(Error::Allocation)?; }
-    struct Output<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> { bytes: &'a mut Vec<u8>, maximum: usize, meter: &'a mut Meter<'b, F> }
-    impl<F: FnMut(JsonCodecCharge) -> Result<()>> std::io::Write for Output<'_, '_, F> {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            if bytes.len() > self.maximum - self.bytes.len() {
-                return Err(self.meter.bound("JSON exceeds admitted output").into_io());
-            }
-            self.meter.charge(JsonCodecCharge::Work { bytes: bytes.len() as u64, items: 0 }).map_err(CodecError::into_io)?;
-            self.meter.charge(JsonCodecCharge::Copy { bytes: bytes.len() as u64 }).map_err(CodecError::into_io)?;
-            self.bytes.extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
-    }
-    if let Err(error) = serde_json::to_writer(Output { bytes: &mut bytes, maximum: size, meter: &mut meter }, &value) {
-        return Err(meter.root_error(error.into()));
-    }
+    write_canonical_output(&value, &mut bytes, size, &mut meter)?;
     let released = meter.retained - size as u64;
     drop(value);
     if let Err(error) = meter.release(released) {
@@ -1448,6 +1508,39 @@ pub fn json_from_value_bounded_native_trusted<T: serde::de::DeserializeOwned, F:
     value_shape.origin = ShapeOrigin::BorrowedConversion;
     charge(JsonCodecCharge::Admission { maximum_owned_bytes, value_shape })?;
     T::deserialize(source).map_err(|source| Error::NativeDecode { code, source, custody: None })
+}
+
+/// Trusted CONSUMING Value-to-closed-DTO boundary. Inspect the original owned
+/// tree in its actual map order, admit its sealed OwnedConversion shape, then
+/// execute the original serde_json::from_value without a clone or JSON round
+/// trip. Admission/inspection callback root errors are returned unchanged; on
+/// any predecode failure this function physically drops its owned source before
+/// returning, while the caller still holds the whole original input guard.
+///
+/// Only an audited closed DTO may use this boundary. Its schema and trusted
+/// custom Deserialize implementations (including ignored/flattened/custom
+/// fields) must establish concrete new String/Vec/Content/Box/typed-node and
+/// diagnostic storage bounds and perform no unmetered external work. Admission
+/// must reserve that additional owner quota BEFORE serde; `maximum_owned_bytes`
+/// is the caller's bound, not an arbitrary-T heap theorem. The public
+/// json_owned_value_conversion_additional_bytes arithmetic excludes already
+/// owned resident strings that MOVE; keep the WHOLE original input guard through
+/// the moved DTO's physical last use/drop, or source/partial DTO drop on failure.
+/// Keep the additional owner guard through physical payload/error drop too.
+///
+/// Serde failures retain their real source and requested wire `code` in
+/// NativeDecode with custody None. Before returning that error, the caller must
+/// attach its original preclaimed diagnostic guard; no late claim or formatting
+/// is performed here. This trusted boundary is not a generic Deserialize heap,
+/// CPU, opaque allocator/global RSS or stack sandbox.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub fn json_from_value_owned_bounded_native_trusted<T: serde::de::DeserializeOwned, F: FnMut(JsonCodecCharge) -> Result<()>>(
+    source: Value, bounds: JsonBounds, maximum_owned_bytes: u64, code: crate::wire::ErrorCode,
+    value_schema: JsonValueSchema, charge: &mut F,
+) -> Result<T> {
+    let value_shape = json_owned_value_shape_bounded(&source, bounds, value_schema, charge)?;
+    charge(JsonCodecCharge::Admission { maximum_owned_bytes, value_shape })?;
+    serde_json::from_value(source).map_err(|source| Error::NativeDecode { code, source, custody: None })
 }
 
 enum DecodeFailure {
