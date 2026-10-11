@@ -2374,9 +2374,14 @@ impl SchemaRegistry {
 
 
     pub(crate) fn implementation_digest(&self, name: &str, version: u32) -> Result<[u8; 32]> {
-        Ok(self
-            .pinned_binding(name, version, None)?
-            .implementation_digest)
+        self.implementation_digest_with_work(name, version, &mut None)
+    }
+
+    pub(crate) fn implementation_digest_with_work(
+        &self, name: &str, version: u32,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<[u8; 32]> {
+        Ok(self.pinned_binding_with_work(name, version, None, work)?.implementation_digest)
     }
 
     #[cfg(feature = "filesystem")]
