@@ -181,7 +181,8 @@ async fn original_creator_catalog_barriers_and_duplicate_observation_do_not_disp
     assert_eq!(reply["state"], "pending");
     assert_eq!(reply["uncertain"], false);
     assert_eq!(session.slots.last_generation, generations);
-    assert!(session.native.is_none());
+    // The funded readonly host carries original owner custody, but no model driver is started.
+    assert!(session.native.is_some());
     assert!(session.native_jobs.is_empty());
     assert_eq!(prepared.frozen_source, source_cut);
     assert_eq!(prepared.native_lazy, native_cut);

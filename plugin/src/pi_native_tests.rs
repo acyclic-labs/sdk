@@ -192,6 +192,11 @@ fn original_host_settings_strip_recursive_credentials_and_cannot_be_overridden_b
         executable_prefix: input.executable_prefix.clone(), extension: input.extension.clone(),
         provider_extension: input.provider_extension.clone(), environment };
     assert!(raw.validate().is_err());
+    let before = work.receipt();
+    assert!(matches!(raw.validate_with_native_work(&work),
+        Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, .. })));
+    assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
+    assert!(work.receipt().items_examined > before.items_examined);
     let original = raw.sanitize().unwrap();
     assert!(original.environment.contains_key("ACYCLIC_PI_PROVIDER_EXTENSION"));
     assert!(!original.environment.keys().any(|key| is_caller_environment(key)));

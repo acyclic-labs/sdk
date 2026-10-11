@@ -23,7 +23,7 @@ pub(crate) struct PiWorkflowHost<'a> {
     runtime: Arc<Runtime>,
     filesystem: Arc<Filesystem>,
     stream: StreamClient<LocalStream>,
-    resources: ServiceResources,
+    resources: &'a ServiceResources,
     retained: &'a AdapterState,
     root_provider: tokio::sync::Mutex<Option<Arc<RootProvider>>>,
     fork_controls: Option<&'a dyn TaskCommandHost>,
@@ -38,7 +38,7 @@ impl<'a> PiWorkflowHost<'a> {
         runtime: Arc<Runtime>,
         filesystem: Arc<Filesystem>,
         stream: StreamClient<LocalStream>,
-        resources: ServiceResources,
+        resources: &'a ServiceResources,
         retained: &'a AdapterState,
     ) -> Self {
         Self { directory, runtime, filesystem, stream, resources, retained,
@@ -279,7 +279,7 @@ impl<'a> PiWorkflowHost<'a> {
 
     async fn root_control_context(
         &self, context: Arc<acyclic_harness::NativeTaskContext>, fence: &LeaseFence,
-        protected: pi_owner::PiOwnerConfig,
+        protected: Arc<pi_owner::PiOwnerConfig>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<Arc<acyclic_harness::NativeTaskContext>> {
         if context.context().durable_task_id() != Some(protected.policy().root_task) {
@@ -294,7 +294,7 @@ impl<'a> PiWorkflowHost<'a> {
                 fence, Arc::clone(&context), work,
             ).await?;
         pi_root_provider::bind_root_output_context_with_native_work(
-            context, &owner, protected, self.resources.clone(),
+            context, &owner, protected, self.resources,
             self.filesystem.clone(), self.stream.clone(), preparation.request(), work,
         ).await
     }
@@ -302,7 +302,7 @@ impl<'a> PiWorkflowHost<'a> {
     async fn root_effects(
         &self, context: Arc<acyclic_harness::NativeTaskContext>, fence: &LeaseFence,
         command: &WorkflowCommand, payload: &Value,
-        owner: pi_owner::PiOwnerConfig,
+        owner: Arc<pi_owner::PiOwnerConfig>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<Arc<acyclic_harness::effect_host::ConversationEffectHost<LocalStream>>> {
         if context.context().durable_task_id() != Some(owner.policy().root_task) {
@@ -336,7 +336,7 @@ impl<'a> PiWorkflowHost<'a> {
         let effect_authority;
         (effect_authority, effect_custody) = owner.effect_authority_with_native_work(work)?;
         let provider = pi_root_provider::root_provider(
-            owner, self.resources.clone(), self.filesystem.clone(), self.stream.clone(),
+            owner, self.resources, self.filesystem.clone(), self.stream.clone(),
             preparation, journal_owner, context, work.clone(),
         )?;
         let effects = pi_owner::root_effects_with_native_work(
@@ -358,7 +358,8 @@ impl<'a> PiWorkflowHost<'a> {
                 reason: "Pi command has no original task",
             },
         )?;
-        let owner = pi_owner::PiOwnerConfig::load_with_native_work(self.directory, work)?;
+        let owner = pi_owner::PiOwnerConfig::load_with_native_work(self.directory, work)?
+            .into_native_shared(work)?;
         self.runtime.verify_owner_with_native_work(&owner, work)?;
         if task == owner.policy().root_task
             && command.operation_id == pi_root_inputs::preparation_operation_with_native_work(task, work)?

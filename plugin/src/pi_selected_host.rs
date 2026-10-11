@@ -62,8 +62,8 @@ pub(crate) struct PiSelectedHost<'a> {
     runtime: Arc<PiNativeRuntime>,
     filesystem: Arc<PiNativeFilesystem>,
     stream: StreamClient<LocalStream>,
-    resources: ServiceResources,
-    protected: PiOwnerConfig,
+    resources: &'a ServiceResources,
+    protected: Arc<PiOwnerConfig>,
     retained: &'a AdapterState,
     roots: &'a BTreeMap<String, PiRootHandle>,
     native: Arc<PiNativeCommandHost>,
@@ -75,12 +75,21 @@ pub(crate) struct PiSelectedHost<'a> {
 impl<'a> PiSelectedHost<'a> {
     #[allow(clippy::too_many_arguments, reason = "original providers, catalog and creator handles are independent")]
     pub(crate) fn new(runtime: Arc<PiNativeRuntime>, filesystem: Arc<PiNativeFilesystem>,
-        stream: StreamClient<LocalStream>, resources: ServiceResources, protected: PiOwnerConfig,
+        stream: StreamClient<LocalStream>, resources: &'a ServiceResources, protected: Arc<PiOwnerConfig>,
         retained: &'a AdapterState, roots: &'a BTreeMap<String, PiRootHandle>,
         native: Arc<PiNativeCommandHost>) -> Result<Self> {
         runtime.verify_owner(&protected)?;
         Ok(Self { runtime, filesystem, stream, resources, protected, retained, roots, native,
             root_source_cut: None, cancellation: None, work: None })
+    }
+    #[allow(clippy::too_many_arguments, reason = "original providers and invocation work are independent")]
+    pub(crate) fn new_with_native_work(runtime: Arc<PiNativeRuntime>, filesystem: Arc<PiNativeFilesystem>,
+        stream: StreamClient<LocalStream>, resources: &'a ServiceResources, protected: Arc<PiOwnerConfig>,
+        retained: &'a AdapterState, roots: &'a BTreeMap<String, PiRootHandle>,
+        native: Arc<PiNativeCommandHost>, work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
+        runtime.verify_owner_with_native_work(&protected, work)?;
+        Ok(Self { runtime, filesystem, stream, resources, protected, retained, roots, native,
+            root_source_cut: None, cancellation: Some(work.cancellation().clone()), work: Some(work.clone()) })
     }
     pub(crate) fn with_root_source_cut(mut self, cut: Option<&'a PiRootSourceCut>) -> Self {
         self.root_source_cut = cut; self
@@ -94,8 +103,12 @@ impl<'a> PiSelectedHost<'a> {
         self
     }
     fn coordinator(&self) -> Result<PiForkCoordinator> {
-        PiForkCoordinator::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            self.resources.clone(), self.protected.clone())
+        match &self.work {
+            Some(work) => PiForkCoordinator::new_with_native_work(self.runtime.clone(), self.filesystem.clone(),
+                self.stream.clone(), self.resources, Arc::clone(&self.protected), work),
+            None => PiForkCoordinator::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
+                self.resources.clone(), Arc::clone(&self.protected)),
+        }
     }
     fn root_binding(&self) -> Result<&PiTaskBinding> {
         match &self.retained.task_binding {

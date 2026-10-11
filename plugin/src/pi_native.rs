@@ -387,6 +387,13 @@ pub(crate) fn capture_limits(actual_root_limits: acyclic_harness::conversation::
         maximum_result_bytes: u32::try_from(result).map_err(|error| invalid(&error.to_string()))? })
 }
 
+fn runtime_validation_step(work: Option<&NativeMaterializationWork>, items: usize) -> Result<()> {
+    if let Some(work) = work {
+        work.charge(WorkCounters { items_examined: items as u64, ..WorkCounters::default() }).map_err(native_error)?;
+    }
+    Ok(())
+}
+
 impl PiNativeHostRuntime {
     pub(crate) fn sanitize(mut self) -> Result<Self> {
         self.environment.retain(|key, _| !is_caller_environment(key));
@@ -395,24 +402,54 @@ impl PiNativeHostRuntime {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
+        self.validate_original(None)
+    }
+
+    pub(crate) fn validate_with_native_work(&self, work: &NativeMaterializationWork) -> Result<()> {
+        work.remaining().map_err(native_error)?;
+        self.validate_original(Some(work))
+    }
+
+    fn validate_original(&self, work: Option<&NativeMaterializationWork>) -> Result<()> {
+        let reject = |reason| match work {
+            Some(_) => Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason },
+            None => invalid(reason),
+        };
         let mut environment_bytes = 0_u64;
         for (index, (key, value)) in self.environment.iter().enumerate() {
+            runtime_validation_step(work, 1)?;
+            runtime_validation_step(work, key.len())?;
+            runtime_validation_step(work, value.len())?;
             environment_bytes = environment_bytes.checked_add(key.len() as u64).and_then(|bytes| bytes.checked_add(value.len() as u64))
-                .ok_or_else(|| invalid("Pi host environment size overflow"))?;
+                .ok_or_else(|| reject("Pi host environment size overflow"))?;
             if key.is_empty() || key.contains(['=', '\0']) || value.contains('\0') || is_caller_environment(key)
                 || environment_bytes > super::MAXIMUM_ADAPTER_STATE_BYTES
-                || (cfg!(windows) && self.environment.keys().take(index).any(|prior| prior.eq_ignore_ascii_case(key)))
+                || (cfg!(windows) && {
+                    let mut duplicate = false;
+                    for prior in self.environment.keys().take(index) {
+                        runtime_validation_step(work, prior.len())?;
+                        runtime_validation_step(work, key.len())?;
+                        if prior.eq_ignore_ascii_case(key) { duplicate = true; break; }
+                    }
+                    duplicate
+                })
             {
-                return Err(invalid("Pi original host environment is invalid or contains a recursive credential"));
+                return Err(reject("Pi original host environment is invalid or contains a recursive credential"));
             }
         }
+        runtime_validation_step(work, self.version.len())?;
+        for path in [&self.executable, &self.extension] {
+            runtime_validation_step(work, path.as_os_str().len())?;
+        }
+        for path in &self.executable_prefix { runtime_validation_step(work, path.len())?; }
+        if let Some(path) = &self.provider_extension { runtime_validation_step(work, path.as_os_str().len())?; }
         if self.version != PI_NATIVE_VERSION || !self.executable.is_absolute() || !self.extension.is_absolute()
             || has_parent(&self.executable) || has_parent(&self.extension) || self.environment.is_empty()
             || self.executable_prefix.len() > 1
             || self.executable_prefix.first().is_some_and(|path| !Path::new(path).is_absolute() || has_parent(Path::new(path)) || path.contains('\0'))
             || self.provider_extension.as_ref().is_some_and(|path| !path.is_absolute() || has_parent(path))
         {
-            return Err(invalid("Pi original runtime must select the pinned absolute executable and extension"));
+            return Err(reject("Pi original runtime must select the pinned absolute executable and extension"));
         }
         Ok(())
     }
@@ -423,7 +460,7 @@ impl PiNativeHostRuntime {
         &self, work: &NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         work.remaining().map_err(native_error)?;
-        self.validate()?;
+        self.validate_with_native_work(work)?;
         let mut version = pi_native_string(&self.version, work)?;
         let mut executable = work.copy_path(&self.executable).map_err(native_error)?;
         let mut extension = work.copy_path(&self.extension).map_err(native_error)?;
@@ -469,7 +506,7 @@ impl PiNativeHostRuntime {
         capture: PiNativeCaptureLimits, work: &NativeMaterializationWork,
     ) -> Result<(PiNativeInvocation, acyclic_fs::NativeAllocation)> {
         work.remaining().map_err(native_error)?;
-        self.validate()?;
+        self.validate_with_native_work(work)?;
         let caller = BTreeMap::new();
         let projection = PiBoundInvocation { version: &self.version, executable: &self.executable,
             executable_prefix: &self.executable_prefix, extension: &self.extension,
@@ -490,7 +527,7 @@ impl PiNativeHostRuntime {
         work: &NativeMaterializationWork,
     ) -> Result<(PiNativeInvocation, acyclic_fs::NativeAllocation)> {
         work.remaining().map_err(native_error)?;
-        self.validate()?;
+        self.validate_with_native_work(work)?;
         intent.validate_with_work(work)?;
         require_caller_environment(caller_environment)?;
         let persisted = &intent.invocation;
