@@ -8,6 +8,8 @@ use std::mem::size_of;
 pub(crate) struct NativeHistoryIo<'a> {
     work: &'a NativeMaterializationWork,
     custody: NativeAllocation,
+    staged_bytes: u64,
+    staged_items: u64,
 }
 
 fn error(cause: std::collections::TryReserveError) -> Error {
@@ -20,13 +22,60 @@ fn error(cause: std::collections::TryReserveError) -> Error {
 pub(crate) fn native_work_io(
     work: &NativeMaterializationWork,
 ) -> std::result::Result<NativeHistoryIo<'_>, NativeTreeMaterializationError> {
-    Ok(NativeHistoryIo { work, custody: work.retain_owned(0)? })
+    Ok(NativeHistoryIo {
+        work, custody: work.retain_owned(0)?, staged_bytes: 0, staged_items: 0,
+    })
+}
+
+/// A scoped loan of existing state custody; the original guard receives every
+/// retained delta before its owner can be dropped, including on cancellation.
+pub(crate) struct NativeStateHistoryIo<'a> {
+    inner: NativeHistoryIo<'a>,
+    owner: &'a mut NativeAllocation,
+}
+
+impl<'a> std::ops::Deref for NativeStateHistoryIo<'a> {
+    type Target = NativeHistoryIo<'a>;
+    fn deref(&self) -> &Self::Target { &self.inner }
+}
+
+impl std::ops::DerefMut for NativeStateHistoryIo<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.inner }
+}
+
+impl Drop for NativeStateHistoryIo<'_> {
+    fn drop(&mut self) {
+        // The exclusive loan leaves the owner empty. Both guards share this
+        // exact ledger, and their combined bytes cannot exceed its live total.
+        self.owner.absorb(&mut self.inner.custody)
+            .expect("native state custody returns to its original owner");
+    }
+}
+
+pub(crate) fn native_state_work_io<'a>(
+    work: &'a NativeMaterializationWork,
+    owner: &'a mut NativeAllocation,
+) -> std::result::Result<NativeStateHistoryIo<'a>, NativeTreeMaterializationError> {
+    if !work.shares_ledger(owner.work()) {
+        return Err(NativeTreeMaterializationError::InvalidLayout);
+    }
+    let custody = owner.split_off(owner.bytes())?;
+    Ok(NativeStateHistoryIo {
+        inner: NativeHistoryIo { work, custody, staged_bytes: 0, staged_items: 0 },
+        owner,
+    })
 }
 
 impl NativeHistoryIo<'_> {
     /// Transfers the same ledger's retained source payloads to their last user.
     pub(crate) fn into_custody(self) -> NativeAllocation {
         self.custody
+    }
+    pub(crate) fn return_staged_output(&mut self) -> Result<()> {
+        self.return_output(self.staged_bytes, self.staged_items)?;
+        self.staged_bytes = 0;
+        self.staged_items = 0;
+        Ok(())
     }
     fn native_error(&self, cause: NativeTreeMaterializationError) -> Error {
         Error::NativeWork { cause, custody: None }
@@ -70,6 +119,9 @@ impl HistoryIo for NativeHistoryIo<'_> {
         self.custody.absorb(&mut incoming).map_err(|cause| Error::NativeWork {
             cause, custody: Some(incoming),
         })
+    }
+    fn take_native_custody(&mut self, bytes: u64) -> Result<NativeAllocation> {
+        self.custody.split_off(bytes).map_err(|cause| self.native_error(cause))
     }
     fn check_cancellation(&self) -> Result<()> {
         self.work.cancellation().check()
@@ -181,9 +233,15 @@ impl HistoryIo for NativeHistoryIo<'_> {
         self.work.admit(WorkCounters { output_bytes: bytes, items_returned: count, ..WorkCounters::default() })
             .map_err(|error| self.native_error(error))
     }
-    fn stage_output(&mut self, _bytes: u64, _count: u64) -> Result<()> {
-        // This borrowed adapter verifies guards; no archive values escape it.
-        self.check_cancellation()
+    fn stage_output(&mut self, bytes: u64, count: u64) -> Result<()> {
+        let overflow = || self.native_error(
+            NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow));
+        let staged_bytes = self.staged_bytes.checked_add(bytes).ok_or_else(overflow)?;
+        let staged_items = self.staged_items.checked_add(count).ok_or_else(overflow)?;
+        self.admit_output(staged_bytes, staged_items)?;
+        self.staged_bytes = staged_bytes;
+        self.staged_items = staged_items;
+        Ok(())
     }
     fn return_output(&mut self, bytes: u64, count: u64) -> Result<()> {
         self.charge(WorkCounters { output_bytes: bytes, items_returned: count, ..WorkCounters::default() })

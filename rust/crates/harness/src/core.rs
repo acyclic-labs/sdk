@@ -155,6 +155,51 @@ impl Scope {
         self.agent
     }
 
+    /// Copies the original immutable grant on the caller's admitted ledger.
+    pub(crate) fn clone_with_work(
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        if work.is_none() {
+            return Ok(self.clone());
+        }
+        let slots = self.capabilities.iter().try_fold(0_u64, |bytes, _| {
+            bytes.checked_add(std::mem::size_of::<String>() as u64)
+                .ok_or_else(|| Error::Invalid("scope clone slots overflow".into()))
+        })?;
+        let mut custody = crate::wire_codec::CodecQuota::new(work, slots)?;
+        let id = custody.work().as_deref_mut().expect("observed scope clone").clone_text(&self.id)?;
+        custody.adopt(id.capacity() as u64)?;
+        let issuer = custody.work().as_deref_mut().expect("observed scope clone").clone_text(&self.issuer)?;
+        custody.adopt(issuer.capacity() as u64)?;
+        let mut source = self.capabilities.iter();
+        let mut failure = None;
+        let capabilities = Capabilities::new(std::iter::from_fn(|| {
+            if failure.is_some() { return None; }
+            let capability = source.next()?;
+            let copied: Result<String> = (|| {
+                let text = custody.work().as_deref_mut().expect("observed scope clone")
+                    .clone_text(capability)?;
+                custody.adopt(text.capacity() as u64)?;
+                Ok(text)
+            })();
+            match copied {
+                Ok(text) => Some(text),
+                Err(error) => { failure = Some(error); None }
+            }
+        }));
+        if let Some(error) = failure {
+            drop(capabilities);
+            return Err(error);
+        }
+        let cloned = Self {
+            id, capabilities, agent: self.agent, issuer,
+            parent_proof: self.parent_proof, proof: self.proof,
+        };
+        custody.transfer();
+        Ok(cloned)
+    }
+
     pub(crate) fn logical_clone_owned_bytes(&self) -> Result<u64> {
         let strings = (self.id.len() as u64).checked_add(self.issuer.len() as u64)
             .ok_or_else(|| Error::Invalid("scope clone strings overflow".into()))?;
@@ -428,7 +473,25 @@ impl AuthorityIssuer {
         attempt_id: EffectAttemptId,
         status: EffectStatus,
     ) -> Result<EffectAttestation> {
-        let proof = effect_attestation_proof(
+        self.attest_effect_with_work(effect_id, effect, attempt_id, status, &mut None)
+    }
+
+    /// Signs the original provider observation with admitted encoding and hashing.
+    pub(crate) fn attest_effect_with_work(
+        &self,
+        effect_id: EffectId,
+        effect: &EffectState,
+        attempt_id: EffectAttemptId,
+        status: EffectStatus,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<EffectAttestation> {
+        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let provider = match custody.work().as_deref_mut() {
+            Some(work) => work.clone_text(&effect.provider)?,
+            None => effect.provider.clone(),
+        };
+        custody.adopt(provider.capacity() as u64)?;
+        let proof = effect_attestation_proof_with_work(
             &self.key,
             &self.audience,
             &effect.provider,
@@ -438,9 +501,11 @@ impl AuthorityIssuer {
             effect.guarantee,
             effect.result_schema_digest,
             &status,
+            custody.work(),
         )?;
+        custody.transfer();
         Ok(EffectAttestation {
-            provider: effect.provider.clone(),
+            provider,
             effect_id,
             attempt_id,
             request_digest: effect.request_digest,
@@ -4187,7 +4252,30 @@ fn effect_attestation_proof(
     result_schema_digest: [u8; 32],
     status: &EffectStatus,
 ) -> Result<[u8; 32]> {
-    let bytes = crate::contract::canonical_json_bytes(&(
+    effect_attestation_proof_with_work(
+        key, audience, provider, effect_id, attempt_id, request_digest,
+        guarantee, result_schema_digest, status, &mut None,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each argument is one field of the original attested proof preimage"
+)]
+fn effect_attestation_proof_with_work(
+    key: &[u8; 32],
+    audience: &Authority,
+    provider: &str,
+    effect_id: EffectId,
+    attempt_id: EffectAttemptId,
+    request_digest: [u8; 32],
+    guarantee: EffectGuarantee,
+    result_schema_digest: [u8; 32],
+    status: &EffectStatus,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<[u8; 32]> {
+    let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let bytes = crate::store::history::canonical_bytes_with_work(&(
         audience,
         provider,
         effect_id,
@@ -4196,8 +4284,14 @@ fn effect_attestation_proof(
         guarantee,
         result_schema_digest,
         status,
-    ))?;
-    Ok(*blake3::keyed_hash(key, &bytes).as_bytes())
+    ), crate::store::default_projection_read_limits().maximum_bytes, custody.work())?;
+    custody.adopt(bytes.capacity() as u64)?;
+    if let Some(work) = custody.work().as_deref_mut() {
+        work.hashed_bytes(bytes.len() as u64)?;
+    }
+    let proof = *blake3::keyed_hash(key, &bytes).as_bytes();
+    drop(bytes);
+    Ok(proof)
 }
 
 pub(crate) fn canonical_intent(command: &Command) -> Result<[u8; 32]> {
@@ -4260,6 +4354,138 @@ fn json_digest(value: &Value) -> Result<[u8; 32]> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn original_proof_budget() -> acyclic_fs::WorkBudget {
+        acyclic_fs::WorkBudget {
+            allocation_operations: 4096,
+            peak_allocation_bytes: 16_777_216,
+            bytes_copied: 16_777_216,
+            bytes_encoded: 16_777_216,
+            bytes_hashed: 16_777_216,
+            source_bytes_read: 16_777_216,
+            items_examined: 16_777_216,
+            ..acyclic_fs::WorkBudget::default()
+        }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn original_scope_clone_preserves_private_grant_and_denies_before_copy() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        let issuer = issuer();
+        let parent = issuer.root_for_agent(
+            AgentId::from_bytes([9; 16]), "original-parent",
+            Capabilities::new(["effect:send", "volume:read"]),
+        );
+        let scope = issuer.attenuate(&parent, "original-child", Capabilities::new(["effect:send"]))?;
+        let cancellation = CancellationToken::new();
+        let ledger = NativeMaterializationWork::new(original_proof_budget(), &cancellation)
+            .expect("original ledger");
+        let mut io = crate::store::history::native_work_io(&ledger).expect("original observer");
+        let cloned = scope.clone_with_work(&mut Some(&mut io))?;
+        assert_eq!(cloned, scope);
+        issuer.verifier().verify(&cloned)?;
+        assert_eq!(ledger.receipt().bytes_copied,
+            (scope.id.len() + scope.issuer.len() + "effect:send".len()) as u64);
+        assert_eq!(ledger.receipt().bytes_hashed, 0);
+        drop(cloned);
+        drop(io);
+        for denied in ["bytes_copied", "peak_allocation_bytes", "cancelled"] {
+            let token = CancellationToken::new();
+            let mut budget = original_proof_budget();
+            if denied == "bytes_copied" { budget.bytes_copied = 0; }
+            if denied == "peak_allocation_bytes" {
+                budget.peak_allocation_bytes = NativeMaterializationWork::accounting_state_bytes();
+            }
+            let ledger = NativeMaterializationWork::new(budget, &token).expect("original ledger");
+            let mut io = crate::store::history::native_work_io(&ledger).expect("original observer");
+            if denied == "cancelled" { token.cancel(); }
+            let prefix = ledger.receipt();
+            let error = scope.clone_with_work(&mut Some(&mut io)).expect_err("denied original clone");
+            match error {
+                Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. } =>
+                    assert_eq!(denied, "cancelled"),
+                Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                    acyclic_fs::WorkError::BudgetExceeded { counter, .. }), .. } =>
+                    assert_eq!(counter, denied),
+                other => panic!("unexpected original clone cause: {other:?}"),
+            }
+            assert_eq!(ledger.receipt().bytes_copied, prefix.bytes_copied);
+            assert_eq!(ledger.receipt().allocation_operations, prefix.allocation_operations);
+            assert_eq!(ledger.receipt().bytes_hashed, 0);
+        }
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn original_effect_attestation_has_canonical_proof_parity_and_preflight_denials() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        let issuer = issuer();
+        let effect_id = EffectId::from_bytes([30; 16]);
+        let attempt_id = EffectAttemptId::from_bytes([31; 16]);
+        let mut reducer = Reducer::new(issuer.audience.clone(), issuer.verifier(), schemas());
+        reducer.apply(command(operation(30), 0, Action::PlanEffect {
+            effect_id, provider: "example.provider".into(),
+            guarantee: EffectGuarantee::AtMostOnce, effect_kind: "example.model_output".into(),
+            request: request_file(br#"{"prompt":"original input"}"#)?,
+            result_schema: schema_file(&json!({"type":"object"}))?,
+        }))?;
+        let effect = reducer.effect(effect_id).ok_or_else(|| Error::NotFound("effect".into()))?;
+        for status in [
+            EffectStatus::Succeeded {
+                result: request_file(br#"{"modelOutput":{"content":"original output","finishReason":"stop"}}"#)?,
+            },
+            EffectStatus::Failed { message: "provider rejected \"original input\"\nretry forbidden".into() },
+            EffectStatus::Indeterminate,
+        ] {
+            let expected_bytes = crate::contract::canonical_json_bytes(&(
+                &issuer.audience, &effect.provider, effect_id, attempt_id,
+                effect.request_digest, effect.guarantee, effect.result_schema_digest, &status,
+            ))?;
+            let expected = issuer.attest_effect(effect_id, effect, attempt_id, status.clone())?;
+            assert_eq!(expected.proof, *blake3::keyed_hash(&issuer.key, &expected_bytes).as_bytes());
+            let cancellation = CancellationToken::new();
+            let ledger = NativeMaterializationWork::new(original_proof_budget(), &cancellation)
+                .expect("original ledger");
+            let mut io = crate::store::history::native_work_io(&ledger).expect("original observer");
+            let observed = issuer.attest_effect_with_work(
+                effect_id, effect, attempt_id, status, &mut Some(&mut io))?;
+            assert_eq!(observed, expected);
+            issuer.verifier().verify_effect(&observed)?;
+            assert_eq!(ledger.receipt().bytes_hashed, expected_bytes.len() as u64);
+            assert!(ledger.receipt().bytes_copied >= effect.provider.len() as u64);
+            for denied in ["bytes_copied", "bytes_hashed", "peak_allocation_bytes", "cancelled"] {
+                let token = CancellationToken::new();
+                let mut budget = original_proof_budget();
+                if denied == "bytes_copied" { budget.bytes_copied = 0; }
+                if denied == "bytes_hashed" { budget.bytes_hashed = 0; }
+                if denied == "peak_allocation_bytes" {
+                    budget.peak_allocation_bytes = NativeMaterializationWork::accounting_state_bytes();
+                }
+                let ledger = NativeMaterializationWork::new(budget, &token).expect("original ledger");
+                let mut io = crate::store::history::native_work_io(&ledger).expect("original observer");
+                let status = observed.status.clone();
+                if denied == "cancelled" { token.cancel(); }
+                let prefix = ledger.receipt();
+                let error = issuer.attest_effect_with_work(
+                    effect_id, effect, attempt_id, status, &mut Some(&mut io)).expect_err("denied original signer");
+                match error {
+                    Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. } =>
+                        assert_eq!(denied, "cancelled"),
+                    Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                        acyclic_fs::WorkError::BudgetExceeded { counter, .. }), .. } =>
+                        assert_eq!(counter, denied),
+                    other => panic!("unexpected original signer cause: {other:?}"),
+                }
+                assert_eq!(ledger.receipt().bytes_hashed, 0);
+                if denied != "bytes_hashed" { assert_eq!(ledger.receipt(), prefix); }
+                else { assert!(ledger.receipt().bytes_encoded > 0); }
+            }
+        }
+        Ok(())
+    }
 
     /// One generated reducer input; indices select earlier operations.
     #[derive(Clone, Debug)]

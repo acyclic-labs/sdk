@@ -161,6 +161,194 @@ mod measured_open_tests {
         drop(custody);
         Ok(())
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn native_history_pages_preserve_original_provider_prefixes_and_custody() -> Result<()> {
+        use acyclic_fs::{NativeMaterializationWork, NativeTreeMaterializationError};
+        let (provider, client) = fixture().await?;
+        let cancellation = CancellationToken::new();
+        let native = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("original finite ledger");
+        let mut io = history::native_work_io(&native).expect("original reader custody");
+        let reader = HistoryReader::new_with_work(
+            &client, &authority(), &issuer().verifier(), Some(&mut io))?;
+        let reader_custody = io.into_custody();
+        provider.reset_io();
+        let (cursor, cursor_custody) = reader.pin_with_native_work(64, &native).await?;
+        assert_eq!(cursor.through_revision, 69);
+        assert!(cursor_custody.bytes() >= cursor.authority.id.len() as u64);
+        assert!(native.shares_ledger(cursor_custody.work()));
+        let prefix = native.receipt();
+        provider.reset_io();
+        let (page, page_custody) = reader.read_page_with_native_work(
+            &cursor, default_projection_read_limits(), &native).await?;
+        let receipt = native.receipt();
+        let sdk = provider.io_snapshot();
+        assert_eq!(page.events.len(), 5);
+        assert_eq!(page.cursor.after_revision, 69);
+        assert!(native.shares_ledger(page_custody.work()));
+        assert!(page_custody.bytes() >= page.cursor.authority.id.len() as u64);
+        assert_eq!(receipt.backend_read_operations - prefix.backend_read_operations,
+            sdk.reads + sdk.tails as u64);
+        assert_eq!(receipt.authority_bytes_read - prefix.authority_bytes_read, sdk.read_bytes);
+        assert_eq!(receipt.output_bytes - prefix.output_bytes, sdk.read_bytes);
+        assert_eq!(receipt.items_returned - prefix.items_returned, 5);
+        assert_eq!(sdk.writes + sdk.inspections + sdk.commit_reads + sdk.other_calls, 0);
+        drop(page);
+        drop(page_custody);
+
+        for narrow in [
+            WorkBudget { output_bytes: 0, ..budget() },
+            WorkBudget { authority_bytes_read: 0, ..budget() },
+        ] {
+            let denied = NativeMaterializationWork::new(narrow, &cancellation)
+                .expect("original finite denied ledger");
+            provider.reset_io();
+            assert!(matches!(reader.read_page_with_native_work(
+                &cursor, default_projection_read_limits(), &denied).await,
+                Err(Error::NativeWork { custody: None, .. })));
+            let receipt = denied.receipt();
+            assert_eq!(receipt.authority_bytes_read, provider.io_snapshot().read_bytes);
+            assert!(receipt.authority_bytes_read > 0);
+            assert_eq!(receipt.output_bytes, 0);
+            assert_eq!(receipt.items_returned, 0);
+        }
+
+        let fault_work = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("original failed source ledger");
+        provider.reset_io();
+        provider.history_read_fault.store(4, Ordering::SeqCst);
+        assert!(reader.read_page_with_native_work(
+            &cursor, default_projection_read_limits(), &fault_work).await.is_err());
+        assert_eq!(fault_work.receipt().authority_records_read, 1);
+        assert_eq!(fault_work.receipt().authority_bytes_read, 7);
+        assert_eq!(fault_work.receipt().authority_bytes_read, provider.io_snapshot().read_bytes);
+        assert_eq!(fault_work.receipt().output_bytes, 0);
+        assert_eq!(fault_work.receipt().items_returned, 0);
+
+        let wrong_issuer = AuthorityIssuer::new("test", [8; 32], authority());
+        let auth_work = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("original authentication ledger");
+        let mut io = history::native_work_io(&auth_work).expect("original reader custody");
+        let wrong_reader = HistoryReader::new_with_work(
+            &client, &authority(), &wrong_issuer.verifier(), Some(&mut io))?;
+        let wrong_custody = io.into_custody();
+        provider.reset_io();
+        assert!(wrong_reader.read_page_with_native_work(
+            &cursor, default_projection_read_limits(), &auth_work).await.is_err());
+        assert_eq!(auth_work.receipt().authority_bytes_read, provider.io_snapshot().read_bytes);
+        assert!(auth_work.receipt().authority_bytes_read > 0);
+        assert_eq!(auth_work.receipt().output_bytes, 0);
+        drop(wrong_reader);
+        drop(wrong_custody);
+
+        let cancelled = CancellationToken::new();
+        let cancelled_work = NativeMaterializationWork::new(budget(), &cancelled)
+            .expect("original cancellation ledger");
+        cancelled.cancel();
+        provider.reset_io();
+        assert!(matches!(reader.pin_with_native_work(64, &cancelled_work).await,
+            Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, custody: None })));
+        assert!(matches!(reader.read_page_with_native_work(
+            &cursor, default_projection_read_limits(), &cancelled_work).await,
+            Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, custody: None })));
+        let sdk = provider.io_snapshot();
+        assert_eq!(sdk.reads + sdk.tails as u64, 0);
+        assert_eq!(cancelled_work.receipt().output_bytes, 0);
+        drop(cursor);
+        drop(cursor_custody);
+        drop(reader);
+        drop(reader_custody);
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn native_checkpoint_open_preserves_actual_output_and_failed_source_prefixes() -> Result<()> {
+        use acyclic_fs::{NativeMaterializationWork, NativeTreeMaterializationError};
+        let (provider, client) = fixture().await?;
+        let cancellation = CancellationToken::new();
+        let expected = StreamAggregate::open(
+            &client, authority(), issuer().verifier(), schemas()).await?.reducer().snapshot()?;
+        let measured = StreamAggregate::open_measured(
+            &client, authority(), issuer().verifier(), schemas(), budget(), &cancellation)
+            .await.map_err(|failure| failure.error)?;
+        let expected_output = measured.work.output_bytes;
+        let expected_items = measured.work.items_returned;
+        drop(measured);
+        let work = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("original finite open ledger");
+        provider.reset_io();
+        let (aggregate, custody) = StreamAggregate::open_with_native_work(
+            &client, authority(), issuer().verifier(), schemas(), &work).await?;
+        assert_eq!(aggregate.reducer().snapshot()?, expected);
+        assert!(work.shares_ledger(custody.work()));
+        assert!(custody.bytes() > 0);
+        let receipt = work.receipt();
+        let sdk = provider.io_snapshot();
+        assert_eq!(receipt.backend_read_operations, sdk.reads + sdk.tails as u64);
+        assert_eq!(receipt.authority_bytes_read, sdk.read_bytes);
+        assert_eq!(receipt.output_bytes, expected_output);
+        assert_eq!(receipt.items_returned, expected_items);
+        assert_eq!(sdk.writes + sdk.inspections + sdk.commit_reads + sdk.other_calls, 0);
+        drop(aggregate);
+        drop(custody);
+        let exact_work = NativeMaterializationWork::new(receipt, &cancellation)
+            .expect("actual native high-water allowance includes accounting state");
+        provider.reset_io();
+        let (repeated, repeated_custody) = StreamAggregate::open_with_native_work(
+            &client, authority(), issuer().verifier(), schemas(), &exact_work).await?;
+        assert_eq!(repeated.reducer().snapshot()?, expected);
+        assert_eq!(exact_work.receipt(), receipt);
+        drop(repeated);
+        drop(repeated_custody);
+        let denied_copy = NativeMaterializationWork::new(
+            WorkBudget { bytes_copied: 0, ..budget() }, &cancellation)
+            .expect("original clone-denied ledger");
+        provider.reset_io();
+        assert!(matches!(StreamAggregate::open_with_native_work(
+            &client, authority(), issuer().verifier(), schemas(), &denied_copy).await,
+            Err(Error::NativeWork { custody: None, .. })));
+        let sdk = provider.io_snapshot();
+        assert_eq!(sdk.reads + sdk.tails as u64, 0);
+        assert_eq!(denied_copy.receipt().bytes_copied, 0);
+        for narrow in [
+            WorkBudget { output_bytes: 0, ..budget() },
+            WorkBudget { authority_bytes_read: 0, ..budget() },
+        ] {
+            let denied = NativeMaterializationWork::new(narrow, &cancellation)
+                .expect("original denied open ledger");
+            provider.reset_io();
+            assert!(StreamAggregate::open_with_native_work(
+                &client, authority(), issuer().verifier(), schemas(), &denied).await.is_err());
+            assert_eq!(denied.receipt().authority_bytes_read, provider.io_snapshot().read_bytes);
+            assert!(denied.receipt().authority_bytes_read > 0);
+            assert_eq!(denied.receipt().output_bytes, 0);
+            assert_eq!(denied.receipt().items_returned, 0);
+        }
+        let wrong_issuer = AuthorityIssuer::new("test", [8; 32], authority());
+        let auth_work = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("original authentication ledger");
+        provider.reset_io();
+        assert!(StreamAggregate::open_with_native_work(
+            &client, authority(), wrong_issuer.verifier(), schemas(), &auth_work).await.is_err());
+        assert_eq!(auth_work.receipt().authority_bytes_read, provider.io_snapshot().read_bytes);
+        assert!(auth_work.receipt().authority_bytes_read > 0);
+        assert_eq!(auth_work.receipt().output_bytes, 0);
+        let cancelled = CancellationToken::new();
+        let cancelled_work = NativeMaterializationWork::new(budget(), &cancelled)
+            .expect("original cancelled open ledger");
+        cancelled.cancel();
+        provider.reset_io();
+        assert!(matches!(StreamAggregate::open_with_native_work(
+            &client, authority(), issuer().verifier(), schemas(), &cancelled_work).await,
+            Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, custody: None })));
+        let sdk = provider.io_snapshot();
+        assert_eq!(sdk.reads + sdk.tails as u64, 0);
+        assert_eq!(cancelled_work.receipt().output_bytes, 0);
+        Ok(())
+    }
     #[tokio::test]
     async fn measured_checkpoint_open_matches_original_cut_and_exact_sdk_work() -> Result<()> {
         let (provider, client) = fixture().await?;

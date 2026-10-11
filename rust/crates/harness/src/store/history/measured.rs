@@ -7,6 +7,36 @@ use acyclic_stream::StreamProvider;
 use std::mem::size_of;
 
 impl<P: StreamProvider> HistoryReader<P> {
+    /// Pins the original committed cut using the caller's native ledger.
+    /// The returned guard retains the cursor's admitted authority allocation.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub async fn pin_with_native_work(
+        &self,
+        after_revision: u64,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(HistoryCursor, acyclic_fs::NativeAllocation)> {
+        let mut native_io = super::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let cursor = self.pin_with_work(after_revision, Some(&mut native_io)).await?;
+        Ok((cursor, native_io.into_custody()))
+    }
+
+    /// Reads the original authenticated bounded page on the same native ledger.
+    /// Values precede their guard so their allocations drop before custody.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub async fn read_page_with_native_work(
+        &self,
+        cursor: &HistoryCursor,
+        limits: HistoryReadLimits,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(HistoryPage, acyclic_fs::NativeAllocation)> {
+        let mut native_io = super::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let read = self.read_page_with_work(cursor, limits, false, Some(&mut native_io)).await?;
+        native_io.return_staged_output()?;
+        Ok((read.page, native_io.into_custody()))
+    }
+
     /// Pins the same committed Stream cut with a finite SDK-boundary receipt.
     /// Tail metadata exposes no encoded byte size; none is invented here.
     pub async fn pin_measured(

@@ -17,6 +17,8 @@ pub(crate) use measured::HistoryWork;
 mod native;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use native::native_work_io;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) use native::native_state_work_io;
 
 // The portable reader remains independent of the optional Filesystem SDK.
 // A receipt observer instruments this same engine, never another reader.
@@ -57,6 +59,12 @@ pub(crate) trait HistoryIo: Send {
         Err(Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
             custody: Some(incoming),
+        })
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn take_native_custody(&mut self, _bytes: u64) -> Result<acyclic_fs::NativeAllocation> {
+        Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout, custody: None,
         })
     }
     fn hashed_bytes(&mut self, bytes: u64) -> Result<()>;
@@ -150,6 +158,27 @@ impl<P: StreamProvider> HistoryReader<P> {
         verifier.verify_audience(authority)?;
         let verifier = verifier.clone_with_work(&mut work)?;
         Self::new_owned(client, authority, verifier, &mut work)
+    }
+
+    /// Constructs the original authenticated reader with pre-admitted issuer
+    /// and path copies on the caller's exact native ledger.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn new_with_native_work(
+        client: &StreamClient<P>,
+        authority: &Authority,
+        verifier: &AuthorityVerifier,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        let mut io = native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let reader = Self::new_with_work(client, authority, verifier, Some(&mut io))?;
+        Ok((reader, io.into_custody()))
+    }
+
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        self.verifier.logical_owned_bytes()?
+            .checked_add(self.stream.path().as_str().len() as u64)
+            .ok_or_else(|| Error::Invalid("history reader metadata byte count overflows".into()))
     }
 
     fn new_owned(
