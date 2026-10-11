@@ -179,7 +179,9 @@ pub(super) fn exact_replace_engine(
     {
         return Err(work.invalid("exact edit has invalid text or byte bounds"));
     }
-    work.examine(source.len() as u64)?;
+    // These are logical source examinations; std's opaque substring-search
+    // implementation is not falsely reported as one SDK comparison per byte.
+    work.examine(1)?;
     let start = source
         .find(old_text)
         .ok_or_else(|| work.conflict("exact edit text is missing"))?;
@@ -187,6 +189,7 @@ pub(super) fn exact_replace_engine(
     // slicing inside a UTF-8 code point.
     let first_character_bytes = old_text.chars().next().map_or(0, char::len_utf8);
     let next_start = start + first_character_bytes;
+    work.examine(1)?;
     if source
         .get(next_start..)
         .is_some_and(|tail| tail.contains(old_text))

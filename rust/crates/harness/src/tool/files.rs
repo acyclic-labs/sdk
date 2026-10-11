@@ -393,7 +393,7 @@ impl ToolExecutor for FileTool {
             // receipt, not an edited reconstruction, supplies reconciliation.
             let receipt = context.task().observe_staged_file_once_with_native_work(
                 invocation.operation_id, work,
-            )?.await?;
+            ).await?;
             match &receipt.0 {
                 Some(file) => {
                     let encoded = super::value_with_native_work(&native::BorrowedFileResult { file }, work)?;
@@ -627,7 +627,7 @@ impl FileTool {
         match self {
             Self::Read => {
                 let input = super::decode_with_native_work::<ReadFileInput>(&invocation.arguments, work)?;
-                let mut read = task.read_file_with_native_work(&input.0.file, work)?.await?;
+                let mut read = task.read_file_with_native_work(&input.0.file, work).await?;
                 read.1.resize_retained(read.1.bytes() + std::mem::size_of::<ToolResult>() as u64)
                     .map_err(super::edit::native_error)?;
                 let text = String::from_utf8(std::mem::take(&mut read.0))
@@ -639,13 +639,13 @@ impl FileTool {
                 let file = task.stage_file_once_with_native_work(
                     invocation.operation_id, &input.0.path, input.0.text.as_bytes(),
                     &input.0.media_type, &input.0.display_name, work,
-                )?.await?;
+                ).await?;
                 let encoded = super::value_with_native_work(&native::BorrowedFileResult { file: &file.0 }, work)?;
                 Ok((ToolResult { value: encoded.0 }, encoded.1))
             }
             Self::Edit => {
                 let input = super::decode_with_native_work::<EditFileInput>(&invocation.arguments, work)?;
-                let read = task.read_file_with_native_work(&input.0.file, work)?.await?;
+                let read = task.read_file_with_native_work(&input.0.file, work).await?;
                 let source = std::str::from_utf8(&read.0)
                     .map_err(|_| native::invalid("exact text edit requires UTF-8 content"))?;
                 let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<String>())?;
@@ -655,7 +655,7 @@ impl FileTool {
                 )?;
                 let file = task.stage_file_at_with_native_work(
                     invocation.operation_id, &input.0.file, edited.as_bytes(), work,
-                )?.await?;
+                ).await?;
                 let encoded = super::value_with_native_work(&native::BorrowedFileResult { file: &file.0 }, work)?;
                 Ok((ToolResult { value: encoded.0 }, encoded.1))
             }
@@ -670,14 +670,14 @@ impl FileTool {
                 {
                     return Err(native::invalid("patch input exceeds original task file bound"));
                 }
-                let read = task.read_file_with_native_work(&input.0.file, work)?.await?;
+                let read = task.read_file_with_native_work(&input.0.file, work).await?;
                 let source = std::str::from_utf8(&read.0)
                     .map_err(|_| native::invalid("patch editing requires UTF-8 content"))?;
                 let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<String>())?;
                 let edited = super::patch::apply_update_engine(source, &input.0.diff, limits, &mut allocation)?;
                 let file = task.stage_file_at_with_native_work(
                     invocation.operation_id, &input.0.file, edited.as_bytes(), work,
-                )?.await?;
+                ).await?;
                 let encoded = super::value_with_native_work(&native::BorrowedFileResult { file: &file.0 }, work)?;
                 Ok((ToolResult { value: encoded.0 }, encoded.1))
             }
@@ -726,10 +726,45 @@ pub(super) mod native {
     }
 
     pub(super) fn bound<T: Serialize>(value: &T, maximum: u64, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        // Count the canonical typed serializer without allocating a discarded
+        // encoded buffer. Only audited file/text DTOs use this writer.
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let encoded = io.encode(value, maximum)?;
-        drop(encoded);
-        Ok(())
+        let diagnostic_bytes = crate::contract::sdk_json_diagnostic_bytes();
+        io.claim(diagnostic_bytes)?;
+        let custody = io.into_native_custody(diagnostic_bytes)?;
+        struct Counter<'a> {
+            remaining: u64,
+            work: &'a acyclic_fs::NativeMaterializationWork,
+            denial: Option<Error>,
+        }
+        impl std::io::Write for Counter<'_> {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                let Some(remaining) = self.remaining.checked_sub(bytes.len() as u64) else {
+                    self.denial = Some(invalid("JSON exceeds declared byte bound"));
+                    return Err(std::io::ErrorKind::WriteZero.into());
+                };
+                if let Err(cause) = self.work.charge(acyclic_fs::WorkCounters {
+                    bytes_encoded: bytes.len() as u64, ..Default::default()
+                }) {
+                    self.denial = Some(super::super::edit::native_error(cause));
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                self.remaining = remaining;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let mut counter = Counter { remaining: maximum, work, denial: None };
+        let encoded = serde_json::to_writer(&mut counter, value);
+        if let Some(error) = counter.denial.take() {
+            // Drop serde's opaque error metadata while the original diagnostic
+            // quota is still paid; propagate an actual native denial unchanged.
+            drop(encoded);
+            return Err(error);
+        }
+        encoded.map_err(|source| Error::NativeEncode {
+            code: crate::wire::ErrorCode::Invalid, source, custody: Some(custody),
+        })
     }
 
 
@@ -764,6 +799,7 @@ pub(super) mod native {
         if writer.write_fmt(arguments).is_err() {
             return Err(writer.denial.take().unwrap_or_else(|| invalid("file summary formatting failed")));
         }
+        drop(writer);
         super::super::schema::project_reference_with_native_work(file, &text, work)
     }
 
