@@ -784,6 +784,12 @@ After a restart, `AgentHarness::attach(task_id, &definition)` asks the durable h
 Durable observation distinguishes ordinary pending work (`None`) from a terminal `Indeterminate` outcome. `RuntimeTask::result` waits for a terminal observation before join, race, first-success, or quorum counts that task as complete. Hosts may replace the bounded-poll wait with provider completion notifications. Long-lived Stream coordinators refresh foreign commits before observation and reconcile a repeated operation against the committed intent.
 
 Task and tool registries can retain several revisions under one logical name. Use `name@version` for exact task lookup; unqualified task lookup works only when unique. `ToolRegistry::select_model_version` explicitly chooses the one revision advertised to a model when several are retained; durable tool calls still resolve their own pinned revision. Ambiguity fails before stock model dispatch rather than silently choosing the newest registration.
+Native registration of recursive default tools borrows the original protected
+machine identity through `resumable_machine_identity_with_native_work`. The
+adapter uses the machine's same original-ledger identity callback, never an
+ordinary identity clone or an unaudited fallback. Registration still requires
+the exact retained definition and machine identity; a matching version alone
+does not authorize another implementation.
 
 Assemble each tool explicitly from `Tool { definition, executor, projection }` and register it with `ToolRegistry::register` or `HarnessBuilder::tool`. The selected definition pins its revision and independent argument, canonical result and projection schemas. A bundle can contain a single tool without implementing other coding operations. Fork and merge remain parent-controlled workspace operations.
 

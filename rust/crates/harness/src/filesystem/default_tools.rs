@@ -1996,6 +1996,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     fn resumable_machine_identity(&self) -> Option<MachineIdentity> {
         Some(self.durable.machine.identity().clone())
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn resumable_machine_identity_with_native_work<'a>(
+        &'a self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<&'a MachineIdentity>> {
+        self.durable.machine.identity_with_native_work(work).map(Some)
+    }
     fn authorize(&self, _: Option<&RuntimeScope>, _: &ToolInvocation) -> Result<()> {
         Err(Error::Unauthorized("recursive tools require the original durable ToolContext".into()))
     }
