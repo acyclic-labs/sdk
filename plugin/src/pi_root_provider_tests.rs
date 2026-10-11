@@ -75,7 +75,8 @@ impl Fixture {
         let request = PiRootRequest { binding, root: intent };
         let startup = NativeMaterializationWork::new(budget, &cancellation).unwrap();
         drop(owner);
-        let owner = PiOwnerConfig::load_with_native_work(&session, &startup).unwrap()
+        let owner = PiOwnerConfig::load_with_native_work(&resources.private_state_root,
+            session.strip_prefix(&resources.data).unwrap(), &startup).unwrap()
             .into_native_shared(&startup).unwrap();
         let (command, command_custody) = stage_root_command(&owner, &filesystem, &request, &startup).await.unwrap();
         let stream = StreamClient::new(Arc::new(LocalStream::open(session.join("stream"), LocalStreamLimits::default()).await.unwrap()));
@@ -100,7 +101,8 @@ impl Fixture {
         };
         let fence = LeaseFence::from(&lease.reservation);
         let context = runtime.runtime.task_context_with_native_work(task, &fence, &startup).await.unwrap();
-        let (preparation, journal_owner) = PiRootPreparation::load_for_dispatch(&session, &runtime, &filesystem,
+        let (preparation, journal_owner) = PiRootPreparation::load_for_dispatch(&resources.private_state_root,
+            session.strip_prefix(&resources.data).unwrap(), &runtime, &filesystem,
             &request, &fence, Arc::clone(&context), &startup).await.unwrap();
         let journal_owner = journal_owner.into_native_shared(&startup).unwrap();
         let provider = root_provider(owner.clone(), &resources, filesystem.clone(), stream.clone(), preparation,
@@ -134,15 +136,18 @@ impl Fixture {
     }
 
     async fn reopen_provider(&self) -> Arc<PiRootProvider<LocalStream>> {
-        let owner = PiOwnerConfig::load_with_native_work(&self.session, &self.startup).unwrap()
+        let owner = PiOwnerConfig::load_with_native_work(&self.resources.private_state_root,
+            self.session.strip_prefix(&self.resources.data).unwrap(), &self.startup).unwrap()
             .into_native_shared(&self.startup).unwrap();
         let fence = LeaseFence::from(&self.lease.reservation);
         let context = self.runtime.runtime.task_context_with_native_work(self.request.binding.task_id,
             &fence, &self.startup).await.unwrap();
-        let (preparation, journal_owner) = PiRootPreparation::load_for_dispatch(&self.session, &self.runtime,
+        let (preparation, journal_owner) = PiRootPreparation::load_for_dispatch(&self.resources.private_state_root,
+            self.session.strip_prefix(&self.resources.data).unwrap(), &self.runtime,
             &self.filesystem, &self.request, &fence, Arc::clone(&context), &self.startup).await.unwrap();
         let journal_owner = journal_owner.into_native_shared(&self.startup).unwrap();
-        let mut resources = copy_service_resources_with_native_work(&self.resources, &self.startup).unwrap();
+        let (value, custody) = service_resources_with_native_work(&self.resources, &self.startup).unwrap();
+        let mut resources = NativeOwned { value, _custody: custody };
         resources.value.shared_roots = crate::SharedRootRegistry::default();
         root_provider(owner, &resources.value, self.filesystem.clone(), self.stream.clone(), preparation,
             journal_owner, context, self.startup.clone()).unwrap()
@@ -185,7 +190,8 @@ async fn pi_root_provider_allocates_actual_lazy_roots_and_original_scratch_gener
             assert!(state.as_state().parent_workspace_id.is_none());
             assert_eq!(handle.workspace.read("/untouched.txt", 64).await.unwrap().as_ref(), b"original native bytes");
         }
-        let preparation = PiRootPreparation::load(&fixture.session, &fixture.runtime,
+        let preparation = PiRootPreparation::load(&fixture.resources.private_state_root,
+            fixture.session.strip_prefix(&fixture.resources.data).unwrap(), &fixture.runtime,
             &fixture.filesystem, &fixture.request, &fixture.startup).await.unwrap();
         let observed = observe_root_allocation(fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), fixture.stream.clone(), preparation, &fixture.startup).await.unwrap().unwrap();
         let observed = NativeOwned { value: observed.0, _custody: observed.1 };
@@ -616,7 +622,8 @@ async fn pi_root_private_scratch_proof_is_original_readonly_and_never_probes_use
     std::fs::rename(&fixture.native, &retained).unwrap();
     std::fs::create_dir(&fixture.native).unwrap();
     assert!(fixture.provider.observe_allocation_with_native_work(dispatch.attempt_id, &fixture.startup).await.is_err());
-    let preparation = PiRootPreparation::load(&fixture.session, &fixture.runtime,
+    let preparation = PiRootPreparation::load(&fixture.resources.private_state_root,
+        fixture.session.strip_prefix(&fixture.resources.data).unwrap(), &fixture.runtime,
         &fixture.filesystem, &fixture.request, &fixture.startup).await.unwrap();
     let before = fixture.startup.receipt();
     let second = prove_root_scratch_allocation_with_native_work(fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), fixture.stream.clone(), preparation, &fixture.startup).await.unwrap().unwrap();

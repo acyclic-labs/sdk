@@ -20,6 +20,7 @@ struct Fixture {
     request: PiRootRequest,
     command: WorkflowCommand,
     session: tempfile::TempDir,
+    private_root: acyclic_fs::NativeHostPrivateStateRoot,
     work: acyclic_fs::NativeMaterializationWork,
     _command_custody: acyclic_fs::NativeAllocation,
 }
@@ -177,6 +178,11 @@ impl Fixture {
         let session = tempfile::tempdir().unwrap();
         let (owner, filesystem, request, raw) = root_input_fixture(session.path(), |_| {}).await;
         let work = startup_work();
+        // This is trusted fixture host configuration, not a request-selected
+        // project path or accounting token authorizing private-file access.
+        let private_root = acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
+            session.path(), &work,
+        ).unwrap();
         let staged = stage_root_command(&owner, &filesystem, &request, &work).await.unwrap();
         let command = alter_command(case, &owner, &filesystem, &request, staged.0).await;
         let filesystem = Arc::new(filesystem);
@@ -195,6 +201,7 @@ impl Fixture {
             request,
             command,
             session,
+            private_root,
             work,
             _command_custody: staged.1,
         }
@@ -213,7 +220,7 @@ impl Fixture {
 
     async fn load(&self) -> Result<PiRootPreparation> {
         PiRootPreparation::load(
-            self.session.path(),
+            &self.private_root, Path::new(""),
             &self.runtime,
             &self.filesystem,
             &self.request,
@@ -244,6 +251,7 @@ impl Fixture {
             request,
             command,
             session,
+            private_root,
             work,
             _command_custody,
         } = self;
@@ -267,6 +275,7 @@ impl Fixture {
             request,
             command,
             session,
+            private_root,
             work,
             _command_custody,
         }
@@ -301,7 +310,7 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
         fixture.request.binding.task_id, &fence, &fixture.work,
     ).await.unwrap();
     let (preparation, owner) = PiRootPreparation::load_for_dispatch(
-        fixture.session.path(),
+        &fixture.private_root, Path::new(""),
         &fixture.runtime,
         &fixture.filesystem,
         &fixture.request,
@@ -320,7 +329,7 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
     stale.reservation_id.push_str("-stale");
     assert!(
         PiRootPreparation::load_for_dispatch(
-            fixture.session.path(),
+            &fixture.private_root, Path::new(""),
             &fixture.runtime,
             &fixture.filesystem,
             &fixture.request,
@@ -335,7 +344,7 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
     assert!(owner.verify_dispatch().await.is_err());
     assert!(
         PiRootPreparation::load_for_dispatch(
-            fixture.session.path(),
+            &fixture.private_root, Path::new(""),
             &fixture.runtime,
             &fixture.filesystem,
             &fixture.request,
@@ -423,8 +432,11 @@ async fn pi_preparation_rejects_other_original_keys_and_any_policy_drift() {
             _ => unreachable!(),
         }
         owner.save_new(other.path()).unwrap();
+        let private_root = acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
+            other.path(), &fixture.work,
+        ).unwrap();
         let result = PiRootPreparation::load(
-            other.path(),
+            &private_root, Path::new(""),
             &fixture.runtime,
             &fixture.filesystem,
             &fixture.request,
@@ -482,20 +494,20 @@ async fn pi_preparation_native_state_retains_original_root_and_shared_context() 
     };
     let head = fixture.head().await;
     let original = PiRootPreparation::load_native_from_state(
-        fixture.session.path(), &fixture.runtime, &fixture.filesystem, &state, None, &fixture.work,
+        &fixture.private_root, Path::new(""), &fixture.runtime, &fixture.filesystem, &state, None, &fixture.work,
     ).await.unwrap();
     assert_eq!(original.request(), &fixture.request);
     assert_eq!(original.command(), &fixture.command);
     let context = original.native_context().clone();
     let supplied = PiRootPreparation::load_native_from_state(
-        fixture.session.path(), &fixture.runtime, &fixture.filesystem, &state,
+        &fixture.private_root, Path::new(""), &fixture.runtime, &fixture.filesystem, &state,
         Some(context.clone()), &fixture.work,
     ).await.unwrap();
     assert!(Arc::ptr_eq(supplied.native_context(), &context));
     assert_eq!(supplied.request(), &fixture.request);
     state.roots.values_mut().next().unwrap().path.push("not-original");
     assert!(PiRootPreparation::load_native_from_state(
-        fixture.session.path(), &fixture.runtime, &fixture.filesystem, &state,
+        &fixture.private_root, Path::new(""), &fixture.runtime, &fixture.filesystem, &state,
         Some(context), &fixture.work,
     ).await.is_err());
     assert_eq!(fixture.head().await, head);

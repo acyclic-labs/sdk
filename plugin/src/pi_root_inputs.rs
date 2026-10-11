@@ -142,6 +142,7 @@ impl PiRootPreparation {
     }
 
     pub(crate) async fn load_for_dispatch<P, A, O>(
+        private_root: &acyclic_fs::NativeHostPrivateStateRoot,
         session: &Path, runtime: &super::pi_runtime::PiTaskRuntime<P, A, O>,
         _filesystem: &FilesystemHost<A, O>, retained: &PiRootRequest,
         fence: &acyclic_harness::scheduler::LeaseFence,
@@ -152,9 +153,9 @@ impl PiRootPreparation {
         A: acyclic_fs::AsyncAuthorityStore + 'static,
         O: acyclic_fs::AsyncObjectStore + 'static,
     {
-        let owner = PiOwnerConfig::load_with_native_work(session, work)?;
+        let owner = PiOwnerConfig::load_readonly_with_native_work(private_root, session, work)?;
         runtime.verify_owner_with_native_work(&owner, work)?;
-        owner.validate_root(&retained.binding)?;
+        owner.validate_root_with_native_work(&retained.binding, work)?;
         let admitted = super::pi_recovery::authenticate_pi_task_with_native_work(
             &runtime.runtime, &retained.binding,
             super::pi_recovery::PiTaskOrigin::Root(&retained.root), work,
@@ -175,6 +176,7 @@ impl PiRootPreparation {
 
     /// Reopens immutable artifacts without staging or selecting a new lease.
     pub(crate) async fn load<P, A, O>(
+        private_root: &acyclic_fs::NativeHostPrivateStateRoot,
         session: &Path, runtime: &super::pi_runtime::PiTaskRuntime<P, A, O>,
         _filesystem: &FilesystemHost<A, O>, retained: &PiRootRequest,
         work: &NativeMaterializationWork,
@@ -183,9 +185,9 @@ impl PiRootPreparation {
         A: acyclic_fs::AsyncAuthorityStore + 'static,
         O: acyclic_fs::AsyncObjectStore + 'static,
     {
-        let owner = PiOwnerConfig::load_with_native_work(session, work)?;
+        let owner = PiOwnerConfig::load_readonly_with_native_work(private_root, session, work)?;
         runtime.verify_owner_with_native_work(&owner, work)?;
-        owner.validate_root(&retained.binding)?;
+        owner.validate_root_with_native_work(&retained.binding, work)?;
         let admitted = super::pi_recovery::authenticate_pi_task_with_native_work(
             &runtime.runtime, &retained.binding,
             super::pi_recovery::PiTaskOrigin::Root(&retained.root), work,
@@ -202,6 +204,7 @@ impl PiRootPreparation {
     /// A supplied current context is reused unchanged; cold reads obtain only
     /// the genuine original SDK context and its metadata custody.
     pub(crate) async fn load_native_from_state<P, A, O>(
+        private_root: &acyclic_fs::NativeHostPrivateStateRoot,
         session: &Path, runtime: &super::pi_runtime::PiTaskRuntime<P, A, O>,
         _filesystem: &FilesystemHost<A, O>, state: &super::AdapterState,
         context: Option<std::sync::Arc<acyclic_harness::NativeTaskContext>>,
@@ -215,9 +218,9 @@ impl PiRootPreparation {
         let super::PluginTaskBinding::Pi(binding) = &state.task_binding else {
             return Err(invalid("Pi root preparation requires a Pi state binding"));
         };
-        let owner = PiOwnerConfig::load_with_native_work(session, work)?;
+        let owner = PiOwnerConfig::load_readonly_with_native_work(private_root, session, work)?;
         runtime.verify_owner_with_native_work(&owner, work)?;
-        owner.validate_root(binding)?;
+        owner.validate_root_with_native_work(binding, work)?;
         let admitted = super::pi_recovery::authenticate_pi_task_with_native_work(
             &runtime.runtime, binding, super::pi_recovery::PiTaskOrigin::RootState(state), work,
         ).await?;
@@ -235,6 +238,7 @@ impl PiRootPreparation {
 
     /// Uses the actual native command context and original execution fence.
     pub(crate) async fn load_native_from_state_for_dispatch<P, A, O>(
+        private_root: &acyclic_fs::NativeHostPrivateStateRoot,
         session: &Path, runtime: &super::pi_runtime::PiTaskRuntime<P, A, O>,
         filesystem: &FilesystemHost<A, O>, state: &super::AdapterState,
         fence: &acyclic_harness::scheduler::LeaseFence,
@@ -246,7 +250,7 @@ impl PiRootPreparation {
         O: acyclic_fs::AsyncObjectStore + 'static,
     {
         let preparation = Self::load_native_from_state(
-            session, runtime, filesystem, state, Some(context), work,
+            private_root, session, runtime, filesystem, state, Some(context), work,
         ).await?;
         let owner = runtime.runtime.task_host()
             .journal_owner_with_native_work(preparation.request.binding.task_id, fence, work).await?;
@@ -283,7 +287,7 @@ impl PiRootPreparation {
         }
         let request = read_input::<PiRootRequest>(context.context(), &plan.0.request,
             "root", "application/json", maximum, work).await?;
-        validate_request(&owner, &request.0)?;
+        validate_request(&owner, &request.0, work)?;
         if request.0.binding != admitted.0.binding || &request.0.root != root {
             return Err(invalid("Pi root preparation differs from its original admission"));
         }
@@ -419,9 +423,9 @@ pub(crate) fn preparation_operation(task: TaskId) -> OperationId {
     OperationId::from_bytes(operation)
 }
 
-fn validate_request(owner: &PiOwnerConfig, request: &PiRootRequest) -> Result<()> {
-    owner.validate_root(&request.binding)?;
-    request.root.validate(&request.binding).map_err(Error::Invalid)?;
+fn validate_request(owner: &PiOwnerConfig, request: &PiRootRequest, work: &NativeMaterializationWork) -> Result<()> {
+    owner.validate_root_with_native_work(&request.binding, work)?;
+    request.root.validate_with_native_work(&request.binding, work)?;
     if !matches!(request.binding.scratch.allocation, PiScratchAllocation::Preparing) {
         return Err(invalid("Pi root preparation requires its original unallocated scratch intent"));
     }
@@ -438,7 +442,7 @@ pub(crate) async fn stage_root_request<A, O>(
 ) -> Result<(FileRef, NativeAllocation)>
 where A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore,
 {
-    validate_request(owner, request)?;
+    validate_request(owner, request, work)?;
     super::pi_root_provider::stage_pi_root_input_with_native_work(
         owner, filesystem, "root", request, "application/json", work,
     ).await

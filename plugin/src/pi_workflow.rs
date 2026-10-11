@@ -290,7 +290,7 @@ impl<'a> PiWorkflowHost<'a> {
         }
         let (preparation, owner) =
             pi_root_inputs::PiRootPreparation::load_native_from_state_for_dispatch(
-                self.directory, &self.runtime, &self.filesystem, self.retained,
+                &self.resources.private_state_root, self.directory, &self.runtime, &self.filesystem, self.retained,
                 fence, Arc::clone(&context), work,
             ).await?;
         pi_root_provider::bind_root_output_context_with_native_work(
@@ -313,7 +313,7 @@ impl<'a> PiWorkflowHost<'a> {
         }
         let (preparation, journal_owner) =
             pi_root_inputs::PiRootPreparation::load_native_from_state_for_dispatch(
-                self.directory, &self.runtime, &self.filesystem, self.retained,
+                &self.resources.private_state_root, self.directory, &self.runtime, &self.filesystem, self.retained,
                 fence, Arc::clone(&context), work,
             ).await?;
         let expected = pi_root_provider::guarded_pi_value(
@@ -358,7 +358,8 @@ impl<'a> PiWorkflowHost<'a> {
                 reason: "Pi command has no original task",
             },
         )?;
-        let owner = pi_owner::PiOwnerConfig::load_with_native_work(self.directory, work)?
+        let owner = pi_owner::PiOwnerConfig::load_readonly_with_native_work(
+            &self.resources.private_state_root, self.directory, work)?
             .into_native_shared(work)?;
         self.runtime.verify_owner_with_native_work(&owner, work)?;
         if task == owner.policy().root_task

@@ -50,10 +50,12 @@ pub(crate) async fn register(
     work.admit(acyclic_fs::WorkCounters::UNCHARGED)
         .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
     let directory = resources.session_directory(session);
-    fs::create_dir_all(&directory).map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
-    let (previous, _) = load_state(&directory).map_err(acyclic_harness::Error::Invalid)?;
-    if !previous.root_session_id.is_empty() {
-        if previous.root_session_id != session || !matches!(previous.task_binding, PluginTaskBinding::Pi(_)) {
+    let relative_directory = resources.private_session_data(&directory)?;
+    work.create_directories_with_native_work(&resources.private_state_root, relative_directory)
+        .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+    let mut previous = load_state_with_native_work(&resources.private_state_root, relative_directory, work)?;
+    if !previous.0.0.root_session_id.is_empty() {
+        if previous.0.0.root_session_id != session || !matches!(previous.0.0.task_binding, PluginTaskBinding::Pi(_)) {
             return Err(acyclic_harness::Error::Invalid("Pi original session selection differs".to_owned()));
         }
         return SessionController::open(directory, resources, work).await;
@@ -67,9 +69,12 @@ pub(crate) async fn register(
     let owned = (std::mem::size_of::<PiRootRequest>() + std::mem::size_of::<AdapterState>()
         + std::mem::size_of::<PiTaskBinding>() + std::mem::size_of::<(String, VolumeRef)>()
         + std::mem::size_of::<(String, String)>() + std::mem::size_of::<(String, RootBinding)>()) as u64;
-    let startup_custody = work.retain_owned(owned)
+    let mut startup_custody = work.retain_owned(owned)
         .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
-    let provider = ProviderRef::new("acyclic.pi", "filesystem", "1")?;
+    let mut provider_metadata = ProviderRef::new_with_native_work("acyclic.pi", "filesystem", "1", work)?;
+    startup_custody.absorb(&mut provider_metadata.1)
+        .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+    let provider = &provider_metadata.0;
     let task = TaskId::from_bytes(identity("task", session, work)?);
     let agent = AgentId::from_bytes(identity("agent", session, work)?);
     let root_id = identity("root", session, work)?;
@@ -108,7 +113,7 @@ pub(crate) async fn register(
         context_id, root_id,
         paths: BTreeMap::from([(path_key.0, root_path.0)]),
     };
-    root.validate(&binding).map_err(acyclic_harness::Error::Invalid)?;
+    root.validate_with_native_work(&binding, work)?;
     const GRANTS: &[&str] = &[
         "operation:declare", "operation:observe", "operation:cancel", "operation:wake",
         "task:spawn:acyclic.pi@1", "effect:plan", "effect:run", "fork:publish", "conversation:bind",
@@ -139,20 +144,30 @@ pub(crate) async fn register(
         },
         policy_journal.1, capabilities.1,
     );
-    let owner = if directory.join("pi-owner.v1").exists() {
-        let original = PiOwnerConfig::load_with_native_work(&directory, work)?;
+    let owner_path = work.join_path(relative_directory, Path::new("pi-owner.v1"))
+        .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+    let owner_exists = work.state_path_exists_with_native_work(&resources.private_state_root, &owner_path.0)
+        .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+    drop(owner_path);
+    let owner = if owner_exists {
+        let original = PiOwnerConfig::load_with_native_work(&resources.private_state_root, relative_directory, work)?;
         if original.policy() != &policy.0 { return Err(acyclic_harness::Error::Unauthorized("Pi original root policy differs".to_owned())); }
         drop(policy);
         drop(native_runtime);
         original
     } else {
-        if directory.join("stream").exists() {
+        let stream_path = work.join_path(relative_directory, Path::new("stream"))
+            .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let stream_exists = work.state_path_exists_with_native_work(&resources.private_state_root, &stream_path.0)
+            .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        drop(stream_path);
+        if stream_exists {
             return Err(acyclic_harness::Error::Invalid("Pi original task storage exists but its owner credential is missing".to_owned()));
         }
         let owner = PiOwnerConfig::new_with_native_runtime_with_native_work(
             &policy.0, native_runtime.as_ref(), work,
         )?;
-        owner.save_new_with_native_work(&directory, work)?;
+        owner.save_new_with_native_work(&resources.private_state_root, relative_directory, work)?;
         owner
     };
     let filesystem = acyclic_harness::filesystem::FilesystemHost::new_with_native_work(
@@ -195,13 +210,15 @@ pub(crate) async fn register(
         ..AdapterState::default()
     };
     // A catalog entry is published only after authenticated durable admission.
-    StateSlots::read(&directory).map_err(acyclic_harness::Error::Invalid)?.0
-        .save(&directory, &state, Survives::PowerLoss).map_err(acyclic_harness::Error::Storage)?;
+    previous.0.1.save_with_native_work(&resources.private_state_root, relative_directory, &state, Survives::PowerLoss, work)?;
     drop(state);
     drop(request.root);
     drop(runtime);
     drop(filesystem);
     drop(owner);
+    // Every SDK provider copy already has its own native custody. Release the
+    // original source data before transferring its original merged guard.
+    drop(provider_metadata);
     let controller = SessionController::open(directory, resources, work).await?;
     controller.retain_original_input(startup_custody)
 }
