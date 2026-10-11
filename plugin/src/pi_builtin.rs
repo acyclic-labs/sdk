@@ -254,6 +254,227 @@ pub(crate) fn read_response(bytes: &[u8], path: &str, volume_role: &str, work: &
         MAXIMUM_BUILTIN_BYTES * 2, work)
 }
 
+fn decoded_tool_request(
+    context: &acyclic_harness::runtime::ToolContext,
+    invocation: &acyclic_harness::tool::ToolInvocation,
+    work: &NativeMaterializationWork,
+) -> Result<(PiBuiltinRequest, NativeAllocation)> {
+    work.remaining().map_err(native_error)?;
+    if invocation.name != PI_BUILTIN_COMMAND_KIND
+        || invocation.operation_id != context.operation_id()
+        || invocation.call_id != context.call_id() {
+        return Err(denied("builtin invocation differs from its original SDK command"));
+    }
+    let encoded = crate::pi_root_provider::guarded_pi_bytes(
+        &invocation.arguments, MAXIMUM_BUILTIN_BYTES * 2, work)?;
+    let decoded = crate::pi_root_provider::guarded_pi_decode::<PiBuiltinRequest>(
+        &encoded.0, MAXIMUM_BUILTIN_BYTES * 2, MAXIMUM_BUILTIN_BYTES * 4,
+        acyclic_harness::JsonValueSchema::None, BUILTIN_DIAGNOSTIC_LABEL_BYTES, work)?;
+    drop(encoded.0);
+    drop(encoded.1);
+    decoded.0.validate()?;
+    if context.task().durable_task_id() != Some(decoded.0.caller) {
+        return Err(denied("builtin input substitutes its original accepted task actor"));
+    }
+    // The canonical runner binds these immutable arguments to the operation's
+    // prepared digest. A provider call string alone never conveys authority.
+    Ok(decoded)
+}
+
+/// This executor owns no session, runtime, provider, credentials, or view.
+/// The canonical SDK runner supplies the sole accepted owner-bound context.
+struct PiBuiltinToolExecutor;
+
+pub(crate) fn builtin_tool_executor_with_native_work(
+    work: &NativeMaterializationWork,
+) -> Result<std::sync::Arc<dyn acyclic_harness::tool::ToolExecutor>> {
+    work.remaining().map_err(native_error)?;
+    Ok(std::sync::Arc::new(PiBuiltinToolExecutor))
+}
+
+fn validate_declared_working_roles(
+    binding: &crate::PiTaskBinding,
+    manifest: &acyclic_harness::filesystem::NativeViewManifest,
+) -> Result<()> {
+    binding.validate(None, binding.project_volumes.keys().map(String::as_str), false)?;
+    if manifest.volumes.len() != binding.project_volumes.len() + 1
+        || !manifest.volumes.iter().any(|mapping| mapping.volume == binding.scratch.volume)
+        || binding.project_volumes.values().any(|volume| {
+            !manifest.volumes.iter().any(|mapping| &mapping.volume == volume)
+        })
+        || manifest.volumes.iter().any(|mapping| {
+            mapping.volume != binding.scratch.volume
+                && !binding.project_volumes.values().any(|volume| volume == &mapping.volume)
+        })
+        || binding.results.as_ref().is_some_and(|result| {
+            manifest.volumes.iter().any(|mapping| mapping.volume == result.volume)
+        }) {
+        return Err(denied("prepared working view differs from its original declared PROJECT/SCRATCH roles"));
+    }
+    Ok(())
+}
+
+fn mounted_relative_path(
+    manifest: &acyclic_harness::filesystem::NativeViewManifest,
+    mapping: &acyclic_harness::filesystem::NativeVolumeMapping,
+    leaf: &Path,
+    work: &NativeMaterializationWork,
+) -> Result<(std::path::PathBuf, NativeAllocation)> {
+    let prefix = mapping.path.strip_prefix(&manifest.options.root)
+        .map_err(|_| denied("mounted volume is outside its original namespace root"))?;
+    if prefix.as_os_str().is_empty()
+        || prefix.components().any(|part| !matches!(part, Component::Normal(_)))
+        || leaf.components().any(|part| !matches!(part, Component::Normal(_))) {
+        return Err(denied("mounted path is not a regular original namespace leaf"));
+    }
+    let capacity = prefix.as_os_str().len().checked_add(leaf.as_os_str().len())
+        .and_then(|length| length.checked_add(1))
+        .ok_or_else(|| invalid("mounted path size overflow"))?;
+    // Covers either native byte or UTF-16 backing before PathBuf growth.
+    let bytes = (capacity as u64).checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<std::path::PathBuf>() as u64))
+        .ok_or_else(|| invalid("mounted path ownership overflow"))?;
+    let custody = work.retain_owned(bytes).map_err(native_error)?;
+    let mut path = std::path::PathBuf::with_capacity(capacity);
+    path.push(prefix);
+    path.push(leaf);
+    Ok((path, custody))
+}
+
+async fn accepted_builtin_io(
+    context: &acyclic_harness::runtime::ToolContext,
+    invocation: &acyclic_harness::tool::ToolInvocation,
+    work: &NativeMaterializationWork,
+) -> Result<(acyclic_harness::tool::ToolResult, NativeAllocation)> {
+    use acyclic_harness::conversation::VolumeOperation;
+    let decoded = decoded_tool_request(context, invocation, work)?;
+    let _request_custody = decoded.1;
+    let request = decoded.0;
+    // This producer requires the actual protected ToolStarted marker, dispatch
+    // purpose, original task/fence and original ledger; no session can mint it.
+    let admission = context.original_admission_with_native_work(work)?.await?;
+    let encoded = crate::pi_root_provider::guarded_pi_bytes(
+        &admission.0.input, crate::MAXIMUM_ADAPTER_STATE_BYTES, work)?;
+    let input = crate::pi_root_provider::guarded_pi_decode::<crate::pi_task::PiTaskInput>(
+        &encoded.0, crate::MAXIMUM_ADAPTER_STATE_BYTES, crate::MAXIMUM_ADAPTER_STATE_BYTES,
+        acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work)?;
+    drop(encoded.0);
+    drop(encoded.1);
+    let _input_custody = input.1;
+    let input = input.0;
+    if admission.0.parent.is_none() || input.binding.task_id != request.caller
+        || !matches!(input.execution, crate::pi_task::PiTaskExecution::Child { .. }) {
+        return Err(denied("working builtin does not belong to its original declared child task"));
+    }
+    let manifest = context.native_working_manifest_with_native_work(work)?;
+    validate_declared_working_roles(&input.binding, manifest)?;
+    let (mapping, leaf) = select_native_path(&request.path, &input.binding, manifest)?;
+    let variants = match &request.io { PiBuiltinIo::Read { variants, .. } => variants.as_slice(), _ => &[] };
+    let leaves = scoped_variants(variants, &mapping.path)?;
+    let volume_role = if mapping.volume == input.binding.scratch.volume { "SCRATCH" } else { "PROJECT" };
+    let response = match &request.io {
+        PiBuiltinIo::Read { maximum_bytes, .. } | PiBuiltinIo::EditRead { maximum_bytes } => {
+            let mut last_absence = None;
+            let mut found = None;
+            for (leaf, candidate) in std::iter::once(leaf).chain(leaves.into_iter().flatten())
+                .zip(std::iter::once(&request.path).chain(variants.iter())) {
+                let path = mounted_relative_path(manifest, mapping, leaf, work)?;
+                if matches!(request.io, PiBuiltinIo::EditRead { .. }) {
+                    context.authorize_working_file_with_native_work(&path.0, VolumeOperation::Write, work).await?;
+                }
+                match context.read_working_file_with_native_work(&path.0, *maximum_bytes as usize, work).await {
+                    Ok(bytes) => {
+                        let result = match context.authorize_working_file_with_native_work(
+                            &path.0, VolumeOperation::Read, work).await {
+                            Ok(()) => read_response(bytes.as_ref(), candidate, volume_role, work),
+                            Err(error) => Err(error),
+                        };
+                        drop(bytes);
+                        found = Some(result?);
+                        break;
+                    }
+                    Err(error) if is_absent(&error) => last_absence = Some(error),
+                    Err(error) => return Err(error),
+                }
+            }
+            found.ok_or_else(|| last_absence.expect("the requested candidate is always checked"))?
+        }
+        PiBuiltinIo::Write { content } | PiBuiltinIo::EditWrite { content, .. } => {
+            let path = mounted_relative_path(manifest, mapping, leaf, work)?;
+            let expected = match &request.io {
+                PiBuiltinIo::EditWrite { expected_sha256, .. } => Some(expected_digest(expected_sha256)?),
+                _ => None,
+            };
+            context.write_working_file_with_native_work(
+                &path.0, content, matches!(request.io, PiBuiltinIo::Write { .. }), expected, work).await?;
+            context.authorize_working_file_with_native_work(&path.0, VolumeOperation::Write, work).await?;
+            #[derive(Serialize)]
+            struct Response<'a> { written: bool, path: &'a str, volume_role: &'a str }
+            crate::pi_root_provider::guarded_pi_value(
+                &Response { written: true, path: &request.path, volume_role }, 8192, work)?
+        }
+    };
+    drop(input);
+    drop(admission.0);
+    drop(admission.1);
+    Ok((acyclic_harness::tool::ToolResult { value: response.0 }, response.1))
+}
+
+impl acyclic_harness::tool::ToolExecutor for PiBuiltinToolExecutor {
+    fn execute<'a>(&'a self, _invocation: acyclic_harness::tool::ToolInvocation)
+        -> acyclic_stream::BoxProviderFuture<'a, Result<acyclic_harness::tool::ToolResult>> {
+        Box::pin(async { Err(denied("builtin IO requires the original accepted native tool callback")) })
+    }
+
+    fn reconcile<'a>(&'a self, _invocation: acyclic_harness::tool::ToolInvocation)
+        -> acyclic_stream::BoxProviderFuture<'a, Result<Option<acyclic_harness::tool::ToolResult>>> {
+        Box::pin(async { Err(denied("builtin reconciliation requires the original accepted native tool callback")) })
+    }
+
+    fn supports_native_execution(&self, work: &NativeMaterializationWork) -> Result<()> {
+        work.remaining().map_err(native_error)?;
+        Ok(())
+    }
+
+    fn authorize_with_native_context(&self, context: &acyclic_harness::runtime::ToolContext,
+        invocation: &acyclic_harness::tool::ToolInvocation, work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        // Canonical authorization precedes ToolStarted. Only pure original
+        // invocation and bounded-input checks belong in this phase.
+        let decoded = decoded_tool_request(context, invocation, work)?;
+        drop(decoded.0);
+        drop(decoded.1);
+        Ok(())
+    }
+
+    fn execute_with_native_context<'a>(&'a self, context: &'a acyclic_harness::runtime::ToolContext,
+        invocation: &'a acyclic_harness::tool::ToolInvocation, work: &'a NativeMaterializationWork,
+    ) -> Result<acyclic_harness::NativeFutureBundle<'a, (acyclic_harness::tool::ToolResult, NativeAllocation)>> {
+        acyclic_harness::NativeFutureBundle::new(work, || async move {
+            accepted_builtin_io(context, invocation, work).await
+        })
+    }
+
+    fn reconcile_with_native_context<'a>(&'a self, context: &'a acyclic_harness::runtime::ToolContext,
+        invocation: &'a acyclic_harness::tool::ToolInvocation, work: &'a NativeMaterializationWork,
+    ) -> Result<acyclic_harness::NativeFutureBundle<'a, (Option<acyclic_harness::tool::ToolResult>, NativeAllocation)>> {
+        acyclic_harness::NativeFutureBundle::new(work, || async move {
+            let decoded = decoded_tool_request(context, invocation, work)?;
+            let admission = context.original_admission_with_native_work(work)?.await?;
+            context.native_working_manifest_with_native_work(work)?;
+            drop(decoded.0);
+            drop(decoded.1);
+            drop(admission.0);
+            drop(admission.1);
+            // Only the canonical completed checkpoint proves a result. An
+            // uncertain started effect is not reexecuted or inferred from bytes;
+            // None preserves its existing ToolStarted reservation.
+            let custody = work.retain_owned(std::mem::size_of::<Option<acyclic_harness::tool::ToolResult>>() as u64)
+                .map_err(native_error)?;
+            Ok((None, custody))
+        })
+    }
+}
 type Owner = acyclic_harness::durable_host::TaskJournalOwner<acyclic_stream::LocalStream>;
 
 /// Borrows original providers and creator handles; it owns no second journal,

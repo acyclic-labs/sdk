@@ -260,34 +260,15 @@ pub(crate) async fn bind_task_conversation_with_native_work<P: StreamProvider + 
     if task.value != authority.authority.id {
         return Err(native_invalid("Pi conversation binding differs from the original task owner"));
     }
-    owner.verify_with_native_work(false, work).await?;
-    let verifier = authority.issuer.verifier_with_native_work(work)?;
-    let verifier = NativeOwned { value: verifier.0, _custody: verifier.1 };
-    let operation = acyclic_harness::filesystem::native_root_output_binding_operation(
-        &authority.authority, exact_volume, original_creation, work)?;
-    let original_revision = observe_binding_with_native_work(stream, &authority.authority, &verifier.value,
-        &authority.scope, operation, limits.file_bytes, work).await?;
-    let aggregate = StreamAggregate::open_with_native_work(stream, authority.authority,
-        verifier.value, SchemaRegistry::new(), work).await?;
-    let mut aggregate = NativeOwned { value: aggregate.0.with_limits(limits)?, _custody: aggregate.1 };
-    if original_revision.is_none() && aggregate.value.reducer().conversation()
-        .and_then(|state| state.agent).is_some()
-    {
-        return Err(native_invalid("Pi conversation changed during original binding admission"));
-    }
-    let key = work.display(&format_args!("harness/native-root-output-bind/v2/{}",
-        operation))
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    let key = NativeOwned { value: IdempotencyKey::new(key.0)?, _custody: key.1 };
-    let command = Command { operation_id: operation, idempotency_key: key.value,
-        expected_revision: original_revision.unwrap_or_else(|| aggregate.value.reducer().revision()),
-        causal_parent: None,
-        action: Action::BindConversation { agent: authority.scope.agent()
-            .ok_or_else(|| native_invalid("Pi conversation scope has no actual agent"))? },
-        scope: authority.scope };
-    let applied = aggregate.value.execute_task_command_with_native_work(command, owner, work).await?;
-    let applied = NativeOwned { value: applied.0, _custody: applied.1 };
-    drop(applied);
+    // Pi's task/audience association is checked above; the SDK owns the
+    // canonical original Bind/reopen, current-fence guard and immutable ACK.
+    // Its exact command bytes retain their intrinsic original custody until
+    // after the genuine publication completes; they are never extracted.
+    let encoded = acyclic_harness::filesystem::bind_original_root_conversation_with_native_work(
+        stream, (authority.authority, authority.issuer, authority.scope),
+        authority._custody, owner, exact_volume, original_creation, limits, work,
+    ).await?;
+    drop(encoded);
     Ok(())
 }
 
