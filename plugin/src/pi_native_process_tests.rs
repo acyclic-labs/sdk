@@ -362,7 +362,10 @@ async fn required_pinned_pi_native_effect_lost_ack_and_disk_runtime_reopen_do_no
     assert_eq!(drained.task, fixture.binding.task_id);
     assert_eq!(drained.command, fixture.command);
     assert!(recovery_work.receipt().backend_read_operations > 0, "successful cleanup reads the authenticated result, not a nonexistent stop diagnostic");
+    let drain_proof = recovered.drain_with_native_work(
+        &fixture.view, &recovery_work, &recovery_cancellation)?.await?;
     fixture.release_publication().await?;
+    drop(drain_proof);
     Ok(())
 }
 
@@ -392,6 +395,8 @@ async fn required_pinned_pi_native_cancellation_records_actual_cleanup_without_p
     assert_eq!(cleanup.task, fixture.binding.task_id);
     assert_eq!(cleanup.command, fixture.command);
     assert!(cleanup_work.receipt().backend_read_operations > 0, "actual cleanup artifact read work must be reported");
+    let drain_proof = runner.drain_with_native_work(
+        &fixture.view, &cleanup_work, &cleanup_cancellation)?.await?;
     assert!(fixture.owner.child_scratch_creation_proof().is_err(), "an admitted root's named volume grants cannot fabricate a created-child scratch disposal proof");
     let mut forged_result_binding = fixture.binding.clone();
     forged_result_binding.results.as_mut().unwrap().volume = fixture.binding.scratch.volume.clone();
@@ -406,6 +411,7 @@ async fn required_pinned_pi_native_cancellation_records_actual_cleanup_without_p
     assert!(matches!(reconciled.0, EffectStatus::Indeterminate));
     assert_eq!(std::fs::read_to_string(fixture.invocation.cwd.join("launches.txt")).map_err(io_error)?, "started\n");
     fixture.release_publication().await?;
+    drop(drain_proof);
     Ok(())
 }
 
@@ -454,7 +460,25 @@ async fn required_pinned_pi_native_warm_supervisor_stop_drains_without_cancellin
     assert_eq!(receipt.work, original_work, "readonly recovery must not recharge or replace the original capture/publication work");
     assert_eq!(observation.receipt().backend_write_operations, 0, "receipt observation must not append or dispatch");
     assert_eq!(std::fs::read_to_string(fixture.invocation.cwd.join("launches.txt")).map_err(io_error)?, "started\n");
+    let drain_work = pi_meter(super::super::native_root_source::budget(), &cleanup_cancellation)?;
+    let proof = runner.drain_with_native_work(&fixture.view, &drain_work, &cleanup_cancellation)?.await?;
+    let recovered_proof = recovered.drain_with_native_work(
+        &fixture.view, &observation, &cleanup_cancellation)?.await?;
+    let mut foreign = Fixture::new(250).await?;
+    assert!(runner.drain_with_native_work(&foreign.view, &drain_work, &cleanup_cancellation).is_err(),
+        "an authentic prepared view for another task cannot substitute for the dispatched physical view");
+    foreign.release_publication().await?;
+    let cancelled = CancellationToken::new();
+    let cancelled_work = pi_meter(super::super::native_root_source::budget(), &cancelled)?;
+    cancelled.cancel();
+    let denied = match runner.drain_with_native_work(&fixture.view, &cancelled_work, &cancelled) {
+        Ok(future) => future.await,
+        Err(error) => Err(error),
+    };
+    assert!(denied.is_err(), "cancelled cleanup cannot return a substitute drain proof");
     fixture.release_publication().await?;
+    drop(recovered_proof);
+    drop(proof);
     Ok(())
 }
 
