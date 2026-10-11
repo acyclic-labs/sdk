@@ -71,7 +71,7 @@ trait RootLazyBacking<A, O>: acyclic_stream::ProviderPlatform {
         mutations: &'a [super::WorkspaceMutation], key: acyclic_fs::IdempotencyKey,
         permit: acyclic_fs::PublicationPermit,
         io: &'a super::fork_preparer::PreparationIo,
-        lease: &'a dyn crate::resource_preparation::CreatedTaskLease)
+        lease: &'a Arc<dyn crate::resource_preparation::CreatedTaskLease>)
         -> Result<crate::store::history::HistoryContentFuture<'a, RootLazyPublication<A, O>>>;
 }
 
@@ -141,7 +141,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
         mutations: &'a [super::WorkspaceMutation], key: acyclic_fs::IdempotencyKey,
         permit: acyclic_fs::PublicationPermit,
         io: &'a super::fork_preparer::PreparationIo,
-        lease: &'a dyn crate::resource_preparation::CreatedTaskLease)
+        lease: &'a Arc<dyn crate::resource_preparation::CreatedTaskLease>)
         -> Result<crate::store::history::HistoryContentFuture<'a, RootLazyPublication<A, O>>>
     {
         let generation = |commit| match commit {
@@ -150,8 +150,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
         };
         if let Some(original) = io.original_native_work() {
             return crate::NativeFutureBundle::new(original, || async move {
-                let mut before_mutation = |work| async move {
-                    lease.verify_with_native_work(work)?.await
+                let lease = Arc::clone(lease);
+                let mut before_mutation = move |work: &acyclic_fs::NativeMaterializationWork| {
+                    let original = acyclic_fs::NativeMaterializationWork::clone(work);
+                    let lease = Arc::clone(&lease);
+                    async move { lease.verify_with_native_work(&original)?.await }
                 };
                 let (commit, snapshot) = self.lazy.write_batch_at_snapshot_with_native_work_guarded(
                     snapshot, root_lazy_mutations(mutations), key, permit, original,
@@ -166,7 +169,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                 let mut before_mutation = |budget| async move {
                     let callback = super::fork_preparer::PreparationIo::from_budget(budget, &io.cancellation)
                         .map_err(acyclic_fs::OperationFailure::before_work)?;
-                    let verified = callback.verify_publication_lease(lease).await;
+                    let verified = callback.verify_publication_lease(lease.as_ref()).await;
                     match verified {
                         Ok(()) => Ok(acyclic_fs::OperationReceipt { value: (), work: callback.receipt() }),
                         Err(error) => Err(acyclic_fs::OperationFailure::new(error, callback.receipt())),
@@ -242,7 +245,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootNati
         mutations: &'a [super::WorkspaceMutation], key: acyclic_fs::IdempotencyKey,
         permit: acyclic_fs::PublicationPermit,
         io: &'a super::fork_preparer::PreparationIo,
-        lease: &'a dyn crate::resource_preparation::CreatedTaskLease)
+        lease: &'a Arc<dyn crate::resource_preparation::CreatedTaskLease>)
         -> Result<crate::store::history::HistoryContentFuture<'a, RootLazyPublication<A, O>>>
     {
         if mutations.iter().any(|mutation| matches!(mutation, super::WorkspaceMutation::Remove { .. })) {

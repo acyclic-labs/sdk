@@ -564,14 +564,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 &ordinary
             }
         };
-        let lease = self.publication_lease.as_deref().filter(|_| self.writable)
+        let lease = self.publication_lease.as_ref().filter(|_| self.writable)
             .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "Root lazy content has no original declared publication authority" })?;
         self.source_generation_with_io(Some(io))?.ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Invalid,
             reason: "Root eager content does not select a lazy publication candidate",
         })?;
-        io.verify_publication_lease(lease).await?;
+        io.verify_publication_lease(lease.as_ref()).await?;
         self.reauthenticate_with_io(io).await?;
         let source = self.native_source.as_ref().expect("authenticated original lazy source");
         let snapshot = self.native_snapshot.expect("authenticated original lazy snapshot");
