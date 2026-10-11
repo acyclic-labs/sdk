@@ -178,7 +178,7 @@ async fn report_apfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
         NativeDemandSource::open(
             source.path(),
             FilesystemProfile::Portable,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?,
     );

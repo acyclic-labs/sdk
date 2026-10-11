@@ -1610,7 +1610,7 @@ where
                 std::fs::write(physical.join("cold.txt"), b"genuine cold project")
                     .map_err(|error| Error::Storage(error.to_string()))?;
                 let demand = Arc::new(acyclic_fs::NativeDemandSource::open(&physical,
-                    acyclic_fs::FilesystemProfile::Portable, acyclic_fs::VolumeLimits::default())
+                    acyclic_fs::FilesystemProfile::Portable, acyclic_fs::VolumeLimits::default(), None, None)
                     .await.map_err(|error| Error::Storage(error.to_string()))?);
                 let workspace = files.open_volume_with_native_work(&source, work).await?;
                 let lazy = acyclic_fs::LazyWorkspace::open_or_attach(workspace, demand,
