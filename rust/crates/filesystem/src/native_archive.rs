@@ -315,6 +315,7 @@ pub async fn restore_native_directory_capture(store: &LocalCoreStateStore, opera
     if record.version != 1 || record.revision != 1 || record.operation_id != operation_id || !record.source_root.is_absolute()
         || record.archive.total_bytes == 0 || record.archive.total_bytes > MAXIMUM_NATIVE_ARCHIVE_BYTES
         || record.archive.sha256.len() != 64 || !record.archive.sha256.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || !record.preimages.keys().any(NamespacePath::is_root)
         || record.preimages.len().saturating_sub(1) > usize::try_from(record.volume_config.limits.maximum_paths_per_batch).map_err(|_| NativeArchiveError::InvalidReceipt)? {
         return Err(NativeArchiveError::InvalidReceipt);
     }
@@ -337,7 +338,7 @@ fn scan_source(root: &HostRoot, config: VolumeConfig, options: &CaptureOptions, 
     result.insert(root_path, SourceObservation { relative: PathBuf::new(), snapshot: HostSnapshot::from_metadata(&root.symlink_metadata_held(Path::new(""))?).map_err(|_| NativeArchiveError::SourceChanged)? });
     let mut pending = vec![PathBuf::new()];
     let mut regular_identities = BTreeSet::new();
-    let mut logical_bytes = 0_u64;
+    let mut expanded_lower_bound = 2 * BLOCK_BYTES;
     while let Some(parent) = pending.pop() {
         if cancellation.is_cancelled() { return Err(NativeArchiveError::Engine("native archive capture cancelled".to_owned())); }
         let directory = root.open_dir_held(&parent)?;
@@ -346,17 +347,24 @@ fn scan_source(root: &HostRoot, config: VolumeConfig, options: &CaptureOptions, 
             let relative = parent.join(entry.name);
             let path = host_path_to_namespace(&relative, config.profile, config.limits).map_err(|_| NativeArchiveError::InvalidPath)?;
             if policy.excludes(&path) { continue; }
-            portable_archive_path(&path, config)?;
+            let archive_path = portable_archive_path(&path, config)?;
+            expanded_lower_bound = expanded_lower_bound.checked_add(BLOCK_BYTES).ok_or(NativeArchiveError::InvalidBounds)?;
+            if archive_path.len() > 100 {
+                let name_bytes = u64::try_from(archive_path.len()).map_err(|_| NativeArchiveError::InvalidBounds)? + 1;
+                let extension_bytes = BLOCK_BYTES + name_bytes.div_ceil(BLOCK_BYTES) * BLOCK_BYTES;
+                expanded_lower_bound = expanded_lower_bound.checked_add(extension_bytes).ok_or(NativeArchiveError::InvalidBounds)?;
+            }
             let metadata = root.symlink_metadata_held(&relative)?;
             let kind = metadata.file_type();
             if !kind.is_dir() && !kind.is_file() && !kind.is_symlink() { return Err(NativeArchiveError::UnsupportedEntry); }
             if kind.is_file() {
                 let identity = NativeRootIdentity::from_metadata(&metadata)?.to_bytes();
                 if regular_identities.insert(identity) {
-                    logical_bytes = logical_bytes.checked_add(metadata.len()).ok_or(NativeArchiveError::InvalidBounds)?;
-                    if logical_bytes > MAXIMUM_NATIVE_ARCHIVE_BYTES { return Err(NativeArchiveError::InvalidBounds); }
+                    let padded_bytes = metadata.len().checked_add(BLOCK_BYTES - 1).ok_or(NativeArchiveError::InvalidBounds)? / BLOCK_BYTES * BLOCK_BYTES;
+                    expanded_lower_bound = expanded_lower_bound.checked_add(padded_bytes).ok_or(NativeArchiveError::InvalidBounds)?;
                 }
             }
+            if expanded_lower_bound > MAXIMUM_NATIVE_ARCHIVE_BYTES { return Err(NativeArchiveError::InvalidBounds); }
             let snapshot = HostSnapshot::from_metadata(&metadata).map_err(|_| NativeArchiveError::SourceChanged)?;
             if kind.is_dir() { pending.push(relative.clone()); }
             result.insert(path, SourceObservation { relative, snapshot });
@@ -386,6 +394,10 @@ async fn require_empty_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(che
 /// Captures the actual held directory, produces its archive, and durably binds
 /// the original published generation and physical preimages before returning.
 ///
+/// Whole-directory capture is not an atomic host filesystem snapshot. Callers
+/// must quiesce source writers. Held-root path/metadata checks and repeated
+/// canonical physical preimages reject observed movement without adopting it.
+///
 /// # Errors
 /// Rejects source changes, inadmissible entries, archive bounds, publication
 /// conflicts, reused locators, and native state-store failures.
@@ -399,14 +411,18 @@ pub async fn capture_native_directory_archive<A: AsyncAuthorityStore, O: AsyncOb
     require_empty_checkout(checkout, budget, cancellation).await?;
     let config = checkout.volume_config();
     let observed = scan_source(&root, config, options, policy, cancellation)?;
+    let paths = Arc::new(observed.keys().cloned().collect::<Vec<_>>());
+    let retained_root = Arc::clone(&root);
+    let initial_paths = Arc::clone(&paths);
+    let preimages = Arc::new(acyclic_native_runtime::run_blocking_io(move || capture_native_preimages(&retained_root, &initial_paths)).await?.map_err(|error| NativeArchiveError::Engine(error.to_string()))?);
     let mut candidate = checkout.private_candidate();
     let captured = capture_baseline_from_root(&mut candidate, &root, options, policy, budget, cancellation).await.map_err(|failure| NativeArchiveError::Engine(failure.to_string()))?;
-    let paths = observed.keys().cloned().collect::<Vec<_>>();
-    let retained_root = Arc::clone(&root);
-    let preimages = Arc::new(acyclic_native_runtime::run_blocking_io(move || capture_native_preimages(&retained_root, &paths)).await?.map_err(|error| NativeArchiveError::Engine(error.to_string()))?);
     verify_source(&root, &observed, config, options, policy, cancellation)?;
     verify_root_binding(&root, &options.source_root)?;
     let archive = export_native_directory_archive(&candidate.snapshot_reader(), config, options.maximum_paths, budget, cancellation).await?;
+    let retained_root = Arc::clone(&root);
+    let final_preimages = acyclic_native_runtime::run_blocking_io(move || capture_native_preimages(&retained_root, &paths)).await?.map_err(|error| NativeArchiveError::Engine(error.to_string()))?;
+    if preimages.as_ref() != &final_preimages { return Err(NativeArchiveError::SourceChanged); }
     verify_source(&root, &observed, config, options, policy, cancellation)?;
     verify_root_binding(&root, &options.source_root)?;
     let mut work = captured.work;
@@ -828,17 +844,32 @@ mod tests {
         imported_path(value, config)
     }
 
-    fn malicious_archive(name: &[u8], kind: EntryType, link: Option<&str>, declared_size: u64, body: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let mut entry = header(kind, declared_size, 0o644);
-        entry.as_mut_bytes()[..name.len()].copy_from_slice(name);
-        if let Some(link) = link { entry.set_link_name_literal(link)?; }
-        entry.set_cksum();
+    struct ArchiveFixtureEntry<'a> {
+        name: &'a [u8],
+        kind: EntryType,
+        link: Option<&'a str>,
+        mode: u32,
+        declared_size: u64,
+        body: &'a [u8],
+    }
+
+    fn archive_fixture(entries: &[ArchiveFixtureEntry<'_>]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let mut writer = GzBuilder::new().mtime(0).operating_system(255).write(Vec::new(), Compression::new(6));
-        writer.write_all(entry.as_bytes())?;
-        writer.write_all(body)?;
-        write_padding(&mut writer, body.len() as u64)?;
+        for fixture in entries {
+            let mut entry = header(fixture.kind, fixture.declared_size, fixture.mode);
+            entry.as_mut_bytes()[..fixture.name.len()].copy_from_slice(fixture.name);
+            if let Some(link) = fixture.link { entry.set_link_name_literal(link)?; }
+            entry.set_cksum();
+            writer.write_all(entry.as_bytes())?;
+            writer.write_all(fixture.body)?;
+            write_padding(&mut writer, fixture.body.len() as u64)?;
+        }
         writer.write_all(&[0; 1024])?;
         Ok(writer.finish()?)
+    }
+
+    fn malicious_archive(name: &[u8], kind: EntryType, link: Option<&str>, declared_size: u64, body: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        archive_fixture(&[ArchiveFixtureEntry { name, kind, link, mode: 0o644, declared_size, body }])
     }
 
     #[tokio::test]
@@ -916,6 +947,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn desired_archive_requires_original_volume_and_preserves_original_baseline_on_failure() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let source = directory.path().join("source");
+        std::fs::create_dir(&source)?;
+        std::fs::write(source.join("before.txt"), b"original physical bytes")?;
+        let fs = crate::Fs::local(crate::LocalOptions::new(directory.path().join("sdk-store"))).await?;
+        let workspace = fs.create_workspace("archive-original-authority").await?;
+        let mut checkout = workspace.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction()).await?;
+        let config = checkout.volume_config();
+        let root = Arc::new(HostRoot::open(&source)?);
+        let options = CaptureOptions { source_root: source.clone(), expected_root_identity: root.identity(), maximum_paths: 16, maximum_extent_spans: 16 };
+        let policy = CapturePolicy::excluding(vec![path(".env", config)?])?;
+        let store = LocalCoreStateStore::new(directory.path().join("native-state"));
+        let cancellation = CancellationToken::new();
+        let captured = capture_native_directory_archive(&mut checkout, root, &options, &policy, OperationId::new(), PublicationPermit::Unrestricted, &store, WorkBudget::UNBOUNDED, &cancellation).await?;
+        let original_generation = checkout.generation_id();
+        let desired = malicious_archive(b"desired.txt", EntryType::Regular, None, 6, b"actual")?;
+        let foreign = fs.create_workspace("archive-foreign-authority").await?;
+        let mut foreign_checkout = foreign.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction()).await?;
+        assert!(matches!(replace_captured_native_directory_archive(&mut foreign_checkout, &captured.capture, Cursor::new(&desired), WorkBudget::UNBOUNDED, &cancellation).await, Err(NativeArchiveError::InvalidCheckout)));
+        assert!(!foreign_checkout.has_pending_mutations());
+        let excluded = malicious_archive(b".env", EntryType::Regular, None, 1, b"x")?;
+        assert!(matches!(replace_captured_native_directory_archive(&mut checkout, &captured.capture, Cursor::new(excluded), WorkBudget::UNBOUNDED, &cancellation).await, Err(NativeArchiveError::InvalidPath)));
+        assert_eq!(checkout.generation_id(), original_generation);
+        assert!(!checkout.has_pending_mutations());
+        let before = checkout.snapshot_reader().read_file_range(&path("before.txt", config)?, ByteRange { offset: 0, length: 23 }, WorkBudget::UNBOUNDED, &cancellation).await?.value;
+        assert_eq!(before.bytes.as_ref(), b"original physical bytes");
+        let imported = replace_captured_native_directory_archive(&mut checkout, &captured.capture, Cursor::new(&desired), WorkBudget::UNBOUNDED, &cancellation).await?;
+        assert_eq!(imported.value.entries, 1);
+        let reader = checkout.snapshot_reader();
+        assert!(reader.read_file_range(&path("before.txt", config)?, ByteRange { offset: 0, length: 1 }, WorkBudget::UNBOUNDED, &cancellation).await.is_err());
+        let after = reader.read_file_range(&path("desired.txt", config)?, ByteRange { offset: 0, length: 6 }, WorkBudget::UNBOUNDED, &cancellation).await?.value;
+        assert_eq!(after.bytes.as_ref(), b"actual");
+        assert_eq!(std::fs::read(source.join("before.txt"))?, b"original physical bytes");
+        let published = checkout.commit_with_permit(OperationId::new(), PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation).await?;
+        assert!(matches!(published.value, CheckoutCommitOutcome::Committed { .. }));
+        assert_eq!(checkout.volume_id(), captured.capture.original_volume());
+        assert_ne!(checkout.generation_id(), original_generation);
+        assert_eq!(captured.capture.original_generation(), original_generation);
+        assert!(matches!(replace_captured_native_directory_archive(&mut checkout, &captured.capture, Cursor::new(desired), WorkBudget::UNBOUNDED, &cancellation).await, Err(NativeArchiveError::InvalidCheckout)));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn changed_directory_and_replaced_root_fail_without_adopting_new_source() -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let source = directory.path().join("source");
@@ -944,6 +1019,12 @@ mod tests {
     async fn malformed_foreign_paths_links_modes_and_truncation_do_not_mutate_checkout() -> Result<(), Box<dyn std::error::Error>> {
         let fs = crate::Fs::memory();
         let cancellation = CancellationToken::new();
+        let valid = malicious_archive(b"safe", EntryType::Regular, None, 1, b"x")?;
+        let mut wrong_crc = valid.clone();
+        let crc_offset = wrong_crc.len() - 8;
+        wrong_crc[crc_offset] ^= 1;
+        let mut another_member = valid.clone();
+        another_member.extend_from_slice(&valid);
         let cases = [
             malicious_archive(b"../outside", EntryType::Regular, None, 1, b"x")?,
             malicious_archive(b"/absolute", EntryType::Regular, None, 1, b"x")?,
@@ -953,6 +1034,13 @@ mod tests {
             malicious_archive(b"hard", EntryType::Link, Some("not-present"), 0, b"")?,
             malicious_archive(b"truncated", EntryType::Regular, None, 2048, b"short")?,
             malicious_archive(b"too-large", EntryType::Regular, None, MAXIMUM_NATIVE_ARCHIVE_BYTES + 1, b"")?,
+            archive_fixture(&[ArchiveFixtureEntry { name: b"special-mode", kind: EntryType::Regular, link: None, mode: 0o4755, declared_size: 1, body: b"x" }])?,
+            archive_fixture(&[
+                ArchiveFixtureEntry { name: b"alias", kind: EntryType::Symlink, link: Some("other"), mode: 0o777, declared_size: 0, body: b"" },
+                ArchiveFixtureEntry { name: b"alias/child", kind: EntryType::Regular, link: None, mode: 0o644, declared_size: 1, body: b"x" },
+            ])?,
+            wrong_crc,
+            another_member,
         ];
         for (index, archive) in cases.into_iter().enumerate() {
             let workspace = fs.create_workspace(format!("archive-rejected-{index}")).await?;
